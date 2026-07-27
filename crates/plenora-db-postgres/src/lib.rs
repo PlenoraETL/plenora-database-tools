@@ -5031,7 +5031,7 @@ impl PostgresProvider {
         ResourceBudget::new(plenora_database_core::resource::ResourceLimits::default())
     }
 
-    fn read<'a>(
+    fn read_with_test_budget<'a>(
         &'a self,
         secret: &'a SecretString,
         operation: &'a ReadOperation,
@@ -5044,7 +5044,7 @@ impl PostgresProvider {
         })
     }
 
-    fn query<'a>(
+    fn query_with_test_budget<'a>(
         &'a self,
         secret: &'a SecretString,
         operation: &'a QueryOperation,
@@ -5057,7 +5057,7 @@ impl PostgresProvider {
         })
     }
 
-    fn prepare_write<'a>(
+    fn prepare_write_with_test_budget<'a>(
         &'a self,
         secret: &'a SecretString,
         operation: &'a WriteOperation,
@@ -5071,7 +5071,7 @@ impl PostgresProvider {
         })
     }
 
-    fn write<'a>(
+    fn write_with_prepared_budget<'a>(
         &'a self,
         secret: &'a SecretString,
         prepared: PreparedWrite,
@@ -5460,7 +5460,7 @@ mod tests {
             .with_byte_limits(256 * 1024, 64 * 1024 * 1024);
         let secret = SecretString::new(dsn);
         let mut stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -5730,7 +5730,7 @@ mod tests {
             allow_partial: false,
         };
         let error = PostgresProvider::default()
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &SecretString::new(dsn),
                 &operation,
                 schema,
@@ -5819,7 +5819,7 @@ mod tests {
             toggle.cancel();
         });
         let error = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -5905,7 +5905,7 @@ mod tests {
             filter: None,
         };
         let mut stream = provider
-            .read(&secret, &operation, &ParameterBag::default(), &cancellation)
+            .read_with_test_budget(&secret, &operation, &ParameterBag::default(), &cancellation)
             .await
             .expect("read");
         let stream_schema = stream.schema();
@@ -5963,7 +5963,7 @@ mod tests {
         values.insert("region_id".to_owned(), ParameterValue::I32(11));
         let parameters = ParameterBag::new(values);
         let mut filtered_stream = provider
-            .read(&secret, &filtered, &parameters, &cancellation)
+            .read_with_test_budget(&secret, &filtered, &parameters, &cancellation)
             .await
             .expect("filtered read");
         let filtered_batch = filtered_stream
@@ -6013,7 +6013,7 @@ mod tests {
             },
         );
         let mut spatial_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &spatial_read,
                 &ParameterBag::new(spatial_values),
@@ -6120,7 +6120,7 @@ mod tests {
             },
         )]));
         let mut indexed_stream = provider
-            .query(&secret, &indexed_query, &indexed_parameters, &cancellation)
+            .query_with_test_budget(&secret, &indexed_query, &indexed_parameters, &cancellation)
             .await
             .expect("indexed spatial query");
         let indexed_batch = indexed_stream
@@ -6219,7 +6219,7 @@ mod tests {
         let mut query_parameters = BTreeMap::new();
         query_parameters.insert("minimum_id".to_owned(), ParameterValue::I64(100));
         let mut query_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &query_operation,
                 &ParameterBag::new(query_parameters),
@@ -6248,7 +6248,7 @@ mod tests {
         );
         drop(query_stream);
         let mut cached_query_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &query_operation,
                 &ParameterBag::new(BTreeMap::from([(
@@ -6270,7 +6270,7 @@ mod tests {
         );
         drop(cached_query_stream);
         let mut empty_query_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &query_operation,
                 &ParameterBag::new(BTreeMap::from([(
@@ -6360,7 +6360,7 @@ mod tests {
             locking: None,
         };
         let mut window_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &window_query,
                 &ParameterBag::default(),
@@ -6478,7 +6478,7 @@ mod tests {
             locking: None,
         };
         let mut lateral_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &lateral_query,
                 &ParameterBag::default(),
@@ -6532,7 +6532,7 @@ mod tests {
             query: Box::new(set_rhs),
         }];
         let mut set_stream = provider
-            .query(
+            .query_with_test_budget(
                 &secret,
                 &set_query,
                 &ParameterBag::new(BTreeMap::from([
@@ -6635,7 +6635,7 @@ mod tests {
             }));
         }
         let mut dimensions_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: dimensions_source,
@@ -6753,7 +6753,7 @@ mod tests {
             true
         );
         let mut advanced_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: advanced_source,
@@ -6870,7 +6870,7 @@ mod tests {
             ParameterValue::Decimal("12300".to_owned()),
         );
         let mut typed_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -6918,7 +6918,7 @@ mod tests {
             },
         );
         let mut null_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -6949,7 +6949,7 @@ mod tests {
 
         let limited_provider = PostgresProvider::new(10).with_byte_limits(1, 1);
         let mut limited_stream = limited_provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: spatial_read.source.clone(),
@@ -6967,7 +6967,7 @@ mod tests {
         assert_eq!(limited_error.category, ErrorCategory::ResourceLimit);
 
         let mut cancelled_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: spatial_read.source.clone(),
@@ -7006,7 +7006,7 @@ mod tests {
         });
         let started = std::time::Instant::now();
         let inflight_error = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7046,7 +7046,7 @@ mod tests {
 
         let single_connection_provider = PostgresProvider::new(10).with_pool_size(1, 25);
         let held_stream = single_connection_provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: spatial_read.source.clone(),
@@ -7088,7 +7088,7 @@ mod tests {
             filter: None,
         };
         let mut quoted_stream = provider
-            .read(&secret, &quoted, &ParameterBag::default(), &cancellation)
+            .read_with_test_budget(&secret, &quoted, &ParameterBag::default(), &cancellation)
             .await
             .expect("quoted read");
         assert_eq!(
@@ -7136,7 +7136,7 @@ mod tests {
         row_limit: u64,
     ) -> Box<dyn BatchStream> {
         provider
-            .read(
+            .read_with_test_budget(
                 secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7170,7 +7170,7 @@ mod tests {
         let mut values = BTreeMap::new();
         values.insert("event_id".to_owned(), ParameterValue::I64(event_id));
         provider
-            .read(
+            .read_with_test_budget(
                 secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7229,11 +7229,11 @@ mod tests {
     ) -> WriteOutcome {
         let operation = write_operation(mode);
         let prepared = provider
-            .prepare_write(secret, &operation, stream.schema(), cancellation)
+            .prepare_write_with_test_budget(secret, &operation, stream.schema(), cancellation)
             .await
             .expect("prepare write");
         provider
-            .write(secret, prepared, stream, cancellation)
+            .write_with_prepared_budget(secret, prepared, stream, cancellation)
             .await
             .expect("execute write")
     }
@@ -7260,7 +7260,7 @@ mod tests {
             .expect("cleanup");
 
         let advanced_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7307,7 +7307,7 @@ mod tests {
             allow_partial: false,
         };
         let advanced_prepared = provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &advanced_operation,
                 advanced_stream.schema(),
@@ -7316,7 +7316,7 @@ mod tests {
             .await
             .expect("advanced prepare");
         let advanced_outcome = provider
-            .write(&secret, advanced_prepared, advanced_stream, &cancellation)
+            .write_with_prepared_budget(&secret, advanced_prepared, advanced_stream, &cancellation)
             .await
             .expect("advanced write");
         assert_eq!(advanced_outcome.rows.confirmed, 1);
@@ -7343,7 +7343,7 @@ mod tests {
         assert!(advanced_matches);
 
         let advanced_binary_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7378,7 +7378,7 @@ mod tests {
             .clone()
             .with_insert_mode(PostgresInsertMode::CopyBinary);
         let advanced_binary_prepared = binary_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &advanced_binary_operation,
                 advanced_binary_stream.schema(),
@@ -7387,7 +7387,7 @@ mod tests {
             .await
             .expect("advanced binary prepare");
         let advanced_binary_outcome = binary_provider
-            .write(
+            .write_with_prepared_budget(
                 &secret,
                 advanced_binary_prepared,
                 advanced_binary_stream,
@@ -7426,7 +7426,7 @@ mod tests {
             .await
             .expect("evolution target");
         let evolution_stream = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &ReadOperation {
                     source: ObjectRef {
@@ -7469,7 +7469,7 @@ mod tests {
             allow_partial: false,
         };
         let strict_error = provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &evolution_operation,
                 evolution_stream.schema(),
@@ -7483,7 +7483,7 @@ mod tests {
             .clone()
             .with_schema_evolution(PostgresSchemaEvolution::AddNullableColumns);
         let evolution_prepared = evolution_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &evolution_operation,
                 evolution_stream.schema(),
@@ -7498,7 +7498,12 @@ mod tests {
             .iter()
             .all(|loss| loss.severity == LossSeverity::Information));
         let evolution_outcome = evolution_provider
-            .write(&secret, evolution_prepared, evolution_stream, &cancellation)
+            .write_with_prepared_budget(
+                &secret,
+                evolution_prepared,
+                evolution_stream,
+                &cancellation,
+            )
             .await
             .expect("additive evolution write");
         assert_eq!(evolution_outcome.rows.confirmed, 2);
@@ -7563,7 +7568,7 @@ mod tests {
             allow_partial: false,
         };
         let slow_write_prepared = provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &slow_write_operation,
                 slow_write_stream.schema(),
@@ -7579,7 +7584,7 @@ mod tests {
         });
         let started = std::time::Instant::now();
         let slow_write_error = provider
-            .write(
+            .write_with_prepared_budget(
                 &secret,
                 slow_write_prepared,
                 slow_write_stream,
@@ -7693,7 +7698,7 @@ mod tests {
             allow_partial: false,
         };
         let failing_prepared = provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &failing_operation,
                 failing_stream.schema(),
@@ -7702,7 +7707,7 @@ mod tests {
             .await
             .expect("failing write prepare");
         let failing_error = provider
-            .write(&secret, failing_prepared, failing_stream, &cancellation)
+            .write_with_prepared_budget(&secret, failing_prepared, failing_stream, &cancellation)
             .await
             .expect_err("trigger rejection");
         assert_eq!(failing_error.remote_effect, RemoteEffect::RolledBack);
@@ -7833,7 +7838,7 @@ mod tests {
         let rollback_stream =
             fixture_stream(&provider, &secret, &cancellation, Vec::new(), 2).await;
         let rollback_prepared = rollback_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &fault_operation,
                 rollback_stream.schema(),
@@ -7842,7 +7847,7 @@ mod tests {
             .await
             .expect("fault prepare");
         let rollback_error = rollback_provider
-            .write(&secret, rollback_prepared, rollback_stream, &cancellation)
+            .write_with_prepared_budget(&secret, rollback_prepared, rollback_stream, &cancellation)
             .await
             .expect_err("fault before commit");
         assert_eq!(rollback_error.remote_effect, RemoteEffect::RolledBack);
@@ -7862,7 +7867,7 @@ mod tests {
             .with_fault_injection(PostgresFaultPoint::AfterCommitAcknowledgement);
         let unknown_stream = fixture_stream(&provider, &secret, &cancellation, Vec::new(), 2).await;
         let unknown_prepared = unknown_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &fault_operation,
                 unknown_stream.schema(),
@@ -7871,7 +7876,7 @@ mod tests {
             .await
             .expect("unknown prepare");
         let unknown = unknown_provider
-            .write(&secret, unknown_prepared, unknown_stream, &cancellation)
+            .write_with_prepared_budget(&secret, unknown_prepared, unknown_stream, &cancellation)
             .await
             .expect("unknown outcome");
         assert_eq!(unknown.status, WriteStatus::OutcomeUnknown);
@@ -7937,7 +7942,7 @@ mod tests {
         };
         for _ in 0..2 {
             let mut stream = provider
-                .read(
+                .read_with_test_budget(
                     &secret,
                     &operation,
                     &ParameterBag::default(),
@@ -7997,7 +8002,7 @@ mod tests {
             .expect("external schema evolution");
 
         let mut evolved = provider
-            .read(
+            .read_with_test_budget(
                 &secret,
                 &operation,
                 &ParameterBag::default(),
@@ -8059,7 +8064,7 @@ mod tests {
             filter: None,
         };
         let mut other_stream = provider
-            .read(&secret, &other, &ParameterBag::default(), &NeverCancelled)
+            .read_with_test_budget(&secret, &other, &ParameterBag::default(), &NeverCancelled)
             .await
             .expect("LRU second object");
         while other_stream
@@ -8183,7 +8188,12 @@ mod tests {
                 let mut rows = 0_u64;
                 for _ in 0..ROUNDS {
                     let mut stream = provider
-                        .read(&secret, &operation, &ParameterBag::default(), &cancellation)
+                        .read_with_test_budget(
+                            &secret,
+                            &operation,
+                            &ParameterBag::default(),
+                            &cancellation,
+                        )
                         .await
                         .expect("concurrent read");
                     while let Some(batch) = stream.next_batch().await.expect("concurrent batch") {
@@ -8267,7 +8277,12 @@ mod tests {
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
                 let error = match provider
-                    .read(&secret, &operation, &ParameterBag::default(), &cancellation)
+                    .read_with_test_budget(
+                        &secret,
+                        &operation,
+                        &ParameterBag::default(),
+                        &cancellation,
+                    )
                     .await
                 {
                     Ok(mut stream) => stream
@@ -8344,7 +8359,7 @@ mod tests {
             PostgresProvider::new(1_000).with_insert_mode(PostgresInsertMode::CopyText);
         let copy_stream = fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let copy_prepared = copy_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &copy_operation,
                 copy_stream.schema(),
@@ -8354,7 +8369,7 @@ mod tests {
             .expect("copy prepare");
         let started = std::time::Instant::now();
         copy_provider
-            .write(&secret, copy_prepared, copy_stream, &cancellation)
+            .write_with_prepared_budget(&secret, copy_prepared, copy_stream, &cancellation)
             .await
             .expect("copy write");
         let copy_micros = started.elapsed().as_micros();
@@ -8366,7 +8381,7 @@ mod tests {
         let binary_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let binary_prepared = binary_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &binary_operation,
                 binary_stream.schema(),
@@ -8376,7 +8391,7 @@ mod tests {
             .expect("binary prepare");
         let started = std::time::Instant::now();
         binary_provider
-            .write(&secret, binary_prepared, binary_stream, &cancellation)
+            .write_with_prepared_budget(&secret, binary_prepared, binary_stream, &cancellation)
             .await
             .expect("binary write");
         let binary_micros = started.elapsed().as_micros();
@@ -8388,7 +8403,7 @@ mod tests {
         let prepared_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let prepared = prepared_provider
-            .prepare_write(
+            .prepare_write_with_test_budget(
                 &secret,
                 &prepared_operation,
                 prepared_stream.schema(),
@@ -8398,7 +8413,7 @@ mod tests {
             .expect("prepared prepare");
         let started = std::time::Instant::now();
         prepared_provider
-            .write(&secret, prepared, prepared_stream, &cancellation)
+            .write_with_prepared_budget(&secret, prepared, prepared_stream, &cancellation)
             .await
             .expect("prepared write");
         let prepared_micros = started.elapsed().as_micros();
