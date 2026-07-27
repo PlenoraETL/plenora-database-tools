@@ -719,11 +719,11 @@ fn configure_session_startup(
 }
 
 impl CatalogSchemaToken {
-    fn from_catalog_row(row: &Row, offset: usize) -> Result<Self> {
-        let database_oid = catalog_oid(row.get::<_, i64>(offset))?;
-        let namespace_oid = catalog_oid(row.get::<_, i64>(offset + 1))?;
-        let relation_oid = catalog_oid(row.get::<_, i64>(offset + 2))?;
-        let exact_signature = row.get::<_, String>(offset + 3);
+    fn from_catalog_row(row: &Row) -> Result<Self> {
+        let database_oid = catalog_oid(catalog_field(row, "database_oid")?)?;
+        let namespace_oid = catalog_oid(catalog_field(row, "namespace_oid")?)?;
+        let relation_oid = catalog_oid(catalog_field(row, "relation_oid")?)?;
+        let exact_signature: String = catalog_field(row, "structural_signature")?;
         let digest = Sha256::digest(exact_signature.as_bytes());
         let mut structural_fingerprint = String::with_capacity(digest.len() * 2);
         for byte in digest {
@@ -748,6 +748,45 @@ impl CatalogSchemaToken {
             && self.public.relation_oid == other.public.relation_oid
             && self.exact_signature == other.exact_signature
     }
+}
+
+fn catalog_field<'a, T>(row: &'a Row, name: &'static str) -> Result<T>
+where
+    T: FromSql<'a>,
+{
+    row.try_get(name).map_err(|_| {
+        let message =
+            format!("campo catalogo PostgreSQL '{name}' incompatibile con il contratto interno");
+        public_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Probe,
+            false,
+            &message,
+        )
+    })
+}
+
+fn catalog_json_list<T>(row: &Row, name: &'static str) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let encoded: Option<String> = catalog_field(row, name)?;
+    encoded.map_or_else(
+        || Ok(Vec::new()),
+        |value| {
+            serde_json::from_str(&value).map_err(|_| {
+                let message = format!(
+                    "JSON del campo catalogo PostgreSQL '{name}' incompatibile con il contratto interno"
+                );
+                public_error(
+                    ErrorCategory::DataMapping,
+                    ErrorPhase::Probe,
+                    false,
+                    &message,
+                )
+            })
+        },
+    )
 }
 
 fn catalog_oid(value: i64) -> Result<u32> {
@@ -1248,8 +1287,12 @@ impl PostgresProvider {
                 "oggetto PostgreSQL non trovato",
             ));
         }
-        let token = CatalogSchemaToken::from_catalog_row(&rows[0], 16)?;
-        let columns = Arc::new(rows.iter().map(ColumnSpec::from_catalog_row).collect());
+        let token = CatalogSchemaToken::from_catalog_row(&rows[0])?;
+        let columns = Arc::new(
+            rows.iter()
+                .map(ColumnSpec::from_catalog_row)
+                .collect::<Result<Vec<_>>>()?,
+        );
         Ok((columns, token))
     }
 
@@ -1367,7 +1410,7 @@ impl PostgresProvider {
                     "oggetto PostgreSQL non trovato",
                 )
             })?;
-        CatalogSchemaToken::from_catalog_row(&row, 0)
+        CatalogSchemaToken::from_catalog_row(&row)
     }
 
     fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
@@ -2907,17 +2950,17 @@ impl ColumnSpec {
         })
     }
 
-    fn from_catalog_row(row: &Row) -> Self {
-        let name: String = row.get(0);
-        let native_type: String = row.get(1);
-        let nullable: bool = row.get(2);
-        let precision_i32: Option<i32> = row.get(3);
-        let scale_i32: Option<i32> = row.get(4);
-        let srid_i32: Option<i32> = row.get(5);
-        let spatial_dimension_count: Option<i32> = row.get(6);
-        let spatial_typmod_type: Option<String> = row.get(7);
-        let spatial_crs_auth_name: Option<String> = row.get(8);
-        let spatial_crs_auth_srid: Option<i32> = row.get(9);
+    fn from_catalog_row(row: &Row) -> Result<Self> {
+        let name: String = catalog_field(row, "attname")?;
+        let native_type: String = catalog_field(row, "typname")?;
+        let nullable: bool = catalog_field(row, "nullable")?;
+        let precision_i32: Option<i32> = catalog_field(row, "numeric_precision")?;
+        let scale_i32: Option<i32> = catalog_field(row, "numeric_scale")?;
+        let srid_i32: Option<i32> = catalog_field(row, "spatial_srid")?;
+        let spatial_dimension_count: Option<i32> = catalog_field(row, "spatial_dims")?;
+        let spatial_typmod_type: Option<String> = catalog_field(row, "spatial_type")?;
+        let spatial_crs_auth_name: Option<String> = catalog_field(row, "spatial_crs_auth_name")?;
+        let spatial_crs_auth_srid: Option<i32> = catalog_field(row, "spatial_crs_auth_srid")?;
         let spatial_dimensions =
             spatial_dimensions_label(spatial_dimension_count, spatial_typmod_type.as_deref());
         let spatial_type = spatial_typmod_type.as_deref().map(spatial_base_type);
@@ -2925,25 +2968,16 @@ impl ColumnSpec {
             .filter(|value| !value.is_empty())
             .zip(spatial_crs_auth_srid.and_then(|value| u32::try_from(value).ok()))
             .map(|(authority, code)| format!("{authority}:{code}"));
-        let default_expression: Option<String> = row.get(10);
-        let identity_kind: Option<String> = row.get(11);
-        let generated_kind: Option<String> = row.get(12);
-        let native_declaration: Option<String> = row.get(13);
-        let type_kind: Option<String> = row.get(14);
-        let composite_fields = row
-            .get::<_, Option<String>>(15)
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default();
-        let enum_labels = row
-            .get::<_, Option<String>>(20)
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default();
-        let domain_base_type = row.get(21);
-        let domain_constraints = row
-            .get::<_, Option<String>>(22)
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default();
-        let collation = row.get(23);
+        let default_expression = catalog_field(row, "default_expression")?;
+        let identity_kind = catalog_field(row, "identity_kind")?;
+        let generated_kind = catalog_field(row, "generated_kind")?;
+        let native_declaration = catalog_field(row, "native_declaration")?;
+        let type_kind: Option<String> = catalog_field(row, "type_kind")?;
+        let composite_fields = catalog_json_list(row, "composite_fields")?;
+        let enum_labels = catalog_json_list(row, "enum_labels")?;
+        let domain_base_type = catalog_field(row, "domain_base_type")?;
+        let domain_constraints = catalog_json_list(row, "domain_constraints")?;
+        let collation = catalog_field(row, "collation")?;
         let numeric_precision = precision_i32.and_then(|value| u8::try_from(value).ok());
         let numeric_scale = scale_i32.and_then(|value| i8::try_from(value).ok());
         let kind = if type_kind.as_deref() == Some("c") {
@@ -2979,7 +3013,7 @@ impl ColumnSpec {
                 _ => ColumnKind::Utf8,
             }
         };
-        Self {
+        Ok(Self {
             name,
             native_type,
             nullable,
@@ -3002,7 +3036,7 @@ impl ColumnSpec {
             domain_constraints,
             collation,
             kind,
-        }
+        })
     }
 
     #[allow(clippy::too_many_lines)]
