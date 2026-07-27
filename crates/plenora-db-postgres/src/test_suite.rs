@@ -1,4 +1,5 @@
 use super::*;
+use plenora_database_core::RemoteEffect;
 
 #[cfg(test)]
 impl PostgresProvider {

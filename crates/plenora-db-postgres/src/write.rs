@@ -1,8 +1,9 @@
 use crate::{
-    control::select_with_cancellation, metrics::PostgresMetrics, public_error,
-    public_error_envelope, PostgresFaultPoint, PostgresInsertMode, PostgresNetworkOptions,
-    PostgresPool, PostgresSchemaEvolution, PostgresSessionOptions, PostgresTlsConfig,
-    PostgresTlsMode,
+    control::select_with_cancellation,
+    error::{classify_error, public_error, public_error_envelope},
+    metrics::PostgresMetrics,
+    PostgresFaultPoint, PostgresInsertMode, PostgresNetworkOptions, PostgresPool,
+    PostgresSchemaEvolution, PostgresSessionOptions, PostgresTlsConfig, PostgresTlsMode,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
@@ -128,7 +129,7 @@ pub async fn execute(
             Some(Ok(())) => {}
             Some(Err(error)) => {
                 client.invalidate();
-                return Err(super::classify_error(ErrorPhase::Connect, &error));
+                return Err(classify_error(ErrorPhase::Connect, &error));
             }
             None => {
                 client.invalidate();

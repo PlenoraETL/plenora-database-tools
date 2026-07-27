@@ -5,6 +5,7 @@
 //! definite dal core.
 
 mod control;
+mod error;
 mod metrics;
 mod write;
 
@@ -21,6 +22,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use bytes::{Buf, BytesMut};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use control::select_with_cancellation;
+use error::{check_cancelled, classify_error, public_error, row_decode_error};
 use futures_util::{Stream, StreamExt};
 use metrics::PostgresMetrics;
 use plenora_database_core::capabilities::{
@@ -42,10 +44,7 @@ use plenora_database_core::provider::{
 };
 use plenora_database_core::query::{QueryExpression, QueryOperation, SpatialFunction};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
     Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
 };
@@ -4922,107 +4921,6 @@ fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {
         parsed /= divisor;
     }
     Ok(if negative { -parsed } else { parsed })
-}
-
-fn check_cancelled(cancellation: &CancellationToken, phase: ErrorPhase) -> Result<()> {
-    if cancellation.is_cancelled() {
-        Err(public_error(
-            ErrorCategory::Cancelled,
-            phase,
-            false,
-            "operazione cancellata",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn row_decode_error(_: tokio_postgres::Error) -> DatabaseError {
-    public_error(
-        ErrorCategory::DataMapping,
-        ErrorPhase::Read,
-        false,
-        "valore PostgreSQL non convertibile nel tipo Arrow",
-    )
-}
-
-fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
-    let (category, retryable, message) =
-        match error.code().map(tokio_postgres::error::SqlState::code) {
-            Some("28P01") => (
-                ErrorCategory::Authentication,
-                false,
-                "autenticazione PostgreSQL fallita",
-            ),
-            Some("42501") => (
-                ErrorCategory::Authorization,
-                false,
-                "permesso PostgreSQL insufficiente",
-            ),
-            Some("42P01" | "42703" | "3F000") => (
-                ErrorCategory::NotFound,
-                false,
-                "oggetto PostgreSQL non trovato",
-            ),
-            Some("40001" | "40P01" | "55P03") => (
-                ErrorCategory::Transient,
-                true,
-                "conflitto PostgreSQL transitorio",
-            ),
-            Some("57014") => (
-                ErrorCategory::Cancelled,
-                false,
-                "operazione PostgreSQL cancellata",
-            ),
-            _ if error.is_closed() => (
-                ErrorCategory::Transient,
-                true,
-                "connessione PostgreSQL chiusa",
-            ),
-            _ => (
-                ErrorCategory::Protocol,
-                false,
-                "operazione PostgreSQL fallita",
-            ),
-        };
-    public_error(category, phase, retryable, message)
-}
-
-pub(crate) fn public_error(
-    category: ErrorCategory,
-    phase: ErrorPhase,
-    retryable: bool,
-    message: &str,
-) -> DatabaseError {
-    public_error_envelope(
-        category,
-        phase,
-        RemoteEffect::None,
-        if retryable {
-            RetryDisposition::Safe
-        } else {
-            RetryDisposition::Never
-        },
-        message,
-    )
-}
-
-pub(crate) fn public_error_envelope(
-    category: ErrorCategory,
-    phase: ErrorPhase,
-    remote_effect: RemoteEffect,
-    retry: RetryDisposition,
-    message: &str,
-) -> DatabaseError {
-    DatabaseError {
-        category,
-        phase,
-        remote_effect,
-        retry,
-        provider: Some(ProviderKind::Postgres),
-        execution_id: None,
-        message: message.to_owned(),
-    }
 }
 
 #[cfg(test)]
