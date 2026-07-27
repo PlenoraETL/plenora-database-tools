@@ -1,7 +1,7 @@
 use crate::{
-    metrics::PostgresMetrics, public_error, PostgresFaultPoint, PostgresInsertMode,
-    PostgresNetworkOptions, PostgresPool, PostgresSchemaEvolution, PostgresSessionOptions,
-    PostgresTlsConfig, PostgresTlsMode,
+    metrics::PostgresMetrics, public_error, public_error_envelope, PostgresFaultPoint,
+    PostgresInsertMode, PostgresNetworkOptions, PostgresPool, PostgresSchemaEvolution,
+    PostgresSessionOptions, PostgresTlsConfig, PostgresTlsMode,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
@@ -17,8 +17,12 @@ use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
 };
 use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
-use plenora_database_core::provider::{BatchStream, Cancellation, PreparedWrite, SecretString};
-use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_core::protocol;
+use plenora_database_core::provider::{BatchStream, PreparedWrite, SecretString};
+use plenora_database_core::{
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
+    RetryDisposition,
+};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,6 +56,7 @@ pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result
         ));
     }
     for field in schema.fields() {
+        validate_metadata_coherence(field)?;
         Identifier::new(field.name().clone())?;
         pg_type(field)?;
     }
@@ -72,7 +77,7 @@ pub async fn execute(
     secret: &SecretString,
     prepared: PreparedWrite,
     mut input: Box<dyn BatchStream>,
-    cancellation: &dyn Cancellation,
+    cancellation: &CancellationToken,
     runtime: WriteRuntime,
 ) -> Result<WriteOutcome> {
     if cancellation.is_cancelled() {
@@ -142,19 +147,16 @@ pub async fn execute(
                 runtime.network_options.connect_timeout_ms,
             )
             .await;
-            return Err(cancelled_write_error());
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(cancelled_write_error(rollback_confirmed));
         };
         let Some(batch) = batch else {
             break;
         };
         if cancellation.is_cancelled() {
             runtime.metrics.cancellation();
-            return Err(public_error(
-                ErrorCategory::Cancelled,
-                ErrorPhase::Write,
-                false,
-                "write PostgreSQL cancellata",
-            ));
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(cancelled_write_error(rollback_confirmed));
         }
         enforce_input_limits(&batch, runtime.max_batch_bytes, runtime.max_wkb_cell_bytes)?;
         received += u64::try_from(batch.num_rows()).map_err(|_| {
@@ -187,7 +189,8 @@ pub async fn execute(
                 runtime.network_options.connect_timeout_ms,
             )
             .await;
-            return Err(cancelled_write_error());
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(cancelled_write_error(rollback_confirmed));
         };
     }
     if let Some(original) = replace_original {
@@ -296,20 +299,14 @@ pub async fn execute(
     Ok(outcome)
 }
 
-async fn select_with_cancellation<T, F>(future: F, cancellation: &dyn Cancellation) -> Option<T>
+async fn select_with_cancellation<T, F>(future: F, cancellation: &CancellationToken) -> Option<T>
 where
     F: std::future::Future<Output = T>,
 {
     tokio::pin!(future);
     tokio::select! {
         result = &mut future => Some(result),
-        () = wait_for_cancellation(cancellation) => None,
-    }
-}
-
-async fn wait_for_cancellation(cancellation: &dyn Cancellation) {
-    while !cancellation.is_cancelled() {
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        _reason = cancellation.cancelled() => None,
     }
 }
 
@@ -329,11 +326,20 @@ async fn cancel_backend(
         tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cancellation).await;
 }
 
-fn cancelled_write_error() -> DatabaseError {
-    public_error(
+fn cancelled_write_error(rollback_confirmed: bool) -> DatabaseError {
+    public_error_envelope(
         ErrorCategory::Cancelled,
         ErrorPhase::Write,
-        false,
+        if rollback_confirmed {
+            RemoteEffect::RolledBack
+        } else {
+            RemoteEffect::Unknown
+        },
+        if rollback_confirmed {
+            RetryDisposition::Never
+        } else {
+            RetryDisposition::RequiresRecovery
+        },
         "write PostgreSQL cancellata sul server",
     )
 }
@@ -1966,6 +1972,53 @@ async fn execute_sql(
     })
 }
 
+fn metadata_value<'a>(field: &'a Field, canonical: &str, legacy: &str) -> Option<&'a str> {
+    field
+        .metadata()
+        .get(canonical)
+        .or_else(|| field.metadata().get(legacy))
+        .map(String::as_str)
+}
+
+fn validate_metadata_coherence(field: &Field) -> Result<()> {
+    for (canonical, legacy) in [
+        (protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions"),
+        (protocol::GEOMETRY_SRID, "plenora.srid"),
+        (
+            protocol::GEOMETRY_SPATIAL_SEMANTICS,
+            "plenora.spatial_semantics",
+        ),
+        (protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type"),
+        (
+            protocol::POSTGRES_NATIVE_DECLARATION,
+            "plenora.native_declaration",
+        ),
+        (protocol::POSTGRES_TYPE_KIND, "plenora.postgres_type_kind"),
+    ] {
+        if let (Some(current), Some(previous)) = (
+            field.metadata().get(canonical),
+            field.metadata().get(legacy),
+        ) {
+            if current != previous {
+                return Err(DatabaseError::invalid_plan(
+                    "metadata canonico e legacy divergenti",
+                ));
+            }
+        }
+    }
+    if let (Some(current), Some(previous)) = (
+        field.metadata().get(protocol::GEOMETRY_TYPES),
+        field.metadata().get("plenora.geometry_type"),
+    ) {
+        if !current.eq_ignore_ascii_case(previous) {
+            return Err(DatabaseError::invalid_plan(
+                "tipo geometrico canonico e legacy divergenti",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn pg_type(field: &Field) -> Result<String> {
     if is_geometry(field) || is_geography(field) {
         let base = if is_geography(field) {
@@ -1973,34 +2026,28 @@ fn pg_type(field: &Field) -> Result<String> {
         } else {
             "geometry"
         };
-        let geometry_type = field
-            .metadata()
-            .get("plenora.geometry_type")
-            .map_or("Geometry", String::as_str);
+        let geometry_type =
+            metadata_value(field, protocol::GEOMETRY_TYPES, "plenora.geometry_type")
+                .unwrap_or("Geometry");
         if !geometry_type
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
         {
             return Err(DatabaseError::invalid_plan("geometry type non valido"));
         }
-        let dimensions = match field
-            .metadata()
-            .get("plenora.dimensions")
-            .map(String::as_str)
-        {
-            None | Some("xy") => "",
-            Some("xyz") => "Z",
-            Some("xym") => "M",
-            Some("xyzm") => "ZM",
-            Some(_) => {
-                return Err(DatabaseError::invalid_plan(
-                    "dimensioni geometry non valide o ambigue",
-                ));
-            }
-        };
-        let srid = field
-            .metadata()
-            .get("plenora.srid")
+        let dimensions =
+            match metadata_value(field, protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions") {
+                None | Some("xy") => "",
+                Some("xyz") => "Z",
+                Some("xym") => "M",
+                Some("xyzm") => "ZM",
+                Some(_) => {
+                    return Err(DatabaseError::invalid_plan(
+                        "dimensioni geometry non valide o ambigue",
+                    ));
+                }
+            };
+        let srid = metadata_value(field, protocol::GEOMETRY_SRID, "plenora.srid")
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0);
         return Ok(format!("{base}({geometry_type}{dimensions},{srid})"));
@@ -2038,18 +2085,12 @@ fn pg_type(field: &Field) -> Result<String> {
 }
 
 fn native_declaration_sql(field: &Field) -> Option<String> {
-    let declaration = field
-        .metadata()
-        .get("plenora.native_declaration")
-        .map_or_else(
-            || {
-                field
-                    .metadata()
-                    .get("plenora.native_type")
-                    .map(String::as_str)
-            },
-            |value| Some(value.as_str()),
-        )?;
+    let declaration = metadata_value(
+        field,
+        protocol::POSTGRES_NATIVE_DECLARATION,
+        "plenora.native_declaration",
+    )
+    .or_else(|| metadata_value(field, protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type"))?;
     let base = declaration.strip_suffix("[]").unwrap_or(declaration);
     let supported = matches!(
         base,
@@ -2089,7 +2130,8 @@ fn native_declaration_sql(field: &Field) -> Option<String> {
     if matches!(
         field
             .metadata()
-            .get("plenora.postgres_type_kind")
+            .get(protocol::POSTGRES_TYPE_KIND)
+            .or_else(|| field.metadata().get("plenora.postgres_type_kind"))
             .map(String::as_str),
         Some("e" | "d" | "c")
     ) {
@@ -2121,7 +2163,8 @@ fn is_range_field(field: &Field) -> bool {
     matches!(
         field
             .metadata()
-            .get("plenora.native_type")
+            .get(protocol::POSTGRES_NATIVE_TYPE)
+            .or_else(|| field.metadata().get("plenora.native_type"))
             .map(String::as_str),
         Some("int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange")
     )
@@ -2130,7 +2173,8 @@ fn is_range_field(field: &Field) -> bool {
 fn is_composite_field(field: &Field) -> bool {
     field
         .metadata()
-        .get("plenora.postgres_type_kind")
+        .get(protocol::POSTGRES_TYPE_KIND)
+        .or_else(|| field.metadata().get("plenora.postgres_type_kind"))
         .is_some_and(|kind| kind == "c")
 }
 
@@ -2145,7 +2189,8 @@ fn is_geometry(field: &Field) -> bool {
     is_spatial(field)
         && field
             .metadata()
-            .get("plenora.spatial_semantics")
+            .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
+            .or_else(|| field.metadata().get("plenora.spatial_semantics"))
             .is_none_or(|value| value == "geometry")
 }
 
@@ -2153,7 +2198,8 @@ fn is_geography(field: &Field) -> bool {
     is_spatial(field)
         && field
             .metadata()
-            .get("plenora.spatial_semantics")
+            .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
+            .or_else(|| field.metadata().get("plenora.spatial_semantics"))
             .is_some_and(|value| value == "geography")
 }
 
@@ -2202,7 +2248,9 @@ fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
         (false, true) => "xym",
         (true, true) => "xyzm",
     };
-    if let Some(expected) = field.metadata().get("plenora.dimensions") {
+    if let Some(expected) =
+        metadata_value(field, protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions")
+    {
         if expected != dimensions {
             return Err(spatial_mapping_error(
                 "dimensioni EWKB diverse dal contratto Arrow",
@@ -2229,7 +2277,8 @@ fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
         17 => "Triangle",
         _ => return Err(spatial_mapping_error("tipo geometry EWKB non supportato")),
     };
-    if let Some(expected) = field.metadata().get("plenora.geometry_type") {
+    if let Some(expected) = metadata_value(field, protocol::GEOMETRY_TYPES, "plenora.geometry_type")
+    {
         if expected != "Geometry" && !expected.eq_ignore_ascii_case(geometry_type) {
             return Err(spatial_mapping_error(
                 "tipo EWKB diverso dal contratto Arrow",
@@ -2237,9 +2286,7 @@ fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
         }
     }
     let actual_srid = has_srid.then(|| read_u32(5)).transpose()?;
-    if let Some(expected) = field
-        .metadata()
-        .get("plenora.srid")
+    if let Some(expected) = metadata_value(field, protocol::GEOMETRY_SRID, "plenora.srid")
         .and_then(|value| value.parse::<u32>().ok())
     {
         if expected != 0 && actual_srid != Some(expected) {
@@ -2516,4 +2563,28 @@ mod tests {
             "-1 mons 0 days -01:02:03.000004"
         );
     }
+}
+#[test]
+fn cancellation_reports_verified_rollback_or_requires_recovery() {
+    let rolled_back = cancelled_write_error(true);
+    assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(rolled_back.retry, RetryDisposition::Never);
+
+    let unknown = cancelled_write_error(false);
+    assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[test]
+fn divergent_canonical_and_legacy_metadata_is_rejected() {
+    let field = Field::new("geom", DataType::Binary, false).with_metadata(
+        [
+            (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
+            ("plenora.dimensions".to_owned(), "xyz".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let error = validate_metadata_coherence(&field).expect_err("metadata divergence");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
 }

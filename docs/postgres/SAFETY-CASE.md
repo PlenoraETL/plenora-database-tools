@@ -38,6 +38,10 @@ la libreria deve:
 | PG-SC-012 | introspezione incompleta | output include constraint, indici/opclass, identity/generated, enum/domain, partizioni, viste materializzate, RLS, policy e ACL | fixture avanzata e test live |
 | PG-SC-013 | commit ambiguo dichiarato certo | outcome `Unknown` con recovery esplicita dopo perdita di certezza | fault injection commit |
 | PG-SC-014 | codice non verificabile introdotto | `unsafe_code = "forbid"` e Clippy warnings-as-errors | gate workspace |
+| PG-SC-015 | retry pericoloso dopo un effetto remoto incerto | errore a quattro assi; `Unknown` è effetto e impone recovery | test error envelope e outcome |
+| PG-SC-016 | polling o race nella cancellazione | token concreto, wake senza polling, registrazione check-register-recheck | test token, cancellazione live e recovery pool |
+| PG-SC-017 | CRS/tipo PostGIS reinterpretato durante il passaggio Arrow | metadata canonici, versione schema e divergenza legacy rifiutata | test metadata e suite PostGIS live |
+| PG-SC-018 | cancellazione di write dichiarata senza conoscere il rollback | `RolledBack` solo dopo conferma; altrimenti `Unknown` e recovery | test semantico e fault injection live |
 
 ## Regole di cambiamento
 

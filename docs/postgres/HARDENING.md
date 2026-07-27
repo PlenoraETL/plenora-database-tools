@@ -31,6 +31,8 @@ sicurezza e comportamento sotto errore del data path v3.
 - Una sessione con errore di protocollo/stream, write fallita, commit incerto,
   cancellazione o stream abbandonato non rientra nel pool.
 - Le cancellazioni raggiungono il backend PostgreSQL con timeout bounded.
+- Il confine usa un `CancellationToken` concreto con wake race-free; il data
+  path non esegue più polling temporizzato per osservare la cancellazione.
 - Dopo cancellazioni concorrenti il pool deve ristabilire una connessione sana.
 - `PostgresTlsMode::Disabled` forza `sslmode=disable`;
   `PostgresTlsMode::Require` forza `sslmode=require` e verifica hostname e
@@ -49,6 +51,15 @@ sicurezza e comportamento sotto errore del data path v3.
 - Date32 e Timestamp Arrow fuori dal range del mapping temporale falliscono
   come `DataMapping`; COPY e prepared non contengono conversioni temporali che
   possano andare in panic.
+- Gli errori attraversano il confine con categoria, fase, effetto remoto e
+  disposizione di retry indipendenti. `OutcomeUnknown` non è più una causa.
+- Una cancellazione di write tenta un rollback esplicito: dichiara
+  `RolledBack` soltanto se PostgreSQL lo conferma, altrimenti `Unknown` con
+  `RequiresRecovery`.
+- Gli schemi Arrow emessi dichiarano `plenora.contract.version=1`; i campi
+  PostGIS e PostgreSQL usano i namespace canonici `plenora.geometry.*` e
+  `plenora.postgres.*`. Le chiavi legacy sono accettate in lettura, ma una
+  divergenza viene rifiutata.
 - I mutex di pool e cache recuperano esplicitamente lo stato da
   `PoisonError`; le strutture protette sono container semplici e bounded.
 - `QueryOperation` viene validato con una visita iterativa prima del renderer:

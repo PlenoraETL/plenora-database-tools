@@ -2,6 +2,7 @@
 //!
 //! Questo crate non contiene client, pool, runtime async o dialect SQL.
 
+pub mod cancellation;
 pub mod capabilities;
 pub mod error;
 pub mod geometry;
@@ -9,11 +10,14 @@ pub mod limits;
 pub mod loss;
 pub mod outcome;
 pub mod plan;
+pub mod protocol;
 pub mod provider;
 pub mod query;
+pub mod resource;
 pub mod spatial_catalog;
 
-pub use error::{DatabaseError, ErrorCategory, ErrorPhase, Result};
+pub use cancellation::{CancellationReason, CancellationToken};
+pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
 
 /// Unico punto di versione Arrow del workspace.
 pub mod arrow {

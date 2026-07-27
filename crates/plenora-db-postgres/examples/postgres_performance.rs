@@ -6,11 +6,12 @@ use plenora_database_core::plan::{
     WriteOperation,
 };
 use plenora_database_core::provider::{
-    BatchStream, Cancellation, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
+    BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
 use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
 };
+use plenora_database_core::CancellationToken;
 use plenora_db_postgres::{PostgresInsertMode, PostgresPerformanceProfile, PostgresProvider};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -19,14 +20,6 @@ use std::time::Instant;
 use tokio_postgres::NoTls;
 
 const RESULT_PREFIX: &str = "PLENORA_PERF_RESULT=";
-
-struct NeverCancelled;
-
-impl Cancellation for NeverCancelled {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
 
 struct MemoryBatchStream {
     schema: SchemaRef,
@@ -311,7 +304,7 @@ async fn materialize(
     parameterized_read: bool,
     query_ast: bool,
 ) -> Result<(ReadSample, SchemaRef, Vec<RecordBatch>), Box<dyn Error>> {
-    let cancellation = NeverCancelled;
+    let cancellation = CancellationToken::new();
     let operation = ReadOperation {
         source: object(profile.source_table()),
         projection: Vec::new(),
@@ -473,7 +466,7 @@ async fn write_once(
     mode: PostgresInsertMode,
     dataset: &WriteDataset<'_>,
 ) -> Result<WriteSample, Box<dyn Error>> {
-    let cancellation = NeverCancelled;
+    let cancellation = CancellationToken::new();
     let target = target_name(dataset.profile, mode);
     client
         .batch_execute(&format!(

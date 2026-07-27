@@ -1,4 +1,5 @@
 use crate::plan::ProviderKind;
+use crate::RemoteEffect;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,12 +93,61 @@ impl WriteOutcome {
                 "recovery deve essere presente soltanto per outcome parziale o incerto",
             ));
         }
-        if self.rows.confirmed + self.rows.failed + self.rows.skipped > self.rows.received {
+        if matches!(self.status, WriteStatus::OutcomeUnknown)
+            && self
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.automatic_retry_allowed)
+        {
+            return Err(crate::DatabaseError::invalid_plan(
+                "un outcome ignoto richiede recovery prima del retry",
+            ));
+        }
+        if matches!(
+            self.status,
+            WriteStatus::RolledBack | WriteStatus::OutcomeUnknown
+        ) && self.rows.confirmed != 0
+        {
+            return Err(crate::DatabaseError::invalid_plan(
+                "un outcome rolled_back o unknown non può confermare righe",
+            ));
+        }
+        let accounted = self
+            .rows
+            .confirmed
+            .checked_add(self.rows.failed)
+            .and_then(|value| value.checked_add(self.rows.skipped))
+            .ok_or_else(|| {
+                crate::DatabaseError::invalid_plan("overflow nella contabilità delle righe")
+            })?;
+        if accounted > self.rows.received {
             return Err(crate::DatabaseError::invalid_plan(
                 "i conteggi di write superano le righe ricevute",
             ));
         }
+        let mutations = [self.rows.inserted, self.rows.updated, self.rows.deleted]
+            .into_iter()
+            .flatten()
+            .try_fold(0_u64, u64::checked_add)
+            .ok_or_else(|| {
+                crate::DatabaseError::invalid_plan("overflow nei conteggi delle mutazioni")
+            })?;
+        if mutations > self.rows.confirmed {
+            return Err(crate::DatabaseError::invalid_plan(
+                "le mutazioni confermate superano le righe confermate",
+            ));
+        }
         Ok(())
+    }
+
+    #[must_use]
+    pub const fn remote_effect(&self) -> RemoteEffect {
+        match self.status {
+            WriteStatus::Committed => RemoteEffect::Committed,
+            WriteStatus::RolledBack => RemoteEffect::RolledBack,
+            WriteStatus::PartiallyCommitted => RemoteEffect::Partial,
+            WriteStatus::OutcomeUnknown => RemoteEffect::Unknown,
+        }
     }
 }
 
@@ -112,5 +162,42 @@ mod tests {
         outcome.validate().expect("valid outcome");
         assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);
         assert_eq!(outcome.layer_outcomes.len(), 1);
+        assert_eq!(outcome.remote_effect(), RemoteEffect::Unknown);
+    }
+
+    #[test]
+    fn row_accounting_overflow_is_rejected_without_panicking() {
+        let outcome = WriteOutcome {
+            schema_version: 1,
+            status: WriteStatus::Committed,
+            execution_id: "overflow".to_owned(),
+            provider: ProviderKind::Postgres,
+            rows: RowCounts {
+                received: u64::MAX,
+                confirmed: u64::MAX,
+                inserted: None,
+                updated: None,
+                deleted: None,
+                failed: 1,
+                skipped: 0,
+            },
+            layer_outcomes: Vec::new(),
+            recovery: None,
+        };
+        assert!(outcome.validate().is_err());
+    }
+
+    #[test]
+    fn unknown_outcome_cannot_authorize_automatic_retry() {
+        let mut outcome: WriteOutcome = serde_json::from_str(include_str!(
+            "../../../contracts/v1/examples/outcome-unknown.json"
+        ))
+        .expect("outcome example");
+        outcome
+            .recovery
+            .as_mut()
+            .expect("unknown recovery")
+            .automatic_retry_allowed = true;
+        assert!(outcome.validate().is_err());
     }
 }

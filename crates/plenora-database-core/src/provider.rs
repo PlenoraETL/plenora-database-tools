@@ -4,6 +4,7 @@ use crate::loss::LossReport;
 use crate::outcome::WriteOutcome;
 use crate::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
 use crate::query::QueryOperation;
+use crate::CancellationToken;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,25 +39,22 @@ pub trait SecretResolver: Send + Sync {
     fn resolve<'a>(&'a self, connection_ref: &'a str) -> ProviderFuture<'a, SecretString>;
 }
 
-pub trait Cancellation: Send + Sync {
-    fn is_cancelled(&self) -> bool;
-}
-
 pub trait BatchStream: Send {
     fn schema(&self) -> SchemaRef;
     fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>>;
 
     fn next_batch_with_cancellation<'a>(
         &'a mut self,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if cancellation.is_cancelled() {
                 return Err(crate::DatabaseError {
                     category: crate::ErrorCategory::Cancelled,
                     phase: crate::ErrorPhase::Read,
+                    remote_effect: crate::RemoteEffect::None,
+                    retry: crate::RetryDisposition::Never,
                     provider: None,
-                    retryable: false,
                     execution_id: None,
                     message: "lettura cancellata".to_owned(),
                 });
@@ -139,20 +137,20 @@ pub trait Provider: Send + Sync {
     fn test_connection<'a>(
         &'a self,
         secret: &'a SecretString,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ConnectionInfo>;
 
     fn probe_capabilities<'a>(
         &'a self,
         secret: &'a SecretString,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ProviderCapabilities>;
 
     fn inspect<'a>(
         &'a self,
         secret: &'a SecretString,
         operation: &'a Operation,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Inspection>;
 
     fn read<'a>(
@@ -160,7 +158,7 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         operation: &'a ReadOperation,
         parameters: &'a ParameterBag,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>>;
 
     fn query<'a>(
@@ -168,7 +166,7 @@ pub trait Provider: Send + Sync {
         _secret: &'a SecretString,
         _operation: &'a QueryOperation,
         _parameters: &'a ParameterBag,
-        _cancellation: &'a dyn Cancellation,
+        _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             Err(crate::DatabaseError::unsupported(
@@ -184,7 +182,7 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         operation: &'a WriteOperation,
         input_schema: SchemaRef,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite>;
 
     fn write<'a>(
@@ -192,6 +190,6 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         prepared: PreparedWrite,
         input: Box<dyn BatchStream>,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome>;
 }

@@ -1,19 +1,12 @@
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
-use plenora_database_core::provider::{Cancellation, ParameterBag, Provider, SecretString};
+use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::CancellationToken;
 use plenora_database_engine::parse_and_validate;
 use plenora_db_postgres::PostgresProvider;
 use serde_json::json;
 use std::env;
 use std::fs;
 use std::process::ExitCode;
-
-struct NeverCancelled;
-
-impl Cancellation for NeverCancelled {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -58,7 +51,7 @@ async fn postgres_probe(args: &mut impl Iterator<Item = String>) -> Result<(), S
     let env_name = one_argument(args, "manca il nome della variabile DSN")?;
     let secret = secret_from_env(&env_name)?;
     let provider = PostgresProvider::default();
-    let cancellation = NeverCancelled;
+    let cancellation = CancellationToken::new();
     let connection = provider
         .test_connection(&secret, &cancellation)
         .await
@@ -89,7 +82,7 @@ async fn postgres_describe(args: &mut impl Iterator<Item = String>) -> Result<()
             &Operation::DatabaseDescribeObject {
                 source: object_ref(schema, object),
             },
-            &NeverCancelled,
+            &CancellationToken::new(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -119,7 +112,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> Resul
             &secret,
             &operation,
             &ParameterBag::default(),
-            &NeverCancelled,
+            &CancellationToken::new(),
         )
         .await
         .map_err(|error| error.to_string())?;

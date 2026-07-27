@@ -32,12 +32,16 @@ use plenora_database_core::plan::{
     FilterExpression, ObjectRef, Operation, ProviderKind, ReadOperation, SortDirection,
     WriteOperation,
 };
+use plenora_database_core::protocol;
 use plenora_database_core::provider::{
-    BatchStream, Cancellation, ConnectionInfo, Inspection, ParameterBag, ParameterValue,
-    PreparedWrite, Provider, ProviderFuture, SecretString,
+    BatchStream, ConnectionInfo, Inspection, ParameterBag, ParameterValue, PreparedWrite, Provider,
+    ProviderFuture, SecretString,
 };
 use plenora_database_core::query::{QueryExpression, QueryOperation, SpatialFunction};
-use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_core::{
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
+    RetryDisposition,
+};
 use plenora_database_sql::{
     Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
 };
@@ -59,6 +63,16 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn contract_schema(fields: Vec<Field>) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -1577,7 +1591,7 @@ impl PostgresProvider {
         sql: &str,
         parameter_refs: Vec<&(dyn ToSql + Sync)>,
         parameter_types: Option<Vec<Type>>,
-        cancellation: &dyn Cancellation,
+        cancellation: &CancellationToken,
     ) -> Result<RowStream> {
         let parameter_count = parameter_refs.len();
         let (result, error_phase) = if let Some(parameter_types) = parameter_types {
@@ -1632,7 +1646,7 @@ impl PostgresProvider {
         secret: &SecretString,
         operation: &ReadOperation,
         parameters: &ParameterBag,
-        cancellation: &dyn Cancellation,
+        cancellation: &CancellationToken,
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
             self.metrics.cancellation();
@@ -1694,12 +1708,12 @@ impl PostgresProvider {
             )
             .await?;
         let cancel_token = client.cancel_token();
-        let schema = Arc::new(Schema::new(
+        let schema = contract_schema(
             selected
                 .iter()
                 .map(ColumnSpec::arrow_field)
                 .collect::<Vec<_>>(),
-        ));
+        );
         Ok(Box::new(PostgresBatchStream {
             client,
             cancel_token,
@@ -1730,7 +1744,7 @@ impl PostgresProvider {
         secret: &SecretString,
         operation: &QueryOperation,
         parameters: &ParameterBag,
-        cancellation: &dyn Cancellation,
+        cancellation: &CancellationToken,
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
             self.metrics.cancellation();
@@ -1861,12 +1875,12 @@ impl PostgresProvider {
             };
             (Box::pin(rows), columns)
         };
-        let schema = Arc::new(Schema::new(
+        let schema = contract_schema(
             columns
                 .iter()
                 .map(ColumnSpec::arrow_field)
                 .collect::<Vec<_>>(),
-        ));
+        );
         let cancel_token = client.cancel_token();
         Ok(Box::new(PostgresBatchStream {
             client,
@@ -1992,8 +2006,14 @@ impl PostgresProvider {
                         None,
                     )?);
                 }
-                let source_srid = source.metadata().get("plenora.srid");
-                let target_srid = target_field.metadata().get("plenora.srid");
+                let source_srid = source
+                    .metadata()
+                    .get(protocol::GEOMETRY_SRID)
+                    .or_else(|| source.metadata().get("plenora.srid"));
+                let target_srid = target_field
+                    .metadata()
+                    .get(protocol::GEOMETRY_SRID)
+                    .or_else(|| target_field.metadata().get("plenora.srid"));
                 if source_srid != target_srid && (source_srid.is_some() || target_srid.is_some()) {
                     losses.push(mapping_loss(
                         field_id,
@@ -2067,7 +2087,7 @@ impl Provider for PostgresProvider {
     fn test_connection<'a>(
         &'a self,
         secret: &'a SecretString,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ConnectionInfo> {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Connect)?;
@@ -2096,7 +2116,7 @@ impl Provider for PostgresProvider {
     fn probe_capabilities<'a>(
         &'a self,
         secret: &'a SecretString,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ProviderCapabilities> {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Probe)?;
@@ -2109,7 +2129,7 @@ impl Provider for PostgresProvider {
         &'a self,
         secret: &'a SecretString,
         operation: &'a Operation,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Inspection> {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Probe)?;
@@ -2123,7 +2143,7 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a ReadOperation,
         parameters: &'a ParameterBag,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             self.read_stream(secret, operation, parameters, cancellation)
@@ -2136,7 +2156,7 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a QueryOperation,
         parameters: &'a ParameterBag,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             self.query_stream(secret, operation, parameters, cancellation)
@@ -2149,7 +2169,7 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a WriteOperation,
         input_schema: SchemaRef,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Prepare)?;
@@ -2169,7 +2189,7 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         prepared: PreparedWrite,
         input: Box<dyn BatchStream>,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let target = prepared.operation.target.clone();
@@ -2813,7 +2833,7 @@ impl ColumnSpec {
                     .map(|item| {
                         let mut metadata = HashMap::new();
                         metadata.insert(
-                            "plenora.native_declaration".to_owned(),
+                            protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
                             item.declaration.clone(),
                         );
                         Arc::new(
@@ -2848,39 +2868,45 @@ impl ColumnSpec {
             }
         };
         let mut metadata = HashMap::new();
-        metadata.insert("plenora.native_type".to_owned(), self.native_type.clone());
+        metadata.insert(
+            protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+            self.native_type.clone(),
+        );
         if let Some(declaration) = &self.native_declaration {
-            metadata.insert("plenora.native_declaration".to_owned(), declaration.clone());
+            metadata.insert(
+                protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
+                declaration.clone(),
+            );
         }
         if let Some(type_kind) = &self.type_kind {
-            metadata.insert("plenora.postgres_type_kind".to_owned(), type_kind.clone());
+            metadata.insert(protocol::POSTGRES_TYPE_KIND.to_owned(), type_kind.clone());
         }
         if !self.enum_labels.is_empty() {
             if let Ok(value) = serde_json::to_string(&self.enum_labels) {
-                metadata.insert("plenora.postgres_enum_labels".to_owned(), value);
+                metadata.insert(protocol::POSTGRES_ENUM_LABELS.to_owned(), value);
             }
         }
         if let Some(base_type) = &self.domain_base_type {
             metadata.insert(
-                "plenora.postgres_domain_base_type".to_owned(),
+                protocol::POSTGRES_DOMAIN_BASE_TYPE.to_owned(),
                 base_type.clone(),
             );
         }
         if !self.domain_constraints.is_empty() {
             if let Ok(value) = serde_json::to_string(&self.domain_constraints) {
-                metadata.insert("plenora.postgres_domain_constraints".to_owned(), value);
+                metadata.insert(protocol::POSTGRES_DOMAIN_CONSTRAINTS.to_owned(), value);
             }
         }
         if let Some(collation) = &self.collation {
-            metadata.insert("plenora.postgres_collation".to_owned(), collation.clone());
+            metadata.insert(protocol::POSTGRES_COLLATION.to_owned(), collation.clone());
         }
         if matches!(self.kind, ColumnKind::Geometry | ColumnKind::Geography) {
             metadata.insert(
-                "ARROW:extension:name".to_owned(),
+                protocol::GEOARROW_EXTENSION_NAME.to_owned(),
                 GEOARROW_WKB_EXTENSION_NAME.to_owned(),
             );
             metadata.insert(
-                "plenora.spatial_semantics".to_owned(),
+                protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
                 if matches!(self.kind, ColumnKind::Geography) {
                     "geography"
                 } else {
@@ -2889,14 +2915,36 @@ impl ColumnSpec {
                 .to_owned(),
             );
             if let Some(srid) = self.spatial_srid {
-                metadata.insert("plenora.srid".to_owned(), srid.to_string());
+                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
+                metadata.insert(
+                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                    "declared_unresolved".to_owned(),
+                );
             }
             if let Some(dimensions) = &self.spatial_dimensions {
-                metadata.insert("plenora.dimensions".to_owned(), dimensions.clone());
+                metadata.insert(
+                    protocol::GEOMETRY_DIMENSIONS.to_owned(),
+                    dimensions.to_ascii_lowercase(),
+                );
             }
             if let Some(spatial_type) = &self.spatial_type {
-                metadata.insert("plenora.geometry_type".to_owned(), spatial_type.clone());
+                if spatial_type.eq_ignore_ascii_case("geometry") {
+                    metadata.insert(
+                        protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                        "mixed".to_owned(),
+                    );
+                } else {
+                    metadata.insert(
+                        protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                        "exact".to_owned(),
+                    );
+                    metadata.insert(
+                        protocol::GEOMETRY_TYPES.to_owned(),
+                        spatial_type.to_ascii_lowercase(),
+                    );
+                }
             }
+            metadata.insert(protocol::GEOMETRY_ENCODING.to_owned(), "ewkb".to_owned());
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
     }
@@ -3168,7 +3216,7 @@ impl BatchStream for PostgresBatchStream {
 
     fn next_batch_with_cancellation<'a>(
         &'a mut self,
-        cancellation: &'a dyn Cancellation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if cancellation.is_cancelled() {
@@ -3186,7 +3234,7 @@ impl BatchStream for PostgresBatchStream {
                 tokio::pin!(next);
                 tokio::select! {
                     result = &mut next => Some(result),
-                    () = wait_for_cancellation(cancellation) => None,
+                    _reason = cancellation.cancelled() => None,
                 }
             };
             if let Some(result) = completed {
@@ -3214,20 +3262,14 @@ impl Drop for PostgresBatchStream {
     }
 }
 
-async fn wait_for_cancellation(cancellation: &dyn Cancellation) {
-    while !cancellation.is_cancelled() {
-        tokio::time::sleep(StdDuration::from_millis(5)).await;
-    }
-}
-
-async fn select_with_cancellation<T, F>(future: F, cancellation: &dyn Cancellation) -> Option<T>
+async fn select_with_cancellation<T, F>(future: F, cancellation: &CancellationToken) -> Option<T>
 where
     F: std::future::Future<Output = T>,
 {
     tokio::pin!(future);
     tokio::select! {
         result = &mut future => Some(result),
-        () = wait_for_cancellation(cancellation) => None,
+        _reason = cancellation.cancelled() => None,
     }
 }
 
@@ -3397,7 +3439,7 @@ impl ColumnBuffer {
                     .map(|(name, composite_field)| {
                         let mut metadata = HashMap::new();
                         metadata.insert(
-                            "plenora.native_declaration".to_owned(),
+                            protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
                             composite_field.declaration.clone(),
                         );
                         Arc::new(Field::new(name, DataType::Utf8, true).with_metadata(metadata))
@@ -4503,7 +4545,7 @@ fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {
     Ok(if negative { -parsed } else { parsed })
 }
 
-fn check_cancelled(cancellation: &dyn Cancellation, phase: ErrorPhase) -> Result<()> {
+fn check_cancelled(cancellation: &CancellationToken, phase: ErrorPhase) -> Result<()> {
     if cancellation.is_cancelled() {
         Err(public_error(
             ErrorCategory::Cancelled,
@@ -4573,11 +4615,32 @@ pub(crate) fn public_error(
     retryable: bool,
     message: &str,
 ) -> DatabaseError {
+    public_error_envelope(
+        category,
+        phase,
+        RemoteEffect::None,
+        if retryable {
+            RetryDisposition::Safe
+        } else {
+            RetryDisposition::Never
+        },
+        message,
+    )
+}
+
+pub(crate) fn public_error_envelope(
+    category: ErrorCategory,
+    phase: ErrorPhase,
+    remote_effect: RemoteEffect,
+    retry: RetryDisposition,
+    message: &str,
+) -> DatabaseError {
     DatabaseError {
         category,
         phase,
+        remote_effect,
+        retry,
         provider: Some(ProviderKind::Postgres),
-        retryable,
         execution_id: None,
         message: message.to_owned(),
     }
@@ -4598,27 +4661,42 @@ mod tests {
         ScalarFunction, SpatialOperator,
     };
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::OnceLock;
+
+    #[test]
+    fn postgres_arrow_schema_declares_contract_version() {
+        let schema = contract_schema(vec![Field::new("value", DataType::Int64, false)]);
+        assert_eq!(
+            schema
+                .metadata()
+                .get(protocol::CONTRACT_VERSION_KEY)
+                .map(String::as_str),
+            Some(protocol::CONTRACT_VERSION)
+        );
+    }
 
     struct NeverCancelled;
     struct AlwaysCancelled;
-    struct AtomicCancellation(Arc<AtomicBool>);
 
-    impl Cancellation for NeverCancelled {
-        fn is_cancelled(&self) -> bool {
-            false
+    impl Deref for NeverCancelled {
+        type Target = CancellationToken;
+
+        fn deref(&self) -> &Self::Target {
+            static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
+            TOKEN.get_or_init(CancellationToken::new)
         }
     }
 
-    impl Cancellation for AlwaysCancelled {
-        fn is_cancelled(&self) -> bool {
-            true
-        }
-    }
+    impl Deref for AlwaysCancelled {
+        type Target = CancellationToken;
 
-    impl Cancellation for AtomicCancellation {
-        fn is_cancelled(&self) -> bool {
-            self.0.load(AtomicOrdering::Acquire)
+        fn deref(&self) -> &Self::Target {
+            static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
+            TOKEN.get_or_init(|| {
+                let token = CancellationToken::new();
+                token.cancel();
+                token
+            })
         }
     }
 
@@ -4979,11 +5057,11 @@ mod tests {
             .await
             .expect("mTLS slow view");
 
-        let flag = Arc::new(AtomicBool::new(false));
-        let toggle = Arc::clone(&flag);
+        let inflight_cancellation = CancellationToken::new();
+        let toggle = inflight_cancellation.clone();
         tokio::spawn(async move {
             tokio::time::sleep(StdDuration::from_millis(75)).await;
-            toggle.store(true, AtomicOrdering::Release);
+            toggle.cancel();
         });
         let error = provider
             .read(
@@ -5001,7 +5079,7 @@ mod tests {
                     filter: None,
                 },
                 &ParameterBag::default(),
-                &AtomicCancellation(flag),
+                &inflight_cancellation,
             )
             .await
             .err()
@@ -5803,7 +5881,7 @@ mod tests {
                 .field_with_name("point_m")
                 .expect("point M")
                 .metadata()
-                .get("plenora.dimensions")
+                .get(protocol::GEOMETRY_DIMENSIONS)
                 .map(String::as_str),
             Some("xym")
         );
@@ -5813,7 +5891,7 @@ mod tests {
                 .field_with_name("geog")
                 .expect("geography")
                 .metadata()
-                .get("plenora.spatial_semantics")
+                .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
                 .map(String::as_str),
             Some("geography")
         );
@@ -5983,7 +6061,7 @@ mod tests {
                 .field_with_name("integer_values")
                 .expect("array field")
                 .metadata()
-                .get("plenora.native_declaration")
+                .get(protocol::POSTGRES_NATIVE_DECLARATION)
                 .map(String::as_str),
             Some("integer[]")
         );
@@ -5993,7 +6071,7 @@ mod tests {
                 .field_with_name("status")
                 .expect("enum field")
                 .metadata()
-                .get("plenora.postgres_type_kind")
+                .get(protocol::POSTGRES_TYPE_KIND)
                 .map(String::as_str),
             Some("e")
         );
@@ -6146,11 +6224,11 @@ mod tests {
             )
             .await
             .expect("slow view");
-        let cancellation_flag = Arc::new(AtomicBool::new(false));
-        let toggle = Arc::clone(&cancellation_flag);
+        let inflight_cancellation = CancellationToken::new();
+        let toggle = inflight_cancellation.clone();
         tokio::spawn(async move {
             tokio::time::sleep(StdDuration::from_millis(50)).await;
-            toggle.store(true, AtomicOrdering::Release);
+            toggle.cancel();
         });
         let started = std::time::Instant::now();
         let inflight_error = provider
@@ -6169,7 +6247,7 @@ mod tests {
                     filter: None,
                 },
                 &ParameterBag::default(),
-                &AtomicCancellation(cancellation_flag),
+                &inflight_cancellation,
             )
             .await
             .err()
@@ -6719,11 +6797,11 @@ mod tests {
             )
             .await
             .expect("slow write prepare");
-        let write_cancellation_flag = Arc::new(AtomicBool::new(false));
-        let write_toggle = Arc::clone(&write_cancellation_flag);
+        let write_cancellation = CancellationToken::new();
+        let write_toggle = write_cancellation.clone();
         tokio::spawn(async move {
             tokio::time::sleep(StdDuration::from_millis(50)).await;
-            write_toggle.store(true, AtomicOrdering::Release);
+            write_toggle.cancel();
         });
         let started = std::time::Instant::now();
         let slow_write_error = provider
@@ -6731,7 +6809,7 @@ mod tests {
                 &secret,
                 slow_write_prepared,
                 slow_write_stream,
-                &AtomicCancellation(write_cancellation_flag),
+                &write_cancellation,
             )
             .await
             .expect_err("in-flight write cancellation");
@@ -7039,7 +7117,7 @@ mod tests {
                 .field_with_name("label")
                 .expect("evolved label")
                 .metadata()
-                .get("plenora.native_type")
+                .get(protocol::POSTGRES_NATIVE_TYPE)
                 .map(String::as_str),
             Some("varchar")
         );
@@ -7287,14 +7365,13 @@ mod tests {
             filter: None,
         });
         let mut tasks = Vec::new();
-        let cancellation_flag = Arc::new(AtomicBool::new(false));
+        let cancellation = CancellationToken::new();
         for _ in 0..WORKERS {
             let provider = Arc::clone(&provider);
             let secret = Arc::clone(&secret);
             let operation = Arc::clone(&operation);
-            let flag = Arc::clone(&cancellation_flag);
+            let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
-                let cancellation = AtomicCancellation(flag);
                 let error = match provider
                     .read(&secret, &operation, &ParameterBag::default(), &cancellation)
                     .await
@@ -7318,7 +7395,7 @@ mod tests {
         .await
         .expect("all cancellation sessions connected");
         tokio::time::sleep(StdDuration::from_millis(50)).await;
-        cancellation_flag.store(true, AtomicOrdering::Release);
+        cancellation.cancel();
         for task in tasks {
             task.await.expect("cancellation worker");
         }
