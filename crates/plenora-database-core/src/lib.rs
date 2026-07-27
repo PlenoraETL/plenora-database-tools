@@ -5,6 +5,7 @@
 pub mod cancellation;
 pub mod capabilities;
 pub mod error;
+pub mod ewkb;
 pub mod geometry;
 pub mod limits;
 pub mod loss;
@@ -18,6 +19,7 @@ pub mod spatial_catalog;
 
 pub use cancellation::{CancellationReason, CancellationToken};
 pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
+pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};
 
 /// Unico punto di versione Arrow del workspace.
 pub mod arrow {

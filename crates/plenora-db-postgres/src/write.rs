@@ -12,6 +12,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, SchemaRef, TimeUnit};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use futures_util::SinkExt;
+use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
@@ -19,6 +20,7 @@ use plenora_database_core::outcome::{
 use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{BatchStream, PreparedWrite, SecretString};
+use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
@@ -77,6 +79,7 @@ pub async fn execute(
     secret: &SecretString,
     prepared: PreparedWrite,
     mut input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
     cancellation: &CancellationToken,
     runtime: WriteRuntime,
 ) -> Result<WriteOutcome> {
@@ -158,16 +161,18 @@ pub async fn execute(
             let rollback_confirmed = transaction.rollback().await.is_ok();
             return Err(cancelled_write_error(rollback_confirmed));
         }
-        enforce_input_limits(&batch, runtime.max_batch_bytes, runtime.max_wkb_cell_bytes)?;
-        received += u64::try_from(batch.num_rows()).map_err(|_| {
-            public_error(
-                ErrorCategory::ResourceLimit,
-                ErrorPhase::Write,
-                false,
-                "batch oltre il conteggio supportato",
-            )
-        })?;
-        confirmed += if let Some(result) = select_with_cancellation(
+        let resources = match reserve_write_batch(&batch, &runtime, budget) {
+            Ok(resources) => resources,
+            Err(error) => {
+                let rollback_confirmed = transaction.rollback().await.is_ok();
+                return Err(resource_write_error(&error, rollback_confirmed));
+            }
+        };
+        let batch_rows = resources.rows;
+        if batch_rows == 0 {
+            continue;
+        }
+        let written = if let Some(result) = select_with_cancellation(
             write_batch(
                 &transaction,
                 operation,
@@ -192,6 +197,19 @@ pub async fn execute(
             let rollback_confirmed = transaction.rollback().await.is_ok();
             return Err(cancelled_write_error(rollback_confirmed));
         };
+        let accounting = resources.commit().and_then(|()| {
+            received = received.checked_add(batch_rows).ok_or_else(|| {
+                DatabaseError::resource_limit("overflow nel conteggio righe ricevute")
+            })?;
+            confirmed = confirmed.checked_add(written).ok_or_else(|| {
+                DatabaseError::resource_limit("overflow nel conteggio righe confermate")
+            })?;
+            Ok(())
+        });
+        if let Err(error) = accounting {
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(resource_write_error(&error, rollback_confirmed));
+        }
     }
     if let Some(original) = replace_original {
         publish_replacement(&transaction, &write_target, &original).await?;
@@ -344,6 +362,105 @@ fn cancelled_write_error(rollback_confirmed: bool) -> DatabaseError {
     )
 }
 
+struct WriteBatchResources {
+    rows: u64,
+    bytes: u64,
+    rows_lease: Option<ResourceLease>,
+    output_lease: Option<ResourceLease>,
+    memory_lease: Option<ResourceLease>,
+    geometry_components: u64,
+    geometry_lease: Option<ResourceLease>,
+}
+
+impl WriteBatchResources {
+    const fn empty() -> Self {
+        Self {
+            rows: 0,
+            bytes: 0,
+            rows_lease: None,
+            output_lease: None,
+            memory_lease: None,
+            geometry_components: 0,
+            geometry_lease: None,
+        }
+    }
+
+    fn commit(self) -> Result<()> {
+        let (Some(rows_lease), Some(output_lease), Some(memory_lease)) =
+            (self.rows_lease, self.output_lease, self.memory_lease)
+        else {
+            return Ok(());
+        };
+        rows_lease.commit(self.rows)?;
+        output_lease.commit(self.bytes)?;
+        drop(memory_lease);
+        if self.geometry_components > 0 {
+            self.geometry_lease
+                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico esaurito"))?
+                .commit(self.geometry_components)?;
+        }
+        Ok(())
+    }
+}
+
+fn reserve_write_batch(
+    batch: &RecordBatch,
+    runtime: &WriteRuntime,
+    budget: &ResourceBudget,
+) -> Result<WriteBatchResources> {
+    let geometry_components = enforce_input_limits(
+        batch,
+        runtime
+            .max_batch_bytes
+            .min(budget.limits().memory_bytes)
+            .min(budget.limits().output_bytes),
+        runtime.max_wkb_cell_bytes.min(budget.limits().cell_bytes),
+        budget.remaining(ResourceKind::GeometryComponents),
+        budget.limits().nesting_depth,
+    )?;
+    let rows = u64::try_from(batch.num_rows())
+        .map_err(|_| DatabaseError::resource_limit("batch oltre il conteggio supportato"))?;
+    if rows == 0 {
+        return Ok(WriteBatchResources::empty());
+    }
+    let bytes = batch
+        .columns()
+        .iter()
+        .try_fold(0_u64, |total, array| {
+            total.checked_add(u64::try_from(array.get_array_memory_size()).unwrap_or(u64::MAX))
+        })
+        .ok_or_else(|| DatabaseError::resource_limit("overflow nel conteggio byte del batch"))?;
+    Ok(WriteBatchResources {
+        rows,
+        bytes,
+        rows_lease: Some(budget.try_lease(ResourceKind::Rows, rows)?),
+        output_lease: Some(budget.try_lease(ResourceKind::OutputBytes, bytes)?),
+        memory_lease: Some(budget.try_lease(ResourceKind::MemoryBytes, bytes)?),
+        geometry_components,
+        geometry_lease: (geometry_components > 0)
+            .then(|| budget.try_lease(ResourceKind::GeometryComponents, geometry_components))
+            .transpose()?,
+    })
+}
+
+fn resource_write_error(error: &DatabaseError, rollback_confirmed: bool) -> DatabaseError {
+    public_error_envelope(
+        ErrorCategory::ResourceLimit,
+        ErrorPhase::Write,
+        if rollback_confirmed {
+            RemoteEffect::RolledBack
+        } else {
+            RemoteEffect::Unknown
+        },
+        if rollback_confirmed {
+            RetryDisposition::Never
+        } else {
+            RetryDisposition::RequiresRecovery
+        },
+        &error.message,
+    )
+}
+
 async fn evolve_target_schema(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -380,7 +497,9 @@ fn enforce_input_limits(
     batch: &RecordBatch,
     max_batch_bytes: u64,
     max_wkb_cell_bytes: u64,
-) -> Result<()> {
+    max_geometry_components: u64,
+    max_geometry_depth: u64,
+) -> Result<u64> {
     let bytes = batch
         .columns()
         .iter()
@@ -394,6 +513,7 @@ fn enforce_input_limits(
             "RecordBatch write oltre max_batch_bytes",
         ));
     }
+    let mut geometry_components = 0_u64;
     for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
         if is_spatial(field) {
             let binary = array
@@ -412,11 +532,27 @@ fn enforce_input_limits(
                         ));
                     }
                     validate_ewkb_contract(value, field)?;
+                    let remaining = max_geometry_components
+                        .checked_sub(geometry_components)
+                        .ok_or_else(|| {
+                            DatabaseError::resource_limit("budget componenti geometriche esaurito")
+                        })?;
+                    if remaining == 0 {
+                        return Err(DatabaseError::resource_limit(
+                            "budget componenti geometriche esaurito",
+                        ));
+                    }
+                    let stats = inspect_ewkb(value, remaining, max_geometry_depth)?;
+                    geometry_components = geometry_components
+                        .checked_add(stats.components)
+                        .ok_or_else(|| {
+                            DatabaseError::resource_limit("overflow componenti geometriche")
+                        })?;
                 }
             }
         }
     }
-    Ok(())
+    Ok(geometry_components)
 }
 
 async fn prepare_target(
@@ -2571,6 +2707,20 @@ fn cancellation_reports_verified_rollback_or_requires_recovery() {
     assert_eq!(rolled_back.retry, RetryDisposition::Never);
 
     let unknown = cancelled_write_error(false);
+    assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[test]
+fn resource_failure_reports_verified_rollback_or_requires_recovery() {
+    let cause = DatabaseError::resource_limit("budget esaurito");
+    let rolled_back = resource_write_error(&cause, true);
+    assert_eq!(rolled_back.category, ErrorCategory::ResourceLimit);
+    assert_eq!(rolled_back.phase, ErrorPhase::Write);
+    assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(rolled_back.retry, RetryDisposition::Never);
+
+    let unknown = resource_write_error(&cause, false);
     assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
 }

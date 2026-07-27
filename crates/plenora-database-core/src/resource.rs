@@ -144,6 +144,14 @@ impl ResourceBudget {
         self.counters.get(kind).load(Ordering::Acquire)
     }
 
+    /// Restituisce `true` soltanto quando i due handle condividono gli stessi
+    /// contatori. È usato per impedire la sostituzione del budget tra prepare
+    /// ed execute.
+    #[must_use]
+    pub fn is_same_budget(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.counters, &other.counters)
+    }
+
     /// Riserva una quota che viene restituita automaticamente al `Drop`.
     ///
     /// # Errors
@@ -229,6 +237,29 @@ impl ResourceLease {
         self.amount
     }
 
+    /// Trasforma una parte della prenotazione in consumo definitivo e
+    /// restituisce al budget la quota inutilizzata.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce `ResourceLimit` se `used` è zero, supera la prenotazione o
+    /// se la contabilita interna non puo essere ripristinata.
+    pub fn commit(mut self, used: u64) -> crate::Result<()> {
+        if used == 0 || used > self.amount {
+            return Err(crate::DatabaseError::resource_limit(
+                "consumo non valido per la lease di risorsa",
+            ));
+        }
+        let unused = self.amount - used;
+        if unused > 0 {
+            self.budget.release(self.kind, unused)?;
+        }
+        // La parte `used` resta sottratta: è consumo cumulativo, non memoria
+        // temporanea da restituire al Drop.
+        self.released = true;
+        Ok(())
+    }
+
     /// Restituisce esplicitamente la quota e rende osservabile un'eventuale
     /// violazione dell'invariante interna.
     ///
@@ -283,5 +314,22 @@ mod tests {
         assert!(budget
             .try_lease(ResourceKind::MemoryBytes, u64::MAX)
             .is_err());
+    }
+
+    #[test]
+    fn commit_returns_only_unused_quota() {
+        let budget = budget(100);
+        let lease = budget
+            .try_lease(ResourceKind::MemoryBytes, 80)
+            .expect("lease");
+        lease.commit(30).expect("commit");
+        assert_eq!(budget.remaining(ResourceKind::MemoryBytes), 70);
+    }
+
+    #[test]
+    fn budget_identity_is_explicit() {
+        let first = budget(100);
+        assert!(first.is_same_budget(&first.clone()));
+        assert!(!first.is_same_budget(&budget(100)));
     }
 }

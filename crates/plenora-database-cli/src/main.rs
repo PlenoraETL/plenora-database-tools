@@ -1,5 +1,6 @@
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::CancellationToken;
 use plenora_database_engine::parse_and_validate;
 use plenora_db_postgres::PostgresProvider;
@@ -112,6 +113,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> Resul
             &secret,
             &operation,
             &ParameterBag::default(),
+            &ResourceBudget::new(ResourceLimits::default()).map_err(|error| error.to_string())?,
             &CancellationToken::new(),
         )
         .await

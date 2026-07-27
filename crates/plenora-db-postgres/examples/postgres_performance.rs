@@ -11,6 +11,7 @@ use plenora_database_core::provider::{
 use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
 };
+use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::CancellationToken;
 use plenora_db_postgres::{PostgresInsertMode, PostgresPerformanceProfile, PostgresProvider};
 use serde::Serialize;
@@ -305,6 +306,7 @@ async fn materialize(
     query_ast: bool,
 ) -> Result<(ReadSample, SchemaRef, Vec<RecordBatch>), Box<dyn Error>> {
     let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
     let operation = ReadOperation {
         source: object(profile.source_table()),
         projection: Vec::new(),
@@ -372,11 +374,11 @@ async fn materialize(
             locking: None,
         };
         provider
-            .query(secret, &query, &parameters, &cancellation)
+            .query(secret, &query, &parameters, &budget, &cancellation)
             .await?
     } else {
         provider
-            .read(secret, &operation, &parameters, &cancellation)
+            .read(secret, &operation, &parameters, &budget, &cancellation)
             .await?
     };
     let acquire_micros = acquire_started.elapsed().as_micros();
@@ -467,6 +469,7 @@ async fn write_once(
     dataset: &WriteDataset<'_>,
 ) -> Result<WriteSample, Box<dyn Error>> {
     let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
     let target = target_name(dataset.profile, mode);
     client
         .batch_execute(&format!(
@@ -478,7 +481,13 @@ async fn write_once(
     let total_started = Instant::now();
     let prepare_started = Instant::now();
     let prepared = provider
-        .prepare_write(secret, &operation, dataset.schema.clone(), &cancellation)
+        .prepare_write(
+            secret,
+            &operation,
+            dataset.schema.clone(),
+            &budget,
+            &cancellation,
+        )
         .await?;
     let prepare_micros = prepare_started.elapsed().as_micros();
     let before_wal = wal_position(client).await?;
@@ -491,6 +500,7 @@ async fn write_once(
                 dataset.schema.clone(),
                 dataset.batches,
             )),
+            &budget,
             &cancellation,
         )
         .await?;

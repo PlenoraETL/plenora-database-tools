@@ -89,6 +89,26 @@ hostname, database, utente, nomi di oggetti o valori. I contatori usano atomiche
 relaxed: servono per osservabilità operativa, non per sincronizzare il data
 path.
 
+## Budget di risorse end-to-end
+
+Le operazioni read, query e write richiedono un `ResourceBudget` condiviso.
+Il provider:
+
+- prenota atomicamente operazioni concorrenti e colonne, restituendole al drop;
+- prenota righe, memoria e output prima di costruire o inviare un batch;
+- converte la quota effettivamente usata in consumo cumulativo con
+  `ResourceLease::commit`, restituendo solo la parte inutilizzata;
+- applica `cell_bytes` alle celle PostGIS oltre ai limiti locali del provider;
+- attraversa EWKB in modo iterativo, limitando componenti e profondità senza
+  fidarsi dei conteggi incorporati nel payload;
+- impedisce di sostituire il budget tra `prepare_write` e `write`;
+- effettua rollback esplicito se il budget si esaurisce dentro una transazione,
+  senza dichiarare il rollback quando PostgreSQL non lo conferma.
+
+Questa contabilità è deliberatamente conservativa: un batch consegnato al
+chiamante resta contabilizzato fino al termine del budget, perché il contratto
+Arrow restituisce un `RecordBatch` che può sopravvivere allo stream.
+
 ## Prove automatiche
 
 Il gate esegue:
@@ -119,6 +139,10 @@ Il gate esegue:
 15. header EWKB incoerenti e cataloghi spatial divergenti rifiutati
     deterministicamente.
 16. piano `EXPLAIN` con indice GiST e gate separato su mediana/p95.
+17. budget righe esaurito live senza emettere righe eccedenti, rilascio delle
+    lease strutturali e rifiuto della sostituzione del budget di write.
+18. geometry bomb EWKB troncate, profonde o oltre il budget componenti
+    rifiutate; test live senza emissione del batch eccedente.
 
 Esecuzione:
 

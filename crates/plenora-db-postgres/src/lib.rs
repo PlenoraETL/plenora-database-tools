@@ -25,6 +25,7 @@ use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
     TransactionCapabilities, TransactionScope, WriteCapabilities,
 };
+use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::geometry::{Dimensions, GEOARROW_WKB_EXTENSION_NAME};
 use plenora_database_core::loss::{LossCategory, LossReport, LossSeverity, MappingLoss};
 use plenora_database_core::outcome::WriteOutcome;
@@ -38,6 +39,7 @@ use plenora_database_core::provider::{
     ProviderFuture, SecretString,
 };
 use plenora_database_core::query::{QueryExpression, QueryOperation, SpatialFunction};
+use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
@@ -1646,6 +1648,7 @@ impl PostgresProvider {
         secret: &SecretString,
         operation: &ReadOperation,
         parameters: &ParameterBag,
+        budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
@@ -1657,6 +1660,7 @@ impl PostgresProvider {
                 "batch_rows e budget byte PostgreSQL devono essere maggiori di zero",
             ));
         }
+        let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
         let mut client = if let Some(result) =
             select_with_cancellation(self.connect_session(secret), cancellation).await
         {
@@ -1682,6 +1686,9 @@ impl PostgresProvider {
         }
         let (available, _schema_token) = self.cached_columns(&client, &operation.source).await?;
         let selected = select_columns(&available, &operation.projection)?;
+        let columns = u64::try_from(selected.len())
+            .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
+        let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
         let (sql, bind_names) = build_read_sql(operation, &selected, &available)?;
         let owned_parameters = bind_parameters(parameters, &bind_names)?;
         let parameter_refs = owned_parameters
@@ -1729,6 +1736,9 @@ impl PostgresProvider {
                 .map(|target| target.min(self.max_batch_bytes)),
             max_batch_bytes: self.max_batch_bytes,
             max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+            budget: budget.clone(),
+            _operation_lease: operation_lease,
+            _columns_lease: columns_lease,
             metrics: Arc::clone(&self.metrics),
             byte_estimate_scale_permille: 1_500,
             track_byte_estimate: true,
@@ -1744,6 +1754,7 @@ impl PostgresProvider {
         secret: &SecretString,
         operation: &QueryOperation,
         parameters: &ParameterBag,
+        budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
@@ -1755,6 +1766,7 @@ impl PostgresProvider {
                 "batch_rows e budget byte PostgreSQL devono essere maggiori di zero",
             ));
         }
+        let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
         let rendered = postgres_renderer().render_query(operation)?;
         let mut client = if let Some(result) =
             select_with_cancellation(self.connect_session(secret), cancellation).await
@@ -1881,6 +1893,9 @@ impl PostgresProvider {
                 .map(ColumnSpec::arrow_field)
                 .collect::<Vec<_>>(),
         );
+        let column_count = u64::try_from(columns.len())
+            .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
+        let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
         let cancel_token = client.cancel_token();
         Ok(Box::new(PostgresBatchStream {
             client,
@@ -1897,6 +1912,9 @@ impl PostgresProvider {
                 .map(|target| target.min(self.max_batch_bytes)),
             max_batch_bytes: self.max_batch_bytes,
             max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+            budget: budget.clone(),
+            _operation_lease: operation_lease,
+            _columns_lease: columns_lease,
             metrics: Arc::clone(&self.metrics),
             byte_estimate_scale_permille: 1_500,
             track_byte_estimate: true,
@@ -2143,10 +2161,11 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a ReadOperation,
         parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            self.read_stream(secret, operation, parameters, cancellation)
+            self.read_stream(secret, operation, parameters, budget, cancellation)
                 .await
         })
     }
@@ -2156,10 +2175,11 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a QueryOperation,
         parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            self.query_stream(secret, operation, parameters, cancellation)
+            self.query_stream(secret, operation, parameters, budget, cancellation)
                 .await
         })
     }
@@ -2169,17 +2189,25 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         operation: &'a WriteOperation,
         input_schema: SchemaRef,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Prepare)?;
             write::validate_schema(&input_schema, operation)?;
+            let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+            let column_count = u64::try_from(input_schema.fields().len())
+                .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
+            let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
             let loss_report = self
                 .preflight_write(secret, operation, &input_schema)
                 .await?;
             Ok(PreparedWrite {
                 operation: operation.clone(),
                 loss_report,
+                budget: budget.clone(),
+                operation_lease,
+                columns_lease,
             })
         })
     }
@@ -2189,14 +2217,21 @@ impl Provider for PostgresProvider {
         secret: &'a SecretString,
         prepared: PreparedWrite,
         input: Box<dyn BatchStream>,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
+            if !prepared.budget.is_same_budget(budget) {
+                return Err(DatabaseError::invalid_plan(
+                    "il budget di write non coincide con quello usato in prepare_write",
+                ));
+            }
             let target = prepared.operation.target.clone();
             let result = write::execute(
                 secret,
                 prepared,
                 input,
+                budget,
                 cancellation,
                 write::WriteRuntime {
                     statement_timeout_ms: self.statement_timeout_ms,
@@ -3059,6 +3094,9 @@ struct PostgresBatchStream {
     target_batch_bytes: Option<u64>,
     max_batch_bytes: u64,
     max_wkb_cell_bytes: u64,
+    budget: ResourceBudget,
+    _operation_lease: ResourceLease,
+    _columns_lease: ResourceLease,
     metrics: Arc<PostgresMetrics>,
     byte_estimate_scale_permille: u64,
     track_byte_estimate: bool,
@@ -3097,6 +3135,40 @@ fn adaptive_builder_capacity(
 }
 
 impl PostgresBatchStream {
+    fn reserve_batch(&self) -> Result<BatchReservation> {
+        let rows = self
+            .budget
+            .remaining(ResourceKind::Rows)
+            .min(u64::try_from(self.batch_rows).unwrap_or(u64::MAX));
+        let bytes = self
+            .max_batch_bytes
+            .min(self.budget.remaining(ResourceKind::MemoryBytes))
+            .min(self.budget.remaining(ResourceKind::OutputBytes));
+        let has_spatial = self
+            .columns
+            .iter()
+            .any(|column| matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography));
+        let component_limit = if has_spatial {
+            self.budget.remaining(ResourceKind::GeometryComponents)
+        } else {
+            0
+        };
+        Ok(BatchReservation {
+            rows_lease: self.budget.try_lease(ResourceKind::Rows, rows)?,
+            memory_lease: self.budget.try_lease(ResourceKind::MemoryBytes, bytes)?,
+            output_lease: self.budget.try_lease(ResourceKind::OutputBytes, bytes)?,
+            geometry_lease: (component_limit > 0)
+                .then(|| {
+                    self.budget
+                        .try_lease(ResourceKind::GeometryComponents, component_limit)
+                })
+                .transpose()?,
+            row_limit: usize::try_from(rows).unwrap_or(usize::MAX),
+            byte_limit: bytes,
+            component_limit,
+        })
+    }
+
     fn observe_batch_size(&mut self, actual_bytes: u64, estimated_bytes: u64) {
         let Some(target) = self.target_batch_bytes else {
             return;
@@ -3131,8 +3203,12 @@ impl BatchStream for PostgresBatchStream {
             if self.finished {
                 return Ok(None);
             }
+            let reservation = self.reserve_batch()?;
+            let target_batch_bytes = self
+                .target_batch_bytes
+                .map(|target| target.min(reservation.byte_limit));
             let builder_capacity =
-                adaptive_builder_capacity(&self.columns, self.batch_rows, self.target_batch_bytes);
+                adaptive_builder_capacity(&self.columns, reservation.row_limit, target_batch_bytes);
             let mut buffers = self
                 .columns
                 .iter()
@@ -3141,7 +3217,7 @@ impl BatchStream for PostgresBatchStream {
             let mut row_count = 0;
             let mut estimated_bytes = 0_u64;
             let mut target_limited = false;
-            while row_count < self.batch_rows {
+            while row_count < reservation.row_limit {
                 match self.rows.as_mut().next().await {
                     Some(Ok(row)) => {
                         for (index, buffer) in buffers.iter_mut().enumerate() {
@@ -3157,9 +3233,9 @@ impl BatchStream for PostgresBatchStream {
                             }
                         }
                         row_count += 1;
-                        if row_count < self.batch_rows
+                        if row_count < reservation.row_limit
                             && self.track_byte_estimate
-                            && self.target_batch_bytes.is_some_and(|target| {
+                            && target_batch_bytes.is_some_and(|target| {
                                 estimated_bytes.saturating_mul(self.byte_estimate_scale_permille)
                                     >= target.saturating_mul(1_000)
                             })
@@ -3192,16 +3268,25 @@ impl BatchStream for PostgresBatchStream {
                     return Err(DatabaseError::from(error));
                 }
             };
-            if let Err(error) = enforce_batch_limits(
+            let geometry_components = match enforce_batch_limits(
                 &batch,
                 &self.columns,
-                self.max_batch_bytes,
-                self.max_wkb_cell_bytes,
+                reservation.byte_limit,
+                self.max_wkb_cell_bytes.min(self.budget.limits().cell_bytes),
+                reservation.component_limit,
+                self.budget.limits().nesting_depth,
             ) {
-                self.client.invalidate();
-                return Err(error);
-            }
+                Ok(components) => components,
+                Err(error) => {
+                    self.client.invalidate();
+                    return Err(error);
+                }
+            };
             let actual_bytes = batch_memory_bytes(&batch);
+            let actual_rows = u64::try_from(batch.num_rows()).map_err(|_| {
+                DatabaseError::resource_limit("numero righe batch non rappresentabile")
+            })?;
+            reservation.commit(actual_rows, actual_bytes, geometry_components)?;
             self.observe_batch_size(actual_bytes, estimated_bytes);
             self.metrics.read_batch(
                 u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
@@ -3251,6 +3336,30 @@ impl BatchStream for PostgresBatchStream {
                 Err(cancelled_read_error())
             }
         })
+    }
+}
+
+struct BatchReservation {
+    rows_lease: ResourceLease,
+    memory_lease: ResourceLease,
+    output_lease: ResourceLease,
+    geometry_lease: Option<ResourceLease>,
+    row_limit: usize,
+    byte_limit: u64,
+    component_limit: u64,
+}
+
+impl BatchReservation {
+    fn commit(self, rows: u64, bytes: u64, geometry_components: u64) -> Result<()> {
+        self.rows_lease.commit(rows)?;
+        self.memory_lease.commit(bytes)?;
+        self.output_lease.commit(bytes)?;
+        if geometry_components > 0 {
+            self.geometry_lease
+                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico esaurito"))?
+                .commit(geometry_components)?;
+        }
+        Ok(())
     }
 }
 
@@ -3314,7 +3423,9 @@ fn enforce_batch_limits(
     columns: &[ColumnSpec],
     max_batch_bytes: u64,
     max_wkb_cell_bytes: u64,
-) -> Result<()> {
+    max_geometry_components: u64,
+    max_geometry_depth: u64,
+) -> Result<u64> {
     let bytes = batch_memory_bytes(batch);
     if bytes > max_batch_bytes {
         return Err(public_error(
@@ -3324,6 +3435,7 @@ fn enforce_batch_limits(
             "RecordBatch PostgreSQL oltre max_batch_bytes",
         ));
     }
+    let mut geometry_components = 0_u64;
     for (index, column) in columns.iter().enumerate() {
         if matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography) {
             let array = batch
@@ -3332,21 +3444,37 @@ fn enforce_batch_limits(
                 .downcast_ref::<arrow_array::BinaryArray>()
                 .expect("colonna spatial Binary");
             for row in 0..array.len() {
-                if !array.is_null(row)
-                    && u64::try_from(array.value(row).len()).unwrap_or(u64::MAX)
-                        > max_wkb_cell_bytes
-                {
-                    return Err(public_error(
-                        ErrorCategory::ResourceLimit,
-                        ErrorPhase::Read,
-                        false,
-                        "cella WKB oltre max_wkb_cell_bytes",
-                    ));
+                if !array.is_null(row) {
+                    let value = array.value(row);
+                    if u64::try_from(value.len()).unwrap_or(u64::MAX) > max_wkb_cell_bytes {
+                        return Err(public_error(
+                            ErrorCategory::ResourceLimit,
+                            ErrorPhase::Read,
+                            false,
+                            "cella WKB oltre max_wkb_cell_bytes",
+                        ));
+                    }
+                    let remaining = max_geometry_components
+                        .checked_sub(geometry_components)
+                        .ok_or_else(|| {
+                            DatabaseError::resource_limit("budget componenti geometriche esaurito")
+                        })?;
+                    if remaining == 0 {
+                        return Err(DatabaseError::resource_limit(
+                            "budget componenti geometriche esaurito",
+                        ));
+                    }
+                    let stats = inspect_ewkb(value, remaining, max_geometry_depth)?;
+                    geometry_components = geometry_components
+                        .checked_add(stats.components)
+                        .ok_or_else(|| {
+                            DatabaseError::resource_limit("overflow componenti geometriche")
+                        })?;
                 }
             }
         }
     }
-    Ok(())
+    Ok(geometry_components)
 }
 
 fn batch_memory_bytes(batch: &RecordBatch) -> u64 {
@@ -4647,6 +4775,66 @@ pub(crate) fn public_error_envelope(
 }
 
 #[cfg(test)]
+impl PostgresProvider {
+    fn test_budget() -> Result<ResourceBudget> {
+        ResourceBudget::new(plenora_database_core::resource::ResourceLimits::default())
+    }
+
+    fn read<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a ReadOperation,
+        parameters: &'a ParameterBag,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        Box::pin(async move {
+            let budget = Self::test_budget()?;
+            Provider::read(self, secret, operation, parameters, &budget, cancellation).await
+        })
+    }
+
+    fn query<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a QueryOperation,
+        parameters: &'a ParameterBag,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        Box::pin(async move {
+            let budget = Self::test_budget()?;
+            Provider::query(self, secret, operation, parameters, &budget, cancellation).await
+        })
+    }
+
+    fn prepare_write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a WriteOperation,
+        input_schema: SchemaRef,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, PreparedWrite> {
+        Box::pin(async move {
+            let budget = Self::test_budget()?;
+            Provider::prepare_write(self, secret, operation, input_schema, &budget, cancellation)
+                .await
+        })
+    }
+
+    fn write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        prepared: PreparedWrite,
+        input: Box<dyn BatchStream>,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, WriteOutcome> {
+        Box::pin(async move {
+            let budget = prepared.budget.clone();
+            Provider::write(self, secret, prepared, input, &budget, cancellation).await
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use plenora_database_core::geometry::SpatialSemantics;
@@ -4677,6 +4865,19 @@ mod tests {
 
     struct NeverCancelled;
     struct AlwaysCancelled;
+    struct NoBatchStream {
+        schema: SchemaRef,
+    }
+
+    impl BatchStream for NoBatchStream {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+
+        fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
 
     impl Deref for NeverCancelled {
         type Target = CancellationToken;
@@ -4705,6 +4906,59 @@ mod tests {
         assert_eq!(parse_decimal128("123.45", 4).expect("decimal"), 1_234_500);
         assert_eq!(parse_decimal128("-0.01", 2).expect("decimal"), -1);
         assert_eq!(parse_decimal128("12300", -2).expect("negative scale"), 123);
+    }
+
+    #[tokio::test]
+    async fn write_rejects_budget_substitution_before_connecting() {
+        let prepared_budget = PostgresProvider::test_budget().expect("prepared budget");
+        let other_budget = PostgresProvider::test_budget().expect("other budget");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "event_id",
+            DataType::Int64,
+            false,
+        )]));
+        let prepared = PreparedWrite {
+            operation: WriteOperation {
+                target: ObjectRef {
+                    catalog: None,
+                    schema: Some("public".to_owned()),
+                    object: "never_reached".to_owned(),
+                    layer_id: None,
+                },
+                mode: WriteMode::Append,
+                mapping_policy: MappingPolicy::Strict,
+                transaction_profile: TransactionProfile::SingleTransaction,
+                keys: Vec::new(),
+                update_columns: Vec::new(),
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            },
+            loss_report: plenora_database_core::loss::LossReport {
+                schema_version: 1,
+                policy: MappingPolicy::Strict,
+                losses: Vec::new(),
+            },
+            budget: prepared_budget.clone(),
+            operation_lease: prepared_budget
+                .try_lease(ResourceKind::ConcurrentOperations, 1)
+                .expect("operation lease"),
+            columns_lease: prepared_budget
+                .try_lease(ResourceKind::Columns, 1)
+                .expect("columns lease"),
+        };
+        let error = Provider::write(
+            &PostgresProvider::default(),
+            &SecretString::new("host=must-not-connect.invalid"),
+            prepared,
+            Box::new(NoBatchStream { schema }),
+            &other_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("budget substitution");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Validate);
     }
 
     #[test]
@@ -4986,6 +5240,117 @@ mod tests {
         assert!(batches > 1);
         assert!(max_rows < 10_000);
         assert!(provider.metrics_snapshot().read_target_limited_batches > 0);
+    }
+
+    #[tokio::test]
+    async fn live_read_budget_fails_closed_before_exceeding_rows() {
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let limits = plenora_database_core::resource::ResourceLimits {
+            memory_bytes: 256 * 1024,
+            rows: 3,
+            output_bytes: 256 * 1024,
+            cell_bytes: 64 * 1024,
+            ..plenora_database_core::resource::ResourceLimits::default()
+        };
+        let budget = ResourceBudget::new(limits).expect("budget");
+        let provider = PostgresProvider::new(10);
+        let secret = SecretString::new(dsn);
+        let cancellation = CancellationToken::new();
+        let operation = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            projection: vec!["event_id".to_owned()],
+            order_by: Vec::new(),
+            row_limit: Some(10),
+            filter: None,
+        };
+        let mut stream = Provider::read(
+            &provider,
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("budgeted stream");
+        let first = stream
+            .next_batch()
+            .await
+            .expect("first batch")
+            .expect("rows");
+        assert_eq!(first.num_rows(), 3);
+        let error = stream
+            .next_batch()
+            .await
+            .expect_err("row budget must be exhausted");
+        assert_eq!(error.category, ErrorCategory::ResourceLimit);
+        assert_eq!(budget.remaining(ResourceKind::Rows), 0);
+        drop(stream);
+        assert_eq!(
+            budget.remaining(ResourceKind::ConcurrentOperations),
+            budget.limits().concurrent_operations
+        );
+        assert_eq!(
+            budget.remaining(ResourceKind::Columns),
+            budget.limits().columns
+        );
+    }
+
+    #[tokio::test]
+    async fn live_geometry_component_budget_rejects_before_emission() {
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let limits = plenora_database_core::resource::ResourceLimits {
+            memory_bytes: 256 * 1024,
+            rows: 1,
+            geometry_components: 1,
+            output_bytes: 256 * 1024,
+            cell_bytes: 64 * 1024,
+            ..plenora_database_core::resource::ResourceLimits::default()
+        };
+        let budget = ResourceBudget::new(limits).expect("geometry budget");
+        let provider = PostgresProvider::new(1);
+        let secret = SecretString::new(dsn);
+        let cancellation = CancellationToken::new();
+        let operation = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            projection: vec!["geom".to_owned()],
+            order_by: Vec::new(),
+            row_limit: Some(1),
+            filter: None,
+        };
+        let mut stream = Provider::read(
+            &provider,
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("geometry stream");
+        let error = stream
+            .next_batch()
+            .await
+            .expect_err("point needs geometry plus coordinate component");
+        assert_eq!(error.category, ErrorCategory::ResourceLimit);
+        assert_eq!(
+            budget.remaining(ResourceKind::GeometryComponents),
+            budget.limits().geometry_components
+        );
     }
 
     #[test]

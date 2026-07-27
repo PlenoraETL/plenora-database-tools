@@ -42,6 +42,9 @@ la libreria deve:
 | PG-SC-016 | polling o race nella cancellazione | token concreto, wake senza polling, registrazione check-register-recheck | test token, cancellazione live e recovery pool |
 | PG-SC-017 | CRS/tipo PostGIS reinterpretato durante il passaggio Arrow | metadata canonici, versione schema e divergenza legacy rifiutata | test metadata e suite PostGIS live |
 | PG-SC-018 | cancellazione di write dichiarata senza conoscere il rollback | `RolledBack` solo dopo conferma; altrimenti `Unknown` e recovery | test semantico e fault injection live |
+| PG-SC-019 | limiti applicati dopo l'allocazione o aggirati cambiando contesto | budget unico obbligatorio, lease atomiche reserve/commit e identità verificata | test core, test sostituzione e budget righe live |
+| PG-SC-020 | esaurimento risorse a metà transazione dichiarato privo di effetti | rollback esplicito; `RolledBack` solo se confermato, altrimenti recovery | test semantico resource failure e suite write live |
+| PG-SC-021 | conteggi EWKB avversari causano ricorsione, allocazioni o traversal illimitato | scanner iterativo, stack limitato dalla profondità e contatore componenti checked | test EWKB bomb core e budget geometrico live |
 
 ## Regole di cambiamento
 

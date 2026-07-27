@@ -4,6 +4,7 @@ use crate::loss::LossReport;
 use crate::outcome::WriteOutcome;
 use crate::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
 use crate::query::QueryOperation;
+use crate::resource::{ResourceBudget, ResourceLease};
 use crate::CancellationToken;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -129,6 +130,9 @@ pub struct Inspection {
 pub struct PreparedWrite {
     pub operation: WriteOperation,
     pub loss_report: LossReport,
+    pub budget: ResourceBudget,
+    pub operation_lease: ResourceLease,
+    pub columns_lease: ResourceLease,
 }
 
 pub trait Provider: Send + Sync {
@@ -158,6 +162,7 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         operation: &'a ReadOperation,
         parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>>;
 
@@ -166,6 +171,7 @@ pub trait Provider: Send + Sync {
         _secret: &'a SecretString,
         _operation: &'a QueryOperation,
         _parameters: &'a ParameterBag,
+        _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
@@ -182,6 +188,7 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         operation: &'a WriteOperation,
         input_schema: SchemaRef,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite>;
 
@@ -190,6 +197,7 @@ pub trait Provider: Send + Sync {
         secret: &'a SecretString,
         prepared: PreparedWrite,
         input: Box<dyn BatchStream>,
+        budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome>;
 }
