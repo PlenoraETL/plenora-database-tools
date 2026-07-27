@@ -175,9 +175,14 @@ pub async fn execute(
             return Err(rollback_after_error(transaction, error, &execution_id).await);
         }
     } else {
-        runtime.metrics.cancellation();
-        let rollback_confirmed = transaction.rollback().await.is_ok();
-        return Err(cancelled_write_error(cancellation, rollback_confirmed));
+        return Err(rollback_after_cancellation(
+            transaction,
+            cancellation,
+            &runtime,
+            &cancel_token,
+            &execution_id,
+        )
+        .await);
     }
     let (write_target, replace_original) = if let Some(result) = select_with_cancellation(
         prepare_target(&transaction, operation, &schema, &execution_id),
@@ -192,9 +197,14 @@ pub async fn execute(
             }
         }
     } else {
-        runtime.metrics.cancellation();
-        let rollback_confirmed = transaction.rollback().await.is_ok();
-        return Err(cancelled_write_error(cancellation, rollback_confirmed));
+        return Err(rollback_after_cancellation(
+            transaction,
+            cancellation,
+            &runtime,
+            &cancel_token,
+            &execution_id,
+        )
+        .await);
     };
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
@@ -209,30 +219,34 @@ pub async fn execute(
                 }
             }
         } else {
-            runtime.metrics.cancellation();
-            cancel_backend(
+            return Err(rollback_after_cancellation(
+                transaction,
+                cancellation,
+                &runtime,
                 &cancel_token,
-                runtime.tls_mode,
-                &runtime.tls_config.connector,
-                runtime.network_options.connect_timeout_ms,
+                &execution_id,
             )
-            .await;
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+            .await);
         };
         let Some(batch) = batch else {
             break;
         };
         if cancellation.is_cancelled() {
-            runtime.metrics.cancellation();
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+            return Err(rollback_after_cancellation(
+                transaction,
+                cancellation,
+                &runtime,
+                &cancel_token,
+                &execution_id,
+            )
+            .await);
         }
         let resources = match reserve_write_batch(&batch, &runtime, budget) {
             Ok(resources) => resources,
             Err(error) => {
-                let rollback_confirmed = transaction.rollback().await.is_ok();
-                return Err(resource_write_error(&error, rollback_confirmed));
+                return Err(
+                    rollback_after_resource_error(transaction, &error, &execution_id).await,
+                );
             }
         };
         let batch_rows = resources.rows;
@@ -258,16 +272,14 @@ pub async fn execute(
                 }
             }
         } else {
-            runtime.metrics.cancellation();
-            cancel_backend(
+            return Err(rollback_after_cancellation(
+                transaction,
+                cancellation,
+                &runtime,
                 &cancel_token,
-                runtime.tls_mode,
-                &runtime.tls_config.connector,
-                runtime.network_options.connect_timeout_ms,
+                &execution_id,
             )
-            .await;
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+            .await);
         };
         let accounting = resources.commit().and_then(|()| {
             received = received.checked_add(batch_rows).ok_or_else(|| {
@@ -279,8 +291,7 @@ pub async fn execute(
             Ok(())
         });
         if let Err(error) = accounting {
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(resource_write_error(&error, rollback_confirmed));
+            return Err(rollback_after_resource_error(transaction, &error, &execution_id).await);
         }
     }
     if let Some(original) = replace_original {
@@ -294,9 +305,14 @@ pub async fn execute(
                 return Err(rollback_after_error(transaction, error, &execution_id).await);
             }
         } else {
-            runtime.metrics.cancellation();
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+            return Err(rollback_after_cancellation(
+                transaction,
+                cancellation,
+                &runtime,
+                &cancel_token,
+                &execution_id,
+            )
+            .await);
         }
     }
     if operation.create_spatial_index {
@@ -310,9 +326,14 @@ pub async fn execute(
                 return Err(rollback_after_error(transaction, error, &execution_id).await);
             }
         } else {
-            runtime.metrics.cancellation();
-            let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+            return Err(rollback_after_cancellation(
+                transaction,
+                cancellation,
+                &runtime,
+                &cancel_token,
+                &execution_id,
+            )
+            .await);
         }
     }
     if runtime.fault_point == Some(PostgresFaultPoint::BeforeCommit) {
@@ -335,65 +356,25 @@ pub async fn execute(
         )
         .await;
         drop(client);
-        return Err(commit_interruption_error(cancellation));
+        return Err(commit_interruption_error(cancellation, &execution_id));
     }
     if commit_result.is_some_and(|result| result.is_err()) {
         runtime.metrics.write_outcome_unknown();
         drop(client);
-        return Ok(WriteOutcome {
-            schema_version: 1,
-            status: WriteStatus::OutcomeUnknown,
+        return Ok(unknown_write_outcome(
             execution_id,
-            provider: ProviderKind::Postgres,
-            rows: RowCounts {
-                received,
-                confirmed: 0,
-                inserted: None,
-                updated: None,
-                deleted: None,
-                failed: 0,
-                skipped: 0,
-            },
-            layer_outcomes: Vec::new(),
-            recovery: Some(Recovery {
-                last_certain_phase: CertainPhase::CommitOrEditRequested,
-                automatic_retry_allowed: false,
-                idempotency_key: None,
-                staging_object: None,
-                verification_action: Some(
-                    "verificare lo stato remoto prima di un retry".to_owned(),
-                ),
-            }),
-        });
+            received,
+            "verificare lo stato remoto prima di un retry",
+        ));
     }
     if runtime.fault_point == Some(PostgresFaultPoint::AfterCommitAcknowledgement) {
         runtime.metrics.write_outcome_unknown();
         drop(client);
-        return Ok(WriteOutcome {
-            schema_version: 1,
-            status: WriteStatus::OutcomeUnknown,
+        return Ok(unknown_write_outcome(
             execution_id,
-            provider: ProviderKind::Postgres,
-            rows: RowCounts {
-                received,
-                confirmed: 0,
-                inserted: None,
-                updated: None,
-                deleted: None,
-                failed: 0,
-                skipped: 0,
-            },
-            layer_outcomes: Vec::new(),
-            recovery: Some(Recovery {
-                last_certain_phase: CertainPhase::CommitOrEditRequested,
-                automatic_retry_allowed: false,
-                idempotency_key: None,
-                staging_object: None,
-                verification_action: Some(
-                    "fault injection: verificare lo stato remoto già committed".to_owned(),
-                ),
-            }),
-        });
+            received,
+            "fault injection: verificare lo stato remoto già committed",
+        ));
     }
     client.mark_reusable();
     drop(client);
@@ -482,14 +463,51 @@ fn interruption_message(cancellation: &CancellationToken) -> &'static str {
     }
 }
 
-fn commit_interruption_error(cancellation: &CancellationToken) -> DatabaseError {
-    public_error_envelope(
+fn commit_interruption_error(
+    cancellation: &CancellationToken,
+    execution_id: &str,
+) -> DatabaseError {
+    let mut error = public_error_envelope(
         interruption_category(cancellation),
         ErrorPhase::Commit,
         RemoteEffect::Unknown,
         RetryDisposition::RequiresRecovery,
         "deadline o cancellazione durante commit PostgreSQL: verificare lo stato remoto",
+    );
+    error.execution_id = Some(execution_id.to_owned());
+    error
+}
+
+async fn rollback_after_cancellation(
+    transaction: Transaction<'_>,
+    cancellation: &CancellationToken,
+    runtime: &WriteRuntime,
+    cancel_token: &CancelToken,
+    execution_id: &str,
+) -> DatabaseError {
+    runtime.metrics.cancellation();
+    cancel_backend(
+        cancel_token,
+        runtime.tls_mode,
+        &runtime.tls_config.connector,
+        runtime.network_options.connect_timeout_ms,
     )
+    .await;
+    let rollback_confirmed = transaction.rollback().await.is_ok();
+    let mut error = cancelled_write_error(cancellation, rollback_confirmed);
+    error.execution_id = Some(execution_id.to_owned());
+    error
+}
+
+async fn rollback_after_resource_error(
+    transaction: Transaction<'_>,
+    cause: &DatabaseError,
+    execution_id: &str,
+) -> DatabaseError {
+    let rollback_confirmed = transaction.rollback().await.is_ok();
+    let mut error = resource_write_error(cause, rollback_confirmed);
+    error.execution_id = Some(execution_id.to_owned());
+    error
 }
 
 async fn rollback_after_error(
@@ -507,6 +525,36 @@ async fn rollback_after_error(
         error.retry = RetryDisposition::RequiresRecovery;
     }
     error
+}
+
+fn unknown_write_outcome(
+    execution_id: String,
+    received: u64,
+    verification_action: &str,
+) -> WriteOutcome {
+    WriteOutcome {
+        schema_version: 1,
+        status: WriteStatus::OutcomeUnknown,
+        execution_id,
+        provider: ProviderKind::Postgres,
+        rows: RowCounts {
+            received,
+            confirmed: 0,
+            inserted: None,
+            updated: None,
+            deleted: None,
+            failed: 0,
+            skipped: 0,
+        },
+        layer_outcomes: Vec::new(),
+        recovery: Some(Recovery {
+            last_certain_phase: CertainPhase::CommitOrEditRequested,
+            automatic_retry_allowed: false,
+            idempotency_key: None,
+            staging_object: None,
+            verification_action: Some(verification_action.to_owned()),
+        }),
+    }
 }
 
 struct WriteBatchResources {
@@ -2882,11 +2930,12 @@ fn deadline_is_a_timeout_with_the_same_rollback_guarantees() {
     assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
     assert_eq!(rolled_back.retry, RetryDisposition::Never);
 
-    let commit = commit_interruption_error(&deadline);
+    let commit = commit_interruption_error(&deadline, "pg-test-1");
     assert_eq!(commit.category, ErrorCategory::Timeout);
     assert_eq!(commit.phase, ErrorPhase::Commit);
     assert_eq!(commit.remote_effect, RemoteEffect::Unknown);
     assert_eq!(commit.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(commit.execution_id.as_deref(), Some("pg-test-1"));
 }
 
 #[test]
@@ -2901,6 +2950,26 @@ fn resource_failure_reports_verified_rollback_or_requires_recovery() {
     let unknown = resource_write_error(&cause, false);
     assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[test]
+fn unknown_write_outcome_is_valid_and_never_retryable() {
+    let outcome = unknown_write_outcome(
+        "pg-test-unknown".to_owned(),
+        7,
+        "verificare lo stato remoto",
+    );
+    outcome.validate().expect("valid unknown outcome");
+    assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);
+    assert_eq!(outcome.rows.received, 7);
+    assert_eq!(outcome.rows.confirmed, 0);
+    assert!(
+        !outcome
+            .recovery
+            .as_ref()
+            .expect("recovery")
+            .automatic_retry_allowed
+    );
 }
 
 #[test]
