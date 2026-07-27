@@ -170,7 +170,9 @@ pub async fn execute(
     )
     .await
     {
-        result?;
+        if let Err(error) = result {
+            return Err(rollback_after_error(transaction, error, &execution_id).await);
+        }
     } else {
         runtime.metrics.cancellation();
         let rollback_confirmed = transaction.rollback().await.is_ok();
@@ -182,7 +184,12 @@ pub async fn execute(
     )
     .await
     {
-        result?
+        match result {
+            Ok(target) => target,
+            Err(error) => {
+                return Err(rollback_after_error(transaction, error, &execution_id).await);
+            }
+        }
     } else {
         runtime.metrics.cancellation();
         let rollback_confirmed = transaction.rollback().await.is_ok();
@@ -194,7 +201,12 @@ pub async fn execute(
         let batch = if let Some(result) =
             select_with_cancellation(input.next_batch(), cancellation).await
         {
-            result?
+            match result {
+                Ok(batch) => batch,
+                Err(error) => {
+                    return Err(rollback_after_error(transaction, error, &execution_id).await);
+                }
+            }
         } else {
             runtime.metrics.cancellation();
             cancel_backend(
@@ -238,7 +250,12 @@ pub async fn execute(
         )
         .await
         {
-            result?
+            match result {
+                Ok(written) => written,
+                Err(error) => {
+                    return Err(rollback_after_error(transaction, error, &execution_id).await);
+                }
+            }
         } else {
             runtime.metrics.cancellation();
             cancel_backend(
@@ -272,7 +289,9 @@ pub async fn execute(
         )
         .await
         {
-            result?;
+            if let Err(error) = result {
+                return Err(rollback_after_error(transaction, error, &execution_id).await);
+            }
         } else {
             runtime.metrics.cancellation();
             let rollback_confirmed = transaction.rollback().await.is_ok();
@@ -286,7 +305,9 @@ pub async fn execute(
         )
         .await
         {
-            result?;
+            if let Err(error) = result {
+                return Err(rollback_after_error(transaction, error, &execution_id).await);
+            }
         } else {
             runtime.metrics.cancellation();
             let rollback_confirmed = transaction.rollback().await.is_ok();
@@ -294,12 +315,13 @@ pub async fn execute(
         }
     }
     if runtime.fault_point == Some(PostgresFaultPoint::BeforeCommit) {
-        return Err(public_error(
+        let error = public_error(
             ErrorCategory::Transient,
             ErrorPhase::Commit,
             true,
             "fault injection prima del commit PostgreSQL",
-        ));
+        );
+        return Err(rollback_after_error(transaction, error, &execution_id).await);
     }
     let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
     if commit_result.is_none() {
@@ -478,6 +500,23 @@ fn commit_interruption_error(cancellation: &CancellationToken) -> DatabaseError 
         RetryDisposition::RequiresRecovery,
         "deadline o cancellazione durante commit PostgreSQL: verificare lo stato remoto",
     )
+}
+
+async fn rollback_after_error(
+    transaction: Transaction<'_>,
+    mut error: DatabaseError,
+    execution_id: &str,
+) -> DatabaseError {
+    let rollback_confirmed = transaction.rollback().await.is_ok();
+    error.provider = Some(ProviderKind::Postgres);
+    error.execution_id = Some(execution_id.to_owned());
+    if rollback_confirmed {
+        error.remote_effect = RemoteEffect::RolledBack;
+    } else {
+        error.remote_effect = RemoteEffect::Unknown;
+        error.retry = RetryDisposition::RequiresRecovery;
+    }
+    error
 }
 
 struct WriteBatchResources {

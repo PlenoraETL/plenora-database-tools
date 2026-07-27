@@ -106,6 +106,8 @@ Il provider:
   polling;
 - effettua rollback esplicito se il budget si esaurisce dentro una transazione,
   senza dichiarare il rollback quando PostgreSQL non lo conferma.
+- applica la stessa regola a errori del producer, codec, SQL, trigger, DDL,
+  pubblicazione staged e fault injection prima del commit.
 
 Questa contabilità è deliberatamente conservativa: un batch consegnato al
 chiamante resta contabilizzato fino al termine del budget, perché il contratto
@@ -162,6 +164,8 @@ Il gate esegue:
     preflight di un authority ID incoerente con lo SRID.
 20. deadline read con cancellazione server-side e nessun backend residuo;
     deadline write con rollback confermato e zero righe pubblicate.
+21. errore trigger dopo l'avvio della write e fault pre-commit: rollback
+    confermato, execution ID presente e nessuna riga/DDL pubblicati.
 
 Esecuzione:
 

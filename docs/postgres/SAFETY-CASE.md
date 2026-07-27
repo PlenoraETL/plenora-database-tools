@@ -47,6 +47,7 @@ la libreria deve:
 | PG-SC-021 | conteggi EWKB avversari causano ricorsione, allocazioni o traversal illimitato | scanner iterativo, stack limitato dalla profondità e contatore componenti checked | test EWKB bomb core e budget geometrico live |
 | PG-SC-022 | SRID reinterpretato come CRS diverso durante una write | authority ID risolto da `spatial_ref_sys`, incluso nel token schema e verificato prima del preflight | assert metadata live e test negativo CRS mismatch |
 | PG-SC-023 | `duration_ms` dichiarato ma non operativo, o timeout che lascia effetti remoti ambigui | deadline monotona attiva; cancel backend; rollback verificato, commit timeout `Unknown` | test deadline token/budget, read backend e write rollback live |
+| PG-SC-024 | errore SQL, trigger, producer o DDL dopo `BEGIN` affidato al drop implicito | ogni uscita fallibile pre-commit consuma la transazione con rollback esplicito; execution ID nell'errore | trigger failure e fault before-commit live |
 
 ## Regole di cambiamento
 

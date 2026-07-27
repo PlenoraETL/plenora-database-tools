@@ -7621,6 +7621,77 @@ mod tests {
             .get(0);
         assert_eq!(deadline_rows, 0);
 
+        client
+            .batch_execute(
+                "CREATE OR REPLACE FUNCTION plenora_fixture.reject_second_row()
+                 RETURNS trigger LANGUAGE plpgsql AS $$
+                 BEGIN
+                   IF NEW.event_id = 2 THEN
+                     RAISE EXCEPTION 'intentional write rejection';
+                   END IF;
+                   RETURN NEW;
+                 END
+                 $$;
+                 DROP TABLE IF EXISTS plenora_fixture.failing_write_target;
+                 CREATE TABLE plenora_fixture.failing_write_target (
+                   event_id bigint,
+                   name text
+                 );
+                 CREATE TRIGGER reject_second_row
+                 BEFORE INSERT ON plenora_fixture.failing_write_target
+                 FOR EACH ROW EXECUTE FUNCTION plenora_fixture.reject_second_row()",
+            )
+            .await
+            .expect("failing write target");
+        let failing_stream = fixture_stream(
+            &provider,
+            &secret,
+            &cancellation,
+            vec!["event_id".to_owned(), "name".to_owned()],
+            3,
+        )
+        .await;
+        let failing_operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "failing_write_target".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let failing_prepared = provider
+            .prepare_write(
+                &secret,
+                &failing_operation,
+                failing_stream.schema(),
+                &cancellation,
+            )
+            .await
+            .expect("failing write prepare");
+        let failing_error = provider
+            .write(&secret, failing_prepared, failing_stream, &cancellation)
+            .await
+            .expect_err("trigger rejection");
+        assert_eq!(failing_error.remote_effect, RemoteEffect::RolledBack);
+        assert!(failing_error.execution_id.is_some());
+        let failing_rows: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.failing_write_target",
+                &[],
+            )
+            .await
+            .expect("failing write rollback")
+            .get(0);
+        assert_eq!(failing_rows, 0);
+
         let created = execute_fixture_write(
             &provider,
             &secret,
@@ -7745,10 +7816,13 @@ mod tests {
             )
             .await
             .expect("fault prepare");
-        rollback_provider
+        let rollback_error = rollback_provider
             .write(&secret, rollback_prepared, rollback_stream, &cancellation)
             .await
             .expect_err("fault before commit");
+        assert_eq!(rollback_error.remote_effect, RemoteEffect::RolledBack);
+        assert_eq!(rollback_error.provider, Some(ProviderKind::Postgres));
+        assert!(rollback_error.execution_id.is_some());
         let rolled_back: bool = client
             .query_one(
                 "SELECT to_regclass('plenora_fixture.write_fault_reference') IS NULL",
