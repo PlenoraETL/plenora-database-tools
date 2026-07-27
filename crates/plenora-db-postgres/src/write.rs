@@ -12,7 +12,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, SchemaRef, TimeUnit};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use futures_util::SinkExt;
-use plenora_database_core::ewkb::inspect_ewkb;
+use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbGeometryMetadata};
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
@@ -688,7 +688,6 @@ fn enforce_input_limits(
                             "cella WKB write oltre max_wkb_cell_bytes",
                         ));
                     }
-                    validate_ewkb_contract(value, field)?;
                     let remaining = max_geometry_components
                         .checked_sub(geometry_components)
                         .ok_or_else(|| {
@@ -699,9 +698,10 @@ fn enforce_input_limits(
                             "budget componenti geometriche esaurito",
                         ));
                     }
-                    let stats = inspect_ewkb(value, remaining, max_geometry_depth)?;
+                    let inspection = inspect_ewkb_detailed(value, remaining, max_geometry_depth)?;
+                    validate_ewkb_contract(inspection.root, field)?;
                     geometry_components = geometry_components
-                        .checked_add(stats.components)
+                        .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
                             DatabaseError::resource_limit("overflow componenti geometriche")
                         })?;
@@ -2568,80 +2568,19 @@ fn is_geography(field: &Field) -> bool {
             .is_some_and(|value| value == "geography")
 }
 
-fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
-    if bytes.len() < 5 {
-        return Err(spatial_mapping_error("EWKB troncato"));
-    }
-    let little_endian = match bytes[0] {
-        0 => false,
-        1 => true,
-        _ => return Err(spatial_mapping_error("byte order EWKB non valido")),
-    };
-    let read_u32 = |offset: usize| -> Result<u32> {
-        let raw: [u8; 4] = bytes
-            .get(offset..offset.saturating_add(4))
-            .and_then(|value| value.try_into().ok())
-            .ok_or_else(|| spatial_mapping_error("header EWKB troncato"))?;
-        Ok(if little_endian {
-            u32::from_le_bytes(raw)
-        } else {
-            u32::from_be_bytes(raw)
-        })
-    };
-    let type_word = read_u32(1)?;
-    let ewkb_z = type_word & 0x8000_0000 != 0;
-    let ewkb_m = type_word & 0x4000_0000 != 0;
-    let has_srid = type_word & 0x2000_0000 != 0;
-    let mut base_type = type_word & 0x0fff_ffff;
-    let (iso_z, iso_m) = if base_type >= 3_000 {
-        base_type -= 3_000;
-        (true, true)
-    } else if base_type >= 2_000 {
-        base_type -= 2_000;
-        (false, true)
-    } else if base_type >= 1_000 {
-        base_type -= 1_000;
-        (true, false)
-    } else {
-        (false, false)
-    };
-    let z = ewkb_z || iso_z;
-    let m = ewkb_m || iso_m;
-    let dimensions = match (z, m) {
-        (false, false) => "xy",
-        (true, false) => "xyz",
-        (false, true) => "xym",
-        (true, true) => "xyzm",
-    };
+fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, field: &Field) -> Result<()> {
     if let Some(expected) =
         metadata_value(field, protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions")
     {
-        if expected != dimensions {
+        if expected != metadata.dimensions_label() {
             return Err(spatial_mapping_error(
                 "dimensioni EWKB diverse dal contratto Arrow",
             ));
         }
     }
-    let geometry_type = match base_type {
-        1 => "Point",
-        2 => "LineString",
-        3 => "Polygon",
-        4 => "MultiPoint",
-        5 => "MultiLineString",
-        6 => "MultiPolygon",
-        7 => "GeometryCollection",
-        8 => "CircularString",
-        9 => "CompoundCurve",
-        10 => "CurvePolygon",
-        11 => "MultiCurve",
-        12 => "MultiSurface",
-        13 => "Curve",
-        14 => "Surface",
-        15 => "PolyhedralSurface",
-        16 => "TIN",
-        17 => "Triangle",
-        _ => return Err(spatial_mapping_error("tipo geometry EWKB non supportato")),
-    };
+    let geometry_type = metadata
+        .geometry_type_name()
+        .ok_or_else(|| spatial_mapping_error("tipo geometry EWKB non supportato"))?;
     if let Some(expected) = metadata_value(field, protocol::GEOMETRY_TYPES, "plenora.geometry_type")
     {
         if expected != "Geometry" && !expected.eq_ignore_ascii_case(geometry_type) {
@@ -2650,11 +2589,10 @@ fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
             ));
         }
     }
-    let actual_srid = has_srid.then(|| read_u32(5)).transpose()?;
     if let Some(expected) = metadata_value(field, protocol::GEOMETRY_SRID, "plenora.srid")
         .and_then(|value| value.parse::<u32>().ok())
     {
-        if expected != 0 && actual_srid != Some(expected) {
+        if expected != 0 && metadata.srid != Some(expected) {
             return Err(spatial_mapping_error(
                 "SRID EWKB diverso dal contratto Arrow",
             ));
@@ -2814,12 +2752,14 @@ mod tests {
         point_z_4326.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
         point_z_4326.extend_from_slice(&4326_u32.to_le_bytes());
         point_z_4326.extend_from_slice(&[0_u8; 24]);
-        validate_ewkb_contract(&point_z_4326, &field).expect("matching contract");
+        let inspection = inspect_ewkb_detailed(&point_z_4326, 10, 1).expect("valid point Z EWKB");
+        validate_ewkb_contract(inspection.root, &field).expect("matching contract");
 
         let mut wrong_srid = point_z_4326.clone();
         wrong_srid[5..9].copy_from_slice(&3857_u32.to_le_bytes());
+        let inspection = inspect_ewkb_detailed(&wrong_srid, 10, 1).expect("valid wrong-SRID EWKB");
         assert_eq!(
-            validate_ewkb_contract(&wrong_srid, &field)
+            validate_ewkb_contract(inspection.root, &field)
                 .expect_err("SRID mismatch")
                 .category,
             ErrorCategory::DataMapping
@@ -2829,13 +2769,14 @@ mod tests {
         point_xy_4326.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
         point_xy_4326.extend_from_slice(&4326_u32.to_le_bytes());
         point_xy_4326.extend_from_slice(&[0_u8; 16]);
+        let inspection = inspect_ewkb_detailed(&point_xy_4326, 10, 1).expect("valid point XY EWKB");
         assert_eq!(
-            validate_ewkb_contract(&point_xy_4326, &field)
+            validate_ewkb_contract(inspection.root, &field)
                 .expect_err("dimension mismatch")
                 .category,
             ErrorCategory::DataMapping
         );
-        assert!(validate_ewkb_contract(&[2, 0, 0, 0, 1], &field).is_err());
+        assert!(inspect_ewkb_detailed(&[2, 0, 0, 0, 1], 10, 1).is_err());
     }
 
     #[test]

@@ -6,11 +6,64 @@ pub struct EwkbStats {
     pub max_depth: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EwkbGeometryMetadata {
+    pub base_type: u32,
+    pub has_z: bool,
+    pub has_m: bool,
+    pub srid: Option<u32>,
+}
+
+impl EwkbGeometryMetadata {
+    #[must_use]
+    pub const fn dimensions_label(self) -> &'static str {
+        match (self.has_z, self.has_m) {
+            (false, false) => "xy",
+            (true, false) => "xyz",
+            (false, true) => "xym",
+            (true, true) => "xyzm",
+        }
+    }
+
+    #[must_use]
+    pub const fn geometry_type_name(self) -> Option<&'static str> {
+        match self.base_type {
+            1 => Some("Point"),
+            2 => Some("LineString"),
+            3 => Some("Polygon"),
+            4 => Some("MultiPoint"),
+            5 => Some("MultiLineString"),
+            6 => Some("MultiPolygon"),
+            7 => Some("GeometryCollection"),
+            8 => Some("CircularString"),
+            9 => Some("CompoundCurve"),
+            10 => Some("CurvePolygon"),
+            11 => Some("MultiCurve"),
+            12 => Some("MultiSurface"),
+            13 => Some("Curve"),
+            14 => Some("Surface"),
+            15 => Some("PolyhedralSurface"),
+            16 => Some("TIN"),
+            17 => Some("Triangle"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EwkbInspection {
+    pub stats: EwkbStats,
+    pub root: EwkbGeometryMetadata,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Header {
     base_type: u32,
     dimensions: u64,
     little_endian: bool,
+    has_z: bool,
+    has_m: bool,
+    srid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -93,13 +146,16 @@ impl Scanner<'_> {
         } else {
             (false, false)
         };
-        if has_srid {
-            self.take(4)?;
-        }
+        let has_z = ewkb_z || iso_z;
+        let has_m = ewkb_m || iso_m;
+        let srid = has_srid.then(|| self.u32(little_endian)).transpose()?;
         Ok(Header {
             base_type,
-            dimensions: 2 + u64::from(ewkb_z || iso_z) + u64::from(ewkb_m || iso_m),
+            dimensions: 2 + u64::from(has_z) + u64::from(has_m),
             little_endian,
+            has_z,
+            has_m,
+            srid,
         })
     }
 
@@ -115,7 +171,7 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    fn geometry(&mut self, depth: u64) -> Result<u64> {
+    fn geometry(&mut self, depth: u64) -> Result<(u64, Header)> {
         if depth == 0 || depth > self.max_depth {
             return Err(resource_error(
                 "geometria EWKB oltre il limite di profondità",
@@ -124,15 +180,15 @@ impl Scanner<'_> {
         self.observed_depth = self.observed_depth.max(depth);
         self.add_components(1)?;
         let header = self.header()?;
-        match header.base_type {
+        let children = match header.base_type {
             1 => {
                 self.coordinates(1, header.dimensions)?;
-                Ok(0)
+                0
             }
             2 | 8 => {
                 let points = u64::from(self.u32(header.little_endian)?);
                 self.coordinates(points, header.dimensions)?;
-                Ok(0)
+                0
             }
             3 | 17 => {
                 let rings = u64::from(self.u32(header.little_endian)?);
@@ -141,12 +197,13 @@ impl Scanner<'_> {
                     let points = u64::from(self.u32(header.little_endian)?);
                     self.coordinates(points, header.dimensions)?;
                 }
-                Ok(0)
+                0
             }
-            4..=7 | 9..=12 | 15 | 16 => Ok(u64::from(self.u32(header.little_endian)?)),
-            13 | 14 => Err(mapping_error("tipo EWKB astratto non serializzabile")),
-            _ => Err(mapping_error("tipo geometry EWKB non supportato")),
-        }
+            4..=7 | 9..=12 | 15 | 16 => u64::from(self.u32(header.little_endian)?),
+            13 | 14 => return Err(mapping_error("tipo EWKB astratto non serializzabile")),
+            _ => return Err(mapping_error("tipo geometry EWKB non supportato")),
+        };
+        Ok((children, header))
     }
 }
 
@@ -158,6 +215,21 @@ impl Scanner<'_> {
 /// Restituisce `DataMapping` per payload malformati e `ResourceLimit` prima di
 /// attraversare conteggi o profondità oltre i limiti.
 pub fn inspect_ewkb(bytes: &[u8], max_components: u64, max_depth: u64) -> Result<EwkbStats> {
+    inspect_ewkb_detailed(bytes, max_components, max_depth).map(|inspection| inspection.stats)
+}
+
+/// Ispeziona struttura e metadati della geometria EWKB radice con gli stessi
+/// limiti applicati da [`inspect_ewkb`].
+///
+/// # Errors
+///
+/// Restituisce `DataMapping` per payload malformati e `ResourceLimit` prima di
+/// attraversare conteggi o profondità oltre i limiti.
+pub fn inspect_ewkb_detailed(
+    bytes: &[u8],
+    max_components: u64,
+    max_depth: u64,
+) -> Result<EwkbInspection> {
     if max_components == 0 || max_depth == 0 {
         return Err(resource_error("limiti EWKB devono essere maggiori di zero"));
     }
@@ -171,8 +243,17 @@ pub fn inspect_ewkb(bytes: &[u8], max_components: u64, max_depth: u64) -> Result
     };
     let mut depth = 1;
     let mut frames = Vec::<Frame>::new();
+    let mut root = None;
     loop {
-        let children = scanner.geometry(depth)?;
+        let (children, header) = scanner.geometry(depth)?;
+        if root.is_none() {
+            root = Some(EwkbGeometryMetadata {
+                base_type: header.base_type,
+                has_z: header.has_z,
+                has_m: header.has_m,
+                srid: header.srid,
+            });
+        }
         if children > 0 {
             let child_depth = depth
                 .checked_add(1)
@@ -192,9 +273,12 @@ pub fn inspect_ewkb(bytes: &[u8], max_components: u64, max_depth: u64) -> Result
                 if scanner.offset != bytes.len() {
                     return Err(mapping_error("byte residui dopo la geometria EWKB"));
                 }
-                return Ok(EwkbStats {
-                    components: scanner.components,
-                    max_depth: scanner.observed_depth,
+                return Ok(EwkbInspection {
+                    stats: EwkbStats {
+                        components: scanner.components,
+                        max_depth: scanner.observed_depth,
+                    },
+                    root: root.ok_or_else(|| mapping_error("geometria EWKB assente"))?,
                 });
             };
             if frame.remaining == 0 {
@@ -244,6 +328,16 @@ mod tests {
         bytes
     }
 
+    fn point_z_srid() -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(&(0xa000_0001_u32).to_le_bytes());
+        bytes.extend_from_slice(&4_326_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_f64.to_le_bytes());
+        bytes.extend_from_slice(&1_f64.to_le_bytes());
+        bytes.extend_from_slice(&2_f64.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn counts_components_without_recursive_calls() {
         let bytes = collection(&collection(&point()));
@@ -276,5 +370,15 @@ mod tests {
         let mut trailing = point();
         trailing.push(0);
         assert!(inspect_ewkb(&trailing, 10, 3).is_err());
+    }
+
+    #[test]
+    fn reports_root_contract_metadata_from_the_validated_header() {
+        let inspection = inspect_ewkb_detailed(&point_z_srid(), 10, 1).expect("valid point");
+        assert_eq!(inspection.stats.components, 2);
+        assert_eq!(inspection.root.base_type, 1);
+        assert_eq!(inspection.root.dimensions_label(), "xyz");
+        assert_eq!(inspection.root.geometry_type_name(), Some("Point"));
+        assert_eq!(inspection.root.srid, Some(4_326));
     }
 }
