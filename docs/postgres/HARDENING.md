@@ -109,6 +109,19 @@ Questa contabilità è deliberatamente conservativa: un batch consegnato al
 chiamante resta contabilizzato fino al termine del budget, perché il contratto
 Arrow restituisce un `RecordBatch` che può sopravvivere allo stream.
 
+## Risoluzione CRS PostGIS
+
+L'introspezione collega il typmod PostGIS a `spatial_ref_sys`. Quando la riga
+contiene authority e codice, Arrow emette `crs_resolution=resolved`,
+`crs_id=<authority>:<code>` e lo SRID osservato. In assenza di authority il CRS
+resta esplicitamente `declared_unresolved`; SRID 0 diventa `missing`.
+
+L'axis order resta `unknown` e la definizione WKT non viene emessa: il provider
+non deduce semantica degli assi da stringhe non analizzate. Il token della cache
+schema include authority, codice e versione MVCC della riga SRS. In write, un
+CRS dichiarato resolved viene confrontato con `spatial_ref_sys` prima di
+qualsiasi DDL o transazione.
+
 ## Prove automatiche
 
 Il gate esegue:
@@ -143,6 +156,8 @@ Il gate esegue:
     lease strutturali e rifiuto della sostituzione del budget di write.
 18. geometry bomb EWKB troncate, profonde o oltre il budget componenti
     rifiutate; test live senza emissione del batch eccedente.
+19. risoluzione live `EPSG:4326`, inclusione SRS nel token strutturale e rifiuto
+    preflight di un authority ID incoerente con lo SRID.
 
 Esecuzione:
 

@@ -45,6 +45,7 @@ la libreria deve:
 | PG-SC-019 | limiti applicati dopo l'allocazione o aggirati cambiando contesto | budget unico obbligatorio, lease atomiche reserve/commit e identità verificata | test core, test sostituzione e budget righe live |
 | PG-SC-020 | esaurimento risorse a metà transazione dichiarato privo di effetti | rollback esplicito; `RolledBack` solo se confermato, altrimenti recovery | test semantico resource failure e suite write live |
 | PG-SC-021 | conteggi EWKB avversari causano ricorsione, allocazioni o traversal illimitato | scanner iterativo, stack limitato dalla profondità e contatore componenti checked | test EWKB bomb core e budget geometrico live |
+| PG-SC-022 | SRID reinterpretato come CRS diverso durante una write | authority ID risolto da `spatial_ref_sys`, incluso nel token schema e verificato prima del preflight | assert metadata live e test negativo CRS mismatch |
 
 ## Regole di cambiamento
 

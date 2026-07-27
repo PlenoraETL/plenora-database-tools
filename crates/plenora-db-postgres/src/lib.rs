@@ -1082,6 +1082,8 @@ impl PostgresProvider {
                            AND a.atttypmod >= 0
                       THEN postgis_typmod_type(a.atttypmod)
                     END AS spatial_type,
+                    srs.auth_name AS spatial_crs_auth_name,
+                    srs.auth_srid AS spatial_crs_auth_srid,
                     pg_get_expr(ad.adbin, ad.adrelid) AS default_expression,
                     NULLIF(a.attidentity, '')::text AS identity_kind,
                     NULLIF(a.attgenerated, '')::text AS generated_kind,
@@ -1131,6 +1133,10 @@ impl PostgresProvider {
                 LEFT JOIN pg_catalog.pg_attrdef ad
                   ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
                 LEFT JOIN pg_catalog.pg_collation coll ON coll.oid = a.attcollation
+                LEFT JOIN spatial_ref_sys srs
+                  ON t.typname IN ('geometry', 'geography')
+                 AND a.atttypmod >= 0
+                 AND srs.srid = postgis_typmod_srid(a.atttypmod)
                 CROSS JOIN LATERAL (
                     SELECT jsonb_build_object(
                         'relation',
@@ -1195,7 +1201,21 @@ impl PostgresProvider {
                                         WHERE sca.attrelid = st.typrelid
                                           AND sca.attnum > 0
                                           AND NOT sca.attisdropped
-                                    ) END
+                                    ) END,
+                                    CASE
+                                      WHEN st.typname IN ('geometry', 'geography')
+                                           AND sa.atttypmod >= 0
+                                      THEN (
+                                        SELECT jsonb_build_array(
+                                            ssrs.auth_name,
+                                            ssrs.auth_srid,
+                                            ssrs.xmin::text
+                                        )
+                                        FROM spatial_ref_sys ssrs
+                                        WHERE ssrs.srid =
+                                            postgis_typmod_srid(sa.atttypmod)
+                                      )
+                                    END
                                 )
                                 ORDER BY sa.attnum
                             )
@@ -1228,7 +1248,7 @@ impl PostgresProvider {
                 "oggetto PostgreSQL non trovato",
             ));
         }
-        let token = CatalogSchemaToken::from_catalog_row(&rows[0], 14)?;
+        let token = CatalogSchemaToken::from_catalog_row(&rows[0], 16)?;
         let columns = Arc::new(rows.iter().map(ColumnSpec::from_catalog_row).collect());
         Ok((columns, token))
     }
@@ -1303,7 +1323,21 @@ impl PostgresProvider {
                                         WHERE ca.attrelid = t.typrelid
                                           AND ca.attnum > 0
                                           AND NOT ca.attisdropped
-                                    ) END
+                                    ) END,
+                                    CASE
+                                      WHEN t.typname IN ('geometry', 'geography')
+                                           AND a.atttypmod >= 0
+                                      THEN (
+                                        SELECT jsonb_build_array(
+                                            srs.auth_name,
+                                            srs.auth_srid,
+                                            srs.xmin::text
+                                        )
+                                        FROM spatial_ref_sys srs
+                                        WHERE srs.srid =
+                                            postgis_typmod_srid(a.atttypmod)
+                                      )
+                                    END
                                 )
                                 ORDER BY a.attnum
                             )
@@ -1931,6 +1965,7 @@ impl PostgresProvider {
         input_schema: &SchemaRef,
     ) -> Result<LossReport> {
         let client = self.connect_session(secret).await?;
+        validate_resolved_crs_against_postgis(&client, input_schema).await?;
         let schema_name = operation.target.schema.as_deref().unwrap_or("public");
         let exists: bool = client
             .query_one(
@@ -2041,6 +2076,17 @@ impl PostgresProvider {
                         target_srid.cloned(),
                     )?);
                 }
+                let source_crs = source.metadata().get(protocol::GEOMETRY_CRS_ID);
+                let target_crs = target_field.metadata().get(protocol::GEOMETRY_CRS_ID);
+                if source_crs != target_crs && (source_crs.is_some() || target_crs.is_some()) {
+                    losses.push(mapping_loss(
+                        field_id,
+                        LossCategory::Crs,
+                        "identificatore CRS sorgente e target differente",
+                        source_crs.cloned(),
+                        target_crs.cloned(),
+                    )?);
+                }
             }
             for key in &operation.keys {
                 if !target_columns.iter().any(|column| &column.name == key) {
@@ -2066,6 +2112,70 @@ impl PostgresProvider {
         drop(client);
         Ok(report)
     }
+}
+
+async fn validate_resolved_crs_against_postgis(
+    client: &PooledClient,
+    input_schema: &SchemaRef,
+) -> Result<()> {
+    for field in input_schema.fields() {
+        if field
+            .metadata()
+            .get(protocol::GEOMETRY_CRS_RESOLUTION)
+            .is_none_or(|value| value != "resolved")
+        {
+            continue;
+        }
+        let srid = field
+            .metadata()
+            .get(protocol::GEOMETRY_SRID)
+            .and_then(|value| value.parse::<i32>().ok())
+            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza SRID valido"))?;
+        let declared_id = field
+            .metadata()
+            .get(protocol::GEOMETRY_CRS_ID)
+            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza identificatore"))?;
+        let row = client
+            .query_opt(
+                "SELECT auth_name, auth_srid
+                 FROM spatial_ref_sys
+                 WHERE srid = $1",
+                &[&srid],
+            )
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
+            .ok_or_else(|| {
+                public_error(
+                    ErrorCategory::Crs,
+                    ErrorPhase::Prepare,
+                    false,
+                    "SRID resolved assente da spatial_ref_sys",
+                )
+            })?;
+        let authority: Option<String> = row.get(0);
+        let authority_code: Option<i32> = row.get(1);
+        let observed_id = authority
+            .filter(|value| !value.is_empty())
+            .zip(authority_code)
+            .map(|(name, code)| format!("{name}:{code}"))
+            .ok_or_else(|| {
+                public_error(
+                    ErrorCategory::Crs,
+                    ErrorPhase::Prepare,
+                    false,
+                    "spatial_ref_sys non risolve un authority ID",
+                )
+            })?;
+        if !declared_id.eq_ignore_ascii_case(&observed_id) {
+            return Err(public_error(
+                ErrorCategory::Crs,
+                ErrorPhase::Prepare,
+                false,
+                "identificatore CRS non coerente con spatial_ref_sys",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn mapping_loss(
@@ -2649,6 +2759,7 @@ struct ColumnSpec {
     spatial_srid: Option<u32>,
     spatial_dimensions: Option<String>,
     spatial_type: Option<String>,
+    spatial_crs_id: Option<String>,
     default_expression: Option<String>,
     identity_kind: Option<String>,
     generated_kind: Option<String>,
@@ -2745,6 +2856,7 @@ impl ColumnSpec {
             spatial_srid: None,
             spatial_dimensions: None,
             spatial_type: None,
+            spatial_crs_id: None,
             default_expression: None,
             identity_kind: None,
             generated_kind: None,
@@ -2768,28 +2880,34 @@ impl ColumnSpec {
         let srid_i32: Option<i32> = row.get(5);
         let spatial_dimension_count: Option<i32> = row.get(6);
         let spatial_typmod_type: Option<String> = row.get(7);
+        let spatial_crs_auth_name: Option<String> = row.get(8);
+        let spatial_crs_auth_srid: Option<i32> = row.get(9);
         let spatial_dimensions =
             spatial_dimensions_label(spatial_dimension_count, spatial_typmod_type.as_deref());
         let spatial_type = spatial_typmod_type.as_deref().map(spatial_base_type);
-        let default_expression: Option<String> = row.get(8);
-        let identity_kind: Option<String> = row.get(9);
-        let generated_kind: Option<String> = row.get(10);
-        let native_declaration: Option<String> = row.get(11);
-        let type_kind: Option<String> = row.get(12);
+        let spatial_crs_id = spatial_crs_auth_name
+            .filter(|value| !value.is_empty())
+            .zip(spatial_crs_auth_srid.and_then(|value| u32::try_from(value).ok()))
+            .map(|(authority, code)| format!("{authority}:{code}"));
+        let default_expression: Option<String> = row.get(10);
+        let identity_kind: Option<String> = row.get(11);
+        let generated_kind: Option<String> = row.get(12);
+        let native_declaration: Option<String> = row.get(13);
+        let type_kind: Option<String> = row.get(14);
         let composite_fields = row
-            .get::<_, Option<String>>(13)
+            .get::<_, Option<String>>(15)
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
         let enum_labels = row
-            .get::<_, Option<String>>(18)
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default();
-        let domain_base_type = row.get(19);
-        let domain_constraints = row
             .get::<_, Option<String>>(20)
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
-        let collation = row.get(21);
+        let domain_base_type = row.get(21);
+        let domain_constraints = row
+            .get::<_, Option<String>>(22)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        let collation = row.get(23);
         let numeric_precision = precision_i32.and_then(|value| u8::try_from(value).ok());
         let numeric_scale = scale_i32.and_then(|value| i8::try_from(value).ok());
         let kind = if type_kind.as_deref() == Some("c") {
@@ -2831,9 +2949,12 @@ impl ColumnSpec {
             nullable,
             numeric_precision,
             numeric_scale,
-            spatial_srid: srid_i32.and_then(|value| u32::try_from(value).ok()),
+            spatial_srid: srid_i32
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0),
             spatial_dimensions,
             spatial_type,
+            spatial_crs_id,
             default_expression,
             identity_kind,
             generated_kind,
@@ -2953,8 +3074,25 @@ impl ColumnSpec {
                 metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
                 metadata.insert(
                     protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                    "declared_unresolved".to_owned(),
+                    if self.spatial_crs_id.is_some() {
+                        "resolved"
+                    } else {
+                        "declared_unresolved"
+                    }
+                    .to_owned(),
                 );
+                metadata.insert(
+                    protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                    "unknown".to_owned(),
+                );
+            } else {
+                metadata.insert(
+                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                    "missing".to_owned(),
+                );
+            }
+            if let Some(crs_id) = &self.spatial_crs_id {
+                metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
             }
             if let Some(dimensions) = &self.spatial_dimensions {
                 metadata.insert(
@@ -5119,6 +5257,7 @@ mod tests {
                 spatial_srid: None,
                 spatial_dimensions: None,
                 spatial_type: None,
+                spatial_crs_id: None,
                 default_expression: None,
                 identity_kind: None,
                 generated_kind: None,
@@ -5353,6 +5492,74 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn live_resolved_crs_must_match_spatial_ref_sys() {
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let metadata = HashMap::from([
+            (
+                protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+                GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+            ),
+            (
+                protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+                "geometry".to_owned(),
+            ),
+            (protocol::GEOMETRY_ENCODING.to_owned(), "ewkb".to_owned()),
+            (
+                protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                "exact".to_owned(),
+            ),
+            (protocol::GEOMETRY_TYPES.to_owned(), "point".to_owned()),
+            (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
+            (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+            (
+                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                "resolved".to_owned(),
+            ),
+            (protocol::GEOMETRY_CRS_ID.to_owned(), "EPSG:3857".to_owned()),
+            (
+                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                "unknown".to_owned(),
+            ),
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "geom",
+            DataType::Binary,
+            false,
+        )
+        .with_metadata(metadata)]));
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "crs_validation_never_created".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Create,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: Some(SridPolicy::RequireMatch),
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let error = PostgresProvider::default()
+            .prepare_write(
+                &SecretString::new(dsn),
+                &operation,
+                schema,
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .expect("mismatched resolved CRS");
+        assert_eq!(error.category, ErrorCategory::Crs);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
     #[test]
     fn tls_material_is_validated_and_redacted() {
         let config = PostgresTlsConfig::webpki();
@@ -5518,15 +5725,34 @@ mod tests {
             .read(&secret, &operation, &ParameterBag::default(), &cancellation)
             .await
             .expect("read");
+        let stream_schema = stream.schema();
+        let geom_metadata = stream_schema
+            .field_with_name("geom")
+            .expect("geom")
+            .metadata();
         assert_eq!(
-            stream
-                .schema()
-                .field_with_name("geom")
-                .expect("geom")
-                .metadata()
+            geom_metadata
                 .get("ARROW:extension:name")
                 .map(String::as_str),
             Some(GEOARROW_WKB_EXTENSION_NAME)
+        );
+        assert_eq!(
+            geom_metadata
+                .get(protocol::GEOMETRY_CRS_RESOLUTION)
+                .map(String::as_str),
+            Some("resolved")
+        );
+        assert_eq!(
+            geom_metadata
+                .get(protocol::GEOMETRY_CRS_ID)
+                .map(String::as_str),
+            Some("EPSG:4326")
+        );
+        assert_eq!(
+            geom_metadata
+                .get(protocol::GEOMETRY_AXIS_ORDER)
+                .map(String::as_str),
+            Some("unknown")
         );
         let mut rows = 0;
         let mut batches = 0;

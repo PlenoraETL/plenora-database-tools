@@ -59,6 +59,7 @@ pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result
     }
     for field in schema.fields() {
         validate_metadata_coherence(field)?;
+        validate_crs_metadata(field)?;
         Identifier::new(field.name().clone())?;
         pg_type(field)?;
     }
@@ -2155,6 +2156,78 @@ fn validate_metadata_coherence(field: &Field) -> Result<()> {
     Ok(())
 }
 
+fn validate_crs_metadata(field: &Field) -> Result<()> {
+    if !is_spatial(field) {
+        return Ok(());
+    }
+    let metadata = field.metadata();
+    let resolution = metadata
+        .get(protocol::GEOMETRY_CRS_RESOLUTION)
+        .map(String::as_str);
+    let srid = metadata
+        .get(protocol::GEOMETRY_SRID)
+        .or_else(|| metadata.get("plenora.srid"));
+    let crs_id = metadata.get(protocol::GEOMETRY_CRS_ID);
+    let definition = metadata.get(protocol::GEOMETRY_CRS_DEFINITION);
+    let definition_format = metadata.get(protocol::GEOMETRY_CRS_DEFINITION_FORMAT);
+    let axis_order = metadata.get(protocol::GEOMETRY_AXIS_ORDER);
+
+    if srid.is_some_and(|value| {
+        value
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+    }) {
+        return Err(DatabaseError::invalid_plan(
+            "SRID CRS deve essere un intero positivo",
+        ));
+    }
+    if definition.is_some() != definition_format.is_some() {
+        return Err(DatabaseError::invalid_plan(
+            "definizione CRS e formato devono essere presenti insieme",
+        ));
+    }
+    if definition.is_some() && axis_order.is_none_or(|axis| axis == "unknown") {
+        return Err(DatabaseError::invalid_plan(
+            "una definizione CRS richiede un ordine assi esplicito",
+        ));
+    }
+    if axis_order.is_some_and(|axis| {
+        !matches!(
+            axis.as_str(),
+            "lon_lat" | "lat_lon" | "easting_northing" | "northing_easting" | "other" | "unknown"
+        )
+    }) {
+        return Err(DatabaseError::invalid_plan("ordine assi CRS non valido"));
+    }
+    if crs_id.is_some_and(|value| {
+        value.is_empty() || value.len() > 1_024 || value.chars().any(char::is_control)
+    }) {
+        return Err(DatabaseError::invalid_plan("identificatore CRS non valido"));
+    }
+    match resolution {
+        Some("resolved") if srid.is_none() || crs_id.is_none() => Err(DatabaseError::invalid_plan(
+            "CRS resolved PostgreSQL richiede SRID e identificatore",
+        )),
+        Some("missing")
+            if srid.is_some()
+                || crs_id.is_some()
+                || definition.is_some()
+                || definition_format.is_some()
+                || axis_order.is_some() =>
+        {
+            Err(DatabaseError::invalid_plan(
+                "CRS missing non ammette metadati CRS dichiarati",
+            ))
+        }
+        Some("resolved" | "declared_unresolved" | "missing") | None => Ok(()),
+        Some(_) => Err(DatabaseError::invalid_plan(
+            "stato di risoluzione CRS non valido",
+        )),
+    }
+}
+
 fn pg_type(field: &Field) -> Result<String> {
     if is_geometry(field) || is_geography(field) {
         let base = if is_geography(field) {
@@ -2737,4 +2810,40 @@ fn divergent_canonical_and_legacy_metadata_is_rejected() {
     );
     let error = validate_metadata_coherence(&field).expect_err("metadata divergence");
     assert_eq!(error.category, ErrorCategory::InvalidPlan);
+}
+
+#[test]
+fn incoherent_crs_metadata_is_rejected_before_preflight() {
+    let base = [
+        (
+            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+            GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+        ),
+        (
+            protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+            "resolved".to_owned(),
+        ),
+        (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    let resolved_without_id = Field::new("geom", DataType::Binary, false).with_metadata(base);
+    assert!(validate_crs_metadata(&resolved_without_id).is_err());
+
+    let missing_with_srid = Field::new("geom", DataType::Binary, false).with_metadata(
+        [
+            (
+                protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+                GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+            ),
+            (
+                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                "missing".to_owned(),
+            ),
+            (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert!(validate_crs_metadata(&missing_with_srid).is_err());
 }
