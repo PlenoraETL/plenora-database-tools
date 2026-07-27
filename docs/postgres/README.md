@@ -1,6 +1,6 @@
 # PostgreSQL 16 + PostGIS 3.4
 
-Stato: **driver di riferimento read/write end-to-end operativo**
+Stato: **driver di riferimento read/write/spatial avanzato operativo**
 
 ## Fixture
 
@@ -37,13 +37,17 @@ vuole rigenerare la fixture.
 - connessione redatta e classificazione iniziale SQLSTATE;
 - probe PostgreSQL/PostGIS e capability runtime;
 - lista cataloghi, schemi e oggetti;
-- introspezione di colonne, relation kind, partizioni, viste, default,
-  identity, generated, constraint e indici;
+- introspezione strutturale di colonne, enum, domini, collation, relation kind,
+  partizioni, viste/materialized view, default, identity, generated,
+  constraint, indici/opclass/include/predicati, RLS policy, ACL, owner e
+  tablespace;
 - projection e identificatori quotati;
 - filtri con bind parameter separati;
 - ordering e row limit;
-- `QueryOperation` eseguibile con CTE, join, distinct, filtri booleani,
-  aggregate, group-by, having, ordering e funzioni PostGIS;
+- `QueryOperation` eseguibile con CTE anche ricorsive, join e `LATERAL`,
+  derived table/subquery, `DISTINCT ON`, set operation, filtri booleani,
+  aggregate, group-by, having, window/frame, ordering, offset/limit, locking e
+  funzioni PostGIS;
 - fast path one-shot anche per `QueryOperation`: i tipi dei bind derivano dai
   valori canonici e lo schema esatto dalla prima riga server; sui risultati
   vuoti viene eseguito soltanto il describe finale, senza rieseguire la SELECT;
@@ -76,8 +80,11 @@ vuole rigenerare la fixture.
   dichiarazione PostgreSQL;
 - `Decimal128` con scala positiva, zero o negativa e parametri decimal/UUID/NULL
   tipizzati;
-- geometry/geography come EWKB con metadata GeoArrow-WKB, SRID, dimensioni,
-  tipo e semantica spatial;
+- geometry/geography come EWKB con metadata GeoArrow-WKB, SRID, dimensioni
+  XY/XYZ/XYM/XYZM, tipi curve/surface/collection e semantica spatial;
+- validazione fail-closed dell'header EWKB in scrittura rispetto al contratto
+  Arrow: byte order, tipo, dimensioni e SRID incompatibili non raggiungono il
+  database;
 - create, append, replace atomico su staging e truncate-insert;
 - update, upsert e delete-by-keys con bind parameter;
 - COPY text e COPY binario bounded per
@@ -89,7 +96,10 @@ vuole rigenerare la fixture.
 - transazione unica, rollback su errore e outcome esplicito per commit incerto;
 - creazione opzionale degli indici GiST spatial;
 - Arrow/GeoArrow-WKB verso PostGIS geometry/geography, inclusi Z e SRID;
-- AST e capability per 29 funzioni spatial portabili;
+- catalogo e AST coerenti per 72 funzioni spatial tipizzate, inclusi
+  accessor/predicate, processing, metriche, output e clustering;
+- operatori spatial indicizzabili bounding-box e KNN (`&&`, `~`, `@`, `<->`,
+  `<<->>`) con bind EWKB e verifica del piano GiST;
 - filtri `IN`, `BETWEEN`, `LIKE` e predicati spatial EWKB;
 - preflight remoto di esistenza, chiavi, tipi, nullability e SRID;
 - budget effettivi per batch Arrow e singola cella WKB;
@@ -170,7 +180,13 @@ Il test live verifica:
 - equivalenza COPY text/COPY binario/prepared su 1.000 righe;
 - timeout del pool saturo e riuso sicuro della sessione;
 - CTE/join/group-by/having con ordine stabile dei bind;
+- CTE ricorsive, derived table, lateral, window, set operation, offset e
+  locking con validazione strutturale bounded;
 - introspezione avanzata e roundtrip enum/domain/array/TIME;
+- introspezione di partizioni, policy RLS, ACL, materialized view e indici
+  spatial/espressione/include;
+- geometrie XY/XYZ/XYM/XYZM, curve, TIN, collection e geography;
+- filtri bounding-box/KNN con prova `EXPLAIN` dell'uso dell'indice GiST;
 - roundtrip text/binario di interval, range, composite, UUID e numeric a scala
   negativa;
 - cancellazione live di read e write bloccati con verifica del rollback;
@@ -178,7 +194,9 @@ Il test live verifica:
 - schema evolution additiva e typed parameter decimal/UUID/NULL.
 
 Il profilo di sicurezza e resilienza, con garanzie e limiti espliciti, è in
-[HARDENING.md](HARDENING.md).
+[HARDENING.md](HARDENING.md). Il razionale hazard→invariante→prova e i rischi
+residui sono in [SAFETY-CASE.md](SAFETY-CASE.md); è un profilo ingegneristico,
+non una certificazione aeronautica.
 La politica di versioni verificata è in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -204,6 +222,12 @@ La campagna prestazionale riproducibile è:
 
 ```powershell
 python scripts\check_postgres_performance.py
+```
+
+Il gate micro-prestazionale dedicato agli operatori GiST/KNN è:
+
+```powershell
+python scripts\check_postgres_spatial_performance.py
 ```
 
 Scenari, metriche, baseline e regole anti-regressione sono descritti in

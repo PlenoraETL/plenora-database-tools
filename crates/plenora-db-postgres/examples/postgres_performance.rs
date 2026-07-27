@@ -338,10 +338,11 @@ async fn materialize(
         }
         let query = QueryOperation {
             common_table_expressions: Vec::new(),
-            source: QuerySource {
+            source: Some(QuerySource {
                 object: object(profile.source_table()),
                 alias: Some("source".to_owned()),
-            },
+            }),
+            derived_source: None,
             projection: ["event_id", "metric", "active", "note"]
                 .into_iter()
                 .map(|field| QueryProjection {
@@ -371,7 +372,11 @@ async fn materialize(
             having: None,
             order_by: Vec::new(),
             distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: None,
+            row_offset: None,
+            locking: None,
         };
         provider
             .query(secret, &query, &parameters, &cancellation)

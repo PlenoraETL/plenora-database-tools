@@ -6,8 +6,9 @@
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::query::{
-    validate_query_operation, JoinKind, QueryExpression, QueryOperation, QuerySource,
-    ScalarFunction,
+    validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLockStrength,
+    QueryLockWait, QueryOperation, QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator,
+    WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -242,7 +243,7 @@ impl Renderer {
     pub fn render_query(&self, query: &QueryOperation) -> Result<RenderedSql> {
         validate_query_operation(query, &plenora_database_core::limits::Limits::default())?;
         let mut binds = Vec::new();
-        let sql = self.render_query_inner(query, &mut binds)?;
+        let sql = self.render_query_inner(query, &mut binds, true)?;
         Ok(RenderedSql { sql, binds })
     }
 
@@ -251,6 +252,7 @@ impl Renderer {
         &self,
         query: &QueryOperation,
         binds: &mut Vec<BindParameter>,
+        encode_spatial_output: bool,
     ) -> Result<String> {
         if query.projection.is_empty() {
             return Err(DatabaseError::invalid_plan("query senza projection"));
@@ -258,12 +260,26 @@ impl Renderer {
         let mut sql = String::new();
         if !query.common_table_expressions.is_empty() {
             sql.push_str("WITH ");
+            if query
+                .common_table_expressions
+                .iter()
+                .any(|cte| cte.recursive)
+            {
+                if self.dialect != Dialect::Postgres {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "CTE ricorsiva avanzata supportata solo dal renderer PostgreSQL",
+                    ));
+                }
+                sql.push_str("RECURSIVE ");
+            }
             let ctes = query
                 .common_table_expressions
                 .iter()
                 .map(|cte| {
                     let name = self.quote(&Identifier::new(cte.name.clone())?);
-                    let body = self.render_query_inner(&cte.query, binds)?;
+                    let body = self.render_query_inner(&cte.query, binds, false)?;
                     Ok(format!("{name} AS ({body})"))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -271,7 +287,23 @@ impl Renderer {
             sql.push(' ');
         }
         sql.push_str("SELECT ");
-        if query.distinct {
+        if !query.distinct_on.is_empty() {
+            if self.dialect != Dialect::Postgres {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "DISTINCT ON supportato solo da PostgreSQL",
+                ));
+            }
+            let expressions = query
+                .distinct_on
+                .iter()
+                .map(|expression| self.render_query_expression(expression, binds))
+                .collect::<Result<Vec<_>>>()?;
+            sql.push_str("DISTINCT ON (");
+            sql.push_str(&expressions.join(", "));
+            sql.push_str(") ");
+        } else if query.distinct {
             sql.push_str("DISTINCT ");
         }
         if self.dialect == Dialect::SqlServer {
@@ -290,6 +322,7 @@ impl Renderer {
                     &item.expression,
                     QueryExpression::Spatial { function, .. } if function.returns_geometry()
                 ) && self.dialect == Dialect::Postgres
+                    && encode_spatial_output
                 {
                     rendered = format!("ST_AsEWKB({rendered})");
                 }
@@ -302,7 +335,12 @@ impl Renderer {
             .collect::<Result<Vec<_>>>()?;
         sql.push_str(&projection.join(", "));
         sql.push_str(" FROM ");
-        sql.push_str(&self.render_query_source(&query.source)?);
+        sql.push_str(&self.render_query_relation(
+            query.source.as_ref(),
+            query.derived_source.as_ref(),
+            false,
+            binds,
+        )?);
         for join in &query.joins {
             let keyword = match join.kind {
                 JoinKind::Inner => " INNER JOIN ",
@@ -312,7 +350,12 @@ impl Renderer {
                 JoinKind::Cross => " CROSS JOIN ",
             };
             sql.push_str(keyword);
-            sql.push_str(&self.render_query_source(&join.source)?);
+            sql.push_str(&self.render_query_relation(
+                join.source.as_ref(),
+                join.derived_source.as_ref(),
+                join.lateral,
+                binds,
+            )?);
             if join.kind == JoinKind::Cross {
                 if join.on.is_some() {
                     return Err(DatabaseError::invalid_plan("CROSS JOIN con clausola ON"));
@@ -343,6 +386,24 @@ impl Renderer {
             sql.push_str(" HAVING ");
             sql.push_str(&self.render_query_expression(having, binds)?);
         }
+        for set_operation in &query.set_operations {
+            let operator = match set_operation.operator {
+                QuerySetOperator::Union => " UNION",
+                QuerySetOperator::Intersect => " INTERSECT",
+                QuerySetOperator::Except => " EXCEPT",
+            };
+            sql.push_str(operator);
+            if set_operation.all {
+                sql.push_str(" ALL");
+            }
+            sql.push_str(" (");
+            sql.push_str(&self.render_query_inner(
+                &set_operation.query,
+                binds,
+                encode_spatial_output,
+            )?);
+            sql.push(')');
+        }
         if !query.order_by.is_empty() {
             sql.push_str(" ORDER BY ");
             let ordering = query
@@ -366,11 +427,69 @@ impl Renderer {
                     sql.push_str(&limit.to_string());
                 }
                 Dialect::Oracle | Dialect::Db2 => {
-                    sql.push_str(" FETCH FIRST ");
-                    sql.push_str(&limit.to_string());
-                    sql.push_str(" ROWS ONLY");
+                    if query.row_offset.is_none() {
+                        sql.push_str(" FETCH FIRST ");
+                        sql.push_str(&limit.to_string());
+                        sql.push_str(" ROWS ONLY");
+                    }
                 }
                 Dialect::SqlServer => {}
+            }
+        }
+        if let Some(offset) = query.row_offset {
+            match self.dialect {
+                Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
+                    sql.push_str(" OFFSET ");
+                    sql.push_str(&offset.to_string());
+                }
+                Dialect::Oracle | Dialect::Db2 => {
+                    sql.push_str(" OFFSET ");
+                    sql.push_str(&offset.to_string());
+                    sql.push_str(" ROWS");
+                    if let Some(limit) = query.row_limit {
+                        sql.push_str(" FETCH NEXT ");
+                        sql.push_str(&limit.to_string());
+                        sql.push_str(" ROWS ONLY");
+                    }
+                }
+                Dialect::SqlServer => {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "OFFSET SQL Server richiede un piano dedicato",
+                    ));
+                }
+            }
+        }
+        if let Some(locking) = &query.locking {
+            if self.dialect != Dialect::Postgres {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "locking avanzato supportato solo da PostgreSQL",
+                ));
+            }
+            sql.push_str(match locking.strength {
+                QueryLockStrength::Update => " FOR UPDATE",
+                QueryLockStrength::NoKeyUpdate => " FOR NO KEY UPDATE",
+                QueryLockStrength::Share => " FOR SHARE",
+                QueryLockStrength::KeyShare => " FOR KEY SHARE",
+            });
+            if !locking.relations.is_empty() {
+                sql.push_str(" OF ");
+                let relations = locking
+                    .relations
+                    .iter()
+                    .map(|relation| {
+                        Identifier::new(relation.clone()).map(|identifier| self.quote(&identifier))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                sql.push_str(&relations.join(", "));
+            }
+            match locking.wait {
+                QueryLockWait::Wait => {}
+                QueryLockWait::NoWait => sql.push_str(" NOWAIT"),
+                QueryLockWait::SkipLocked => sql.push_str(" SKIP LOCKED"),
             }
         }
         Ok(sql)
@@ -399,12 +518,59 @@ impl Renderer {
         Ok(value)
     }
 
+    fn render_query_relation(
+        &self,
+        source: Option<&QuerySource>,
+        derived: Option<&QueryDerivedSource>,
+        lateral: bool,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        match (source, derived) {
+            (Some(source), None) => {
+                if lateral {
+                    return Err(DatabaseError::invalid_plan(
+                        "LATERAL richiede una subquery come source",
+                    ));
+                }
+                self.render_query_source(source)
+            }
+            (None, Some(derived)) => {
+                if lateral && self.dialect != Dialect::Postgres {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "LATERAL supportato solo dal renderer PostgreSQL",
+                    ));
+                }
+                let body = self.render_query_inner(&derived.query, binds, false)?;
+                let alias = self.quote(&Identifier::new(derived.alias.clone())?);
+                Ok(format!(
+                    "{}({body}) AS {alias}",
+                    if lateral { "LATERAL " } else { "" }
+                ))
+            }
+            _ => Err(DatabaseError::invalid_plan(
+                "query richiede una sola source, tabella o subquery",
+            )),
+        }
+    }
+
     fn render_query_expression(
         &self,
         expression: &QueryExpression,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
         match expression {
+            QueryExpression::Wildcard { relation } => {
+                if let Some(relation) = relation {
+                    Ok(format!(
+                        "{}.*",
+                        self.quote(&Identifier::new(relation.clone())?)
+                    ))
+                } else {
+                    Ok("*".to_owned())
+                }
+            }
             QueryExpression::Column { column } => {
                 let field = self.quote(&Identifier::new(column.field.clone())?);
                 if let Some(relation) = &column.relation {
@@ -425,6 +591,50 @@ impl Renderer {
                 function,
                 arguments,
             } => self.render_spatial_function(*function, arguments, binds),
+            QueryExpression::SpatialOperator {
+                operator,
+                left,
+                right,
+            } => self.render_spatial_operator(*operator, left, right, binds),
+            QueryExpression::Window {
+                function,
+                arguments,
+                partition_by,
+                order_by,
+                frame,
+            } => {
+                let call = self.render_function(scalar_name(*function), arguments, binds)?;
+                self.render_window_call(&call, partition_by, order_by, frame.as_ref(), binds)
+            }
+            QueryExpression::SpatialWindow {
+                function,
+                arguments,
+                partition_by,
+                order_by,
+                frame,
+            } => {
+                let call = self.render_spatial_function(*function, arguments, binds)?;
+                self.render_window_call(&call, partition_by, order_by, frame.as_ref(), binds)
+            }
+            QueryExpression::ScalarSubquery { query } => Ok(format!(
+                "({})",
+                self.render_query_inner(query, binds, false)?
+            )),
+            QueryExpression::Exists { query, negated } => Ok(format!(
+                "{}EXISTS ({})",
+                if *negated { "NOT " } else { "" },
+                self.render_query_inner(query, binds, false)?
+            )),
+            QueryExpression::InSubquery {
+                expression,
+                query,
+                negated,
+            } => Ok(format!(
+                "{} {}IN ({})",
+                self.render_query_expression(expression, binds)?,
+                if *negated { "NOT " } else { "" },
+                self.render_query_inner(query, binds, false)?
+            )),
             QueryExpression::Compare {
                 left,
                 operator,
@@ -448,6 +658,79 @@ impl Renderer {
                 if *negated { "NOT " } else { "" }
             )),
         }
+    }
+
+    fn render_spatial_operator(
+        &self,
+        operator: SpatialOperator,
+        left: &QueryExpression,
+        right: &QueryExpression,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        if self.dialect != Dialect::Postgres {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "operatori spatial indicizzati supportati solo da PostgreSQL/PostGIS",
+            ));
+        }
+        let operand = |renderer: &Self,
+                       expression: &QueryExpression,
+                       binds: &mut Vec<BindParameter>|
+         -> Result<String> {
+            let value = renderer.render_query_expression(expression, binds)?;
+            if matches!(expression, QueryExpression::Parameter { .. }) {
+                Ok(format!("ST_GeomFromEWKB({value})"))
+            } else {
+                Ok(value)
+            }
+        };
+        let left = operand(self, left, binds)?;
+        let right = operand(self, right, binds)?;
+        let symbol = match operator {
+            SpatialOperator::BoundingBoxIntersects => "&&",
+            SpatialOperator::BoundingBoxContains => "~",
+            SpatialOperator::BoundingBoxContainedBy => "@",
+            SpatialOperator::KnnDistance => "<->",
+            SpatialOperator::KnnCentroidDistance => "<<->>",
+        };
+        Ok(format!("{left} {symbol} {right}"))
+    }
+
+    fn render_window_call(
+        &self,
+        call: &str,
+        partition_by: &[QueryExpression],
+        order_by: &[plenora_database_core::query::QueryOrdering],
+        frame: Option<&WindowFrame>,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let mut clauses = Vec::new();
+        if !partition_by.is_empty() {
+            let partition = partition_by
+                .iter()
+                .map(|item| self.render_query_expression(item, binds))
+                .collect::<Result<Vec<_>>>()?;
+            clauses.push(format!("PARTITION BY {}", partition.join(", ")));
+        }
+        if !order_by.is_empty() {
+            let ordering = order_by
+                .iter()
+                .map(|item| {
+                    let expression = self.render_query_expression(&item.expression, binds)?;
+                    let direction = match item.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    };
+                    Ok(format!("{expression} {direction}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            clauses.push(format!("ORDER BY {}", ordering.join(", ")));
+        }
+        if let Some(frame) = frame {
+            clauses.push(render_window_frame(frame));
+        }
+        Ok(format!("{call} OVER ({})", clauses.join(" ")))
     }
 
     fn render_function(
@@ -673,16 +956,8 @@ impl Renderer {
             ));
         }
         let quoted = self.quote(field);
-        if matches!(
-            function,
-            SpatialFunction::IsEmpty | SpatialFunction::IsValid
-        ) {
-            let name = if function == SpatialFunction::IsEmpty {
-                "ST_IsEmpty"
-            } else {
-                "ST_IsValid"
-            };
-            return Ok(format!("{name}({quoted})"));
+        if function.is_unary_predicate() {
+            return Ok(format!("{}({quoted})", spatial_name(function)));
         }
         let geometry_name = geometry_parameter.ok_or_else(|| {
             DatabaseError::invalid_plan("predicato spatial senza parametro geometria")
@@ -695,23 +970,14 @@ impl Renderer {
             let distance = self.bind(distance_name, binds);
             return Ok(format!("ST_DWithin({quoted}, {right}, {distance})"));
         }
-        let name = match function {
-            SpatialFunction::Intersects => "ST_Intersects",
-            SpatialFunction::Contains => "ST_Contains",
-            SpatialFunction::Within => "ST_Within",
-            SpatialFunction::Covers => "ST_Covers",
-            SpatialFunction::Touches => "ST_Touches",
-            SpatialFunction::Crosses => "ST_Crosses",
-            SpatialFunction::Overlaps => "ST_Overlaps",
-            SpatialFunction::Disjoint => "ST_Disjoint",
-            _ => {
-                return Err(DatabaseError::unsupported(
-                    self.provider_kind(),
-                    ErrorPhase::Prepare,
-                    "funzione spatial non valida come filtro",
-                ));
-            }
-        };
+        if !function.is_binary_predicate() {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "funzione spatial non valida come filtro",
+            ));
+        }
+        let name = spatial_name(function);
         Ok(format!("{name}({quoted}, {right})"))
     }
 
@@ -809,31 +1075,35 @@ const fn scalar_name(function: ScalarFunction) -> &'static str {
         ScalarFunction::Average => "AVG",
         ScalarFunction::Minimum => "MIN",
         ScalarFunction::Maximum => "MAX",
+        ScalarFunction::RowNumber => "ROW_NUMBER",
+        ScalarFunction::Rank => "RANK",
+        ScalarFunction::DenseRank => "DENSE_RANK",
+        ScalarFunction::Lag => "LAG",
+        ScalarFunction::Lead => "LEAD",
     }
 }
 
+fn render_window_frame(frame: &WindowFrame) -> String {
+    let units = match frame.units {
+        WindowFrameUnits::Rows => "ROWS",
+        WindowFrameUnits::Range => "RANGE",
+        WindowFrameUnits::Groups => "GROUPS",
+    };
+    let bound = |value: &WindowFrameBound| match value {
+        WindowFrameBound::UnboundedPreceding => "UNBOUNDED PRECEDING".to_owned(),
+        WindowFrameBound::Preceding(offset) => format!("{offset} PRECEDING"),
+        WindowFrameBound::CurrentRow => "CURRENT ROW".to_owned(),
+        WindowFrameBound::Following(offset) => format!("{offset} FOLLOWING"),
+        WindowFrameBound::UnboundedFollowing => "UNBOUNDED FOLLOWING".to_owned(),
+    };
+    frame.end.as_ref().map_or_else(
+        || format!("{units} {}", bound(&frame.start)),
+        |end| format!("{units} BETWEEN {} AND {}", bound(&frame.start), bound(end)),
+    )
+}
+
 const fn spatial_geometry_argument(function: SpatialFunction, index: usize) -> bool {
-    if index == 0 {
-        return true;
-    }
-    index == 1
-        && matches!(
-            function,
-            SpatialFunction::Intersects
-                | SpatialFunction::Contains
-                | SpatialFunction::Within
-                | SpatialFunction::Covers
-                | SpatialFunction::Touches
-                | SpatialFunction::Crosses
-                | SpatialFunction::Overlaps
-                | SpatialFunction::Disjoint
-                | SpatialFunction::DWithin
-                | SpatialFunction::Intersection
-                | SpatialFunction::Difference
-                | SpatialFunction::Union
-                | SpatialFunction::Distance
-                | SpatialFunction::Collect
-        )
+    function.takes_geometry_at(index)
 }
 
 const fn spatial_name(function: SpatialFunction) -> &'static str {
@@ -841,32 +1111,75 @@ const fn spatial_name(function: SpatialFunction) -> &'static str {
         SpatialFunction::GeometryType => "ST_GeometryType",
         SpatialFunction::Srid => "ST_SRID",
         SpatialFunction::Dimensions => "ST_NDims",
+        SpatialFunction::X => "ST_X",
+        SpatialFunction::Y => "ST_Y",
+        SpatialFunction::Z => "ST_Z",
+        SpatialFunction::M => "ST_M",
+        SpatialFunction::NPoints => "ST_NPoints",
+        SpatialFunction::NRings => "ST_NRings",
+        SpatialFunction::StartPoint => "ST_StartPoint",
+        SpatialFunction::EndPoint => "ST_EndPoint",
+        SpatialFunction::PointN => "ST_PointN",
         SpatialFunction::IsEmpty => "ST_IsEmpty",
         SpatialFunction::IsValid => "ST_IsValid",
+        SpatialFunction::IsSimple => "ST_IsSimple",
+        SpatialFunction::IsClosed => "ST_IsClosed",
         SpatialFunction::Intersects => "ST_Intersects",
         SpatialFunction::Contains => "ST_Contains",
+        SpatialFunction::ContainsProperly => "ST_ContainsProperly",
         SpatialFunction::Within => "ST_Within",
         SpatialFunction::Covers => "ST_Covers",
+        SpatialFunction::CoveredBy => "ST_CoveredBy",
         SpatialFunction::Touches => "ST_Touches",
         SpatialFunction::Crosses => "ST_Crosses",
         SpatialFunction::Overlaps => "ST_Overlaps",
         SpatialFunction::Disjoint => "ST_Disjoint",
+        SpatialFunction::Equals => "ST_Equals",
+        SpatialFunction::Relate => "ST_Relate",
         SpatialFunction::DWithin => "ST_DWithin",
+        SpatialFunction::SetSrid => "ST_SetSRID",
         SpatialFunction::Transform => "ST_Transform",
+        SpatialFunction::Force2d => "ST_Force2D",
+        SpatialFunction::Force3d => "ST_Force3D",
+        SpatialFunction::Force3dm => "ST_Force3DM",
+        SpatialFunction::Force4d => "ST_Force4D",
         SpatialFunction::Buffer => "ST_Buffer",
+        SpatialFunction::OffsetCurve => "ST_OffsetCurve",
         SpatialFunction::Intersection => "ST_Intersection",
         SpatialFunction::Difference => "ST_Difference",
+        SpatialFunction::SymDifference => "ST_SymDifference",
         SpatialFunction::Union => "ST_Union",
+        SpatialFunction::UnaryUnion => "ST_UnaryUnion",
         SpatialFunction::Simplify => "ST_Simplify",
+        SpatialFunction::SimplifyPreserveTopology => "ST_SimplifyPreserveTopology",
         SpatialFunction::MakeValid => "ST_MakeValid",
         SpatialFunction::Centroid => "ST_Centroid",
+        SpatialFunction::PointOnSurface => "ST_PointOnSurface",
         SpatialFunction::Envelope => "ST_Envelope",
+        SpatialFunction::ConvexHull => "ST_ConvexHull",
+        SpatialFunction::OrientedEnvelope => "ST_OrientedEnvelope",
+        SpatialFunction::Boundary => "ST_Boundary",
+        SpatialFunction::LineMerge => "ST_LineMerge",
+        SpatialFunction::Reverse => "ST_Reverse",
+        SpatialFunction::Subdivide => "ST_Subdivide",
+        SpatialFunction::SnapToGrid => "ST_SnapToGrid",
         SpatialFunction::Distance => "ST_Distance",
+        SpatialFunction::Distance3d => "ST_3DDistance",
+        SpatialFunction::MaxDistance => "ST_MaxDistance",
+        SpatialFunction::HausdorffDistance => "ST_HausdorffDistance",
+        SpatialFunction::FrechetDistance => "ST_FrechetDistance",
+        SpatialFunction::Azimuth => "ST_Azimuth",
         SpatialFunction::Area => "ST_Area",
         SpatialFunction::Length => "ST_Length",
         SpatialFunction::Perimeter => "ST_Perimeter",
         SpatialFunction::Collect => "ST_Collect",
         SpatialFunction::Extent => "ST_Extent",
+        SpatialFunction::AsGeoJson => "ST_AsGeoJSON",
+        SpatialFunction::AsMvtGeom => "ST_AsMVTGeom",
+        SpatialFunction::AsMvt => "ST_AsMVT",
+        SpatialFunction::AsGeobuf => "ST_AsGeobuf",
+        SpatialFunction::ClusterDbscan => "ST_ClusterDBSCAN",
+        SpatialFunction::ClusterKMeans => "ST_ClusterKMeans",
     }
 }
 
@@ -875,7 +1188,8 @@ mod tests {
     use super::*;
     use plenora_database_core::plan::ObjectRef;
     use plenora_database_core::query::{
-        ColumnRef, CommonTableExpression, QueryJoin, QueryOrdering, QueryProjection,
+        ColumnRef, CommonTableExpression, QueryJoin, QueryLock, QueryOrdering, QueryProjection,
+        QuerySetOperation,
     };
 
     fn identifier(value: &str) -> Identifier {
@@ -938,6 +1252,21 @@ mod tests {
         );
         assert_eq!(rendered.binds[0].name, "secret_value");
         assert!(!rendered.sql.contains("secret_value"));
+    }
+
+    #[test]
+    fn postgres_spatial_renderer_matches_the_versioned_catalog() {
+        let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
+            .expect("embedded spatial catalog");
+        assert_eq!(SpatialFunction::ALL.len(), catalog.functions.len());
+        for (function, specification) in SpatialFunction::ALL.iter().zip(&catalog.functions) {
+            assert_eq!(
+                spatial_name(*function),
+                specification.postgres,
+                "{}",
+                specification.id
+            );
+        }
     }
 
     #[test]
@@ -1013,7 +1342,8 @@ mod tests {
     fn postgres_query_ast_wraps_spatial_wkb_parameters() {
         let query = QueryOperation {
             common_table_expressions: Vec::new(),
-            source: query_source("events", "e"),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
             projection: vec![QueryProjection {
                 expression: query_column("e", "id"),
                 alias: None,
@@ -1035,7 +1365,11 @@ mod tests {
             having: None,
             order_by: Vec::new(),
             distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: Some(10),
+            row_offset: None,
+            locking: None,
         };
         let rendered = Renderer::new(
             Dialect::Postgres,
@@ -1056,7 +1390,8 @@ mod tests {
     fn query_ast_limit_uses_each_dialect_syntax() {
         let query = QueryOperation {
             common_table_expressions: Vec::new(),
-            source: query_source("events", "e"),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
             projection: vec![QueryProjection {
                 expression: query_column("e", "id"),
                 alias: None,
@@ -1067,7 +1402,11 @@ mod tests {
             having: None,
             order_by: Vec::new(),
             distinct: true,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: Some(7),
+            row_offset: None,
+            locking: None,
         };
         for (dialect, expected) in [
             (Dialect::Postgres, " LIMIT 7"),
@@ -1136,6 +1475,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn query_ast_renders_cte_join_group_having_and_stable_binds() {
         let count_id = QueryExpression::Scalar {
             function: ScalarFunction::Count,
@@ -1143,7 +1483,8 @@ mod tests {
         };
         let cte = QueryOperation {
             common_table_expressions: Vec::new(),
-            source: query_source("events", "e"),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
             projection: vec![
                 QueryProjection {
                     expression: query_column("e", "id"),
@@ -1166,14 +1507,20 @@ mod tests {
             having: None,
             order_by: Vec::new(),
             distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: None,
+            row_offset: None,
+            locking: None,
         };
         let query = QueryOperation {
             common_table_expressions: vec![CommonTableExpression {
                 name: "filtered".to_owned(),
+                recursive: false,
                 query: Box::new(cte),
             }],
-            source: query_source("filtered", "f"),
+            source: Some(query_source("filtered", "f")),
+            derived_source: None,
             projection: vec![
                 QueryProjection {
                     expression: query_column("o", "name"),
@@ -1186,7 +1533,9 @@ mod tests {
             ],
             joins: vec![QueryJoin {
                 kind: JoinKind::Inner,
-                source: query_source("owners", "o"),
+                source: Some(query_source("owners", "o")),
+                derived_source: None,
+                lateral: false,
                 on: Some(QueryExpression::Compare {
                     left: Box::new(query_column("f", "owner_id")),
                     operator: ComparisonOperator::Eq,
@@ -1207,7 +1556,11 @@ mod tests {
                 direction: SortDirection::Desc,
             }],
             distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: Some(25),
+            row_offset: None,
+            locking: None,
         };
         let rendered = Renderer::new(
             Dialect::Postgres,
@@ -1229,5 +1582,330 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["minimum_id", "minimum_count"]
         );
+    }
+
+    #[test]
+    fn postgres_renders_index_aware_spatial_query() {
+        let query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("e", "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: Some(QueryExpression::SpatialOperator {
+                operator: SpatialOperator::BoundingBoxIntersects,
+                left: Box::new(query_column("e", "geom")),
+                right: Box::new(QueryExpression::Parameter {
+                    name: "probe".to_owned(),
+                }),
+            }),
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: QueryExpression::SpatialOperator {
+                    operator: SpatialOperator::KnnDistance,
+                    left: Box::new(query_column("e", "geom")),
+                    right: Box::new(QueryExpression::Parameter {
+                        name: "probe".to_owned(),
+                    }),
+                },
+                direction: SortDirection::Asc,
+            }],
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(5),
+            row_offset: None,
+            locking: None,
+        };
+        let rendered = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("index-aware spatial query");
+        assert!(rendered
+            .sql
+            .contains("\"e\".\"geom\" && ST_GeomFromEWKB($1)"));
+        assert!(rendered
+            .sql
+            .contains("\"e\".\"geom\" <-> ST_GeomFromEWKB($2) ASC"));
+        assert_eq!(
+            rendered
+                .binds
+                .iter()
+                .map(|bind| bind.name.as_str())
+                .collect::<Vec<_>>(),
+            ["probe", "probe"]
+        );
+    }
+
+    #[test]
+    fn postgres_renders_spatial_clustering_as_a_window() {
+        let query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::SpatialWindow {
+                    function: SpatialFunction::ClusterDbscan,
+                    arguments: vec![
+                        query_column("e", "geom"),
+                        QueryExpression::Parameter {
+                            name: "epsilon".to_owned(),
+                        },
+                        QueryExpression::Parameter {
+                            name: "minimum_points".to_owned(),
+                        },
+                    ],
+                    partition_by: vec![query_column("e", "region_id")],
+                    order_by: Vec::new(),
+                    frame: None,
+                },
+                alias: Some("cluster_id".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("spatial clustering")
+        .sql;
+        assert!(sql.contains(
+            "ST_ClusterDBSCAN(\"e\".\"geom\", $1, $2) OVER \
+             (PARTITION BY \"e\".\"region_id\")"
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn postgres_renders_derived_window_lateral_pagination_and_locking() {
+        let inner = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("e", "id"),
+                alias: Some("id".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let lateral = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("details", "x")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("x", "event_id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: Some(QueryExpression::Compare {
+                left: Box::new(query_column("x", "event_id")),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(query_column("d", "id")),
+            }),
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        let query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: None,
+            derived_source: Some(QueryDerivedSource {
+                query: Box::new(inner),
+                alias: "d".to_owned(),
+            }),
+            projection: vec![
+                QueryProjection {
+                    expression: query_column("d", "id"),
+                    alias: None,
+                },
+                QueryProjection {
+                    expression: QueryExpression::Window {
+                        function: ScalarFunction::RowNumber,
+                        arguments: Vec::new(),
+                        partition_by: Vec::new(),
+                        order_by: vec![QueryOrdering {
+                            expression: query_column("d", "id"),
+                            direction: SortDirection::Asc,
+                        }],
+                        frame: None,
+                    },
+                    alias: Some("ordinal".to_owned()),
+                },
+            ],
+            joins: vec![QueryJoin {
+                kind: JoinKind::Cross,
+                source: None,
+                derived_source: Some(QueryDerivedSource {
+                    query: Box::new(lateral),
+                    alias: "latest".to_owned(),
+                }),
+                lateral: true,
+                on: None,
+            }],
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: query_column("d", "id"),
+                direction: SortDirection::Asc,
+            }],
+            distinct: false,
+            distinct_on: vec![query_column("d", "id")],
+            set_operations: Vec::new(),
+            row_limit: Some(10),
+            row_offset: Some(5),
+            locking: None,
+        };
+        let sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("advanced PostgreSQL query")
+        .sql;
+        assert!(sql.contains("DISTINCT ON (\"d\".\"id\")"));
+        assert!(sql.contains("ROW_NUMBER() OVER (ORDER BY \"d\".\"id\" ASC)"));
+        assert!(sql.contains("CROSS JOIN LATERAL (SELECT"));
+        assert!(sql.ends_with("LIMIT 10 OFFSET 5"));
+
+        let mut locking_query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("e", "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        locking_query.locking = Some(QueryLock {
+            strength: QueryLockStrength::Share,
+            relations: vec!["e".to_owned()],
+            wait: QueryLockWait::SkipLocked,
+        });
+        let locking_sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&locking_query)
+        .expect("locking PostgreSQL query")
+        .sql;
+        assert!(locking_sql.ends_with("LIMIT 1 FOR SHARE OF \"e\" SKIP LOCKED"));
+    }
+
+    #[test]
+    fn postgres_renders_set_operations_and_recursive_cte() {
+        let leaf = |table: &str, alias: &str| QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source(table, alias)),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column(alias, "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let mut cte_body = leaf("roots", "r");
+        cte_body.set_operations.push(QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: true,
+            query: Box::new(leaf("tree", "t")),
+        });
+        let query = QueryOperation {
+            common_table_expressions: vec![CommonTableExpression {
+                name: "tree".to_owned(),
+                recursive: true,
+                query: Box::new(cte_body),
+            }],
+            source: Some(query_source("tree", "result")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("result", "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("recursive CTE")
+        .sql;
+        assert!(sql.starts_with("WITH RECURSIVE \"tree\" AS ("));
+        assert!(sql.contains(" UNION ALL (SELECT "));
     }
 }

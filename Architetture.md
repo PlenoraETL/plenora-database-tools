@@ -1119,12 +1119,16 @@ non un generico “supporta Oracle” o “supporta MySQL”.
 - transazioni, cancellazione e recovery;
 - benchmark e confronto con backend.
 
-Stato del riferimento v3:
+Stato del riferimento PostgreSQL/PostGIS avanzato:
 
-- `QueryOperation` copre CTE, join, aggregate, group-by e having;
+- `QueryOperation` copre CTE ricorsive, derived table, join/lateral,
+  `DISTINCT ON`, subquery, aggregate, group-by/having, window, set operation,
+  offset/limit e locking;
 - pool condiviso bounded con reset sessione e timeout di acquisizione;
 - COPY text e binario, più percorso prepared;
-- catalogo avanzato per relation, partizioni, viste, constraint e indici;
+- catalogo strutturale per relation, partizioni, viste/materialized view,
+  enum/domain/collation, constraint, indici/opclass/include/predicati, RLS,
+  ACL, owner e tablespace;
 - `PostgresSchemaToken` con OID e fingerprint strutturale, cache LRU bounded e
   validazione catalogo su ogni hit;
 - protocollo one-shot tipizzato per read senza bind e filtri parametrizzati
@@ -1134,10 +1138,16 @@ Stato del riferimento v3:
   prepared se PostgreSQL rifiuta i tipi canonici;
 - validazione iterativa e bounded dell'AST relazionale prima di qualunque
   rendering ricorsivo;
+- 72 funzioni PostGIS tipizzate e operatori bounding-box/KNN indicizzabili,
+  senza frammenti SQL utente;
+- EWKB fail-closed e metadata GeoArrow per XY/XYZ/XYM/XYZM, curve, surface,
+  collection, TIN e geography;
 - Arrow nativo per array scalari, `TIME`, `INTERVAL`, range e composite;
 - cancellazione server-side read/write, keepalive e sessioni incerte escluse
   dal pool;
 - evoluzione schema opt-in limitata a nuove colonne nullable transazionali.
+- safety case hazard→invariante→prova e gate dedicato al piano GiST/KNN;
+  il profilo non equivale a una certificazione aeronautica.
 
 PostgreSQL è il driver pilota, non il luogo in cui inserire assunzioni comuni.
 

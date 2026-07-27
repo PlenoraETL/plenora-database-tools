@@ -21,11 +21,13 @@ contratti Arrow/GeoArrow-WKB, limiti, mapping, osservabilità e outcome.
 
 La preparazione offline della Fase 0 e la Fase 1 sono eseguibili.
 PostgreSQL 16/PostGIS 3.4 è il driver di riferimento read/write/spatial:
-il data path v3 include QueryOperation, pool bounded, cancellazione server-side,
-COPY text/binario, introspezione avanzata, schema evolution additiva e mapping
-PostgreSQL strutturati. Passa il gate live, la
-fault matrix e il benchmark differenziale COPY text/binario/prepared. Gli
-altri provider richiedono target concordati.
+il profilo avanzato include AST relazionale e spatial bounded, 72 funzioni
+PostGIS tipizzate, operatori GiST/KNN, geometrie XY/XYZ/XYM/XYZM, pool bounded,
+cancellazione server-side, COPY text/binario, introspezione strutturale e
+schema evolution additiva. Passa gate live, fault matrix e benchmark
+differenziali. Il relativo safety case rende esplicite prove, assunzioni e
+rischi residui; non costituisce certificazione aeronautica. Gli altri provider
+richiedono target concordati.
 
 Documenti principali:
 
@@ -35,6 +37,7 @@ Documenti principali:
 - [stato Fase 1 Rust](docs/phase-1/README.md);
 - [driver PostgreSQL/PostGIS](docs/postgres/README.md);
 - [hardening PostgreSQL/PostGIS](docs/postgres/HARDENING.md);
+- [safety case PostgreSQL/PostGIS](docs/postgres/SAFETY-CASE.md);
 - [compatibilità PostgreSQL/PostGIS](docs/postgres/COMPATIBILITY.md);
 - [campagna prestazionale PostgreSQL/PostGIS](docs/postgres/PERFORMANCE.md);
 - [decisioni che richiedono i target](docs/phase-0/open-decisions.md);

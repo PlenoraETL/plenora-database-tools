@@ -1087,7 +1087,26 @@ impl PostgresProvider {
                     d.oid::bigint AS database_oid,
                     n.oid::bigint AS namespace_oid,
                     c.oid::bigint AS relation_oid,
-                    signature.structural_signature
+                    signature.structural_signature,
+                    CASE WHEN t.typtype = 'e' THEN (
+                        SELECT jsonb_agg(e.enumlabel ORDER BY e.enumsortorder)::text
+                        FROM pg_catalog.pg_enum e
+                        WHERE e.enumtypid = t.oid
+                    ) END AS enum_labels,
+                    CASE WHEN t.typtype = 'd'
+                         THEN format_type(t.typbasetype, t.typtypmod)
+                    END AS domain_base_type,
+                    CASE WHEN t.typtype = 'd' THEN (
+                        SELECT jsonb_agg(
+                            pg_get_constraintdef(dc.oid, true)
+                            ORDER BY dc.conname
+                        )::text
+                        FROM pg_catalog.pg_constraint dc
+                        WHERE dc.contypid = t.oid
+                    ) END AS domain_constraints,
+                    CASE WHEN a.attcollation <> t.typcollation
+                         THEN coll.collname
+                    END AS collation
                 FROM pg_catalog.pg_attribute a
                 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -1095,6 +1114,7 @@ impl PostgresProvider {
                 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
                 LEFT JOIN pg_catalog.pg_attrdef ad
                   ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+                LEFT JOIN pg_catalog.pg_collation coll ON coll.oid = a.attcollation
                 CROSS JOIN LATERAL (
                     SELECT jsonb_build_object(
                         'relation',
@@ -1110,11 +1130,36 @@ impl PostgresProvider {
                                     sa.attnotnull,
                                     sa.attidentity,
                                     sa.attgenerated,
+                                    sa.attcollation::text,
                                     sa.xmin::text,
                                     st.typname,
                                     st.typtype,
                                     st.xmin::text,
                                     pg_get_expr(sad.adbin, sad.adrelid),
+                                    CASE WHEN st.typtype = 'e' THEN (
+                                        SELECT jsonb_agg(
+                                            jsonb_build_array(
+                                                se.enumlabel,
+                                                se.enumsortorder,
+                                                se.xmin::text
+                                            )
+                                            ORDER BY se.enumsortorder
+                                        )
+                                        FROM pg_catalog.pg_enum se
+                                        WHERE se.enumtypid = st.oid
+                                    ) END,
+                                    CASE WHEN st.typtype = 'd' THEN (
+                                        SELECT jsonb_agg(
+                                            jsonb_build_array(
+                                                sdc.conname,
+                                                sdc.xmin::text,
+                                                pg_get_constraintdef(sdc.oid, true)
+                                            )
+                                            ORDER BY sdc.conname
+                                        )
+                                        FROM pg_catalog.pg_constraint sdc
+                                        WHERE sdc.contypid = st.oid
+                                    ) END,
                                     CASE WHEN st.typtype = 'c' THEN (
                                         SELECT jsonb_agg(
                                             jsonb_build_array(
@@ -1172,6 +1217,7 @@ impl PostgresProvider {
         Ok((columns, token))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn schema_token(client: &Client, source: &ObjectRef) -> Result<CatalogSchemaToken> {
         let schema = source.schema.as_deref().unwrap_or("public");
         let row = client
@@ -1195,11 +1241,36 @@ impl PostgresProvider {
                                     a.attnotnull,
                                     a.attidentity,
                                     a.attgenerated,
+                                    a.attcollation::text,
                                     a.xmin::text,
                                     t.typname,
                                     t.typtype,
                                     t.xmin::text,
                                     pg_get_expr(ad.adbin, ad.adrelid),
+                                    CASE WHEN t.typtype = 'e' THEN (
+                                        SELECT jsonb_agg(
+                                            jsonb_build_array(
+                                                e.enumlabel,
+                                                e.enumsortorder,
+                                                e.xmin::text
+                                            )
+                                            ORDER BY e.enumsortorder
+                                        )
+                                        FROM pg_catalog.pg_enum e
+                                        WHERE e.enumtypid = t.oid
+                                    ) END,
+                                    CASE WHEN t.typtype = 'd' THEN (
+                                        SELECT jsonb_agg(
+                                            jsonb_build_array(
+                                                dc.conname,
+                                                dc.xmin::text,
+                                                pg_get_constraintdef(dc.oid, true)
+                                            )
+                                            ORDER BY dc.conname
+                                        )
+                                        FROM pg_catalog.pg_constraint dc
+                                        WHERE dc.contypid = t.oid
+                                    ) END,
                                     CASE WHEN t.typtype = 'c' THEN (
                                         SELECT jsonb_agg(
                                             jsonb_build_array(
@@ -1344,7 +1415,7 @@ impl PostgresProvider {
             reads: ReadCapabilities {
                 streaming: true,
                 server_cursor: true,
-                pagination: false,
+                pagination: true,
                 object_id_windows: false,
                 projection: true,
                 filter: true,
@@ -1486,7 +1557,9 @@ impl PostgresProvider {
                         "schema_token": schema_token,
                         "relation": metadata.relation,
                         "constraints": metadata.constraints,
-                        "indexes": metadata.indexes
+                        "indexes": metadata.indexes,
+                        "policies": metadata.policies,
+                        "privileges": metadata.privileges
                     }),
                 })
             }
@@ -2134,8 +2207,11 @@ struct ObjectMetadata {
     relation: serde_json::Value,
     constraints: Vec<serde_json::Value>,
     indexes: Vec<serde_json::Value>,
+    policies: Vec<serde_json::Value>,
+    privileges: Vec<serde_json::Value>,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result<ObjectMetadata> {
     let schema = source.schema.as_deref().unwrap_or("public");
     let relation = client
@@ -2146,9 +2222,45 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
                 c.relispartition,
                 pg_get_partkeydef(c.oid),
                 CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END,
-                obj_description(c.oid, 'pg_class')
+                obj_description(c.oid, 'pg_class'),
+                c.relrowsecurity,
+                c.relforcerowsecurity,
+                c.relreplident::text,
+                c.relpersistence::text,
+                c.relispopulated,
+                pg_get_expr(c.relpartbound, c.oid, true),
+                pg_get_userbyid(c.relowner),
+                COALESCE(ts.spcname, current_setting('default_tablespace')),
+                (
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'schema', pn.nspname,
+                            'name', pc.relname
+                        )
+                        ORDER BY pn.nspname, pc.relname
+                    )::text
+                    FROM pg_catalog.pg_inherits inh
+                    JOIN pg_catalog.pg_class pc ON pc.oid = inh.inhparent
+                    JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace
+                    WHERE inh.inhrelid = c.oid
+                ),
+                (
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'schema', cn.nspname,
+                            'name', cc.relname,
+                            'bound', pg_get_expr(cc.relpartbound, cc.oid, true)
+                        )
+                        ORDER BY cn.nspname, cc.relname
+                    )::text
+                    FROM pg_catalog.pg_inherits inh
+                    JOIN pg_catalog.pg_class cc ON cc.oid = inh.inhrelid
+                    JOIN pg_catalog.pg_namespace cn ON cn.oid = cc.relnamespace
+                    WHERE inh.inhparent = c.oid
+                )
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_catalog.pg_tablespace ts ON ts.oid = c.reltablespace
             WHERE n.nspname = $1 AND c.relname = $2
             ",
             &[&schema, &source.object],
@@ -2160,7 +2272,17 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
         "is_partition": relation.get::<_, bool>(1),
         "partition_key": relation.get::<_, Option<String>>(2),
         "view_definition": relation.get::<_, Option<String>>(3),
-        "comment": relation.get::<_, Option<String>>(4)
+        "comment": relation.get::<_, Option<String>>(4),
+        "row_security": relation.get::<_, bool>(5),
+        "force_row_security": relation.get::<_, bool>(6),
+        "replica_identity": replica_identity(&relation.get::<_, String>(7)),
+        "persistence": relation_persistence(&relation.get::<_, String>(8)),
+        "is_populated": relation.get::<_, bool>(9),
+        "partition_bound": relation.get::<_, Option<String>>(10),
+        "owner": relation.get::<_, String>(11),
+        "tablespace": relation.get::<_, String>(12),
+        "parents": parse_json_array(relation.get::<_, Option<String>>(13))?,
+        "partitions": parse_json_array(relation.get::<_, Option<String>>(14))?
     });
     let constraint_rows = client
         .query(
@@ -2171,10 +2293,29 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
                 pg_get_constraintdef(con.oid, true),
                 con.convalidated,
                 con.condeferrable,
-                con.condeferred
+                con.condeferred,
+                (
+                    SELECT jsonb_agg(a.attname ORDER BY key.ordinality)::text
+                    FROM unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinality)
+                    JOIN pg_catalog.pg_attribute a
+                      ON a.attrelid = con.conrelid AND a.attnum = key.attnum
+                ),
+                rn.nspname,
+                rc.relname,
+                (
+                    SELECT jsonb_agg(a.attname ORDER BY key.ordinality)::text
+                    FROM unnest(con.confkey) WITH ORDINALITY AS key(attnum, ordinality)
+                    JOIN pg_catalog.pg_attribute a
+                      ON a.attrelid = con.confrelid AND a.attnum = key.attnum
+                ),
+                con.confupdtype::text,
+                con.confdeltype::text,
+                con.confmatchtype::text
             FROM pg_catalog.pg_constraint con
             JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_catalog.pg_class rc ON rc.oid = con.confrelid
+            LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace
             WHERE n.nspname = $1 AND c.relname = $2
             ORDER BY con.conname
             ",
@@ -2185,16 +2326,23 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
     let constraints = constraint_rows
         .iter()
         .map(|row| {
-            json!({
+            Ok(json!({
                 "name": row.get::<_, String>(0),
                 "kind": constraint_kind(&row.get::<_, String>(1)),
                 "definition": row.get::<_, String>(2),
                 "validated": row.get::<_, bool>(3),
                 "deferrable": row.get::<_, bool>(4),
-                "initially_deferred": row.get::<_, bool>(5)
-            })
+                "initially_deferred": row.get::<_, bool>(5),
+                "columns": parse_json_array(row.get::<_, Option<String>>(6))?,
+                "referenced_schema": row.get::<_, Option<String>>(7),
+                "referenced_object": row.get::<_, Option<String>>(8),
+                "referenced_columns": parse_json_array(row.get::<_, Option<String>>(9))?,
+                "on_update": foreign_key_action(&row.get::<_, String>(10)),
+                "on_delete": foreign_key_action(&row.get::<_, String>(11)),
+                "match": foreign_key_match(&row.get::<_, String>(12))
+            }))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let index_rows = client
         .query(
             r"
@@ -2204,7 +2352,37 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
                 ix.indisunique,
                 ix.indisvalid,
                 am.amname,
-                pg_get_indexdef(i.oid)
+                pg_get_indexdef(i.oid),
+                ix.indisready,
+                ix.indisclustered,
+                pg_get_expr(ix.indpred, ix.indrelid, true),
+                pg_relation_size(i.oid)::bigint,
+                (
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'position', keys.ordinality,
+                            'expression', pg_get_indexdef(
+                                ix.indexrelid,
+                                keys.ordinality::integer,
+                                true
+                            ),
+                            'opclass', opc.opcname,
+                            'included', keys.ordinality > ix.indnkeyatts
+                        )
+                        ORDER BY keys.ordinality
+                    )::text
+                    FROM unnest(ix.indclass) WITH ORDINALITY
+                        AS keys(opclass_oid, ordinality)
+                    JOIN pg_catalog.pg_opclass opc ON opc.oid = keys.opclass_oid
+                ),
+                EXISTS (
+                    SELECT 1
+                    FROM unnest(ix.indclass) AS opclass_oid
+                    JOIN pg_catalog.pg_opclass opc ON opc.oid = opclass_oid
+                    WHERE opc.opcname ILIKE ANY (
+                        ARRAY['%geometry%', '%geography%', '%box2d%', '%box3d%']
+                    )
+                )
             FROM pg_catalog.pg_index ix
             JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid
             JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
@@ -2220,13 +2398,92 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
     let indexes = index_rows
         .iter()
         .map(|row| {
-            json!({
+            Ok(json!({
                 "name": row.get::<_, String>(0),
                 "primary": row.get::<_, bool>(1),
                 "unique": row.get::<_, bool>(2),
                 "valid": row.get::<_, bool>(3),
                 "method": row.get::<_, String>(4),
-                "definition": row.get::<_, String>(5)
+                "definition": row.get::<_, String>(5),
+                "ready": row.get::<_, bool>(6),
+                "clustered": row.get::<_, bool>(7),
+                "predicate": row.get::<_, Option<String>>(8),
+                "size_bytes": row.get::<_, i64>(9),
+                "keys": parse_json_array(row.get::<_, Option<String>>(10))?,
+                "spatial": row.get::<_, bool>(11)
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let policy_rows = client
+        .query(
+            r"
+            SELECT
+                p.polname,
+                p.polpermissive,
+                p.polcmd::text,
+                (
+                    SELECT jsonb_agg(
+                        CASE WHEN role_oid = 0 THEN 'PUBLIC' ELSE r.rolname END
+                        ORDER BY CASE
+                            WHEN role_oid = 0 THEN 'PUBLIC'
+                            ELSE r.rolname
+                        END
+                    )::text
+                    FROM unnest(p.polroles) AS roles(role_oid)
+                    LEFT JOIN pg_catalog.pg_roles r ON r.oid = roles.role_oid
+                ),
+                pg_get_expr(p.polqual, p.polrelid, true),
+                pg_get_expr(p.polwithcheck, p.polrelid, true)
+            FROM pg_catalog.pg_policy p
+            JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+            ORDER BY p.polname
+            ",
+            &[&schema, &source.object],
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
+    let policies = policy_rows
+        .iter()
+        .map(|row| {
+            Ok(json!({
+                "name": row.get::<_, String>(0),
+                "permissive": row.get::<_, bool>(1),
+                "command": policy_command(&row.get::<_, String>(2)),
+                "roles": parse_json_array(row.get::<_, Option<String>>(3))?,
+                "using": row.get::<_, Option<String>>(4),
+                "check": row.get::<_, Option<String>>(5)
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let privilege_rows = client
+        .query(
+            r"
+            SELECT
+                COALESCE(grantee.rolname, 'PUBLIC'),
+                upper(acl.privilege_type),
+                acl.is_grantable
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            CROSS JOIN LATERAL aclexplode(
+                COALESCE(c.relacl, acldefault('r', c.relowner))
+            ) acl
+            LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
+            WHERE n.nspname = $1 AND c.relname = $2
+            ORDER BY 1, 2
+            ",
+            &[&schema, &source.object],
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
+    let privileges = privilege_rows
+        .iter()
+        .map(|row| {
+            json!({
+                "grantee": row.get::<_, String>(0),
+                "privilege": row.get::<_, String>(1),
+                "grantable": row.get::<_, bool>(2)
             })
         })
         .collect();
@@ -2234,6 +2491,8 @@ async fn describe_object_metadata(client: &Client, source: &ObjectRef) -> Result
         relation: relation_document,
         constraints,
         indexes,
+        policies,
+        privileges,
     })
 }
 
@@ -2245,6 +2504,72 @@ fn relation_kind(kind: &str) -> &'static str {
         "m" => "materialized_view",
         "f" => "foreign_table",
         _ => "other",
+    }
+}
+
+fn parse_json_array(value: Option<String>) -> Result<serde_json::Value> {
+    value.map_or_else(
+        || Ok(json!([])),
+        |document| {
+            serde_json::from_str(&document).map_err(|_| {
+                public_error(
+                    ErrorCategory::DataMapping,
+                    ErrorPhase::Probe,
+                    false,
+                    "metadato catalogo PostgreSQL non convertibile",
+                )
+            })
+        },
+    )
+}
+
+fn replica_identity(value: &str) -> &'static str {
+    match value {
+        "d" => "default",
+        "n" => "nothing",
+        "f" => "full",
+        "i" => "index",
+        _ => "unknown",
+    }
+}
+
+fn relation_persistence(value: &str) -> &'static str {
+    match value {
+        "p" => "permanent",
+        "u" => "unlogged",
+        "t" => "temporary",
+        _ => "unknown",
+    }
+}
+
+fn foreign_key_action(value: &str) -> &'static str {
+    match value {
+        "a" => "no_action",
+        "r" => "restrict",
+        "c" => "cascade",
+        "n" => "set_null",
+        "d" => "set_default",
+        _ => "unknown",
+    }
+}
+
+fn foreign_key_match(value: &str) -> &'static str {
+    match value {
+        "f" => "full",
+        "p" => "partial",
+        "s" => "simple",
+        _ => "unknown",
+    }
+}
+
+fn policy_command(value: &str) -> &'static str {
+    match value {
+        "r" => "select",
+        "a" => "insert",
+        "w" => "update",
+        "d" => "delete",
+        "*" => "all",
+        _ => "unknown",
     }
 }
 
@@ -2275,6 +2600,10 @@ struct ColumnSpec {
     native_declaration: Option<String>,
     type_kind: Option<String>,
     composite_fields: Vec<CompositeFieldSpec>,
+    enum_labels: Vec<String>,
+    domain_base_type: Option<String>,
+    domain_constraints: Vec<String>,
+    collation: Option<String>,
     #[serde(skip)]
     kind: ColumnKind,
 }
@@ -2367,6 +2696,10 @@ impl ColumnSpec {
             native_declaration: None,
             type_kind: None,
             composite_fields: Vec::new(),
+            enum_labels: Vec::new(),
+            domain_base_type: None,
+            domain_constraints: Vec::new(),
+            collation: None,
             kind,
         })
     }
@@ -2378,8 +2711,11 @@ impl ColumnSpec {
         let precision_i32: Option<i32> = row.get(3);
         let scale_i32: Option<i32> = row.get(4);
         let srid_i32: Option<i32> = row.get(5);
-        let spatial_dimensions: Option<i32> = row.get(6);
-        let spatial_type: Option<String> = row.get(7);
+        let spatial_dimension_count: Option<i32> = row.get(6);
+        let spatial_typmod_type: Option<String> = row.get(7);
+        let spatial_dimensions =
+            spatial_dimensions_label(spatial_dimension_count, spatial_typmod_type.as_deref());
+        let spatial_type = spatial_typmod_type.as_deref().map(spatial_base_type);
         let default_expression: Option<String> = row.get(8);
         let identity_kind: Option<String> = row.get(9);
         let generated_kind: Option<String> = row.get(10);
@@ -2389,6 +2725,16 @@ impl ColumnSpec {
             .get::<_, Option<String>>(13)
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
+        let enum_labels = row
+            .get::<_, Option<String>>(18)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        let domain_base_type = row.get(19);
+        let domain_constraints = row
+            .get::<_, Option<String>>(20)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        let collation = row.get(21);
         let numeric_precision = precision_i32.and_then(|value| u8::try_from(value).ok());
         let numeric_scale = scale_i32.and_then(|value| i8::try_from(value).ok());
         let kind = if type_kind.as_deref() == Some("c") {
@@ -2431,7 +2777,7 @@ impl ColumnSpec {
             numeric_precision,
             numeric_scale,
             spatial_srid: srid_i32.and_then(|value| u32::try_from(value).ok()),
-            spatial_dimensions: spatial_dimensions.map(|value| value.to_string()),
+            spatial_dimensions,
             spatial_type,
             default_expression,
             identity_kind,
@@ -2439,10 +2785,15 @@ impl ColumnSpec {
             native_declaration,
             type_kind,
             composite_fields,
+            enum_labels,
+            domain_base_type,
+            domain_constraints,
+            collation,
             kind,
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn arrow_field(&self) -> Field {
         let data_type = match self.kind {
             ColumnKind::Bool => DataType::Boolean,
@@ -2503,6 +2854,25 @@ impl ColumnSpec {
         }
         if let Some(type_kind) = &self.type_kind {
             metadata.insert("plenora.postgres_type_kind".to_owned(), type_kind.clone());
+        }
+        if !self.enum_labels.is_empty() {
+            if let Ok(value) = serde_json::to_string(&self.enum_labels) {
+                metadata.insert("plenora.postgres_enum_labels".to_owned(), value);
+            }
+        }
+        if let Some(base_type) = &self.domain_base_type {
+            metadata.insert(
+                "plenora.postgres_domain_base_type".to_owned(),
+                base_type.clone(),
+            );
+        }
+        if !self.domain_constraints.is_empty() {
+            if let Ok(value) = serde_json::to_string(&self.domain_constraints) {
+                metadata.insert("plenora.postgres_domain_constraints".to_owned(), value);
+            }
+        }
+        if let Some(collation) = &self.collation {
+            metadata.insert("plenora.postgres_collation".to_owned(), collation.clone());
         }
         if matches!(self.kind, ColumnKind::Geometry | ColumnKind::Geography) {
             metadata.insert(
@@ -2594,6 +2964,37 @@ impl ColumnSpec {
             ColumnKind::I64Array | ColumnKind::F64Array => 41,
             ColumnKind::Utf8Array => 137,
         }
+    }
+}
+
+fn spatial_dimensions_label(count: Option<i32>, typmod_type: Option<&str>) -> Option<String> {
+    let uppercase = typmod_type.unwrap_or_default().to_ascii_uppercase();
+    if uppercase.ends_with("ZM") {
+        return Some("xyzm".to_owned());
+    }
+    if uppercase.ends_with('M') {
+        return Some("xym".to_owned());
+    }
+    if uppercase.ends_with('Z') {
+        return Some("xyz".to_owned());
+    }
+    match count {
+        Some(2) => Some("xy".to_owned()),
+        Some(4) => Some("xyzm".to_owned()),
+        _ => None,
+    }
+}
+
+fn spatial_base_type(typmod_type: &str) -> String {
+    let base = typmod_type
+        .strip_suffix("ZM")
+        .or_else(|| typmod_type.strip_suffix('Z'))
+        .or_else(|| typmod_type.strip_suffix('M'))
+        .unwrap_or(typmod_type);
+    if base.eq_ignore_ascii_case("tin") {
+        "TIN".to_owned()
+    } else {
+        base.to_owned()
     }
 }
 
@@ -4192,7 +4593,9 @@ mod tests {
         ComparisonOperator, LayerId, OrderBy, SridPolicy, TransactionProfile, WriteMode,
     };
     use plenora_database_core::query::{
-        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+        ColumnRef, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin, QueryOperation,
+        QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
+        ScalarFunction, SpatialOperator,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -4390,6 +4793,10 @@ mod tests {
                 native_declaration: None,
                 type_kind: Some(type_kind.to_owned()),
                 composite_fields: Vec::new(),
+                enum_labels: Vec::new(),
+                domain_base_type: None,
+                domain_constraints: Vec::new(),
+                collation: None,
                 kind: ColumnKind::Utf8,
             }
         }
@@ -4747,7 +5154,7 @@ mod tests {
         spatial_values.insert(
             "probe".to_owned(),
             ParameterValue::Wkb {
-                bytes: probe_wkb,
+                bytes: probe_wkb.clone(),
                 srid: Some(4326),
                 dimensions: Dimensions::Xyz,
                 semantics: SpatialSemantics::Geometry,
@@ -4772,12 +5179,137 @@ mod tests {
             3
         );
 
-        let query_operation = QueryOperation {
+        let indexed_query = QueryOperation {
             common_table_expressions: Vec::new(),
-            source: QuerySource {
+            source: Some(QuerySource {
                 object: spatial_read.source.clone(),
                 alias: Some("e".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![
+                QueryProjection {
+                    expression: QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: Some("e".to_owned()),
+                            field: "event_id".to_owned(),
+                        },
+                    },
+                    alias: Some("event_id".to_owned()),
+                },
+                QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: SpatialFunction::X,
+                        arguments: vec![QueryExpression::Column {
+                            column: ColumnRef {
+                                relation: Some("e".to_owned()),
+                                field: "geom".to_owned(),
+                            },
+                        }],
+                    },
+                    alias: Some("x".to_owned()),
+                },
+                QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: SpatialFunction::AsGeoJson,
+                        arguments: vec![QueryExpression::Column {
+                            column: ColumnRef {
+                                relation: Some("e".to_owned()),
+                                field: "geom".to_owned(),
+                            },
+                        }],
+                    },
+                    alias: Some("geojson".to_owned()),
+                },
+            ],
+            joins: Vec::new(),
+            filter: Some(QueryExpression::SpatialOperator {
+                operator: SpatialOperator::BoundingBoxIntersects,
+                left: Box::new(QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("e".to_owned()),
+                        field: "geom".to_owned(),
+                    },
+                }),
+                right: Box::new(QueryExpression::Parameter {
+                    name: "probe".to_owned(),
+                }),
+            }),
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: QueryExpression::SpatialOperator {
+                    operator: SpatialOperator::KnnDistance,
+                    left: Box::new(QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: Some("e".to_owned()),
+                            field: "geom".to_owned(),
+                        },
+                    }),
+                    right: Box::new(QueryExpression::Parameter {
+                        name: "probe".to_owned(),
+                    }),
+                },
+                direction: SortDirection::Asc,
+            }],
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(3),
+            row_offset: None,
+            locking: None,
+        };
+        let indexed_parameters = ParameterBag::new(BTreeMap::from([(
+            "probe".to_owned(),
+            ParameterValue::Wkb {
+                bytes: probe_wkb.clone(),
+                srid: Some(4326),
+                dimensions: Dimensions::Xyz,
+                semantics: SpatialSemantics::Geometry,
             },
+        )]));
+        let mut indexed_stream = provider
+            .query(&secret, &indexed_query, &indexed_parameters, &cancellation)
+            .await
+            .expect("indexed spatial query");
+        let indexed_batch = indexed_stream
+            .next_batch()
+            .await
+            .expect("indexed spatial batch")
+            .expect("indexed spatial rows");
+        assert_eq!(indexed_batch.num_rows(), 3);
+        assert_eq!(
+            indexed_stream
+                .schema()
+                .field_with_name("x")
+                .expect("x accessor")
+                .data_type(),
+            &DataType::Float64
+        );
+        let explain: serde_json::Value = client
+            .query_one(
+                r"
+                EXPLAIN (FORMAT JSON)
+                SELECT event_id
+                FROM plenora_fixture.events
+                WHERE geom && ST_Expand(ST_GeomFromEWKB($1), 0.01)
+                ORDER BY geom <-> ST_GeomFromEWKB($1)
+                LIMIT 3
+                ",
+                &[&probe_wkb],
+            )
+            .await
+            .expect("spatial index explain")
+            .get(0);
+        let explain_text = explain.to_string();
+        assert!(explain_text.contains("events_geom_gix"), "{explain_text}");
+
+        let query_operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: spatial_read.source.clone(),
+                alias: Some("e".to_owned()),
+            }),
+            derived_source: None,
             projection: vec![
                 QueryProjection {
                     expression: QueryExpression::Column {
@@ -4826,7 +5358,11 @@ mod tests {
                 direction: SortDirection::Asc,
             }],
             distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
             row_limit: Some(2),
+            row_offset: None,
+            locking: None,
         };
         let mut query_parameters = BTreeMap::new();
         query_parameters.insert("minimum_id".to_owned(), ParameterValue::I64(100));
@@ -4910,6 +5446,262 @@ mod tests {
             .is_none());
         drop(empty_query_stream);
 
+        let window_query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: spatial_read.source.clone(),
+                alias: Some("e".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![
+                QueryProjection {
+                    expression: QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: Some("e".to_owned()),
+                            field: "event_id".to_owned(),
+                        },
+                    },
+                    alias: Some("event_id".to_owned()),
+                },
+                QueryProjection {
+                    expression: QueryExpression::Window {
+                        function: ScalarFunction::RowNumber,
+                        arguments: Vec::new(),
+                        partition_by: vec![QueryExpression::Column {
+                            column: ColumnRef {
+                                relation: Some("e".to_owned()),
+                                field: "region_id".to_owned(),
+                            },
+                        }],
+                        order_by: vec![QueryOrdering {
+                            expression: QueryExpression::Column {
+                                column: ColumnRef {
+                                    relation: Some("e".to_owned()),
+                                    field: "event_id".to_owned(),
+                                },
+                            },
+                            direction: SortDirection::Asc,
+                        }],
+                        frame: None,
+                    },
+                    alias: Some("ordinal".to_owned()),
+                },
+            ],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("e".to_owned()),
+                        field: "event_id".to_owned(),
+                    },
+                },
+                direction: SortDirection::Asc,
+            }],
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(3),
+            row_offset: Some(2),
+            locking: None,
+        };
+        let mut window_stream = provider
+            .query(
+                &secret,
+                &window_query,
+                &ParameterBag::default(),
+                &cancellation,
+            )
+            .await
+            .expect("window query");
+        assert_eq!(
+            window_stream
+                .next_batch()
+                .await
+                .expect("window batch")
+                .expect("window rows")
+                .num_rows(),
+            3
+        );
+        drop(window_stream);
+
+        let lateral_body = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: spatial_read.source.clone(),
+                alias: Some("candidate".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("candidate".to_owned()),
+                        field: "event_id".to_owned(),
+                    },
+                },
+                alias: Some("related_id".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: Some(QueryExpression::Compare {
+                left: Box::new(QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("candidate".to_owned()),
+                        field: "region_id".to_owned(),
+                    },
+                }),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("e".to_owned()),
+                        field: "region_id".to_owned(),
+                    },
+                }),
+            }),
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("candidate".to_owned()),
+                        field: "event_id".to_owned(),
+                    },
+                },
+                direction: SortDirection::Desc,
+            }],
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        let lateral_query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: spatial_read.source.clone(),
+                alias: Some("e".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![
+                QueryProjection {
+                    expression: QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: Some("e".to_owned()),
+                            field: "event_id".to_owned(),
+                        },
+                    },
+                    alias: Some("event_id".to_owned()),
+                },
+                QueryProjection {
+                    expression: QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: Some("latest".to_owned()),
+                            field: "related_id".to_owned(),
+                        },
+                    },
+                    alias: Some("related_id".to_owned()),
+                },
+            ],
+            joins: vec![QueryJoin {
+                kind: JoinKind::Cross,
+                source: None,
+                derived_source: Some(QueryDerivedSource {
+                    query: Box::new(lateral_body),
+                    alias: "latest".to_owned(),
+                }),
+                lateral: true,
+                on: None,
+            }],
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(2),
+            row_offset: None,
+            locking: None,
+        };
+        let mut lateral_stream = provider
+            .query(
+                &secret,
+                &lateral_query,
+                &ParameterBag::default(),
+                &cancellation,
+            )
+            .await
+            .expect("lateral query");
+        assert_eq!(
+            lateral_stream
+                .next_batch()
+                .await
+                .expect("lateral batch")
+                .expect("lateral rows")
+                .num_rows(),
+            2
+        );
+        drop(lateral_stream);
+
+        let mut set_query = query_operation.clone();
+        set_query.filter = Some(QueryExpression::Compare {
+            left: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("e".to_owned()),
+                    field: "event_id".to_owned(),
+                },
+            }),
+            operator: ComparisonOperator::Lt,
+            right: Box::new(QueryExpression::Parameter {
+                name: "lower_cut".to_owned(),
+            }),
+        });
+        set_query.order_by = Vec::new();
+        set_query.row_limit = Some(4);
+        let mut set_rhs = query_operation.clone();
+        set_rhs.filter = Some(QueryExpression::Compare {
+            left: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("e".to_owned()),
+                    field: "event_id".to_owned(),
+                },
+            }),
+            operator: ComparisonOperator::Gt,
+            right: Box::new(QueryExpression::Parameter {
+                name: "upper_cut".to_owned(),
+            }),
+        });
+        set_rhs.row_limit = None;
+        set_query.set_operations = vec![QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: true,
+            query: Box::new(set_rhs),
+        }];
+        let mut set_stream = provider
+            .query(
+                &secret,
+                &set_query,
+                &ParameterBag::new(BTreeMap::from([
+                    ("lower_cut".to_owned(), ParameterValue::I64(3)),
+                    ("upper_cut".to_owned(), ParameterValue::I64(9_998)),
+                ])),
+                &cancellation,
+            )
+            .await
+            .expect("set operation query");
+        assert_eq!(
+            set_stream
+                .next_batch()
+                .await
+                .expect("set batch")
+                .expect("set rows")
+                .num_rows(),
+            4
+        );
+        drop(set_stream);
+
         let advanced_source = ObjectRef {
             catalog: None,
             schema: Some("plenora_fixture".to_owned()),
@@ -4942,6 +5734,172 @@ mod tests {
         assert!(described_columns
             .iter()
             .any(|column| { column["name"] == "doubled" && column["generated_kind"] == "s" }));
+        assert!(described_columns.iter().any(|column| {
+            column["name"] == "status"
+                && column["enum_labels"]
+                    .as_array()
+                    .is_some_and(|labels| labels.len() == 3)
+        }));
+        assert!(described_columns.iter().any(|column| {
+            column["name"] == "domain_value"
+                && column["domain_base_type"] == "integer"
+                && column["domain_constraints"]
+                    .as_array()
+                    .is_some_and(|constraints| !constraints.is_empty())
+        }));
+
+        let dimensions_source = ObjectRef {
+            catalog: None,
+            schema: Some("plenora_fixture".to_owned()),
+            object: "spatial_dimensions".to_owned(),
+            layer_id: None,
+        };
+        let dimensions_description = provider
+            .inspect(
+                &secret,
+                &Operation::DatabaseDescribeObject {
+                    source: dimensions_source.clone(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect("spatial dimension introspection");
+        let dimension_columns = dimensions_description.document["columns"]
+            .as_array()
+            .expect("spatial dimension columns");
+        for (name, dimensions, geometry_type) in [
+            ("point_xy", "xy", "Point"),
+            ("point_z", "xyz", "Point"),
+            ("point_m", "xym", "Point"),
+            ("point_zm", "xyzm", "Point"),
+            ("collection", "xy", "GeometryCollection"),
+            ("curve", "xy", "CircularString"),
+            ("tin", "xyz", "TIN"),
+        ] {
+            assert!(dimension_columns.iter().any(|column| {
+                column["name"] == name
+                    && column["spatial_dimensions"] == dimensions
+                    && column["spatial_type"] == geometry_type
+            }));
+        }
+        let mut dimensions_stream = provider
+            .read(
+                &secret,
+                &ReadOperation {
+                    source: dimensions_source,
+                    projection: Vec::new(),
+                    order_by: Vec::new(),
+                    row_limit: None,
+                    filter: None,
+                },
+                &ParameterBag::default(),
+                &cancellation,
+            )
+            .await
+            .expect("spatial dimension read");
+        assert_eq!(
+            dimensions_stream
+                .schema()
+                .field_with_name("point_m")
+                .expect("point M")
+                .metadata()
+                .get("plenora.dimensions")
+                .map(String::as_str),
+            Some("xym")
+        );
+        assert_eq!(
+            dimensions_stream
+                .schema()
+                .field_with_name("geog")
+                .expect("geography")
+                .metadata()
+                .get("plenora.spatial_semantics")
+                .map(String::as_str),
+            Some("geography")
+        );
+        assert_eq!(
+            dimensions_stream
+                .next_batch()
+                .await
+                .expect("spatial dimension batch")
+                .expect("spatial dimension row")
+                .num_rows(),
+            1
+        );
+
+        let secure_description = provider
+            .inspect(
+                &secret,
+                &Operation::DatabaseDescribeObject {
+                    source: ObjectRef {
+                        catalog: None,
+                        schema: Some("plenora_fixture".to_owned()),
+                        object: "secure_events".to_owned(),
+                        layer_id: None,
+                    },
+                },
+                &cancellation,
+            )
+            .await
+            .expect("secure partitioned introspection");
+        assert_eq!(
+            secure_description.document["relation"]["kind"],
+            "partitioned_table"
+        );
+        assert_eq!(
+            secure_description.document["relation"]["row_security"],
+            true
+        );
+        assert_eq!(
+            secure_description.document["relation"]["force_row_security"],
+            true
+        );
+        assert_eq!(
+            secure_description.document["relation"]["partitions"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(secure_description.document["indexes"]
+            .as_array()
+            .is_some_and(|indexes| indexes.iter().any(|index| index["spatial"] == true)));
+        assert!(secure_description.document["policies"]
+            .as_array()
+            .is_some_and(|policies| policies.iter().any(|policy| {
+                policy["name"] == "secure_events_tenant_policy"
+                    && policy["command"] == "all"
+                    && policy["roles"]
+                        .as_array()
+                        .is_some_and(|roles| roles.iter().any(|role| role == "PUBLIC"))
+            })));
+        assert!(secure_description.document["privileges"]
+            .as_array()
+            .is_some_and(|privileges| privileges.iter().any(|privilege| {
+                privilege["grantee"] == "plenora_reader" && privilege["privilege"] == "SELECT"
+            })));
+        let materialized_description = provider
+            .inspect(
+                &secret,
+                &Operation::DatabaseDescribeObject {
+                    source: ObjectRef {
+                        catalog: None,
+                        schema: Some("plenora_fixture".to_owned()),
+                        object: "event_region_summary".to_owned(),
+                        layer_id: None,
+                    },
+                },
+                &cancellation,
+            )
+            .await
+            .expect("materialized view introspection");
+        assert_eq!(
+            materialized_description.document["relation"]["kind"],
+            "materialized_view"
+        );
+        assert_eq!(
+            materialized_description.document["relation"]["is_populated"],
+            true
+        );
         let mut advanced_stream = provider
             .read(
                 &secret,
@@ -6497,6 +7455,82 @@ mod tests {
         assert_eq!(differences, 0);
         println!(
             "{{\"rows\":1000,\"copy_text_micros\":{copy_micros},\"copy_binary_micros\":{binary_micros},\"prepared_micros\":{prepared_micros},\"differences\":0}}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "benchmark spatial live esplicito"]
+    async fn live_spatial_index_benchmark() {
+        let dsn = std::env::var("PLENORA_TEST_POSTGRES_DSN").expect("live DSN");
+        let secret = SecretString::new(dsn);
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        let probe_wkb: Vec<u8> = client
+            .query_one(
+                "SELECT ST_AsEWKB(geom) FROM plenora_fixture.events WHERE event_id = 1",
+                &[],
+            )
+            .await
+            .expect("spatial benchmark probe")
+            .get(0);
+        let statement = client
+            .prepare(
+                r"
+                SELECT event_id
+                FROM plenora_fixture.events
+                WHERE geom && ST_Expand(ST_GeomFromEWKB($1), $2)
+                ORDER BY geom <-> ST_GeomFromEWKB($1)
+                LIMIT 100
+                ",
+            )
+            .await
+            .expect("spatial benchmark statement");
+        for _ in 0..5 {
+            assert_eq!(
+                client
+                    .query(&statement, &[&probe_wkb, &0.2_f64])
+                    .await
+                    .expect("spatial warmup")
+                    .len(),
+                100
+            );
+        }
+        let mut samples = Vec::with_capacity(50);
+        for _ in 0..50 {
+            let started = std::time::Instant::now();
+            let rows = client
+                .query(&statement, &[&probe_wkb, &0.2_f64])
+                .await
+                .expect("spatial benchmark sample");
+            assert_eq!(rows.len(), 100);
+            samples.push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        }
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
+        let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+        let explain: serde_json::Value = client
+            .query_one(
+                r"
+                EXPLAIN (FORMAT JSON)
+                SELECT event_id
+                FROM plenora_fixture.events
+                WHERE geom && ST_Expand(ST_GeomFromEWKB($1), 0.2)
+                ORDER BY geom <-> ST_GeomFromEWKB($1)
+                LIMIT 100
+                ",
+                &[&probe_wkb],
+            )
+            .await
+            .expect("spatial benchmark explain")
+            .get(0);
+        println!(
+            "{}",
+            json!({
+                "rows": 100,
+                "samples": samples.len(),
+                "median_micros": median,
+                "p95_micros": p95,
+                "index_used": explain.to_string().contains("events_geom_gix")
+            })
         );
     }
 }

@@ -53,6 +53,13 @@ sicurezza e comportamento sotto errore del data path v3.
   `PoisonError`; le strutture protette sono container semplici e bounded.
 - `QueryOperation` viene validato con una visita iterativa prima del renderer:
   massimo 64 livelli e 4.096 nodi strutturali/espressioni.
+- Il validatore verifica anche arità e contesto booleano, sorgenti
+  table/derived mutuamente esclusive, regole `DISTINCT ON`, window frame,
+  set-operation, offset deterministico e lock applicabili.
+- Gli input geometry/geography vengono rifiutati prima della transazione se
+  l'header EWKB non concorda con tipo, dimensioni o SRID del contratto Arrow.
+- Catalogo spatial e renderer sono verificati in lockstep; ogni variante
+  tipizzata deve avere nome SQL, arità e classificazione espliciti.
 
 ## Metriche bounded
 
@@ -96,12 +103,21 @@ Il gate esegue:
     result set vuoti.
 13. estremi Date32/Timestamp, poisoning intenzionale e AST oltre i budget,
     tutti convertiti in esiti controllati.
+14. query avanzate CTE/derived/lateral/window/set/locking e operatori GiST/KNN
+    senza escape hatch SQL.
+15. header EWKB incoerenti e cataloghi spatial divergenti rifiutati
+    deterministicamente.
+16. piano `EXPLAIN` con indice GiST e gate separato su mediana/p95.
 
 Esecuzione:
 
 ```powershell
 python scripts\check_postgres_hardening.py
 ```
+
+Il safety case del profilo è in [SAFETY-CASE.md](SAFETY-CASE.md). Le sue claim
+sono accettabili soltanto insieme alle prove automatiche elencate; il documento
+non dichiara conformità a DO-178C, ED-12C o ad altri standard aeronautici.
 
 ## Limiti TLS dichiarati
 

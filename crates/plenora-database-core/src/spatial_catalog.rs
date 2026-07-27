@@ -21,19 +21,28 @@ pub struct SpatialFunctionCatalog {
     pub functions: Vec<SpatialFunctionSpec>,
 }
 
-#[must_use]
 /// Restituisce il catalogo spatial incorporato.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panica soltanto se il catalogo versionato nel repository non è JSON valido;
-/// il gate offline impedisce di pubblicare tale stato.
-pub fn spatial_function_catalog() -> &'static SpatialFunctionCatalog {
-    static CATALOG: OnceLock<SpatialFunctionCatalog> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../catalog/spatial-functions.v1.json"))
-            .expect("catalogo spatial incorporato valido")
-    })
+/// Restituisce `InvalidPlan` se il catalogo incorporato non è valido; un
+/// pacchetto corrotto non può causare un panic nel processo chiamante.
+pub fn spatial_function_catalog() -> crate::Result<&'static SpatialFunctionCatalog> {
+    static CATALOG: OnceLock<std::result::Result<SpatialFunctionCatalog, String>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("../../../catalog/spatial-functions.v1.json"))
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_or_else(
+            |_| {
+                Err(crate::DatabaseError::invalid_plan(
+                    "catalogo spatial incorporato non valido",
+                ))
+            },
+            Ok,
+        )
 }
 
 #[cfg(test)]
@@ -42,9 +51,12 @@ mod tests {
 
     #[test]
     fn embedded_catalog_is_unique_and_complete() {
-        let catalog = spatial_function_catalog();
+        let catalog = spatial_function_catalog().expect("catalog fixture");
         assert_eq!(catalog.schema_version, 1);
-        assert_eq!(catalog.functions.len(), 29);
+        assert_eq!(
+            catalog.functions.len(),
+            crate::query::SpatialFunction::ALL.len()
+        );
         let unique = catalog
             .functions
             .iter()

@@ -289,7 +289,7 @@ fn validate_filter(
                 validate_parameter(parameter)?;
             }
             match function {
-                SpatialFunction::IsEmpty | SpatialFunction::IsValid => {
+                function if function.is_unary_predicate() => {
                     if geometry_parameter.is_some() || distance_parameter.is_some() {
                         return Err(DatabaseError::invalid_plan(
                             "predicato spatial unario con parametri inattesi",
@@ -303,14 +303,7 @@ fn validate_filter(
                         ));
                     }
                 }
-                SpatialFunction::Intersects
-                | SpatialFunction::Contains
-                | SpatialFunction::Within
-                | SpatialFunction::Covers
-                | SpatialFunction::Touches
-                | SpatialFunction::Crosses
-                | SpatialFunction::Overlaps
-                | SpatialFunction::Disjoint => {
+                function if function.is_binary_predicate() => {
                     if geometry_parameter.is_none() || distance_parameter.is_some() {
                         return Err(DatabaseError::invalid_plan(
                             "predicato spatial binario non valido",

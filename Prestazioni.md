@@ -1258,6 +1258,12 @@ arriva dalla prima riga PostgreSQL, mentre un result set vuoto richiede solo il
 describe. Su query parametrizzate narrow da 1.000 righe il totale mediano
 migliora del 6,26% e il p95 del 16,69%.
 
+Gli operatori PostGIS bounding-box e KNN hanno inoltre un gate specifico che
+non misura soltanto la latenza: `EXPLAIN` deve provare l'uso dell'indice GiST.
+Sul riferimento PostgreSQL 16/PostGIS 3.4, 50 campioni su 100 righe hanno
+registrato 189 µs di mediana e 263 µs di p95. Il gate fallisce oltre 50 ms di
+mediana, 100 ms di p95 o in assenza dell'indice atteso.
+
 ### Fase 3 — Driver principali
 
 - MySQL/MariaDB;

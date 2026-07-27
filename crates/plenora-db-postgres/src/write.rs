@@ -395,16 +395,17 @@ fn enforce_input_limits(
                 .downcast_ref::<BinaryArray>()
                 .ok_or_else(mapping_error)?;
             for row in 0..binary.len() {
-                if !binary.is_null(row)
-                    && u64::try_from(binary.value(row).len()).unwrap_or(u64::MAX)
-                        > max_wkb_cell_bytes
-                {
-                    return Err(public_error(
-                        ErrorCategory::ResourceLimit,
-                        ErrorPhase::Write,
-                        false,
-                        "cella WKB write oltre max_wkb_cell_bytes",
-                    ));
+                if !binary.is_null(row) {
+                    let value = binary.value(row);
+                    if u64::try_from(value.len()).unwrap_or(u64::MAX) > max_wkb_cell_bytes {
+                        return Err(public_error(
+                            ErrorCategory::ResourceLimit,
+                            ErrorPhase::Write,
+                            false,
+                            "cella WKB write oltre max_wkb_cell_bytes",
+                        ));
+                    }
+                    validate_ewkb_contract(value, field)?;
                 }
             }
         }
@@ -1982,12 +1983,27 @@ fn pg_type(field: &Field) -> Result<String> {
         {
             return Err(DatabaseError::invalid_plan("geometry type non valido"));
         }
+        let dimensions = match field
+            .metadata()
+            .get("plenora.dimensions")
+            .map(String::as_str)
+        {
+            None | Some("xy") => "",
+            Some("xyz") => "Z",
+            Some("xym") => "M",
+            Some("xyzm") => "ZM",
+            Some(_) => {
+                return Err(DatabaseError::invalid_plan(
+                    "dimensioni geometry non valide o ambigue",
+                ));
+            }
+        };
         let srid = field
             .metadata()
             .get("plenora.srid")
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0);
-        return Ok(format!("{base}({geometry_type},{srid})"));
+        return Ok(format!("{base}({geometry_type}{dimensions},{srid})"));
     }
     Ok(match field.data_type() {
         DataType::Boolean => "boolean".to_owned(),
@@ -2141,6 +2157,109 @@ fn is_geography(field: &Field) -> bool {
             .is_some_and(|value| value == "geography")
 }
 
+fn validate_ewkb_contract(bytes: &[u8], field: &Field) -> Result<()> {
+    if bytes.len() < 5 {
+        return Err(spatial_mapping_error("EWKB troncato"));
+    }
+    let little_endian = match bytes[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(spatial_mapping_error("byte order EWKB non valido")),
+    };
+    let read_u32 = |offset: usize| -> Result<u32> {
+        let raw: [u8; 4] = bytes
+            .get(offset..offset.saturating_add(4))
+            .and_then(|value| value.try_into().ok())
+            .ok_or_else(|| spatial_mapping_error("header EWKB troncato"))?;
+        Ok(if little_endian {
+            u32::from_le_bytes(raw)
+        } else {
+            u32::from_be_bytes(raw)
+        })
+    };
+    let type_word = read_u32(1)?;
+    let ewkb_z = type_word & 0x8000_0000 != 0;
+    let ewkb_m = type_word & 0x4000_0000 != 0;
+    let has_srid = type_word & 0x2000_0000 != 0;
+    let mut base_type = type_word & 0x0fff_ffff;
+    let (iso_z, iso_m) = if base_type >= 3_000 {
+        base_type -= 3_000;
+        (true, true)
+    } else if base_type >= 2_000 {
+        base_type -= 2_000;
+        (false, true)
+    } else if base_type >= 1_000 {
+        base_type -= 1_000;
+        (true, false)
+    } else {
+        (false, false)
+    };
+    let z = ewkb_z || iso_z;
+    let m = ewkb_m || iso_m;
+    let dimensions = match (z, m) {
+        (false, false) => "xy",
+        (true, false) => "xyz",
+        (false, true) => "xym",
+        (true, true) => "xyzm",
+    };
+    if let Some(expected) = field.metadata().get("plenora.dimensions") {
+        if expected != dimensions {
+            return Err(spatial_mapping_error(
+                "dimensioni EWKB diverse dal contratto Arrow",
+            ));
+        }
+    }
+    let geometry_type = match base_type {
+        1 => "Point",
+        2 => "LineString",
+        3 => "Polygon",
+        4 => "MultiPoint",
+        5 => "MultiLineString",
+        6 => "MultiPolygon",
+        7 => "GeometryCollection",
+        8 => "CircularString",
+        9 => "CompoundCurve",
+        10 => "CurvePolygon",
+        11 => "MultiCurve",
+        12 => "MultiSurface",
+        13 => "Curve",
+        14 => "Surface",
+        15 => "PolyhedralSurface",
+        16 => "TIN",
+        17 => "Triangle",
+        _ => return Err(spatial_mapping_error("tipo geometry EWKB non supportato")),
+    };
+    if let Some(expected) = field.metadata().get("plenora.geometry_type") {
+        if expected != "Geometry" && !expected.eq_ignore_ascii_case(geometry_type) {
+            return Err(spatial_mapping_error(
+                "tipo EWKB diverso dal contratto Arrow",
+            ));
+        }
+    }
+    let actual_srid = has_srid.then(|| read_u32(5)).transpose()?;
+    if let Some(expected) = field
+        .metadata()
+        .get("plenora.srid")
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        if expected != 0 && actual_srid != Some(expected) {
+            return Err(spatial_mapping_error(
+                "SRID EWKB diverso dal contratto Arrow",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn spatial_mapping_error(message: &str) -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        message,
+    )
+}
+
 fn quote_object(target: &ObjectRef) -> Result<String> {
     Ok(renderer().quote_object(&ObjectName {
         catalog: None,
@@ -2264,6 +2383,47 @@ mod tests {
                 assert_eq!(error.category, ErrorCategory::DataMapping);
             }
         }
+    }
+
+    #[test]
+    fn ewkb_header_must_match_spatial_contract() {
+        let field = Field::new("geom", DataType::Binary, false).with_metadata(
+            std::collections::HashMap::from([
+                (
+                    "ARROW:extension:name".to_owned(),
+                    GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+                ),
+                ("plenora.geometry_type".to_owned(), "Point".to_owned()),
+                ("plenora.dimensions".to_owned(), "xyz".to_owned()),
+                ("plenora.srid".to_owned(), "4326".to_owned()),
+            ]),
+        );
+        let mut point_z_4326 = vec![1_u8];
+        point_z_4326.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
+        point_z_4326.extend_from_slice(&4326_u32.to_le_bytes());
+        point_z_4326.extend_from_slice(&[0_u8; 24]);
+        validate_ewkb_contract(&point_z_4326, &field).expect("matching contract");
+
+        let mut wrong_srid = point_z_4326.clone();
+        wrong_srid[5..9].copy_from_slice(&3857_u32.to_le_bytes());
+        assert_eq!(
+            validate_ewkb_contract(&wrong_srid, &field)
+                .expect_err("SRID mismatch")
+                .category,
+            ErrorCategory::DataMapping
+        );
+
+        let mut point_xy_4326 = vec![1_u8];
+        point_xy_4326.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
+        point_xy_4326.extend_from_slice(&4326_u32.to_le_bytes());
+        point_xy_4326.extend_from_slice(&[0_u8; 16]);
+        assert_eq!(
+            validate_ewkb_contract(&point_xy_4326, &field)
+                .expect_err("dimension mismatch")
+                .category,
+            ErrorCategory::DataMapping
+        );
+        assert!(validate_ewkb_contract(&[2, 0, 0, 0, 1], &field).is_err());
     }
 
     #[test]

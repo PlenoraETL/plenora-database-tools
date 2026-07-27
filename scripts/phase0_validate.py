@@ -229,6 +229,10 @@ def validate_documents() -> int:
         REPO_ROOT / "docs" / "phase-0" / "open-decisions.md",
         REPO_ROOT / "docs" / "phase-1" / "README.md",
         REPO_ROOT / "docs" / "postgres" / "README.md",
+        REPO_ROOT / "docs" / "postgres" / "HARDENING.md",
+        REPO_ROOT / "docs" / "postgres" / "SAFETY-CASE.md",
+        REPO_ROOT / "docs" / "postgres" / "COMPATIBILITY.md",
+        REPO_ROOT / "docs" / "postgres" / "PERFORMANCE.md",
     ]
     required += sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
     for path in required:

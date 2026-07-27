@@ -324,6 +324,26 @@ La baseline è
 `benchmarks/baseline/postgres16-postgis34-query-fast-path.json`; il manifest è
 `benchmarks/manifests/postgres-performance-query-fast-path.json`.
 
+## Operatori spatial indicizzati
+
+Un gate separato esegue una query tipizzata bounding-box più KNN su 100 righe,
+con cinque warm-up e 50 campioni. Prima delle misure usa `EXPLAIN` e richiede
+esplicitamente il nome dell'indice GiST nel piano: un risultato veloce ottenuto
+con scan accidentale non è considerato prova sufficiente.
+
+Sul riferimento PostgreSQL 16/PostGIS 3.4 del 27 luglio 2026:
+
+| campioni | righe | mediana | p95 | indice |
+|---:|---:|---:|---:|---|
+| 50 | 100 | 189 µs | 263 µs | `events_geom_gix` |
+
+Il gate è fail-closed: fallisce se il piano non usa l'indice, se la mediana
+supera 50 ms o se il p95 supera 100 ms. Si esegue con:
+
+```powershell
+python scripts\check_postgres_spatial_performance.py
+```
+
 ## Interpretazione
 
 Si ottimizza un solo collo di bottiglia per volta. Ogni modifica deve:

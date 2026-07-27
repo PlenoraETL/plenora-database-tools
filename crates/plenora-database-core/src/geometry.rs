@@ -22,6 +22,14 @@ pub enum GeometryType {
     Polygon,
     Multipolygon,
     Geometrycollection,
+    Circularstring,
+    Compoundcurve,
+    Curvepolygon,
+    Multicurve,
+    Multisurface,
+    Polyhedralsurface,
+    Tin,
+    Triangle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
