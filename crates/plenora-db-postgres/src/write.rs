@@ -2081,7 +2081,8 @@ fn binary_copy_value(
         && matches!(
             field
                 .metadata()
-                .get("plenora.native_type")
+                .get(protocol::POSTGRES_NATIVE_TYPE)
+                .or_else(|| field.metadata().get("plenora.native_type"))
                 .map(String::as_str),
             Some("json" | "jsonb")
         )
@@ -2861,6 +2862,26 @@ mod tests {
             assert_eq!(decoded, expected);
             assert_eq!(negative, value < 0);
         }
+    }
+
+    #[test]
+    fn binary_copy_jsonb_accepts_canonical_native_type_metadata() {
+        let field = Field::new("payload", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([(
+                protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+                "jsonb".to_owned(),
+            )]),
+        );
+        let array = StringArray::from(vec![Some(r#"{"safe":true}"#)]);
+        let value = binary_copy_value(&array, &field, &Type::JSONB, 0).expect("JSONB binary value");
+        let mut encoded = BytesMut::new();
+        assert!(matches!(
+            value
+                .to_sql_checked(&Type::JSONB, &mut encoded)
+                .expect("JSONB binary encoding"),
+            IsNull::No
+        ));
+        assert_eq!(encoded.first(), Some(&1));
     }
 
     #[test]
