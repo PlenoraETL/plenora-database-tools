@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v1/capabilities.schema.json",
+  "title": "Runtime provider capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "provider_version",
+    "reads",
+    "writes",
+    "transactions",
+    "spatial",
+    "limits"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "provider": {
+      "$ref": "common.schema.json#/$defs/provider_kind"
+    },
+    "provider_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "extension_versions": {
+      "type": "object",
+      "propertyNames": {"maxLength": 128},
+      "additionalProperties": {"type": "string", "maxLength": 256}
+    },
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streaming", "projection", "filter", "ordering"],
+      "properties": {
+        "streaming": {"type": "boolean"},
+        "server_cursor": {"type": "boolean"},
+        "pagination": {"type": "boolean"},
+        "object_id_windows": {"type": "boolean"},
+        "projection": {"type": "boolean"},
+        "filter": {"type": "boolean"},
+        "ordering": {"type": "boolean"},
+        "resumable": {"type": "boolean"}
+      }
+    },
+    "writes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "append", "update", "upsert", "replace"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "append": {"type": "boolean"},
+        "update": {"type": "boolean"},
+        "upsert": {"type": "boolean"},
+        "replace": {"type": "boolean"},
+        "delete_by_keys": {"type": "boolean"},
+        "bulk": {"type": "boolean"},
+        "array_binding": {"type": "boolean"},
+        "returning": {"type": "boolean"},
+        "apply_edits": {"type": "boolean"},
+        "rollback_on_failure": {"type": "boolean"},
+        "use_global_ids": {"type": "boolean"}
+      }
+    },
+    "transactions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "single_transaction": {"type": "boolean"},
+        "savepoints": {"type": "boolean"},
+        "transactional_ddl": {"type": "boolean"},
+        "staged_swap": {"type": "boolean"},
+        "scope": {
+          "enum": ["none", "statement", "transaction", "edit_request", "layer", "service"]
+        }
+      }
+    },
+    "spatial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read_wkb", "write_wkb", "dimensions"],
+      "properties": {
+        "read_wkb": {"type": "boolean"},
+        "write_wkb": {"type": "boolean"},
+        "geometry": {"type": "boolean"},
+        "geography": {"type": "boolean"},
+        "spatial_index": {"type": "boolean"},
+        "mixed_geometry_types": {"type": "boolean"},
+        "dimensions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["xy", "xyz", "xym", "xyzm"]}
+        },
+        "functions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "geometry_type", "srid", "dimensions", "is_empty", "is_valid",
+              "intersects", "contains", "within", "covers", "touches",
+              "crosses", "overlaps", "disjoint", "d_within", "transform",
+              "buffer", "intersection", "difference", "union", "simplify",
+              "make_valid", "centroid", "envelope", "distance", "area",
+              "length", "perimeter", "collect", "extent"
+            ]
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_identifier_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_bind_parameters": {"type": ["integer", "null"], "minimum": 1},
+        "max_statement_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_batch_rows": {"type": ["integer", "null"], "minimum": 1},
+        "max_payload_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_record_count": {"type": ["integer", "null"], "minimum": 1}
+      }
+    }
+  }
+}

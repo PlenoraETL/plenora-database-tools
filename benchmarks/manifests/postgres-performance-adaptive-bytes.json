@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-performance-adaptive-bytes",
+  "warmup": 1,
+  "repeat": 5,
+  "scenarios": [
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "target_batch_bytes": 1048576,
+      "modes": ["copy_binary"]
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "target_batch_bytes": 4194304,
+      "modes": ["copy_binary"]
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "target_batch_bytes": 1048576,
+      "modes": ["copy_binary"]
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "target_batch_bytes": 4194304,
+      "modes": ["copy_binary"]
+    }
+  ]
+}

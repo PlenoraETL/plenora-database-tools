@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "connection_ref": "secret:arcgis-production",
+  "provider": "arcgis",
+  "operation": {
+    "id": "arcgis.write",
+    "target": {
+      "object": "Municipalities",
+      "layer_id": 0
+    },
+    "mode": "upsert",
+    "mapping_policy": "strict",
+    "transaction_profile": "arcgis_apply_edits",
+    "keys": [
+      "GlobalID"
+    ],
+    "srid_policy": "require_match",
+    "allow_partial": false
+  },
+  "limits": {
+    "max_batch_bytes": 8388608,
+    "timeout_ms": 60000
+  }
+}

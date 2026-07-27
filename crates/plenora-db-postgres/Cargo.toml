@@ -1,0 +1,27 @@
+[package]
+name = "plenora-db-postgres"
+description = "Driver PostgreSQL/PostGIS di plenora-database-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+plenora-database-core.workspace = true
+plenora-database-sql.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+rustls.workspace = true
+tokio-postgres-rustls.workspace = true
+webpki-roots.workspace = true
+
+[lints]
+workspace = true

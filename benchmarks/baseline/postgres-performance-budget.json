@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "policy": "postgres-performance-regression-budget",
+  "minimum_samples": 5,
+  "environment_must_match": [
+    "postgres_major",
+    "postgis_major_minor",
+    "platform",
+    "cpu_count"
+  ],
+  "maximum_regression_percent": {
+    "read_total_median": 5.0,
+    "read_total_p95": 10.0,
+    "time_to_first_batch_median": 10.0,
+    "write_execute_median": 5.0,
+    "write_execute_p95": 10.0,
+    "peak_rss_bytes": 10.0,
+    "wal_bytes": 5.0
+  },
+  "correctness_requirements": {
+    "differences": 0,
+    "confirmed_rows_equal_requested": true
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "checks": [
+    {
+      "count": 6,
+      "id": "json-schemas",
+      "status": "passed"
+    },
+    {
+      "count": 7,
+      "id": "contract-examples",
+      "status": "passed"
+    },
+    {
+      "count": 20,
+      "id": "golden-cases",
+      "status": "passed"
+    },
+    {
+      "count": 10,
+      "id": "benchmark-manifest",
+      "status": "passed"
+    },
+    {
+      "count": 11,
+      "id": "python-syntax",
+      "status": "passed"
+    },
+    {
+      "count": 15,
+      "id": "required-documents",
+      "status": "passed"
+    }
+  ],
+  "database_connections_opened": 0,
+  "gate": "phase0-pre-database",
+  "generated_at": "2026-07-27T02:05:51.865382+00:00",
+  "schema_version": 1,
+  "status": "passed",
+  "tool_versions": {
+    "jsonschema": "4.23.0",
+    "python": "3.12.3",
+    "referencing": "0.30.2"
+  }
+}

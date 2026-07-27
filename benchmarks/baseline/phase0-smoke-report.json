@@ -1,0 +1,234 @@
+{
+  "cases": [
+    {
+      "case_id": "arcgis.connection.portal",
+      "failed": 0,
+      "passed": 1,
+      "provider": "arcgis",
+      "rss_delta_bytes": {
+        "max": 4689920,
+        "median": 4689920,
+        "min": 4689920
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "a88343deea02df974d1d258c76ebb2751c34a5d0cef9aa4ebd703d79fad039bb"
+      ],
+      "wall_ns": {
+        "max": 28832200,
+        "median": 28832200,
+        "min": 28832200,
+        "p95_nearest_rank": 28832200
+      }
+    },
+    {
+      "case_id": "arcgis.introspection.layer",
+      "failed": 0,
+      "passed": 1,
+      "provider": "arcgis",
+      "rss_delta_bytes": {
+        "max": 32768,
+        "median": 32768,
+        "min": 32768
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "47f0c88423b5b1781b91aad98e4811ba8f3c3dcf4ee68f9c6f9ae8681f3d4c60"
+      ],
+      "wall_ns": {
+        "max": 16808700,
+        "median": 16808700,
+        "min": 16808700,
+        "p95_nearest_rank": 16808700
+      }
+    },
+    {
+      "case_id": "arcgis.read.features",
+      "failed": 0,
+      "passed": 1,
+      "provider": "arcgis",
+      "rss_delta_bytes": {
+        "max": 4096,
+        "median": 4096,
+        "min": 4096
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "e0788630ca0b3266363fafec48c5158face0e8542d6521b9c5c18860a0129acc"
+      ],
+      "wall_ns": {
+        "max": 15948800,
+        "median": 15948800,
+        "min": 15948800,
+        "p95_nearest_rank": 15948800
+      }
+    },
+    {
+      "case_id": "arcgis.write.apply_edits",
+      "failed": 0,
+      "passed": 1,
+      "provider": "arcgis",
+      "rss_delta_bytes": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "0973b9886b1841d8bb3409ca076207d566b0f1afbae6889c1ffbef8b5261f8a5"
+      ],
+      "wall_ns": {
+        "max": 3538500,
+        "median": 3538500,
+        "min": 3538500,
+        "p95_nearest_rank": 3538500
+      }
+    },
+    {
+      "case_id": "backend.static_inventory",
+      "failed": 0,
+      "passed": 1,
+      "provider": "backend-python",
+      "rss_delta_bytes": {
+        "max": 2711552,
+        "median": 2711552,
+        "min": 2711552
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "ffa0980b8d16e56e0460e9efb6288c8c4b5540910510cb78937fbb4382785d5e"
+      ],
+      "wall_ns": {
+        "max": 173558100,
+        "median": 173558100,
+        "min": 173558100,
+        "p95_nearest_rank": 173558100
+      }
+    },
+    {
+      "case_id": "postgres.connection.version",
+      "failed": 0,
+      "passed": 1,
+      "provider": "postgres",
+      "rss_delta_bytes": {
+        "max": 122880,
+        "median": 122880,
+        "min": 122880
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "1d340d3fa5cbe40a2e06978b303f96b9c3b97de593767ca585a3dc7cc91c3cec"
+      ],
+      "wall_ns": {
+        "max": 5257500,
+        "median": 5257500,
+        "min": 5257500,
+        "p95_nearest_rank": 5257500
+      }
+    },
+    {
+      "case_id": "postgres.fixture.preflight",
+      "failed": 0,
+      "passed": 1,
+      "provider": "postgres",
+      "rss_delta_bytes": {
+        "max": 0,
+        "median": 0,
+        "min": 0
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "de1cd969acab698ae31bc68a36be674fb111b126e91ff91b1172f0c53944f418"
+      ],
+      "wall_ns": {
+        "max": 1674200,
+        "median": 1674200,
+        "min": 1674200,
+        "p95_nearest_rank": 1674200
+      }
+    },
+    {
+      "case_id": "postgres.introspection.columns",
+      "failed": 0,
+      "passed": 1,
+      "provider": "postgres",
+      "rss_delta_bytes": {
+        "max": 57344,
+        "median": 57344,
+        "min": 57344
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "146b7a0eba6684559eb4ba0f89652a09893fb5f0027124d57f7fd45faea9ea7c"
+      ],
+      "wall_ns": {
+        "max": 3341200,
+        "median": 3341200,
+        "min": 3341200,
+        "p95_nearest_rank": 3341200
+      }
+    },
+    {
+      "case_id": "postgres.read.events_stream",
+      "failed": 0,
+      "passed": 1,
+      "provider": "postgres",
+      "rss_delta_bytes": {
+        "max": 749568,
+        "median": 749568,
+        "min": 749568
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "8c6e8ef1d594faff77f388e70383ed7c0f741a3fd32eb46e7185ede00e9a0c9c"
+      ],
+      "wall_ns": {
+        "max": 38365000,
+        "median": 38365000,
+        "min": 38365000,
+        "p95_nearest_rank": 38365000
+      }
+    },
+    {
+      "case_id": "postgres.spatial.ewkb_read",
+      "failed": 0,
+      "passed": 1,
+      "provider": "postgres",
+      "rss_delta_bytes": {
+        "max": 4096,
+        "median": 4096,
+        "min": 4096
+      },
+      "samples": 1,
+      "stable_summary": true,
+      "summary_digests": [
+        "d54b0fbf6744106efa64d27a67f928ed056c250c83fc34c534f025804ec84fe9"
+      ],
+      "wall_ns": {
+        "max": 702200,
+        "median": 702200,
+        "min": 702200,
+        "p95_nearest_rank": 702200
+      }
+    }
+  ],
+  "generated_at": "2026-07-27T01:19:17.316189+00:00",
+  "report": "phase0-aggregate",
+  "schema_version": 1,
+  "totals": {
+    "cases": 10,
+    "failed": 0,
+    "passed": 10,
+    "samples": 10,
+    "unstable_summaries": 0
+  }
+}

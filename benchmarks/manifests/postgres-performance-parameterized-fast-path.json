@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-parameterized-fast-path",
+  "warmup": 2,
+  "repeat": 20,
+  "scenarios": [
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": false
+    },
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": true
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": false
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": true
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": false
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": true
+    }
+  ]
+}

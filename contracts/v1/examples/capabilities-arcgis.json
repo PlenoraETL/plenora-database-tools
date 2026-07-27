@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "provider": "arcgis",
+  "provider_version": "candidate-unverified",
+  "extension_versions": {},
+  "reads": {
+    "streaming": true,
+    "server_cursor": false,
+    "pagination": true,
+    "object_id_windows": true,
+    "projection": true,
+    "filter": true,
+    "ordering": true,
+    "resumable": true
+  },
+  "writes": {
+    "create": true,
+    "append": true,
+    "update": true,
+    "upsert": true,
+    "replace": false,
+    "delete_by_keys": true,
+    "bulk": false,
+    "array_binding": false,
+    "returning": false,
+    "apply_edits": true,
+    "rollback_on_failure": true,
+    "use_global_ids": true
+  },
+  "transactions": {
+    "single_transaction": false,
+    "savepoints": false,
+    "transactional_ddl": false,
+    "staged_swap": false,
+    "scope": "edit_request"
+  },
+  "spatial": {
+    "read_wkb": true,
+    "write_wkb": true,
+    "geometry": true,
+    "geography": false,
+    "spatial_index": false,
+    "mixed_geometry_types": false,
+    "dimensions": [
+      "xy",
+      "xyz",
+      "xym",
+      "xyzm"
+    ]
+  },
+  "limits": {
+    "max_identifier_bytes": null,
+    "max_bind_parameters": null,
+    "max_statement_bytes": null,
+    "max_batch_rows": null,
+    "max_payload_bytes": null,
+    "max_record_count": null
+  }
+}

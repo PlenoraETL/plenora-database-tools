@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-query-fast-path",
+  "warmup": 3,
+  "repeat": 50,
+  "scenarios": [
+    {
+      "profile": "narrow",
+      "rows": 1000,
+      "batch_rows": 1024,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": false,
+      "query_ast": true
+    },
+    {
+      "profile": "narrow",
+      "rows": 1000,
+      "batch_rows": 1024,
+      "modes": [],
+      "parameterized_read": true,
+      "parameterized_fast_path": true,
+      "query_ast": true
+    }
+  ]
+}

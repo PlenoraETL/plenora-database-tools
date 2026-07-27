@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-schema-cache",
+  "warmup": 2,
+  "repeat": 20,
+  "scenarios": [
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 0
+    },
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 256
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 0
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 256
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 0
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": [],
+      "schema_cache_entries": 256
+    }
+  ]
+}

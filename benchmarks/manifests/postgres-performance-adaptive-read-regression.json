@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-adaptive-read-regression",
+  "warmup": 2,
+  "repeat": 20,
+  "scenarios": [
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": []
+    },
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": []
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": []
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": []
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": []
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": []
+    }
+  ]
+}

@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "suite": "golden-v1",
+  "cases": [
+    {
+      "id": "scalar.signed-boundaries",
+      "dataset": "scalars_v1",
+      "category": "scalar",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "offline_ready",
+      "tags": ["integer", "exact"],
+      "input": {"values": [-9223372036854775808, -1, 0, 1, 9223372036854775807]},
+      "expected": {"comparison": "exact", "float_coercion": false}
+    },
+    {
+      "id": "scalar.decimal-high-precision",
+      "dataset": "scalars_v1",
+      "category": "scalar",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "duckdb"],
+      "status": "database_required",
+      "tags": ["decimal", "precision", "scale"],
+      "input": {"values_as_text": ["0", "-0.01", "12345678901234567890.123456789012345678"]},
+      "expected": {"comparison": "exact_decimal", "float_coercion": false, "loss_report_on_narrowing": true}
+    },
+    {
+      "id": "scalar.unicode-normalization",
+      "dataset": "scalars_v1",
+      "category": "scalar",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["unicode", "emoji", "combining"],
+      "input": {"values": ["caffè", "caffé", "🗺️", "東京"]},
+      "expected": {"comparison": "codepoint_exact", "implicit_normalization": false}
+    },
+    {
+      "id": "temporal.timezone-dst-boundary",
+      "dataset": "scalars_v1",
+      "category": "temporal",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["timestamp", "timezone", "dst"],
+      "input": {"instant": "2025-10-26T00:30:00Z", "zone": "Europe/Berlin"},
+      "expected": {"preserve_instant": true, "timezone_loss_is_reported": true}
+    },
+    {
+      "id": "binary.empty-null-and-bytes",
+      "dataset": "scalars_v1",
+      "category": "binary",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "offline_ready",
+      "tags": ["binary", "null"],
+      "input": {"base64_values": ["", "AAECA/8="], "includes_null": true},
+      "expected": {"empty_distinct_from_null": true, "comparison": "byte_exact"}
+    },
+    {
+      "id": "schema.empty-with-fields",
+      "dataset": "empty_v1",
+      "category": "schema",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["empty", "schema"],
+      "input": {"rows": 0, "fields": ["id", "name", "geom"]},
+      "expected": {"schema_preserved": true, "rows": 0}
+    },
+    {
+      "id": "schema.quoted-identifiers",
+      "dataset": "wide_rows_v1",
+      "category": "schema",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "database_required",
+      "tags": ["identifier", "sql-injection"],
+      "input": {"identifiers": ["order", "spaced column", "a\"b", "semi;drop table x"]},
+      "expected": {"identifier_quoting": "dialect", "value_interpolation": false}
+    },
+    {
+      "id": "geometry.point-xy-srid4326",
+      "dataset": "geometry_v1",
+      "category": "geometry",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["point", "xy", "srid"],
+      "input": {"wkt": "POINT (9.19 45.4642)", "srid": 4326, "dimensions": "xy"},
+      "expected": {"encoding": "geoarrow.wkb", "geometry_type": "point", "srid": 4326}
+    },
+    {
+      "id": "geometry.polygon-hole",
+      "dataset": "geometry_v1",
+      "category": "geometry",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["polygon", "ring", "hole"],
+      "input": {"wkt": "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,2 4,4 4,4 2,2 2))", "srid": 3857},
+      "expected": {"comparison": "semantic_structural", "ring_count": 2, "srid": 3857}
+    },
+    {
+      "id": "geometry.empty-vs-null",
+      "dataset": "geometry_v1",
+      "category": "geometry",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["empty", "null"],
+      "input": {"values": [{"wkt": "POINT EMPTY", "srid": 4326}, null]},
+      "expected": {"empty_distinct_from_null": true}
+    },
+    {
+      "id": "geometry.xyzm-preservation",
+      "dataset": "geometry_v1",
+      "category": "geometry",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["z", "m", "dimensions"],
+      "input": {"wkt": "POINT ZM (9.19 45.4642 120.5 7)", "srid": 4326},
+      "expected": {"dimensions": "xyzm", "silent_dimension_drop": false}
+    },
+    {
+      "id": "geometry.unknown-srid",
+      "dataset": "geometry_v1",
+      "category": "geometry",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "database_required",
+      "tags": ["srid", "unknown"],
+      "input": {"wkt": "POINT (0 0)", "srid": null},
+      "expected": {"srid": null, "default_to_4326": false}
+    },
+    {
+      "id": "write.append-atomic",
+      "dataset": "scalars_v1",
+      "category": "write",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "database_required",
+      "tags": ["append", "transaction"],
+      "input": {"mode": "append", "rows": 10000, "fault_after_row": 5000},
+      "expected": {"profile": "single_transaction", "outcome": "rolled_back", "remote_rows_added": 0}
+    },
+    {
+      "id": "write.upsert-composite-key",
+      "dataset": "keys_conflicts_v1",
+      "category": "write",
+      "classification": "new",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "database_required",
+      "tags": ["upsert", "composite-key"],
+      "input": {"mode": "upsert", "keys": ["tenant_id", "event_id"], "conflict_rate_percent": 50},
+      "expected": {"duplicate_source_policy": "reject", "counts_required": true}
+    },
+    {
+      "id": "write.replace-staged",
+      "dataset": "wide_rows_v1",
+      "category": "write",
+      "classification": "new",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "duckdb"],
+      "status": "database_required",
+      "tags": ["replace", "staging"],
+      "input": {"mode": "replace", "fault_phase": "finalizing"},
+      "expected": {"profile": "staged_swap", "old_or_new_visible": true, "half_schema_visible": false}
+    },
+    {
+      "id": "outcome.commit-response-lost",
+      "dataset": "keys_conflicts_v1",
+      "category": "outcome",
+      "classification": "corrected",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb"],
+      "status": "database_required",
+      "tags": ["commit", "network", "retry"],
+      "input": {"fault": "connection_lost_after_commit_request"},
+      "expected": {"outcome": "outcome_unknown", "automatic_retry_allowed": false}
+    },
+    {
+      "id": "arcgis.pagination-objectid-windows",
+      "dataset": "arcgis_features_v1",
+      "category": "arcgis",
+      "classification": "new",
+      "providers": ["arcgis"],
+      "status": "database_required",
+      "tags": ["pagination", "objectid"],
+      "input": {"features": 2501, "max_record_count": 1000, "unstable_offset": true},
+      "expected": {"strategy": "object_id_windows", "duplicates": 0, "missing": 0}
+    },
+    {
+      "id": "arcgis.applyedits-partial",
+      "dataset": "arcgis_features_v1",
+      "category": "arcgis",
+      "classification": "corrected",
+      "providers": ["arcgis"],
+      "status": "database_required",
+      "tags": ["applyedits", "partial"],
+      "input": {"adds": 10, "failed_object_indexes": [4], "rollback_on_failure": false},
+      "expected": {"outcome": "partially_committed", "confirmed": 9, "failed": 1}
+    },
+    {
+      "id": "arcgis.globalid-idempotency",
+      "dataset": "arcgis_features_v1",
+      "category": "arcgis",
+      "classification": "new",
+      "providers": ["arcgis"],
+      "status": "database_required",
+      "tags": ["globalid", "idempotency"],
+      "input": {"fault": "response_lost_after_applyedits", "use_global_ids": true},
+      "expected": {"outcome": "outcome_unknown", "verification_before_retry": true}
+    },
+    {
+      "id": "security.redacted-connection-error",
+      "dataset": "scalars_v1",
+      "category": "security",
+      "classification": "normative",
+      "providers": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2", "sqlite", "duckdb", "arcgis"],
+      "status": "offline_ready",
+      "tags": ["secrets", "errors"],
+      "input": {"secret_markers": ["password", "token", "dsn"], "operation": "test_connection"},
+      "expected": {"public_error_contains_secret": false, "raw_driver_message_is_public": false}
+    }
+  ]
+}

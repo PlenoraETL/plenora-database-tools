@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "gate": "postgres-postgis-read-slice",
+  "status": "passed",
+  "generated_at": "2026-07-27T04:05:42.8970150+02:00",
+  "target": {
+    "container": "dataflow-postgres",
+    "postgres": "16.4",
+    "postgis": "3.4.3",
+    "fixture_schema": "plenora_fixture"
+  },
+  "database_connections_opened": true,
+  "checks": {
+    "connection": "passed",
+    "capability_probe": "passed",
+    "introspection": "passed",
+    "arrow_read": "passed",
+    "postgis_ewkb": "passed",
+    "parameter_binding": "passed",
+    "quoted_identifiers": "passed",
+    "secret_redaction": "passed",
+    "clippy_deny_warnings": "passed"
+  },
+  "read": {
+    "rows": 10000,
+    "batch_rows": 777,
+    "batches": 13,
+    "types": [
+      "Int64",
+      "Int32",
+      "Utf8",
+      "Decimal128(38,18)",
+      "Boolean",
+      "TimestampMicrosecond(UTC)",
+      "Date32",
+      "Binary",
+      "GeoArrow-WKB"
+    ],
+    "spatial": {
+      "geometry": "PointZ",
+      "geography": "Point",
+      "srid": 4326
+    }
+  }
+}

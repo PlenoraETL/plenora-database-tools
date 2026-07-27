@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "gate": "postgres-postgis-write-reference",
+  "status": "passed",
+  "generated_at": "2026-07-27T05:47:42.956781+00:00",
+  "target": {
+    "container": "dataflow-postgres",
+    "postgres": "16.4",
+    "postgis": "3.4.3",
+    "fixture_schema": "plenora_fixture"
+  },
+  "database_connections_opened": true,
+  "checks": {
+    "create": "passed",
+    "append": "passed",
+    "replace_staging": "passed",
+    "truncate_insert": "passed",
+    "update": "passed",
+    "upsert": "passed",
+    "delete_by_keys": "passed",
+    "copy_text_from_stdin": "passed",
+    "copy_binary_from_stdin": "passed",
+    "binary_array_uuid_range_composite_interval": "passed",
+    "server_side_read_write_cancellation": "passed",
+    "tcp_keepalive_and_connect_timeouts": "passed",
+    "transactional_additive_schema_evolution": "passed",
+    "transaction_commit": "passed",
+    "spatial_gist_indexes": "passed",
+    "clippy_deny_warnings": "passed",
+    "workspace_gate": "passed"
+  },
+  "mapping_roundtrip": {
+    "decimal128_exact": "passed",
+    "jsonb": "passed",
+    "bytea": "passed",
+    "timestamp_tz": "passed",
+    "geometry_ewkb_point_z_srid_4326": "passed",
+    "geography_ewkb_point_srid_4326": "passed",
+    "enum_domain_array_time": "passed",
+    "range_composite_interval_structured": "passed",
+    "negative_scale_numeric": "passed",
+    "typed_decimal_uuid_null_parameters": "passed"
+  },
+  "final_remote_state": {
+    "rows": 12,
+    "spatial_gist_indexes": 2
+  },
+  "known_open_gates": []
+}

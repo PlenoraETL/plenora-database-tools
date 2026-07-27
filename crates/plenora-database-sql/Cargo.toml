@@ -1,0 +1,14 @@
+[package]
+name = "plenora-database-sql"
+description = "AST SQL tipizzato e renderer redatto multi-dialect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+plenora-database-core.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

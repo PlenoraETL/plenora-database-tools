@@ -1,0 +1,30 @@
+{
+  "checks": [
+    {
+      "id": "phase0-offline",
+      "status": "passed"
+    },
+    {
+      "id": "rustfmt",
+      "status": "passed"
+    },
+    {
+      "id": "clippy",
+      "status": "passed"
+    },
+    {
+      "id": "rust-tests",
+      "status": "passed"
+    },
+    {
+      "id": "cli-contract",
+      "status": "passed"
+    }
+  ],
+  "database_connections_opened": 0,
+  "gate": "pre-database-complete",
+  "generated_at": "2026-07-27T02:48:32.289606+00:00",
+  "rust_toolchain": "1.92.0",
+  "schema_version": 1,
+  "status": "passed"
+}

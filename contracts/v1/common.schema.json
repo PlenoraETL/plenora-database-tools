@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v1/common.schema.json",
+  "title": "Plenora database common definitions",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "field_id": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "provider_kind": {
+      "enum": [
+        "postgres",
+        "mysql",
+        "mariadb",
+        "sqlserver",
+        "oracle",
+        "db2",
+        "sqlite",
+        "duckdb",
+        "arcgis"
+      ]
+    },
+    "object_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object"],
+      "properties": {
+        "catalog": {"$ref": "#/$defs/identifier"},
+        "schema": {"$ref": "#/$defs/identifier"},
+        "object": {"$ref": "#/$defs/identifier"},
+        "layer_id": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0},
+            {"$ref": "#/$defs/identifier"}
+          ]
+        }
+      }
+    },
+    "geometry_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_id", "encoding", "dimensions", "nullable"],
+      "properties": {
+        "field_id": {"$ref": "#/$defs/field_id"},
+        "encoding": {"const": "geoarrow.wkb"},
+        "dimensions": {"enum": ["xy", "xyz", "xym", "xyzm"]},
+        "nullable": {"type": "boolean"},
+        "geometry_type": {
+          "enum": [
+            "unknown",
+            "point",
+            "multipoint",
+            "linestring",
+            "multilinestring",
+            "polygon",
+            "multipolygon",
+            "geometrycollection"
+          ]
+        },
+        "srid": {"type": ["integer", "null"], "minimum": 0},
+        "crs": {"type": ["string", "null"], "maxLength": 65536},
+        "spatial_semantics": {
+          "enum": ["geometry", "geography", "feature_service"]
+        }
+      }
+    },
+    "mapping_policy": {
+      "enum": ["strict", "compatible", "lossy", "native"]
+    },
+    "transaction_profile": {
+      "enum": [
+        "read_only",
+        "single_transaction",
+        "staged_swap",
+        "chunk_committed",
+        "best_effort_ddl",
+        "arcgis_apply_edits"
+      ]
+    }
+  }
+}

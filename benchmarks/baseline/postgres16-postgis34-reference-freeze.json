@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "gate": "postgres-postgis-reference-freeze",
+  "status": "passed",
+  "generated_at": "2026-07-27T05:47:42.956781+00:00",
+  "database_connections_opened": true,
+  "secrets_persisted": false,
+  "freeze_scope": "postgres-postgis-data-path-v3",
+  "checks": [
+    "container_health",
+    "clippy_deny_warnings",
+    "read_write_spatial_live",
+    "query_ast_cte_join_group_having",
+    "bounded_shared_pool_and_session_reset",
+    "server_side_read_write_cancellation",
+    "tcp_keepalive_and_connect_timeouts",
+    "advanced_catalog_introspection",
+    "advanced_type_read_write_roundtrip",
+    "binary_array_uuid_range_composite_interval_roundtrip",
+    "negative_scale_numeric_and_typed_parameters",
+    "transactional_additive_schema_evolution",
+    "write_preflight",
+    "byte_limits",
+    "fault_before_commit_rollback",
+    "fault_after_commit_unknown",
+    "copy_text_binary_prepared_differential"
+  ],
+  "benchmark": {
+    "rows": 1000,
+    "copy_text_micros": 37454,
+    "copy_binary_micros": 39742,
+    "prepared_micros": 315877,
+    "differences": 0
+  },
+  "open_non_blocking": []
+}

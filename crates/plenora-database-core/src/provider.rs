@@ -1,0 +1,197 @@
+use crate::arrow::{RecordBatch, SchemaRef};
+use crate::capabilities::ProviderCapabilities;
+use crate::loss::LossReport;
+use crate::outcome::WriteOutcome;
+use crate::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
+use crate::query::QueryOperation;
+use crate::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+
+pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretString(String);
+
+impl SecretString {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretString([REDACTED])")
+    }
+}
+
+pub trait SecretResolver: Send + Sync {
+    fn resolve<'a>(&'a self, connection_ref: &'a str) -> ProviderFuture<'a, SecretString>;
+}
+
+pub trait Cancellation: Send + Sync {
+    fn is_cancelled(&self) -> bool;
+}
+
+pub trait BatchStream: Send {
+    fn schema(&self) -> SchemaRef;
+    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>>;
+
+    fn next_batch_with_cancellation<'a>(
+        &'a mut self,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(crate::DatabaseError {
+                    category: crate::ErrorCategory::Cancelled,
+                    phase: crate::ErrorPhase::Read,
+                    provider: None,
+                    retryable: false,
+                    execution_id: None,
+                    message: "lettura cancellata".to_owned(),
+                });
+            }
+            self.next_batch().await
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ParameterValue {
+    Bool(bool),
+    I32(i32),
+    I64(i64),
+    F64(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Date(String),
+    Timestamp(String),
+    TimestampTz(String),
+    Decimal(String),
+    Uuid(String),
+    Json(Value),
+    Wkb {
+        bytes: Vec<u8>,
+        srid: Option<u32>,
+        dimensions: crate::geometry::Dimensions,
+        semantics: crate::geometry::SpatialSemantics,
+    },
+    Null {
+        type_name: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ParameterBag(BTreeMap<String, ParameterValue>);
+
+impl ParameterBag {
+    #[must_use]
+    pub const fn new(values: BTreeMap<String, ParameterValue>) -> Self {
+        Self(values)
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&ParameterValue> {
+        self.0.get(name)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionInfo {
+    pub provider: ProviderKind,
+    pub server_version: String,
+    pub connection_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inspection {
+    pub operation: String,
+    pub document: Value,
+}
+
+pub struct PreparedWrite {
+    pub operation: WriteOperation,
+    pub loss_report: LossReport,
+}
+
+pub trait Provider: Send + Sync {
+    fn kind(&self) -> ProviderKind;
+
+    fn test_connection<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, ConnectionInfo>;
+
+    fn probe_capabilities<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, ProviderCapabilities>;
+
+    fn inspect<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a Operation,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, Inspection>;
+
+    fn read<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a ReadOperation,
+        parameters: &'a ParameterBag,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>>;
+
+    fn query<'a>(
+        &'a self,
+        _secret: &'a SecretString,
+        _operation: &'a QueryOperation,
+        _parameters: &'a ParameterBag,
+        _cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        Box::pin(async move {
+            Err(crate::DatabaseError::unsupported(
+                self.kind(),
+                crate::ErrorPhase::Prepare,
+                "query AST non supportata dal provider",
+            ))
+        })
+    }
+
+    fn prepare_write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a WriteOperation,
+        input_schema: SchemaRef,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, PreparedWrite>;
+
+    fn write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        prepared: PreparedWrite,
+        input: Box<dyn BatchStream>,
+        cancellation: &'a dyn Cancellation,
+    ) -> ProviderFuture<'a, WriteOutcome>;
+}

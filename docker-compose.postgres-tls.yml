@@ -1,0 +1,90 @@
+name: plenora-database-tools
+
+services:
+  postgres-tls-certgen:
+    image: postgis/postgis:16-3.4
+    container_name: dataflow-postgres-tls-certgen
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        if [[ ! -s /tls/ca.crt || ! -s /tls/server.crt || ! -s /tls/client.crt ]]; then
+          rm -f /tls/*
+          openssl genrsa -out /tls/ca.key 3072
+          openssl req -x509 -new -sha256 -days 3650 \
+            -key /tls/ca.key -out /tls/ca.crt \
+            -subj "/CN=Plenora PostgreSQL Test CA"
+          openssl genrsa -out /tls/server.key 2048
+          openssl req -new -sha256 \
+            -key /tls/server.key -out /tls/server.csr \
+            -subj "/CN=dataflow-postgres-tls"
+          printf '%s\n' \
+            'subjectAltName=DNS:dataflow-postgres-tls,DNS:localhost,IP:127.0.0.1' \
+            'extendedKeyUsage=serverAuth' > /tmp/server.ext
+          openssl x509 -req -sha256 -days 3650 \
+            -in /tls/server.csr -CA /tls/ca.crt -CAkey /tls/ca.key \
+            -CAcreateserial -out /tls/server.crt -extfile /tmp/server.ext
+          openssl genrsa -out /tls/client.key 2048
+          openssl req -new -sha256 \
+            -key /tls/client.key -out /tls/client.csr \
+            -subj "/CN=dataflow_tls"
+          printf '%s\n' 'extendedKeyUsage=clientAuth' > /tmp/client.ext
+          openssl x509 -req -sha256 -days 3650 \
+            -in /tls/client.csr -CA /tls/ca.crt -CAkey /tls/ca.key \
+            -CAcreateserial -out /tls/client.crt -extfile /tmp/client.ext
+          rm -f /tls/*.csr /tls/*.srl
+          chown 999:999 /tls/*
+          chmod 0644 /tls/ca.crt /tls/server.crt /tls/client.crt
+          chmod 0600 /tls/ca.key /tls/server.key /tls/client.key
+        fi
+    volumes:
+      - postgres_tls_certs:/tls
+    restart: "no"
+
+  postgres-tls:
+    image: postgis/postgis:16-3.4
+    container_name: dataflow-postgres-tls
+    depends_on:
+      postgres-tls-certgen:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: dataflow_tls
+      POSTGRES_PASSWORD: dataflow_tls_test_2026
+      POSTGRES_DB: dataflow_tls_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_tls_data:/var/lib/postgresql/data
+      - postgres_tls_certs:/tls:ro
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/postgres-tls/pg_hba.conf:/etc/postgresql/pg_hba_tls.conf:ro
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - ssl_ca_file=/tls/ca.crt
+      - -c
+      - hba_file=/etc/postgresql/pg_hba_tls.conf
+      - -c
+      - password_encryption=scram-sha-256
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          PGPASSWORD=dataflow_tls_test_2026
+          psql "host=localhost user=dataflow_tls dbname=dataflow_tls_test
+          sslmode=verify-full sslrootcert=/tls/ca.crt
+          sslcert=/tls/client.crt sslkey=/tls/client.key"
+          -v ON_ERROR_STOP=1 -Atqc "SELECT 1" | grep -qx 1
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: "no"
+
+volumes:
+  postgres_tls_data:
+  postgres_tls_certs:

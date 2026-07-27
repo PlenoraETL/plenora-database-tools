@@ -1,0 +1,1048 @@
+{
+  "campaign": "postgres16-postgis34-performance-adaptive-bytes",
+  "environment": {
+    "container": "dataflow-postgres",
+    "cpu_count": 32,
+    "platform": "Windows-AMD64",
+    "postgis_major_minor": "3.4",
+    "postgis_version": "3.4.3",
+    "postgres_major": "16",
+    "postgres_version": "16.4 (Debian 16.4-1.pgdg110+2)",
+    "rust_image": "rust:1.92"
+  },
+  "generated_at": "2026-07-27T08:52:03.849308+00:00",
+  "manifest": "benchmarks/manifests/postgres-performance-adaptive-bytes.json",
+  "raw_results": [
+    {
+      "batch_rows": 32768,
+      "configured_target_batch_bytes": 1048576,
+      "metrics": {
+        "cancellations": 0,
+        "invalidated_sessions": 0,
+        "pool_checkouts": 6,
+        "pool_new_connections": 1,
+        "pool_reuses": 5,
+        "pool_timeouts": 0,
+        "read_batches": 666,
+        "read_bytes": 654893568,
+        "read_rows": 600000,
+        "read_target_limited_batches": 660,
+        "write_rows": 0,
+        "writes_committed": 0,
+        "writes_outcome_unknown": 0
+      },
+      "modes": [
+        "copy_binary"
+      ],
+      "peak_rss_bytes": 71958528,
+      "postgis_version": "3.4.3",
+      "postgres_version": "16.4 (Debian 16.4-1.pgdg110+2)",
+      "profile": "wide",
+      "reads": [
+        {
+          "acquire_micros": 2001,
+          "batches": 111,
+          "first_batch_micros": 2894,
+          "iteration": 0,
+          "materialized_bytes": 109148928,
+          "max_batch_bytes": 1267360,
+          "max_batch_rows": 3491,
+          "min_batch_rows": 625,
+          "remaining_micros": 81538,
+          "rows": 100000,
+          "rows_per_second": 1156952,
+          "total_micros": 86434
+        },
+        {
+          "acquire_micros": 1702,
+          "batches": 111,
+          "first_batch_micros": 3110,
+          "iteration": 1,
+          "materialized_bytes": 109148928,
+          "max_batch_bytes": 1267360,
+          "max_batch_rows": 3491,
+          "min_batch_rows": 625,
+          "remaining_micros": 79787,
+          "rows": 100000,
+          "rows_per_second": 1182033,
+          "total_micros": 84600
+        },
+        {
+          "acquire_micros": 1729,
+          "batches": 111,
+          "first_batch_micros": 2571,
+          "iteration": 2,
+          "materialized_bytes": 109148928,
+          "max_batch_bytes": 1267360,
+          "max_batch_rows": 3491,
+          "min_batch_rows": 625,
+          "remaining_micros": 80551,
+          "rows": 100000,
+          "rows_per_second": 1178508,
+          "total_micros": 84853
+        },
+        {
+          "acquire_micros": 1550,
+          "batches": 111,
+          "first_batch_micros": 2863,
+          "iteration": 3,
+          "materialized_bytes": 109148928,
+          "max_batch_bytes": 1267360,
+          "max_batch_rows": 3491,
+          "min_batch_rows": 625,
+          "remaining_micros": 80776,
+          "rows": 100000,
+          "rows_per_second": 1173846,
+          "total_micros": 85190
+        },
+        {
+          "acquire_micros": 1845,
+          "batches": 111,
+          "first_batch_micros": 2713,
+          "iteration": 4,
+          "materialized_bytes": 109148928,
+          "max_batch_bytes": 1267360,
+          "max_batch_rows": 3491,
+          "min_batch_rows": 625,
+          "remaining_micros": 81245,
+          "rows": 100000,
+          "rows_per_second": 1165446,
+          "total_micros": 85804
+        }
+      ],
+      "repeat": 5,
+      "rows": 100000,
+      "schema_version": 1,
+      "warmup": 1,
+      "writes": [
+        {
+          "differences": 0,
+          "execute_micros": 230913,
+          "iteration": 0,
+          "mode": "copy_binary",
+          "prepare_micros": 4742,
+          "rows": 100000,
+          "rows_per_second": 433063,
+          "total_micros": 235906,
+          "wal_bytes": 21197392
+        },
+        {
+          "differences": 0,
+          "execute_micros": 238165,
+          "iteration": 1,
+          "mode": "copy_binary",
+          "prepare_micros": 4806,
+          "rows": 100000,
+          "rows_per_second": 419876,
+          "total_micros": 243228,
+          "wal_bytes": 21197688
+        },
+        {
+          "differences": 0,
+          "execute_micros": 237601,
+          "iteration": 2,
+          "mode": "copy_binary",
+          "prepare_micros": 4868,
+          "rows": 100000,
+          "rows_per_second": 420873,
+          "total_micros": 242750,
+          "wal_bytes": 21197520
+        },
+        {
+          "differences": 0,
+          "execute_micros": 217946,
+          "iteration": 3,
+          "mode": "copy_binary",
+          "prepare_micros": 4614,
+          "rows": 100000,
+          "rows_per_second": 458829,
+          "total_micros": 222862,
+          "wal_bytes": 21198168
+        },
+        {
+          "differences": 0,
+          "execute_micros": 228831,
+          "iteration": 4,
+          "mode": "copy_binary",
+          "prepare_micros": 4837,
+          "rows": 100000,
+          "rows_per_second": 437003,
+          "total_micros": 233923,
+          "wal_bytes": 21197520
+        }
+      ]
+    },
+    {
+      "batch_rows": 32768,
+      "configured_target_batch_bytes": 4194304,
+      "metrics": {
+        "cancellations": 0,
+        "invalidated_sessions": 0,
+        "pool_checkouts": 6,
+        "pool_new_connections": 1,
+        "pool_reuses": 5,
+        "pool_timeouts": 0,
+        "read_batches": 66,
+        "read_bytes": 265347288,
+        "read_rows": 600000,
+        "read_target_limited_batches": 60,
+        "write_rows": 0,
+        "writes_committed": 0,
+        "writes_outcome_unknown": 0
+      },
+      "modes": [
+        "copy_binary"
+      ],
+      "peak_rss_bytes": 29265920,
+      "postgis_version": "3.4.3",
+      "postgres_version": "16.4 (Debian 16.4-1.pgdg110+2)",
+      "profile": "wide",
+      "reads": [
+        {
+          "acquire_micros": 1655,
+          "batches": 11,
+          "first_batch_micros": 10677,
+          "iteration": 0,
+          "materialized_bytes": 44224548,
+          "max_batch_bytes": 4592364,
+          "max_batch_rows": 13890,
+          "min_batch_rows": 5398,
+          "remaining_micros": 70937,
+          "rows": 100000,
+          "rows_per_second": 1200883,
+          "total_micros": 83272
+        },
+        {
+          "acquire_micros": 1634,
+          "batches": 11,
+          "first_batch_micros": 12036,
+          "iteration": 1,
+          "materialized_bytes": 44224548,
+          "max_batch_bytes": 4592364,
+          "max_batch_rows": 13890,
+          "min_batch_rows": 5398,
+          "remaining_micros": 71146,
+          "rows": 100000,
+          "rows_per_second": 1179008,
+          "total_micros": 84817
+        },
+        {
+          "acquire_micros": 1613,
+          "batches": 11,
+          "first_batch_micros": 12062,
+          "iteration": 2,
+          "materialized_bytes": 44224548,
+          "max_batch_bytes": 4592364,
+          "max_batch_rows": 13890,
+          "min_batch_rows": 5398,
+          "remaining_micros": 72388,
+          "rows": 100000,
+          "rows_per_second": 1161912,
+          "total_micros": 86065
+        },
+        {
+          "acquire_micros": 1659,
+          "batches": 11,
+          "first_batch_micros": 12052,
+          "iteration": 3,
+          "materialized_bytes": 44224548,
+          "max_batch_bytes": 4592364,
+          "max_batch_rows": 13890,
+          "min_batch_rows": 5398,
+          "remaining_micros": 72212,
+          "rows": 100000,
+          "rows_per_second": 1163819,
+          "total_micros": 85924
+        },
+        {
+          "acquire_micros": 1721,
+          "batches": 11,
+          "first_batch_micros": 11191,
+          "iteration": 4,
+          "materialized_bytes": 44224548,
+          "max_batch_bytes": 4592364,
+          "max_batch_rows": 13890,
+          "min_batch_rows": 5398,
+          "remaining_micros": 72695,
+          "rows": 100000,
+          "rows_per_second": 1168115,
+          "total_micros": 85608
+        }
+      ],
+      "repeat": 5,
+      "rows": 100000,
+      "schema_version": 1,
+      "warmup": 1,
+      "writes": [
+        {
+          "differences": 0,
+          "execute_micros": 133603,
+          "iteration": 0,
+          "mode": "copy_binary",
+          "prepare_micros": 4699,
+          "rows": 100000,
+          "rows_per_second": 748486,
+          "total_micros": 138566,
+          "wal_bytes": 21304960
+        },
+        {
+          "differences": 0,
+          "execute_micros": 230712,
+          "iteration": 1,
+          "mode": "copy_binary",
+          "prepare_micros": 5147,
+          "rows": 100000,
+          "rows_per_second": 433440,
+          "total_micros": 236151,
+          "wal_bytes": 21214128
+        },
+        {
+          "differences": 0,
+          "execute_micros": 125955,
+          "iteration": 2,
+          "mode": "copy_binary",
+          "prepare_micros": 4754,
+          "rows": 100000,
+          "rows_per_second": 793934,
+          "total_micros": 130996,
+          "wal_bytes": 21222984
+        },
+        {
+          "differences": 0,
+          "execute_micros": 131506,
+          "iteration": 3,
+          "mode": "copy_binary",
+          "prepare_micros": 4552,
+          "rows": 100000,
+          "rows_per_second": 760421,
+          "total_micros": 136307,
+          "wal_bytes": 21205576
+        },
+        {
+          "differences": 0,
+          "execute_micros": 129722,
+          "iteration": 4,
+          "mode": "copy_binary",
+          "prepare_micros": 4808,
+          "rows": 100000,
+          "rows_per_second": 770879,
+          "total_micros": 134789,
+          "wal_bytes": 21226352
+        }
+      ]
+    },
+    {
+      "batch_rows": 32768,
+      "configured_target_batch_bytes": 1048576,
+      "metrics": {
+        "cancellations": 0,
+        "invalidated_sessions": 0,
+        "pool_checkouts": 6,
+        "pool_new_connections": 1,
+        "pool_reuses": 5,
+        "pool_timeouts": 0,
+        "read_batches": 210,
+        "read_bytes": 211501920,
+        "read_rows": 600000,
+        "read_target_limited_batches": 204,
+        "write_rows": 0,
+        "writes_committed": 0,
+        "writes_outcome_unknown": 0
+      },
+      "modes": [
+        "copy_binary"
+      ],
+      "peak_rss_bytes": 20164608,
+      "postgis_version": "3.4.3",
+      "postgres_version": "16.4 (Debian 16.4-1.pgdg110+2)",
+      "profile": "spatial",
+      "reads": [
+        {
+          "acquire_micros": 1641,
+          "batches": 35,
+          "first_batch_micros": 4326,
+          "iteration": 0,
+          "materialized_bytes": 35250320,
+          "max_batch_bytes": 1007152,
+          "max_batch_rows": 6313,
+          "min_batch_rows": 528,
+          "remaining_micros": 67103,
+          "rows": 100000,
+          "rows_per_second": 1368531,
+          "total_micros": 73071
+        },
+        {
+          "acquire_micros": 1634,
+          "batches": 35,
+          "first_batch_micros": 4566,
+          "iteration": 1,
+          "materialized_bytes": 35250320,
+          "max_batch_bytes": 1007152,
+          "max_batch_rows": 6313,
+          "min_batch_rows": 528,
+          "remaining_micros": 65174,
+          "rows": 100000,
+          "rows_per_second": 1401050,
+          "total_micros": 71375
+        },
+        {
+          "acquire_micros": 1664,
+          "batches": 35,
+          "first_batch_micros": 4318,
+          "iteration": 2,
+          "materialized_bytes": 35250320,
+          "max_batch_bytes": 1007152,
+          "max_batch_rows": 6313,
+          "min_batch_rows": 528,
+          "remaining_micros": 64535,
+          "rows": 100000,
+          "rows_per_second": 1418077,
+          "total_micros": 70518
+        },
+        {
+          "acquire_micros": 1517,
+          "batches": 35,
+          "first_batch_micros": 4350,
+          "iteration": 3,
+          "materialized_bytes": 35250320,
+          "max_batch_bytes": 1007152,
+          "max_batch_rows": 6313,
+          "min_batch_rows": 528,
+          "remaining_micros": 64521,
+          "rows": 100000,
+          "rows_per_second": 1420656,
+          "total_micros": 70390
+        },
+        {
+          "acquire_micros": 1777,
+          "batches": 35,
+          "first_batch_micros": 4296,
+          "iteration": 4,
+          "materialized_bytes": 35250320,
+          "max_batch_bytes": 1007152,
+          "max_batch_rows": 6313,
+          "min_batch_rows": 528,
+          "remaining_micros": 65324,
+          "rows": 100000,
+          "rows_per_second": 1400579,
+          "total_micros": 71399
+        }
+      ],
+      "repeat": 5,
+      "rows": 100000,
+      "schema_version": 1,
+      "warmup": 1,
+      "writes": [
+        {
+          "differences": 0,
+          "execute_micros": 120801,
+          "iteration": 0,
+          "mode": "copy_binary",
+          "prepare_micros": 4698,
+          "rows": 100000,
+          "rows_per_second": 827807,
+          "total_micros": 125755,
+          "wal_bytes": 12334816
+        },
+        {
+          "differences": 0,
+          "execute_micros": 124182,
+          "iteration": 1,
+          "mode": "copy_binary",
+          "prepare_micros": 4667,
+          "rows": 100000,
+          "rows_per_second": 805269,
+          "total_micros": 129137,
+          "wal_bytes": 12332520
+        },
+        {
+          "differences": 0,
+          "execute_micros": 116965,
+          "iteration": 2,
+          "mode": "copy_binary",
+          "prepare_micros": 4730,
+          "rows": 100000,
+          "rows_per_second": 854956,
+          "total_micros": 121951,
+          "wal_bytes": 12332104
+        },
+        {
+          "differences": 0,
+          "execute_micros": 121626,
+          "iteration": 3,
+          "mode": "copy_binary",
+          "prepare_micros": 5498,
+          "rows": 100000,
+          "rows_per_second": 822192,
+          "total_micros": 127432,
+          "wal_bytes": 12397192
+        },
+        {
+          "differences": 0,
+          "execute_micros": 125067,
+          "iteration": 4,
+          "mode": "copy_binary",
+          "prepare_micros": 4568,
+          "rows": 100000,
+          "rows_per_second": 799571,
+          "total_micros": 129895,
+          "wal_bytes": 12332240
+        }
+      ]
+    },
+    {
+      "batch_rows": 32768,
+      "configured_target_batch_bytes": 4194304,
+      "metrics": {
+        "cancellations": 0,
+        "invalidated_sessions": 0,
+        "pool_checkouts": 6,
+        "pool_new_connections": 1,
+        "pool_reuses": 5,
+        "pool_timeouts": 0,
+        "read_batches": 30,
+        "read_bytes": 117982560,
+        "read_rows": 600000,
+        "read_target_limited_batches": 24,
+        "write_rows": 0,
+        "writes_committed": 0,
+        "writes_outcome_unknown": 0
+      },
+      "modes": [
+        "copy_binary"
+      ],
+      "peak_rss_bytes": 17784832,
+      "postgis_version": "3.4.3",
+      "postgres_version": "16.4 (Debian 16.4-1.pgdg110+2)",
+      "profile": "spatial",
+      "reads": [
+        {
+          "acquire_micros": 1899,
+          "batches": 5,
+          "first_batch_micros": 17663,
+          "iteration": 0,
+          "materialized_bytes": 19663760,
+          "max_batch_bytes": 3932752,
+          "max_batch_rows": 25086,
+          "min_batch_rows": 4405,
+          "remaining_micros": 52153,
+          "rows": 100000,
+          "rows_per_second": 1394388,
+          "total_micros": 71716
+        },
+        {
+          "acquire_micros": 2165,
+          "batches": 5,
+          "first_batch_micros": 18697,
+          "iteration": 1,
+          "materialized_bytes": 19663760,
+          "max_batch_bytes": 3932752,
+          "max_batch_rows": 25086,
+          "min_batch_rows": 4405,
+          "remaining_micros": 54288,
+          "rows": 100000,
+          "rows_per_second": 1330654,
+          "total_micros": 75151
+        },
+        {
+          "acquire_micros": 1674,
+          "batches": 5,
+          "first_batch_micros": 17195,
+          "iteration": 2,
+          "materialized_bytes": 19663760,
+          "max_batch_bytes": 3932752,
+          "max_batch_rows": 25086,
+          "min_batch_rows": 4405,
+          "remaining_micros": 53095,
+          "rows": 100000,
+          "rows_per_second": 1389564,
+          "total_micros": 71965
+        },
+        {
+          "acquire_micros": 1784,
+          "batches": 5,
+          "first_batch_micros": 17195,
+          "iteration": 3,
+          "materialized_bytes": 19663760,
+          "max_batch_bytes": 3932752,
+          "max_batch_rows": 25086,
+          "min_batch_rows": 4405,
+          "remaining_micros": 52838,
+          "rows": 100000,
+          "rows_per_second": 1392389,
+          "total_micros": 71819
+        },
+        {
+          "acquire_micros": 1661,
+          "batches": 5,
+          "first_batch_micros": 17359,
+          "iteration": 4,
+          "materialized_bytes": 19663760,
+          "max_batch_bytes": 3932752,
+          "max_batch_rows": 25086,
+          "min_batch_rows": 4405,
+          "remaining_micros": 51643,
+          "rows": 100000,
+          "rows_per_second": 1415147,
+          "total_micros": 70664
+        }
+      ],
+      "repeat": 5,
+      "rows": 100000,
+      "schema_version": 1,
+      "warmup": 1,
+      "writes": [
+        {
+          "differences": 0,
+          "execute_micros": 89730,
+          "iteration": 0,
+          "mode": "copy_binary",
+          "prepare_micros": 4669,
+          "rows": 100000,
+          "rows_per_second": 1114454,
+          "total_micros": 94659,
+          "wal_bytes": 12330192
+        },
+        {
+          "differences": 0,
+          "execute_micros": 88487,
+          "iteration": 1,
+          "mode": "copy_binary",
+          "prepare_micros": 5182,
+          "rows": 100000,
+          "rows_per_second": 1130109,
+          "total_micros": 93984,
+          "wal_bytes": 12330328
+        },
+        {
+          "differences": 0,
+          "execute_micros": 89312,
+          "iteration": 2,
+          "mode": "copy_binary",
+          "prepare_micros": 4819,
+          "rows": 100000,
+          "rows_per_second": 1119670,
+          "total_micros": 94413,
+          "wal_bytes": 12339896
+        },
+        {
+          "differences": 0,
+          "execute_micros": 90314,
+          "iteration": 3,
+          "mode": "copy_binary",
+          "prepare_micros": 4677,
+          "rows": 100000,
+          "rows_per_second": 1107248,
+          "total_micros": 95247,
+          "wal_bytes": 12330240
+        },
+        {
+          "differences": 0,
+          "execute_micros": 86370,
+          "iteration": 4,
+          "mode": "copy_binary",
+          "prepare_micros": 4687,
+          "rows": 100000,
+          "rows_per_second": 1157809,
+          "total_micros": 91323,
+          "wal_bytes": 12330256
+        }
+      ]
+    }
+  ],
+  "sample_count": 5,
+  "schema_version": 1,
+  "secrets_persisted": false,
+  "status": "passed",
+  "summaries": [
+    {
+      "batch_rows": 32768,
+      "peak_rss_bytes": 71958528,
+      "profile": "wide",
+      "read": {
+        "acquire_micros": {
+          "max": 2001.0,
+          "median": 1729.0,
+          "min": 1550.0,
+          "p95": 2001.0
+        },
+        "first_batch_micros": {
+          "max": 3110.0,
+          "median": 2863.0,
+          "min": 2571.0,
+          "p95": 3110.0
+        },
+        "materialized_bytes": {
+          "max": 109148928.0,
+          "median": 109148928.0,
+          "min": 109148928.0,
+          "p95": 109148928.0
+        },
+        "max_batch_bytes": {
+          "max": 1267360.0,
+          "median": 1267360.0,
+          "min": 1267360.0,
+          "p95": 1267360.0
+        },
+        "max_batch_rows": {
+          "max": 3491.0,
+          "median": 3491.0,
+          "min": 3491.0,
+          "p95": 3491.0
+        },
+        "min_batch_rows": {
+          "max": 625.0,
+          "median": 625.0,
+          "min": 625.0,
+          "p95": 625.0
+        },
+        "remaining_micros": {
+          "max": 81538.0,
+          "median": 80776.0,
+          "min": 79787.0,
+          "p95": 81538.0
+        },
+        "rows_per_second": {
+          "max": 1182033.0,
+          "median": 1173846.0,
+          "min": 1156952.0,
+          "p95": 1182033.0
+        },
+        "total_micros": {
+          "max": 86434.0,
+          "median": 85190.0,
+          "min": 84600.0,
+          "p95": 86434.0
+        }
+      },
+      "rows": 100000,
+      "target_batch_bytes": 1048576,
+      "write": {
+        "copy_binary": {
+          "execute_micros": {
+            "max": 238165.0,
+            "median": 230913.0,
+            "min": 217946.0,
+            "p95": 238165.0
+          },
+          "prepare_micros": {
+            "max": 4868.0,
+            "median": 4806.0,
+            "min": 4614.0,
+            "p95": 4868.0
+          },
+          "rows_per_second": {
+            "max": 458829.0,
+            "median": 433063.0,
+            "min": 419876.0,
+            "p95": 458829.0
+          },
+          "total_micros": {
+            "max": 243228.0,
+            "median": 235906.0,
+            "min": 222862.0,
+            "p95": 243228.0
+          },
+          "wal_bytes": {
+            "max": 21198168.0,
+            "median": 21197520.0,
+            "min": 21197392.0,
+            "p95": 21198168.0
+          }
+        }
+      }
+    },
+    {
+      "batch_rows": 32768,
+      "peak_rss_bytes": 29265920,
+      "profile": "wide",
+      "read": {
+        "acquire_micros": {
+          "max": 1721.0,
+          "median": 1655.0,
+          "min": 1613.0,
+          "p95": 1721.0
+        },
+        "first_batch_micros": {
+          "max": 12062.0,
+          "median": 12036.0,
+          "min": 10677.0,
+          "p95": 12062.0
+        },
+        "materialized_bytes": {
+          "max": 44224548.0,
+          "median": 44224548.0,
+          "min": 44224548.0,
+          "p95": 44224548.0
+        },
+        "max_batch_bytes": {
+          "max": 4592364.0,
+          "median": 4592364.0,
+          "min": 4592364.0,
+          "p95": 4592364.0
+        },
+        "max_batch_rows": {
+          "max": 13890.0,
+          "median": 13890.0,
+          "min": 13890.0,
+          "p95": 13890.0
+        },
+        "min_batch_rows": {
+          "max": 5398.0,
+          "median": 5398.0,
+          "min": 5398.0,
+          "p95": 5398.0
+        },
+        "remaining_micros": {
+          "max": 72695.0,
+          "median": 72212.0,
+          "min": 70937.0,
+          "p95": 72695.0
+        },
+        "rows_per_second": {
+          "max": 1200883.0,
+          "median": 1168115.0,
+          "min": 1161912.0,
+          "p95": 1200883.0
+        },
+        "total_micros": {
+          "max": 86065.0,
+          "median": 85608.0,
+          "min": 83272.0,
+          "p95": 86065.0
+        }
+      },
+      "rows": 100000,
+      "target_batch_bytes": 4194304,
+      "write": {
+        "copy_binary": {
+          "execute_micros": {
+            "max": 230712.0,
+            "median": 131506.0,
+            "min": 125955.0,
+            "p95": 230712.0
+          },
+          "prepare_micros": {
+            "max": 5147.0,
+            "median": 4754.0,
+            "min": 4552.0,
+            "p95": 5147.0
+          },
+          "rows_per_second": {
+            "max": 793934.0,
+            "median": 760421.0,
+            "min": 433440.0,
+            "p95": 793934.0
+          },
+          "total_micros": {
+            "max": 236151.0,
+            "median": 136307.0,
+            "min": 130996.0,
+            "p95": 236151.0
+          },
+          "wal_bytes": {
+            "max": 21304960.0,
+            "median": 21222984.0,
+            "min": 21205576.0,
+            "p95": 21304960.0
+          }
+        }
+      }
+    },
+    {
+      "batch_rows": 32768,
+      "peak_rss_bytes": 20164608,
+      "profile": "spatial",
+      "read": {
+        "acquire_micros": {
+          "max": 1777.0,
+          "median": 1641.0,
+          "min": 1517.0,
+          "p95": 1777.0
+        },
+        "first_batch_micros": {
+          "max": 4566.0,
+          "median": 4326.0,
+          "min": 4296.0,
+          "p95": 4566.0
+        },
+        "materialized_bytes": {
+          "max": 35250320.0,
+          "median": 35250320.0,
+          "min": 35250320.0,
+          "p95": 35250320.0
+        },
+        "max_batch_bytes": {
+          "max": 1007152.0,
+          "median": 1007152.0,
+          "min": 1007152.0,
+          "p95": 1007152.0
+        },
+        "max_batch_rows": {
+          "max": 6313.0,
+          "median": 6313.0,
+          "min": 6313.0,
+          "p95": 6313.0
+        },
+        "min_batch_rows": {
+          "max": 528.0,
+          "median": 528.0,
+          "min": 528.0,
+          "p95": 528.0
+        },
+        "remaining_micros": {
+          "max": 67103.0,
+          "median": 65174.0,
+          "min": 64521.0,
+          "p95": 67103.0
+        },
+        "rows_per_second": {
+          "max": 1420656.0,
+          "median": 1401050.0,
+          "min": 1368531.0,
+          "p95": 1420656.0
+        },
+        "total_micros": {
+          "max": 73071.0,
+          "median": 71375.0,
+          "min": 70390.0,
+          "p95": 73071.0
+        }
+      },
+      "rows": 100000,
+      "target_batch_bytes": 1048576,
+      "write": {
+        "copy_binary": {
+          "execute_micros": {
+            "max": 125067.0,
+            "median": 121626.0,
+            "min": 116965.0,
+            "p95": 125067.0
+          },
+          "prepare_micros": {
+            "max": 5498.0,
+            "median": 4698.0,
+            "min": 4568.0,
+            "p95": 5498.0
+          },
+          "rows_per_second": {
+            "max": 854956.0,
+            "median": 822192.0,
+            "min": 799571.0,
+            "p95": 854956.0
+          },
+          "total_micros": {
+            "max": 129895.0,
+            "median": 127432.0,
+            "min": 121951.0,
+            "p95": 129895.0
+          },
+          "wal_bytes": {
+            "max": 12397192.0,
+            "median": 12332520.0,
+            "min": 12332104.0,
+            "p95": 12397192.0
+          }
+        }
+      }
+    },
+    {
+      "batch_rows": 32768,
+      "peak_rss_bytes": 17784832,
+      "profile": "spatial",
+      "read": {
+        "acquire_micros": {
+          "max": 2165.0,
+          "median": 1784.0,
+          "min": 1661.0,
+          "p95": 2165.0
+        },
+        "first_batch_micros": {
+          "max": 18697.0,
+          "median": 17359.0,
+          "min": 17195.0,
+          "p95": 18697.0
+        },
+        "materialized_bytes": {
+          "max": 19663760.0,
+          "median": 19663760.0,
+          "min": 19663760.0,
+          "p95": 19663760.0
+        },
+        "max_batch_bytes": {
+          "max": 3932752.0,
+          "median": 3932752.0,
+          "min": 3932752.0,
+          "p95": 3932752.0
+        },
+        "max_batch_rows": {
+          "max": 25086.0,
+          "median": 25086.0,
+          "min": 25086.0,
+          "p95": 25086.0
+        },
+        "min_batch_rows": {
+          "max": 4405.0,
+          "median": 4405.0,
+          "min": 4405.0,
+          "p95": 4405.0
+        },
+        "remaining_micros": {
+          "max": 54288.0,
+          "median": 52838.0,
+          "min": 51643.0,
+          "p95": 54288.0
+        },
+        "rows_per_second": {
+          "max": 1415147.0,
+          "median": 1392389.0,
+          "min": 1330654.0,
+          "p95": 1415147.0
+        },
+        "total_micros": {
+          "max": 75151.0,
+          "median": 71819.0,
+          "min": 70664.0,
+          "p95": 75151.0
+        }
+      },
+      "rows": 100000,
+      "target_batch_bytes": 4194304,
+      "write": {
+        "copy_binary": {
+          "execute_micros": {
+            "max": 90314.0,
+            "median": 89312.0,
+            "min": 86370.0,
+            "p95": 90314.0
+          },
+          "prepare_micros": {
+            "max": 5182.0,
+            "median": 4687.0,
+            "min": 4669.0,
+            "p95": 5182.0
+          },
+          "rows_per_second": {
+            "max": 1157809.0,
+            "median": 1119670.0,
+            "min": 1107248.0,
+            "p95": 1157809.0
+          },
+          "total_micros": {
+            "max": 95247.0,
+            "median": 94413.0,
+            "min": 91323.0,
+            "p95": 95247.0
+          },
+          "wal_bytes": {
+            "max": 12339896.0,
+            "median": 12330256.0,
+            "min": 12330192.0,
+            "p95": 12339896.0
+          }
+        }
+      }
+    }
+  ],
+  "warmup_count": 1
+}

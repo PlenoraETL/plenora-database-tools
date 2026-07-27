@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "campaign": "postgres16-postgis34-performance-batch-tuning",
+  "warmup": 1,
+  "repeat": 5,
+  "scenarios": [
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "narrow",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "wide",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 1024,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 8192,
+      "modes": ["copy_text", "copy_binary"]
+    },
+    {
+      "profile": "spatial",
+      "rows": 100000,
+      "batch_rows": 32768,
+      "modes": ["copy_text", "copy_binary"]
+    }
+  ]
+}
