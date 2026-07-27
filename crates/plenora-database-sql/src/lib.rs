@@ -6,7 +6,8 @@
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::query::{
-    JoinKind, QueryExpression, QueryOperation, QuerySource, ScalarFunction,
+    validate_query_operation, JoinKind, QueryExpression, QueryOperation, QuerySource,
+    ScalarFunction,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -239,6 +240,7 @@ impl Renderer {
     ///
     /// Fallisce per query strutturalmente incomplete o funzioni non supportate.
     pub fn render_query(&self, query: &QueryOperation) -> Result<RenderedSql> {
+        validate_query_operation(query, &plenora_database_core::limits::Limits::default())?;
         let mut binds = Vec::new();
         let sql = self.render_query_inner(query, &mut binds)?;
         Ok(RenderedSql { sql, binds })
@@ -271,6 +273,13 @@ impl Renderer {
         sql.push_str("SELECT ");
         if query.distinct {
             sql.push_str("DISTINCT ");
+        }
+        if self.dialect == Dialect::SqlServer {
+            if let Some(limit) = query.row_limit {
+                sql.push_str("TOP (");
+                sql.push_str(&limit.to_string());
+                sql.push_str(") ");
+            }
         }
         let projection = query
             .projection
@@ -351,8 +360,18 @@ impl Renderer {
             sql.push_str(&ordering.join(", "));
         }
         if let Some(limit) = query.row_limit {
-            sql.push_str(" LIMIT ");
-            sql.push_str(&limit.to_string());
+            match self.dialect {
+                Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
+                    sql.push_str(" LIMIT ");
+                    sql.push_str(&limit.to_string());
+                }
+                Dialect::Oracle | Dialect::Db2 => {
+                    sql.push_str(" FETCH FIRST ");
+                    sql.push_str(&limit.to_string());
+                    sql.push_str(" ROWS ONLY");
+                }
+                Dialect::SqlServer => {}
+            }
         }
         Ok(sql)
     }
@@ -455,11 +474,24 @@ impl Renderer {
             .enumerate()
             .map(|(index, argument)| {
                 let value = self.render_query_expression(argument, binds)?;
-                if self.dialect == Dialect::Postgres
-                    && spatial_geometry_argument(function, index)
+                if spatial_geometry_argument(function, index)
                     && matches!(argument, QueryExpression::Parameter { .. })
                 {
-                    Ok(format!("ST_GeomFromEWKB({value})"))
+                    Ok(match self.dialect {
+                        Dialect::Postgres => format!("ST_GeomFromEWKB({value})"),
+                        Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
+                            format!("ST_GeomFromWKB({value})")
+                        }
+                        Dialect::SqlServer => {
+                            format!("geometry::STGeomFromWKB({value}, 0)")
+                        }
+                        Dialect::Oracle => {
+                            format!("SDO_UTIL.FROM_WKBGEOMETRY({value})")
+                        }
+                        Dialect::Db2 => {
+                            format!("DB2GSE.ST_GeomFromWKB({value}, 0)")
+                        }
+                    })
                 } else {
                     Ok(value)
                 }
@@ -596,10 +628,16 @@ impl Renderer {
                         )
                     }
                     Dialect::Oracle => {
-                        format!("SDO_RELATE({quoted}, {placeholder}, 'mask=ANYINTERACT') = 'TRUE'")
+                        format!(
+                            "SDO_RELATE({quoted}, SDO_UTIL.FROM_WKBGEOMETRY({placeholder}), \
+                             'mask=ANYINTERACT') = 'TRUE'"
+                        )
                     }
                     Dialect::Db2 => {
-                        format!("DB2GSE.ST_INTERSECTS({quoted}, {placeholder}) = 1")
+                        format!(
+                            "DB2GSE.ST_INTERSECTS(\
+                             {quoted}, DB2GSE.ST_GeomFromWKB({placeholder}, 0)) = 1"
+                        )
                     }
                 };
                 Ok(expression)
@@ -1012,6 +1050,89 @@ mod tests {
             .contains("ST_DWithin(\"e\".\"geom\", ST_GeomFromEWKB($1), $2)"));
         assert_eq!(rendered.binds[0].name, "probe");
         assert_eq!(rendered.binds[1].name, "radius");
+    }
+
+    #[test]
+    fn query_ast_limit_uses_each_dialect_syntax() {
+        let query = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: query_source("events", "e"),
+            projection: vec![QueryProjection {
+                expression: query_column("e", "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: true,
+            row_limit: Some(7),
+        };
+        for (dialect, expected) in [
+            (Dialect::Postgres, " LIMIT 7"),
+            (Dialect::Mysql, " LIMIT 7"),
+            (Dialect::Sqlite, " LIMIT 7"),
+            (Dialect::Duckdb, " LIMIT 7"),
+            (Dialect::Oracle, " FETCH FIRST 7 ROWS ONLY"),
+            (Dialect::Db2, " FETCH FIRST 7 ROWS ONLY"),
+        ] {
+            let sql = Renderer::new(
+                dialect,
+                DialectCapabilities {
+                    spatial_intersects: true,
+                },
+            )
+            .render_query(&query)
+            .expect("dialect query")
+            .sql;
+            assert!(sql.ends_with(expected), "{dialect:?}: {sql}");
+        }
+        let sql = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("SQL Server query")
+        .sql;
+        assert!(sql.starts_with("SELECT DISTINCT TOP (7) "), "{sql}");
+        assert!(!sql.contains(" LIMIT "));
+    }
+
+    #[test]
+    fn oracle_and_db2_convert_wkb_before_spatial_predicates() {
+        let select = Select {
+            source: source(),
+            projection: vec![identifier("id")],
+            filter: Some(Expression::SpatialIntersects {
+                field: identifier("geom"),
+                wkb_parameter: "probe".to_owned(),
+            }),
+            order_by: Vec::new(),
+            limit: None,
+        };
+        let oracle = Renderer::new(
+            Dialect::Oracle,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_select(&select)
+        .expect("Oracle spatial")
+        .sql;
+        assert!(oracle.contains("SDO_UTIL.FROM_WKBGEOMETRY(:1)"));
+        let db2 = Renderer::new(
+            Dialect::Db2,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_select(&select)
+        .expect("Db2 spatial")
+        .sql;
+        assert!(db2.contains("DB2GSE.ST_GeomFromWKB(?, 0)"));
     }
 
     #[test]

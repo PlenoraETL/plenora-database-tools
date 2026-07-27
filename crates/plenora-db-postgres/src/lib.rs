@@ -49,13 +49,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration as StdDuration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
 use tokio_postgres::{CancelToken, Client, Config, NoTls, Row, RowStream};
 use tokio_postgres_rustls::MakeRustlsConnect;
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone)]
 pub struct PostgresProvider {
@@ -434,16 +438,11 @@ impl PostgresSchemaCache {
     }
 
     fn candidate(&self, key: &SchemaCacheKey) -> Option<SchemaCacheEntry> {
-        self.state
-            .lock()
-            .expect("schema cache lock")
-            .entries
-            .get(key)
-            .cloned()
+        lock_recover(&self.state).entries.get(key).cloned()
     }
 
     fn touch(&self, key: &SchemaCacheKey) {
-        let mut state = self.state.lock().expect("schema cache lock");
+        let mut state = lock_recover(&self.state);
         state.clock = state.clock.saturating_add(1);
         let clock = state.clock;
         if let Some(entry) = state.entries.get_mut(key) {
@@ -460,7 +459,7 @@ impl PostgresSchemaCache {
         if self.max_entries == 0 {
             return false;
         }
-        let mut state = self.state.lock().expect("schema cache lock");
+        let mut state = lock_recover(&self.state);
         state.clock = state.clock.saturating_add(1);
         let clock = state.clock;
         state.entries.insert(
@@ -486,16 +485,11 @@ impl PostgresSchemaCache {
     }
 
     fn invalidate(&self, key: &SchemaCacheKey) -> bool {
-        self.state
-            .lock()
-            .expect("schema cache lock")
-            .entries
-            .remove(key)
-            .is_some()
+        lock_recover(&self.state).entries.remove(key).is_some()
     }
 
     fn len(&self) -> usize {
-        self.state.lock().map_or(0, |state| state.entries.len())
+        lock_recover(&self.state).entries.len()
     }
 }
 
@@ -567,12 +561,7 @@ impl PostgresPool {
             session_options.statement_timeout_ms,
             session_options.lock_timeout_ms,
         );
-        let mut client = self
-            .idle
-            .lock()
-            .expect("pool lock")
-            .get_mut(&key)
-            .and_then(Vec::pop);
+        let mut client = lock_recover(&self.idle).get_mut(&key).and_then(Vec::pop);
         if client.as_ref().is_some_and(Client::is_closed) {
             self.metrics.invalidate();
             client = None;
@@ -650,7 +639,7 @@ impl Drop for PooledClient {
             self.pool.metrics.invalidate();
             return;
         }
-        let mut idle = self.pool.idle.lock().expect("pool lock");
+        let mut idle = lock_recover(&self.pool.idle);
         let clients = idle.entry(self.key).or_default();
         if clients.len() < self.pool.max_idle_per_key {
             clients.push(client);
@@ -957,10 +946,7 @@ impl PostgresProvider {
 
     #[must_use]
     pub fn pool_idle_connections(&self) -> usize {
-        self.pool
-            .idle
-            .lock()
-            .map_or(0, |idle| idle.values().map(Vec::len).sum())
+        lock_recover(&self.pool.idle).values().map(Vec::len).sum()
     }
 
     #[must_use]
@@ -4372,6 +4358,18 @@ mod tests {
             .with_target_batch_bytes(123_456)
             .without_target_batch_bytes();
         assert_eq!(manual.target_batch_bytes, None);
+    }
+
+    #[test]
+    fn poisoned_internal_mutex_is_recovered() {
+        let state = Arc::new(Mutex::new(7_u8));
+        let poisoned = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().expect("initial lock");
+            panic!("intentional poison");
+        })
+        .join();
+        assert_eq!(*lock_recover(&state), 7);
     }
 
     #[test]

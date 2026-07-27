@@ -735,12 +735,10 @@ fn encode_copy_value(
         }
         DataType::Date32 => {
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
-            write!(
-                output,
-                "{}",
-                epoch + Duration::days(i64::from(typed!(Date32Array).value(row)))
-            )
-            .expect("String write");
+            let value = epoch
+                .checked_add_signed(Duration::days(i64::from(typed!(Date32Array).value(row))))
+                .ok_or_else(temporal_range_error)?;
+            write!(output, "{value}").expect("String write");
         }
         DataType::Time64(TimeUnit::Microsecond) => {
             let value = time_from_microseconds(typed!(Time64MicrosecondArray).value(row))?;
@@ -754,7 +752,7 @@ fn encode_copy_value(
             let instant = DateTime::<Utc>::from_timestamp_micros(
                 typed!(TimestampMicrosecondArray).value(row),
             )
-            .ok_or_else(mapping_error)?;
+            .ok_or_else(temporal_range_error)?;
             if timezone.is_some() {
                 write!(output, "{}", instant.to_rfc3339()).expect("String write");
             } else {
@@ -1204,9 +1202,14 @@ fn arrow_value(
                 .downcast_ref::<Date32Array>()
                 .ok_or_else(mapping_error)?;
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
-            Box::new(
-                (!typed.is_null(row)).then(|| epoch + Duration::days(i64::from(typed.value(row)))),
-            )
+            let value = (!typed.is_null(row))
+                .then(|| {
+                    epoch
+                        .checked_add_signed(Duration::days(i64::from(typed.value(row))))
+                        .ok_or_else(temporal_range_error)
+                })
+                .transpose()?;
+            Box::new(value)
         }
         DataType::Time64(TimeUnit::Microsecond) => {
             let typed = array
@@ -1234,16 +1237,22 @@ fn arrow_value(
                 .downcast_ref::<TimestampMicrosecondArray>()
                 .ok_or_else(mapping_error)?;
             if timezone.is_some() {
-                Box::new((!typed.is_null(row)).then(|| {
-                    DateTime::<Utc>::from_timestamp_micros(typed.value(row))
-                        .expect("Arrow timestamp range")
-                }))
+                let value = (!typed.is_null(row))
+                    .then(|| {
+                        DateTime::<Utc>::from_timestamp_micros(typed.value(row))
+                            .ok_or_else(temporal_range_error)
+                    })
+                    .transpose()?;
+                Box::new(value)
             } else {
-                Box::new((!typed.is_null(row)).then(|| {
-                    DateTime::<Utc>::from_timestamp_micros(typed.value(row))
-                        .expect("Arrow timestamp range")
-                        .naive_utc()
-                }))
+                let value = (!typed.is_null(row))
+                    .then(|| {
+                        DateTime::<Utc>::from_timestamp_micros(typed.value(row))
+                            .map(|instant| instant.naive_utc())
+                            .ok_or_else(temporal_range_error)
+                    })
+                    .transpose()?;
+                Box::new(value)
             }
         }
         DataType::Decimal128(_, scale) => {
@@ -2162,6 +2171,15 @@ fn mapping_error() -> DatabaseError {
     )
 }
 
+fn temporal_range_error() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Prepare,
+        false,
+        "valore temporale Arrow fuori dall'intervallo PostgreSQL/chrono supportato",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2213,6 +2231,39 @@ mod tests {
             text.parse::<u128>().expect("decoded numeric"),
             scale,
         )
+    }
+
+    #[test]
+    fn arrow_temporal_extremes_return_mapping_errors_without_panicking() {
+        let date_field = Field::new("date_value", DataType::Date32, true);
+        for extreme in [i32::MIN, i32::MAX] {
+            let date = Date32Array::from(vec![Some(extreme)]);
+            let mut text = String::new();
+            let date_text_error =
+                encode_copy_value(&mut text, &date, &date_field, 0).expect_err("date text range");
+            assert_eq!(date_text_error.category, ErrorCategory::DataMapping);
+            let date_prepared_error =
+                arrow_value(&date, &date_field, 0).expect_err("date prepared range");
+            assert_eq!(date_prepared_error.category, ErrorCategory::DataMapping);
+        }
+
+        for extreme in [i64::MIN, i64::MAX] {
+            let timestamp = TimestampMicrosecondArray::from(vec![Some(extreme)]);
+            for timezone in [None, Some("UTC".into())] {
+                let field = Field::new(
+                    "timestamp_value",
+                    DataType::Timestamp(TimeUnit::Microsecond, timezone),
+                    true,
+                );
+                let mut text = String::new();
+                let text_error = encode_copy_value(&mut text, &timestamp, &field, 0)
+                    .expect_err("timestamp text range");
+                assert_eq!(text_error.category, ErrorCategory::DataMapping);
+                let error =
+                    arrow_value(&timestamp, &field, 0).expect_err("timestamp prepared range");
+                assert_eq!(error.category, ErrorCategory::DataMapping);
+            }
+        }
     }
 
     #[test]

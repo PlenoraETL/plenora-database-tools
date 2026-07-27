@@ -46,6 +46,13 @@ sicurezza e comportamento sotto errore del data path v3.
   scale positive/negative e limiti `i128`.
 - Escaping di range e composite con quote, backslash, newline e Unicode ha un
   unico encoder condiviso.
+- Date32 e Timestamp Arrow fuori dal range del mapping temporale falliscono
+  come `DataMapping`; COPY e prepared non contengono conversioni temporali che
+  possano andare in panic.
+- I mutex di pool e cache recuperano esplicitamente lo stato da
+  `PoisonError`; le strutture protette sono container semplici e bounded.
+- `QueryOperation` viene validato con una visita iterativa prima del renderer:
+  massimo 64 livelli e 4.096 nodi strutturali/espressioni.
 
 ## Metriche bounded
 
@@ -87,6 +94,8 @@ Il gate esegue:
     deterministico per i tipi custom.
 12. schema `QueryOperation` ricavato dalla prima riga e describe sicuro per
     result set vuoti.
+13. estremi Date32/Timestamp, poisoning intenzionale e AST oltre i budget,
+    tutti convertiti in esiti controllati.
 
 Esecuzione:
 

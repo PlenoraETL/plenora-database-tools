@@ -1132,6 +1132,8 @@ Stato del riferimento v3:
 - `QueryOperation` one-shot indipendente dalla forma dell'AST: schema dalla
   prima riga, describe senza riesecuzione per risultati vuoti e fallback
   prepared se PostgreSQL rifiuta i tipi canonici;
+- validazione iterativa e bounded dell'AST relazionale prima di qualunque
+  rendering ricorsivo;
 - Arrow nativo per array scalari, `TIME`, `INTERVAL`, range e composite;
 - cancellazione server-side read/write, keepalive e sessioni incerte escluse
   dal pool;

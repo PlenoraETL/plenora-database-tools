@@ -98,6 +98,7 @@ def main() -> int:
         "custom_type_prepared_fallback",
         "query_operation_typed_one_shot",
         "query_operation_empty_result_describe",
+        "bounded_iterative_query_operation_validation",
         "bounded_validated_schema_cache",
         "external_ddl_schema_token_invalidation",
         "write_target_schema_cache_invalidation",
@@ -105,6 +106,8 @@ def main() -> int:
         "concurrent_server_side_cancellation",
         "invalid_session_exclusion",
         "pool_recovery_after_cancellation",
+        "temporal_extremes_are_mapping_errors",
+        "poisoned_internal_mutex_recovery",
         "commit_fault_recovery_semantics",
         "tls_mode_cannot_be_weakened_by_dsn",
         "private_ca_and_mtls_live",
@@ -158,6 +161,17 @@ def main() -> int:
                     "--",
                     "-D",
                     "warnings",
+                ]
+            )
+        )
+        run(
+            cargo(
+                [
+                    "test",
+                    "-p",
+                    "plenora-database-core",
+                    "-p",
+                    "plenora-database-sql",
                 ]
             )
         )

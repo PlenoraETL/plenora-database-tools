@@ -69,6 +69,8 @@ vuole rigenerare la fixture.
 - connect timeout, TCP user timeout e keepalive configurabili;
 - bool, interi, float, text, bytea, date, timestamp/timestamptz, JSON/UUID
   testuale e `Decimal128`;
+- valori Arrow Date32/Timestamp fuori dal range di `chrono` producono un errore
+  `DataMapping` recuperabile e non possono causare panic nel writer;
 - `TIME`, `INTERVAL MonthDayNano`, array Arrow nativi di bool, interi, float e
   text, range built-in e composite come `Struct`; enum e domini preservano la
   dichiarazione PostgreSQL;
@@ -95,6 +97,8 @@ vuole rigenerare la fixture.
   autenticazione client mTLS;
 - fault injection prima e dopo commit;
 - confronto differenziale COPY/prepared.
+- mutex interni di pool e cache recuperabili dopo poisoning, senza rendere
+  inutilizzabile il provider.
 
 ## Profili prestazionali
 

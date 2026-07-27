@@ -62,6 +62,11 @@ def main() -> int:
         if state != "running|healthy":
             raise RuntimeError("container PostgreSQL non healthy")
         run(cargo(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
+        run(cargo([
+            "test",
+            "-p", "plenora-database-core",
+            "-p", "plenora-database-sql",
+        ]))
         run(cargo(["test", "-p", "plenora-db-postgres", "--", "--nocapture"], dsn))
         output = run(
             cargo([
@@ -102,6 +107,9 @@ def main() -> int:
             "custom_type_prepared_fallback",
             "query_operation_typed_one_shot",
             "query_operation_empty_result_describe",
+            "bounded_iterative_query_operation_validation",
+            "dialect_correct_query_limit_rendering",
+            "spatial_wkb_constructor_rendering",
             "bounded_validated_schema_cache",
             "external_ddl_schema_token_invalidation",
             "server_side_read_write_cancellation",
@@ -111,6 +119,8 @@ def main() -> int:
             "binary_array_uuid_range_composite_interval_roundtrip",
             "portable_interval_text_encoding",
             "negative_scale_numeric_and_typed_parameters",
+            "temporal_extremes_are_mapping_errors",
+            "poisoned_internal_mutex_recovery",
             "transactional_additive_schema_evolution",
             "write_preflight",
             "byte_limits",
