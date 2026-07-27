@@ -87,10 +87,10 @@ pub async fn execute(
     if cancellation.is_cancelled() {
         runtime.metrics.cancellation();
         return Err(public_error(
-            ErrorCategory::Cancelled,
+            interruption_category(cancellation),
             ErrorPhase::Write,
             false,
-            "write PostgreSQL cancellata",
+            interruption_message(cancellation),
         ));
     }
     let schema = input.schema();
@@ -100,41 +100,94 @@ pub async fn execute(
         std::process::id(),
         EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
-    let mut client = runtime
-        .pool
-        .checkout(
-            secret,
-            runtime.tls_mode,
-            &runtime.tls_config,
-            runtime.network_options,
-            PostgresSessionOptions {
-                statement_timeout_ms: runtime.statement_timeout_ms,
-                lock_timeout_ms: runtime.lock_timeout_ms,
-            },
-            runtime.pool_acquire_timeout_ms,
-        )
-        .await?;
+    let checkout = runtime.pool.checkout(
+        secret,
+        runtime.tls_mode,
+        &runtime.tls_config,
+        runtime.network_options,
+        PostgresSessionOptions {
+            statement_timeout_ms: runtime.statement_timeout_ms,
+            lock_timeout_ms: runtime.lock_timeout_ms,
+        },
+        runtime.pool_acquire_timeout_ms,
+    );
+    let mut client = if let Some(result) = select_with_cancellation(checkout, cancellation).await {
+        result?
+    } else {
+        runtime.metrics.cancellation();
+        return Err(public_error(
+            interruption_category(cancellation),
+            ErrorPhase::Connect,
+            false,
+            interruption_message(cancellation),
+        ));
+    };
     if client.was_reused() {
-        if let Err(error) = client.batch_execute("DISCARD ALL").await {
-            client.invalidate();
-            return Err(super::classify_error(ErrorPhase::Connect, &error));
+        match select_with_cancellation(client.batch_execute("DISCARD ALL"), cancellation).await {
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                client.invalidate();
+                return Err(super::classify_error(ErrorPhase::Connect, &error));
+            }
+            None => {
+                client.invalidate();
+                runtime.metrics.cancellation();
+                return Err(public_error(
+                    interruption_category(cancellation),
+                    ErrorPhase::Connect,
+                    false,
+                    interruption_message(cancellation),
+                ));
+            }
         }
         runtime.metrics.session_reset();
     }
     client.invalidate();
     let cancel_token = client.cancel_token();
-    let transaction = client.transaction().await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Write,
-            false,
-            "avvio transazione PostgreSQL fallito",
-        )
-    })?;
+    let transaction =
+        if let Some(result) = select_with_cancellation(client.transaction(), cancellation).await {
+            result.map_err(|_| {
+                public_error(
+                    ErrorCategory::Protocol,
+                    ErrorPhase::Write,
+                    false,
+                    "avvio transazione PostgreSQL fallito",
+                )
+            })?
+        } else {
+            runtime.metrics.cancellation();
+            return Err(public_error(
+                interruption_category(cancellation),
+                ErrorPhase::Write,
+                false,
+                interruption_message(cancellation),
+            ));
+        };
     let operation = &prepared.operation;
-    evolve_target_schema(&transaction, operation, &schema, runtime.schema_evolution).await?;
-    let (write_target, replace_original) =
-        prepare_target(&transaction, operation, &schema, &execution_id).await?;
+    if let Some(result) = select_with_cancellation(
+        evolve_target_schema(&transaction, operation, &schema, runtime.schema_evolution),
+        cancellation,
+    )
+    .await
+    {
+        result?;
+    } else {
+        runtime.metrics.cancellation();
+        let rollback_confirmed = transaction.rollback().await.is_ok();
+        return Err(cancelled_write_error(cancellation, rollback_confirmed));
+    }
+    let (write_target, replace_original) = if let Some(result) = select_with_cancellation(
+        prepare_target(&transaction, operation, &schema, &execution_id),
+        cancellation,
+    )
+    .await
+    {
+        result?
+    } else {
+        runtime.metrics.cancellation();
+        let rollback_confirmed = transaction.rollback().await.is_ok();
+        return Err(cancelled_write_error(cancellation, rollback_confirmed));
+    };
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
     loop {
@@ -152,7 +205,7 @@ pub async fn execute(
             )
             .await;
             let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(rollback_confirmed));
+            return Err(cancelled_write_error(cancellation, rollback_confirmed));
         };
         let Some(batch) = batch else {
             break;
@@ -160,7 +213,7 @@ pub async fn execute(
         if cancellation.is_cancelled() {
             runtime.metrics.cancellation();
             let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(rollback_confirmed));
+            return Err(cancelled_write_error(cancellation, rollback_confirmed));
         }
         let resources = match reserve_write_batch(&batch, &runtime, budget) {
             Ok(resources) => resources,
@@ -196,7 +249,7 @@ pub async fn execute(
             )
             .await;
             let rollback_confirmed = transaction.rollback().await.is_ok();
-            return Err(cancelled_write_error(rollback_confirmed));
+            return Err(cancelled_write_error(cancellation, rollback_confirmed));
         };
         let accounting = resources.commit().and_then(|()| {
             received = received.checked_add(batch_rows).ok_or_else(|| {
@@ -213,10 +266,32 @@ pub async fn execute(
         }
     }
     if let Some(original) = replace_original {
-        publish_replacement(&transaction, &write_target, &original).await?;
+        if let Some(result) = select_with_cancellation(
+            publish_replacement(&transaction, &write_target, &original),
+            cancellation,
+        )
+        .await
+        {
+            result?;
+        } else {
+            runtime.metrics.cancellation();
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+        }
     }
     if operation.create_spatial_index {
-        create_spatial_indexes(&transaction, &operation.target, &schema).await?;
+        if let Some(result) = select_with_cancellation(
+            create_spatial_indexes(&transaction, &operation.target, &schema),
+            cancellation,
+        )
+        .await
+        {
+            result?;
+        } else {
+            runtime.metrics.cancellation();
+            let rollback_confirmed = transaction.rollback().await.is_ok();
+            return Err(cancelled_write_error(cancellation, rollback_confirmed));
+        }
     }
     if runtime.fault_point == Some(PostgresFaultPoint::BeforeCommit) {
         return Err(public_error(
@@ -226,7 +301,20 @@ pub async fn execute(
             "fault injection prima del commit PostgreSQL",
         ));
     }
-    if transaction.commit().await.is_err() {
+    let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
+    if commit_result.is_none() {
+        runtime.metrics.write_outcome_unknown();
+        cancel_backend(
+            &cancel_token,
+            runtime.tls_mode,
+            &runtime.tls_config.connector,
+            runtime.network_options.connect_timeout_ms,
+        )
+        .await;
+        drop(client);
+        return Err(commit_interruption_error(cancellation));
+    }
+    if commit_result.is_some_and(|result| result.is_err()) {
         runtime.metrics.write_outcome_unknown();
         drop(client);
         return Ok(WriteOutcome {
@@ -345,9 +433,12 @@ async fn cancel_backend(
         tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cancellation).await;
 }
 
-fn cancelled_write_error(rollback_confirmed: bool) -> DatabaseError {
+fn cancelled_write_error(
+    cancellation: &CancellationToken,
+    rollback_confirmed: bool,
+) -> DatabaseError {
     public_error_envelope(
-        ErrorCategory::Cancelled,
+        interruption_category(cancellation),
         ErrorPhase::Write,
         if rollback_confirmed {
             RemoteEffect::RolledBack
@@ -359,7 +450,33 @@ fn cancelled_write_error(rollback_confirmed: bool) -> DatabaseError {
         } else {
             RetryDisposition::RequiresRecovery
         },
-        "write PostgreSQL cancellata sul server",
+        interruption_message(cancellation),
+    )
+}
+
+fn interruption_category(cancellation: &CancellationToken) -> ErrorCategory {
+    if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
+        ErrorCategory::Timeout
+    } else {
+        ErrorCategory::Cancelled
+    }
+}
+
+fn interruption_message(cancellation: &CancellationToken) -> &'static str {
+    if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
+        "durata massima write PostgreSQL esaurita"
+    } else {
+        "write PostgreSQL cancellata sul server"
+    }
+}
+
+fn commit_interruption_error(cancellation: &CancellationToken) -> DatabaseError {
+    public_error_envelope(
+        interruption_category(cancellation),
+        ErrorPhase::Commit,
+        RemoteEffect::Unknown,
+        RetryDisposition::RequiresRecovery,
+        "deadline o cancellazione durante commit PostgreSQL: verificare lo stato remoto",
     )
 }
 
@@ -2775,13 +2892,31 @@ mod tests {
 }
 #[test]
 fn cancellation_reports_verified_rollback_or_requires_recovery() {
-    let rolled_back = cancelled_write_error(true);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let rolled_back = cancelled_write_error(&cancellation, true);
     assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
     assert_eq!(rolled_back.retry, RetryDisposition::Never);
 
-    let unknown = cancelled_write_error(false);
+    let unknown = cancelled_write_error(&cancellation, false);
     assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[test]
+fn deadline_is_a_timeout_with_the_same_rollback_guarantees() {
+    let deadline = CancellationToken::new();
+    deadline.cancel_due_to_deadline();
+    let rolled_back = cancelled_write_error(&deadline, true);
+    assert_eq!(rolled_back.category, ErrorCategory::Timeout);
+    assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(rolled_back.retry, RetryDisposition::Never);
+
+    let commit = commit_interruption_error(&deadline);
+    assert_eq!(commit.category, ErrorCategory::Timeout);
+    assert_eq!(commit.phase, ErrorPhase::Commit);
+    assert_eq!(commit.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(commit.retry, RetryDisposition::RequiresRecovery);
 }
 
 #[test]

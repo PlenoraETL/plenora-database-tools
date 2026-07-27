@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +120,7 @@ impl Counters {
 pub struct ResourceBudget {
     limits: Arc<ResourceLimits>,
     counters: Arc<Counters>,
+    deadline: Instant,
 }
 
 impl ResourceBudget {
@@ -127,10 +129,14 @@ impl ResourceBudget {
     /// Restituisce `InvalidPlan` per limiti incoerenti.
     pub fn new(limits: ResourceLimits) -> crate::Result<Self> {
         limits.validate()?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(limits.duration_ms))
+            .ok_or_else(|| crate::DatabaseError::invalid_plan("deadline risorse oltre Instant"))?;
         let counters = Counters::new(&limits);
         Ok(Self {
             limits: Arc::new(limits),
             counters: Arc::new(counters),
+            deadline,
         })
     }
 
@@ -142,6 +148,29 @@ impl ResourceBudget {
     #[must_use]
     pub fn remaining(&self, kind: ResourceKind) -> u64 {
         self.counters.get(kind).load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    #[must_use]
+    pub fn remaining_duration(&self) -> Option<Duration> {
+        self.deadline.checked_duration_since(Instant::now())
+    }
+
+    /// # Errors
+    ///
+    /// Restituisce `ResourceLimit` quando la durata del budget è scaduta.
+    pub fn ensure_active(&self) -> crate::Result<()> {
+        if self.remaining_duration().is_none() {
+            Err(crate::DatabaseError::resource_limit(
+                "durata del budget di risorse esaurita",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Restituisce `true` soltanto quando i due handle condividono gli stessi
@@ -331,5 +360,17 @@ mod tests {
         let first = budget(100);
         assert!(first.is_same_budget(&first.clone()));
         assert!(!first.is_same_budget(&budget(100)));
+    }
+
+    #[test]
+    fn duration_budget_expires_monotonically() {
+        let limits = ResourceLimits {
+            duration_ms: 1,
+            ..ResourceLimits::default()
+        };
+        let budget = ResourceBudget::new(limits).expect("budget");
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(budget.ensure_active().is_err());
+        assert!(budget.remaining_duration().is_none());
     }
 }

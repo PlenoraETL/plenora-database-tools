@@ -1673,7 +1673,7 @@ impl PostgresProvider {
             self.network_options.connect_timeout_ms,
         )
         .await;
-        Err(cancelled_read_error())
+        Err(cancelled_read_error(cancellation))
     }
 
     #[allow(clippy::significant_drop_tightening)]
@@ -1687,7 +1687,7 @@ impl PostgresProvider {
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
             self.metrics.cancellation();
-            return Err(cancelled_read_error());
+            return Err(cancelled_read_error(cancellation));
         }
         if self.batch_rows == 0 || self.max_batch_bytes == 0 || self.target_batch_bytes == Some(0) {
             return Err(DatabaseError::invalid_plan(
@@ -1701,7 +1701,7 @@ impl PostgresProvider {
             result?
         } else {
             self.metrics.cancellation();
-            return Err(cancelled_read_error());
+            return Err(cancelled_read_error(cancellation));
         };
         if let Some(catalog) = &operation.source.catalog {
             let current_database: String = client
@@ -1793,7 +1793,7 @@ impl PostgresProvider {
     ) -> Result<Box<dyn BatchStream>> {
         if cancellation.is_cancelled() {
             self.metrics.cancellation();
-            return Err(cancelled_read_error());
+            return Err(cancelled_read_error(cancellation));
         }
         if self.batch_rows == 0 || self.max_batch_bytes == 0 || self.target_batch_bytes == Some(0) {
             return Err(DatabaseError::invalid_plan(
@@ -1808,7 +1808,7 @@ impl PostgresProvider {
             result?
         } else {
             self.metrics.cancellation();
-            return Err(cancelled_read_error());
+            return Err(cancelled_read_error(cancellation));
         };
         let bind_names = rendered
             .binds
@@ -1847,7 +1847,7 @@ impl PostgresProvider {
                     self.network_options.connect_timeout_ms,
                 )
                 .await;
-                return Err(cancelled_read_error());
+                return Err(cancelled_read_error(cancellation));
             }
         }
         let (rows, columns): (PostgresRows, Vec<ColumnSpec>) = if let Some(raw_rows) = typed_rows {
@@ -1867,7 +1867,7 @@ impl PostgresProvider {
                     self.network_options.connect_timeout_ms,
                 )
                 .await;
-                return Err(cancelled_read_error());
+                return Err(cancelled_read_error(cancellation));
             };
             self.metrics.query_typed_fast_path();
             if let Some(first) = first {
@@ -1917,7 +1917,7 @@ impl PostgresProvider {
                     self.network_options.connect_timeout_ms,
                 )
                 .await;
-                return Err(cancelled_read_error());
+                return Err(cancelled_read_error(cancellation));
             };
             (Box::pin(rows), columns)
         };
@@ -2207,6 +2207,38 @@ const fn supports_additive_evolution(mode: plenora_database_core::plan::WriteMod
     )
 }
 
+struct BudgetCancellation {
+    token: CancellationToken,
+    deadline_task: tokio::task::JoinHandle<()>,
+}
+
+impl BudgetCancellation {
+    fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Result<Self> {
+        budget.ensure_active()?;
+        let token = parent.child_token_with_deadline(Some(budget.deadline()));
+        let deadline_token = token.clone();
+        let deadline = tokio::time::Instant::from_std(budget.deadline());
+        let deadline_task = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            deadline_token.cancel_due_to_deadline();
+        });
+        Ok(Self {
+            token,
+            deadline_task,
+        })
+    }
+
+    const fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+}
+
+impl Drop for BudgetCancellation {
+    fn drop(&mut self) {
+        self.deadline_task.abort();
+    }
+}
+
 impl Provider for PostgresProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Postgres
@@ -2275,7 +2307,8 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            self.read_stream(secret, operation, parameters, budget, cancellation)
+            let control = BudgetCancellation::new(cancellation, budget)?;
+            self.read_stream(secret, operation, parameters, budget, control.token())
                 .await
         })
     }
@@ -2289,7 +2322,8 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            self.query_stream(secret, operation, parameters, budget, cancellation)
+            let control = BudgetCancellation::new(cancellation, budget)?;
+            self.query_stream(secret, operation, parameters, budget, control.token())
                 .await
         })
     }
@@ -2303,7 +2337,8 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
-            check_cancelled(cancellation, ErrorPhase::Prepare)?;
+            let control = BudgetCancellation::new(cancellation, budget)?;
+            check_cancelled(control.token(), ErrorPhase::Prepare)?;
             write::validate_schema(&input_schema, operation)?;
             let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
             let column_count = u64::try_from(input_schema.fields().len())
@@ -2336,13 +2371,14 @@ impl Provider for PostgresProvider {
                     "il budget di write non coincide con quello usato in prepare_write",
                 ));
             }
+            let control = BudgetCancellation::new(cancellation, budget)?;
             let target = prepared.operation.target.clone();
             let result = write::execute(
                 secret,
                 prepared,
                 input,
                 budget,
-                cancellation,
+                control.token(),
                 write::WriteRuntime {
                     statement_timeout_ms: self.statement_timeout_ms,
                     lock_timeout_ms: self.lock_timeout_ms,
@@ -3273,7 +3309,38 @@ fn adaptive_builder_capacity(
 }
 
 impl PostgresBatchStream {
+    async fn deadline_exceeded<T>(&mut self) -> Result<T> {
+        self.client.invalidate();
+        self.finished = true;
+        let _cancel_result = tokio::time::timeout(
+            StdDuration::from_millis(self.cancel_timeout_ms),
+            cancel_query(&self.cancel_token, self.tls_mode, &self.tls_connector),
+        )
+        .await;
+        Err(deadline_read_error())
+    }
+
+    async fn next_row_before_deadline(
+        &mut self,
+    ) -> Result<Option<std::result::Result<Row, tokio_postgres::Error>>> {
+        let Some(remaining) = self.budget.remaining_duration() else {
+            return self.deadline_exceeded().await;
+        };
+        let next = {
+            let mut rows = self.rows.as_mut();
+            tokio::select! {
+                row = rows.next() => Some(row),
+                () = tokio::time::sleep(remaining) => None,
+            }
+        };
+        match next {
+            Some(row) => Ok(row),
+            None => self.deadline_exceeded().await,
+        }
+    }
+
     fn reserve_batch(&self) -> Result<BatchReservation> {
+        self.budget.ensure_active()?;
         let rows = self
             .budget
             .remaining(ResourceKind::Rows)
@@ -3336,10 +3403,14 @@ impl BatchStream for PostgresBatchStream {
         Arc::clone(&self.schema)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
         Box::pin(async move {
             if self.finished {
                 return Ok(None);
+            }
+            if self.budget.remaining_duration().is_none() {
+                return self.deadline_exceeded().await;
             }
             let reservation = self.reserve_batch()?;
             let target_batch_bytes = self
@@ -3356,7 +3427,7 @@ impl BatchStream for PostgresBatchStream {
             let mut estimated_bytes = 0_u64;
             let mut target_limited = false;
             while row_count < reservation.row_limit {
-                match self.rows.as_mut().next().await {
+                match self.next_row_before_deadline().await? {
                     Some(Ok(row)) => {
                         for (index, buffer) in buffers.iter_mut().enumerate() {
                             match buffer.append(&row, index) {
@@ -3446,7 +3517,7 @@ impl BatchStream for PostgresBatchStream {
                 self.metrics.cancellation();
                 self.client.invalidate();
                 self.finished = true;
-                return Err(cancelled_read_error());
+                return Err(cancelled_read_error(cancellation));
             }
             let token = self.cancel_token.clone();
             let tls_mode = self.tls_mode;
@@ -3471,7 +3542,7 @@ impl BatchStream for PostgresBatchStream {
                     cancel_query(&token, tls_mode, &tls_connector),
                 )
                 .await;
-                Err(cancelled_read_error())
+                Err(cancelled_read_error(cancellation))
             }
         })
     }
@@ -3547,12 +3618,29 @@ async fn cancel_query(
     }
 }
 
-fn cancelled_read_error() -> DatabaseError {
+fn cancelled_read_error(cancellation: &CancellationToken) -> DatabaseError {
     public_error(
-        ErrorCategory::Cancelled,
+        if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
+            ErrorCategory::Timeout
+        } else {
+            ErrorCategory::Cancelled
+        },
         ErrorPhase::Read,
         false,
-        "query PostgreSQL cancellata sul server",
+        if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
+            "durata massima query PostgreSQL esaurita"
+        } else {
+            "query PostgreSQL cancellata sul server"
+        },
+    )
+}
+
+fn deadline_read_error() -> DatabaseError {
+    public_error(
+        ErrorCategory::Timeout,
+        ErrorPhase::Read,
+        false,
+        "durata massima query PostgreSQL esaurita",
     )
 }
 
@@ -5493,6 +5581,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_read_duration_budget_cancels_backend() {
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let secret = SecretString::new(dsn);
+        let setup = PostgresProvider::connect(&secret).await.expect("setup");
+        setup
+            .batch_execute(
+                "CREATE OR REPLACE VIEW plenora_fixture.deadline_slow_events AS
+                 SELECT value::bigint AS event_id
+                 FROM generate_series(1, 10) AS value
+                 CROSS JOIN LATERAL
+                    pg_sleep((value * 0 + 100)::double precision / 1000)",
+            )
+            .await
+            .expect("slow deadline view");
+        let limits = plenora_database_core::resource::ResourceLimits {
+            duration_ms: 50,
+            ..plenora_database_core::resource::ResourceLimits::default()
+        };
+        let budget = ResourceBudget::new(limits).expect("duration budget");
+        let provider = PostgresProvider::new(10);
+        let cancellation = CancellationToken::new();
+        let operation = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "deadline_slow_events".to_owned(),
+                layer_id: None,
+            },
+            projection: Vec::new(),
+            order_by: Vec::new(),
+            row_limit: None,
+            filter: None,
+        };
+        let result = Provider::read(
+            &provider,
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await;
+        let error = match result {
+            Ok(mut stream) => stream
+                .next_batch()
+                .await
+                .expect_err("read duration deadline"),
+            Err(error) => error,
+        };
+        assert_eq!(error.category, ErrorCategory::Timeout);
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        let active: i64 = setup
+            .query_one(
+                "SELECT count(*)
+                 FROM pg_stat_activity
+                 WHERE datname = current_database()
+                   AND state = 'active'
+                   AND query LIKE '%deadline_slow_events%'
+                   AND pid <> pg_backend_pid()",
+                &[],
+            )
+            .await
+            .expect("deadline backend state")
+            .get(0);
+        assert_eq!(active, 0);
+    }
+
+    #[tokio::test]
     async fn live_resolved_crs_must_match_spatial_ref_sys() {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
@@ -7416,6 +7574,52 @@ mod tests {
             .expect("slow write rollback")
             .get(0);
         assert_eq!(slow_write_rows, 0);
+
+        let deadline_stream = fixture_stream(
+            &provider,
+            &secret,
+            &cancellation,
+            vec!["event_id".to_owned(), "name".to_owned()],
+            100,
+        )
+        .await;
+        let deadline_budget =
+            ResourceBudget::new(plenora_database_core::resource::ResourceLimits {
+                duration_ms: 250,
+                ..plenora_database_core::resource::ResourceLimits::default()
+            })
+            .expect("write deadline budget");
+        let deadline_prepared = Provider::prepare_write(
+            &provider,
+            &secret,
+            &slow_write_operation,
+            deadline_stream.schema(),
+            &deadline_budget,
+            &cancellation,
+        )
+        .await
+        .expect("deadline write prepare");
+        let deadline_error = Provider::write(
+            &provider,
+            &secret,
+            deadline_prepared,
+            deadline_stream,
+            &deadline_budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("write deadline");
+        assert_eq!(deadline_error.category, ErrorCategory::Timeout);
+        assert_eq!(deadline_error.remote_effect, RemoteEffect::RolledBack);
+        let deadline_rows: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.slow_write_target",
+                &[],
+            )
+            .await
+            .expect("deadline write rollback")
+            .get(0);
+        assert_eq!(deadline_rows, 0);
 
         let created = execute_fixture_write(
             &provider,

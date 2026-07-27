@@ -102,6 +102,8 @@ Il provider:
 - attraversa EWKB in modo iterativo, limitando componenti e profondità senza
   fidarsi dei conteggi incorporati nel payload;
 - impedisce di sostituire il budget tra `prepare_write` e `write`;
+- applica `duration_ms` come deadline monotona, cancellando il backend senza
+  polling;
 - effettua rollback esplicito se il budget si esaurisce dentro una transazione,
   senza dichiarare il rollback quando PostgreSQL non lo conferma.
 
@@ -158,6 +160,8 @@ Il gate esegue:
     rifiutate; test live senza emissione del batch eccedente.
 19. risoluzione live `EPSG:4326`, inclusione SRS nel token strutturale e rifiuto
     preflight di un authority ID incoerente con lo SRID.
+20. deadline read con cancellazione server-side e nessun backend residuo;
+    deadline write con rollback confermato e zero righe pubblicate.
 
 Esecuzione:
 

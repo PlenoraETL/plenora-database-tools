@@ -89,6 +89,10 @@ impl CancellationToken {
         cancel_tree(Arc::clone(&self.inner), CancellationReason::Requested);
     }
 
+    pub fn cancel_due_to_deadline(&self) {
+        cancel_tree(Arc::clone(&self.inner), CancellationReason::Deadline);
+    }
+
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.reason().is_some()
@@ -111,14 +115,31 @@ impl CancellationToken {
 
     #[must_use]
     pub fn child_token(&self) -> Self {
-        let child = Self::new_inner(self.inner.deadline);
+        self.child_token_with_deadline(self.inner.deadline)
+    }
+
+    #[must_use]
+    pub fn child_token_with_deadline(&self, deadline: Option<Instant>) -> Self {
+        let deadline = match (self.inner.deadline, deadline) {
+            (Some(parent), Some(child)) => Some(parent.min(child)),
+            (Some(parent), None) => Some(parent),
+            (None, child) => child,
+        };
+        let child = Self::new_inner(deadline);
         {
             let mut children = lock_recover(&self.inner.children);
             children.retain(|existing| existing.strong_count() > 0);
             children.push(Arc::downgrade(&child.inner));
         }
-        if self.is_cancelled() {
-            cancel_tree(Arc::clone(&child.inner), CancellationReason::Parent);
+        if let Some(reason) = self.reason() {
+            cancel_tree(
+                Arc::clone(&child.inner),
+                if reason == CancellationReason::Deadline {
+                    CancellationReason::Deadline
+                } else {
+                    CancellationReason::Parent
+                },
+            );
         }
         child
     }
@@ -299,5 +320,20 @@ mod tests {
         let token = CancellationToken::with_deadline(Instant::now());
         assert!(token.is_cancelled());
         assert_eq!(token.reason(), Some(CancellationReason::Deadline));
+    }
+
+    #[test]
+    fn child_deadline_cannot_weaken_parent_and_has_distinct_reason() {
+        let parent_deadline = Instant::now();
+        let parent = CancellationToken::with_deadline(parent_deadline);
+        let child = parent.child_token_with_deadline(
+            parent_deadline.checked_add(std::time::Duration::from_secs(1)),
+        );
+        assert_eq!(child.deadline(), Some(parent_deadline));
+        assert_eq!(child.reason(), Some(CancellationReason::Deadline));
+
+        let explicit = CancellationToken::new();
+        explicit.cancel_due_to_deadline();
+        assert_eq!(explicit.reason(), Some(CancellationReason::Deadline));
     }
 }
