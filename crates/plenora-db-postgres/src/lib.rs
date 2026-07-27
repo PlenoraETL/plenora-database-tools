@@ -4,6 +4,7 @@
 //! batch-bounded verso Arrow/GeoArrow-WKB e tutte le modalità di scrittura
 //! definite dal core.
 
+mod control;
 mod metrics;
 mod write;
 
@@ -19,6 +20,7 @@ use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use bytes::{Buf, BytesMut};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
+use control::select_with_cancellation;
 use futures_util::{Stream, StreamExt};
 use metrics::PostgresMetrics;
 use plenora_database_core::capabilities::{
@@ -3611,17 +3613,6 @@ impl Drop for PostgresBatchStream {
         if !self.finished {
             self.client.invalidate();
         }
-    }
-}
-
-async fn select_with_cancellation<T, F>(future: F, cancellation: &CancellationToken) -> Option<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::pin!(future);
-    tokio::select! {
-        result = &mut future => Some(result),
-        _reason = cancellation.cancelled() => None,
     }
 }
 

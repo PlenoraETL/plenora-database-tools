@@ -1,7 +1,8 @@
 use crate::{
-    metrics::PostgresMetrics, public_error, public_error_envelope, PostgresFaultPoint,
-    PostgresInsertMode, PostgresNetworkOptions, PostgresPool, PostgresSchemaEvolution,
-    PostgresSessionOptions, PostgresTlsConfig, PostgresTlsMode,
+    control::select_with_cancellation, metrics::PostgresMetrics, public_error,
+    public_error_envelope, PostgresFaultPoint, PostgresInsertMode, PostgresNetworkOptions,
+    PostgresPool, PostgresSchemaEvolution, PostgresSessionOptions, PostgresTlsConfig,
+    PostgresTlsMode,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
@@ -426,17 +427,6 @@ pub async fn execute(
     outcome.validate()?;
     runtime.metrics.write_committed(confirmed);
     Ok(outcome)
-}
-
-async fn select_with_cancellation<T, F>(future: F, cancellation: &CancellationToken) -> Option<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::pin!(future);
-    tokio::select! {
-        result = &mut future => Some(result),
-        _reason = cancellation.cancelled() => None,
-    }
 }
 
 async fn cancel_backend(
