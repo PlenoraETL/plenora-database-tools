@@ -1,5 +1,5 @@
 use super::*;
-use arrow_schema::IntervalUnit;
+use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::RemoteEffect;
 
