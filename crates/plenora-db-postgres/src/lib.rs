@@ -10,6 +10,7 @@ mod control;
 mod error;
 mod field_contract;
 mod metrics;
+mod parameter_codec;
 mod types;
 mod write;
 
@@ -18,13 +19,12 @@ pub use metrics::PostgresMetricsSnapshot;
 use arrow::{read_mapping_error, ColumnBuffer};
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{Field, Schema, SchemaRef};
-use bytes::BytesMut;
 use catalog::{describe_object_metadata, relation_kind, CatalogSchemaToken};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use control::select_with_cancellation;
 use error::{check_cancelled, classify_error, public_error};
 use futures_util::{Stream, StreamExt};
 use metrics::PostgresMetrics;
+use parameter_codec::{bind_parameters, typed_filter_parameter_types, typed_query_parameter_types};
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
     TransactionCapabilities, TransactionScope, WriteCapabilities,
@@ -39,8 +39,8 @@ use plenora_database_core::plan::{
 };
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{
-    BatchStream, ConnectionInfo, Inspection, ParameterBag, ParameterValue, PreparedWrite, Provider,
-    ProviderFuture, SecretString,
+    BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
+    SecretString,
 };
 use plenora_database_core::query::{QueryExpression, QueryOperation, SpatialFunction};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
@@ -59,7 +59,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration as StdDuration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::config::SslMode;
-use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
+use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{CancelToken, Client, Config, NoTls, Row, RowStream};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use types::{ColumnKind, ColumnSpec};
@@ -2865,233 +2865,6 @@ fn select_columns(available: &[ColumnSpec], projection: &[String]) -> Result<Vec
         .collect()
 }
 
-#[derive(Clone, Copy)]
-enum FilterBindTarget<'a> {
-    Column(&'a str),
-    SpatialGeometry,
-    SpatialDistance,
-}
-
-#[derive(Clone, Copy)]
-struct FilterBind<'a> {
-    name: &'a str,
-    target: FilterBindTarget<'a>,
-}
-
-fn collect_filter_binds<'a>(expression: &'a FilterExpression, binds: &mut Vec<FilterBind<'a>>) {
-    match expression {
-        FilterExpression::And { args } | FilterExpression::Or { args } => {
-            for argument in args {
-                collect_filter_binds(argument, binds);
-            }
-        }
-        FilterExpression::Eq { field, parameter }
-        | FilterExpression::Ne { field, parameter }
-        | FilterExpression::Lt { field, parameter }
-        | FilterExpression::Lte { field, parameter }
-        | FilterExpression::Gt { field, parameter }
-        | FilterExpression::Gte { field, parameter }
-        | FilterExpression::Like {
-            field, parameter, ..
-        } => binds.push(FilterBind {
-            name: parameter,
-            target: FilterBindTarget::Column(field),
-        }),
-        FilterExpression::In { field, parameters } => {
-            binds.extend(parameters.iter().map(|parameter| FilterBind {
-                name: parameter,
-                target: FilterBindTarget::Column(field),
-            }));
-        }
-        FilterExpression::Between {
-            field,
-            lower_parameter,
-            upper_parameter,
-        } => {
-            binds.push(FilterBind {
-                name: lower_parameter,
-                target: FilterBindTarget::Column(field),
-            });
-            binds.push(FilterBind {
-                name: upper_parameter,
-                target: FilterBindTarget::Column(field),
-            });
-        }
-        FilterExpression::Spatial {
-            function,
-            geometry_parameter,
-            distance_parameter,
-            ..
-        } => {
-            if !matches!(
-                function,
-                SpatialFunction::IsEmpty | SpatialFunction::IsValid
-            ) {
-                if let Some(parameter) = geometry_parameter {
-                    binds.push(FilterBind {
-                        name: parameter,
-                        target: FilterBindTarget::SpatialGeometry,
-                    });
-                }
-                if *function == SpatialFunction::DWithin {
-                    if let Some(parameter) = distance_parameter {
-                        binds.push(FilterBind {
-                            name: parameter,
-                            target: FilterBindTarget::SpatialDistance,
-                        });
-                    }
-                }
-            }
-        }
-        FilterExpression::IsNull { .. } | FilterExpression::IsNotNull { .. } => {}
-    }
-}
-
-fn typed_filter_parameter_types(
-    filter: Option<&FilterExpression>,
-    bind_names: &[String],
-    parameters: &ParameterBag,
-    columns: &[ColumnSpec],
-) -> Option<Vec<Type>> {
-    let Some(filter) = filter else {
-        return bind_names.is_empty().then(Vec::new);
-    };
-    let mut binds = Vec::new();
-    collect_filter_binds(filter, &mut binds);
-    if binds.len() != bind_names.len()
-        || binds
-            .iter()
-            .zip(bind_names)
-            .any(|(bind, rendered)| bind.name != rendered)
-    {
-        return None;
-    }
-    binds
-        .into_iter()
-        .map(|bind| {
-            let value = parameters.get(bind.name)?;
-            match bind.target {
-                FilterBindTarget::SpatialGeometry => match value {
-                    ParameterValue::Wkb { .. } | ParameterValue::Bytes(_) => Some(Type::BYTEA),
-                    _ => None,
-                },
-                FilterBindTarget::SpatialDistance => {
-                    matches!(value, ParameterValue::F64(_)).then_some(Type::FLOAT8)
-                }
-                FilterBindTarget::Column(field) => {
-                    let column = columns.iter().find(|column| column.name == field)?;
-                    typed_column_parameter_type(column, value)
-                }
-            }
-        })
-        .collect()
-}
-
-fn typed_column_parameter_type(column: &ColumnSpec, value: &ParameterValue) -> Option<Type> {
-    if column.type_kind.as_deref().is_some_and(|kind| kind != "b") {
-        return None;
-    }
-    let native = column.native_type.as_str();
-    match value {
-        ParameterValue::Bool(_) if native == "bool" => Some(Type::BOOL),
-        ParameterValue::I32(_) if matches!(native, "int2" | "int4" | "int8" | "numeric") => {
-            Some(Type::INT4)
-        }
-        ParameterValue::I64(_) if matches!(native, "int2" | "int4" | "int8" | "numeric") => {
-            Some(Type::INT8)
-        }
-        ParameterValue::F64(_) if matches!(native, "float4" | "float8" | "numeric") => {
-            Some(Type::FLOAT8)
-        }
-        ParameterValue::String(_) if matches!(native, "text" | "varchar" | "bpchar" | "name") => {
-            Some(Type::TEXT)
-        }
-        ParameterValue::Bytes(_) | ParameterValue::Wkb { .. } if native == "bytea" => {
-            Some(Type::BYTEA)
-        }
-        ParameterValue::Date(_) if matches!(native, "date" | "timestamp" | "timestamptz") => {
-            Some(Type::DATE)
-        }
-        ParameterValue::Timestamp(_) if matches!(native, "date" | "timestamp" | "timestamptz") => {
-            Some(Type::TIMESTAMP)
-        }
-        ParameterValue::TimestampTz(_)
-            if matches!(native, "date" | "timestamp" | "timestamptz") =>
-        {
-            Some(Type::TIMESTAMPTZ)
-        }
-        ParameterValue::Json(_) if native == "json" => Some(Type::JSON),
-        ParameterValue::Json(_) if native == "jsonb" => Some(Type::JSONB),
-        ParameterValue::Decimal(_) if native == "numeric" => Some(Type::NUMERIC),
-        ParameterValue::Uuid(_) if native == "uuid" => Some(Type::UUID),
-        ParameterValue::Null { type_name } => {
-            let declared = builtin_type_name(type_name)?;
-            (declared.name() == native
-                || null_type_matches(type_name, &declared)
-                    && null_type_matches(type_name, &native_type(native)?))
-            .then_some(declared)
-        }
-        _ => None,
-    }
-}
-
-fn builtin_type_name(type_name: &str) -> Option<Type> {
-    match type_name.to_ascii_lowercase().as_str() {
-        "bool" | "boolean" => Some(Type::BOOL),
-        "int2" | "smallint" => Some(Type::INT2),
-        "int4" | "integer" => Some(Type::INT4),
-        "int8" | "bigint" => Some(Type::INT8),
-        "float4" | "real" => Some(Type::FLOAT4),
-        "float8" | "double precision" => Some(Type::FLOAT8),
-        "text" => Some(Type::TEXT),
-        "varchar" | "character varying" => Some(Type::VARCHAR),
-        "bpchar" | "character" => Some(Type::BPCHAR),
-        "bytea" => Some(Type::BYTEA),
-        "date" => Some(Type::DATE),
-        "time" => Some(Type::TIME),
-        "timestamp" => Some(Type::TIMESTAMP),
-        "timestamptz" | "timestamp with time zone" => Some(Type::TIMESTAMPTZ),
-        "interval" => Some(Type::INTERVAL),
-        "numeric" | "decimal" => Some(Type::NUMERIC),
-        "json" => Some(Type::JSON),
-        "jsonb" => Some(Type::JSONB),
-        "uuid" => Some(Type::UUID),
-        _ => None,
-    }
-}
-
-fn native_type(type_name: &str) -> Option<Type> {
-    builtin_type_name(type_name)
-}
-
-fn parameter_value_type(value: &ParameterValue) -> Option<Type> {
-    match value {
-        ParameterValue::Null { type_name } => builtin_type_name(type_name),
-        ParameterValue::Bool(_) => Some(Type::BOOL),
-        ParameterValue::I32(_) => Some(Type::INT4),
-        ParameterValue::I64(_) => Some(Type::INT8),
-        ParameterValue::F64(_) => Some(Type::FLOAT8),
-        ParameterValue::String(_) => Some(Type::TEXT),
-        ParameterValue::Bytes(_) | ParameterValue::Wkb { .. } => Some(Type::BYTEA),
-        ParameterValue::Date(_) => Some(Type::DATE),
-        ParameterValue::Timestamp(_) => Some(Type::TIMESTAMP),
-        ParameterValue::TimestampTz(_) => Some(Type::TIMESTAMPTZ),
-        ParameterValue::Json(_) => Some(Type::JSONB),
-        ParameterValue::Decimal(_) => Some(Type::NUMERIC),
-        ParameterValue::Uuid(_) => Some(Type::UUID),
-    }
-}
-
-fn typed_query_parameter_types(
-    bind_names: &[String],
-    parameters: &ParameterBag,
-) -> Option<Vec<Type>> {
-    bind_names
-        .iter()
-        .map(|name| parameter_value_type(parameters.get(name)?))
-        .collect()
-}
-
 fn mark_query_spatial_columns(operation: &QueryOperation, columns: &mut [ColumnSpec]) {
     for (column, projection) in columns.iter_mut().zip(&operation.projection) {
         if matches!(
@@ -3316,177 +3089,6 @@ fn ensure_filter_columns(expression: &FilterExpression, columns: &[ColumnSpec]) 
             "colonna filtro non presente nella projection",
         ))
     }
-}
-
-#[derive(Debug)]
-struct DecimalParameter {
-    value: i128,
-    scale: i8,
-}
-
-impl DecimalParameter {
-    fn parse(value: &str) -> Result<Self> {
-        let negative = value.starts_with('-');
-        let unsigned = value.trim_start_matches(['-', '+']);
-        let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-        let scale = i8::try_from(fraction.len())
-            .map_err(|_| DatabaseError::invalid_plan("scala parametro decimal troppo grande"))?;
-        let mut digits = String::with_capacity(integer.len() + fraction.len());
-        digits.push_str(if integer.is_empty() { "0" } else { integer });
-        digits.push_str(fraction);
-        let parsed = digits
-            .parse::<i128>()
-            .map_err(|_| DatabaseError::invalid_plan("parametro decimal non valido"))?;
-        Ok(Self {
-            value: if negative { -parsed } else { parsed },
-            scale,
-        })
-    }
-}
-
-impl ToSql for DecimalParameter {
-    fn to_sql(
-        &self,
-        target_type: &Type,
-        output: &mut BytesMut,
-    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        if !Self::accepts(target_type) {
-            return Err("target non numeric".into());
-        }
-        write::binary_codec::encode_numeric_binary(self.value, self.scale, output)?;
-        Ok(IsNull::No)
-    }
-
-    fn accepts(target_type: &Type) -> bool {
-        *target_type == Type::NUMERIC
-    }
-
-    to_sql_checked!();
-}
-
-#[derive(Debug)]
-struct UuidParameter([u8; 16]);
-
-impl UuidParameter {
-    fn parse(value: &str) -> Result<Self> {
-        let compact = value
-            .chars()
-            .filter(|character| *character != '-')
-            .collect::<String>();
-        if compact.len() != 32 {
-            return Err(DatabaseError::invalid_plan("parametro UUID non valido"));
-        }
-        let mut bytes = [0_u8; 16];
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)
-                .map_err(|_| DatabaseError::invalid_plan("parametro UUID non valido"))?;
-        }
-        Ok(Self(bytes))
-    }
-}
-
-impl ToSql for UuidParameter {
-    fn to_sql(
-        &self,
-        target_type: &Type,
-        output: &mut BytesMut,
-    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        if !Self::accepts(target_type) {
-            return Err("target non UUID".into());
-        }
-        output.extend_from_slice(&self.0);
-        Ok(IsNull::No)
-    }
-
-    fn accepts(target_type: &Type) -> bool {
-        *target_type == Type::UUID
-    }
-
-    to_sql_checked!();
-}
-
-#[derive(Debug)]
-struct TypedNull(String);
-
-impl ToSql for TypedNull {
-    fn to_sql(
-        &self,
-        target_type: &Type,
-        _output: &mut BytesMut,
-    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        if !null_type_matches(&self.0, target_type) {
-            return Err("tipo NULL dichiarato non coerente col parametro PostgreSQL".into());
-        }
-        Ok(IsNull::Yes)
-    }
-
-    fn accepts(_target_type: &Type) -> bool {
-        true
-    }
-
-    to_sql_checked!();
-}
-
-fn null_type_matches(declared: &str, target: &Type) -> bool {
-    declared.eq_ignore_ascii_case(target.name())
-        || matches!(
-            (declared.to_ascii_lowercase().as_str(), target.name()),
-            ("boolean", "bool")
-                | ("smallint", "int2")
-                | ("integer", "int4")
-                | ("bigint", "int8")
-                | ("real", "float4")
-                | ("double precision", "float8")
-                | ("decimal", "numeric")
-                | ("timestamp", "timestamp")
-                | ("timestamptz", "timestamptz")
-                | ("varchar", "varchar")
-                | ("text", "text")
-        )
-}
-
-fn bind_parameters(
-    parameters: &ParameterBag,
-    bind_names: &[String],
-) -> Result<Vec<Box<dyn ToSql + Sync + Send>>> {
-    bind_names
-        .iter()
-        .map(|name| {
-            let value = parameters
-                .get(name)
-                .ok_or_else(|| DatabaseError::invalid_plan("parametro filtro mancante"))?;
-            let boxed: Box<dyn ToSql + Sync + Send> = match value {
-                ParameterValue::Bool(value) => Box::new(*value),
-                ParameterValue::I32(value) => Box::new(*value),
-                ParameterValue::I64(value) => Box::new(*value),
-                ParameterValue::F64(value) => Box::new(*value),
-                ParameterValue::String(value) => Box::new(value.clone()),
-                ParameterValue::Bytes(value) => Box::new(value.clone()),
-                ParameterValue::Date(value) => Box::new(
-                    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                        .map_err(|_| DatabaseError::invalid_plan("parametro date non valido"))?,
-                ),
-                ParameterValue::Timestamp(value) => Box::new(
-                    NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").map_err(|_| {
-                        DatabaseError::invalid_plan("parametro timestamp non valido")
-                    })?,
-                ),
-                ParameterValue::TimestampTz(value) => Box::new(
-                    DateTime::parse_from_rfc3339(value)
-                        .map_err(|_| {
-                            DatabaseError::invalid_plan("parametro timestamptz non valido")
-                        })?
-                        .with_timezone(&Utc),
-                ),
-                ParameterValue::Json(value) => Box::new(value.clone()),
-                ParameterValue::Wkb { bytes, .. } => Box::new(bytes.clone()),
-                ParameterValue::Decimal(value) => Box::new(DecimalParameter::parse(value)?),
-                ParameterValue::Uuid(value) => Box::new(UuidParameter::parse(value)?),
-                ParameterValue::Null { type_name } => Box::new(TypedNull(type_name.clone())),
-            };
-            Ok(boxed)
-        })
-        .collect()
 }
 
 fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {

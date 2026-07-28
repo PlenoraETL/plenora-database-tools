@@ -72,6 +72,7 @@ mod tests {
     use plenora_database_core::plan::{
         ComparisonOperator, LayerId, OrderBy, SridPolicy, TransactionProfile, WriteMode,
     };
+    use plenora_database_core::provider::ParameterValue;
     use plenora_database_core::query::{
         ColumnRef, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin, QueryOperation,
         QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
