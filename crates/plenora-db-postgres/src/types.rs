@@ -1,5 +1,6 @@
-use super::{catalog_field, catalog_json_list, usize_to_u64};
+use super::usize_to_u64;
 use crate::arrow::range_fields;
+use crate::catalog::{catalog_field, catalog_json_list};
 use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit};
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::plan::ProviderKind;
