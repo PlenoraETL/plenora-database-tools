@@ -81,7 +81,11 @@ mod tests {
     use std::ops::Deref;
     use std::sync::OnceLock;
 
-    async fn wait_for_no_active_query(client: &tokio_postgres::Client, marker: &str) {
+    async fn wait_for_query_state(
+        client: &tokio_postgres::Client,
+        marker: &str,
+        expected_active: bool,
+    ) {
         let pattern = format!("%{marker}%");
         tokio::time::timeout(StdDuration::from_secs(2), async {
             loop {
@@ -98,7 +102,7 @@ mod tests {
                     .await
                     .expect("query backend cancellation state")
                     .get(0);
-                if active == 0 {
+                if (active > 0) == expected_active {
                     break;
                 }
                 tokio::time::sleep(StdDuration::from_millis(10)).await;
@@ -106,8 +110,23 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| {
-            panic!("query containing {marker:?} remained active after cancellation")
+            panic!(
+                "query containing {marker:?} did not become {} within the bounded observation",
+                if expected_active {
+                    "active"
+                } else {
+                    "inactive"
+                }
+            )
         });
+    }
+
+    async fn wait_for_active_query(client: &tokio_postgres::Client, marker: &str) {
+        wait_for_query_state(client, marker, true).await;
+    }
+
+    async fn wait_for_no_active_query(client: &tokio_postgres::Client, marker: &str) {
+        wait_for_query_state(client, marker, false).await;
     }
 
     #[test]
@@ -1995,30 +2014,8 @@ mod tests {
         let inflight_cancellation = CancellationToken::new();
         let toggle = inflight_cancellation.clone();
         let observe_then_cancel = async {
-            tokio::time::timeout(StdDuration::from_secs(2), async {
-                loop {
-                    let active: i64 = client
-                        .query_one(
-                            "SELECT count(*)
-                             FROM pg_stat_activity
-                             WHERE datname = current_database()
-                               AND state = 'active'
-                               AND query LIKE '%slow_events%'
-                               AND pid <> pg_backend_pid()",
-                            &[],
-                        )
-                        .await
-                        .expect("observe in-flight query")
-                        .get(0);
-                    if active > 0 {
-                        toggle.cancel();
-                        break;
-                    }
-                    tokio::time::sleep(StdDuration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("slow query became active");
+            wait_for_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
+            toggle.cancel();
         };
         let started = std::time::Instant::now();
         let slow_read = ReadOperation {
@@ -2580,20 +2577,19 @@ mod tests {
             .expect("slow write prepare");
         let write_cancellation = CancellationToken::new();
         let write_toggle = write_cancellation.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(StdDuration::from_millis(50)).await;
+        let observe_then_cancel = async {
+            wait_for_active_query(&client, "COPY \"plenora_fixture\".\"slow_write_target\"").await;
             write_toggle.cancel();
-        });
+        };
         let started = std::time::Instant::now();
-        let slow_write_error = provider
-            .write_with_prepared_budget(
-                &secret,
-                slow_write_prepared,
-                slow_write_stream,
-                &write_cancellation,
-            )
-            .await
-            .expect_err("in-flight write cancellation");
+        let write = provider.write_with_prepared_budget(
+            &secret,
+            slow_write_prepared,
+            slow_write_stream,
+            &write_cancellation,
+        );
+        let (write_result, ()) = tokio::join!(write, observe_then_cancel);
+        let slow_write_error = write_result.expect_err("in-flight write cancellation");
         assert_eq!(slow_write_error.category, ErrorCategory::Cancelled);
         assert!(started.elapsed() < StdDuration::from_secs(2));
         tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -2617,7 +2613,7 @@ mod tests {
         .await;
         let deadline_budget =
             ResourceBudget::new(plenora_database_core::resource::ResourceLimits {
-                duration_ms: 250,
+                duration_ms: 1_000,
                 ..plenora_database_core::resource::ResourceLimits::default()
             })
             .expect("write deadline budget");
