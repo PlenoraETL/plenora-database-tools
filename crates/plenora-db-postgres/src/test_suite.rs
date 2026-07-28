@@ -1979,32 +1979,54 @@ mod tests {
             .expect("slow view");
         let inflight_cancellation = CancellationToken::new();
         let toggle = inflight_cancellation.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(StdDuration::from_millis(50)).await;
-            toggle.cancel();
-        });
-        let started = std::time::Instant::now();
-        let inflight_error = provider
-            .read_with_test_budget(
-                &secret,
-                &ReadOperation {
-                    source: ObjectRef {
-                        catalog: None,
-                        schema: Some("plenora_fixture".to_owned()),
-                        object: "slow_events".to_owned(),
-                        layer_id: None,
-                    },
-                    projection: vec!["event_id".to_owned()],
-                    order_by: Vec::new(),
-                    row_limit: None,
-                    filter: None,
-                },
-                &ParameterBag::default(),
-                &inflight_cancellation,
-            )
+        let observe_then_cancel = async {
+            tokio::time::timeout(StdDuration::from_secs(2), async {
+                loop {
+                    let active: i64 = client
+                        .query_one(
+                            "SELECT count(*)
+                             FROM pg_stat_activity
+                             WHERE datname = current_database()
+                               AND state = 'active'
+                               AND query LIKE '%slow_events%'
+                               AND pid <> pg_backend_pid()",
+                            &[],
+                        )
+                        .await
+                        .expect("observe in-flight query")
+                        .get(0);
+                    if active > 0 {
+                        toggle.cancel();
+                        break;
+                    }
+                    tokio::time::sleep(StdDuration::from_millis(10)).await;
+                }
+            })
             .await
-            .err()
-            .expect("in-flight cancellation");
+            .expect("slow query became active");
+        };
+        let started = std::time::Instant::now();
+        let slow_read = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "slow_events".to_owned(),
+                layer_id: None,
+            },
+            projection: vec!["event_id".to_owned()],
+            order_by: Vec::new(),
+            row_limit: None,
+            filter: None,
+        };
+        let slow_parameters = ParameterBag::default();
+        let read = provider.read_with_test_budget(
+            &secret,
+            &slow_read,
+            &slow_parameters,
+            &inflight_cancellation,
+        );
+        let (read_result, ()) = tokio::join!(read, observe_then_cancel);
+        let inflight_error = read_result.err().expect("in-flight cancellation");
         assert_eq!(inflight_error.category, ErrorCategory::Cancelled);
         assert!(started.elapsed() < StdDuration::from_secs(2));
         tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -2014,7 +2036,7 @@ mod tests {
                  FROM pg_stat_activity
                  WHERE datname = current_database()
                    AND state = 'active'
-                   AND query LIKE '%plenora_fixture.slow_events%'
+                   AND query LIKE '%slow_events%'
                    AND pid <> pg_backend_pid()",
                 &[],
             )

@@ -19,9 +19,10 @@ jobs:
         shell: bash --noprofile --norc -euo pipefail {0}
 
     steps:
-      # actions/checkout v4, pinned to the exact revision resolved on 2026-07-27.
+      # actions/checkout v6, pinned to the exact Node 24 revision resolved on
+      # 2026-07-28.
       - name: Check out the candidate revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Record the execution environment
         run: |
@@ -108,11 +109,12 @@ jobs:
           docker compose -f docker-compose.postgres-tls.yml logs --no-color \
             > assurance-results/postgres-tls-compose.log 2>&1 || true
 
-      # actions/upload-artifact v4, pinned to the exact revision resolved on
-      # 2026-07-27. These reports are execution evidence, not certification.
+      # actions/upload-artifact v7.0.1, pinned to the exact Node 24 revision
+      # resolved on 2026-07-28. These reports are execution evidence, not
+      # certification.
       - name: Preserve assurance evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: postgres-postgis-assurance-${{ github.sha }}
           path: assurance-results/

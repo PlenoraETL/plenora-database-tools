@@ -148,6 +148,7 @@ def main() -> int:
                 "docker-compose.postgres-tls.yml",
                 "up",
                 "-d",
+                "--wait",
             ]
         )
         state = run(
