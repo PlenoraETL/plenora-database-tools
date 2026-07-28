@@ -23,7 +23,10 @@ pub use metrics::PostgresMetricsSnapshot;
 pub use schema_cache::PostgresSchemaToken;
 
 use arrow_schema::{Field, Schema, SchemaRef};
-use catalog::{describe_object_metadata, relation_kind, CatalogSchemaToken};
+use catalog::{
+    capability_document, describe_object_metadata, list_catalogs, list_objects, list_schemas,
+    load_columns_and_token, schema_token,
+};
 use connection::connection_fingerprint;
 #[cfg(test)]
 use connection::{
@@ -35,11 +38,7 @@ use error::{check_cancelled, classify_error, public_error};
 use futures_util::StreamExt;
 use metrics::PostgresMetrics;
 use parameter_codec::{bind_parameters, typed_filter_parameter_types, typed_query_parameter_types};
-use plenora_database_core::capabilities::{
-    ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
-    TransactionCapabilities, TransactionScope, WriteCapabilities,
-};
-use plenora_database_core::geometry::Dimensions;
+use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::loss::{LossCategory, LossReport, LossSeverity, MappingLoss};
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
@@ -51,7 +50,7 @@ use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
-use plenora_database_core::query::{QueryExpression, QueryOperation, SpatialFunction};
+use plenora_database_core::query::{QueryExpression, QueryOperation};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
@@ -67,14 +66,16 @@ use read_stream::{
 use schema_cache::{PostgresSchemaCache, SchemaCacheKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(test)]
 use std::time::Duration as StdDuration;
 #[cfg(test)]
 use tokio_postgres::config::SslMode;
 use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::{Client, RowStream};
+#[cfg(test)]
+use tokio_postgres::Client;
+use tokio_postgres::RowStream;
 use types::{ColumnKind, ColumnSpec};
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -384,338 +385,6 @@ impl PostgresProvider {
         .await
     }
 
-    #[allow(clippy::too_many_lines)]
-    async fn load_columns_and_token(
-        client: &Client,
-        source: &ObjectRef,
-    ) -> Result<(Arc<Vec<ColumnSpec>>, CatalogSchemaToken)> {
-        let schema = source.schema.as_deref().unwrap_or("public");
-        let rows = client
-            .query(
-                r"
-                SELECT
-                    a.attname,
-                    t.typname,
-                    NOT a.attnotnull AS nullable,
-                    CASE
-                      WHEN t.typname = 'numeric' AND a.atttypmod >= 0
-                      THEN ((a.atttypmod - 4) >> 16) & 65535
-                    END AS numeric_precision,
-                    CASE
-                      WHEN t.typname = 'numeric' AND a.atttypmod >= 0
-                      THEN CASE
-                        WHEN ((a.atttypmod - 4) & 2047) >= 1024
-                        THEN ((a.atttypmod - 4) & 2047) - 2048
-                        ELSE (a.atttypmod - 4) & 2047
-                      END
-                    END AS numeric_scale,
-                    CASE
-                      WHEN t.typname IN ('geometry', 'geography')
-                           AND a.atttypmod >= 0
-                      THEN postgis_typmod_srid(a.atttypmod)
-                    END AS spatial_srid,
-                    CASE
-                      WHEN t.typname IN ('geometry', 'geography')
-                           AND a.atttypmod >= 0
-                      THEN postgis_typmod_dims(a.atttypmod)
-                    END AS spatial_dims,
-                    CASE
-                      WHEN t.typname IN ('geometry', 'geography')
-                           AND a.atttypmod >= 0
-                      THEN postgis_typmod_type(a.atttypmod)
-                    END AS spatial_type,
-                    srs.auth_name AS spatial_crs_auth_name,
-                    srs.auth_srid AS spatial_crs_auth_srid,
-                    pg_get_expr(ad.adbin, ad.adrelid) AS default_expression,
-                    NULLIF(a.attidentity, '')::text AS identity_kind,
-                    NULLIF(a.attgenerated, '')::text AS generated_kind,
-                    format_type(a.atttypid, a.atttypmod) AS native_declaration,
-                    t.typtype::text AS type_kind,
-                    CASE WHEN t.typtype = 'c' THEN (
-                        SELECT jsonb_agg(
-                            jsonb_build_object(
-                                'name', ca.attname,
-                                'declaration', format_type(ca.atttypid, ca.atttypmod)
-                            )
-                            ORDER BY ca.attnum
-                        )::text
-                        FROM pg_catalog.pg_attribute ca
-                        WHERE ca.attrelid = t.typrelid
-                          AND ca.attnum > 0
-                          AND NOT ca.attisdropped
-                    ) END AS composite_fields,
-                    d.oid::bigint AS database_oid,
-                    n.oid::bigint AS namespace_oid,
-                    c.oid::bigint AS relation_oid,
-                    signature.structural_signature,
-                    CASE WHEN t.typtype = 'e' THEN (
-                        SELECT jsonb_agg(e.enumlabel ORDER BY e.enumsortorder)::text
-                        FROM pg_catalog.pg_enum e
-                        WHERE e.enumtypid = t.oid
-                    ) END AS enum_labels,
-                    CASE WHEN t.typtype = 'd'
-                         THEN format_type(t.typbasetype, t.typtypmod)
-                    END AS domain_base_type,
-                    CASE WHEN t.typtype = 'd' THEN (
-                        SELECT jsonb_agg(
-                            pg_get_constraintdef(dc.oid, true)
-                            ORDER BY dc.conname
-                        )::text
-                        FROM pg_catalog.pg_constraint dc
-                        WHERE dc.contypid = t.oid
-                    ) END AS domain_constraints,
-                    CASE WHEN a.attcollation <> t.typcollation
-                         THEN coll.collname
-                    END AS collation
-                FROM pg_catalog.pg_attribute a
-                JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                JOIN pg_catalog.pg_database d ON d.datname = current_database()
-                JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
-                LEFT JOIN pg_catalog.pg_attrdef ad
-                  ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
-                LEFT JOIN pg_catalog.pg_collation coll ON coll.oid = a.attcollation
-                LEFT JOIN spatial_ref_sys srs
-                  ON t.typname IN ('geometry', 'geography')
-                 AND a.atttypmod >= 0
-                 AND srs.srid = postgis_typmod_srid(a.atttypmod)
-                CROSS JOIN LATERAL (
-                    SELECT jsonb_build_object(
-                        'relation',
-                        jsonb_build_array(c.relname, c.relkind, c.xmin::text),
-                        'columns',
-                        COALESCE((
-                            SELECT jsonb_agg(
-                                jsonb_build_array(
-                                    sa.attnum,
-                                    sa.attname,
-                                    sa.atttypid::text,
-                                    sa.atttypmod,
-                                    sa.attnotnull,
-                                    sa.attidentity,
-                                    sa.attgenerated,
-                                    sa.attcollation::text,
-                                    sa.xmin::text,
-                                    st.typname,
-                                    st.typtype,
-                                    st.xmin::text,
-                                    pg_get_expr(sad.adbin, sad.adrelid),
-                                    CASE WHEN st.typtype = 'e' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                se.enumlabel,
-                                                se.enumsortorder,
-                                                se.xmin::text
-                                            )
-                                            ORDER BY se.enumsortorder
-                                        )
-                                        FROM pg_catalog.pg_enum se
-                                        WHERE se.enumtypid = st.oid
-                                    ) END,
-                                    CASE WHEN st.typtype = 'd' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                sdc.conname,
-                                                sdc.xmin::text,
-                                                pg_get_constraintdef(sdc.oid, true)
-                                            )
-                                            ORDER BY sdc.conname
-                                        )
-                                        FROM pg_catalog.pg_constraint sdc
-                                        WHERE sdc.contypid = st.oid
-                                    ) END,
-                                    CASE WHEN st.typtype = 'c' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                sca.attnum,
-                                                sca.attname,
-                                                sca.atttypid::text,
-                                                sca.atttypmod,
-                                                sca.xmin::text,
-                                                format_type(
-                                                    sca.atttypid,
-                                                    sca.atttypmod
-                                                )
-                                            )
-                                            ORDER BY sca.attnum
-                                        )
-                                        FROM pg_catalog.pg_attribute sca
-                                        WHERE sca.attrelid = st.typrelid
-                                          AND sca.attnum > 0
-                                          AND NOT sca.attisdropped
-                                    ) END,
-                                    CASE
-                                      WHEN st.typname IN ('geometry', 'geography')
-                                           AND sa.atttypmod >= 0
-                                      THEN (
-                                        SELECT jsonb_build_array(
-                                            ssrs.auth_name,
-                                            ssrs.auth_srid,
-                                            ssrs.xmin::text
-                                        )
-                                        FROM spatial_ref_sys ssrs
-                                        WHERE ssrs.srid =
-                                            postgis_typmod_srid(sa.atttypmod)
-                                      )
-                                    END
-                                )
-                                ORDER BY sa.attnum
-                            )
-                            FROM pg_catalog.pg_attribute sa
-                            JOIN pg_catalog.pg_type st ON st.oid = sa.atttypid
-                            LEFT JOIN pg_catalog.pg_attrdef sad
-                              ON sad.adrelid = sa.attrelid
-                             AND sad.adnum = sa.attnum
-                            WHERE sa.attrelid = c.oid
-                              AND sa.attnum > 0
-                              AND NOT sa.attisdropped
-                        ), '[]'::jsonb)
-                    )::text AS structural_signature
-                ) signature
-                WHERE n.nspname = $1
-                  AND c.relname = $2
-                  AND a.attnum > 0
-                  AND NOT a.attisdropped
-                ORDER BY a.attnum
-                ",
-                &[&schema, &source.object],
-            )
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
-        if rows.is_empty() {
-            return Err(public_error(
-                ErrorCategory::NotFound,
-                ErrorPhase::Probe,
-                false,
-                "oggetto PostgreSQL non trovato",
-            ));
-        }
-        let token = CatalogSchemaToken::from_catalog_row(&rows[0])?;
-        let columns = Arc::new(
-            rows.iter()
-                .map(ColumnSpec::from_catalog_row)
-                .collect::<Result<Vec<_>>>()?,
-        );
-        Ok((columns, token))
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn schema_token(client: &Client, source: &ObjectRef) -> Result<CatalogSchemaToken> {
-        let schema = source.schema.as_deref().unwrap_or("public");
-        let row = client
-            .query_opt(
-                r"
-                SELECT
-                    d.oid::bigint AS database_oid,
-                    n.oid::bigint AS namespace_oid,
-                    c.oid::bigint AS relation_oid,
-                    jsonb_build_object(
-                        'relation',
-                        jsonb_build_array(c.relname, c.relkind, c.xmin::text),
-                        'columns',
-                        COALESCE((
-                            SELECT jsonb_agg(
-                                jsonb_build_array(
-                                    a.attnum,
-                                    a.attname,
-                                    a.atttypid::text,
-                                    a.atttypmod,
-                                    a.attnotnull,
-                                    a.attidentity,
-                                    a.attgenerated,
-                                    a.attcollation::text,
-                                    a.xmin::text,
-                                    t.typname,
-                                    t.typtype,
-                                    t.xmin::text,
-                                    pg_get_expr(ad.adbin, ad.adrelid),
-                                    CASE WHEN t.typtype = 'e' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                e.enumlabel,
-                                                e.enumsortorder,
-                                                e.xmin::text
-                                            )
-                                            ORDER BY e.enumsortorder
-                                        )
-                                        FROM pg_catalog.pg_enum e
-                                        WHERE e.enumtypid = t.oid
-                                    ) END,
-                                    CASE WHEN t.typtype = 'd' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                dc.conname,
-                                                dc.xmin::text,
-                                                pg_get_constraintdef(dc.oid, true)
-                                            )
-                                            ORDER BY dc.conname
-                                        )
-                                        FROM pg_catalog.pg_constraint dc
-                                        WHERE dc.contypid = t.oid
-                                    ) END,
-                                    CASE WHEN t.typtype = 'c' THEN (
-                                        SELECT jsonb_agg(
-                                            jsonb_build_array(
-                                                ca.attnum,
-                                                ca.attname,
-                                                ca.atttypid::text,
-                                                ca.atttypmod,
-                                                ca.xmin::text,
-                                                format_type(ca.atttypid, ca.atttypmod)
-                                            )
-                                            ORDER BY ca.attnum
-                                        )
-                                        FROM pg_catalog.pg_attribute ca
-                                        WHERE ca.attrelid = t.typrelid
-                                          AND ca.attnum > 0
-                                          AND NOT ca.attisdropped
-                                    ) END,
-                                    CASE
-                                      WHEN t.typname IN ('geometry', 'geography')
-                                           AND a.atttypmod >= 0
-                                      THEN (
-                                        SELECT jsonb_build_array(
-                                            srs.auth_name,
-                                            srs.auth_srid,
-                                            srs.xmin::text
-                                        )
-                                        FROM spatial_ref_sys srs
-                                        WHERE srs.srid =
-                                            postgis_typmod_srid(a.atttypmod)
-                                      )
-                                    END
-                                )
-                                ORDER BY a.attnum
-                            )
-                            FROM pg_catalog.pg_attribute a
-                            JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
-                            LEFT JOIN pg_catalog.pg_attrdef ad
-                              ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
-                            WHERE a.attrelid = c.oid
-                              AND a.attnum > 0
-                              AND NOT a.attisdropped
-                        ), '[]'::jsonb)
-                    )::text AS structural_signature
-                FROM pg_catalog.pg_class c
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                JOIN pg_catalog.pg_database d ON d.datname = current_database()
-                WHERE n.nspname = $1 AND c.relname = $2
-                ",
-                &[&schema, &source.object],
-            )
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Probe, &error))?
-            .ok_or_else(|| {
-                public_error(
-                    ErrorCategory::NotFound,
-                    ErrorPhase::Probe,
-                    false,
-                    "oggetto PostgreSQL non trovato",
-                )
-            })?;
-        CatalogSchemaToken::from_catalog_row(&row)
-    }
-
     fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
         SchemaCacheKey::new(
             client.key(),
@@ -732,7 +401,7 @@ impl PostgresProvider {
         let key = Self::schema_cache_key(client, source);
         if let Some((candidate_token, candidate_columns)) = self.schema_cache.candidate(&key) {
             self.metrics.schema_token_check();
-            let current = match Self::schema_token(client.client()?, source).await {
+            let current = match schema_token(client.client()?, source).await {
                 Ok(token) => token,
                 Err(error) => {
                     if self.schema_cache.invalidate(&key) {
@@ -752,7 +421,7 @@ impl PostgresProvider {
         }
         self.metrics.schema_cache_miss();
         self.metrics.catalog_introspection();
-        let (columns, token) = Self::load_columns_and_token(client.client()?, source).await?;
+        let (columns, token) = load_columns_and_token(client.client()?, source).await?;
         if self
             .schema_cache
             .insert(key, token.clone(), Arc::clone(&columns))
@@ -781,166 +450,22 @@ impl PostgresProvider {
         }
     }
 
-    async fn capability_document(client: &Client) -> Result<ProviderCapabilities> {
-        let row = client
-            .query_one(
-                r"
-                SELECT
-                    current_setting('server_version'),
-                    COALESCE(
-                      (SELECT extversion FROM pg_extension WHERE extname = 'postgis'),
-                      ''
-                    )
-                ",
-                &[],
-            )
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
-        let server_version: String = row.get(0);
-        let postgis_version: String = row.get(1);
-        let spatial = !postgis_version.is_empty();
-        let mut extensions = BTreeMap::new();
-        if spatial {
-            extensions.insert("postgis".to_owned(), postgis_version);
-        }
-        Ok(ProviderCapabilities {
-            schema_version: 1,
-            provider: ProviderKind::Postgres,
-            provider_version: server_version,
-            extension_versions: extensions,
-            reads: ReadCapabilities {
-                streaming: true,
-                server_cursor: true,
-                pagination: true,
-                object_id_windows: false,
-                projection: true,
-                filter: true,
-                ordering: true,
-                resumable: false,
-            },
-            writes: WriteCapabilities {
-                create: true,
-                append: true,
-                update: true,
-                upsert: true,
-                replace: true,
-                delete_by_keys: true,
-                bulk: true,
-                array_binding: false,
-                returning: true,
-                apply_edits: false,
-                rollback_on_failure: true,
-                use_global_ids: false,
-            },
-            transactions: TransactionCapabilities {
-                single_transaction: true,
-                savepoints: true,
-                transactional_ddl: true,
-                staged_swap: true,
-                scope: TransactionScope::Transaction,
-            },
-            spatial: SpatialCapabilities {
-                read_wkb: spatial,
-                write_wkb: spatial,
-                geometry: spatial,
-                geography: spatial,
-                spatial_index: spatial,
-                mixed_geometry_types: spatial,
-                dimensions: if spatial {
-                    vec![
-                        Dimensions::Xy,
-                        Dimensions::Xyz,
-                        Dimensions::Xym,
-                        Dimensions::Xyzm,
-                    ]
-                } else {
-                    Vec::new()
-                },
-                functions: if spatial {
-                    SpatialFunction::ALL.to_vec()
-                } else {
-                    Vec::new()
-                },
-            },
-            limits: ProviderLimits {
-                max_identifier_bytes: Some(63),
-                max_bind_parameters: Some(65_535),
-                max_statement_bytes: None,
-                max_batch_rows: None,
-                max_payload_bytes: None,
-                max_record_count: None,
-            },
-        })
-    }
-
     async fn inspection(&self, client: &PooledClient, operation: &Operation) -> Result<Inspection> {
         match operation {
-            Operation::DatabaseListCatalogs => {
-                let rows = client
-                    .client()?
-                    .query(
-                        "SELECT datname FROM pg_database WHERE datallowconn ORDER BY datname",
-                        &[],
-                    )
-                    .await
-                    .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
-                Ok(Inspection {
-                    operation: "database.list_catalogs".to_owned(),
-                    document: json!({
-                        "catalogs": rows.iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>()
-                    }),
-                })
-            }
-            Operation::DatabaseListSchemas { .. } => {
-                let rows = client
-                    .client()?
-                    .query(
-                        r"
-                        SELECT schema_name
-                        FROM information_schema.schemata
-                        ORDER BY schema_name
-                        ",
-                        &[],
-                    )
-                    .await
-                    .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
-                Ok(Inspection {
-                    operation: "database.list_schemas".to_owned(),
-                    document: json!({
-                        "schemas": rows.iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>()
-                    }),
-                })
-            }
+            Operation::DatabaseListCatalogs => Ok(Inspection {
+                operation: "database.list_catalogs".to_owned(),
+                document: json!({"catalogs": list_catalogs(client.client()?).await?}),
+            }),
+            Operation::DatabaseListSchemas { .. } => Ok(Inspection {
+                operation: "database.list_schemas".to_owned(),
+                document: json!({"schemas": list_schemas(client.client()?).await?}),
+            }),
             Operation::DatabaseListObjects { source } => {
                 let schema = source
                     .as_ref()
                     .and_then(|value| value.schema.as_deref())
                     .unwrap_or("public");
-                let rows = client
-                    .client()?
-                    .query(
-                        r"
-                        SELECT c.relname, c.relkind::text, c.relispartition
-                        FROM pg_catalog.pg_class c
-                        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                        WHERE n.nspname = $1
-                          AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
-                        ORDER BY c.relname
-                        ",
-                        &[&schema],
-                    )
-                    .await
-                    .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
-                let objects = rows
-                    .iter()
-                    .map(|row| {
-                        json!({
-                            "name": row.get::<_, String>(0),
-                            "kind": relation_kind(&row.get::<_, String>(1)),
-                            "is_partition": row.get::<_, bool>(2)
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                let objects = list_objects(client.client()?, schema).await?;
                 Ok(Inspection {
                     operation: "database.list_objects".to_owned(),
                     document: json!({"schema": schema, "objects": objects}),
@@ -1575,7 +1100,7 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Probe)?;
             let client = self.connect_session(secret).await?;
-            Self::capability_document(client.client()?).await
+            capability_document(client.client()?).await
         })
     }
 

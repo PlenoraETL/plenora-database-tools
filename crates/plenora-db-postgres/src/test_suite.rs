@@ -67,7 +67,7 @@ impl PostgresProvider {
 mod tests {
     use super::*;
     use arrow_array::RecordBatch;
-    use plenora_database_core::geometry::SpatialSemantics;
+    use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::outcome::WriteStatus;
     use plenora_database_core::plan::{
@@ -77,7 +77,7 @@ mod tests {
     use plenora_database_core::query::{
         ColumnRef, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin, QueryOperation,
         QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
-        ScalarFunction, SpatialOperator,
+        ScalarFunction, SpatialFunction, SpatialOperator,
     };
     use std::collections::BTreeMap;
     use std::ops::Deref;
