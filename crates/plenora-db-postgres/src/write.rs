@@ -1,6 +1,7 @@
 use crate::{
     control::select_with_cancellation,
     error::{classify_error, public_error, public_error_envelope},
+    field_contract::FieldContract,
     metrics::PostgresMetrics,
     PostgresFaultPoint, PostgresInsertMode, PostgresNetworkOptions, PostgresPool,
     PostgresSchemaEvolution, PostgresSessionOptions, PostgresTlsConfig, PostgresTlsMode,
@@ -15,11 +16,13 @@ use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use futures_util::SinkExt;
 use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbGeometryMetadata};
+#[cfg(test)]
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
 };
 use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
+#[cfg(test)]
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{BatchStream, PreparedWrite, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
@@ -53,6 +56,58 @@ pub struct WriteRuntime {
     pub pool_acquire_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct WriteColumnPlan {
+    data_type: DataType,
+    native_type: Option<String>,
+    native_declaration_sql: Option<String>,
+    geometry_type: Option<String>,
+    dimensions: Option<String>,
+    srid: Option<u32>,
+    semantics: ColumnSemantics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnSemantics {
+    Scalar,
+    Geometry,
+    Geography,
+    Range,
+    Composite,
+}
+
+impl WriteColumnPlan {
+    fn compile(field: &Field) -> Result<Self> {
+        let contract = FieldContract::parse(field)?;
+        Ok(Self {
+            data_type: field.data_type().clone(),
+            native_type: contract.native_type.map(str::to_owned),
+            native_declaration_sql: native_declaration_sql(contract),
+            geometry_type: contract.geometry_type.map(str::to_owned),
+            dimensions: contract.dimensions.map(str::to_owned),
+            srid: contract.srid,
+            semantics: if contract.is_geography() {
+                ColumnSemantics::Geography
+            } else if contract.is_geometry() {
+                ColumnSemantics::Geometry
+            } else if contract.is_range() {
+                ColumnSemantics::Range
+            } else if contract.is_composite() {
+                ColumnSemantics::Composite
+            } else {
+                ColumnSemantics::Scalar
+            },
+        })
+    }
+
+    const fn is_spatial(&self) -> bool {
+        matches!(
+            self.semantics,
+            ColumnSemantics::Geometry | ColumnSemantics::Geography
+        )
+    }
+}
+
 pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result<()> {
     if schema.fields().is_empty() {
         return Err(DatabaseError::invalid_plan(
@@ -60,10 +115,9 @@ pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result
         ));
     }
     for field in schema.fields() {
-        validate_metadata_coherence(field)?;
-        validate_crs_metadata(field)?;
+        let contract = FieldContract::parse(field)?;
         Identifier::new(field.name().clone())?;
-        pg_type(field)?;
+        pg_type(contract)?;
     }
     for name in operation.keys.iter().chain(&operation.update_columns) {
         if schema.field_with_name(name).is_err() {
@@ -638,13 +692,14 @@ async fn evolve_target_schema(
     }
     let renderer = renderer();
     for field in schema.fields() {
+        let contract = FieldContract::parse(field)?;
         let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         execute_sql(
             transaction,
             &format!(
                 "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {column} {}",
                 quote_object(&operation.target)?,
-                pg_type(field)?
+                pg_type(contract)?
             ),
             &[],
         )
@@ -674,8 +729,14 @@ fn enforce_input_limits(
         ));
     }
     let mut geometry_components = 0_u64;
-    for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
-        if is_spatial(field) {
+    let schema = batch.schema();
+    let plans = schema
+        .fields()
+        .iter()
+        .map(|field| WriteColumnPlan::compile(field))
+        .collect::<Result<Vec<_>>>()?;
+    for (plan, array) in plans.iter().zip(batch.columns()) {
+        if plan.is_spatial() {
             let binary = array
                 .as_any()
                 .downcast_ref::<BinaryArray>()
@@ -702,7 +763,7 @@ fn enforce_input_limits(
                         ));
                     }
                     let inspection = inspect_ewkb_detailed(value, remaining, max_geometry_depth)?;
-                    validate_ewkb_contract(inspection.root, field)?;
+                    validate_ewkb_contract(inspection.root, plan)?;
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
@@ -762,9 +823,10 @@ async fn create_table(
         .fields()
         .iter()
         .map(|field| {
+            let contract = FieldContract::parse(field)?;
             let name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
             let nullability = if field.is_nullable() { "" } else { " NOT NULL" };
-            Ok(format!("{name} {}{nullability}", pg_type(field)?))
+            Ok(format!("{name} {}{nullability}", pg_type(contract)?))
         })
         .collect::<Result<Vec<_>>>()?;
     if !keys.is_empty() {
@@ -820,16 +882,15 @@ async fn write_batch(
     })?;
     let mut affected = 0;
     let batch_schema = batch.schema();
+    let plans = indexes
+        .iter()
+        .map(|index| WriteColumnPlan::compile(batch_schema.field(*index)))
+        .collect::<Result<Vec<_>>>()?;
     for row in 0..batch.num_rows() {
         let values = indexes
             .iter()
-            .map(|index| {
-                arrow_value(
-                    batch.column(*index).as_ref(),
-                    batch_schema.field(*index),
-                    row,
-                )
-            })
+            .zip(&plans)
+            .map(|(index, plan)| arrow_value(batch.column(*index).as_ref(), plan, row))
             .collect::<Result<Vec<_>>>()?;
         let refs = values
             .iter()
@@ -897,14 +958,19 @@ async fn copy_binary_batch(
     let writer = BinaryCopyInWriter::new(sink, &types);
     futures_util::pin_mut!(writer);
     let schema = batch.schema();
+    let plans = schema
+        .fields()
+        .iter()
+        .map(|field| WriteColumnPlan::compile(field))
+        .collect::<Result<Vec<_>>>()?;
     for row in 0..batch.num_rows() {
         let values = batch
             .columns()
             .iter()
-            .zip(schema.fields())
+            .zip(&plans)
             .zip(&types)
-            .map(|((array, field), target_type)| {
-                binary_copy_value(array.as_ref(), field, target_type, row)
+            .map(|((array, plan), target_type)| {
+                binary_copy_value(array.as_ref(), plan, target_type, row)
             })
             .collect::<Result<Vec<_>>>()?;
         let refs = values
@@ -979,9 +1045,14 @@ async fn copy_batch(
 
 fn copy_buffer(batch: &RecordBatch) -> Result<Vec<u8>> {
     let schema = batch.schema();
+    let plans = schema
+        .fields()
+        .iter()
+        .map(|field| WriteColumnPlan::compile(field))
+        .collect::<Result<Vec<_>>>()?;
     let mut output = String::new();
     for row in 0..batch.num_rows() {
-        for column in 0..batch.num_columns() {
+        for (column, plan) in plans.iter().enumerate() {
             if column > 0 {
                 output.push('\t');
             }
@@ -989,7 +1060,7 @@ fn copy_buffer(batch: &RecordBatch) -> Result<Vec<u8>> {
             if array.is_null(row) {
                 output.push_str("\\N");
             } else {
-                encode_copy_value(&mut output, array, schema.field(column), row)?;
+                encode_copy_value(&mut output, array, plan, row)?;
             }
         }
         output.push('\n');
@@ -1001,7 +1072,7 @@ fn copy_buffer(batch: &RecordBatch) -> Result<Vec<u8>> {
 fn encode_copy_value(
     output: &mut String,
     array: &dyn Array,
-    field: &Field,
+    plan: &WriteColumnPlan,
     row: usize,
 ) -> Result<()> {
     macro_rules! typed {
@@ -1012,7 +1083,7 @@ fn encode_copy_value(
                 .ok_or_else(mapping_error)?
         };
     }
-    match field.data_type() {
+    match &plan.data_type {
         DataType::Boolean => output.push_str(if typed!(BooleanArray).value(row) {
             "t"
         } else {
@@ -1033,7 +1104,7 @@ fn encode_copy_value(
         DataType::Utf8 => escape_copy_text(output, typed!(StringArray).value(row)),
         DataType::Binary => {
             let bytes = typed!(BinaryArray).value(row);
-            if !is_spatial(field) {
+            if !plan.is_spatial() {
                 // COPY consumes one escaping layer before the bytea parser sees
                 // the canonical PostgreSQL `\x` hexadecimal representation.
                 output.push_str("\\\\x");
@@ -1073,11 +1144,11 @@ fn encode_copy_value(
             let value = list_string(typed!(ListArray), row)?;
             escape_copy_text(output, &value);
         }
-        DataType::Struct(_) if is_range_field(field) => {
+        DataType::Struct(_) if plan.semantics == ColumnSemantics::Range => {
             let value = range_string(typed!(StructArray), row)?;
             escape_copy_text(output, &value);
         }
-        DataType::Struct(_) if is_composite_field(field) => {
+        DataType::Struct(_) if plan.semantics == ColumnSemantics::Composite => {
             let value = composite_string(typed!(StructArray), row)?;
             escape_copy_text(output, &value);
         }
@@ -1333,7 +1404,8 @@ fn statement(
                 .enumerate()
                 .map(|(position, name)| {
                     let field = schema.field(field_index(name)?);
-                    let value = placeholder_expression(field, position + 1);
+                    let plan = WriteColumnPlan::compile(field)?;
+                    let value = placeholder_expression(&plan, position + 1);
                     let identifier = Identifier::new(name.clone())?;
                     Ok(format!(
                         "{} = {value}",
@@ -1380,8 +1452,11 @@ fn statement(
                 .fields()
                 .iter()
                 .enumerate()
-                .map(|(index, field)| placeholder_expression(field, index + 1))
-                .collect::<Vec<_>>();
+                .map(|(index, field)| {
+                    WriteColumnPlan::compile(field)
+                        .map(|plan| placeholder_expression(&plan, index + 1))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let conflict = if operation.mode == WriteMode::Upsert {
                 let keys = operation
                     .keys
@@ -1426,23 +1501,25 @@ fn statement(
     }
 }
 
-fn placeholder_expression(field: &Field, ordinal: usize) -> String {
-    let native_type = metadata_value(field, protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type");
-    if is_geometry(field) {
+fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> String {
+    if plan.semantics == ColumnSemantics::Geometry {
         format!("ST_GeomFromEWKB(${ordinal})")
-    } else if is_geography(field) {
+    } else if plan.semantics == ColumnSemantics::Geography {
         format!("ST_GeomFromEWKB(${ordinal})::geography")
-    } else if matches!(field.data_type(), DataType::Decimal128(_, _)) {
+    } else if matches!(plan.data_type, DataType::Decimal128(_, _)) {
         format!("${ordinal}::text::numeric")
-    } else if matches!(field.data_type(), DataType::Utf8)
-        && matches!(native_type, Some("json" | "jsonb" | "uuid"))
+    } else if matches!(plan.data_type, DataType::Utf8)
+        && matches!(plan.native_type.as_deref(), Some("json" | "jsonb" | "uuid"))
     {
-        format!("${ordinal}::text::{}", native_type.unwrap_or("text"))
+        format!(
+            "${ordinal}::text::{}",
+            plan.native_type.as_deref().unwrap_or("text")
+        )
     } else if matches!(
-        field.data_type(),
+        plan.data_type,
         DataType::Utf8 | DataType::List(_) | DataType::Struct(_)
     ) {
-        native_declaration_sql(field).map_or_else(
+        plan.native_declaration_sql.as_deref().map_or_else(
             || format!("${ordinal}"),
             |declaration| {
                 if declaration == "text" {
@@ -1471,7 +1548,7 @@ fn key_predicates(renderer: &Renderer, keys: &[String], first: usize) -> Result<
 #[allow(clippy::too_many_lines)]
 fn arrow_value(
     array: &dyn Array,
-    field: &Field,
+    plan: &WriteColumnPlan,
     row: usize,
 ) -> Result<Box<dyn ToSql + Sync + Send>> {
     macro_rules! scalar {
@@ -1484,7 +1561,7 @@ fn arrow_value(
                 as Box<dyn ToSql + Sync + Send>
         }};
     }
-    Ok(match field.data_type() {
+    Ok(match &plan.data_type {
         DataType::Boolean => scalar!(BooleanArray, |a: &BooleanArray, i| a.value(i)),
         DataType::Int32 => scalar!(Int32Array, |a: &Int32Array, i| a.value(i)),
         DataType::Int64 => scalar!(Int64Array, |a: &Int64Array, i| a.value(i)),
@@ -1580,7 +1657,7 @@ fn arrow_value(
                 .transpose()?;
             Box::new(value)
         }
-        DataType::Struct(_) if is_range_field(field) => {
+        DataType::Struct(_) if plan.semantics == ColumnSemantics::Range => {
             let typed = array
                 .as_any()
                 .downcast_ref::<StructArray>()
@@ -1590,7 +1667,7 @@ fn arrow_value(
                 .transpose()?;
             Box::new(value)
         }
-        DataType::Struct(_) if is_composite_field(field) => {
+        DataType::Struct(_) if plan.semantics == ColumnSemantics::Composite => {
             let typed = array
                 .as_any()
                 .downcast_ref::<StructArray>()
@@ -1990,11 +2067,12 @@ fn postgres_interval(
 
 fn binary_copy_value(
     array: &dyn Array,
-    field: &Field,
+    plan: &WriteColumnPlan,
     target_type: &Type,
     row: usize,
 ) -> Result<Box<dyn ToSql + Sync + Send>> {
-    if matches!(field.data_type(), DataType::Struct(_)) && is_composite_field(field) {
+    if matches!(plan.data_type, DataType::Struct(_)) && plan.semantics == ColumnSemantics::Composite
+    {
         let typed = array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -2004,7 +2082,7 @@ fn binary_copy_value(
             .transpose()?;
         return Ok(Box::new(value));
     }
-    if matches!(field.data_type(), DataType::Struct(_)) && is_range_field(field) {
+    if matches!(plan.data_type, DataType::Struct(_)) && plan.semantics == ColumnSemantics::Range {
         let typed = array
             .as_any()
             .downcast_ref::<StructArray>()
@@ -2014,7 +2092,7 @@ fn binary_copy_value(
             .transpose()?;
         return Ok(Box::new(value));
     }
-    if matches!(field.data_type(), DataType::List(_)) {
+    if matches!(plan.data_type, DataType::List(_)) {
         if !matches!(target_type.kind(), Kind::Array(_)) {
             return Err(mapping_error());
         }
@@ -2024,12 +2102,12 @@ fn binary_copy_value(
             .ok_or_else(mapping_error)?;
         return binary_array_value(typed, row);
     }
-    if matches!(field.data_type(), DataType::Decimal128(_, _)) {
+    if matches!(plan.data_type, DataType::Decimal128(_, _)) {
         let typed = array
             .as_any()
             .downcast_ref::<Decimal128Array>()
             .ok_or_else(mapping_error)?;
-        let DataType::Decimal128(_, scale) = field.data_type() else {
+        let DataType::Decimal128(_, scale) = &plan.data_type else {
             return Err(mapping_error());
         };
         return Ok(Box::new((!typed.is_null(row)).then(|| NumericBinary {
@@ -2037,7 +2115,7 @@ fn binary_copy_value(
             scale: *scale,
         })));
     }
-    if is_spatial(field) {
+    if plan.is_spatial() {
         let typed = array
             .as_any()
             .downcast_ref::<BinaryArray>()
@@ -2046,15 +2124,8 @@ fn binary_copy_value(
             (!typed.is_null(row)).then(|| EwkbBinary(typed.value(row).to_vec())),
         ));
     }
-    if matches!(field.data_type(), DataType::Utf8)
-        && matches!(
-            field
-                .metadata()
-                .get(protocol::POSTGRES_NATIVE_TYPE)
-                .or_else(|| field.metadata().get("plenora.native_type"))
-                .map(String::as_str),
-            Some("json" | "jsonb")
-        )
+    if matches!(plan.data_type, DataType::Utf8)
+        && matches!(plan.native_type.as_deref(), Some("json" | "jsonb"))
     {
         let typed = array
             .as_any()
@@ -2080,7 +2151,7 @@ fn binary_copy_value(
             .transpose()?;
         return Ok(Box::new(value));
     }
-    arrow_value(array, field, row)
+    arrow_value(array, plan, row)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2246,7 +2317,10 @@ async fn create_spatial_indexes(
     schema: &SchemaRef,
 ) -> Result<()> {
     let renderer = renderer();
-    for field in schema.fields().iter().filter(|field| is_spatial(field)) {
+    for field in schema.fields() {
+        if !FieldContract::parse(field)?.spatial {
+            continue;
+        }
         let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         let index_raw = format!("{}_{}_gix", target.object, field.name());
         let index_name = renderer.quote_identifier(&Identifier::new(
@@ -2280,165 +2354,41 @@ async fn execute_sql(
     })
 }
 
-fn metadata_value<'a>(field: &'a Field, canonical: &str, legacy: &str) -> Option<&'a str> {
-    field
-        .metadata()
-        .get(canonical)
-        .or_else(|| field.metadata().get(legacy))
-        .map(String::as_str)
-}
-
-fn validate_metadata_coherence(field: &Field) -> Result<()> {
-    for (canonical, legacy) in [
-        (protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions"),
-        (protocol::GEOMETRY_SRID, "plenora.srid"),
-        (
-            protocol::GEOMETRY_SPATIAL_SEMANTICS,
-            "plenora.spatial_semantics",
-        ),
-        (protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type"),
-        (
-            protocol::POSTGRES_NATIVE_DECLARATION,
-            "plenora.native_declaration",
-        ),
-        (protocol::POSTGRES_TYPE_KIND, "plenora.postgres_type_kind"),
-    ] {
-        if let (Some(current), Some(previous)) = (
-            field.metadata().get(canonical),
-            field.metadata().get(legacy),
-        ) {
-            if current != previous {
-                return Err(DatabaseError::invalid_plan(
-                    "metadata canonico e legacy divergenti",
-                ));
-            }
-        }
-    }
-    if let (Some(current), Some(previous)) = (
-        field.metadata().get(protocol::GEOMETRY_TYPES),
-        field.metadata().get("plenora.geometry_type"),
-    ) {
-        if !current.eq_ignore_ascii_case(previous) {
-            return Err(DatabaseError::invalid_plan(
-                "tipo geometrico canonico e legacy divergenti",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_crs_metadata(field: &Field) -> Result<()> {
-    if !is_spatial(field) {
-        return Ok(());
-    }
-    let metadata = field.metadata();
-    let resolution = metadata
-        .get(protocol::GEOMETRY_CRS_RESOLUTION)
-        .map(String::as_str);
-    let srid = metadata
-        .get(protocol::GEOMETRY_SRID)
-        .or_else(|| metadata.get("plenora.srid"));
-    let crs_id = metadata.get(protocol::GEOMETRY_CRS_ID);
-    let definition = metadata.get(protocol::GEOMETRY_CRS_DEFINITION);
-    let definition_format = metadata.get(protocol::GEOMETRY_CRS_DEFINITION_FORMAT);
-    let axis_order = metadata.get(protocol::GEOMETRY_AXIS_ORDER);
-
-    if srid.is_some_and(|value| {
-        value
-            .parse::<u32>()
-            .ok()
-            .filter(|value| *value > 0)
-            .is_none()
-    }) {
-        return Err(DatabaseError::invalid_plan(
-            "SRID CRS deve essere un intero positivo",
-        ));
-    }
-    if definition.is_some() != definition_format.is_some() {
-        return Err(DatabaseError::invalid_plan(
-            "definizione CRS e formato devono essere presenti insieme",
-        ));
-    }
-    if definition.is_some() && axis_order.is_none_or(|axis| axis == "unknown") {
-        return Err(DatabaseError::invalid_plan(
-            "una definizione CRS richiede un ordine assi esplicito",
-        ));
-    }
-    if axis_order.is_some_and(|axis| {
-        !matches!(
-            axis.as_str(),
-            "lon_lat" | "lat_lon" | "easting_northing" | "northing_easting" | "other" | "unknown"
-        )
-    }) {
-        return Err(DatabaseError::invalid_plan("ordine assi CRS non valido"));
-    }
-    if crs_id.is_some_and(|value| {
-        value.is_empty() || value.len() > 1_024 || value.chars().any(char::is_control)
-    }) {
-        return Err(DatabaseError::invalid_plan("identificatore CRS non valido"));
-    }
-    match resolution {
-        Some("resolved") if srid.is_none() || crs_id.is_none() => Err(DatabaseError::invalid_plan(
-            "CRS resolved PostgreSQL richiede SRID e identificatore",
-        )),
-        Some("missing")
-            if srid.is_some()
-                || crs_id.is_some()
-                || definition.is_some()
-                || definition_format.is_some()
-                || axis_order.is_some() =>
-        {
-            Err(DatabaseError::invalid_plan(
-                "CRS missing non ammette metadati CRS dichiarati",
-            ))
-        }
-        Some("resolved" | "declared_unresolved" | "missing") | None => Ok(()),
-        Some(_) => Err(DatabaseError::invalid_plan(
-            "stato di risoluzione CRS non valido",
-        )),
-    }
-}
-
-fn pg_type(field: &Field) -> Result<String> {
-    if is_geometry(field) || is_geography(field) {
-        let base = if is_geography(field) {
+fn pg_type(contract: FieldContract<'_>) -> Result<String> {
+    if contract.is_geometry() || contract.is_geography() {
+        let base = if contract.is_geography() {
             "geography"
         } else {
             "geometry"
         };
-        let geometry_type =
-            metadata_value(field, protocol::GEOMETRY_TYPES, "plenora.geometry_type")
-                .unwrap_or("Geometry");
+        let geometry_type = contract.geometry_type.unwrap_or("Geometry");
         if !geometry_type
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
         {
             return Err(DatabaseError::invalid_plan("geometry type non valido"));
         }
-        let dimensions =
-            match metadata_value(field, protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions") {
-                None | Some("xy") => "",
-                Some("xyz") => "Z",
-                Some("xym") => "M",
-                Some("xyzm") => "ZM",
-                Some(_) => {
-                    return Err(DatabaseError::invalid_plan(
-                        "dimensioni geometry non valide o ambigue",
-                    ));
-                }
-            };
-        let srid = metadata_value(field, protocol::GEOMETRY_SRID, "plenora.srid")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(0);
+        let dimensions = match contract.dimensions {
+            None | Some("xy") => "",
+            Some("xyz") => "Z",
+            Some("xym") => "M",
+            Some("xyzm") => "ZM",
+            Some(_) => {
+                return Err(DatabaseError::invalid_plan(
+                    "dimensioni geometry non valide o ambigue",
+                ));
+            }
+        };
+        let srid = contract.srid.unwrap_or(0);
         return Ok(format!("{base}({geometry_type}{dimensions},{srid})"));
     }
-    Ok(match field.data_type() {
+    Ok(match contract.field.data_type() {
         DataType::Boolean => "boolean".to_owned(),
         DataType::Int32 => "integer".to_owned(),
         DataType::Int64 => "bigint".to_owned(),
         DataType::Float32 => "real".to_owned(),
         DataType::Float64 => "double precision".to_owned(),
-        DataType::Utf8 => native_declaration_sql(field).unwrap_or_else(|| "text".to_owned()),
+        DataType::Utf8 => native_declaration_sql(contract).unwrap_or_else(|| "text".to_owned()),
         DataType::Binary => "bytea".to_owned(),
         DataType::Date32 => "date".to_owned(),
         DataType::Time64(TimeUnit::Microsecond) => "time".to_owned(),
@@ -2453,24 +2403,19 @@ fn pg_type(field: &Field) -> Result<String> {
         DataType::Decimal128(precision, scale) => {
             format!("numeric({precision},{scale})")
         }
-        DataType::List(_) => native_declaration_sql(field).ok_or_else(mapping_error)?,
-        DataType::Struct(_) if is_range_field(field) => {
-            native_declaration_sql(field).ok_or_else(mapping_error)?
+        DataType::List(_) => native_declaration_sql(contract).ok_or_else(mapping_error)?,
+        DataType::Struct(_) if contract.is_range() => {
+            native_declaration_sql(contract).ok_or_else(mapping_error)?
         }
-        DataType::Struct(_) if is_composite_field(field) => {
-            native_declaration_sql(field).ok_or_else(mapping_error)?
+        DataType::Struct(_) if contract.is_composite() => {
+            native_declaration_sql(contract).ok_or_else(mapping_error)?
         }
         _ => return Err(mapping_error()),
     })
 }
 
-fn native_declaration_sql(field: &Field) -> Option<String> {
-    let declaration = metadata_value(
-        field,
-        protocol::POSTGRES_NATIVE_DECLARATION,
-        "plenora.native_declaration",
-    )
-    .or_else(|| metadata_value(field, protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type"))?;
+fn native_declaration_sql(contract: FieldContract<'_>) -> Option<String> {
+    let declaration = contract.native_declaration.or(contract.native_type)?;
     let base = declaration.strip_suffix("[]").unwrap_or(declaration);
     let supported = matches!(
         base,
@@ -2507,14 +2452,7 @@ fn native_declaration_sql(field: &Field) -> Option<String> {
     if supported {
         return Some(declaration.to_owned());
     }
-    if matches!(
-        field
-            .metadata()
-            .get(protocol::POSTGRES_TYPE_KIND)
-            .or_else(|| field.metadata().get("plenora.postgres_type_kind"))
-            .map(String::as_str),
-        Some("e" | "d" | "c")
-    ) {
+    if matches!(contract.type_kind, Some("e" | "d" | "c")) {
         let (base, array_suffix) = declaration
             .strip_suffix("[]")
             .map_or((declaration, ""), |base| (base, "[]"));
@@ -2539,54 +2477,8 @@ fn native_declaration_sql(field: &Field) -> Option<String> {
     None
 }
 
-fn is_range_field(field: &Field) -> bool {
-    matches!(
-        field
-            .metadata()
-            .get(protocol::POSTGRES_NATIVE_TYPE)
-            .or_else(|| field.metadata().get("plenora.native_type"))
-            .map(String::as_str),
-        Some("int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange")
-    )
-}
-
-fn is_composite_field(field: &Field) -> bool {
-    field
-        .metadata()
-        .get(protocol::POSTGRES_TYPE_KIND)
-        .or_else(|| field.metadata().get("plenora.postgres_type_kind"))
-        .is_some_and(|kind| kind == "c")
-}
-
-fn is_spatial(field: &Field) -> bool {
-    field
-        .metadata()
-        .get("ARROW:extension:name")
-        .is_some_and(|value| value == GEOARROW_WKB_EXTENSION_NAME)
-}
-
-fn is_geometry(field: &Field) -> bool {
-    is_spatial(field)
-        && field
-            .metadata()
-            .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
-            .or_else(|| field.metadata().get("plenora.spatial_semantics"))
-            .is_none_or(|value| value == "geometry")
-}
-
-fn is_geography(field: &Field) -> bool {
-    is_spatial(field)
-        && field
-            .metadata()
-            .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
-            .or_else(|| field.metadata().get("plenora.spatial_semantics"))
-            .is_some_and(|value| value == "geography")
-}
-
-fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, field: &Field) -> Result<()> {
-    if let Some(expected) =
-        metadata_value(field, protocol::GEOMETRY_DIMENSIONS, "plenora.dimensions")
-    {
+fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, plan: &WriteColumnPlan) -> Result<()> {
+    if let Some(expected) = plan.dimensions.as_deref() {
         if expected != metadata.dimensions_label() {
             return Err(spatial_mapping_error(
                 "dimensioni EWKB diverse dal contratto Arrow",
@@ -2596,17 +2488,14 @@ fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, field: &Field) -> Resu
     let geometry_type = metadata
         .geometry_type_name()
         .ok_or_else(|| spatial_mapping_error("tipo geometry EWKB non supportato"))?;
-    if let Some(expected) = metadata_value(field, protocol::GEOMETRY_TYPES, "plenora.geometry_type")
-    {
+    if let Some(expected) = plan.geometry_type.as_deref() {
         if expected != "Geometry" && !expected.eq_ignore_ascii_case(geometry_type) {
             return Err(spatial_mapping_error(
                 "tipo EWKB diverso dal contratto Arrow",
             ));
         }
     }
-    if let Some(expected) = metadata_value(field, protocol::GEOMETRY_SRID, "plenora.srid")
-        .and_then(|value| value.parse::<u32>().ok())
-    {
+    if let Some(expected) = plan.srid {
         if expected != 0 && metadata.srid != Some(expected) {
             return Err(spatial_mapping_error(
                 "SRID EWKB diverso dal contratto Arrow",
@@ -2723,11 +2612,12 @@ mod tests {
         for extreme in [i32::MIN, i32::MAX] {
             let date = Date32Array::from(vec![Some(extreme)]);
             let mut text = String::new();
+            let plan = WriteColumnPlan::compile(&date_field).expect("date plan");
             let date_text_error =
-                encode_copy_value(&mut text, &date, &date_field, 0).expect_err("date text range");
+                encode_copy_value(&mut text, &date, &plan, 0).expect_err("date text range");
             assert_eq!(date_text_error.category, ErrorCategory::DataMapping);
             let date_prepared_error =
-                arrow_value(&date, &date_field, 0).expect_err("date prepared range");
+                arrow_value(&date, &plan, 0).expect_err("date prepared range");
             assert_eq!(date_prepared_error.category, ErrorCategory::DataMapping);
         }
 
@@ -2739,12 +2629,13 @@ mod tests {
                     DataType::Timestamp(TimeUnit::Microsecond, timezone),
                     true,
                 );
+                let plan = WriteColumnPlan::compile(&field).expect("timestamp plan");
                 let mut text = String::new();
-                let text_error = encode_copy_value(&mut text, &timestamp, &field, 0)
+                let text_error = encode_copy_value(&mut text, &timestamp, &plan, 0)
                     .expect_err("timestamp text range");
                 assert_eq!(text_error.category, ErrorCategory::DataMapping);
                 let error =
-                    arrow_value(&timestamp, &field, 0).expect_err("timestamp prepared range");
+                    arrow_value(&timestamp, &plan, 0).expect_err("timestamp prepared range");
                 assert_eq!(error.category, ErrorCategory::DataMapping);
             }
         }
@@ -2767,14 +2658,15 @@ mod tests {
         point_z_4326.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
         point_z_4326.extend_from_slice(&4326_u32.to_le_bytes());
         point_z_4326.extend_from_slice(&[0_u8; 24]);
+        let plan = WriteColumnPlan::compile(&field).expect("spatial plan");
         let inspection = inspect_ewkb_detailed(&point_z_4326, 10, 1).expect("valid point Z EWKB");
-        validate_ewkb_contract(inspection.root, &field).expect("matching contract");
+        validate_ewkb_contract(inspection.root, &plan).expect("matching contract");
 
         let mut wrong_srid = point_z_4326.clone();
         wrong_srid[5..9].copy_from_slice(&3857_u32.to_le_bytes());
         let inspection = inspect_ewkb_detailed(&wrong_srid, 10, 1).expect("valid wrong-SRID EWKB");
         assert_eq!(
-            validate_ewkb_contract(inspection.root, &field)
+            validate_ewkb_contract(inspection.root, &plan)
                 .expect_err("SRID mismatch")
                 .category,
             ErrorCategory::DataMapping
@@ -2786,7 +2678,7 @@ mod tests {
         point_xy_4326.extend_from_slice(&[0_u8; 16]);
         let inspection = inspect_ewkb_detailed(&point_xy_4326, 10, 1).expect("valid point XY EWKB");
         assert_eq!(
-            validate_ewkb_contract(inspection.root, &field)
+            validate_ewkb_contract(inspection.root, &plan)
                 .expect_err("dimension mismatch")
                 .category,
             ErrorCategory::DataMapping
@@ -2849,7 +2741,8 @@ mod tests {
             )]),
         );
         let array = StringArray::from(vec![Some(r#"{"safe":true}"#)]);
-        let value = binary_copy_value(&array, &field, &Type::JSONB, 0).expect("JSONB binary value");
+        let plan = WriteColumnPlan::compile(&field).expect("JSONB plan");
+        let value = binary_copy_value(&array, &plan, &Type::JSONB, 0).expect("JSONB binary value");
         let mut encoded = BytesMut::new();
         assert!(matches!(
             value
@@ -2868,7 +2761,8 @@ mod tests {
                 "jsonb".to_owned(),
             )]),
         );
-        assert_eq!(placeholder_expression(&jsonb, 1), "$1::text::jsonb");
+        let jsonb_plan = WriteColumnPlan::compile(&jsonb).expect("JSONB plan");
+        assert_eq!(placeholder_expression(&jsonb_plan, 1), "$1::text::jsonb");
 
         let domain = Field::new("code", DataType::Utf8, true).with_metadata(
             std::collections::HashMap::from([
@@ -2879,8 +2773,9 @@ mod tests {
                 (protocol::POSTGRES_TYPE_KIND.to_owned(), "d".to_owned()),
             ]),
         );
+        let domain_plan = WriteColumnPlan::compile(&domain).expect("domain plan");
         assert_eq!(
-            placeholder_expression(&domain, 2),
+            placeholder_expression(&domain_plan, 2),
             "$2::text::\"public\".\"safe_code\""
         );
     }
@@ -3004,7 +2899,7 @@ fn divergent_canonical_and_legacy_metadata_is_rejected() {
         .into_iter()
         .collect(),
     );
-    let error = validate_metadata_coherence(&field).expect_err("metadata divergence");
+    let error = FieldContract::parse(&field).expect_err("metadata divergence");
     assert_eq!(error.category, ErrorCategory::InvalidPlan);
 }
 
@@ -3024,7 +2919,7 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
     .into_iter()
     .collect();
     let resolved_without_id = Field::new("geom", DataType::Binary, false).with_metadata(base);
-    assert!(validate_crs_metadata(&resolved_without_id).is_err());
+    assert!(FieldContract::parse(&resolved_without_id).is_err());
 
     let missing_with_srid = Field::new("geom", DataType::Binary, false).with_metadata(
         [
@@ -3041,5 +2936,5 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
         .into_iter()
         .collect(),
     );
-    assert!(validate_crs_metadata(&missing_with_srid).is_err());
+    assert!(FieldContract::parse(&missing_with_srid).is_err());
 }

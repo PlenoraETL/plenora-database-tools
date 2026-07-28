@@ -8,6 +8,7 @@ mod arrow;
 mod catalog;
 mod control;
 mod error;
+mod field_contract;
 mod metrics;
 mod types;
 mod write;
