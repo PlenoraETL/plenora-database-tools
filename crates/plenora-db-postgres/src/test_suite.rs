@@ -81,6 +81,35 @@ mod tests {
     use std::ops::Deref;
     use std::sync::OnceLock;
 
+    async fn wait_for_no_active_query(client: &tokio_postgres::Client, marker: &str) {
+        let pattern = format!("%{marker}%");
+        tokio::time::timeout(StdDuration::from_secs(2), async {
+            loop {
+                let active: i64 = client
+                    .query_one(
+                        "SELECT count(*)
+                         FROM pg_stat_activity
+                         WHERE datname = current_database()
+                           AND state = 'active'
+                           AND query LIKE $1
+                           AND pid <> pg_backend_pid()",
+                        &[&pattern],
+                    )
+                    .await
+                    .expect("query backend cancellation state")
+                    .get(0);
+                if active == 0 {
+                    break;
+                }
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("query containing {marker:?} remained active after cancellation")
+        });
+    }
+
     #[test]
     fn postgres_arrow_schema_declares_contract_version() {
         let schema = contract_schema(vec![Field::new("value", DataType::Int64, false)]);
@@ -637,21 +666,7 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.category, ErrorCategory::Timeout);
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
-        let active: i64 = setup
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%deadline_slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("deadline backend state")
-            .get(0);
-        assert_eq!(active, 0);
+        wait_for_no_active_query(&setup, "\"plenora_fixture\".\"deadline_slow_events\"").await;
     }
 
     #[tokio::test]
@@ -2029,21 +2044,7 @@ mod tests {
         let inflight_error = read_result.err().expect("in-flight cancellation");
         assert_eq!(inflight_error.category, ErrorCategory::Cancelled);
         assert!(started.elapsed() < StdDuration::from_secs(2));
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
-        let slow_queries: i64 = client
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("cancel state")
-            .get(0);
-        assert_eq!(slow_queries, 0);
+        wait_for_no_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
 
         let single_connection_provider = PostgresProvider::new(10).with_pool_size(1, 25);
         let held_stream = single_connection_provider
@@ -3320,21 +3321,7 @@ mod tests {
             .test_connection(&secret, &NeverCancelled)
             .await
             .expect("pool recovery");
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-        let active: i64 = setup
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%hardening_slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("server cancellation state")
-            .get(0);
-        assert_eq!(active, 0);
+        wait_for_no_active_query(&setup, "\"plenora_fixture\".\"hardening_slow_events\"").await;
 
         let metrics = provider.metrics_snapshot();
         assert!(metrics.cancellations >= u64::try_from(WORKERS).expect("workers"));
