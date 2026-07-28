@@ -754,6 +754,7 @@ dependencies = [
  "futures-util",
  "plenora-database-core",
  "plenora-database-sql",
+ "plenora-database-testkit",
  "rustls",
  "serde",
  "serde_json",

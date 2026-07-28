@@ -23,5 +23,8 @@ rustls.workspace = true
 tokio-postgres-rustls.workspace = true
 webpki-roots.workspace = true
 
+[dev-dependencies]
+plenora-database-testkit.workspace = true
+
 [lints]
 workspace = true

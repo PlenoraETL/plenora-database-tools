@@ -98,6 +98,8 @@ def main() -> int:
         "checks": [
             "container_health",
             "clippy_deny_warnings",
+            "public_api_v0_1_compile_freeze",
+            "provider_common_conformance",
             "read_write_spatial_live",
             "query_ast_cte_join_group_having",
             "bounded_shared_pool_and_session_reset",
@@ -129,7 +131,7 @@ def main() -> int:
             "temporal_extremes_are_mapping_errors",
             "poisoned_internal_mutex_recovery",
             "transactional_additive_schema_evolution",
-            "write_preflight",
+            "write_preflight_crs_authority_and_loss_report",
             "byte_limits",
             "fault_before_commit_rollback",
             "fault_after_commit_unknown",
@@ -138,6 +140,7 @@ def main() -> int:
         "benchmark": benchmark,
         "freeze_scope": "postgres-postgis-data-path-v3",
         "advanced_scope": "postgres-postgis-advanced-profile-v1",
+        "release_reference": "postgres-provider-v0.1",
         "open_non_blocking": [],
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))

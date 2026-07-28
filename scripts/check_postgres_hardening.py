@@ -87,6 +87,8 @@ def main() -> int:
         "container_health",
         "rustfmt",
         "clippy_deny_warnings",
+        "provider_common_conformance",
+        "public_api_v0_1_compile_freeze",
         "deterministic_numeric_codec_boundaries",
         "strict_numeric_text_parser",
         "strict_parameter_uuid_decimal_parser",

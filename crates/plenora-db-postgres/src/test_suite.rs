@@ -1,6 +1,7 @@
 use super::*;
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
+use plenora_database_core::loss::LossSeverity;
 use plenora_database_core::RemoteEffect;
 
 #[cfg(test)]
@@ -86,6 +87,57 @@ mod tests {
     use std::ops::Deref;
     use std::sync::OnceLock;
     use tokio_postgres::types::Type;
+
+    #[tokio::test]
+    async fn live_provider_conformance_contract() {
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let provider = PostgresProvider::default();
+        let secret = SecretString::new(dsn);
+        let operations = [
+            Operation::DatabaseListCatalogs,
+            Operation::DatabaseListSchemas { source: None },
+            Operation::DatabaseListObjects {
+                source: Some(ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_fixture".to_owned()),
+                    object: "conformance_scope".to_owned(),
+                    layer_id: None,
+                }),
+            },
+            Operation::DatabaseDescribeObject {
+                source: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_fixture".to_owned()),
+                    object: "events".to_owned(),
+                    layer_id: None,
+                },
+            },
+        ];
+        let report = plenora_database_testkit::verify_provider_contract(
+            &provider,
+            &secret,
+            &operations,
+            Some(&Operation::ArcgisListFolders),
+        )
+        .await
+        .expect("provider conformance");
+
+        assert_eq!(report.provider, ProviderKind::Postgres);
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(
+            report.inspected_operations,
+            [
+                "database.list_catalogs",
+                "database.list_schemas",
+                "database.list_objects",
+                "database.describe_object"
+            ]
+        );
+        assert!(report.pre_cancelled_connection_verified);
+        assert!(report.unsupported_inspection_verified);
+    }
 
     async fn wait_for_query_state(
         client: &tokio_postgres::Client,
