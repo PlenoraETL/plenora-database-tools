@@ -813,6 +813,8 @@ Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitat
 | `write/resources.rs` | prenotazione e commit dei lease di righe, byte, memoria e componenti geometrici | oltrepassare il budget o cambiare la transazione |
 | `write/sql.rs` | DML, quoting, placeholder e dichiarazioni PostgreSQL | leggere valori Arrow |
 | `write/value_codec.rs` | COPY text e rappresentazioni condivise di array, range e composite | pubblicare, fare commit o scegliere la modalità di scrittura |
+| `write/binary_codec.rs` | COPY binary, tipi wire PostgreSQL ed encoding numerico deterministico | eseguire SQL, scegliere il piano o dichiarare l'esito |
+| `write/prepared_codec.rs` | binding tipizzato Arrow → parametri prepared | eseguire SQL, fare fallback o mutare il contratto colonna |
 
 Questi confini sono safety boundaries: l'autorità di dichiarare `Committed` resta
 nell'orchestratore, mentre recovery e risorse possono soltanto restringere

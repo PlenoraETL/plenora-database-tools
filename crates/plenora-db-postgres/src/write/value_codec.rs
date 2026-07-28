@@ -1,7 +1,8 @@
 use super::{
-    decimal_string, interval_text, mapping_error,
+    binary_codec::{decimal_string, interval_text, postgres_interval},
+    mapping_error,
     plan::{ColumnSemantics, WriteColumnPlan},
-    postgres_interval, temporal_range_error,
+    temporal_range_error,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
