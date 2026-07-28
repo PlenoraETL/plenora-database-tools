@@ -1,0 +1,128 @@
+name: PostgreSQL and PostGIS assurance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-postgis:
+    name: PostgreSQL 16 / PostGIS 3.4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      # actions/checkout v4, pinned to the exact revision resolved on 2026-07-27.
+      - name: Check out the candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the execution environment
+        run: |
+          mkdir -p assurance-results ../plenora-cargo-cache
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            printf 'kernel='
+            uname -a
+            printf 'python='
+            python3 --version
+            printf 'docker='
+            docker --version
+            printf 'compose='
+            docker compose version
+          } | tee assurance-results/environment.txt
+
+      - name: Validate Compose definitions
+        run: |
+          docker compose -f docker-compose.postgres.yml config --quiet
+          docker compose -f docker-compose.postgres-tls.yml config --quiet
+
+      - name: Start PostgreSQL and PostGIS
+        run: |
+          docker compose -f docker-compose.postgres.yml up -d --wait
+          docker compose -f docker-compose.postgres-tls.yml up -d --wait
+          docker pull rust:1.92
+
+      - name: Record database and toolchain identities
+        run: |
+          docker image inspect rust:1.92 postgis/postgis:16-3.4 \
+            --format '{{index .RepoTags 0}} id={{.Id}} digests={{json .RepoDigests}}' \
+            | tee assurance-results/container-images.txt
+          docker run --rm rust:1.92 rustc --version --verbose \
+            | tee assurance-results/rust-toolchain.txt
+          docker exec dataflow-postgres psql \
+            -U dataflow -d dataflow_test -At \
+            -c "SELECT version(); SELECT postgis_full_version();" \
+            | tee assurance-results/database-versions.txt
+
+      - name: Run the hardening and mTLS gate
+        run: |
+          python3 scripts/check_postgres_hardening.py 2>&1 |
+            tee assurance-results/postgres-hardening.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/postgres-hardening.log \
+            assurance-results/postgres-hardening.json
+
+      - name: Run the reference and encoder differential gate
+        run: |
+          python3 scripts/check_postgres_reference.py 2>&1 |
+            tee assurance-results/postgres-reference.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/postgres-reference.log \
+            assurance-results/postgres-reference.json
+
+      - name: Run the indexed PostGIS performance gate
+        run: |
+          python3 scripts/check_postgres_spatial_performance.py 2>&1 |
+            tee assurance-results/postgis-spatial-performance.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/postgis-spatial-performance.log \
+            assurance-results/postgis-spatial-performance.json
+
+      - name: Run the reproducible performance smoke campaign
+        run: >-
+          python3 scripts/check_postgres_performance.py
+          --manifest benchmarks/manifests/postgres-performance-smoke.json
+          --output assurance-results/postgres-performance-smoke.json
+
+      - name: Verify the candidate remained unchanged
+        run: git diff --exit-code
+
+      - name: Capture database diagnostics
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/docker-containers.txt
+          docker compose -f docker-compose.postgres.yml logs --no-color \
+            > assurance-results/postgres-compose.log 2>&1 || true
+          docker compose -f docker-compose.postgres-tls.yml logs --no-color \
+            > assurance-results/postgres-tls-compose.log 2>&1 || true
+
+      # actions/upload-artifact v4, pinned to the exact revision resolved on
+      # 2026-07-27. These reports are execution evidence, not certification.
+      - name: Preserve assurance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: postgres-postgis-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Stop databases and remove ephemeral volumes
+        if: always()
+        run: |
+          docker compose -f docker-compose.postgres-tls.yml down --volumes \
+            --remove-orphans || true
+          docker compose -f docker-compose.postgres.yml down --volumes \
+            --remove-orphans || true
