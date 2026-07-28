@@ -814,6 +814,8 @@ Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitat
 | `connection.rs` | validazione DSN/rete/timeout, trust TLS/mTLS, fingerprint e apertura della connessione | gestire il pool, eseguire query o esporre materiale crittografico |
 | `parameter_codec.rs` | inferenza conservativa dei tipi bind e conversione `ParameterValue` → `ToSql` | renderizzare SQL, scegliere fast path/fallback o aprire sessioni |
 | `pool.rs` | semaphore bounded, checkout, riuso, invalidazione e restituzione RAII delle sessioni | costruire TLS/DSN, eseguire query o rendere riutilizzabile una sessione incerta |
+| `query_plan.rs` | piano immutabile PostgreSQL per projection, filtri, SQL di dialetto e nomi dei bind | aprire connessioni, leggere valori dei parametri o eseguire fallback |
+| `query_execution.rs` | bind PostgreSQL, fast path tipizzato, fallback prepared, cancellazione e consegna allo stream | modificare AST/SQL, interpolare valori o dichiarare riutilizzabile una sessione incerta |
 | `read_stream.rs` | backpressure Arrow, lease di risorse, limiti geometrici, deadline e cancellazione server-side | costruire SQL, scegliere parametri o riutilizzare sessioni incerte |
 | `schema_cache.rs` | token strutturali, LRU bounded, invalidazione e recovery da poisoning | decidere quando interrogare il catalogo o dichiarare valido uno schema remoto |
 | `write.rs` | orchestrazione, confini di transazione e ordine delle fasi | formato dei tipi o politica di recovery in autonomia |
@@ -829,6 +831,12 @@ Questi confini sono safety boundaries: l'autorità di dichiarare `Committed` res
 nell'orchestratore, mentre recovery e risorse possono soltanto restringere
 l'esito o fallire. Gli encoder text, binary e prepared restano distinti perché
 costituiscono tre implementazioni differenziali dello stesso risultato.
+
+L'AST relazionale, la validazione strutturale e il renderer multi-dialetto
+restano nei crate condivisi. Ogni driver mantiene invece un proprio
+`query_plan` e un proprio `query_execution`: il futuro adapter SQL Server
+riuserà i contratti condivisi, ma non dipenderà da `tokio-postgres`, dai tipi
+wire PostgreSQL o dalle funzioni PostGIS.
 
 `replace` non significa automaticamente atomic rename. L'output dichiara la
 garanzia realmente ottenuta.

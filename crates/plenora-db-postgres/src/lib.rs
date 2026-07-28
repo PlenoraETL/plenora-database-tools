@@ -13,6 +13,8 @@ mod field_contract;
 mod metrics;
 mod parameter_codec;
 mod pool;
+mod query_execution;
+mod query_plan;
 mod read_stream;
 mod schema_cache;
 mod types;
@@ -33,36 +35,26 @@ use connection::{
     configure_session_startup, connect as open_connection,
     connect_with_tls as open_connection_with_tls, connection_config, connection_config_for_mode,
 };
-use control::select_with_cancellation;
 use error::{check_cancelled, classify_error, public_error};
-use futures_util::StreamExt;
 use metrics::PostgresMetrics;
-use parameter_codec::{bind_parameters, typed_filter_parameter_types, typed_query_parameter_types};
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::loss::{LossCategory, LossReport, LossSeverity, MappingLoss};
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
-    FilterExpression, ObjectRef, Operation, ProviderKind, ReadOperation, SortDirection,
-    WriteOperation,
+    ObjectRef, Operation, ProviderKind, ReadOperation, WriteOperation,
 };
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
-use plenora_database_core::query::{QueryExpression, QueryOperation};
+use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
-use plenora_database_sql::{
-    Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
-};
 use pool::{PooledClient, PostgresPool, PostgresSessionOptions};
 #[cfg(test)]
 use read_stream::batch_memory_bytes;
-use read_stream::{
-    cancel_and_invalidate, cancelled_read_error, BudgetCancellation, PostgresBatchStream,
-    PostgresRows, ReadStreamSource,
-};
+use read_stream::BudgetCancellation;
 use schema_cache::{PostgresSchemaCache, SchemaCacheKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -72,11 +64,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration as StdDuration;
 #[cfg(test)]
 use tokio_postgres::config::SslMode;
-use tokio_postgres::types::{ToSql, Type};
 #[cfg(test)]
 use tokio_postgres::Client;
-use tokio_postgres::RowStream;
-use types::{ColumnKind, ColumnSpec};
+use types::ColumnSpec;
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -495,316 +485,6 @@ impl PostgresProvider {
         }
     }
 
-    async fn start_read_query(
-        &self,
-        client: &mut PooledClient,
-        sql: &str,
-        parameter_refs: Vec<&(dyn ToSql + Sync)>,
-        parameter_types: Option<Vec<Type>>,
-        cancellation: &CancellationToken,
-    ) -> Result<RowStream> {
-        let parameter_count = parameter_refs.len();
-        let (result, error_phase) = if let Some(parameter_types) = parameter_types {
-            let query = client.client()?.query_typed_raw(
-                sql,
-                parameter_refs.into_iter().zip(parameter_types.into_iter()),
-            );
-            (
-                select_with_cancellation(query, cancellation)
-                    .await
-                    .map(|result| {
-                        result.inspect(|_| {
-                            self.metrics.read_typed_fast_path();
-                            if parameter_count > 0 {
-                                self.metrics.read_parameterized_typed_fast_path();
-                            }
-                        })
-                    }),
-                ErrorPhase::Prepare,
-            )
-        } else {
-            self.metrics.read_prepared_fallback();
-            let statement = client
-                .client()?
-                .prepare(sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-            (
-                select_with_cancellation(
-                    client.client()?.query_raw(&statement, parameter_refs),
-                    cancellation,
-                )
-                .await,
-                ErrorPhase::Read,
-            )
-        };
-        if let Some(result) = result {
-            return result.map_err(|error| classify_error(error_phase, &error));
-        }
-        cancel_and_invalidate(
-            client,
-            self.tls_mode,
-            self.tls_config.connector(),
-            self.network_options.connect_timeout_ms,
-        )
-        .await;
-        Err(cancelled_read_error(cancellation))
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    async fn read_stream(
-        &self,
-        secret: &SecretString,
-        operation: &ReadOperation,
-        parameters: &ParameterBag,
-        budget: &ResourceBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Box<dyn BatchStream>> {
-        if cancellation.is_cancelled() {
-            self.metrics.cancellation();
-            return Err(cancelled_read_error(cancellation));
-        }
-        if self.batch_rows == 0 || self.max_batch_bytes == 0 || self.target_batch_bytes == Some(0) {
-            return Err(DatabaseError::invalid_plan(
-                "batch_rows e budget byte PostgreSQL devono essere maggiori di zero",
-            ));
-        }
-        let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-        let mut client = if let Some(result) =
-            select_with_cancellation(self.connect_session(secret), cancellation).await
-        {
-            result?
-        } else {
-            self.metrics.cancellation();
-            return Err(cancelled_read_error(cancellation));
-        };
-        if let Some(catalog) = &operation.source.catalog {
-            let current_database: String = client
-                .client()?
-                .query_one("SELECT current_database()", &[])
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Probe, &error))?
-                .get(0);
-            if catalog != &current_database {
-                return Err(public_error(
-                    ErrorCategory::NotFound,
-                    ErrorPhase::Prepare,
-                    false,
-                    "catalog PostgreSQL diverso dalla connessione corrente",
-                ));
-            }
-        }
-        let (available, _schema_token) = self.cached_columns(&client, &operation.source).await?;
-        let selected = select_columns(&available, &operation.projection)?;
-        let columns = u64::try_from(selected.len())
-            .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
-        let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
-        let (sql, bind_names) = build_read_sql(operation, &selected, &available)?;
-        let owned_parameters = bind_parameters(parameters, &bind_names)?;
-        let parameter_refs = owned_parameters
-            .iter()
-            .map(|value| value.as_ref() as &(dyn ToSql + Sync))
-            .collect::<Vec<_>>();
-        let parameter_types = if self.parameterized_read_fast_path || bind_names.is_empty() {
-            typed_filter_parameter_types(
-                operation.filter.as_ref(),
-                &bind_names,
-                parameters,
-                &available,
-            )
-        } else {
-            None
-        };
-        let rows = self
-            .start_read_query(
-                &mut client,
-                &sql,
-                parameter_refs,
-                parameter_types,
-                cancellation,
-            )
-            .await?;
-        let cancel_token = client.client()?.cancel_token();
-        let schema = contract_schema(
-            selected
-                .iter()
-                .map(ColumnSpec::arrow_field)
-                .collect::<Vec<_>>(),
-        );
-        Ok(Box::new(PostgresBatchStream::new(
-            self,
-            ReadStreamSource::new(client, cancel_token, Box::pin(rows), selected, schema),
-            budget,
-            operation_lease,
-            columns_lease,
-        )))
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    #[allow(clippy::too_many_lines)]
-    async fn query_stream(
-        &self,
-        secret: &SecretString,
-        operation: &QueryOperation,
-        parameters: &ParameterBag,
-        budget: &ResourceBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Box<dyn BatchStream>> {
-        if cancellation.is_cancelled() {
-            self.metrics.cancellation();
-            return Err(cancelled_read_error(cancellation));
-        }
-        if self.batch_rows == 0 || self.max_batch_bytes == 0 || self.target_batch_bytes == Some(0) {
-            return Err(DatabaseError::invalid_plan(
-                "batch_rows e budget byte PostgreSQL devono essere maggiori di zero",
-            ));
-        }
-        let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-        let rendered = postgres_renderer().render_query(operation)?;
-        let mut client = if let Some(result) =
-            select_with_cancellation(self.connect_session(secret), cancellation).await
-        {
-            result?
-        } else {
-            self.metrics.cancellation();
-            return Err(cancelled_read_error(cancellation));
-        };
-        let bind_names = rendered
-            .binds
-            .iter()
-            .map(|bind| bind.name.clone())
-            .collect::<Vec<_>>();
-        let owned_parameters = bind_parameters(parameters, &bind_names)?;
-        let parameter_refs = owned_parameters
-            .iter()
-            .map(|value| value.as_ref() as &(dyn ToSql + Sync))
-            .collect::<Vec<_>>();
-        let typed_parameter_types = self
-            .parameterized_read_fast_path
-            .then(|| typed_query_parameter_types(&bind_names, parameters))
-            .flatten();
-        let mut typed_rows = None;
-        if let Some(parameter_types) = typed_parameter_types {
-            let typed_parameters = parameter_refs
-                .iter()
-                .copied()
-                .zip(parameter_types.into_iter());
-            if let Some(result) = select_with_cancellation(
-                client
-                    .client()?
-                    .query_typed_raw(&rendered.sql, typed_parameters),
-                cancellation,
-            )
-            .await
-            {
-                if let Ok(rows) = result {
-                    typed_rows = Some(rows);
-                }
-            } else {
-                cancel_and_invalidate(
-                    &mut client,
-                    self.tls_mode,
-                    self.tls_config.connector(),
-                    self.network_options.connect_timeout_ms,
-                )
-                .await;
-                return Err(cancelled_read_error(cancellation));
-            }
-        }
-        let (rows, columns): (PostgresRows, Vec<ColumnSpec>) = if let Some(raw_rows) = typed_rows {
-            let mut raw_rows = Box::pin(raw_rows);
-            let first = if let Some(result) =
-                select_with_cancellation(raw_rows.as_mut().next(), cancellation).await
-            {
-                result.transpose().map_err(|error| {
-                    client.invalidate();
-                    classify_error(ErrorPhase::Read, &error)
-                })?
-            } else {
-                cancel_and_invalidate(
-                    &mut client,
-                    self.tls_mode,
-                    self.tls_config.connector(),
-                    self.network_options.connect_timeout_ms,
-                )
-                .await;
-                return Err(cancelled_read_error(cancellation));
-            };
-            self.metrics.query_typed_fast_path();
-            if let Some(first) = first {
-                let mut columns = first
-                    .columns()
-                    .iter()
-                    .map(ColumnSpec::from_statement_column)
-                    .collect::<Result<Vec<_>>>()?;
-                mark_query_spatial_columns(operation, &mut columns);
-                let rows = futures_util::stream::once(async move { Ok(first) }).chain(raw_rows);
-                (Box::pin(rows), columns)
-            } else {
-                let statement = client
-                    .client()?
-                    .prepare(&rendered.sql)
-                    .await
-                    .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-                let mut columns = statement
-                    .columns()
-                    .iter()
-                    .map(ColumnSpec::from_statement_column)
-                    .collect::<Result<Vec<_>>>()?;
-                mark_query_spatial_columns(operation, &mut columns);
-                (Box::pin(futures_util::stream::empty()), columns)
-            }
-        } else {
-            self.metrics.query_prepared_fallback();
-            let statement = client
-                .client()?
-                .prepare(&rendered.sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-            let mut columns = statement
-                .columns()
-                .iter()
-                .map(ColumnSpec::from_statement_column)
-                .collect::<Result<Vec<_>>>()?;
-            mark_query_spatial_columns(operation, &mut columns);
-            let rows = if let Some(result) = select_with_cancellation(
-                client.client()?.query_raw(&statement, parameter_refs),
-                cancellation,
-            )
-            .await
-            {
-                result.map_err(|error| classify_error(ErrorPhase::Read, &error))?
-            } else {
-                cancel_and_invalidate(
-                    &mut client,
-                    self.tls_mode,
-                    self.tls_config.connector(),
-                    self.network_options.connect_timeout_ms,
-                )
-                .await;
-                return Err(cancelled_read_error(cancellation));
-            };
-            (Box::pin(rows), columns)
-        };
-        let schema = contract_schema(
-            columns
-                .iter()
-                .map(ColumnSpec::arrow_field)
-                .collect::<Vec<_>>(),
-        );
-        let column_count = u64::try_from(columns.len())
-            .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
-        let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-        let cancel_token = client.client()?.cancel_token();
-        Ok(Box::new(PostgresBatchStream::new(
-            self,
-            ReadStreamSource::new(client, cancel_token, rows, columns, schema),
-            budget,
-            operation_lease,
-            columns_lease,
-        )))
-    }
-
     #[allow(clippy::too_many_lines)]
     async fn preflight_write(
         &self,
@@ -1127,8 +807,15 @@ impl Provider for PostgresProvider {
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
-            self.read_stream(secret, operation, parameters, budget, control.token())
-                .await
+            query_execution::read_stream(
+                self,
+                secret,
+                operation,
+                parameters,
+                budget,
+                control.token(),
+            )
+            .await
         })
     }
 
@@ -1142,8 +829,15 @@ impl Provider for PostgresProvider {
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
-            self.query_stream(secret, operation, parameters, budget, control.token())
-                .await
+            query_execution::query_stream(
+                self,
+                secret,
+                operation,
+                parameters,
+                budget,
+                control.token(),
+            )
+            .await
         })
     }
 
@@ -1225,258 +919,6 @@ impl Provider for PostgresProvider {
 
 fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-fn select_columns(available: &[ColumnSpec], projection: &[String]) -> Result<Vec<ColumnSpec>> {
-    if projection.is_empty() {
-        return Ok(available.to_vec());
-    }
-    let by_name = available
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<HashMap<_, _>>();
-    projection
-        .iter()
-        .map(|name| {
-            by_name
-                .get(name.as_str())
-                .map(|column| (*column).clone())
-                .ok_or_else(|| {
-                    public_error(
-                        ErrorCategory::NotFound,
-                        ErrorPhase::Prepare,
-                        false,
-                        "colonna PostgreSQL richiesta non trovata",
-                    )
-                })
-        })
-        .collect()
-}
-
-fn mark_query_spatial_columns(operation: &QueryOperation, columns: &mut [ColumnSpec]) {
-    for (column, projection) in columns.iter_mut().zip(&operation.projection) {
-        if matches!(
-            projection.expression,
-            QueryExpression::Spatial { function, .. } if function.returns_geometry()
-        ) {
-            column.kind = ColumnKind::Geometry;
-            "geometry".clone_into(&mut column.native_type);
-            column.spatial_type = Some("Geometry".to_owned());
-        }
-    }
-}
-
-fn build_read_sql(
-    operation: &ReadOperation,
-    columns: &[ColumnSpec],
-    available_columns: &[ColumnSpec],
-) -> Result<(String, Vec<String>)> {
-    let renderer = Renderer::new(
-        Dialect::Postgres,
-        DialectCapabilities {
-            spatial_intersects: true,
-        },
-    );
-    let source = ObjectName {
-        // PostgreSQL non supporta nomi cross-database a tre componenti. Il
-        // catalogo è verificato contro current_database prima del rendering.
-        catalog: None,
-        schema: operation
-            .source
-            .schema
-            .as_ref()
-            .map(|value| Identifier::new(value.clone()))
-            .transpose()?,
-        object: Identifier::new(operation.source.object.clone())?,
-    };
-    let projection = columns
-        .iter()
-        .map(|column| column.projection_sql(&renderer))
-        .collect::<Result<Vec<_>>>()?
-        .join(", ");
-    let mut sql = format!(
-        "SELECT {projection} FROM {}",
-        renderer.quote_object(&source)
-    );
-    let mut bind_names = Vec::new();
-    if let Some(filter) = &operation.filter {
-        ensure_filter_columns(filter, available_columns)?;
-        let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
-        sql.push_str(" WHERE ");
-        sql.push_str(&rendered_filter.sql);
-        bind_names.extend(rendered_filter.binds.into_iter().map(|bind| bind.name));
-    }
-    if !operation.order_by.is_empty() {
-        let available = available_columns
-            .iter()
-            .map(|column| column.name.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut orders = Vec::with_capacity(operation.order_by.len());
-        for order in &operation.order_by {
-            if !available.contains(order.field.as_str()) {
-                return Err(public_error(
-                    ErrorCategory::NotFound,
-                    ErrorPhase::Prepare,
-                    false,
-                    "colonna ORDER BY non presente nella projection",
-                ));
-            }
-            let quoted = renderer.quote_identifier(&Identifier::new(order.field.clone())?);
-            let direction = match order.direction {
-                SortDirection::Asc => "ASC",
-                SortDirection::Desc => "DESC",
-            };
-            orders.push(format!("{quoted} {direction}"));
-        }
-        sql.push_str(" ORDER BY ");
-        sql.push_str(&orders.join(", "));
-    }
-    if let Some(limit) = operation.row_limit {
-        sql.push_str(" LIMIT ");
-        sql.push_str(&limit.to_string());
-    }
-    Ok((sql, bind_names))
-}
-
-const fn postgres_renderer() -> Renderer {
-    Renderer::new(
-        Dialect::Postgres,
-        DialectCapabilities {
-            spatial_intersects: true,
-        },
-    )
-}
-
-fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
-    match expression {
-        FilterExpression::And { args } => Ok(Expression::And(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Or { args } => Ok(Expression::Or(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Eq { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Eq,
-            parameter,
-        ),
-        FilterExpression::Ne { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Ne,
-            parameter,
-        ),
-        FilterExpression::Lt { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Lt,
-            parameter,
-        ),
-        FilterExpression::Lte { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Lte,
-            parameter,
-        ),
-        FilterExpression::Gt { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Gt,
-            parameter,
-        ),
-        FilterExpression::Gte { field, parameter } => comparison(
-            field,
-            plenora_database_core::plan::ComparisonOperator::Gte,
-            parameter,
-        ),
-        FilterExpression::IsNull { field } => {
-            Ok(Expression::IsNull(Identifier::new(field.clone())?))
-        }
-        FilterExpression::IsNotNull { field } => {
-            Ok(Expression::IsNotNull(Identifier::new(field.clone())?))
-        }
-        FilterExpression::In { field, parameters } => Ok(Expression::In {
-            field: Identifier::new(field.clone())?,
-            parameters: parameters.clone(),
-        }),
-        FilterExpression::Between {
-            field,
-            lower_parameter,
-            upper_parameter,
-        } => Ok(Expression::Between {
-            field: Identifier::new(field.clone())?,
-            lower_parameter: lower_parameter.clone(),
-            upper_parameter: upper_parameter.clone(),
-        }),
-        FilterExpression::Like {
-            field,
-            parameter,
-            case_insensitive,
-        } => Ok(Expression::Like {
-            field: Identifier::new(field.clone())?,
-            parameter: parameter.clone(),
-            case_insensitive: *case_insensitive,
-        }),
-        FilterExpression::Spatial {
-            function,
-            field,
-            geometry_parameter,
-            distance_parameter,
-        } => Ok(Expression::SpatialPredicate {
-            function: *function,
-            field: Identifier::new(field.clone())?,
-            geometry_parameter: geometry_parameter.clone(),
-            distance_parameter: distance_parameter.clone(),
-        }),
-    }
-}
-
-fn comparison(
-    field: &str,
-    operator: plenora_database_core::plan::ComparisonOperator,
-    parameter: &str,
-) -> Result<Expression> {
-    Ok(Expression::Compare {
-        field: Identifier::new(field.to_owned())?,
-        operator,
-        parameter: parameter.to_owned(),
-    })
-}
-
-fn ensure_filter_columns(expression: &FilterExpression, columns: &[ColumnSpec]) -> Result<()> {
-    fn visit(expression: &FilterExpression, available: &std::collections::BTreeSet<&str>) -> bool {
-        match expression {
-            FilterExpression::And { args } | FilterExpression::Or { args } => {
-                args.iter().all(|arg| visit(arg, available))
-            }
-            FilterExpression::Eq { field, .. }
-            | FilterExpression::Ne { field, .. }
-            | FilterExpression::Lt { field, .. }
-            | FilterExpression::Lte { field, .. }
-            | FilterExpression::Gt { field, .. }
-            | FilterExpression::Gte { field, .. }
-            | FilterExpression::IsNull { field }
-            | FilterExpression::IsNotNull { field }
-            | FilterExpression::In { field, .. }
-            | FilterExpression::Between { field, .. }
-            | FilterExpression::Like { field, .. }
-            | FilterExpression::Spatial { field, .. } => available.contains(field.as_str()),
-        }
-    }
-    let available = columns
-        .iter()
-        .map(|column| column.name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    if visit(expression, &available) {
-        Ok(())
-    } else {
-        Err(public_error(
-            ErrorCategory::NotFound,
-            ErrorPhase::Prepare,
-            false,
-            "colonna filtro non presente nella projection",
-        ))
-    }
 }
 
 fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {

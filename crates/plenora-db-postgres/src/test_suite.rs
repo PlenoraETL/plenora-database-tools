@@ -66,12 +66,15 @@ impl PostgresProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parameter_codec::typed_filter_parameter_types;
+    use crate::types::ColumnKind;
     use arrow_array::RecordBatch;
     use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::outcome::WriteStatus;
     use plenora_database_core::plan::{
-        ComparisonOperator, LayerId, OrderBy, SridPolicy, TransactionProfile, WriteMode,
+        ComparisonOperator, FilterExpression, LayerId, OrderBy, SortDirection, SridPolicy,
+        TransactionProfile, WriteMode,
     };
     use plenora_database_core::provider::ParameterValue;
     use plenora_database_core::query::{
@@ -82,6 +85,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::ops::Deref;
     use std::sync::OnceLock;
+    use tokio_postgres::types::Type;
 
     async fn wait_for_query_state(
         client: &tokio_postgres::Client,
