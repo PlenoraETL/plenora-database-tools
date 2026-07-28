@@ -59,6 +59,7 @@ pub struct WriteRuntime {
 #[derive(Debug, Clone)]
 struct WriteColumnPlan {
     data_type: DataType,
+    postgres_type: String,
     native_type: Option<String>,
     native_declaration_sql: Option<String>,
     geometry_type: Option<String>,
@@ -81,6 +82,7 @@ impl WriteColumnPlan {
         let contract = FieldContract::parse(field)?;
         Ok(Self {
             data_type: field.data_type().clone(),
+            postgres_type: pg_type(contract)?,
             native_type: contract.native_type.map(str::to_owned),
             native_declaration_sql: native_declaration_sql(contract),
             geometry_type: contract.geometry_type.map(str::to_owned),
@@ -109,15 +111,20 @@ impl WriteColumnPlan {
 }
 
 pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result<()> {
+    compile_schema_plan(schema, operation).map(drop)
+}
+
+fn compile_schema_plan(
+    schema: &SchemaRef,
+    operation: &WriteOperation,
+) -> Result<Vec<WriteColumnPlan>> {
     if schema.fields().is_empty() {
         return Err(DatabaseError::invalid_plan(
             "write PostgreSQL richiede almeno un campo",
         ));
     }
     for field in schema.fields() {
-        let contract = FieldContract::parse(field)?;
         Identifier::new(field.name().clone())?;
-        pg_type(contract)?;
     }
     for name in operation.keys.iter().chain(&operation.update_columns) {
         if schema.field_with_name(name).is_err() {
@@ -126,7 +133,11 @@ pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result
             ));
         }
     }
-    Ok(())
+    schema
+        .fields()
+        .iter()
+        .map(|field| WriteColumnPlan::compile(field))
+        .collect()
 }
 
 // The orchestration is intentionally kept in one place so transaction boundaries,
@@ -150,7 +161,7 @@ pub async fn execute(
         ));
     }
     let schema = input.schema();
-    validate_schema(&schema, &prepared.operation)?;
+    let column_plans = compile_schema_plan(&schema, &prepared.operation)?;
     let execution_id = format!(
         "pg-{}-{}",
         std::process::id(),
@@ -230,7 +241,13 @@ pub async fn execute(
     };
     let operation = &prepared.operation;
     if let Some(result) = select_with_cancellation(
-        evolve_target_schema(&transaction, operation, &schema, runtime.schema_evolution),
+        evolve_target_schema(
+            &transaction,
+            operation,
+            &schema,
+            &column_plans,
+            runtime.schema_evolution,
+        ),
         cancellation,
     )
     .await
@@ -242,7 +259,13 @@ pub async fn execute(
         return Err(recovery.rollback_cancellation(transaction).await);
     }
     let (write_target, replace_original) = if let Some(result) = select_with_cancellation(
-        prepare_target(&transaction, operation, &schema, &execution_id),
+        prepare_target(
+            &transaction,
+            operation,
+            &schema,
+            &column_plans,
+            &execution_id,
+        ),
         cancellation,
     )
     .await
@@ -274,10 +297,13 @@ pub async fn execute(
         let Some(batch) = batch else {
             break;
         };
+        if let Err(error) = validate_batch_schema(&batch, &schema) {
+            return Err(recovery.rollback_error(transaction, error).await);
+        }
         if cancellation.is_cancelled() {
             return Err(recovery.rollback_cancellation(transaction).await);
         }
-        let resources = match reserve_write_batch(&batch, &runtime, budget) {
+        let resources = match reserve_write_batch(&batch, &column_plans, &runtime, budget) {
             Ok(resources) => resources,
             Err(error) => {
                 return Err(recovery.rollback_resource_error(transaction, &error).await);
@@ -293,6 +319,7 @@ pub async fn execute(
                 operation,
                 &write_target,
                 &batch,
+                &column_plans,
                 runtime.insert_mode,
             ),
             cancellation,
@@ -337,7 +364,7 @@ pub async fn execute(
     }
     if operation.create_spatial_index {
         if let Some(result) = select_with_cancellation(
-            create_spatial_indexes(&transaction, &operation.target, &schema),
+            create_spatial_indexes(&transaction, &operation.target, &schema, &column_plans),
             cancellation,
         )
         .await
@@ -421,6 +448,15 @@ pub async fn execute(
     outcome.validate()?;
     runtime.metrics.write_committed(confirmed);
     Ok(outcome)
+}
+
+fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Result<()> {
+    if Arc::ptr_eq(batch.schema_ref(), declared) || batch.schema_ref() == declared {
+        return Ok(());
+    }
+    Err(DatabaseError::invalid_plan(
+        "lo schema del batch write diverge dallo schema dichiarato dallo stream",
+    ))
 }
 
 async fn cancel_backend(
@@ -620,11 +656,13 @@ impl WriteBatchResources {
 
 fn reserve_write_batch(
     batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
     runtime: &WriteRuntime,
     budget: &ResourceBudget,
 ) -> Result<WriteBatchResources> {
     let geometry_components = enforce_input_limits(
         batch,
+        plans,
         runtime
             .max_batch_bytes
             .min(budget.limits().memory_bytes)
@@ -680,6 +718,7 @@ async fn evolve_target_schema(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
     schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
     policy: PostgresSchemaEvolution,
 ) -> Result<()> {
     if policy != PostgresSchemaEvolution::AddNullableColumns
@@ -691,15 +730,14 @@ async fn evolve_target_schema(
         return Ok(());
     }
     let renderer = renderer();
-    for field in schema.fields() {
-        let contract = FieldContract::parse(field)?;
+    for (field, plan) in schema.fields().iter().zip(plans) {
         let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         execute_sql(
             transaction,
             &format!(
                 "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {column} {}",
                 quote_object(&operation.target)?,
-                pg_type(contract)?
+                plan.postgres_type
             ),
             &[],
         )
@@ -710,6 +748,7 @@ async fn evolve_target_schema(
 
 fn enforce_input_limits(
     batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
     max_batch_bytes: u64,
     max_wkb_cell_bytes: u64,
     max_geometry_components: u64,
@@ -729,12 +768,6 @@ fn enforce_input_limits(
         ));
     }
     let mut geometry_components = 0_u64;
-    let schema = batch.schema();
-    let plans = schema
-        .fields()
-        .iter()
-        .map(|field| WriteColumnPlan::compile(field))
-        .collect::<Result<Vec<_>>>()?;
     for (plan, array) in plans.iter().zip(batch.columns()) {
         if plan.is_spatial() {
             let binary = array
@@ -780,11 +813,19 @@ async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
     schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
     execution_id: &str,
 ) -> Result<(ObjectRef, Option<ObjectRef>)> {
     match operation.mode {
         WriteMode::Create => {
-            create_table(transaction, &operation.target, schema, &operation.keys).await?;
+            create_table(
+                transaction,
+                &operation.target,
+                schema,
+                plans,
+                &operation.keys,
+            )
+            .await?;
             Ok((operation.target.clone(), None))
         }
         WriteMode::Replace => {
@@ -794,7 +835,7 @@ async fn prepare_target(
                 operation.target.object.chars().take(36).collect::<String>(),
                 execution_id.replace('-', "_")
             );
-            create_table(transaction, &staging, schema, &operation.keys).await?;
+            create_table(transaction, &staging, schema, plans, &operation.keys).await?;
             Ok((staging, Some(operation.target.clone())))
         }
         WriteMode::TruncateInsert => {
@@ -816,17 +857,18 @@ async fn create_table(
     transaction: &Transaction<'_>,
     target: &ObjectRef,
     schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
     keys: &[String],
 ) -> Result<()> {
     let renderer = renderer();
     let mut definitions = schema
         .fields()
         .iter()
-        .map(|field| {
-            let contract = FieldContract::parse(field)?;
+        .zip(plans)
+        .map(|(field, plan)| {
             let name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
             let nullability = if field.is_nullable() { "" } else { " NOT NULL" };
-            Ok(format!("{name} {}{nullability}", pg_type(contract)?))
+            Ok(format!("{name} {}{nullability}", plan.postgres_type))
         })
         .collect::<Result<Vec<_>>>()?;
     if !keys.is_empty() {
@@ -857,6 +899,7 @@ async fn write_batch(
     operation: &WriteOperation,
     target: &ObjectRef,
     batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
     insert_mode: PostgresInsertMode,
 ) -> Result<u64> {
     if matches!(
@@ -864,14 +907,16 @@ async fn write_batch(
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert
     ) {
         match insert_mode {
-            PostgresInsertMode::CopyText => return copy_batch(transaction, target, batch).await,
+            PostgresInsertMode::CopyText => {
+                return copy_batch(transaction, target, batch, plans).await;
+            }
             PostgresInsertMode::CopyBinary => {
-                return copy_binary_batch(transaction, target, batch).await;
+                return copy_binary_batch(transaction, target, batch, plans).await;
             }
             PostgresInsertMode::Prepared => {}
         }
     }
-    let (sql, indexes) = statement(operation, target, batch.schema_ref())?;
+    let (sql, indexes) = statement(operation, target, batch.schema_ref(), plans)?;
     let statement = transaction.prepare(&sql).await.map_err(|_| {
         public_error(
             ErrorCategory::Protocol,
@@ -881,16 +926,10 @@ async fn write_batch(
         )
     })?;
     let mut affected = 0;
-    let batch_schema = batch.schema();
-    let plans = indexes
-        .iter()
-        .map(|index| WriteColumnPlan::compile(batch_schema.field(*index)))
-        .collect::<Result<Vec<_>>>()?;
     for row in 0..batch.num_rows() {
         let values = indexes
             .iter()
-            .zip(&plans)
-            .map(|(index, plan)| arrow_value(batch.column(*index).as_ref(), plan, row))
+            .map(|index| arrow_value(batch.column(*index).as_ref(), &plans[*index], row))
             .collect::<Result<Vec<_>>>()?;
         let refs = values
             .iter()
@@ -912,6 +951,7 @@ async fn copy_binary_batch(
     transaction: &Transaction<'_>,
     target: &ObjectRef,
     batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
 ) -> Result<u64> {
     let renderer = renderer();
     let columns = batch
@@ -957,17 +997,11 @@ async fn copy_binary_batch(
         })?;
     let writer = BinaryCopyInWriter::new(sink, &types);
     futures_util::pin_mut!(writer);
-    let schema = batch.schema();
-    let plans = schema
-        .fields()
-        .iter()
-        .map(|field| WriteColumnPlan::compile(field))
-        .collect::<Result<Vec<_>>>()?;
     for row in 0..batch.num_rows() {
         let values = batch
             .columns()
             .iter()
-            .zip(&plans)
+            .zip(plans)
             .zip(&types)
             .map(|((array, plan), target_type)| {
                 binary_copy_value(array.as_ref(), plan, target_type, row)
@@ -1000,6 +1034,7 @@ async fn copy_batch(
     transaction: &Transaction<'_>,
     target: &ObjectRef,
     batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
 ) -> Result<u64> {
     let renderer = renderer();
     let columns = batch
@@ -1023,7 +1058,7 @@ async fn copy_batch(
     })?;
     futures_util::pin_mut!(sink);
     sink.as_mut()
-        .send(Bytes::from(copy_buffer(batch)?))
+        .send(Bytes::from(copy_buffer(batch, plans)?))
         .await
         .map_err(|_| {
             public_error(
@@ -1043,13 +1078,7 @@ async fn copy_batch(
     })
 }
 
-fn copy_buffer(batch: &RecordBatch) -> Result<Vec<u8>> {
-    let schema = batch.schema();
-    let plans = schema
-        .fields()
-        .iter()
-        .map(|field| WriteColumnPlan::compile(field))
-        .collect::<Result<Vec<_>>>()?;
+fn copy_buffer(batch: &RecordBatch, plans: &[WriteColumnPlan]) -> Result<Vec<u8>> {
     let mut output = String::new();
     for row in 0..batch.num_rows() {
         for (column, plan) in plans.iter().enumerate() {
@@ -1377,6 +1406,7 @@ fn statement(
     operation: &WriteOperation,
     target: &ObjectRef,
     schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
 ) -> Result<(String, Vec<usize>)> {
     let renderer = renderer();
     let field_index = |name: &str| {
@@ -1403,9 +1433,8 @@ fn statement(
                 .iter()
                 .enumerate()
                 .map(|(position, name)| {
-                    let field = schema.field(field_index(name)?);
-                    let plan = WriteColumnPlan::compile(field)?;
-                    let value = placeholder_expression(&plan, position + 1);
+                    let index = field_index(name)?;
+                    let value = placeholder_expression(&plans[index], position + 1);
                     let identifier = Identifier::new(name.clone())?;
                     Ok(format!(
                         "{} = {value}",
@@ -1452,11 +1481,8 @@ fn statement(
                 .fields()
                 .iter()
                 .enumerate()
-                .map(|(index, field)| {
-                    WriteColumnPlan::compile(field)
-                        .map(|plan| placeholder_expression(&plan, index + 1))
-                })
-                .collect::<Result<Vec<_>>>()?;
+                .map(|(index, _)| placeholder_expression(&plans[index], index + 1))
+                .collect::<Vec<_>>();
             let conflict = if operation.mode == WriteMode::Upsert {
                 let keys = operation
                     .keys
@@ -2315,10 +2341,11 @@ async fn create_spatial_indexes(
     transaction: &Transaction<'_>,
     target: &ObjectRef,
     schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
 ) -> Result<()> {
     let renderer = renderer();
-    for field in schema.fields() {
-        if !FieldContract::parse(field)?.spatial {
+    for (field, plan) in schema.fields().iter().zip(plans) {
+        if !plan.is_spatial() {
             continue;
         }
         let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
@@ -2604,6 +2631,43 @@ mod tests {
             text.parse::<u128>().expect("decoded numeric"),
             scale,
         )
+    }
+
+    #[test]
+    fn batch_schema_drift_is_rejected_before_encoding() {
+        let declared = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "value",
+            DataType::Int32,
+            true,
+        )]));
+        let matching = RecordBatch::try_new(
+            Arc::clone(&declared),
+            vec![Arc::new(Int32Array::from(vec![Some(1)]))],
+        )
+        .expect("matching batch");
+        validate_batch_schema(&matching, &declared).expect("stable schema");
+
+        let equivalent = RecordBatch::try_new(
+            Arc::new(declared.as_ref().clone()),
+            vec![Arc::new(Int32Array::from(vec![Some(1)]))],
+        )
+        .expect("equivalent batch");
+        validate_batch_schema(&equivalent, &declared).expect("structurally stable schema");
+
+        let drifted = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "renamed",
+            DataType::Int32,
+            true,
+        )]));
+        let drifted_batch =
+            RecordBatch::try_new(drifted, vec![Arc::new(Int32Array::from(vec![Some(1)]))])
+                .expect("drifted batch");
+        assert_eq!(
+            validate_batch_schema(&drifted_batch, &declared)
+                .expect_err("schema drift")
+                .category,
+            ErrorCategory::InvalidPlan
+        );
     }
 
     #[test]
