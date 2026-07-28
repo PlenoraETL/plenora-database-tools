@@ -816,6 +816,7 @@ Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitat
 | `pool.rs` | semaphore bounded, checkout, riuso, invalidazione e restituzione RAII delle sessioni | costruire TLS/DSN, eseguire query o rendere riutilizzabile una sessione incerta |
 | `query_plan.rs` | piano immutabile PostgreSQL per projection, filtri, SQL di dialetto e nomi dei bind | aprire connessioni, leggere valori dei parametri o eseguire fallback |
 | `query_execution.rs` | bind PostgreSQL, fast path tipizzato, fallback prepared, cancellazione e consegna allo stream | modificare AST/SQL, interpolare valori o dichiarare riutilizzabile una sessione incerta |
+| `preflight.rs` | esistenza e modo del target, compatibilità schema, chiavi, CRS authority e `LossReport` prima della mutazione | eseguire write, mutare schema/cache o attenuare una perdita non ammessa |
 | `read_stream.rs` | backpressure Arrow, lease di risorse, limiti geometrici, deadline e cancellazione server-side | costruire SQL, scegliere parametri o riutilizzare sessioni incerte |
 | `schema_cache.rs` | token strutturali, LRU bounded, invalidazione e recovery da poisoning | decidere quando interrogare il catalogo o dichiarare valido uno schema remoto |
 | `write.rs` | orchestrazione, confini di transazione e ordine delle fasi | formato dei tipi o politica di recovery in autonomia |

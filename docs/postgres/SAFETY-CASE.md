@@ -49,6 +49,7 @@ la libreria deve:
 | PG-SC-023 | `duration_ms` dichiarato ma non operativo, o timeout che lascia effetti remoti ambigui | deadline monotona attiva; cancel backend; rollback verificato, commit timeout `Unknown` | test deadline token/budget, read backend e write rollback live |
 | PG-SC-024 | errore SQL, trigger, producer o DDL dopo `BEGIN` affidato al drop implicito | ogni uscita fallibile pre-commit consuma la transazione con rollback esplicito; execution ID nell'errore | trigger failure e fault before-commit live |
 | PG-SC-025 | parametro testuale avversario causa panic o coercizione ambigua | UUID decodificato solo da byte ASCII esadecimali; decimal richiede una grammatica non vuota e deterministica | test negativi UTF-8, segno isolato, punti multipli e caratteri non ASCII |
+| PG-SC-026 | drift dell'API o capability contraddittorie viene scoperto soltanto dal chiamante | freeze compile-time degli export v0.1 e suite comune fail-closed su connessione, capability, inspection, cancellation e unsupported | `public_api_v0_1.rs` e `verify_provider_contract` live |
 
 ## Regole di cambiamento
 

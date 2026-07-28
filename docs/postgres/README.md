@@ -197,6 +197,8 @@ Il profilo di sicurezza e resilienza, con garanzie e limiti espliciti, è in
 [HARDENING.md](HARDENING.md). Il razionale hazard→invariante→prova e i rischi
 residui sono in [SAFETY-CASE.md](SAFETY-CASE.md); è un profilo ingegneristico,
 non una certificazione aeronautica.
+Il freeze pubblico e la condizione di passaggio al driver SQL Server sono in
+[REFERENCE-V0.1.md](REFERENCE-V0.1.md).
 La politica di versioni verificata è in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -233,8 +235,9 @@ python scripts\check_postgres_spatial_performance.py
 Scenari, metriche, baseline e regole anti-regressione sono descritti in
 [PERFORMANCE.md](PERFORMANCE.md).
 
-Il data path v3 PostgreSQL/PostGIS è congelato come riferimento. Il gate non
-salva il DSN e produce un confronto differenziale dei dati.
+Il provider pubblico v0.1 e il data path v3 PostgreSQL/PostGIS sono congelati
+come riferimento. Il gate non salva il DSN e produce un confronto
+differenziale dei dati.
 
 ## Confine del riferimento completo
 

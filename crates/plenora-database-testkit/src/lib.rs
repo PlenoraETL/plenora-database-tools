@@ -1,5 +1,12 @@
 //! Supporto di conformità indipendente dai database reali.
 
+mod conformance;
+
+pub use conformance::{
+    operation_id, validate_capabilities, validate_connection, validate_inspection,
+    verify_provider_contract, ProviderConformanceReport,
+};
+
 use plenora_database_core::{DatabaseError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

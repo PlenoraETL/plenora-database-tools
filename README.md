@@ -36,6 +36,7 @@ Documenti principali:
 - [gate pre-database](docs/phase-0/pre-database-gate.md);
 - [stato Fase 1 Rust](docs/phase-1/README.md);
 - [driver PostgreSQL/PostGIS](docs/postgres/README.md);
+- [freeze PostgreSQL/PostGIS v0.1](docs/postgres/REFERENCE-V0.1.md);
 - [hardening PostgreSQL/PostGIS](docs/postgres/HARDENING.md);
 - [safety case PostgreSQL/PostGIS](docs/postgres/SAFETY-CASE.md);
 - [compatibilità PostgreSQL/PostGIS](docs/postgres/COMPATIBILITY.md);
