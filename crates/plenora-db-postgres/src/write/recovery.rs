@@ -98,7 +98,7 @@ impl PreCommitRecovery<'_> {
         cancel_backend(
             self.cancel_token,
             self.runtime.tls_mode,
-            &self.runtime.tls_config.connector,
+            self.runtime.tls_config.connector(),
             self.runtime.network_options.connect_timeout_ms,
         )
         .await;

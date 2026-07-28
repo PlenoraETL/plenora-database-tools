@@ -136,7 +136,7 @@ impl PostgresBatchStream {
             client,
             cancel_token,
             tls_mode: provider.tls_mode,
-            tls_connector: provider.tls_config.connector.clone(),
+            tls_connector: provider.tls_config.connector().clone(),
             cancel_timeout_ms: provider.network_options.connect_timeout_ms,
             rows,
             columns,
