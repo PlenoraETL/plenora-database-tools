@@ -6,3 +6,7 @@ __pycache__/
 target/
 benchmarks/results/
 assurance-results/
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/coverage/
+fuzz/target/
