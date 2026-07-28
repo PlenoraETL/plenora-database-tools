@@ -125,7 +125,9 @@ pub async fn execute(
         ));
     };
     if client.was_reused() {
-        match select_with_cancellation(client.batch_execute("DISCARD ALL"), cancellation).await {
+        match select_with_cancellation(client.client()?.batch_execute("DISCARD ALL"), cancellation)
+            .await
+        {
             Some(Ok(())) => {}
             Some(Err(error)) => {
                 client.invalidate();
@@ -145,26 +147,27 @@ pub async fn execute(
         runtime.metrics.session_reset();
     }
     client.invalidate();
-    let cancel_token = client.cancel_token();
-    let transaction =
-        if let Some(result) = select_with_cancellation(client.transaction(), cancellation).await {
-            result.map_err(|_| {
-                public_error(
-                    ErrorCategory::Protocol,
-                    ErrorPhase::Write,
-                    false,
-                    "avvio transazione PostgreSQL fallito",
-                )
-            })?
-        } else {
-            runtime.metrics.cancellation();
-            return Err(public_error(
-                interruption_category(cancellation),
+    let cancel_token = client.client()?.cancel_token();
+    let transaction = if let Some(result) =
+        select_with_cancellation(client.client_mut()?.transaction(), cancellation).await
+    {
+        result.map_err(|_| {
+            public_error(
+                ErrorCategory::Protocol,
                 ErrorPhase::Write,
                 false,
-                interruption_message(cancellation),
-            ));
-        };
+                "avvio transazione PostgreSQL fallito",
+            )
+        })?
+    } else {
+        runtime.metrics.cancellation();
+        return Err(public_error(
+            interruption_category(cancellation),
+            ErrorPhase::Write,
+            false,
+            interruption_message(cancellation),
+        ));
+    };
     let recovery = PreCommitRecovery {
         cancellation,
         runtime: &runtime,

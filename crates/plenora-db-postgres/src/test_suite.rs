@@ -78,6 +78,7 @@ mod tests {
         ScalarFunction, SpatialOperator,
     };
     use std::collections::BTreeMap;
+    use std::ops::Deref;
     use std::sync::OnceLock;
 
     #[test]
@@ -3071,6 +3072,8 @@ mod tests {
             .await
             .expect("fresh configured session");
         let initial = first
+            .client()
+            .expect("pooled client")
             .query_one(
                 "SELECT current_setting('statement_timeout'),
                         current_setting('lock_timeout'),
@@ -3083,6 +3086,8 @@ mod tests {
         assert_eq!(initial.get::<_, String>(1), "567ms");
         assert_eq!(initial.get::<_, String>(2), "plenora-database-tools");
         first
+            .client()
+            .expect("pooled client")
             .batch_execute(
                 "SET statement_timeout = 0;
                  SET lock_timeout = 0;
@@ -3103,6 +3108,8 @@ mod tests {
             .await
             .expect("strictly reset reused session");
         let restored = reused
+            .client()
+            .expect("pooled client")
             .query_one(
                 "SELECT current_setting('statement_timeout'),
                         current_setting('lock_timeout'),

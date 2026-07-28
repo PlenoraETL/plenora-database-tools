@@ -53,7 +53,6 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration as StdDuration;
@@ -637,19 +636,27 @@ impl PooledClient {
     const fn was_reused(&self) -> bool {
         self.reused
     }
-}
 
-impl Deref for PooledClient {
-    type Target = Client;
-
-    fn deref(&self) -> &Self::Target {
-        self.client.as_ref().expect("pooled client available")
+    fn client(&self) -> Result<&Client> {
+        self.client.as_ref().ok_or_else(|| {
+            public_error(
+                ErrorCategory::Internal,
+                ErrorPhase::Connect,
+                false,
+                "client PostgreSQL del pool non disponibile",
+            )
+        })
     }
-}
 
-impl DerefMut for PooledClient {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.client.as_mut().expect("pooled client available")
+    fn client_mut(&mut self) -> Result<&mut Client> {
+        self.client.as_mut().ok_or_else(|| {
+            public_error(
+                ErrorCategory::Internal,
+                ErrorPhase::Connect,
+                false,
+                "client PostgreSQL del pool non disponibile",
+            )
+        })
     }
 }
 
@@ -970,7 +977,7 @@ impl PostgresProvider {
             )
             .await?;
         if client.was_reused() {
-            if let Err(error) = client.batch_execute("DISCARD ALL").await {
+            if let Err(error) = client.client()?.batch_execute("DISCARD ALL").await {
                 client.invalidate();
                 return Err(classify_error(ErrorPhase::Connect, &error));
             }
@@ -1361,7 +1368,7 @@ impl PostgresProvider {
         let key = Self::schema_cache_key(client, source);
         if let Some(candidate) = self.schema_cache.candidate(&key) {
             self.metrics.schema_token_check();
-            let current = match Self::schema_token(client, source).await {
+            let current = match Self::schema_token(client.client()?, source).await {
                 Ok(token) => token,
                 Err(error) => {
                     if self.schema_cache.invalidate(&key) {
@@ -1381,7 +1388,7 @@ impl PostgresProvider {
         }
         self.metrics.schema_cache_miss();
         self.metrics.catalog_introspection();
-        let (columns, token) = Self::load_columns_and_token(client, source).await?;
+        let (columns, token) = Self::load_columns_and_token(client.client()?, source).await?;
         if self
             .schema_cache
             .insert(key, token.clone(), Arc::clone(&columns))
@@ -1506,6 +1513,7 @@ impl PostgresProvider {
         match operation {
             Operation::DatabaseListCatalogs => {
                 let rows = client
+                    .client()?
                     .query(
                         "SELECT datname FROM pg_database WHERE datallowconn ORDER BY datname",
                         &[],
@@ -1521,6 +1529,7 @@ impl PostgresProvider {
             }
             Operation::DatabaseListSchemas { .. } => {
                 let rows = client
+                    .client()?
                     .query(
                         r"
                         SELECT schema_name
@@ -1544,6 +1553,7 @@ impl PostgresProvider {
                     .and_then(|value| value.schema.as_deref())
                     .unwrap_or("public");
                 let rows = client
+                    .client()?
                     .query(
                         r"
                         SELECT c.relname, c.relkind::text, c.relispartition
@@ -1574,7 +1584,7 @@ impl PostgresProvider {
             }
             Operation::DatabaseDescribeObject { source } => {
                 let (columns, schema_token) = self.cached_columns(client, source).await?;
-                let metadata = describe_object_metadata(client, source).await?;
+                let metadata = describe_object_metadata(client.client()?, source).await?;
                 Ok(Inspection {
                     operation: "database.describe_object".to_owned(),
                     document: json!({
@@ -1606,7 +1616,7 @@ impl PostgresProvider {
     ) -> Result<RowStream> {
         let parameter_count = parameter_refs.len();
         let (result, error_phase) = if let Some(parameter_types) = parameter_types {
-            let query = client.query_typed_raw(
+            let query = client.client()?.query_typed_raw(
                 sql,
                 parameter_refs.into_iter().zip(parameter_types.into_iter()),
             );
@@ -1626,12 +1636,13 @@ impl PostgresProvider {
         } else {
             self.metrics.read_prepared_fallback();
             let statement = client
+                .client()?
                 .prepare(sql)
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
             (
                 select_with_cancellation(
-                    client.query_raw(&statement, parameter_refs),
+                    client.client()?.query_raw(&statement, parameter_refs),
                     cancellation,
                 )
                 .await,
@@ -1680,6 +1691,7 @@ impl PostgresProvider {
         };
         if let Some(catalog) = &operation.source.catalog {
             let current_database: String = client
+                .client()?
                 .query_one("SELECT current_database()", &[])
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Probe, &error))?
@@ -1723,7 +1735,7 @@ impl PostgresProvider {
                 cancellation,
             )
             .await?;
-        let cancel_token = client.cancel_token();
+        let cancel_token = client.client()?.cancel_token();
         let schema = contract_schema(
             selected
                 .iter()
@@ -1806,7 +1818,9 @@ impl PostgresProvider {
                 .copied()
                 .zip(parameter_types.into_iter());
             if let Some(result) = select_with_cancellation(
-                client.query_typed_raw(&rendered.sql, typed_parameters),
+                client
+                    .client()?
+                    .query_typed_raw(&rendered.sql, typed_parameters),
                 cancellation,
             )
             .await
@@ -1856,6 +1870,7 @@ impl PostgresProvider {
                 (Box::pin(rows), columns)
             } else {
                 let statement = client
+                    .client()?
                     .prepare(&rendered.sql)
                     .await
                     .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
@@ -1870,6 +1885,7 @@ impl PostgresProvider {
         } else {
             self.metrics.query_prepared_fallback();
             let statement = client
+                .client()?
                 .prepare(&rendered.sql)
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
@@ -1879,9 +1895,11 @@ impl PostgresProvider {
                 .map(ColumnSpec::from_statement_column)
                 .collect::<Result<Vec<_>>>()?;
             mark_query_spatial_columns(operation, &mut columns);
-            let rows = if let Some(result) =
-                select_with_cancellation(client.query_raw(&statement, parameter_refs), cancellation)
-                    .await
+            let rows = if let Some(result) = select_with_cancellation(
+                client.client()?.query_raw(&statement, parameter_refs),
+                cancellation,
+            )
+            .await
             {
                 result.map_err(|error| classify_error(ErrorPhase::Read, &error))?
             } else {
@@ -1905,7 +1923,7 @@ impl PostgresProvider {
         let column_count = u64::try_from(columns.len())
             .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
         let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-        let cancel_token = client.cancel_token();
+        let cancel_token = client.client()?.cancel_token();
         Ok(Box::new(PostgresBatchStream {
             client,
             cancel_token,
@@ -1943,6 +1961,7 @@ impl PostgresProvider {
         validate_resolved_crs_against_postgis(&client, input_schema).await?;
         let schema_name = operation.target.schema.as_deref().unwrap_or("public");
         let exists: bool = client
+            .client()?
             .query_one(
                 "SELECT EXISTS (
                     SELECT 1 FROM information_schema.tables
@@ -2111,6 +2130,7 @@ async fn validate_resolved_crs_against_postgis(
             .get(protocol::GEOMETRY_CRS_ID)
             .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza identificatore"))?;
         let row = client
+            .client()?
             .query_opt(
                 "SELECT auth_name, auth_srid
                  FROM spatial_ref_sys
@@ -2228,6 +2248,7 @@ impl Provider for PostgresProvider {
             check_cancelled(cancellation, ErrorPhase::Connect)?;
             let client = self.connect_session(secret).await?;
             let row = client
+                .client()?
                 .query_one(
                     "SELECT current_setting('server_version'), current_database(), current_user",
                     &[],
@@ -2256,7 +2277,7 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Probe)?;
             let client = self.connect_session(secret).await?;
-            Self::capability_document(&client).await
+            Self::capability_document(client.client()?).await
         })
     }
 
@@ -2698,8 +2719,12 @@ async fn cancel_and_invalidate(
     tls_connector: &MakeRustlsConnect,
     timeout_ms: u64,
 ) {
-    let token = client.cancel_token();
     client.pool.metrics.cancellation();
+    let Ok(active_client) = client.client() else {
+        client.invalidate();
+        return;
+    };
+    let token = active_client.cancel_token();
     client.invalidate();
     let _cancel_result = tokio::time::timeout(
         StdDuration::from_millis(timeout_ms),
