@@ -242,9 +242,22 @@ struct DecimalParameter {
 
 impl DecimalParameter {
     fn parse(value: &str) -> Result<Self> {
-        let negative = value.starts_with('-');
-        let unsigned = value.trim_start_matches(['-', '+']);
+        let (negative, unsigned) = match value.as_bytes().first() {
+            Some(b'-') => (true, &value[1..]),
+            Some(b'+') => (false, &value[1..]),
+            _ => (false, value),
+        };
+        if unsigned.is_empty() {
+            return Err(DatabaseError::invalid_plan("parametro decimal non valido"));
+        }
         let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+        if fraction.contains('.')
+            || (integer.is_empty() && fraction.is_empty())
+            || !integer.bytes().all(|byte| byte.is_ascii_digit())
+            || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(DatabaseError::invalid_plan("parametro decimal non valido"));
+        }
         let scale = i8::try_from(fraction.len())
             .map_err(|_| DatabaseError::invalid_plan("scala parametro decimal troppo grande"))?;
         let mut digits = String::with_capacity(integer.len() + fraction.len());
@@ -286,18 +299,30 @@ struct UuidParameter([u8; 16]);
 impl UuidParameter {
     fn parse(value: &str) -> Result<Self> {
         let compact = value
-            .chars()
-            .filter(|character| *character != '-')
-            .collect::<String>();
+            .bytes()
+            .filter(|byte| *byte != b'-')
+            .collect::<Vec<_>>();
         if compact.len() != 32 {
             return Err(DatabaseError::invalid_plan("parametro UUID non valido"));
         }
         let mut bytes = [0_u8; 16];
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)
-                .map_err(|_| DatabaseError::invalid_plan("parametro UUID non valido"))?;
+        for (output, pair) in bytes.iter_mut().zip(compact.chunks_exact(2)) {
+            let high = decode_hex_nibble(pair[0])
+                .ok_or_else(|| DatabaseError::invalid_plan("parametro UUID non valido"))?;
+            let low = decode_hex_nibble(pair[1])
+                .ok_or_else(|| DatabaseError::invalid_plan("parametro UUID non valido"))?;
+            *output = high << 4 | low;
         }
         Ok(Self(bytes))
+    }
+}
+
+const fn decode_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -403,4 +428,44 @@ pub fn bind_parameters(
             Ok(boxed)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DecimalParameter, UuidParameter};
+
+    #[test]
+    fn decimal_parser_rejects_ambiguous_or_non_ascii_input() {
+        for invalid in ["", "+", "-", ".", "+.", "-.", "1.2.3", "NaN", "１２"] {
+            assert!(
+                DecimalParameter::parse(invalid).is_err(),
+                "{invalid:?} deve fallire"
+            );
+        }
+        assert_eq!(
+            DecimalParameter::parse("-.5")
+                .expect("decimal valido")
+                .value,
+            -5
+        );
+    }
+
+    #[test]
+    fn uuid_parser_is_utf8_safe_and_strictly_hexadecimal() {
+        // 32 byte ma indici non allineati ai confini UTF-8: il vecchio
+        // slicing della String poteva causare panic su questo input.
+        let adversarial_utf8 = format!("{}aa", "€".repeat(10));
+        assert_eq!(adversarial_utf8.len(), 32);
+        assert!(UuidParameter::parse(&adversarial_utf8).is_err());
+        assert!(UuidParameter::parse("gggggggg-gggg-gggg-gggg-gggggggggggg").is_err());
+        assert_eq!(
+            UuidParameter::parse("123e4567-e89b-12d3-a456-426614174000")
+                .expect("UUID valido")
+                .0,
+            [
+                0x12, 0x3e, 0x45, 0x67, 0xe8, 0x9b, 0x12, 0xd3, 0xa4, 0x56, 0x42, 0x66, 0x14, 0x17,
+                0x40, 0x00,
+            ]
+        );
+    }
 }
