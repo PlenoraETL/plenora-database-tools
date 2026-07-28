@@ -1,7 +1,7 @@
-use super::{
-    connection_fingerprint, error::public_error, lock_recover, metrics::PostgresMetrics,
-    validate_session_timeouts, PostgresNetworkOptions, PostgresProvider, PostgresTlsConfig,
-    PostgresTlsMode,
+use super::{error::public_error, lock_recover, metrics::PostgresMetrics};
+use crate::connection::{
+    connect_with_tls, connection_fingerprint, validate_session_timeouts, PostgresNetworkOptions,
+    PostgresTlsConfig, PostgresTlsMode,
 };
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -110,7 +110,7 @@ impl PostgresPool {
             self.metrics.reuse();
             (client, true)
         } else {
-            let client = PostgresProvider::connect_with_tls(
+            let client = connect_with_tls(
                 secret,
                 tls_mode,
                 tls_config,

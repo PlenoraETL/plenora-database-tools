@@ -366,7 +366,7 @@ pub async fn execute(
         cancel_backend(
             &cancel_token,
             runtime.tls_mode,
-            &runtime.tls_config.connector,
+            runtime.tls_config.connector(),
             runtime.network_options.connect_timeout_ms,
         )
         .await;

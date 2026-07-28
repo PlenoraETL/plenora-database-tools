@@ -807,6 +807,7 @@ Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitat
 
 | Unità | Responsabilità | Non può decidere |
 |---|---|---|
+| `connection.rs` | validazione DSN/rete/timeout, trust TLS/mTLS, fingerprint e apertura della connessione | gestire il pool, eseguire query o esporre materiale crittografico |
 | `parameter_codec.rs` | inferenza conservativa dei tipi bind e conversione `ParameterValue` → `ToSql` | renderizzare SQL, scegliere fast path/fallback o aprire sessioni |
 | `pool.rs` | semaphore bounded, checkout, riuso, invalidazione e restituzione RAII delle sessioni | costruire TLS/DSN, eseguire query o rendere riutilizzabile una sessione incerta |
 | `read_stream.rs` | backpressure Arrow, lease di risorse, limiti geometrici, deadline e cancellazione server-side | costruire SQL, scegliere parametri o riutilizzare sessioni incerte |
