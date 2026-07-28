@@ -150,10 +150,7 @@ pub async fn execute(
         runtime.tls_mode,
         &runtime.tls_config,
         runtime.network_options,
-        PostgresSessionOptions {
-            statement_timeout_ms: runtime.statement_timeout_ms,
-            lock_timeout_ms: runtime.lock_timeout_ms,
-        },
+        PostgresSessionOptions::new(runtime.statement_timeout_ms, runtime.lock_timeout_ms),
         runtime.pool_acquire_timeout_ms,
     );
     let mut client = if let Some(result) = select_with_cancellation(checkout, cancellation).await {
