@@ -165,6 +165,12 @@ pub async fn execute(
                 interruption_message(cancellation),
             ));
         };
+    let recovery = PreCommitRecovery {
+        cancellation,
+        runtime: &runtime,
+        cancel_token: &cancel_token,
+        execution_id: &execution_id,
+    };
     let operation = &prepared.operation;
     if let Some(result) = select_with_cancellation(
         evolve_target_schema(&transaction, operation, &schema, runtime.schema_evolution),
@@ -173,17 +179,10 @@ pub async fn execute(
     .await
     {
         if let Err(error) = result {
-            return Err(rollback_after_error(transaction, error, &execution_id).await);
+            return Err(recovery.rollback_error(transaction, error).await);
         }
     } else {
-        return Err(rollback_after_cancellation(
-            transaction,
-            cancellation,
-            &runtime,
-            &cancel_token,
-            &execution_id,
-        )
-        .await);
+        return Err(recovery.rollback_cancellation(transaction).await);
     }
     let (write_target, replace_original) = if let Some(result) = select_with_cancellation(
         prepare_target(&transaction, operation, &schema, &execution_id),
@@ -194,18 +193,11 @@ pub async fn execute(
         match result {
             Ok(target) => target,
             Err(error) => {
-                return Err(rollback_after_error(transaction, error, &execution_id).await);
+                return Err(recovery.rollback_error(transaction, error).await);
             }
         }
     } else {
-        return Err(rollback_after_cancellation(
-            transaction,
-            cancellation,
-            &runtime,
-            &cancel_token,
-            &execution_id,
-        )
-        .await);
+        return Err(recovery.rollback_cancellation(transaction).await);
     };
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
@@ -216,38 +208,22 @@ pub async fn execute(
             match result {
                 Ok(batch) => batch,
                 Err(error) => {
-                    return Err(rollback_after_error(transaction, error, &execution_id).await);
+                    return Err(recovery.rollback_error(transaction, error).await);
                 }
             }
         } else {
-            return Err(rollback_after_cancellation(
-                transaction,
-                cancellation,
-                &runtime,
-                &cancel_token,
-                &execution_id,
-            )
-            .await);
+            return Err(recovery.rollback_cancellation(transaction).await);
         };
         let Some(batch) = batch else {
             break;
         };
         if cancellation.is_cancelled() {
-            return Err(rollback_after_cancellation(
-                transaction,
-                cancellation,
-                &runtime,
-                &cancel_token,
-                &execution_id,
-            )
-            .await);
+            return Err(recovery.rollback_cancellation(transaction).await);
         }
         let resources = match reserve_write_batch(&batch, &runtime, budget) {
             Ok(resources) => resources,
             Err(error) => {
-                return Err(
-                    rollback_after_resource_error(transaction, &error, &execution_id).await,
-                );
+                return Err(recovery.rollback_resource_error(transaction, &error).await);
             }
         };
         let batch_rows = resources.rows;
@@ -269,18 +245,11 @@ pub async fn execute(
             match result {
                 Ok(written) => written,
                 Err(error) => {
-                    return Err(rollback_after_error(transaction, error, &execution_id).await);
+                    return Err(recovery.rollback_error(transaction, error).await);
                 }
             }
         } else {
-            return Err(rollback_after_cancellation(
-                transaction,
-                cancellation,
-                &runtime,
-                &cancel_token,
-                &execution_id,
-            )
-            .await);
+            return Err(recovery.rollback_cancellation(transaction).await);
         };
         let accounting = resources.commit().and_then(|()| {
             received = received.checked_add(batch_rows).ok_or_else(|| {
@@ -292,7 +261,7 @@ pub async fn execute(
             Ok(())
         });
         if let Err(error) = accounting {
-            return Err(rollback_after_resource_error(transaction, &error, &execution_id).await);
+            return Err(recovery.rollback_resource_error(transaction, &error).await);
         }
     }
     if let Some(original) = replace_original {
@@ -303,17 +272,10 @@ pub async fn execute(
         .await
         {
             if let Err(error) = result {
-                return Err(rollback_after_error(transaction, error, &execution_id).await);
+                return Err(recovery.rollback_error(transaction, error).await);
             }
         } else {
-            return Err(rollback_after_cancellation(
-                transaction,
-                cancellation,
-                &runtime,
-                &cancel_token,
-                &execution_id,
-            )
-            .await);
+            return Err(recovery.rollback_cancellation(transaction).await);
         }
     }
     if operation.create_spatial_index {
@@ -324,17 +286,10 @@ pub async fn execute(
         .await
         {
             if let Err(error) = result {
-                return Err(rollback_after_error(transaction, error, &execution_id).await);
+                return Err(recovery.rollback_error(transaction, error).await);
             }
         } else {
-            return Err(rollback_after_cancellation(
-                transaction,
-                cancellation,
-                &runtime,
-                &cancel_token,
-                &execution_id,
-            )
-            .await);
+            return Err(recovery.rollback_cancellation(transaction).await);
         }
     }
     if runtime.fault_point == Some(PostgresFaultPoint::BeforeCommit) {
@@ -344,7 +299,7 @@ pub async fn execute(
             true,
             "fault injection prima del commit PostgreSQL",
         );
-        return Err(rollback_after_error(transaction, error, &execution_id).await);
+        return Err(recovery.rollback_error(transaction, error).await);
     }
     let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
     if commit_result.is_none() {
@@ -479,53 +434,60 @@ fn commit_interruption_error(
     error
 }
 
-async fn rollback_after_cancellation(
-    transaction: Transaction<'_>,
-    cancellation: &CancellationToken,
-    runtime: &WriteRuntime,
-    cancel_token: &CancelToken,
-    execution_id: &str,
-) -> DatabaseError {
-    runtime.metrics.cancellation();
-    cancel_backend(
-        cancel_token,
-        runtime.tls_mode,
-        &runtime.tls_config.connector,
-        runtime.network_options.connect_timeout_ms,
-    )
-    .await;
-    let rollback_confirmed = transaction.rollback().await.is_ok();
-    let mut error = cancelled_write_error(cancellation, rollback_confirmed);
-    error.execution_id = Some(execution_id.to_owned());
-    error
+/// Recovery authority for the only state in which rollback is still meaningful.
+///
+/// Keeping these inputs together prevents a failure path from accidentally using
+/// another execution id, cancellation source, TLS policy or backend cancel token.
+struct PreCommitRecovery<'a> {
+    cancellation: &'a CancellationToken,
+    runtime: &'a WriteRuntime,
+    cancel_token: &'a CancelToken,
+    execution_id: &'a str,
 }
 
-async fn rollback_after_resource_error(
-    transaction: Transaction<'_>,
-    cause: &DatabaseError,
-    execution_id: &str,
-) -> DatabaseError {
-    let rollback_confirmed = transaction.rollback().await.is_ok();
-    let mut error = resource_write_error(cause, rollback_confirmed);
-    error.execution_id = Some(execution_id.to_owned());
-    error
-}
-
-async fn rollback_after_error(
-    transaction: Transaction<'_>,
-    mut error: DatabaseError,
-    execution_id: &str,
-) -> DatabaseError {
-    let rollback_confirmed = transaction.rollback().await.is_ok();
-    error.provider = Some(ProviderKind::Postgres);
-    error.execution_id = Some(execution_id.to_owned());
-    if rollback_confirmed {
-        error.remote_effect = RemoteEffect::RolledBack;
-    } else {
-        error.remote_effect = RemoteEffect::Unknown;
-        error.retry = RetryDisposition::RequiresRecovery;
+impl PreCommitRecovery<'_> {
+    async fn rollback_cancellation(&self, transaction: Transaction<'_>) -> DatabaseError {
+        self.runtime.metrics.cancellation();
+        cancel_backend(
+            self.cancel_token,
+            self.runtime.tls_mode,
+            &self.runtime.tls_config.connector,
+            self.runtime.network_options.connect_timeout_ms,
+        )
+        .await;
+        let rollback_confirmed = transaction.rollback().await.is_ok();
+        let mut error = cancelled_write_error(self.cancellation, rollback_confirmed);
+        error.execution_id = Some(self.execution_id.to_owned());
+        error
     }
-    error
+
+    async fn rollback_resource_error(
+        &self,
+        transaction: Transaction<'_>,
+        cause: &DatabaseError,
+    ) -> DatabaseError {
+        let rollback_confirmed = transaction.rollback().await.is_ok();
+        let mut error = resource_write_error(cause, rollback_confirmed);
+        error.execution_id = Some(self.execution_id.to_owned());
+        error
+    }
+
+    async fn rollback_error(
+        &self,
+        transaction: Transaction<'_>,
+        mut error: DatabaseError,
+    ) -> DatabaseError {
+        let rollback_confirmed = transaction.rollback().await.is_ok();
+        error.provider = Some(ProviderKind::Postgres);
+        error.execution_id = Some(self.execution_id.to_owned());
+        if rollback_confirmed {
+            error.remote_effect = RemoteEffect::RolledBack;
+        } else {
+            error.remote_effect = RemoteEffect::Unknown;
+            error.retry = RetryDisposition::RequiresRecovery;
+        }
+        error
+    }
 }
 
 fn unknown_write_outcome(
@@ -673,8 +635,7 @@ async fn evolve_target_schema(
     }
     let renderer = renderer();
     for field in schema.fields() {
-        let column =
-            renderer.quote_identifier(&Identifier::new(field.name().clone()).expect("validated"));
+        let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         execute_sql(
             transaction,
             &format!(
@@ -1055,13 +1016,17 @@ fn encode_copy_value(
             "f"
         }),
         DataType::Int32 => {
-            write!(output, "{}", typed!(Int32Array).value(row)).expect("String write");
+            append_formatted(output, format_args!("{}", typed!(Int32Array).value(row)))?;
         }
         DataType::Int64 => {
-            write!(output, "{}", typed!(Int64Array).value(row)).expect("String write");
+            append_formatted(output, format_args!("{}", typed!(Int64Array).value(row)))?;
         }
-        DataType::Float32 => encode_float(output, f64::from(typed!(Float32Array).value(row))),
-        DataType::Float64 => encode_float(output, typed!(Float64Array).value(row)),
+        DataType::Float32 => {
+            encode_float(output, f64::from(typed!(Float32Array).value(row)))?;
+        }
+        DataType::Float64 => {
+            encode_float(output, typed!(Float64Array).value(row))?;
+        }
         DataType::Utf8 => escape_copy_text(output, typed!(StringArray).value(row)),
         DataType::Binary => {
             let bytes = typed!(BinaryArray).value(row);
@@ -1073,15 +1038,15 @@ fn encode_copy_value(
             encode_hex(output, bytes);
         }
         DataType::Date32 => {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).ok_or_else(temporal_range_error)?;
             let value = epoch
                 .checked_add_signed(Duration::days(i64::from(typed!(Date32Array).value(row))))
                 .ok_or_else(temporal_range_error)?;
-            write!(output, "{value}").expect("String write");
+            append_formatted(output, format_args!("{value}"))?;
         }
         DataType::Time64(TimeUnit::Microsecond) => {
             let value = time_from_microseconds(typed!(Time64MicrosecondArray).value(row))?;
-            write!(output, "{value}").expect("String write");
+            append_formatted(output, format_args!("{value}"))?;
         }
         DataType::Interval(IntervalUnit::MonthDayNano) => {
             let value = postgres_interval(typed!(IntervalMonthDayNanoArray), row)?;
@@ -1093,9 +1058,9 @@ fn encode_copy_value(
             )
             .ok_or_else(temporal_range_error)?;
             if timezone.is_some() {
-                write!(output, "{}", instant.to_rfc3339()).expect("String write");
+                append_formatted(output, format_args!("{}", instant.to_rfc3339()))?;
             } else {
-                write!(output, "{}", instant.naive_utc()).expect("String write");
+                append_formatted(output, format_args!("{}", instant.naive_utc()))?;
             }
         }
         DataType::Decimal128(_, scale) => {
@@ -1118,7 +1083,11 @@ fn encode_copy_value(
     Ok(())
 }
 
-fn encode_float(output: &mut String, value: f64) {
+fn append_formatted(output: &mut String, arguments: std::fmt::Arguments<'_>) -> Result<()> {
+    output.write_fmt(arguments).map_err(|_| mapping_error())
+}
+
+fn encode_float(output: &mut String, value: f64) -> Result<()> {
     if value.is_nan() {
         output.push_str("NaN");
     } else if value == f64::INFINITY {
@@ -1126,8 +1095,9 @@ fn encode_float(output: &mut String, value: f64) {
     } else if value == f64::NEG_INFINITY {
         output.push_str("-Infinity");
     } else {
-        write!(output, "{value}").expect("String write");
+        append_formatted(output, format_args!("{value}"))?;
     }
+    Ok(())
 }
 
 fn escape_copy_text(output: &mut String, value: &str) {
@@ -1183,10 +1153,10 @@ fn append_array_item(output: &mut String, values: &dyn Array, index: usize) -> R
     }
     match values.data_type() {
         DataType::Boolean => output.push_str(if value!(BooleanArray) { "t" } else { "f" }),
-        DataType::Int32 => write!(output, "{}", value!(Int32Array)).expect("String write"),
-        DataType::Int64 => write!(output, "{}", value!(Int64Array)).expect("String write"),
-        DataType::Float32 => encode_float(output, f64::from(value!(Float32Array))),
-        DataType::Float64 => encode_float(output, value!(Float64Array)),
+        DataType::Int32 => append_formatted(output, format_args!("{}", value!(Int32Array)))?,
+        DataType::Int64 => append_formatted(output, format_args!("{}", value!(Int64Array)))?,
+        DataType::Float32 => encode_float(output, f64::from(value!(Float32Array)))?,
+        DataType::Float64 => encode_float(output, value!(Float64Array))?,
         DataType::Utf8 => append_quoted_array_string(output, value!(StringArray)),
         _ => return Err(mapping_error()),
     }
@@ -1422,12 +1392,12 @@ fn statement(
                     .iter()
                     .filter(|field| !operation.keys.contains(field.name()))
                     .map(|field| {
-                        let name = renderer.quote_identifier(
-                            &Identifier::new(field.name().clone()).expect("validated"),
-                        );
-                        format!("{name} = EXCLUDED.{name}")
+                        Identifier::new(field.name().clone()).map(|identifier| {
+                            let name = renderer.quote_identifier(&identifier);
+                            format!("{name} = EXCLUDED.{name}")
+                        })
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>>>()?;
                 if updates.is_empty() {
                     format!(" ON CONFLICT ({}) DO NOTHING", keys.join(", "))
                 } else {
@@ -1454,6 +1424,7 @@ fn statement(
 }
 
 fn placeholder_expression(field: &Field, ordinal: usize) -> String {
+    let native_type = metadata_value(field, protocol::POSTGRES_NATIVE_TYPE, "plenora.native_type");
     if is_geometry(field) {
         format!("ST_GeomFromEWKB(${ordinal})")
     } else if is_geography(field) {
@@ -1461,27 +1432,22 @@ fn placeholder_expression(field: &Field, ordinal: usize) -> String {
     } else if matches!(field.data_type(), DataType::Decimal128(_, _)) {
         format!("${ordinal}::text::numeric")
     } else if matches!(field.data_type(), DataType::Utf8)
-        && matches!(
-            field
-                .metadata()
-                .get("plenora.native_type")
-                .map(String::as_str),
-            Some("json" | "jsonb" | "uuid")
-        )
+        && matches!(native_type, Some("json" | "jsonb" | "uuid"))
     {
-        let native = field
-            .metadata()
-            .get("plenora.native_type")
-            .expect("matched metadata");
-        format!("${ordinal}::text::{native}")
+        format!("${ordinal}::text::{}", native_type.unwrap_or("text"))
     } else if matches!(
         field.data_type(),
         DataType::Utf8 | DataType::List(_) | DataType::Struct(_)
-    ) && native_declaration_sql(field).is_some_and(|declaration| declaration != "text")
-    {
-        format!(
-            "${ordinal}::text::{}",
-            native_declaration_sql(field).expect("checked declaration")
+    ) {
+        native_declaration_sql(field).map_or_else(
+            || format!("${ordinal}"),
+            |declaration| {
+                if declaration == "text" {
+                    format!("${ordinal}")
+                } else {
+                    format!("${ordinal}::text::{declaration}")
+                }
+            },
         )
     } else {
         format!("${ordinal}")
@@ -1540,7 +1506,7 @@ fn arrow_value(
                 .as_any()
                 .downcast_ref::<Date32Array>()
                 .ok_or_else(mapping_error)?;
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).ok_or_else(temporal_range_error)?;
             let value = (!typed.is_null(row))
                 .then(|| {
                     epoch
@@ -2060,13 +2026,12 @@ fn binary_copy_value(
             .as_any()
             .downcast_ref::<Decimal128Array>()
             .ok_or_else(mapping_error)?;
-        let scale = match field.data_type() {
-            DataType::Decimal128(_, scale) => *scale,
-            _ => unreachable!("matched decimal"),
+        let DataType::Decimal128(_, scale) = field.data_type() else {
+            return Err(mapping_error());
         };
         return Ok(Box::new((!typed.is_null(row)).then(|| NumericBinary {
             value: typed.value(row),
-            scale,
+            scale: *scale,
         })));
     }
     if is_spatial(field) {
@@ -2159,6 +2124,19 @@ fn binary_array_value(array: &ListArray, row: usize) -> Result<Box<dyn ToSql + S
     })
 }
 
+fn parse_base10000_group(
+    chunk: &[u8],
+) -> std::result::Result<i16, Box<dyn std::error::Error + Sync + Send>> {
+    if chunk.len() != 4 {
+        return Err("numeric base-10000 group must contain four digits".into());
+    }
+    let group = std::str::from_utf8(chunk)?.parse::<i16>()?;
+    if !(0..10_000).contains(&group) {
+        return Err("numeric base-10000 group is outside its wire range".into());
+    }
+    Ok(group)
+}
+
 pub fn encode_numeric_binary(
     value: i128,
     scale: i8,
@@ -2186,13 +2164,8 @@ pub fn encode_numeric_binary(
     let mut groups = padded
         .as_bytes()
         .chunks_exact(4)
-        .map(|chunk| {
-            std::str::from_utf8(chunk)
-                .expect("decimal ASCII")
-                .parse::<i16>()
-                .expect("base10000")
-        })
-        .collect::<Vec<_>>();
+        .map(parse_base10000_group)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let leading = groups.iter().take_while(|digit| **digit == 0).count();
     let trailing = groups.iter().rev().take_while(|digit| **digit == 0).count();
     let end = groups.len().saturating_sub(trailing).max(leading);
@@ -2221,7 +2194,7 @@ fn decimal_string(value: i128, scale: i8) -> String {
         }
         return digits;
     }
-    let scale = usize::try_from(scale).expect("non-negative scale");
+    let scale = usize::from(scale.unsigned_abs());
     let padded = if digits.len() <= scale {
         format!("{}{}", "0".repeat(scale + 1 - digits.len()), digits)
     } else {
@@ -2271,8 +2244,7 @@ async fn create_spatial_indexes(
 ) -> Result<()> {
     let renderer = renderer();
     for field in schema.fields().iter().filter(|field| is_spatial(field)) {
-        let field_name =
-            renderer.quote_identifier(&Identifier::new(field.name().clone()).expect("validated"));
+        let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         let index_raw = format!("{}_{}_gix", target.object, field.name());
         let index_name = renderer.quote_identifier(&Identifier::new(
             index_raw.chars().take(63).collect::<String>(),
@@ -2883,6 +2855,31 @@ mod tests {
             IsNull::No
         ));
         assert_eq!(encoded.first(), Some(&1));
+    }
+
+    #[test]
+    fn prepared_placeholders_accept_canonical_native_metadata() {
+        let jsonb = Field::new("payload", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([(
+                protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+                "jsonb".to_owned(),
+            )]),
+        );
+        assert_eq!(placeholder_expression(&jsonb, 1), "$1::text::jsonb");
+
+        let domain = Field::new("code", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([
+                (
+                    protocol::POSTGRES_NATIVE_DECLARATION.to_owned(),
+                    "public.safe_code".to_owned(),
+                ),
+                (protocol::POSTGRES_TYPE_KIND.to_owned(), "d".to_owned()),
+            ]),
+        );
+        assert_eq!(
+            placeholder_expression(&domain, 2),
+            "$2::text::\"public\".\"safe_code\""
+        );
     }
 
     #[test]

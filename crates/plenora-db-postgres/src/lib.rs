@@ -189,13 +189,25 @@ impl Default for PostgresTlsConfig {
 impl PostgresTlsConfig {
     /// Trust store pubblico `WebPKI`, senza certificato client.
     ///
-    /// # Panics
-    ///
-    /// Solo se la configurazione statica `WebPKI` incorporata da Rustls non
-    /// può essere costruita, condizione che viola un'invariante del crate.
     #[must_use]
     pub fn webpki() -> Self {
-        Self::build(true, &[], None, None).expect("WebPKI TLS configuration")
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let mut hasher = Sha256::new();
+        hasher.update(b"plenora-postgres-tls-v1");
+        hasher.update([1]);
+        hash_certificates(&mut hasher, &[]);
+        hash_certificates(&mut hasher, &[]);
+        Self {
+            connector: MakeRustlsConnect::new(client_config),
+            fingerprint: hasher.finalize().into(),
+            include_webpki_roots: true,
+            additional_root_count: 0,
+            client_identity: false,
+        }
     }
 
     /// Usa esclusivamente una o più CA private codificate PEM.
@@ -714,7 +726,14 @@ fn configure_session_startup(
         options,
         "-c statement_timeout={statement_timeout_ms}ms -c lock_timeout={lock_timeout_ms}ms"
     )
-    .expect("writing session options to String");
+    .map_err(|_| {
+        public_error(
+            ErrorCategory::Internal,
+            ErrorPhase::Connect,
+            false,
+            "impossibile costruire le opzioni di sessione PostgreSQL",
+        )
+    })?;
     config
         .options(options)
         .application_name("plenora-database-tools");
@@ -730,8 +749,14 @@ impl CatalogSchemaToken {
         let digest = Sha256::digest(exact_signature.as_bytes());
         let mut structural_fingerprint = String::with_capacity(digest.len() * 2);
         for byte in digest {
-            write!(structural_fingerprint, "{byte:02x}")
-                .expect("writing schema fingerprint to String");
+            write!(structural_fingerprint, "{byte:02x}").map_err(|_| {
+                public_error(
+                    ErrorCategory::DataMapping,
+                    ErrorPhase::Prepare,
+                    false,
+                    "impossibile codificare il fingerprint dello schema PostgreSQL",
+                )
+            })?;
         }
         Ok(Self {
             public: PostgresSchemaToken {
@@ -3209,6 +3234,10 @@ fn deadline_read_error() -> DatabaseError {
     )
 }
 
+fn read_mapping_error(message: &'static str) -> DatabaseError {
+    public_error(ErrorCategory::DataMapping, ErrorPhase::Read, false, message)
+}
+
 fn enforce_batch_limits(
     batch: &RecordBatch,
     columns: &[ColumnSpec],
@@ -3233,7 +3262,9 @@ fn enforce_batch_limits(
                 .column(index)
                 .as_any()
                 .downcast_ref::<arrow_array::BinaryArray>()
-                .expect("colonna spatial Binary");
+                .ok_or_else(|| {
+                    read_mapping_error("colonna spaziale PostgreSQL non codificata come Binary")
+                })?;
             for row in 0..array.len() {
                 if !array.is_null(row) {
                     let value = array.value(row);
@@ -3414,11 +3445,16 @@ impl ColumnBuffer {
             Self::Binary(builder) => append_option(builder, row.try_get(index)),
             Self::Date(builder) => {
                 let value: Option<NaiveDate> = row.try_get(index).map_err(row_decode_error)?;
-                let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch date constant");
-                builder.append_option(value.map(|date| {
-                    i32::try_from(date.signed_duration_since(epoch).num_days())
-                        .expect("PostgreSQL date fits Arrow Date32")
-                }));
+                let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+                    .ok_or_else(|| read_mapping_error("epoch PostgreSQL non rappresentabile"))?;
+                let arrow_date = value
+                    .map(|date| {
+                        i32::try_from(date.signed_duration_since(epoch).num_days()).map_err(|_| {
+                            read_mapping_error("data PostgreSQL oltre il range Arrow Date32")
+                        })
+                    })
+                    .transpose()?;
+                builder.append_option(arrow_date);
                 Ok(5)
             }
             Self::Time(builder) => {
@@ -3544,11 +3580,11 @@ fn append_range(
         .and_then(serde_json::Value::as_str);
     builder
         .field_builder::<StringBuilder>(0)
-        .expect("range lower builder")
+        .ok_or_else(|| read_mapping_error("builder range lower incompatibile"))?
         .append_option(lower);
     builder
         .field_builder::<StringBuilder>(1)
-        .expect("range upper builder")
+        .ok_or_else(|| read_mapping_error("builder range upper incompatibile"))?
         .append_option(upper);
     for (index, key) in [
         (2, "lower_inclusive"),
@@ -3559,7 +3595,7 @@ fn append_range(
     ] {
         builder
             .field_builder::<BooleanBuilder>(index)
-            .expect("range boolean builder")
+            .ok_or_else(|| read_mapping_error("builder range boolean incompatibile"))?
             .append_value(
                 document
                     .as_ref()
@@ -3605,7 +3641,7 @@ fn append_composite(
             });
         builder
             .field_builder::<StringBuilder>(index)
-            .expect("composite field builder")
+            .ok_or_else(|| read_mapping_error("builder composite incompatibile"))?
             .append_option(value);
     }
     builder.append(document.is_some());
