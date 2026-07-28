@@ -3353,7 +3353,7 @@ impl ToSql for DecimalParameter {
         if !Self::accepts(target_type) {
             return Err("target non numeric".into());
         }
-        write::encode_numeric_binary(self.value, self.scale, output)?;
+        write::binary_codec::encode_numeric_binary(self.value, self.scale, output)?;
         Ok(IsNull::No)
     }
 
