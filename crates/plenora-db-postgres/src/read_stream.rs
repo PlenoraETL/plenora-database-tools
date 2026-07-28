@@ -431,7 +431,7 @@ pub async fn cancel_and_invalidate(
     tls_connector: &MakeRustlsConnect,
     timeout_ms: u64,
 ) {
-    client.pool.metrics.cancellation();
+    client.record_cancellation();
     let Ok(active_client) = client.client() else {
         client.invalidate();
         return;

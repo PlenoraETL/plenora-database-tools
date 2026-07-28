@@ -11,6 +11,7 @@ mod error;
 mod field_contract;
 mod metrics;
 mod parameter_codec;
+mod pool;
 mod read_stream;
 mod schema_cache;
 mod types;
@@ -48,6 +49,7 @@ use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, Err
 use plenora_database_sql::{
     Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
 };
+use pool::{PooledClient, PostgresPool, PostgresSessionOptions};
 #[cfg(test)]
 use read_stream::batch_memory_bytes;
 use read_stream::{
@@ -63,7 +65,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration as StdDuration;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, Config, NoTls, RowStream};
@@ -399,182 +400,6 @@ pub enum PostgresSchemaEvolution {
     AddNullableColumns,
 }
 
-struct PostgresPool {
-    idle: Mutex<HashMap<[u8; 32], Vec<Client>>>,
-    semaphore: Arc<Semaphore>,
-    max_idle_per_key: usize,
-    metrics: Arc<PostgresMetrics>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PostgresSessionOptions {
-    statement_timeout_ms: u64,
-    lock_timeout_ms: u64,
-}
-
-impl std::fmt::Debug for PostgresPool {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PostgresPool")
-            .field("max_idle_per_key", &self.max_idle_per_key)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PostgresPool {
-    fn new(max_connections: usize, metrics: Arc<PostgresMetrics>) -> Self {
-        Self {
-            idle: Mutex::new(HashMap::new()),
-            semaphore: Arc::new(Semaphore::new(max_connections)),
-            max_idle_per_key: max_connections,
-            metrics,
-        }
-    }
-
-    async fn checkout(
-        self: &Arc<Self>,
-        secret: &SecretString,
-        tls_mode: PostgresTlsMode,
-        tls_config: &PostgresTlsConfig,
-        network_options: PostgresNetworkOptions,
-        session_options: PostgresSessionOptions,
-        acquire_timeout_ms: u64,
-    ) -> Result<PooledClient> {
-        if self.max_idle_per_key == 0 || acquire_timeout_ms == 0 {
-            return Err(DatabaseError::invalid_plan(
-                "pool PostgreSQL richiede dimensione e timeout maggiori di zero",
-            ));
-        }
-        self.metrics.checkout();
-        let permit = tokio::time::timeout(
-            StdDuration::from_millis(acquire_timeout_ms),
-            Arc::clone(&self.semaphore).acquire_owned(),
-        )
-        .await
-        .map_err(|_| {
-            self.metrics.pool_timeout();
-            public_error(
-                ErrorCategory::Timeout,
-                ErrorPhase::Connect,
-                true,
-                "timeout acquisizione connessione PostgreSQL",
-            )
-        })?
-        .map_err(|_| {
-            public_error(
-                ErrorCategory::Internal,
-                ErrorPhase::Connect,
-                false,
-                "pool PostgreSQL chiuso",
-            )
-        })?;
-        validate_session_timeouts(
-            session_options.statement_timeout_ms,
-            session_options.lock_timeout_ms,
-        )?;
-        let key = connection_fingerprint(
-            secret,
-            tls_mode,
-            tls_config,
-            network_options,
-            session_options.statement_timeout_ms,
-            session_options.lock_timeout_ms,
-        );
-        let mut client = lock_recover(&self.idle).get_mut(&key).and_then(Vec::pop);
-        if client.as_ref().is_some_and(Client::is_closed) {
-            self.metrics.invalidate();
-            client = None;
-        }
-        let (client, reused) = if let Some(client) = client {
-            self.metrics.reuse();
-            (client, true)
-        } else {
-            let client = PostgresProvider::connect_with_tls(
-                secret,
-                tls_mode,
-                tls_config,
-                network_options,
-                session_options.statement_timeout_ms,
-                session_options.lock_timeout_ms,
-            )
-            .await?;
-            self.metrics.new_connection();
-            (client, false)
-        };
-        Ok(PooledClient {
-            client: Some(client),
-            key,
-            pool: Arc::clone(self),
-            reused,
-            reusable: true,
-            _permit: permit,
-        })
-    }
-}
-
-struct PooledClient {
-    client: Option<Client>,
-    key: [u8; 32],
-    pool: Arc<PostgresPool>,
-    reused: bool,
-    reusable: bool,
-    _permit: OwnedSemaphorePermit,
-}
-
-impl PooledClient {
-    const fn invalidate(&mut self) {
-        self.reusable = false;
-    }
-
-    const fn mark_reusable(&mut self) {
-        self.reusable = true;
-    }
-
-    const fn was_reused(&self) -> bool {
-        self.reused
-    }
-
-    fn client(&self) -> Result<&Client> {
-        self.client.as_ref().ok_or_else(|| {
-            public_error(
-                ErrorCategory::Internal,
-                ErrorPhase::Connect,
-                false,
-                "client PostgreSQL del pool non disponibile",
-            )
-        })
-    }
-
-    fn client_mut(&mut self) -> Result<&mut Client> {
-        self.client.as_mut().ok_or_else(|| {
-            public_error(
-                ErrorCategory::Internal,
-                ErrorPhase::Connect,
-                false,
-                "client PostgreSQL del pool non disponibile",
-            )
-        })
-    }
-}
-
-impl Drop for PooledClient {
-    fn drop(&mut self) {
-        let Some(client) = self.client.take() else {
-            return;
-        };
-        if !self.reusable || client.is_closed() {
-            self.pool.metrics.invalidate();
-            return;
-        }
-        let mut idle = lock_recover(&self.pool.idle);
-        let clients = idle.entry(self.key).or_default();
-        if clients.len() < self.pool.max_idle_per_key {
-            clients.push(client);
-        }
-        drop(idle);
-    }
-}
-
 fn connection_fingerprint(
     secret: &SecretString,
     tls_mode: PostgresTlsMode,
@@ -837,7 +662,7 @@ impl PostgresProvider {
 
     #[must_use]
     pub fn pool_idle_connections(&self) -> usize {
-        lock_recover(&self.pool.idle).values().map(Vec::len).sum()
+        self.pool.idle_connections()
     }
 
     #[must_use]
@@ -866,10 +691,7 @@ impl PostgresProvider {
                 self.tls_mode,
                 &self.tls_config,
                 self.network_options,
-                PostgresSessionOptions {
-                    statement_timeout_ms: self.statement_timeout_ms,
-                    lock_timeout_ms: self.lock_timeout_ms,
-                },
+                PostgresSessionOptions::new(self.statement_timeout_ms, self.lock_timeout_ms),
                 self.pool_acquire_timeout_ms,
             )
             .await?;
@@ -1251,7 +1073,7 @@ impl PostgresProvider {
 
     fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
         SchemaCacheKey::new(
-            client.key,
+            client.key(),
             source.schema.as_deref().unwrap_or("public").to_owned(),
             source.object.clone(),
         )
