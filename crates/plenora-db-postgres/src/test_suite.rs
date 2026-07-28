@@ -66,6 +66,7 @@ impl PostgresProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::RecordBatch;
     use plenora_database_core::geometry::SpatialSemantics;
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::outcome::WriteStatus;
