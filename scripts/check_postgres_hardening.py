@@ -89,6 +89,7 @@ def main() -> int:
         "clippy_deny_warnings",
         "deterministic_numeric_codec_boundaries",
         "strict_numeric_text_parser",
+        "strict_parameter_uuid_decimal_parser",
         "range_composite_escaping",
         "bounded_metrics_without_dynamic_labels",
         "startup_session_defaults",
