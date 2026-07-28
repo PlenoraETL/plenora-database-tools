@@ -1,0 +1,129 @@
+name: Rust coverage
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/rust-coverage.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "docker-compose.postgres.yml"
+      - "docker/postgres/init/**"
+  schedule:
+    - cron: "43 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  workspace:
+    name: Workspace coverage / PostgreSQL 16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.92.0
+      PLENORA_TEST_POSTGRES_DSN: >-
+        host=127.0.0.1 port=5432 user=dataflow
+        password=dataflow_test_2026 dbname=dataflow_test
+      PRODUCTION_IGNORE_REGEX: '(^|/)(plenora-database-cli/src/main\.rs|plenora-db-postgres/src/test_suite\.rs)$'
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Validate and start PostgreSQL with PostGIS
+        run: |
+          docker compose -f docker-compose.postgres.yml config --quiet
+          docker compose -f docker-compose.postgres.yml up -d --wait
+
+      - name: Install the pinned coverage toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+            --profile minimal \
+            --component llvm-tools-preview
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      - name: Record the execution environment
+        run: |
+          mkdir -p assurance-results
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            rustc --version --verbose
+            cargo llvm-cov --version
+            docker --version
+            docker compose version
+            docker exec dataflow-postgres psql \
+              -U dataflow -d dataflow_test -At \
+              -c "SELECT version(); SELECT postgis_full_version();"
+          } | tee assurance-results/coverage-environment.txt
+
+      - name: Measure full workspace coverage with live PostgreSQL
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --all-targets \
+            --locked \
+            --lcov \
+            --output-path assurance-results/coverage-full.lcov
+          cargo llvm-cov report \
+            --json \
+            --output-path assurance-results/coverage-full.json
+          cargo llvm-cov report --summary-only \
+            | tee assurance-results/coverage-full-summary.txt
+
+      - name: Export and enforce production-focused coverage
+        run: |
+          cargo llvm-cov report \
+            --lcov \
+            --ignore-filename-regex "$PRODUCTION_IGNORE_REGEX" \
+            --output-path assurance-results/coverage-production.lcov
+          cargo llvm-cov report \
+            --json \
+            --ignore-filename-regex "$PRODUCTION_IGNORE_REGEX" \
+            --output-path assurance-results/coverage-production.json
+          cargo llvm-cov report \
+            --summary-only \
+            --ignore-filename-regex "$PRODUCTION_IGNORE_REGEX" \
+            --fail-under-lines 80 \
+            --fail-under-functions 79 \
+            --fail-under-regions 77 \
+            | tee assurance-results/coverage-production-summary.txt
+          sha256sum assurance-results/coverage-* \
+            > assurance-results/coverage-sha256.txt
+
+      - name: Verify the candidate remained unchanged
+        run: git diff --exit-code
+
+      - name: Capture PostgreSQL diagnostics
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/coverage-docker-containers.txt
+          docker compose -f docker-compose.postgres.yml logs --no-color \
+            > assurance-results/coverage-postgres.log 2>&1 || true
+
+      - name: Preserve coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-coverage-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Stop PostgreSQL and remove ephemeral volumes
+        if: always()
+        run: |
+          docker compose -f docker-compose.postgres.yml down --volumes \
+            --remove-orphans || true
