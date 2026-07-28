@@ -12,10 +12,12 @@ mod field_contract;
 mod metrics;
 mod parameter_codec;
 mod read_stream;
+mod schema_cache;
 mod types;
 mod write;
 
 pub use metrics::PostgresMetricsSnapshot;
+pub use schema_cache::PostgresSchemaToken;
 
 use arrow_schema::{Field, Schema, SchemaRef};
 use catalog::{describe_object_metadata, relation_kind, CatalogSchemaToken};
@@ -53,6 +55,7 @@ use read_stream::{
     PostgresRows, ReadStreamSource,
 };
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use schema_cache::{PostgresSchemaCache, SchemaCacheKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -396,17 +399,6 @@ pub enum PostgresSchemaEvolution {
     AddNullableColumns,
 }
 
-/// Identità strutturale `PostgreSQL` di un oggetto introspezionato.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PostgresSchemaToken {
-    pub schema_version: u32,
-    pub database_oid: u32,
-    pub namespace_oid: u32,
-    pub relation_oid: u32,
-    pub structural_fingerprint: String,
-}
-
 struct PostgresPool {
     idle: Mutex<HashMap<[u8; 32], Vec<Client>>>,
     semaphore: Arc<Semaphore>,
@@ -418,105 +410,6 @@ struct PostgresPool {
 struct PostgresSessionOptions {
     statement_timeout_ms: u64,
     lock_timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SchemaCacheKey {
-    connection: [u8; 32],
-    schema: String,
-    object: String,
-}
-
-#[derive(Clone)]
-struct SchemaCacheEntry {
-    token: CatalogSchemaToken,
-    columns: Arc<Vec<ColumnSpec>>,
-    last_used: u64,
-}
-
-#[derive(Default)]
-struct SchemaCacheState {
-    entries: HashMap<SchemaCacheKey, SchemaCacheEntry>,
-    clock: u64,
-}
-
-struct PostgresSchemaCache {
-    state: Mutex<SchemaCacheState>,
-    max_entries: usize,
-}
-
-impl std::fmt::Debug for PostgresSchemaCache {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PostgresSchemaCache")
-            .field("max_entries", &self.max_entries)
-            .field("entries", &self.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl PostgresSchemaCache {
-    fn new(max_entries: usize) -> Self {
-        Self {
-            state: Mutex::new(SchemaCacheState::default()),
-            max_entries,
-        }
-    }
-
-    fn candidate(&self, key: &SchemaCacheKey) -> Option<SchemaCacheEntry> {
-        lock_recover(&self.state).entries.get(key).cloned()
-    }
-
-    fn touch(&self, key: &SchemaCacheKey) {
-        let mut state = lock_recover(&self.state);
-        state.clock = state.clock.saturating_add(1);
-        let clock = state.clock;
-        if let Some(entry) = state.entries.get_mut(key) {
-            entry.last_used = clock;
-        }
-    }
-
-    fn insert(
-        &self,
-        key: SchemaCacheKey,
-        token: CatalogSchemaToken,
-        columns: Arc<Vec<ColumnSpec>>,
-    ) -> bool {
-        if self.max_entries == 0 {
-            return false;
-        }
-        let mut state = lock_recover(&self.state);
-        state.clock = state.clock.saturating_add(1);
-        let clock = state.clock;
-        state.entries.insert(
-            key,
-            SchemaCacheEntry {
-                token,
-                columns,
-                last_used: clock,
-            },
-        );
-        let evicted = if state.entries.len() > self.max_entries {
-            let oldest = state
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone());
-            oldest.is_some_and(|oldest| state.entries.remove(&oldest).is_some())
-        } else {
-            false
-        };
-        drop(state);
-        evicted
-    }
-
-    fn invalidate(&self, key: &SchemaCacheKey) -> bool {
-        lock_recover(&self.state).entries.remove(key).is_some()
-    }
-
-    fn len(&self) -> usize {
-        lock_recover(&self.state).entries.len()
-    }
 }
 
 impl std::fmt::Debug for PostgresPool {
@@ -1357,11 +1250,11 @@ impl PostgresProvider {
     }
 
     fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
-        SchemaCacheKey {
-            connection: client.key,
-            schema: source.schema.as_deref().unwrap_or("public").to_owned(),
-            object: source.object.clone(),
-        }
+        SchemaCacheKey::new(
+            client.key,
+            source.schema.as_deref().unwrap_or("public").to_owned(),
+            source.object.clone(),
+        )
     }
 
     async fn cached_columns(
@@ -1370,7 +1263,7 @@ impl PostgresProvider {
         source: &ObjectRef,
     ) -> Result<(Arc<Vec<ColumnSpec>>, PostgresSchemaToken)> {
         let key = Self::schema_cache_key(client, source);
-        if let Some(candidate) = self.schema_cache.candidate(&key) {
+        if let Some((candidate_token, candidate_columns)) = self.schema_cache.candidate(&key) {
             self.metrics.schema_token_check();
             let current = match Self::schema_token(client.client()?, source).await {
                 Ok(token) => token,
@@ -1381,10 +1274,10 @@ impl PostgresProvider {
                     return Err(error);
                 }
             };
-            if candidate.token.structurally_equals(&current) {
+            if candidate_token.structurally_equals(&current) {
                 self.schema_cache.touch(&key);
                 self.metrics.schema_cache_hit();
-                return Ok((candidate.columns, current.public));
+                return Ok((candidate_columns, current.public));
             }
             if self.schema_cache.invalidate(&key) {
                 self.metrics.schema_cache_invalidation();
@@ -1411,11 +1304,11 @@ impl PostgresProvider {
             self.statement_timeout_ms,
             self.lock_timeout_ms,
         );
-        let key = SchemaCacheKey {
+        let key = SchemaCacheKey::new(
             connection,
-            schema: source.schema.as_deref().unwrap_or("public").to_owned(),
-            object: source.object.clone(),
-        };
+            source.schema.as_deref().unwrap_or("public").to_owned(),
+            source.object.clone(),
+        );
         if self.schema_cache.invalidate(&key) {
             self.metrics.schema_cache_invalidation();
         }

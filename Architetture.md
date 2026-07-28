@@ -809,6 +809,7 @@ Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitat
 |---|---|---|
 | `parameter_codec.rs` | inferenza conservativa dei tipi bind e conversione `ParameterValue` → `ToSql` | renderizzare SQL, scegliere fast path/fallback o aprire sessioni |
 | `read_stream.rs` | backpressure Arrow, lease di risorse, limiti geometrici, deadline e cancellazione server-side | costruire SQL, scegliere parametri o riutilizzare sessioni incerte |
+| `schema_cache.rs` | token strutturali, LRU bounded, invalidazione e recovery da poisoning | decidere quando interrogare il catalogo o dichiarare valido uno schema remoto |
 | `write.rs` | orchestrazione, confini di transazione e ordine delle fasi | formato dei tipi o politica di recovery in autonomia |
 | `write/plan.rs` | compilazione immutabile del contratto colonna | eseguire SQL o consumare batch |
 | `write/recovery.rs` | cancellazione backend, rollback e classificazione dell'esito incerto | avviare o confermare una scrittura |
