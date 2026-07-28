@@ -15,6 +15,11 @@ The first local live campaign on 2026-07-28 produced:
 | `write.rs` | 83.04% (2,003 / 2,412) | 80.41% (3,165 / 3,936) | 81.58% (186 / 228) |
 | `ewkb.rs` | 84.93% (231 / 272) | 84.09% (354 / 421) | 75.86% (22 / 29) |
 
+La riga `write.rs` fotografa la baseline precedente alla scomposizione
+architetturale del writer. Le campagne successive devono valutare insieme
+`write.rs` e `write/*.rs`: spostare codice fra queste unità non è un aumento né
+una diminuzione di copertura.
+
 The production-focused scope excludes only:
 
 - `plenora-database-cli/src/main.rs`, whose process boundary needs dedicated

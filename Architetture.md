@@ -803,6 +803,22 @@ Modalità:
 - `upsert`: insert/update deterministico tramite chiavi;
 - `delete_by_keys`: elimina solo le chiavi ricevute.
 
+Nel provider PostgreSQL il percorso è suddiviso in unità con autorità limitata:
+
+| Unità | Responsabilità | Non può decidere |
+|---|---|---|
+| `write.rs` | orchestrazione, confini di transazione e ordine delle fasi | formato dei tipi o politica di recovery in autonomia |
+| `write/plan.rs` | compilazione immutabile del contratto colonna | eseguire SQL o consumare batch |
+| `write/recovery.rs` | cancellazione backend, rollback e classificazione dell'esito incerto | avviare o confermare una scrittura |
+| `write/resources.rs` | prenotazione e commit dei lease di righe, byte, memoria e componenti geometrici | oltrepassare il budget o cambiare la transazione |
+| `write/sql.rs` | DML, quoting, placeholder e dichiarazioni PostgreSQL | leggere valori Arrow |
+| `write/value_codec.rs` | COPY text e rappresentazioni condivise di array, range e composite | pubblicare, fare commit o scegliere la modalità di scrittura |
+
+Questi confini sono safety boundaries: l'autorità di dichiarare `Committed` resta
+nell'orchestratore, mentre recovery e risorse possono soltanto restringere
+l'esito o fallire. Gli encoder text, binary e prepared restano distinti perché
+costituiscono tre implementazioni differenziali dello stesso risultato.
+
 `replace` non significa automaticamente atomic rename. L'output dichiara la
 garanzia realmente ottenuta.
 
