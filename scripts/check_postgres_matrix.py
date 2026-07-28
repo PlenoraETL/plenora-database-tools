@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -23,6 +24,16 @@ TARGETS = [
     ("17", "3.5", "postgis/postgis:17-3.5"),
     ("18", "3.6", "postgis/postgis:18-3.6"),
 ]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="scrive il report JSON completo, anche quando un target fallisce",
+    )
+    return parser.parse_args()
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -201,7 +212,7 @@ def test_target(postgres: str, postgis: str, image: str) -> dict[str, str]:
             "actual_postgis": versions["postgis"],
             "status": "passed",
         }
-    except RuntimeError:
+    except (RuntimeError, ValueError):
         logs = subprocess.run(
             ["docker", "logs", "--tail", "120", container],
             cwd=ROOT,
@@ -221,26 +232,56 @@ def test_target(postgres: str, postgis: str, image: str) -> dict[str, str]:
         )
 
 
+def write_report(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as target:
+        json.dump(report, target, ensure_ascii=False, indent=2, sort_keys=True)
+        target.write("\n")
+
+
 def main() -> int:
+    args = parse_args()
     CACHE.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, str]] = []
+    failure: str | None = None
     try:
         ensure_network()
         for postgres, postgis, image in TARGETS:
-            results.append(test_target(postgres, postgis, image))
+            try:
+                results.append(test_target(postgres, postgis, image))
+            except (RuntimeError, ValueError) as error:
+                failure = str(error)
+                results.append(
+                    {
+                        "declared_postgres": postgres,
+                        "declared_postgis": postgis,
+                        "image": image,
+                        "actual_postgres": "",
+                        "actual_postgis": "",
+                        "status": "failed",
+                        "error": failure,
+                    }
+                )
+                break
     except (RuntimeError, ValueError) as error:
-        print(f"postgres matrix gate: {error}", file=sys.stderr)
-        return 1
-    report = {
+        failure = str(error)
+    report: dict[str, object] = {
         "schema_version": 1,
         "gate": "postgres-postgis-supported-major-matrix",
-        "status": "passed",
+        "status": "failed" if failure else "passed",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "database_connections_opened": True,
+        "database_connections_opened": bool(results),
         "secrets_persisted": False,
         "targets": results,
     }
+    if failure:
+        report["failure"] = failure
+    if args.output:
+        write_report(args.output.resolve(), report)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    if failure:
+        print(f"postgres matrix gate: {failure}", file=sys.stderr)
+        return 1
     return 0
 
 

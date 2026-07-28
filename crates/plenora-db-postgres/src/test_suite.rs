@@ -81,6 +81,68 @@ mod tests {
     use std::ops::Deref;
     use std::sync::OnceLock;
 
+    async fn wait_for_query_state(
+        client: &tokio_postgres::Client,
+        marker: &str,
+        minimum_active: Option<i64>,
+    ) {
+        let pattern = format!("%{marker}%");
+        tokio::time::timeout(StdDuration::from_secs(2), async {
+            loop {
+                let active: i64 = client
+                    .query_one(
+                        "SELECT count(*)
+                         FROM pg_stat_activity
+                         WHERE datname = current_database()
+                           AND state = 'active'
+                           AND query LIKE $1
+                           AND pid <> pg_backend_pid()",
+                        &[&pattern],
+                    )
+                    .await
+                    .expect("query backend cancellation state")
+                    .get(0);
+                let expected_state =
+                    minimum_active.map_or(active == 0, |minimum| active >= minimum);
+                if expected_state {
+                    break;
+                }
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "query containing {marker:?} did not become {} within the bounded observation",
+                minimum_active.map_or_else(
+                    || "inactive".to_owned(),
+                    |minimum| format!("active on at least {minimum} sessions")
+                )
+            )
+        });
+    }
+
+    async fn wait_for_active_query(client: &tokio_postgres::Client, marker: &str) {
+        wait_for_query_state(client, marker, Some(1)).await;
+    }
+
+    async fn wait_for_active_query_count(
+        client: &tokio_postgres::Client,
+        marker: &str,
+        minimum_active: usize,
+    ) {
+        wait_for_query_state(
+            client,
+            marker,
+            Some(i64::try_from(minimum_active).expect("active query count")),
+        )
+        .await;
+    }
+
+    async fn wait_for_no_active_query(client: &tokio_postgres::Client, marker: &str) {
+        wait_for_query_state(client, marker, None).await;
+    }
+
     #[test]
     fn postgres_arrow_schema_declares_contract_version() {
         let schema = contract_schema(vec![Field::new("value", DataType::Int64, false)]);
@@ -637,21 +699,7 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.category, ErrorCategory::Timeout);
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
-        let active: i64 = setup
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%deadline_slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("deadline backend state")
-            .get(0);
-        assert_eq!(active, 0);
+        wait_for_no_active_query(&setup, "\"plenora_fixture\".\"deadline_slow_events\"").await;
     }
 
     #[tokio::test]
@@ -1977,35 +2025,6 @@ mod tests {
             )
             .await
             .expect("slow view");
-        let inflight_cancellation = CancellationToken::new();
-        let toggle = inflight_cancellation.clone();
-        let observe_then_cancel = async {
-            tokio::time::timeout(StdDuration::from_secs(2), async {
-                loop {
-                    let active: i64 = client
-                        .query_one(
-                            "SELECT count(*)
-                             FROM pg_stat_activity
-                             WHERE datname = current_database()
-                               AND state = 'active'
-                               AND query LIKE '%slow_events%'
-                               AND pid <> pg_backend_pid()",
-                            &[],
-                        )
-                        .await
-                        .expect("observe in-flight query")
-                        .get(0);
-                    if active > 0 {
-                        toggle.cancel();
-                        break;
-                    }
-                    tokio::time::sleep(StdDuration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect("slow query became active");
-        };
-        let started = std::time::Instant::now();
         let slow_read = ReadOperation {
             source: ObjectRef {
                 catalog: None,
@@ -2018,6 +2037,14 @@ mod tests {
             row_limit: None,
             filter: None,
         };
+
+        let inflight_cancellation = CancellationToken::new();
+        let toggle = inflight_cancellation.clone();
+        let observe_then_cancel = async {
+            wait_for_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
+            toggle.cancel();
+        };
+        let started = std::time::Instant::now();
         let slow_parameters = ParameterBag::default();
         let read = provider.read_with_test_budget(
             &secret,
@@ -2029,21 +2056,7 @@ mod tests {
         let inflight_error = read_result.err().expect("in-flight cancellation");
         assert_eq!(inflight_error.category, ErrorCategory::Cancelled);
         assert!(started.elapsed() < StdDuration::from_secs(2));
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
-        let slow_queries: i64 = client
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("cancel state")
-            .get(0);
-        assert_eq!(slow_queries, 0);
+        wait_for_no_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
 
         let single_connection_provider = PostgresProvider::new(10).with_pool_size(1, 25);
         let held_stream = single_connection_provider
@@ -2579,20 +2592,19 @@ mod tests {
             .expect("slow write prepare");
         let write_cancellation = CancellationToken::new();
         let write_toggle = write_cancellation.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(StdDuration::from_millis(50)).await;
+        let observe_then_cancel = async {
+            wait_for_active_query(&client, "COPY \"plenora_fixture\".\"slow_write_target\"").await;
             write_toggle.cancel();
-        });
+        };
         let started = std::time::Instant::now();
-        let slow_write_error = provider
-            .write_with_prepared_budget(
-                &secret,
-                slow_write_prepared,
-                slow_write_stream,
-                &write_cancellation,
-            )
-            .await
-            .expect_err("in-flight write cancellation");
+        let write = provider.write_with_prepared_budget(
+            &secret,
+            slow_write_prepared,
+            slow_write_stream,
+            &write_cancellation,
+        );
+        let (write_result, ()) = tokio::join!(write, observe_then_cancel);
+        let slow_write_error = write_result.expect_err("in-flight write cancellation");
         assert_eq!(slow_write_error.category, ErrorCategory::Cancelled);
         assert!(started.elapsed() < StdDuration::from_secs(2));
         tokio::time::sleep(StdDuration::from_millis(50)).await;
@@ -2616,7 +2628,7 @@ mod tests {
         .await;
         let deadline_budget =
             ResourceBudget::new(plenora_database_core::resource::ResourceLimits {
-                duration_ms: 250,
+                duration_ms: 1_000,
                 ..plenora_database_core::resource::ResourceLimits::default()
             })
             .expect("write deadline budget");
@@ -3310,7 +3322,12 @@ mod tests {
         })
         .await
         .expect("all cancellation sessions connected");
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        wait_for_active_query_count(
+            &setup,
+            "\"plenora_fixture\".\"hardening_slow_events\"",
+            WORKERS,
+        )
+        .await;
         cancellation.cancel();
         for task in tasks {
             task.await.expect("cancellation worker");
@@ -3320,21 +3337,7 @@ mod tests {
             .test_connection(&secret, &NeverCancelled)
             .await
             .expect("pool recovery");
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-        let active: i64 = setup
-            .query_one(
-                "SELECT count(*)
-                 FROM pg_stat_activity
-                 WHERE datname = current_database()
-                   AND state = 'active'
-                   AND query LIKE '%hardening_slow_events%'
-                   AND pid <> pg_backend_pid()",
-                &[],
-            )
-            .await
-            .expect("server cancellation state")
-            .get(0);
-        assert_eq!(active, 0);
+        wait_for_no_active_query(&setup, "\"plenora_fixture\".\"hardening_slow_events\"").await;
 
         let metrics = provider.metrics_snapshot();
         assert!(metrics.cancellations >= u64::try_from(WORKERS).expect("workers"));

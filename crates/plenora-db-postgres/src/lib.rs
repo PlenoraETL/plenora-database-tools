@@ -2443,6 +2443,18 @@ fn adaptive_builder_capacity(
 }
 
 impl PostgresBatchStream {
+    async fn cancelled<T>(&mut self, cancellation: &CancellationToken) -> Result<T> {
+        self.metrics.cancellation();
+        self.client.invalidate();
+        self.finished = true;
+        let _cancel_result = tokio::time::timeout(
+            StdDuration::from_millis(self.cancel_timeout_ms),
+            cancel_query(&self.cancel_token, self.tls_mode, &self.tls_connector),
+        )
+        .await;
+        Err(cancelled_read_error(cancellation))
+    }
+
     async fn deadline_exceeded<T>(&mut self) -> Result<T> {
         self.client.invalidate();
         self.finished = true;
@@ -2648,15 +2660,8 @@ impl BatchStream for PostgresBatchStream {
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if cancellation.is_cancelled() {
-                self.metrics.cancellation();
-                self.client.invalidate();
-                self.finished = true;
-                return Err(cancelled_read_error(cancellation));
+                return self.cancelled(cancellation).await;
             }
-            let token = self.cancel_token.clone();
-            let tls_mode = self.tls_mode;
-            let tls_connector = self.tls_connector.clone();
-            let cancel_timeout_ms = self.cancel_timeout_ms;
             let completed = {
                 let next = self.next_batch();
                 tokio::pin!(next);
@@ -2668,15 +2673,7 @@ impl BatchStream for PostgresBatchStream {
             if let Some(result) = completed {
                 result
             } else {
-                self.metrics.cancellation();
-                self.client.invalidate();
-                self.finished = true;
-                let _cancel_result = tokio::time::timeout(
-                    StdDuration::from_millis(cancel_timeout_ms),
-                    cancel_query(&token, tls_mode, &tls_connector),
-                )
-                .await;
-                Err(cancelled_read_error(cancellation))
+                self.cancelled(cancellation).await
             }
         })
     }
