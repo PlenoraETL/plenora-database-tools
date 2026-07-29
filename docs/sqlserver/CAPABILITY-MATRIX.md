@@ -20,9 +20,13 @@ Legenda:
 | MARS | disabilitato | offline + live-required |
 | Sessione | XACT_ABORT ON, implicit transactions OFF, NOCOUNT ON | offline + live-required |
 | Pool | bounded; riuso solo in stato `Ready` | offline + live-required |
+| Trait comune `Provider` | connection, capability, inspect, read/query e prepared write | live-proven |
 | Cancellazione | quarantena connessione | offline + live-required |
 | Commit ambiguo | effetto `Unknown`, recovery obbligatoria | live-proven con taglio TDS fisico |
 | Read streaming | Arrow batch con canale TDS a capacità 1 e batch bounded | live-proven |
+| Read comune | projection, filter non-spatial bindato, ordering e `TOP` | live-proven |
+| Query AST base | singola source, alias, colonne, confronti booleani, `IS NULL`, ordering e limit | live-proven |
+| Query AST ricco | CTE/join/aggregate/window/set/offset richiedono schema output derivato | live-required; fail-closed |
 | Codec scalari read | booleani, interi, float, decimal/money, testo, binari e temporali | live-proven |
 | Budget read | righe, colonne, memoria, output, componenti geometriche e deadline | offline + live-proven |
 | Prepared write | bind TDS tipizzati, `append` e `truncate_insert` | live-proven |

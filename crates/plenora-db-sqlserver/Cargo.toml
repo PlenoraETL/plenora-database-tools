@@ -18,5 +18,8 @@ tiberius.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
+[dev-dependencies]
+plenora-database-testkit.workspace = true
+
 [lints]
 workspace = true

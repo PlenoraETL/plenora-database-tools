@@ -1227,6 +1227,24 @@ PostgreSQL è il driver pilota, non il luogo in cui inserire assunzioni comuni.
 - matrice differenziale;
 - fault injection.
 
+Stato corrente SQL Server:
+
+- `SqlServerProvider` implementa il trait comune senza conservare secret nei
+  piani e riusa un pool bounded partizionato dal fingerprint del secret;
+- il testkit comune verifica connection, capability e introspezione sul
+  riferimento SQL Server 2022;
+- `ReadOperation` supporta projection, filtri non-spatial con bind TDS,
+  ordering e `TOP`, mantenendo schema token e preflight spatial;
+- `QueryOperation` usa la validazione iterativa comune e supporta il profilo a
+  singola source con colonne, confronti booleani, `IS NULL`, ordering e limit;
+- join, CTE, aggregate/window, set operation e projection calcolate falliscono
+  chiusi finché non esiste un percorso deterministico per derivare lo schema
+  Arrow dell'output;
+- `append` e `truncate_insert` attraversano il trait comune senza duplicare i
+  resource lease tra prepare ed execute;
+- la suite live seriale copre 18 test, inclusi fault TDS fisici, contratto
+  comune e read/query/write attraverso l'API provider.
+
 ### Fase 4 — Oracle e Db2
 
 - client/runtime supportati;

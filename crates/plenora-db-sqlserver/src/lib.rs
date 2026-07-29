@@ -13,7 +13,10 @@ mod connection;
 pub(crate) mod error;
 #[cfg(test)]
 mod live_tests;
+mod parameter;
 mod pool;
+mod provider;
+mod query;
 mod read;
 mod recovery;
 mod session;
@@ -28,6 +31,7 @@ pub use catalog::{
 pub use config::{CertificatePolicy, SqlServerConfig};
 pub use connection::SqlServerSession;
 pub use pool::{PooledSqlServerSession, SqlServerPool};
+pub use provider::SqlServerProvider;
 pub use read::{read_object, SqlServerBatchStream};
 pub use recovery::{RecoveryAction, RecoveryDecision, TransactionEvent, TransactionState};
 pub use session::{SessionState, SESSION_BOOTSTRAP_SQL};

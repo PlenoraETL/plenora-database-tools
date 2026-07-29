@@ -73,6 +73,12 @@ La suite live seriale ha verificato:
 28. rollback server osservato da una sessione indipendente seguito da blackhole
     della risposta TDS: errore `Unknown/RequiresRecovery`, mai falso rollback
     confermato.
+29. contratto comune `Provider` verificato dal testkit per connessione,
+    capability, cataloghi, schemi, oggetti, describe e rifiuto ArcGIS, seguito
+    da read/write completi attraverso il trait;
+30. projection `id,label`, filtro TDS bindato `id >= 3`, ordinamento
+    discendente e `TOP (2)` verificati sia come `ReadOperation` sia come
+    `QueryOperation`, con risultato deterministico `[5, 4]`.
 
 Comando della prova:
 
@@ -80,7 +86,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **17 superati, 0 falliti**.
+Esito: **18 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
@@ -88,6 +94,8 @@ Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
 - bulk write e modalità create/replace/update/upsert/delete-by-keys;
+- `QueryOperation` con join, CTE, aggregate/window, set operation, offset e
+  projection calcolate;
 - latenza finita e packet loss durante read e rollback;
 - profili spatial Z/M e `FullGlobe` (oggi rifiutati);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;

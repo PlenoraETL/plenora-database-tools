@@ -86,6 +86,16 @@ impl SqlServerConfig {
         self
     }
 
+    /// Sostituisce la password senza modificare endpoint o policy.
+    ///
+    /// È usato dall'adattatore [`crate::SqlServerProvider`] per applicare il
+    /// secret risolto a runtime senza conservarlo in piani o log.
+    #[must_use]
+    pub fn with_password(mut self, password: SecretString) -> Self {
+        self.password = password;
+        self
+    }
+
     #[must_use]
     pub const fn with_timeouts(
         mut self,

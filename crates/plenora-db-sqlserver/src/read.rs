@@ -1,11 +1,13 @@
 use crate::arrow::SqlServerColumnBuffer;
 use crate::catalog::describe_object;
+use crate::parameter::bind_parameters;
 use crate::types::SqlServerReadPlan;
 use crate::SqlServerPool;
 use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::ewkb::inspect_ewkb;
-use plenora_database_core::provider::{BatchStream, ProviderFuture};
+use plenora_database_core::plan::{ObjectRef, ReadOperation};
+use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -17,7 +19,7 @@ use tiberius::{Query, Row};
 use tokio::sync::mpsc;
 
 const ROW_CHANNEL_CAPACITY: usize = 1;
-const MAX_CONFIGURED_BATCH_ROWS: usize = 65_536;
+pub const MAX_CONFIGURED_BATCH_ROWS: usize = 65_536;
 
 /// Apre uno stream Arrow bounded su una tabella o vista SQL Server.
 ///
@@ -40,19 +42,72 @@ pub async fn read_object(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        },
+        projection: Vec::new(),
+        order_by: Vec::new(),
+        row_limit: None,
+        filter: None,
+    };
+    read_operation(
+        pool,
+        &operation,
+        &ParameterBag::default(),
+        batch_rows,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+#[allow(clippy::significant_drop_tightening)]
+// Il lease `pooled` viene trasferito al worker TDS e deve vivere fino al drain.
+pub async fn read_operation(
+    pool: &Arc<SqlServerPool>,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
-    let description = describe_object(pooled.session_mut()?, schema, object, &internal).await?;
-    let mut plan = SqlServerReadPlan::compile(&description)?;
+    let schema = operation.source.schema.as_deref().unwrap_or("dbo");
+    let description = describe_object(
+        pooled.session_mut()?,
+        schema,
+        &operation.source.object,
+        &internal,
+    )
+    .await?;
+    let mut plan = SqlServerReadPlan::compile_operation(&description, operation)?;
     let column_count = u64::try_from(description.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-    preflight_spatial(pooled.session_mut()?, schema, object, &mut plan, &internal).await?;
-    let confirmation = describe_object(pooled.session_mut()?, schema, object, &internal).await?;
+    preflight_spatial(
+        pooled.session_mut()?,
+        schema,
+        &operation.source.object,
+        &mut plan,
+        &internal,
+    )
+    .await?;
+    let confirmation = describe_object(
+        pooled.session_mut()?,
+        schema,
+        &operation.source.object,
+        &internal,
+    )
+    .await?;
     if description.token != confirmation.token {
         pooled.quarantine();
         return Err(read_error(
@@ -64,7 +119,8 @@ pub async fn read_object(
 
     let (sender, receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
     let worker_cancellation = internal.clone();
-    let query = Query::new(plan.sql.clone());
+    let mut query = Query::new(plan.sql.clone());
+    bind_parameters(&mut query, &plan.bind_names, parameters)?;
     tokio::spawn(async move {
         // Se il task viene abortito o va in unwind, Drop distrugge il client
         // invece di rimettere nel pool una sessione dal drain non dimostrato.
