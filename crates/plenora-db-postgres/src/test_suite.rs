@@ -786,18 +786,19 @@ mod tests {
                 protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                 "resolved".to_owned(),
             ),
-            (protocol::GEOMETRY_CRS_ID.to_owned(), "EPSG:3857".to_owned()),
+            (protocol::GEOMETRY_CRS_ID.to_owned(), "OGC:CRS84".to_owned()),
             (
                 protocol::GEOMETRY_AXIS_ORDER.to_owned(),
-                "unknown".to_owned(),
+                "lon_lat".to_owned(),
             ),
         ]);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "geom",
-            DataType::Binary,
-            false,
-        )
-        .with_metadata(metadata)]));
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![Field::new("geom", DataType::Binary, false).with_metadata(metadata)],
+            HashMap::from([(
+                protocol::CONTRACT_VERSION_KEY.to_owned(),
+                protocol::CONTRACT_VERSION.to_owned(),
+            )]),
+        ));
         let operation = WriteOperation {
             target: ObjectRef {
                 catalog: None,
