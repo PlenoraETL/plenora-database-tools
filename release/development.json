@@ -17,6 +17,15 @@
     "document": "docs/PLENORA-CRITERI-RC.md",
     "normative_status": "proposal"
   },
+  "current_icd_baseline": {
+    "repository": "plenora-contracts",
+    "tag": "v2.0-rc11",
+    "tag_object": "721d88b5428fcda88343f9932ef6d8e3a8e3465f",
+    "revision": "31b2207fe8cf4381d75d5341a3262344e32b2337",
+    "normative_status": "partially_ratified",
+    "alignment_status": "open_blockers_declared",
+    "note": "R4.6 e sezione 15.3 restano proposte; la sezione 15.4 e registrata esplicitamente da rc11"
+  },
   "system_qualification_observation": {
     "ownership": "external_system_qualification",
     "owner": "plenora-contracts/conformance",
@@ -25,7 +34,7 @@
       "revision": "60ded1ed38788345eb4a47146e86220e468c46f6",
       "remote": "https://github.com/PlenoraETL/plenora-contracts.git"
     },
-    "icd": {
+    "qualification_icd": {
       "repository": "plenora-contracts",
       "tag": "v2.0-rc8",
       "revision": "62b12e3496466d2c908dac3cc098640b99b52e21"
