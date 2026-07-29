@@ -33,6 +33,9 @@ policy di perdita e outcome restano nei contratti Plenora.
 - errori di commit con esito non dimostrabile restano `Unknown`;
 - parametri e identificatori sono validati prima dell'I/O;
 - funzionalità non provate falliscono in preparazione.
+- il contratto Arrow canonico è validato dallo stesso giudice nel core usato
+  da PostgreSQL; il crate SQL Server interpreta solo il proprio namespace
+  nativo.
 
 ## Lavoro che richiede il database
 

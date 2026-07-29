@@ -2,6 +2,9 @@ use crate::{
     SqlServerColumn, SqlServerColumnKind, SqlServerColumnSpec, SqlServerObjectDescription,
 };
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
+use plenora_database_core::field_contract::{
+    validate_schema_contract, FieldContract as CanonicalFieldContract,
+};
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
 use plenora_database_core::{
@@ -50,6 +53,7 @@ impl WritePlan {
                 "write SQL Server richiede almeno una colonna",
             ));
         }
+        validate_schema_contract(&input_schema)?;
         let renderer = Renderer::new(
             Dialect::SqlServer,
             DialectCapabilities {
@@ -287,16 +291,13 @@ fn validate_spatial_contract(
     let Some(semantics) = target.kind.spatial_semantics() else {
         return Ok(None);
     };
+    let contract = CanonicalFieldContract::parse(field)?;
     if field
         .metadata()
         .get(protocol::GEOARROW_EXTENSION_NAME)
         .map(String::as_str)
         != Some("geoarrow.wkb")
-        || field
-            .metadata()
-            .get(protocol::GEOMETRY_ENCODING)
-            .map(String::as_str)
-            != Some("wkb")
+        || contract.encoding != Some("wkb")
     {
         return Err(plan_error(
             ErrorCategory::DataMapping,
@@ -307,20 +308,14 @@ fn validate_spatial_contract(
         plenora_database_core::geometry::SpatialSemantics::Geometry => "geometry",
         plenora_database_core::geometry::SpatialSemantics::Geography => "geography",
     };
-    if field
-        .metadata()
-        .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
-        .map(String::as_str)
-        != Some(expected_semantics)
-    {
+    if contract.spatial_semantics != Some(expected_semantics) {
         return Err(plan_error(
             ErrorCategory::DataMapping,
             "semantica geometry/geography Arrow incompatibile col target",
         ));
     }
-    if field
-        .metadata()
-        .get(protocol::GEOMETRY_DIMENSIONS)
+    if contract
+        .dimensions
         .is_some_and(|dimensions| dimensions != "xy")
     {
         return Err(plan_error(
@@ -328,22 +323,12 @@ fn validate_spatial_contract(
             "write spatial SQL Server iniziale supporta soltanto XY",
         ));
     }
-    let source_srid = field
-        .metadata()
-        .get(protocol::GEOMETRY_SRID)
-        .ok_or_else(|| {
-            plan_error(
-                ErrorCategory::DataMapping,
-                "SRID Arrow obbligatorio per write spatial SQL Server",
-            )
-        })?
-        .parse::<u32>()
-        .map_err(|_| {
-            plan_error(
-                ErrorCategory::DataMapping,
-                "SRID Arrow non valido per SQL Server",
-            )
-        })?;
+    let source_srid = contract.srid.ok_or_else(|| {
+        plan_error(
+            ErrorCategory::DataMapping,
+            "SRID Arrow obbligatorio per write spatial SQL Server",
+        )
+    })?;
     if observed_srid.is_some_and(|target_srid| target_srid != source_srid) {
         return Err(plan_error(
             ErrorCategory::DataMapping,

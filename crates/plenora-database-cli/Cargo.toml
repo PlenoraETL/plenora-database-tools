@@ -11,6 +11,7 @@ name = "plenora-database"
 path = "src/main.rs"
 
 [dependencies]
+arrow-ipc.workspace = true
 plenora-database-core.workspace = true
 plenora-database-engine.workspace = true
 plenora-db-postgres.workspace = true

@@ -14,6 +14,7 @@ La prima implementazione concreta PostgreSQL/PostGIS è documentata in
   - capability;
   - limiti;
   - GeoArrow-WKB metadata;
+  - validatore unico del contratto canonico Arrow e della versione di schema;
   - AST query portabile e catalogo di 29 funzioni spatial;
   - parametri decimal, UUID, JSON e WKB tipizzati;
   - mapping policy e `LossReport`;
@@ -34,7 +35,13 @@ La prima implementazione concreta PostgreSQL/PostGIS è documentata in
 - `plenora-database-testkit`:
   - golden v1 incorporato;
   - controllo marker-segreto;
-- CLI sottile `validate-plan`.
+- CLI `validate-plan` e `inspect-dataset` offline per Arrow IPC.
+
+`inspect-dataset <file.arrow>` usa `arrow-ipc =59.1.0`, conserva nel report i
+metadati osservati e ispeziona ogni cella geometrica con il parser EWKB
+bounded. Non apre connessioni e fallisce chiuso su versioni future, enum non
+validi, metadati legacy/GeoArrow divergenti, payload incoerenti e conflitti
+CRS.
 
 ## Non ancora implementato in modo generale
 

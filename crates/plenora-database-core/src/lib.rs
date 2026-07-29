@@ -6,6 +6,7 @@ pub mod cancellation;
 pub mod capabilities;
 pub mod error;
 pub mod ewkb;
+pub mod field_contract;
 pub mod geometry;
 pub mod limits;
 pub mod loss;

@@ -180,7 +180,7 @@ fn key_predicates(renderer: &Renderer, keys: &[String], first: usize) -> Result<
         .map(|items| items.join(" AND "))
 }
 
-pub(super) fn pg_type(contract: FieldContract<'_>) -> Result<String> {
+pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
     if contract.is_geometry() || contract.is_geography() {
         let base = if contract.is_geography() {
             "geography"
@@ -240,7 +240,7 @@ pub(super) fn pg_type(contract: FieldContract<'_>) -> Result<String> {
     })
 }
 
-pub(super) fn native_declaration_sql(contract: FieldContract<'_>) -> Option<String> {
+pub(super) fn native_declaration_sql(contract: &FieldContract<'_>) -> Option<String> {
     let declaration = contract.native_declaration.or(contract.native_type)?;
     let base = declaration.strip_suffix("[]").unwrap_or(declaration);
     let supported = matches!(
