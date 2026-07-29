@@ -1,0 +1,54 @@
+name: Release manifest
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/release-manifest.yml"
+      - "release/**"
+      - "scripts/check_release_manifest.py"
+      - "scripts/test_check_release_manifest.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-manifest:
+    name: Release manifest / C1-C4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Validate the release manifest
+        run: |
+          python3 scripts/check_release_manifest.py \
+            --repo . \
+            --json-out "$RUNNER_TEMP/release-manifest-result.json" \
+            release/development.json
+
+      - name: Prove the gate rejects invalid manifests
+        run: python3 scripts/test_check_release_manifest.py
+
+      - name: Verify the candidate remained unchanged
+        run: git diff --exit-code -- .
+
+      - name: Preserve the machine-readable result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/release-manifest-result.json
+          if-no-files-found: error
+          retention-days: 30

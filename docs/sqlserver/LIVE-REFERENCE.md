@@ -4,7 +4,8 @@ Data: 2026-07-29
 
 ## Ambiente
 
-- immagine: `mcr.microsoft.com/mssql/server:2022-latest`;
+- immagine:
+  `mcr.microsoft.com/mssql/server@sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56`;
 - image id osservato:
   `sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56`;
 - prodotto: `16.0.4255.1`;

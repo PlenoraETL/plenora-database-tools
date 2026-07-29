@@ -86,6 +86,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     checks = [
         ("phase0-offline", [sys.executable, "scripts/check_phase0.py"]),
+        (
+            "release-manifest",
+            [
+                sys.executable,
+                "scripts/check_release_manifest.py",
+                "--repo",
+                ".",
+                "release/development.json",
+            ],
+        ),
+        (
+            "release-manifest-negative-tests",
+            [sys.executable, "scripts/test_check_release_manifest.py"],
+        ),
         ("rustfmt", cargo_command(["fmt", "--all", "--", "--check"])),
         (
             "clippy",

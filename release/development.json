@@ -1,0 +1,89 @@
+{
+  "manifest_version": 1,
+  "component": "plenora-database-tools",
+  "component_version": "0.1.0",
+  "status": "development",
+  "revision": "1ca0208b513aace3738b748c9d76619133208b0f",
+  "claims": {
+    "component_rc": false,
+    "system_rc": false,
+    "avionic_certification": false
+  },
+  "verification_claim": "verified_internally",
+  "independent_review": false,
+  "release_criteria": {
+    "repository": "plenora-contracts",
+    "revision": "60ded1ed38788345eb4a47146e86220e468c46f6",
+    "document": "docs/PLENORA-CRITERI-RC.md",
+    "normative_status": "proposal"
+  },
+  "current_icd_baseline": {
+    "repository": "plenora-contracts",
+    "tag": "v2.0-rc11",
+    "tag_object": "721d88b5428fcda88343f9932ef6d8e3a8e3465f",
+    "revision": "31b2207fe8cf4381d75d5341a3262344e32b2337",
+    "normative_status": "partially_ratified",
+    "alignment_status": "open_blockers_declared",
+    "note": "R4.6 e sezione 15.3 restano proposte; la sezione 15.4 e registrata esplicitamente da rc11"
+  },
+  "system_qualification_observation": {
+    "ownership": "external_system_qualification",
+    "owner": "plenora-contracts/conformance",
+    "source": {
+      "repository": "plenora-contracts",
+      "revision": "60ded1ed38788345eb4a47146e86220e468c46f6",
+      "remote": "https://github.com/PlenoraETL/plenora-contracts.git"
+    },
+    "qualification_icd": {
+      "repository": "plenora-contracts",
+      "tag": "v2.0-rc8",
+      "revision": "62b12e3496466d2c908dac3cc098640b99b52e21"
+    },
+    "roundtrip": {
+      "kind": "arrow_to_contract",
+      "tested_component": {
+        "component": "plenora-database-tools",
+        "revision": "eecb3a33b52601ee6cc9e8855855e9d9cb294144"
+      },
+      "equivalent_main": {
+        "component": "plenora-database-tools",
+        "revision": "1ca0208b513aace3738b748c9d76619133208b0f"
+      },
+      "equivalence": "byte_for_byte_tree_identity_verified_externally",
+      "result": "13/13",
+      "date": "2026-07-30"
+    },
+    "whole_system_result": {
+      "status": "run_not_satisfied",
+      "result": "26/39"
+    },
+    "scope_note": "arrow_to_contract osserva e valida un dataset; non dimostra la preservazione arrow_to_arrow e non costituisce un claim di parita con gli altri componenti"
+  },
+  "open_blockers": [
+    {
+      "id": "PLN-DB-R46",
+      "description": "Separare la rilevazione delle incoerenze CRS dalla policy per ruolo prima dell'estrazione del crate condiviso; inspect-dataset usa ancora il validatore strict.",
+      "exit_condition": "Ratifica di R4.6 e test distinti per read/report, write/reject e core/decision."
+    },
+    {
+      "id": "PLN-DB-R153",
+      "description": "Il crate normativo condiviso di sezione 15.3 non e ancora ratificato ne distribuibile.",
+      "exit_condition": "Ratifica della sezione 15.3 e baseline firmata del repository dei contratti."
+    },
+    {
+      "id": "PLN-DB-SYSTEM",
+      "description": "Il risultato 13/13 e un roundtrip arrow_to_contract; la qualifica dell'intero sistema e la direzione inversa non sono soddisfatte.",
+      "exit_condition": "Qualifica esterna completa delle direzioni e delle proprieta richieste."
+    },
+    {
+      "id": "PLN-DB-REVIEW",
+      "description": "Nessun revisore indipendente eleggibile e registrato.",
+      "exit_condition": "Revisione indipendente della revisione candidata con identita, comandi, rilievi ed esito registrati."
+    },
+    {
+      "id": "PLN-DB-PROVIDERS",
+      "description": "La matrice live non copre ancora tutte le versioni e piattaforme dichiarate come target futuri.",
+      "exit_condition": "Matrice esplicita completata per i target inclusi nel futuro RC oppure riduzione formale dello scope."
+    }
+  ]
+}
