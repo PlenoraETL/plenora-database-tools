@@ -1,6 +1,5 @@
-use crate::query::lower_query;
-use crate::read::read_operation;
 use crate::read::MAX_CONFIGURED_BATCH_ROWS;
+use crate::read::{read_operation, read_query_operation};
 use crate::write::{
     prepare_write_with_external_contract_leases, prepare_write_with_mode as prepare_driver_write,
 };
@@ -362,12 +361,11 @@ impl Provider for SqlServerProvider {
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             ensure_not_cancelled(cancellation, ErrorPhase::Read)?;
-            let lowered = lower_query(operation)?;
-            self.validate_source(&lowered.source)?;
             let pool = self.pool_for(secret)?;
-            read_operation(
+            read_query_operation(
                 &pool,
-                &lowered,
+                self.config.database(),
+                operation,
                 parameters,
                 self.batch_rows,
                 budget,

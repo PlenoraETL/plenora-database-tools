@@ -2,6 +2,7 @@ use crate::config::SqlServerConfig;
 use crate::error::{cancellation_error, driver_error, timeout_error};
 use crate::recovery::{TransactionEvent, TransactionState};
 use crate::session::{SessionState, SESSION_BOOTSTRAP_SQL};
+use crate::types::SqlServerColumnSpec;
 use futures_util::TryStreamExt;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -426,13 +427,22 @@ impl SqlServerSession {
         &mut self,
         query: tiberius::Query<'static>,
         sender: mpsc::Sender<Result<tiberius::Row>>,
+        expected_columns: &[SqlServerColumnSpec],
         cancellation: &CancellationToken,
     ) -> Result<()> {
         self.require_state(SessionState::Ready, ErrorPhase::Read)?;
         let Some(client) = self.client.as_mut() else {
             return Err(state_error(ErrorPhase::Read));
         };
-        let outcome = pump_rows(client, query, sender, cancellation, self.operation_timeout).await;
+        let outcome = pump_rows(
+            client,
+            query,
+            sender,
+            expected_columns,
+            cancellation,
+            self.operation_timeout,
+        )
+        .await;
         match outcome {
             PumpOutcome::Completed => Ok(()),
             PumpOutcome::Cancelled | PumpOutcome::ReceiverDropped => {
@@ -447,6 +457,10 @@ impl SqlServerSession {
                 let public = driver_error(&error, ErrorPhase::Read, RemoteEffect::None);
                 self.quarantine();
                 Err(public)
+            }
+            PumpOutcome::Public(error) => {
+                self.quarantine();
+                Err(error)
             }
         }
     }
@@ -472,6 +486,7 @@ enum PumpOutcome {
     ReceiverDropped,
     Timeout,
     Driver(tiberius::error::Error),
+    Public(DatabaseError),
 }
 
 enum WriteQueryOutcome {
@@ -509,10 +524,11 @@ async fn pump_rows(
     client: &mut TdsClient,
     query: tiberius::Query<'static>,
     sender: mpsc::Sender<Result<tiberius::Row>>,
+    expected_columns: &[SqlServerColumnSpec],
     cancellation: &CancellationToken,
     operation_timeout: std::time::Duration,
 ) -> PumpOutcome {
-    let stream = tokio::select! {
+    let mut stream = tokio::select! {
         _ = cancellation.cancelled() => return PumpOutcome::Cancelled,
         result = tokio::time::timeout(operation_timeout, query.query(client)) => {
             match result {
@@ -522,6 +538,24 @@ async fn pump_rows(
             }
         }
     };
+    let metadata = tokio::select! {
+        _ = cancellation.cancelled() => return PumpOutcome::Cancelled,
+        result = tokio::time::timeout(operation_timeout, stream.columns()) => {
+            match result {
+                Ok(Ok(columns)) => columns,
+                Ok(Err(error)) => return PumpOutcome::Driver(error),
+                Err(_) => return PumpOutcome::Timeout,
+            }
+        }
+    };
+    let Some(metadata) = metadata else {
+        return PumpOutcome::Public(read_protocol_error(
+            "QueryOperation SQL Server senza COLMETADATA",
+        ));
+    };
+    if let Err(error) = validate_result_metadata(metadata, expected_columns) {
+        return PumpOutcome::Public(error);
+    }
     let mut rows = stream.into_row_stream();
     loop {
         let next = tokio::select! {
@@ -544,6 +578,42 @@ async fn pump_rows(
         if sent.is_err() {
             return PumpOutcome::ReceiverDropped;
         }
+    }
+}
+
+fn validate_result_metadata(
+    actual: &[tiberius::Column],
+    expected: &[SqlServerColumnSpec],
+) -> Result<()> {
+    if actual.len() != expected.len() {
+        return Err(read_protocol_error(
+            "numero colonne TDS diverso dalla descrizione QueryOperation",
+        ));
+    }
+    for (actual, expected) in actual.iter().zip(expected) {
+        if actual.name() != expected.name.as_str() {
+            return Err(read_protocol_error(
+                "nome colonna TDS diverso dalla descrizione QueryOperation",
+            ));
+        }
+        if !expected.accepts_tds_column_type(actual.column_type()) {
+            return Err(read_protocol_error(
+                "tipo colonna TDS diverso dalla descrizione QueryOperation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_protocol_error(message: &'static str) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Protocol,
+        phase: ErrorPhase::Read,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        execution_id: None,
+        message: message.to_owned(),
     }
 }
 

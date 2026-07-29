@@ -1,6 +1,6 @@
 # Evidenza live — SQL Server 2022
 
-Data: 2026-07-29
+Data: 2026-07-30
 
 ## Ambiente
 
@@ -89,6 +89,16 @@ La suite live seriale ha verificato:
 34. round-trip bulk dei tipi ammessi (`bit`, interi, `real`/`float`,
     `decimal`, `nvarchar`, `varbinary`) con confronto SQL bidirezionale a zero
     differenze.
+35. `QueryOperation` relazionale con CTE, inner join, `COUNT_BIG`,
+    group-by/having e parametri TDS ripetibili;
+36. funzione window `ROW_NUMBER`, `OFFSET/FETCH` e `UNION ALL`, con valori e
+    ordinamento deterministici;
+37. schema output derivato tramite
+    `sys.dm_exec_describe_first_result_set` prima dell'esecuzione e verificato
+    contro il primo `COLMETADATA` TDS, incluso un result set a zero righe;
+38. decodifica nativa esatta di `decimal`, `date`, `time`, `datetime2`,
+    `datetimeoffset`, `uniqueidentifier` e `xml`, con rifiuto fail-closed di
+    proiezioni calcolate senza nome.
 
 Comando della prova:
 
@@ -96,7 +106,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **22 superati, 0 falliti**.
+Esito: **23 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
@@ -104,8 +114,8 @@ Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
 - bulk per spatial/UDT e modalità create/replace/update/upsert/delete-by-keys;
-- `QueryOperation` con join, CTE, aggregate/window, set operation, offset e
-  projection calcolate;
+- `QueryOperation` lateral/APPLY, locking, output spatial UDT nudo e forme
+  calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - profili spatial Z/M e `FullGlobe` (oggi rifiutati);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
