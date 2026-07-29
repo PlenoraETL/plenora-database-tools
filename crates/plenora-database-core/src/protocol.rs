@@ -23,4 +23,8 @@ pub const POSTGRES_DOMAIN_BASE_TYPE: &str = "plenora.postgres.domain_base_type";
 pub const POSTGRES_DOMAIN_CONSTRAINTS: &str = "plenora.postgres.domain_constraints";
 pub const POSTGRES_COLLATION: &str = "plenora.postgres.collation";
 
+pub const SQLSERVER_NATIVE_TYPE: &str = "plenora.sqlserver.native_type";
+pub const SQLSERVER_NATIVE_DECLARATION: &str = "plenora.sqlserver.native_declaration";
+pub const SQLSERVER_COLLATION: &str = "plenora.sqlserver.collation";
+
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";

@@ -14,6 +14,9 @@ use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
+const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier(String);
 
@@ -177,6 +180,7 @@ impl Renderer {
                 "la projection SQL deve essere esplicita e non vuota",
             ));
         }
+        self.validate_select_dialect_limits(select)?;
         let mut sql = String::from("SELECT ");
         if self.dialect == Dialect::SqlServer {
             if let Some(limit) = select.limit {
@@ -232,6 +236,7 @@ impl Renderer {
                 Dialect::SqlServer => {}
             }
         }
+        self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
 
@@ -241,9 +246,16 @@ impl Renderer {
     ///
     /// Fallisce per query strutturalmente incomplete o funzioni non supportate.
     pub fn render_query(&self, query: &QueryOperation) -> Result<RenderedSql> {
-        validate_query_operation(query, &plenora_database_core::limits::Limits::default())?;
+        let mut limits = plenora_database_core::limits::Limits::default();
+        if self.dialect == Dialect::SqlServer {
+            // È volutamente più conservativo del limite SQL Server espresso
+            // in caratteri: il core limita anche i byte allocabili.
+            limits.max_identifier_bytes = SQL_SERVER_MAX_IDENTIFIER_CHARS;
+        }
+        validate_query_operation(query, &limits)?;
         let mut binds = Vec::new();
         let sql = self.render_query_inner(query, &mut binds, true)?;
+        self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
 
@@ -265,14 +277,16 @@ impl Renderer {
                 .iter()
                 .any(|cte| cte.recursive)
             {
-                if self.dialect != Dialect::Postgres {
+                if !matches!(self.dialect, Dialect::Postgres | Dialect::SqlServer) {
                     return Err(DatabaseError::unsupported(
                         self.provider_kind(),
                         ErrorPhase::Prepare,
-                        "CTE ricorsiva avanzata supportata solo dal renderer PostgreSQL",
+                        "CTE ricorsiva non supportata dal dialect",
                     ));
                 }
-                sql.push_str("RECURSIVE ");
+                if self.dialect == Dialect::Postgres {
+                    sql.push_str("RECURSIVE ");
+                }
             }
             let ctes = query
                 .common_table_expressions
@@ -307,7 +321,7 @@ impl Renderer {
             sql.push_str("DISTINCT ");
         }
         if self.dialect == Dialect::SqlServer {
-            if let Some(limit) = query.row_limit {
+            if let Some(limit) = query.row_limit.filter(|_| query.row_offset.is_none()) {
                 sql.push_str("TOP (");
                 sql.push_str(&limit.to_string());
                 sql.push_str(") ");
@@ -442,7 +456,7 @@ impl Renderer {
                     sql.push_str(" OFFSET ");
                     sql.push_str(&offset.to_string());
                 }
-                Dialect::Oracle | Dialect::Db2 => {
+                Dialect::Oracle | Dialect::Db2 | Dialect::SqlServer => {
                     sql.push_str(" OFFSET ");
                     sql.push_str(&offset.to_string());
                     sql.push_str(" ROWS");
@@ -451,13 +465,6 @@ impl Renderer {
                         sql.push_str(&limit.to_string());
                         sql.push_str(" ROWS ONLY");
                     }
-                }
-                Dialect::SqlServer => {
-                    return Err(DatabaseError::unsupported(
-                        self.provider_kind(),
-                        ErrorPhase::Prepare,
-                        "OFFSET SQL Server richiede un piano dedicato",
-                    ));
                 }
             }
         }
@@ -586,7 +593,7 @@ impl Renderer {
             QueryExpression::Scalar {
                 function,
                 arguments,
-            } => self.render_function(scalar_name(*function), arguments, binds),
+            } => self.render_function(self.scalar_name(*function), arguments, binds),
             QueryExpression::Spatial {
                 function,
                 arguments,
@@ -603,7 +610,7 @@ impl Renderer {
                 order_by,
                 frame,
             } => {
-                let call = self.render_function(scalar_name(*function), arguments, binds)?;
+                let call = self.render_function(self.scalar_name(*function), arguments, binds)?;
                 self.render_window_call(&call, partition_by, order_by, frame.as_ref(), binds)
             }
             QueryExpression::SpatialWindow {
@@ -752,6 +759,13 @@ impl Renderer {
         arguments: &[QueryExpression],
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
+        if self.dialect == Dialect::SqlServer {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "spatial SQL Server richiede tipo geometry/geography e SRID risolti",
+            ));
+        }
         let rendered = arguments
             .iter()
             .enumerate()
@@ -766,7 +780,11 @@ impl Renderer {
                             format!("ST_GeomFromWKB({value})")
                         }
                         Dialect::SqlServer => {
-                            format!("geometry::STGeomFromWKB({value}, 0)")
+                            return Err(DatabaseError::unsupported(
+                                self.provider_kind(),
+                                ErrorPhase::Prepare,
+                                "spatial SQL Server senza tipo e SRID risolti",
+                            ));
                         }
                         Dialect::Oracle => {
                             format!("SDO_UTIL.FROM_WKBGEOMETRY({value})")
@@ -810,8 +828,10 @@ impl Renderer {
     /// Restituisce gli stessi errori capability/strutturali di
     /// [`Self::render_select`].
     pub fn render_filter(&self, expression: &Expression) -> Result<RenderedSql> {
+        self.validate_expression_dialect_limits(expression)?;
         let mut binds = Vec::new();
         let sql = self.render_expression(expression, &mut binds)?;
+        self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
 
@@ -899,6 +919,13 @@ impl Renderer {
                         "spatial intersects non supportato dal dialect",
                     ));
                 }
+                if self.dialect == Dialect::SqlServer {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "spatial SQL Server richiede tipo geometry/geography e SRID risolti",
+                    ));
+                }
                 let placeholder = self.bind(wkb_parameter, binds);
                 let quoted = self.quote(field);
                 let expression = match self.dialect {
@@ -906,9 +933,11 @@ impl Renderer {
                         format!("ST_Intersects({quoted}, ST_GeomFromWKB({placeholder}))")
                     }
                     Dialect::SqlServer => {
-                        format!(
-                            "{quoted}.STIntersects(geometry::STGeomFromWKB({placeholder}, 0)) = 1"
-                        )
+                        return Err(DatabaseError::unsupported(
+                            self.provider_kind(),
+                            ErrorPhase::Prepare,
+                            "spatial SQL Server senza tipo e SRID risolti",
+                        ));
                     }
                     Dialect::Oracle => {
                         format!(
@@ -1038,6 +1067,78 @@ impl Renderer {
             .map(|part| self.quote(part))
             .collect::<Vec<_>>()
             .join(".")
+    }
+
+    fn validate_select_dialect_limits(&self, select: &Select) -> Result<()> {
+        if self.dialect != Dialect::SqlServer {
+            return Ok(());
+        }
+        for identifier in select
+            .source
+            .catalog
+            .iter()
+            .chain(select.source.schema.iter())
+            .chain(std::iter::once(&select.source.object))
+            .chain(select.projection.iter())
+            .chain(select.order_by.iter().map(|ordering| &ordering.field))
+        {
+            Self::validate_identifier(identifier)?;
+        }
+        if let Some(filter) = &select.filter {
+            self.validate_expression_dialect_limits(filter)?;
+        }
+        Ok(())
+    }
+
+    fn validate_expression_dialect_limits(&self, expression: &Expression) -> Result<()> {
+        if self.dialect != Dialect::SqlServer {
+            return Ok(());
+        }
+        let mut stack = vec![expression];
+        while let Some(value) = stack.pop() {
+            match value {
+                Expression::And(arguments) | Expression::Or(arguments) => {
+                    stack.extend(arguments);
+                }
+                Expression::Compare { field, .. }
+                | Expression::IsNull(field)
+                | Expression::IsNotNull(field)
+                | Expression::In { field, .. }
+                | Expression::Between { field, .. }
+                | Expression::Like { field, .. }
+                | Expression::SpatialIntersects { field, .. }
+                | Expression::SpatialPredicate { field, .. } => {
+                    Self::validate_identifier(field)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_identifier(identifier: &Identifier) -> Result<()> {
+        if identifier.as_str().chars().count() > SQL_SERVER_MAX_IDENTIFIER_CHARS {
+            return Err(DatabaseError::invalid_plan(
+                "identificatore SQL Server oltre 128 caratteri",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_bind_count(&self, binds: &[BindParameter]) -> Result<()> {
+        if self.dialect == Dialect::SqlServer && binds.len() > SQL_SERVER_MAX_BIND_PARAMETERS {
+            return Err(DatabaseError::resource_limit(
+                "query SQL Server oltre il limite di 2100 parametri",
+            ));
+        }
+        Ok(())
+    }
+
+    fn scalar_name(&self, function: ScalarFunction) -> &'static str {
+        if self.dialect == Dialect::SqlServer && matches!(function, ScalarFunction::Count) {
+            "COUNT_BIG"
+        } else {
+            scalar_name(function)
+        }
     }
 
     const fn provider_kind(&self) -> plenora_database_core::plan::ProviderKind {
@@ -1225,6 +1326,29 @@ mod tests {
         }
     }
 
+    fn simple_query() -> QueryOperation {
+        QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("events", "e")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("e", "id"),
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        }
+    }
+
     #[test]
     fn postgres_uses_quoted_identifiers_and_binds() {
         let select = Select {
@@ -1287,6 +1411,126 @@ mod tests {
         .render_select(&select)
         .expect("render");
         assert_eq!(rendered.sql, "SELECT TOP (5) [a]]b] FROM [public].[events]");
+    }
+
+    #[test]
+    fn sqlserver_rejects_identifier_over_128_characters() {
+        let select = Select {
+            source: source(),
+            projection: vec![identifier(&"x".repeat(129))],
+            filter: None,
+            order_by: Vec::new(),
+            limit: None,
+        };
+        let error = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: false,
+            },
+        )
+        .render_select(&select)
+        .expect_err("identifier must fail");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
+    }
+
+    #[test]
+    fn sqlserver_enforces_2100_bind_limit() {
+        let render = |count| {
+            Renderer::new(
+                Dialect::SqlServer,
+                DialectCapabilities {
+                    spatial_intersects: false,
+                },
+            )
+            .render_filter(&Expression::In {
+                field: identifier("id"),
+                parameters: (0..count).map(|index| format!("p{index}")).collect(),
+            })
+        };
+        assert_eq!(render(2_100).expect("2100 binds").binds.len(), 2_100);
+        let error = render(2_101).expect_err("2101 binds must fail");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn sqlserver_uses_offset_fetch_without_top() {
+        let mut query = simple_query();
+        query.order_by.push(QueryOrdering {
+            expression: query_column("e", "id"),
+            direction: SortDirection::Asc,
+        });
+        query.row_offset = Some(5);
+        query.row_limit = Some(10);
+        let sql = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: false,
+            },
+        )
+        .render_query(&query)
+        .expect("SQL Server pagination")
+        .sql;
+        assert!(sql.ends_with("ORDER BY [e].[id] ASC OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY"));
+        assert!(!sql.contains("TOP"));
+    }
+
+    #[test]
+    fn sqlserver_renders_count_big_and_recursive_cte_syntax() {
+        let cte_body = simple_query();
+        let mut query = simple_query();
+        query.common_table_expressions.push(CommonTableExpression {
+            name: "tree".to_owned(),
+            recursive: true,
+            query: Box::new(cte_body),
+        });
+        query.projection[0].expression = QueryExpression::Scalar {
+            function: ScalarFunction::Count,
+            arguments: vec![query_column("e", "id")],
+        };
+        let sql = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: false,
+            },
+        )
+        .render_query(&query)
+        .expect("SQL Server CTE")
+        .sql;
+        assert!(sql.starts_with("WITH [tree] AS ("));
+        assert!(!sql.starts_with("WITH RECURSIVE"));
+        assert!(sql.contains("COUNT_BIG([e].[id])"));
+    }
+
+    #[test]
+    fn sqlserver_spatial_ast_fails_without_resolved_type_and_srid() {
+        let mut query = simple_query();
+        query.filter = Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![
+                query_column("e", "geom"),
+                QueryExpression::Parameter {
+                    name: "probe".to_owned(),
+                },
+            ],
+        });
+        let error = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect_err("unresolved spatial input must fail");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
     }
 
     #[test]

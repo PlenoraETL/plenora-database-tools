@@ -10,6 +10,8 @@ on:
       - "crates/**"
       - "docker-compose.postgres.yml"
       - "docker/postgres/init/**"
+      - "docker-compose.sqlserver.yml"
+      - "docker/sqlserver/init/**"
   schedule:
     - cron: "43 2 * * 0"
   workflow_dispatch:
@@ -31,6 +33,11 @@ jobs:
       PLENORA_TEST_POSTGRES_DSN: >-
         host=127.0.0.1 port=5432 user=dataflow
         password=dataflow_test_2026 dbname=dataflow_test
+      PLENORA_SQLSERVER_HOST: 127.0.0.1
+      PLENORA_SQLSERVER_DATABASE: dataflow_test
+      PLENORA_SQLSERVER_USER: dataflow
+      PLENORA_SQLSERVER_PASSWORD: DataFlow_Test_2026!
+      PLENORA_SQLSERVER_SA_PASSWORD: DataFlow_Test_2026!
       PRODUCTION_IGNORE_REGEX: '(^|/)(plenora-database-cli/src/main\.rs|plenora-db-postgres/src/test_suite\.rs)$'
 
     defaults:
@@ -41,10 +48,13 @@ jobs:
       - name: Check out the candidate revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
-      - name: Validate and start PostgreSQL with PostGIS
+      - name: Validate and start reference databases
         run: |
           docker compose -f docker-compose.postgres.yml config --quiet
+          docker compose -f docker-compose.sqlserver.yml config --quiet
           docker compose -f docker-compose.postgres.yml up -d --wait
+          docker compose -f docker-compose.sqlserver.yml up -d --wait
+          test "$(docker wait dataflow-sqlserver-init)" = "0"
 
       - name: Install the pinned coverage toolchain
         run: |
@@ -67,14 +77,30 @@ jobs:
             docker exec dataflow-postgres psql \
               -U dataflow -d dataflow_test -At \
               -c "SELECT version(); SELECT postgis_full_version();"
+            docker exec dataflow-sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P "$PLENORA_SQLSERVER_SA_PASSWORD" \
+              -d dataflow_test -C -b -h -1 -W \
+              -Q "SET NOCOUNT ON; SELECT @@VERSION;"
           } | tee assurance-results/coverage-environment.txt
 
-      - name: Measure full workspace coverage with live PostgreSQL
+      - name: Measure workspace coverage with both reference providers
         run: |
+          cargo llvm-cov clean --workspace
           cargo llvm-cov \
             --workspace \
             --all-targets \
             --locked \
+            --no-report
+          cargo llvm-cov \
+            --package plenora-db-sqlserver \
+            --lib \
+            --locked \
+            --no-report \
+            -- \
+            --ignored \
+            --test-threads=1
+          cargo llvm-cov report \
             --lcov \
             --output-path assurance-results/coverage-full.lcov
           cargo llvm-cov report \
@@ -112,6 +138,8 @@ jobs:
           docker ps -a > assurance-results/coverage-docker-containers.txt
           docker compose -f docker-compose.postgres.yml logs --no-color \
             > assurance-results/coverage-postgres.log 2>&1 || true
+          docker compose -f docker-compose.sqlserver.yml logs --no-color \
+            > assurance-results/coverage-sqlserver.log 2>&1 || true
 
       - name: Preserve coverage evidence
         if: always()
@@ -122,8 +150,10 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Stop PostgreSQL and remove ephemeral volumes
+      - name: Stop reference databases and remove ephemeral volumes
         if: always()
         run: |
+          docker compose -f docker-compose.sqlserver.yml down --volumes \
+            --remove-orphans || true
           docker compose -f docker-compose.postgres.yml down --volumes \
             --remove-orphans || true
