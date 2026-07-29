@@ -834,10 +834,40 @@ l'esito o fallire. Gli encoder text, binary e prepared restano distinti perché
 costituiscono tre implementazioni differenziali dello stesso risultato.
 
 L'AST relazionale, la validazione strutturale e il renderer multi-dialetto
-restano nei crate condivisi. Ogni driver mantiene invece un proprio
-`query_plan` e un proprio `query_execution`: il futuro adapter SQL Server
-riuserà i contratti condivisi, ma non dipenderà da `tokio-postgres`, dai tipi
-wire PostgreSQL o dalle funzioni PostGIS.
+restano nei crate condivisi. Ogni driver mantiene invece piani ed esecuzione
+specifici.
+
+Il crate `plenora-db-sqlserver` usa direttamente Tiberius/TDS e, nelle fasi
+offline iniziali, separa:
+
+| Unità | Responsabilità |
+|---|---|
+| `config.rs` | configurazione strutturata, redazione credenziali, TLS required e opt-out esplicito |
+| `connection.rs` | apertura TCP/TDS, bootstrap drenato, timeout e quarantena |
+| `session.rs` | invarianti di sessione e criterio di riuso |
+| `pool.rs` | capacità bounded, checkout cancellabile e rientro solo `Ready` |
+| `recovery.rs` | macchina a stati pura per transazione ed esito ambiguo |
+| `error.rs` | classificazione nativa redatta e `Unknown` durante commit incerto |
+| `catalog/probe.rs` | versione, edition, compatibility level, tipi spatial e listing visibile |
+| `catalog/schema.rs` | colonne, identity/computed, vincoli, indici e token strutturale |
+| `types.rs` | piano immutabile SQL Server→Arrow e proiezioni T-SQL exact/fail-closed |
+| `arrow.rs` | decoder checked scalari, decimal e temporali senza panic |
+| `read.rs` | stream TDS/Arrow bounded, budget, preflight spatial e schema guard |
+| `write/plan.rs` | mapping Arrow→target, SQL prepared e capability fail-closed |
+| `write/codec.rs` | bind TDS checked, temporali, Decimal128 e WKB spatial |
+| `write/resources.rs` | lease batch per righe, memoria, output e geometrie |
+| `write/mod.rs` | lock target, schema guard, transazione, rollback e outcome |
+
+Il provider SQL Server riusa i contratti condivisi ma non dipende da
+`tokio-postgres`, dai tipi wire PostgreSQL o dalle funzioni PostGIS. Probe,
+catalogo, codec Arrow e read streaming XY per `geometry`/`geography` sono
+verificati sul riferimento SQL Server 2022. Anche prepared write
+`append`/`truncate_insert`, rollback e schema drift guard sono provati live.
+I confini pre-commit, perdita trasporto e conferma commit persa sono coperti da
+fault deterministici interni ai test: nessun hook entra nell'API pubblica.
+Bulk, le altre modalità di write, il fault di rete fisico e i profili spatial
+avanzati restano unità distinte e diventeranno capability solo dopo la relativa
+prova live.
 
 `replace` non significa automaticamente atomic rename. L'output dichiara la
 garanzia realmente ottenuta.
