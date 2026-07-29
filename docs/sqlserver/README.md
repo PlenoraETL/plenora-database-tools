@@ -16,6 +16,7 @@ il riferimento comportamentale, non un modello da copiare alla cieca.
 | 6 | prepared write, transazione, schema guard e rollback | verificato sul riferimento SQL Server 2022 |
 | 7 | trait comune `Provider`, capability e testkit di conformità | verificato sul riferimento SQL Server 2022 |
 | 8 | read comune e `QueryOperation` a singola source | verificato sul riferimento SQL Server 2022 |
+| 9 | TDS bulk opt-in, differential e rollback multi-batch | verificato sul riferimento SQL Server 2022 |
 
 Il crate usa un client TDS diretto. Non introduce un ORM: AST, mapping Arrow,
 policy di perdita e outcome restano nei contratti Plenora.
@@ -38,7 +39,10 @@ policy di perdita e outcome restano nei contratti Plenora.
 La campagna live su SQL Server 2022 copre handshake con certificato
 self-signed, probe, catalogo, mapping Arrow e streaming bounded di scalari,
 `geometry` e `geography`, oltre a prepared write `append`/`truncate_insert` in
-singola transazione. Include fault deterministici pre-commit, sul trasporto e
+singola transazione. Il codec `TdsBulk` è opt-in, bounded e ammesso solo per
+tutte le colonne scrivibili nell'ordine del catalogo e per tipi verificati;
+spatial e conversioni non native restano sul percorso prepared. Include fault
+deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e
 dopo rollback server.
@@ -48,7 +52,7 @@ capability, catalogo, projection/filter/order/limit bindati, profilo
 relazionali che richiedono inferenza dello schema output — join, CTE,
 aggregati, window, set operation e spatial — restano fail-closed.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
-certificati verificabili e campagne dedicate per bulk, altre modalità di write,
+certificati verificabili e campagne dedicate per altre modalità di write,
 latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La
 matrice completa è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
 La campagna cumulativa di coverage è descritta in

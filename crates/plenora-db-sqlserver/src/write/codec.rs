@@ -10,7 +10,7 @@ use plenora_database_core::ewkb::inspect_ewkb_detailed;
 use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
 };
-use tiberius::Query;
+use tiberius::{IntoSql, Query, TokenRow};
 
 pub(super) struct BatchInspection {
     pub(super) rows: u64,
@@ -206,6 +206,121 @@ pub(super) fn bind_row(
         }
     }
     Ok(query)
+}
+
+/// Materializza soltanto i descrittori TDS; stringhe e binari restano
+/// borrowed dal batch Arrow. L'intera conversione avviene prima di aprire il
+/// comando bulk, così un errore di mapping non lascia un flusso TDS parziale.
+#[allow(clippy::too_many_lines)]
+pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<Vec<TokenRow<'a>>> {
+    let mut rows = Vec::with_capacity(batch.num_rows());
+    for row_index in 0..batch.num_rows() {
+        let mut row = TokenRow::with_capacity(plan.columns.len());
+        for column in &plan.columns {
+            let array = batch.column(column.input_index);
+            match column.kind {
+                crate::SqlServerColumnKind::Bool => row.push(
+                    optional_scalar::<BooleanArray, bool>(
+                        array.as_ref(),
+                        row_index,
+                        BooleanArray::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::U8 => row.push(
+                    optional_scalar::<UInt8Array, u8>(
+                        array.as_ref(),
+                        row_index,
+                        UInt8Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::I16 => row.push(
+                    optional_scalar::<Int16Array, i16>(
+                        array.as_ref(),
+                        row_index,
+                        Int16Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::I32 => row.push(
+                    optional_scalar::<Int32Array, i32>(
+                        array.as_ref(),
+                        row_index,
+                        Int32Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::I64 => row.push(
+                    optional_scalar::<Int64Array, i64>(
+                        array.as_ref(),
+                        row_index,
+                        Int64Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::F32 => row.push(
+                    optional_scalar::<Float32Array, f32>(
+                        array.as_ref(),
+                        row_index,
+                        Float32Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::F64 => row.push(
+                    optional_scalar::<Float64Array, f64>(
+                        array.as_ref(),
+                        row_index,
+                        Float64Array::value,
+                    )?
+                    .into_sql(),
+                ),
+                crate::SqlServerColumnKind::Utf8 => {
+                    let values = downcast::<StringArray>(array.as_ref())?;
+                    row.push(
+                        (!values.is_null(row_index))
+                            .then(|| values.value(row_index))
+                            .into_sql(),
+                    );
+                }
+                crate::SqlServerColumnKind::Binary => {
+                    let values = downcast::<BinaryArray>(array.as_ref())?;
+                    row.push(
+                        (!values.is_null(row_index))
+                            .then(|| values.value(row_index))
+                            .into_sql(),
+                    );
+                }
+                crate::SqlServerColumnKind::Date
+                | crate::SqlServerColumnKind::Time
+                | crate::SqlServerColumnKind::Timestamp
+                | crate::SqlServerColumnKind::TimestampTz => {
+                    return Err(mapping_error(
+                        "temporali SQL Server non ammessi nel codec TDS bulk",
+                    ));
+                }
+                crate::SqlServerColumnKind::Decimal { scale, .. } => {
+                    let values = downcast::<Decimal128Array>(array.as_ref())?;
+                    let scale = u8::try_from(scale)
+                        .map_err(|_| mapping_error("scala decimal TDS bulk non valida"))?;
+                    if scale >= 38 {
+                        return Err(mapping_error("scala decimal TDS bulk oltre 37"));
+                    }
+                    let value = (!values.is_null(row_index)).then(|| {
+                        tiberius::numeric::Numeric::new_with_scale(values.value(row_index), scale)
+                    });
+                    row.push(value.into_sql());
+                }
+                crate::SqlServerColumnKind::Geometry | crate::SqlServerColumnKind::Geography => {
+                    return Err(mapping_error(
+                        "spatial SQL Server non ammesso nel codec TDS bulk",
+                    ));
+                }
+            }
+        }
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 fn bind_spatial(

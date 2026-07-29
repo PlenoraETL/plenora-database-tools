@@ -36,7 +36,10 @@ pub use read::{read_object, SqlServerBatchStream};
 pub use recovery::{RecoveryAction, RecoveryDecision, TransactionEvent, TransactionState};
 pub use session::{SessionState, SESSION_BOOTSTRAP_SQL};
 pub use types::{SqlServerColumnKind, SqlServerColumnSpec, SqlServerReadPlan};
-pub use write::{prepare_write, write_prepared, PreparedSqlServerWrite};
+pub use write::{
+    prepare_write, prepare_write_with_mode, write_prepared, PreparedSqlServerWrite,
+    SqlServerInsertMode,
+};
 
 /// Limite documentato dal provider per una singola richiesta.
 pub const MAX_BIND_PARAMETERS: usize = 2_100;

@@ -79,6 +79,15 @@ La suite live seriale ha verificato:
 30. projection `id,label`, filtro TDS bindato `id >= 3`, ordinamento
     discendente e `TOP (2)` verificati sia come `ReadOperation` sia come
     `QueryOperation`, con risultato deterministico `[5, 4]`.
+31. TDS bulk opt-in attraversato anche tramite il trait comune `Provider`, con
+    capability pubblicata e conferma del conteggio server;
+32. differenziale prepared/TDS bulk su 100 righe in quattro batch, con zero
+    differenze bidirezionali;
+33. duplicate key nel secondo request bulk con rollback confermato anche per
+    le righe già finalizzate dal primo request.
+34. round-trip bulk dei tipi ammessi (`bit`, interi, `real`/`float`,
+    `decimal`, `nvarchar`, `varbinary`) con confronto SQL bidirezionale a zero
+    differenze.
 
 Comando della prova:
 
@@ -86,14 +95,14 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **18 superati, 0 falliti**.
+Esito: **22 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
 Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
-- bulk write e modalità create/replace/update/upsert/delete-by-keys;
+- bulk per spatial/UDT e modalità create/replace/update/upsert/delete-by-keys;
 - `QueryOperation` con join, CTE, aggregate/window, set operation, offset e
   projection calcolate;
 - latenza finita e packet loss durante read e rollback;
@@ -108,3 +117,12 @@ server, non a sleep probabilistici. Gli hook restano compilati solo nei test e
 non ampliano l'API pubblica.
 
 Tali proprietà restano non pubblicizzate.
+
+Il bulk non è una sostituzione implicita del codec prepared. La selezione usa
+`SqlServerInsertMode::TdsBulk`; il preflight rifiuta input parziali, colonne
+riordinate, temporali, `money`, `geometry`/`geography`, XML/UUID e varianti
+native per cui Tiberius non espone una codifica bulk dimostrata. Ogni batch
+Arrow viene validato e materializzato
+in descrittori borrowed prima di aprire il request TDS; i descrittori sono
+conteggiati nel budget memoria. Un errore non classificabile dopo l'avvio del
+request mette la connessione in quarantena e non dichiara rollback.

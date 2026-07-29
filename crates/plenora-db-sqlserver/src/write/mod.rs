@@ -25,6 +25,18 @@ use tiberius::{FromSql, Query, Row};
 
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Codec usato dal percorso append/truncate-insert SQL Server.
+///
+/// `Prepared` resta il default compatibile e copre l'intero profilo tipi.
+/// `TdsBulk` è opt-in e viene accettato soltanto quando il piano soddisfa il
+/// sottoinsieme verificato dal codec bulk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqlServerInsertMode {
+    #[default]
+    Prepared,
+    TdsBulk,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteFaultPoint {
     BeforeCommit,
@@ -44,6 +56,7 @@ pub struct PreparedSqlServerWrite {
     _operation_lease: Option<ResourceLease>,
     _columns_lease: Option<ResourceLease>,
     loss_report: LossReport,
+    insert_mode: SqlServerInsertMode,
 }
 
 impl std::fmt::Debug for PreparedSqlServerWrite {
@@ -53,6 +66,7 @@ impl std::fmt::Debug for PreparedSqlServerWrite {
             .field("operation", &self.operation)
             .field("target_schema_fingerprint", &self.plan.schema_fingerprint)
             .field("columns", &self.plan.columns.len())
+            .field("insert_mode", &self.insert_mode)
             .field("loss_report", &self.loss_report)
             .finish_non_exhaustive()
     }
@@ -79,7 +93,42 @@ pub async fn prepare_write(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<PreparedSqlServerWrite> {
-    prepare_write_inner(pool, operation, input_schema, budget, cancellation, true).await
+    prepare_write_with_mode(
+        pool,
+        operation,
+        input_schema,
+        budget,
+        cancellation,
+        SqlServerInsertMode::Prepared,
+    )
+    .await
+}
+
+/// Prepara esplicitamente il codec di inserimento.
+///
+/// # Errors
+///
+/// `TdsBulk` fallisce durante `prepare` se l'input non contiene tutte le
+/// colonne scrivibili nell'ordine del catalogo o usa un tipo fuori dal profilo
+/// TDS bulk verificato.
+pub async fn prepare_write_with_mode(
+    pool: &Arc<SqlServerPool>,
+    operation: &WriteOperation,
+    input_schema: SchemaRef,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    insert_mode: SqlServerInsertMode,
+) -> Result<PreparedSqlServerWrite> {
+    prepare_write_inner(
+        pool,
+        operation,
+        input_schema,
+        budget,
+        cancellation,
+        true,
+        insert_mode,
+    )
+    .await
 }
 
 /// Variante usata dall'adattatore del trait comune.
@@ -93,8 +142,18 @@ pub async fn prepare_write_with_external_contract_leases(
     input_schema: SchemaRef,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
+    insert_mode: SqlServerInsertMode,
 ) -> Result<PreparedSqlServerWrite> {
-    prepare_write_inner(pool, operation, input_schema, budget, cancellation, false).await
+    prepare_write_inner(
+        pool,
+        operation,
+        input_schema,
+        budget,
+        cancellation,
+        false,
+        insert_mode,
+    )
+    .await
 }
 
 async fn prepare_write_inner(
@@ -104,6 +163,7 @@ async fn prepare_write_inner(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     acquire_contract_leases: bool,
+    insert_mode: SqlServerInsertMode,
 ) -> Result<PreparedSqlServerWrite> {
     budget.ensure_active()?;
     plan::validate_operation(operation)?;
@@ -151,6 +211,9 @@ async fn prepare_write_inner(
         Arc::clone(&input_schema),
         &observed_srids,
     )?;
+    if insert_mode == SqlServerInsertMode::TdsBulk {
+        plan::validate_bulk_profile(&plan)?;
+    }
     drop(pooled);
     let loss_report = LossReport {
         schema_version: 1,
@@ -165,6 +228,7 @@ async fn prepare_write_inner(
         _operation_lease: operation_lease,
         _columns_lease: columns_lease,
         loss_report,
+        insert_mode,
     })
 }
 
@@ -237,46 +301,47 @@ async fn write_prepared_inner(
             Ok(None) => break,
             Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
         };
-        let reservation =
-            match WriteBatchResources::reserve(&batch, &prepared.plan, &prepared.budget) {
-                Ok(reservation) => reservation,
-                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-            };
+        let reservation = match WriteBatchResources::reserve(
+            &batch,
+            &prepared.plan,
+            &prepared.budget,
+            prepared.insert_mode,
+        ) {
+            Ok(reservation) => reservation,
+            Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
+        };
         received = if let Some(value) = received.checked_add(reservation.rows) {
             value
         } else {
             let error = DatabaseError::resource_limit("conteggio righe write overflow");
             return Err(rollback_after_error(&mut pooled, error).await);
         };
-        for row in 0..batch.num_rows() {
-            let query = match codec::bind_row(&prepared.plan, &batch, row) {
-                Ok(query) => query,
-                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-            };
-            let results = pooled
-                .session_mut()?
-                .execute_query(query, ErrorPhase::Write, control.token())
-                .await;
-            let results = match results {
-                Ok(results) => results,
-                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-            };
-            let confirmed = match one_insert_confirmed(&results) {
-                Ok(confirmed) => confirmed,
-                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-            };
-            if !confirmed {
-                let error = write_error(
-                    ErrorCategory::Protocol,
-                    ErrorPhase::Write,
-                    "INSERT SQL Server senza conferma OUTPUT univoca",
-                );
-                return Err(rollback_after_error(&mut pooled, error).await);
+        let batch_result = match prepared.insert_mode {
+            SqlServerInsertMode::Prepared => {
+                execute_prepared_batch(
+                    &mut pooled,
+                    &prepared.plan,
+                    &batch,
+                    control.token(),
+                    fault,
+                    &execution_id,
+                )
+                .await
             }
-            if fault == Some(WriteFaultPoint::TransportLostAfterFirstInsert) {
-                pooled.quarantine();
-                return Err(transport_loss_error(&execution_id));
+            SqlServerInsertMode::TdsBulk => {
+                execute_bulk_batch(
+                    &mut pooled,
+                    &prepared.plan,
+                    &batch,
+                    control.token(),
+                    fault,
+                    &execution_id,
+                )
+                .await
             }
+        };
+        if let Err(error) = batch_result {
+            return Err(rollback_after_error(&mut pooled, error).await);
         }
         if let Err(error) = reservation.commit() {
             return Err(rollback_after_error(&mut pooled, error).await);
@@ -331,6 +396,66 @@ async fn write_prepared_inner(
         pooled.quarantine();
         unknown_commit_outcome(&prepared, execution_id, received)
     }
+}
+
+async fn execute_prepared_batch(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    batch: &plenora_database_core::arrow::RecordBatch,
+    cancellation: &CancellationToken,
+    fault: Option<WriteFaultPoint>,
+    execution_id: &str,
+) -> Result<()> {
+    for row in 0..batch.num_rows() {
+        let query = codec::bind_row(plan, batch, row)?;
+        let results = pooled
+            .session_mut()?
+            .execute_query(query, ErrorPhase::Write, cancellation)
+            .await?;
+        if !one_insert_confirmed(&results)? {
+            return Err(write_error(
+                ErrorCategory::Protocol,
+                ErrorPhase::Write,
+                "INSERT SQL Server senza conferma OUTPUT univoca",
+            ));
+        }
+        if fault == Some(WriteFaultPoint::TransportLostAfterFirstInsert) {
+            pooled.quarantine();
+            return Err(transport_loss_error(execution_id));
+        }
+    }
+    Ok(())
+}
+
+async fn execute_bulk_batch(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    batch: &plenora_database_core::arrow::RecordBatch,
+    cancellation: &CancellationToken,
+    fault: Option<WriteFaultPoint>,
+    execution_id: &str,
+) -> Result<()> {
+    let rows = codec::bulk_rows(plan, batch)?;
+    let expected = u64::try_from(batch.num_rows())
+        .map_err(|_| DatabaseError::resource_limit("righe bulk non rappresentabili"))?;
+    if expected > 0 {
+        let inserted = pooled
+            .session_mut()?
+            .execute_bulk_rows(&plan.bulk_table, rows, cancellation)
+            .await?;
+        if inserted != expected {
+            return Err(write_error(
+                ErrorCategory::Protocol,
+                ErrorPhase::Write,
+                "conteggio TDS bulk diverso dalle righe inviate",
+            ));
+        }
+        if fault == Some(WriteFaultPoint::TransportLostAfterFirstInsert) {
+            pooled.quarantine();
+            return Err(transport_loss_error(execution_id));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

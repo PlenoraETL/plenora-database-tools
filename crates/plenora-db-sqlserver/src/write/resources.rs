@@ -1,5 +1,6 @@
 use super::codec::inspect_batch;
 use super::plan::WritePlan;
+use super::SqlServerInsertMode;
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{DatabaseError, Result};
@@ -19,6 +20,7 @@ impl WriteBatchResources {
         batch: &RecordBatch,
         plan: &WritePlan,
         budget: &ResourceBudget,
+        insert_mode: SqlServerInsertMode,
     ) -> Result<Self> {
         budget.ensure_active()?;
         let component_limit = budget.remaining(ResourceKind::GeometryComponents);
@@ -40,7 +42,16 @@ impl WriteBatchResources {
                 geometry_lease: None,
             });
         }
-        if inspection.bytes > budget.remaining(ResourceKind::MemoryBytes)
+        let descriptor_bytes = if insert_mode == SqlServerInsertMode::TdsBulk {
+            bulk_descriptor_bytes(inspection.rows, plan.columns.len())?
+        } else {
+            0
+        };
+        let memory_bytes = inspection
+            .bytes
+            .checked_add(descriptor_bytes)
+            .ok_or_else(|| DatabaseError::resource_limit("memoria codec TDS bulk overflow"))?;
+        if memory_bytes > budget.remaining(ResourceKind::MemoryBytes)
             || inspection.bytes > budget.remaining(ResourceKind::OutputBytes)
         {
             return Err(DatabaseError::resource_limit(
@@ -51,7 +62,7 @@ impl WriteBatchResources {
             rows: inspection.rows,
             rows_lease: Some(budget.try_lease(ResourceKind::Rows, inspection.rows)?),
             output_lease: Some(budget.try_lease(ResourceKind::OutputBytes, inspection.bytes)?),
-            memory_lease: Some(budget.try_lease(ResourceKind::MemoryBytes, inspection.bytes)?),
+            memory_lease: Some(budget.try_lease(ResourceKind::MemoryBytes, memory_bytes)?),
             bytes: inspection.bytes,
             geometry_components: inspection.geometry_components,
             geometry_lease: (inspection.geometry_components > 0)
@@ -73,7 +84,7 @@ impl WriteBatchResources {
         };
         rows.commit(self.rows)?;
         output.commit(self.bytes)?;
-        drop(memory);
+        memory.release()?;
         if self.geometry_components > 0 {
             self.geometry_lease
                 .ok_or_else(|| DatabaseError::resource_limit("budget geometrico assente"))?
@@ -81,4 +92,23 @@ impl WriteBatchResources {
         }
         Ok(())
     }
+}
+
+fn bulk_descriptor_bytes(rows: u64, columns: usize) -> Result<u64> {
+    let columns = u64::try_from(columns)
+        .map_err(|_| DatabaseError::resource_limit("colonne bulk non rappresentabili"))?;
+    let row_bytes = u64::try_from(std::mem::size_of::<tiberius::TokenRow<'static>>())
+        .map_err(|_| DatabaseError::resource_limit("descriptor riga bulk non rappresentabile"))?;
+    let cell_bytes = u64::try_from(std::mem::size_of::<tiberius::ColumnData<'static>>())
+        .map_err(|_| DatabaseError::resource_limit("descriptor cella bulk non rappresentabile"))?;
+    let cells = rows
+        .checked_mul(columns)
+        .ok_or_else(|| DatabaseError::resource_limit("celle bulk overflow"))?;
+    rows.checked_mul(row_bytes)
+        .and_then(|rows_size| {
+            cells
+                .checked_mul(cell_bytes)
+                .and_then(|cells_size| rows_size.checked_add(cells_size))
+        })
+        .ok_or_else(|| DatabaseError::resource_limit("descriptor TDS bulk overflow"))
 }

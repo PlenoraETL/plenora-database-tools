@@ -26,6 +26,8 @@ pub(super) struct WritePlan {
     pub(super) input_schema: SchemaRef,
     pub(super) columns: Vec<WriteColumnPlan>,
     pub(super) insert_sql: String,
+    pub(super) bulk_table: String,
+    pub(super) bulk_columns_aligned: bool,
     pub(super) lock_sql: String,
     pub(super) truncate_sql: Option<String>,
     pub(super) schema_fingerprint: String,
@@ -128,6 +130,7 @@ impl WritePlan {
                 expression
             })
             .collect::<Vec<_>>();
+        let bulk_columns_aligned = bulk_columns_are_aligned(description, &columns);
         Ok(Self {
             input_schema,
             columns,
@@ -136,6 +139,8 @@ impl WritePlan {
                 quoted_columns.join(", "),
                 expressions.join(", ")
             ),
+            bulk_table: quoted_object.clone(),
+            bulk_columns_aligned,
             lock_sql: format!(
                 "SELECT TOP (0) 1 AS [plenora_lock] FROM {quoted_object} \
                  WITH (TABLOCKX, HOLDLOCK);"
@@ -147,6 +152,63 @@ impl WritePlan {
             object: description.name.clone(),
         })
     }
+}
+
+pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
+    if !plan.bulk_columns_aligned {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "TDS bulk richiede tutte le colonne scrivibili nell'ordine del catalogo",
+        ));
+    }
+    for column in &plan.columns {
+        let supported = match column.kind {
+            SqlServerColumnKind::Bool
+            | SqlServerColumnKind::U8
+            | SqlServerColumnKind::I16
+            | SqlServerColumnKind::I32
+            | SqlServerColumnKind::I64
+            | SqlServerColumnKind::F32
+            | SqlServerColumnKind::F64 => true,
+            SqlServerColumnKind::Utf8 => column.native_type == "nvarchar",
+            SqlServerColumnKind::Binary => column.native_type == "varbinary",
+            SqlServerColumnKind::Decimal { scale, .. } => {
+                column.native_type == "decimal" && (0..38).contains(&scale)
+            }
+            SqlServerColumnKind::Date
+            | SqlServerColumnKind::Time
+            | SqlServerColumnKind::Timestamp
+            | SqlServerColumnKind::TimestampTz
+            | SqlServerColumnKind::Geometry
+            | SqlServerColumnKind::Geography => false,
+        };
+        if !supported {
+            return Err(plan_error(
+                ErrorCategory::Unsupported,
+                format!(
+                    "tipo {} non ammesso dal profilo TDS bulk verificato",
+                    column.native_declaration
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bulk_columns_are_aligned(
+    description: &SqlServerObjectDescription,
+    columns: &[WriteColumnPlan],
+) -> bool {
+    let writable = description
+        .columns
+        .iter()
+        .filter(|column| is_writable(column))
+        .collect::<Vec<_>>();
+    writable.len() == columns.len()
+        && writable
+            .iter()
+            .zip(columns)
+            .all(|(target, input)| target.name == input.name)
 }
 
 pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
@@ -377,6 +439,7 @@ mod tests {
     use super::*;
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::plan::{ObjectRef, SridPolicy};
+    use std::sync::Arc;
 
     fn operation(mode: WriteMode) -> WriteOperation {
         WriteOperation {
@@ -422,5 +485,57 @@ mod tests {
         candidate.allow_partial = false;
         candidate.transaction_profile = TransactionProfile::ChunkCommitted;
         assert!(validate_operation(&candidate).is_err());
+    }
+
+    #[test]
+    fn bulk_profile_is_explicit_and_rejects_ambiguous_columns_or_spatial() {
+        let mut plan =
+            WritePlan {
+                input_schema: Arc::new(plenora_database_core::arrow::Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                ])),
+                columns: vec![WriteColumnPlan {
+                    input_index: 0,
+                    name: "id".to_owned(),
+                    kind: SqlServerColumnKind::I32,
+                    native_type: "int".to_owned(),
+                    native_declaration: "int".to_owned(),
+                    nullable: false,
+                    spatial_srid: None,
+                }],
+                insert_sql: String::new(),
+                bulk_table: "[dbo].[target]".to_owned(),
+                bulk_columns_aligned: false,
+                lock_sql: String::new(),
+                truncate_sql: None,
+                schema_fingerprint: "fingerprint".to_owned(),
+                schema: "dbo".to_owned(),
+                object: "target".to_owned(),
+            };
+        assert_eq!(
+            validate_bulk_profile(&plan)
+                .expect_err("partial columns")
+                .category,
+            ErrorCategory::Unsupported
+        );
+        plan.bulk_columns_aligned = true;
+        validate_bulk_profile(&plan).expect("verified scalar profile");
+        plan.columns[0].kind = SqlServerColumnKind::Geometry;
+        plan.columns[0].native_type = "geometry".to_owned();
+        assert_eq!(
+            validate_bulk_profile(&plan)
+                .expect_err("spatial bulk")
+                .category,
+            ErrorCategory::Unsupported
+        );
+        plan.columns[0].kind = SqlServerColumnKind::Date;
+        plan.columns[0].native_type = "date".to_owned();
+        assert!(validate_bulk_profile(&plan).is_err());
+        plan.columns[0].kind = SqlServerColumnKind::Decimal {
+            precision: 19,
+            scale: 4,
+        };
+        plan.columns[0].native_type = "money".to_owned();
+        assert!(validate_bulk_profile(&plan).is_err());
     }
 }

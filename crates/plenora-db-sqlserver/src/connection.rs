@@ -7,7 +7,7 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
-use tiberius::Client;
+use tiberius::{Client, TokenRow};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -368,6 +368,60 @@ impl SqlServerSession {
         }
     }
 
+    pub(crate) async fn execute_bulk_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: Vec<TokenRow<'a>>,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
+        let operation_timeout = self.operation_timeout;
+        let Some(client) = self.client.as_mut() else {
+            return Err(state_error(ErrorPhase::Write));
+        };
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => WriteQueryOutcome::Cancelled,
+            result = tokio::time::timeout(
+                operation_timeout,
+                bulk_insert_rows(client, table, rows),
+            ) => {
+                match result {
+                    Ok(Ok(inserted)) => WriteQueryOutcome::Completed(inserted),
+                    Ok(Err(error)) => WriteQueryOutcome::Driver(error),
+                    Err(_) => WriteQueryOutcome::Timeout,
+                }
+            }
+        };
+        match outcome {
+            WriteQueryOutcome::Completed(rows) => Ok(rows),
+            WriteQueryOutcome::Cancelled => {
+                self.quarantine();
+                Err(cancellation_error(ErrorPhase::Write, RemoteEffect::Unknown))
+            }
+            WriteQueryOutcome::Timeout => {
+                self.quarantine();
+                Err(timeout_error(ErrorPhase::Write, RemoteEffect::Unknown))
+            }
+            WriteQueryOutcome::Driver(error) => {
+                let requested_effect = if error.code().is_none() {
+                    RemoteEffect::Unknown
+                } else {
+                    RemoteEffect::None
+                };
+                let public = driver_error(&error, ErrorPhase::Write, requested_effect);
+                if error.code().is_some() {
+                    let _ = self.transaction.apply(TransactionEvent::StatementFailed);
+                } else {
+                    // Un errore locale di encoding può arrivare dopo che il
+                    // request bulk ha già emesso pacchetti: il protocollo non
+                    // è più drenabile con certezza.
+                    self.quarantine();
+                }
+                Err(public)
+            }
+        }
+    }
+
     pub(crate) async fn pump_query_rows(
         &mut self,
         query: tiberius::Query<'static>,
@@ -437,6 +491,18 @@ async fn query_and_drain(
     query: tiberius::Query<'static>,
 ) -> tiberius::Result<Vec<Vec<tiberius::Row>>> {
     query.query(client).await?.into_results().await
+}
+
+async fn bulk_insert_rows<'a>(
+    client: &'a mut TdsClient,
+    table: &'a str,
+    rows: Vec<TokenRow<'a>>,
+) -> tiberius::Result<u64> {
+    let mut request = client.bulk_insert(table).await?;
+    for row in rows {
+        request.send(row).await?;
+    }
+    Ok(request.finalize().await?.total())
 }
 
 async fn pump_rows(
