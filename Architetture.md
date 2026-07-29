@@ -1242,15 +1242,17 @@ Stato corrente SQL Server:
   riferimento SQL Server 2022;
 - `ReadOperation` supporta projection, filtri non-spatial con bind TDS,
   ordering e `TOP`, mantenendo schema token e preflight spatial;
-- `QueryOperation` usa la validazione iterativa comune e supporta il profilo a
-  singola source con colonne, confronti booleani, `IS NULL`, ordering e limit;
-- join, CTE, aggregate/window, set operation e projection calcolate falliscono
-  chiusi finché non esiste un percorso deterministico per derivare lo schema
-  Arrow dell'output;
+- `QueryOperation` usa la validazione iterativa comune e supporta CTE, join,
+  aggregate/group/having, window, set operation e offset/fetch;
+- lo schema Arrow dell'output è derivato una volta tramite
+  `sys.dm_exec_describe_first_result_set` e confrontato fail-closed con il
+  primo `COLMETADATA` TDS, anche quando il risultato contiene zero righe;
+- output spatial UDT nudo, lateral/APPLY, locking e projection calcolate senza
+  alias deterministico restano chiusi finché non esiste una prova dedicata;
 - `append` e `truncate_insert` attraversano il trait comune senza duplicare i
   resource lease tra prepare ed execute;
-- la suite live seriale copre 18 test, inclusi fault TDS fisici, contratto
-  comune e read/query/write attraverso l'API provider.
+- la suite live seriale copre 23 test, inclusi fault TDS fisici, contratto
+  comune, rich query e read/query/write attraverso l'API provider.
 
 ### Fase 4 — Oracle e Db2
 

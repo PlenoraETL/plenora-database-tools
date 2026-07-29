@@ -26,7 +26,7 @@ Legenda:
 | Read streaming | Arrow batch con canale TDS a capacità 1 e batch bounded | live-proven |
 | Read comune | projection, filter non-spatial bindato, ordering e `TOP` | live-proven |
 | Query AST base | singola source, alias, colonne, confronti booleani, `IS NULL`, ordering e limit | live-proven |
-| Query AST ricco | CTE/join/aggregate/window/set/offset richiedono schema output derivato | live-required; fail-closed |
+| Query AST ricco | CTE, join, aggregate/group/having, window, set operation e offset/fetch; schema output derivato dal server e verificato contro TDS | live-proven |
 | Codec scalari read | booleani, interi, float, decimal/money, testo, binari e temporali | live-proven |
 | Budget read | righe, colonne, memoria, output, componenti geometriche e deadline | offline + live-proven |
 | Prepared write | bind TDS tipizzati, `append` e `truncate_insert` | live-proven |
@@ -49,6 +49,8 @@ Legenda:
 | Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
 | `FullGlobe` | rifiutato in strict | reject |
 | Spatial rich AST | fail-closed finché tipo e SRID non sono risolti | offline |
+| Output query spatial | richiede conversione WKB e contratto spatial risolto; UDT nudo rifiutato | fail-closed |
+| Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
 | Introspection estesa | privilegi effettivi, temporal/graph/external e partizioni | live-required |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
 | Catalogo riferimento | schemi, oggetti, colonne, vincoli e indici | live-proven |

@@ -35,7 +35,9 @@ pub use provider::SqlServerProvider;
 pub use read::{read_object, SqlServerBatchStream};
 pub use recovery::{RecoveryAction, RecoveryDecision, TransactionEvent, TransactionState};
 pub use session::{SessionState, SESSION_BOOTSTRAP_SQL};
-pub use types::{SqlServerColumnKind, SqlServerColumnSpec, SqlServerReadPlan};
+pub use types::{
+    SqlServerColumnKind, SqlServerColumnSpec, SqlServerReadPlan, SqlServerWireEncoding,
+};
 pub use write::{
     prepare_write, prepare_write_with_mode, write_prepared, PreparedSqlServerWrite,
     SqlServerInsertMode,

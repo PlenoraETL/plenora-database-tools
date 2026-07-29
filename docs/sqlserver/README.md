@@ -17,6 +17,7 @@ il riferimento comportamentale, non un modello da copiare alla cieca.
 | 7 | trait comune `Provider`, capability e testkit di conformità | verificato sul riferimento SQL Server 2022 |
 | 8 | read comune e `QueryOperation` a singola source | verificato sul riferimento SQL Server 2022 |
 | 9 | TDS bulk opt-in, differential e rollback multi-batch | verificato sul riferimento SQL Server 2022 |
+| 10 | `QueryOperation` relazionale, schema output server-authoritative e codec nativi | verificato sul riferimento SQL Server 2022 |
 
 Il crate usa un client TDS diretto. Non introduce un ORM: AST, mapping Arrow,
 policy di perdita e outcome restano nei contratti Plenora.
@@ -50,10 +51,13 @@ tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e
 dopo rollback server.
 La stessa campagna attraversa ora il trait comune `Provider`: test connection,
-capability, catalogo, projection/filter/order/limit bindati, profilo
-`QueryOperation` a singola source e round-trip prepared write. Le forme
-relazionali che richiedono inferenza dello schema output — join, CTE,
-aggregati, window, set operation e spatial — restano fail-closed.
+capability, catalogo, projection/filter/order/limit bindati, round-trip
+prepared write e `QueryOperation` relazionali con CTE, join, group/having,
+aggregati, window, set operation e offset/fetch. Lo schema Arrow dell'output è
+derivato dal server prima dell'esecuzione e confrontato con i metadati TDS
+effettivi; questo copre anche risultati vuoti senza rieseguire la query. I
+risultati spatial non convertiti esplicitamente in WKB, i lateral join, il
+locking e le forme prive di un nome output deterministico restano fail-closed.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
 certificati verificabili e campagne dedicate per altre modalità di write,
 latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La

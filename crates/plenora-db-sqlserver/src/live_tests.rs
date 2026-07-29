@@ -1,10 +1,11 @@
 use crate::{
     describe_object, list_objects, list_schemas, prepare_write, prepare_write_with_mode,
-    probe_server, read_object, write_prepared, CertificatePolicy, SqlServerConfig,
-    SqlServerInsertMode, SqlServerPool, SqlServerProvider, SqlServerSession,
+    probe_server, read_object, write_prepared, CertificatePolicy, SqlServerColumnKind,
+    SqlServerColumnSpec, SqlServerConfig, SqlServerInsertMode, SqlServerPool, SqlServerProvider,
+    SqlServerSession, SqlServerWireEncoding,
 };
 use plenora_database_core::arrow::array::{
-    Array, BinaryArray, Decimal128Array, Int32Array, StringArray,
+    Array, BinaryArray, Decimal128Array, Int32Array, Int64Array, StringArray,
 };
 use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
@@ -18,7 +19,9 @@ use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
 use plenora_database_core::query::{
-    ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+    ColumnRef, CommonTableExpression, JoinKind, QueryExpression, QueryJoin, QueryOperation,
+    QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
+    ScalarFunction,
 };
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
@@ -513,6 +516,448 @@ async fn live_common_provider_contract_read_and_write() {
         rows = rows.saturating_add(batch.num_rows());
     }
     assert_eq!(rows, 5);
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per QueryOperation ricca"]
+#[allow(clippy::too_many_lines)]
+async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema() {
+    let cancellation = CancellationToken::new();
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        64,
+        3,
+    )
+    .expect("rich query provider");
+    let secret = live_secret();
+    let source = |object: &str, alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let cte_source = |name: &str, alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: name.to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let column = |relation: &str, field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some(relation.to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let parameter = |name: &str| QueryExpression::Parameter {
+        name: name.to_owned(),
+    };
+    let comparison = |left: QueryExpression,
+                      operator: plenora_database_core::plan::ComparisonOperator,
+                      right: QueryExpression| QueryExpression::Compare {
+        left: Box::new(left),
+        operator,
+        right: Box::new(right),
+    };
+    let count = |relation: &str| QueryExpression::Scalar {
+        function: ScalarFunction::Count,
+        arguments: vec![column(relation, "id")],
+    };
+
+    let cte = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source("stream_probe", "base")),
+        derived_source: None,
+        projection: vec![
+            QueryProjection {
+                expression: column("base", "id"),
+                alias: Some("id".to_owned()),
+            },
+            QueryProjection {
+                expression: column("base", "label"),
+                alias: Some("label".to_owned()),
+            },
+        ],
+        joins: Vec::new(),
+        filter: Some(comparison(
+            column("base", "id"),
+            plenora_database_core::plan::ComparisonOperator::Gte,
+            parameter("minimum_id"),
+        )),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let aggregate = QueryOperation {
+        common_table_expressions: vec![CommonTableExpression {
+            name: "filtered".to_owned(),
+            recursive: false,
+            query: Box::new(cte),
+        }],
+        source: Some(cte_source("filtered", "f")),
+        derived_source: None,
+        projection: vec![
+            QueryProjection {
+                expression: column("joined", "label"),
+                alias: Some("label".to_owned()),
+            },
+            QueryProjection {
+                expression: count("f"),
+                alias: Some("event_count".to_owned()),
+            },
+        ],
+        joins: vec![QueryJoin {
+            kind: JoinKind::Inner,
+            source: Some(source("stream_probe", "joined")),
+            derived_source: None,
+            lateral: false,
+            on: Some(comparison(
+                column("f", "id"),
+                plenora_database_core::plan::ComparisonOperator::Eq,
+                column("joined", "id"),
+            )),
+        }],
+        filter: None,
+        group_by: vec![column("joined", "label")],
+        having: Some(comparison(
+            count("f"),
+            plenora_database_core::plan::ComparisonOperator::Gte,
+            parameter("minimum_count"),
+        )),
+        order_by: vec![QueryOrdering {
+            expression: column("joined", "label"),
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(10),
+        row_offset: None,
+        locking: None,
+    };
+    let aggregate_parameters = ParameterBag::new(BTreeMap::from([
+        ("minimum_count".to_owned(), ParameterValue::I64(1)),
+        ("minimum_id".to_owned(), ParameterValue::I32(3)),
+    ]));
+    let aggregate_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("aggregate budget");
+    let mut aggregate_stream = provider
+        .query(
+            &secret,
+            &aggregate,
+            &aggregate_parameters,
+            &aggregate_budget,
+            &cancellation,
+        )
+        .await
+        .expect("aggregate query");
+    let aggregate_batch = aggregate_stream
+        .next_batch()
+        .await
+        .expect("aggregate batch")
+        .expect("aggregate rows");
+    let labels = aggregate_batch
+        .column_by_name("label")
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .expect("aggregate labels");
+    assert_eq!(
+        labels.iter().flatten().collect::<Vec<_>>(),
+        ["row-3", "row-4", "row-5"]
+    );
+    let counts = aggregate_batch
+        .column_by_name("event_count")
+        .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+        .expect("aggregate counts");
+    assert_eq!(counts.values(), &[1, 1, 1]);
+    assert!(aggregate_stream
+        .next_batch()
+        .await
+        .expect("aggregate end")
+        .is_none());
+
+    let window = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source("stream_probe", "source")),
+        derived_source: None,
+        projection: vec![
+            QueryProjection {
+                expression: column("source", "id"),
+                alias: Some("id".to_owned()),
+            },
+            QueryProjection {
+                expression: QueryExpression::Window {
+                    function: ScalarFunction::RowNumber,
+                    arguments: Vec::new(),
+                    partition_by: Vec::new(),
+                    order_by: vec![QueryOrdering {
+                        expression: column("source", "id"),
+                        direction: SortDirection::Asc,
+                    }],
+                    frame: None,
+                },
+                alias: Some("row_number".to_owned()),
+            },
+        ],
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("source", "id"),
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(2),
+        row_offset: Some(2),
+        locking: None,
+    };
+    let window_budget = ResourceBudget::new(ResourceLimits::default()).expect("window budget");
+    let mut window_stream = provider
+        .query(
+            &secret,
+            &window,
+            &ParameterBag::default(),
+            &window_budget,
+            &cancellation,
+        )
+        .await
+        .expect("window query");
+    let window_batch = window_stream
+        .next_batch()
+        .await
+        .expect("window batch")
+        .expect("window rows");
+    let ids = window_batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("window ids");
+    let row_numbers = window_batch
+        .column_by_name("row_number")
+        .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+        .expect("window row numbers");
+    assert_eq!(ids.values(), &[3, 4]);
+    assert_eq!(row_numbers.values(), &[3, 4]);
+
+    let set_rhs = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source("stream_probe", "right_source")),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column("right_source", "id"),
+            alias: Some("id".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(comparison(
+            column("right_source", "id"),
+            plenora_database_core::plan::ComparisonOperator::Gte,
+            parameter("lower_tail"),
+        )),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let set_query = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source("stream_probe", "left_source")),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column("left_source", "id"),
+            alias: Some("id".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(comparison(
+            column("left_source", "id"),
+            plenora_database_core::plan::ComparisonOperator::Lte,
+            parameter("upper_head"),
+        )),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: QueryExpression::Column {
+                column: ColumnRef {
+                    relation: None,
+                    field: "id".to_owned(),
+                },
+            },
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: vec![QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: true,
+            query: Box::new(set_rhs),
+        }],
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let set_parameters = ParameterBag::new(BTreeMap::from([
+        ("lower_tail".to_owned(), ParameterValue::I32(5)),
+        ("upper_head".to_owned(), ParameterValue::I32(2)),
+    ]));
+    let set_budget = ResourceBudget::new(ResourceLimits::default()).expect("set budget");
+    let mut set_stream = provider
+        .query(
+            &secret,
+            &set_query,
+            &set_parameters,
+            &set_budget,
+            &cancellation,
+        )
+        .await
+        .expect("set query");
+    let set_batch = set_stream
+        .next_batch()
+        .await
+        .expect("set batch")
+        .expect("set rows");
+    let set_ids = set_batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("set ids");
+    assert_eq!(set_ids.values(), &[1, 2, 5]);
+
+    let native_projection = |parameter_name: &str| QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source("stream_probe", "native_source")),
+        derived_source: None,
+        projection: [
+            "exact_value",
+            "calendar_date",
+            "clock_time",
+            "local_timestamp",
+            "offset_timestamp",
+            "external_id",
+            "document",
+        ]
+        .into_iter()
+        .map(|name| QueryProjection {
+            expression: column("native_source", name),
+            alias: Some(name.to_owned()),
+        })
+        .collect(),
+        joins: Vec::new(),
+        filter: Some(comparison(
+            column("native_source", "id"),
+            plenora_database_core::plan::ComparisonOperator::Eq,
+            parameter(parameter_name),
+        )),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let native_budget = ResourceBudget::new(ResourceLimits::default()).expect("native budget");
+    let mut native_stream = provider
+        .query(
+            &secret,
+            &native_projection("selected_id"),
+            &ParameterBag::new(BTreeMap::from([(
+                "selected_id".to_owned(),
+                ParameterValue::I32(1),
+            )])),
+            &native_budget,
+            &cancellation,
+        )
+        .await
+        .expect("native query");
+    assert_eq!(
+        native_stream
+            .schema()
+            .field_with_name("exact_value")
+            .expect("native decimal")
+            .data_type(),
+        &DataType::Decimal128(20, 6)
+    );
+    let native_batch = native_stream
+        .next_batch()
+        .await
+        .expect("native batch")
+        .expect("native row");
+    let decimals = native_batch
+        .column_by_name("exact_value")
+        .and_then(|array| array.as_any().downcast_ref::<Decimal128Array>())
+        .expect("native decimal values");
+    assert_eq!(decimals.value(0), 123_456_789);
+    let uuids = native_batch
+        .column_by_name("external_id")
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .expect("native UUID");
+    assert_eq!(uuids.value(0), "00000000-0000-0000-0000-000000000001");
+    let xml = native_batch
+        .column_by_name("document")
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .expect("native XML");
+    assert_eq!(xml.value(0), "<row id=\"1\"/>");
+
+    let empty_budget = ResourceBudget::new(ResourceLimits::default()).expect("empty budget");
+    let mut empty_stream = provider
+        .query(
+            &secret,
+            &native_projection("missing_id"),
+            &ParameterBag::new(BTreeMap::from([(
+                "missing_id".to_owned(),
+                ParameterValue::I32(999),
+            )])),
+            &empty_budget,
+            &cancellation,
+        )
+        .await
+        .expect("empty query");
+    assert_eq!(empty_stream.schema().fields().len(), 7);
+    assert!(empty_stream
+        .next_batch()
+        .await
+        .expect("empty result")
+        .is_none());
+
+    let mut unnamed = native_projection("selected_id");
+    unnamed.projection = vec![QueryProjection {
+        expression: count("native_source"),
+        alias: None,
+    }];
+    let unnamed_budget = ResourceBudget::new(ResourceLimits::default()).expect("unnamed budget");
+    let unnamed_result = provider
+        .query(
+            &secret,
+            &unnamed,
+            &ParameterBag::new(BTreeMap::from([(
+                "selected_id".to_owned(),
+                ParameterValue::I32(1),
+            )])),
+            &unnamed_budget,
+            &cancellation,
+        )
+        .await;
+    let Err(unnamed_error) = unnamed_result else {
+        panic!("unnamed calculated projection must fail");
+    };
+    assert_eq!(unnamed_error.category, ErrorCategory::Schema);
 }
 
 #[tokio::test]
@@ -1427,11 +1872,22 @@ async fn live_physical_blackhole_during_read_times_out_and_quarantines() {
         .expect("server-state admin");
     let (sender, _receiver) = mpsc::channel(1);
     let worker_cancellation = cancellation.clone();
+    let expected_columns = vec![SqlServerColumnSpec {
+        name: "value".to_owned(),
+        native_type: "int".to_owned(),
+        native_declaration: "int".to_owned(),
+        nullable: false,
+        collation: None,
+        kind: SqlServerColumnKind::I32,
+        spatial_srid: None,
+        wire_encoding: SqlServerWireEncoding::Native,
+    }];
     let worker = tokio::spawn(async move {
         let result = session
             .pump_query_rows(
                 Query::new("WAITFOR DELAY '00:00:10'; SELECT 1 AS [value];"),
                 sender,
+                &expected_columns,
                 &worker_cancellation,
             )
             .await;

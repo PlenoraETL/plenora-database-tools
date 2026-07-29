@@ -34,6 +34,16 @@ pub enum SqlServerColumnKind {
     Geography,
 }
 
+/// Rappresentazione effettiva ricevuta sul wire TDS.
+///
+/// Il read tabellare proietta alcuni tipi in testo o WKB; il percorso
+/// relazionale ricco riceve invece i valori nativi descritti dal server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlServerWireEncoding {
+    Projected,
+    Native,
+}
+
 impl SqlServerColumnKind {
     #[must_use]
     pub const fn spatial_semantics(&self) -> Option<SpatialSemantics> {
@@ -54,6 +64,7 @@ pub struct SqlServerColumnSpec {
     pub collation: Option<String>,
     pub kind: SqlServerColumnKind,
     pub spatial_srid: Option<u32>,
+    pub wire_encoding: SqlServerWireEncoding,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +230,30 @@ impl SqlServerReadPlan {
         self.schema = contract_schema(fields);
         Ok(())
     }
+
+    pub(crate) fn from_query_result(
+        sql: String,
+        bind_names: Vec<String>,
+        columns: Vec<SqlServerColumnSpec>,
+    ) -> Result<Self> {
+        if columns.is_empty() {
+            return Err(prepare_error(
+                ErrorCategory::Schema,
+                "QueryOperation SQL Server priva di colonne risultanti",
+            ));
+        }
+        let fields = columns
+            .iter()
+            .map(SqlServerColumnSpec::arrow_field)
+            .collect::<Vec<_>>();
+        Ok(Self {
+            columns,
+            schema: contract_schema(fields),
+            sql,
+            bind_names,
+            structural_fingerprint: "query-result-metadata-v1".to_owned(),
+        })
+    }
 }
 
 const fn sql_server_renderer() -> Renderer {
@@ -381,58 +416,7 @@ impl SqlServerColumnSpec {
     /// Fallisce chiuso per tipi o dichiarazioni non rappresentabili.
     pub fn from_catalog(column: &SqlServerColumn) -> Result<Self> {
         let native = column.native_type.to_ascii_lowercase();
-        let kind = match native.as_str() {
-            "bit" => SqlServerColumnKind::Bool,
-            "tinyint" => SqlServerColumnKind::U8,
-            "smallint" => SqlServerColumnKind::I16,
-            "int" => SqlServerColumnKind::I32,
-            "bigint" => SqlServerColumnKind::I64,
-            "real" => SqlServerColumnKind::F32,
-            "float" => SqlServerColumnKind::F64,
-            "decimal" | "numeric" => {
-                if column.precision == 0 || column.precision > 38 || column.scale > column.precision
-                {
-                    return Err(prepare_error(
-                        ErrorCategory::DataMapping,
-                        "precisione/scala decimal SQL Server non rappresentabile",
-                    ));
-                }
-                SqlServerColumnKind::Decimal {
-                    precision: column.precision,
-                    scale: i8::try_from(column.scale).map_err(|_| {
-                        prepare_error(
-                            ErrorCategory::DataMapping,
-                            "scala decimal SQL Server non rappresentabile",
-                        )
-                    })?,
-                }
-            }
-            "money" => SqlServerColumnKind::Decimal {
-                precision: 19,
-                scale: 4,
-            },
-            "smallmoney" => SqlServerColumnKind::Decimal {
-                precision: 10,
-                scale: 4,
-            },
-            "char" | "varchar" | "text" | "nchar" | "nvarchar" | "ntext" | "uniqueidentifier"
-            | "xml" => SqlServerColumnKind::Utf8,
-            "binary" | "varbinary" | "image" | "timestamp" | "rowversion" => {
-                SqlServerColumnKind::Binary
-            }
-            "date" => SqlServerColumnKind::Date,
-            "time" => SqlServerColumnKind::Time,
-            "smalldatetime" | "datetime" | "datetime2" => SqlServerColumnKind::Timestamp,
-            "datetimeoffset" => SqlServerColumnKind::TimestampTz,
-            "geometry" => SqlServerColumnKind::Geometry,
-            "geography" => SqlServerColumnKind::Geography,
-            _ => {
-                return Err(prepare_error(
-                    ErrorCategory::Unsupported,
-                    format!("tipo SQL Server non supportato nel profilo read: {native}"),
-                ));
-            }
-        };
+        let kind = column_kind(&native, column.precision, column.scale)?;
         Ok(Self {
             name: column.name.clone(),
             native_declaration: native_declaration(column),
@@ -441,7 +425,102 @@ impl SqlServerColumnSpec {
             collation: column.collation.clone(),
             kind,
             spatial_srid: None,
+            wire_encoding: SqlServerWireEncoding::Projected,
         })
+    }
+
+    pub(crate) fn from_query_metadata(
+        name: String,
+        native_declaration: String,
+        nullable: bool,
+        collation: Option<String>,
+    ) -> Result<Self> {
+        let (native_type, precision, scale) = parse_native_declaration(&native_declaration)?;
+        if matches!(native_type.as_str(), "money" | "smallmoney") {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                "output money QueryOperation SQL Server richiede conversione testuale esplicita",
+            ));
+        }
+        let kind = column_kind(&native_type, precision, scale)?;
+        if kind.spatial_semantics().is_some() {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                "output spatial QueryOperation SQL Server richiede WKB e SRID risolto",
+            ));
+        }
+        Ok(Self {
+            name,
+            native_type,
+            native_declaration,
+            nullable,
+            collation,
+            kind,
+            spatial_srid: None,
+            wire_encoding: SqlServerWireEncoding::Native,
+        })
+    }
+
+    pub(crate) fn accepts_tds_column_type(&self, actual: tiberius::ColumnType) -> bool {
+        use tiberius::ColumnType;
+        if self.wire_encoding == SqlServerWireEncoding::Projected {
+            match (&self.kind, self.native_type.as_str()) {
+                (
+                    SqlServerColumnKind::Decimal { .. }
+                    | SqlServerColumnKind::Date
+                    | SqlServerColumnKind::Time
+                    | SqlServerColumnKind::Timestamp
+                    | SqlServerColumnKind::TimestampTz,
+                    _,
+                )
+                | (SqlServerColumnKind::Utf8, "uniqueidentifier" | "xml") => {
+                    return is_tds_text(actual);
+                }
+                (SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography, _) => {
+                    return is_tds_binary(actual)
+                }
+                _ => {}
+            }
+        }
+        match (&self.kind, self.native_type.as_str()) {
+            (SqlServerColumnKind::Utf8, "uniqueidentifier") => actual == ColumnType::Guid,
+            (SqlServerColumnKind::Utf8, "xml") => actual == ColumnType::Xml,
+            (SqlServerColumnKind::Decimal { .. }, "money") => actual == ColumnType::Money,
+            (SqlServerColumnKind::Decimal { .. }, "smallmoney") => actual == ColumnType::Money4,
+            (SqlServerColumnKind::Decimal { .. }, _) => {
+                matches!(actual, ColumnType::Decimaln | ColumnType::Numericn)
+            }
+            (SqlServerColumnKind::Date, _) => actual == ColumnType::Daten,
+            (SqlServerColumnKind::Time, _) => actual == ColumnType::Timen,
+            (SqlServerColumnKind::Timestamp, "smalldatetime") => actual == ColumnType::Datetime4,
+            (SqlServerColumnKind::Timestamp, "datetime") => actual == ColumnType::Datetime,
+            (SqlServerColumnKind::Timestamp, "datetime2") => actual == ColumnType::Datetime2,
+            (
+                SqlServerColumnKind::Timestamp
+                | SqlServerColumnKind::Geometry
+                | SqlServerColumnKind::Geography,
+                _,
+            ) => false,
+            (SqlServerColumnKind::TimestampTz, _) => actual == ColumnType::DatetimeOffsetn,
+            (SqlServerColumnKind::Bool, _) => {
+                matches!(actual, ColumnType::Bit | ColumnType::Bitn)
+            }
+            (SqlServerColumnKind::U8, _) => actual == ColumnType::Int1,
+            (SqlServerColumnKind::I16, _) => actual == ColumnType::Int2,
+            (SqlServerColumnKind::I32, _) => actual == ColumnType::Int4,
+            (SqlServerColumnKind::I64, _) => actual == ColumnType::Int8,
+            (SqlServerColumnKind::F32, _) => actual == ColumnType::Float4,
+            (SqlServerColumnKind::F64, _) => actual == ColumnType::Float8,
+            (SqlServerColumnKind::Utf8, _) => is_tds_text(actual),
+            (SqlServerColumnKind::Binary, _) => is_tds_binary(actual),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn native_scale(&self) -> Option<u8> {
+        parse_declaration_arguments(&self.native_declaration)
+            .and_then(|arguments| arguments.split(',').next_back())
+            .and_then(|value| value.trim().parse().ok())
     }
 
     fn projection(&self, renderer: &Renderer) -> Result<String> {
@@ -537,6 +616,146 @@ impl SqlServerColumnSpec {
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
     }
+}
+
+fn column_kind(native: &str, precision: u8, scale: u8) -> Result<SqlServerColumnKind> {
+    let kind = match native {
+        "bit" => SqlServerColumnKind::Bool,
+        "tinyint" => SqlServerColumnKind::U8,
+        "smallint" => SqlServerColumnKind::I16,
+        "int" => SqlServerColumnKind::I32,
+        "bigint" => SqlServerColumnKind::I64,
+        "real" => SqlServerColumnKind::F32,
+        "float" => SqlServerColumnKind::F64,
+        "decimal" | "numeric" => {
+            if precision == 0 || precision > 38 || scale > precision {
+                return Err(prepare_error(
+                    ErrorCategory::DataMapping,
+                    "precisione/scala decimal SQL Server non rappresentabile",
+                ));
+            }
+            SqlServerColumnKind::Decimal {
+                precision,
+                scale: i8::try_from(scale).map_err(|_| {
+                    prepare_error(
+                        ErrorCategory::DataMapping,
+                        "scala decimal SQL Server non rappresentabile",
+                    )
+                })?,
+            }
+        }
+        "money" => SqlServerColumnKind::Decimal {
+            precision: 19,
+            scale: 4,
+        },
+        "smallmoney" => SqlServerColumnKind::Decimal {
+            precision: 10,
+            scale: 4,
+        },
+        "char" | "varchar" | "text" | "nchar" | "nvarchar" | "ntext" | "uniqueidentifier"
+        | "xml" => SqlServerColumnKind::Utf8,
+        "binary" | "varbinary" | "image" | "timestamp" | "rowversion" => {
+            SqlServerColumnKind::Binary
+        }
+        "date" => SqlServerColumnKind::Date,
+        "time" => SqlServerColumnKind::Time,
+        "smalldatetime" | "datetime" | "datetime2" => SqlServerColumnKind::Timestamp,
+        "datetimeoffset" => SqlServerColumnKind::TimestampTz,
+        "geometry" => SqlServerColumnKind::Geometry,
+        "geography" => SqlServerColumnKind::Geography,
+        _ => {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                format!("tipo SQL Server non supportato nel profilo read: {native}"),
+            ));
+        }
+    };
+    Ok(kind)
+}
+
+fn parse_native_declaration(declaration: &str) -> Result<(String, u8, u8)> {
+    let normalized = declaration.trim().to_ascii_lowercase();
+    let native = normalized
+        .split_once('(')
+        .map_or(normalized.as_str(), |(name, _)| name)
+        .trim();
+    if native.is_empty()
+        || !native
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "dichiarazione tipo output SQL Server non canonica",
+        ));
+    }
+    let (precision, scale) = match native {
+        "decimal" | "numeric" => {
+            let arguments = parse_declaration_arguments(&normalized).ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::DataMapping,
+                    "decimal output SQL Server senza precisione/scala",
+                )
+            })?;
+            let mut values = arguments.split(',').map(str::trim);
+            let precision = values
+                .next()
+                .and_then(|value| value.parse::<u8>().ok())
+                .ok_or_else(|| {
+                    prepare_error(
+                        ErrorCategory::DataMapping,
+                        "precisione decimal output SQL Server non valida",
+                    )
+                })?;
+            let scale = values
+                .next()
+                .and_then(|value| value.parse::<u8>().ok())
+                .ok_or_else(|| {
+                    prepare_error(
+                        ErrorCategory::DataMapping,
+                        "scala decimal output SQL Server non valida",
+                    )
+                })?;
+            if values.next().is_some() {
+                return Err(prepare_error(
+                    ErrorCategory::DataMapping,
+                    "dichiarazione decimal output SQL Server non valida",
+                ));
+            }
+            (precision, scale)
+        }
+        "money" => (19, 4),
+        "smallmoney" => (10, 4),
+        _ => (0, 0),
+    };
+    Ok((native.to_owned(), precision, scale))
+}
+
+fn parse_declaration_arguments(declaration: &str) -> Option<&str> {
+    let (_, suffix) = declaration.split_once('(')?;
+    suffix.strip_suffix(')')
+}
+
+const fn is_tds_text(actual: tiberius::ColumnType) -> bool {
+    matches!(
+        actual,
+        tiberius::ColumnType::BigVarChar
+            | tiberius::ColumnType::BigChar
+            | tiberius::ColumnType::NVarchar
+            | tiberius::ColumnType::NChar
+            | tiberius::ColumnType::Text
+            | tiberius::ColumnType::NText
+    )
+}
+
+const fn is_tds_binary(actual: tiberius::ColumnType) -> bool {
+    matches!(
+        actual,
+        tiberius::ColumnType::BigVarBin
+            | tiberius::ColumnType::BigBinary
+            | tiberius::ColumnType::Image
+            | tiberius::ColumnType::Udt
+    )
 }
 
 fn contract_schema(fields: Vec<Field>) -> SchemaRef {
@@ -665,5 +884,53 @@ mod tests {
             SqlServerReadPlan::compile(&description("sql_variant", 0, 0)).expect_err("unsupported");
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    #[test]
+    fn query_metadata_is_native_exact_and_spatial_remains_fail_closed() {
+        let timestamp = SqlServerColumnSpec::from_query_metadata(
+            "measured_at".to_owned(),
+            "datetime2(7)".to_owned(),
+            true,
+            None,
+        )
+        .expect("datetime2");
+        assert_eq!(timestamp.kind, SqlServerColumnKind::Timestamp);
+        assert_eq!(timestamp.wire_encoding, SqlServerWireEncoding::Native);
+        assert_eq!(timestamp.native_scale(), Some(7));
+        assert!(timestamp.accepts_tds_column_type(tiberius::ColumnType::Datetime2));
+        assert!(!timestamp.accepts_tds_column_type(tiberius::ColumnType::NVarchar));
+
+        let error = SqlServerColumnSpec::from_query_metadata(
+            "shape".to_owned(),
+            "geometry".to_owned(),
+            true,
+            None,
+        )
+        .expect_err("spatial output");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_query_native_types_fail_closed() {
+        for declaration in ["decimal", "decimal(39,0)", "decimal(10,11)", "dbo.custom"] {
+            assert!(
+                SqlServerColumnSpec::from_query_metadata(
+                    "value".to_owned(),
+                    declaration.to_owned(),
+                    true,
+                    None,
+                )
+                .is_err(),
+                "{declaration}"
+            );
+        }
+        assert!(SqlServerColumnSpec::from_query_metadata(
+            "amount".to_owned(),
+            "money".to_owned(),
+            true,
+            None,
+        )
+        .is_err());
     }
 }

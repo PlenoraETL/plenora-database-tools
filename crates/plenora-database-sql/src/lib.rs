@@ -532,6 +532,13 @@ impl Renderer {
         lateral: bool,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
+        if lateral && self.dialect == Dialect::SqlServer {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "subquery laterale SQL Server richiede APPLY tipizzato",
+            ));
+        }
         match (source, derived) {
             (Some(source), None) => {
                 if lateral {

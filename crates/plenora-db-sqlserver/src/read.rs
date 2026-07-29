@@ -1,6 +1,7 @@
 use crate::arrow::SqlServerColumnBuffer;
 use crate::catalog::describe_object;
 use crate::parameter::bind_parameters;
+use crate::query::{describe_query, render_query, validate_query_sources};
 use crate::types::SqlServerReadPlan;
 use crate::SqlServerPool;
 use plenora_database_core::arrow::array::{Array, BinaryArray};
@@ -8,6 +9,7 @@ use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::plan::{ObjectRef, ReadOperation};
 use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture};
+use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -117,10 +119,73 @@ pub async fn read_operation(
         ));
     }
 
+    start_plan_stream(
+        pooled,
+        plan,
+        parameters,
+        batch_rows,
+        budget,
+        internal,
+        &mut budget_cancellation,
+        operation_lease,
+        columns_lease,
+    )
+}
+
+/// Esegue una `QueryOperation` T-SQL completa usando la descrizione output
+/// autoritativa del server e il controllo successivo del token COLMETADATA.
+#[allow(clippy::significant_drop_tightening)]
+pub async fn read_query_operation(
+    pool: &Arc<SqlServerPool>,
+    database: &str,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn BatchStream>> {
+    validate_batch_rows(batch_rows)?;
+    let rendered = render_query(operation)?;
+    validate_query_sources(operation, database)?;
+    budget.ensure_active()?;
+    let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let internal = budget_cancellation.token().clone();
+    let mut pooled = pool.checkout(&internal).await?;
+    let plan = describe_query(pooled.session_mut()?, rendered, parameters, &internal).await?;
+    let column_count = u64::try_from(plan.columns.len())
+        .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
+    let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+    start_plan_stream(
+        pooled,
+        plan,
+        parameters,
+        batch_rows,
+        budget,
+        internal,
+        &mut budget_cancellation,
+        operation_lease,
+        columns_lease,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_plan_stream(
+    mut pooled: crate::PooledSqlServerSession,
+    plan: SqlServerReadPlan,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    budget: &ResourceBudget,
+    internal: CancellationToken,
+    budget_cancellation: &mut BudgetCancellation,
+    operation_lease: ResourceLease,
+    columns_lease: ResourceLease,
+) -> Result<Box<dyn BatchStream>> {
     let (sender, receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
     let worker_cancellation = internal.clone();
     let mut query = Query::new(plan.sql.clone());
     bind_parameters(&mut query, &plan.bind_names, parameters)?;
+    let expected_columns = plan.columns.clone();
     tokio::spawn(async move {
         // Se il task viene abortito o va in unwind, Drop distrugge il client
         // invece di rimettere nel pool una sessione dal drain non dimostrato.
@@ -129,7 +194,7 @@ pub async fn read_operation(
         let result = match pooled.session_mut() {
             Ok(session) => {
                 session
-                    .pump_query_rows(query, sender, &worker_cancellation)
+                    .pump_query_rows(query, sender, &expected_columns, &worker_cancellation)
                     .await
             }
             Err(error) => Err(error),
@@ -284,6 +349,15 @@ impl SqlServerBatchStream {
             };
             match received {
                 Some(Ok(row)) => {
+                    if row.result_index() != 0 {
+                        self.cancellation.cancel();
+                        self.finished = true;
+                        return Err(read_error(
+                            ErrorCategory::Protocol,
+                            ErrorPhase::Read,
+                            "QueryOperation SQL Server ha prodotto piÃ¹ result set",
+                        ));
+                    }
                     for (index, buffer) in buffers.iter_mut().enumerate() {
                         if let Err(error) =
                             buffer.append(&row, index, self.budget.limits().cell_bytes)
