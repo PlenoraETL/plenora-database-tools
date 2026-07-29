@@ -61,7 +61,13 @@ La suite live seriale ha verificato:
     da una sessione indipendente;
 24. perdita della conferma del commit dopo l'applicazione server: outcome
     `OutcomeUnknown`, zero righe confermate, retry automatico vietato e riga
-    osservabile dalla sessione di riconciliazione.
+    osservabile dalla sessione di riconciliazione;
+25. taglio fisico del socket TDS, tramite proxy TCP locale, dopo un `INSERT`
+    non committato: errore `Unknown/RequiresRecovery`, nessuna riga residua e
+    sentinel preservato;
+26. commit server seguito da finestra di risposta TDS ritardata, riga osservata
+    da una sessione indipendente e socket fisicamente chiuso prima della
+    conferma client: `OutcomeUnknown` e retry automatico vietato.
 
 Comando della prova:
 
@@ -69,7 +75,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **13 superati, 0 falliti**.
+Esito: **15 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
@@ -77,13 +83,14 @@ Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
 - bulk write e modalità create/replace/update/upsert/delete-by-keys;
-- fault di rete fisico tramite proxy o packet drop durante le diverse fasi TDS;
+- blackhole, latenza e packet loss durante read e rollback;
 - profili spatial Z/M e `FullGlobe` (oggi rifiutati);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
 - altre build SQL Server e Azure SQL.
 
-La fault injection oggi provata è deterministica e interna al test: esercita
-gli stessi confini di recovery senza ampliare l'API pubblica. La prova fisica
-di rete resta distinta e non è ancora evidenza di release.
+La suite combina fault deterministici interni e un proxy TCP che chiude
+materialmente entrambi i socket TDS. Le barriere sono legate alle fasi
+transazionali e non a sleep probabilistici. Gli hook restano compilati solo nei
+test e non ampliano l'API pubblica.
 
 Tali proprietà restano non pubblicizzate.

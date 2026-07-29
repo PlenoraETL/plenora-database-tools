@@ -37,8 +37,9 @@ La campagna live su SQL Server 2022 copre handshake con certificato
 self-signed, probe, catalogo, mapping Arrow e streaming bounded di scalari,
 `geometry` e `geography`, oltre a prepared write `append`/`truncate_insert` in
 singola transazione. Include fault deterministici pre-commit, sul trasporto e
-sulla conferma del commit, con verifica da una sessione indipendente.
+tagli fisici del socket durante write e prima della conferma commit, con
+verifica da una sessione indipendente.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
 certificati verificabili e campagne dedicate per bulk, altre modalità di write,
-fault di rete fisici e profili spatial avanzati. La matrice completa è in
-[CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
+network shaping su read/rollback e profili spatial avanzati. La matrice completa
+è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).

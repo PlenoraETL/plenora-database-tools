@@ -21,16 +21,16 @@ Legenda:
 | Sessione | XACT_ABORT ON, implicit transactions OFF, NOCOUNT ON | offline + live-required |
 | Pool | bounded; riuso solo in stato `Ready` | offline + live-required |
 | Cancellazione | quarantena connessione | offline + live-required |
-| Commit ambiguo | effetto `Unknown`, recovery obbligatoria | live-proven con fault deterministico |
+| Commit ambiguo | effetto `Unknown`, recovery obbligatoria | live-proven con taglio TDS fisico |
 | Read streaming | Arrow batch con canale TDS a capacità 1 e batch bounded | live-proven |
 | Codec scalari read | booleani, interi, float, decimal/money, testo, binari e temporali | live-proven |
 | Budget read | righe, colonne, memoria, output, componenti geometriche e deadline | offline + live-proven |
 | Prepared write | bind TDS tipizzati, `append` e `truncate_insert` | live-proven |
 | Write transaction | `single_transaction`, lock target e schema guard | live-proven |
 | Rollback | vincolo nel batch successivo ripristina truncate e batch precedenti | live-proven |
-| Commit incerto | `OutcomeUnknown`, retry automatico vietato | live-proven con conferma commit persa |
+| Commit incerto | `OutcomeUnknown`, retry automatico vietato | live-proven con risposta TDS fisicamente interrotta |
 | Fault pre-commit | rollback verificato, effetto `RolledBack` | live-proven |
-| Perdita trasporto in write | nessun falso successo, `Unknown` e recovery | live-proven con fault deterministico |
+| Perdita trasporto in write | nessun falso successo, `Unknown` e recovery | live-proven con taglio socket TDS |
 | Bulk write | TDS bulk con preflight e differential test | live-required |
 | `MERGE` | non usato come default | reject |
 | `geometry` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |
@@ -63,5 +63,5 @@ Il riferimento minimo è SQL Server 2022. Prima del freeze del provider:
 - Azure SQL Database;
 - TLS verificato e test negativo per hostname/CA;
 - `geometry` e `geography` con SRID compatibili e incompatibili;
-- fault di rete fisico tramite proxy/network shaping su lettura, scrittura,
-  rollback e commit.
+- fault di rete tramite blackhole, latenza e packet loss su lettura e rollback;
+- il taglio socket fisico su scrittura e risposta commit è già live-proven.

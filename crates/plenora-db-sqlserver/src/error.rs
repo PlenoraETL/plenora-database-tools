@@ -63,18 +63,19 @@ pub fn driver_error(
         None => classify_transport(error, phase),
     };
 
-    let commit_transport_unknown = phase == ErrorPhase::Commit && code.is_none();
+    let transport_effect_unknown = code.is_none()
+        && (phase == ErrorPhase::Commit || requested_effect == RemoteEffect::Unknown);
     DatabaseError {
         category,
         phase,
-        remote_effect: if commit_transport_unknown {
+        remote_effect: if transport_effect_unknown {
             RemoteEffect::Unknown
         } else if code == Some(1_205) {
             RemoteEffect::RolledBack
         } else {
             requested_effect
         },
-        retry: if commit_transport_unknown {
+        retry: if transport_effect_unknown {
             RetryDisposition::RequiresRecovery
         } else {
             retry
@@ -219,5 +220,18 @@ mod tests {
         assert!(!public.message.contains("private_column"));
         assert_eq!(public.remote_effect, RemoteEffect::Unknown);
         assert_eq!(public.retry, RetryDisposition::RequiresRecovery);
+    }
+
+    #[test]
+    fn transactional_write_transport_loss_requires_recovery() {
+        let driver = Error::Io {
+            kind: std::io::ErrorKind::ConnectionReset,
+            message: "transport detail must stay private".to_owned(),
+        };
+        let public = driver_error(&driver, ErrorPhase::Write, RemoteEffect::Unknown);
+        assert_eq!(public.category, ErrorCategory::Io);
+        assert_eq!(public.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(public.retry, RetryDisposition::RequiresRecovery);
+        assert!(!public.message.contains("transport detail"));
     }
 }

@@ -18,8 +18,12 @@ use plenora_database_core::{
     RetryDisposition,
 };
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tiberius::Query;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{oneshot, watch, Notify};
+use tokio::task::JoinHandle;
 
 fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
     let host = std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".to_owned());
@@ -31,6 +35,115 @@ fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
     SqlServerConfig::new(host, database, username, SecretString::new(password))
         .with_certificate_policy(policy)
+}
+
+fn proxied_live_config(port: u16) -> SqlServerConfig {
+    let database =
+        std::env::var("PLENORA_SQLSERVER_DATABASE").unwrap_or_else(|_| "dataflow_test".to_owned());
+    let username =
+        std::env::var("PLENORA_SQLSERVER_USER").unwrap_or_else(|_| "dataflow".to_owned());
+    let password = std::env::var("PLENORA_SQLSERVER_PASSWORD")
+        .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
+    SqlServerConfig::new("127.0.0.1", database, username, SecretString::new(password))
+        .with_port(port)
+        .with_certificate_policy(CertificatePolicy::TrustServerCertificate)
+}
+
+struct TcpCutProxy {
+    port: u16,
+    cut: watch::Sender<bool>,
+    active_connections: Arc<AtomicUsize>,
+    connection_dropped: Arc<Notify>,
+    accept_task: JoinHandle<()>,
+}
+
+impl TcpCutProxy {
+    async fn start(upstream_host: &str, upstream_port: u16) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind TDS cut proxy");
+        let port = listener.local_addr().expect("proxy local address").port();
+        let upstream = format!("{upstream_host}:{upstream_port}");
+        let (cut, mut accept_cut) = watch::channel(false);
+        let active_connections = Arc::new(AtomicUsize::new(0));
+        let connection_dropped = Arc::new(Notify::new());
+        let task_active = Arc::clone(&active_connections);
+        let task_dropped = Arc::clone(&connection_dropped);
+        let accept_task = tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    changed = accept_cut.changed() => {
+                        assert!(changed.is_ok(), "proxy cut sender dropped unexpectedly");
+                        break;
+                    }
+                    accepted = listener.accept() => accepted,
+                };
+                let (mut client, _) = accepted.expect("accept proxied TDS connection");
+                let mut server = TcpStream::connect(&upstream)
+                    .await
+                    .expect("connect proxy upstream");
+                client.set_nodelay(true).expect("client proxy nodelay");
+                server.set_nodelay(true).expect("server proxy nodelay");
+                let mut connection_cut = accept_cut.clone();
+                let active = Arc::clone(&task_active);
+                let dropped = Arc::clone(&task_dropped);
+                active.fetch_add(1, Ordering::AcqRel);
+                tokio::spawn(async move {
+                    {
+                        let transfer = tokio::io::copy_bidirectional(&mut client, &mut server);
+                        tokio::pin!(transfer);
+                        tokio::select! {
+                            changed = connection_cut.changed() => {
+                                assert!(changed.is_ok(), "proxy cut sender dropped");
+                            }
+                            result = &mut transfer => {
+                                assert!(
+                                    result.is_ok() || *connection_cut.borrow(),
+                                    "unexpected proxy TDS transfer failure"
+                                );
+                            }
+                        }
+                    }
+                    drop(client);
+                    drop(server);
+                    active.fetch_sub(1, Ordering::AcqRel);
+                    dropped.notify_waiters();
+                });
+            }
+        });
+        Self {
+            port,
+            cut,
+            active_connections,
+            connection_dropped,
+            accept_task,
+        }
+    }
+
+    async fn cut(&self) {
+        assert!(
+            self.active_connections.load(Ordering::Acquire) > 0,
+            "physical fault requires an active proxied connection"
+        );
+        self.cut.send(true).expect("signal physical TDS cut");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let dropped = self.connection_dropped.notified();
+                if self.active_connections.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                dropped.await;
+            }
+        })
+        .await
+        .expect("proxied TDS connection must be physically dropped");
+    }
+}
+
+impl Drop for TcpCutProxy {
+    fn drop(&mut self) {
+        self.accept_task.abort();
+    }
 }
 
 #[tokio::test]
@@ -643,6 +756,145 @@ async fn live_fault_commit_confirmation_lost_is_outcome_unknown() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live e taglio fisico del trasporto TDS durante write"]
+async fn live_physical_tds_cut_during_write_requires_recovery() {
+    let cancellation = CancellationToken::new();
+    let direct_config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&direct_config, &cancellation)
+        .await
+        .expect("admin");
+    normalize_guard_fixture(&mut admin, &cancellation).await;
+    let proxy = TcpCutProxy::start(direct_config.host(), direct_config.port()).await;
+
+    let schema = guard_schema();
+    let (barrier_reached, barrier_wait) = oneshot::channel();
+    let (release, release_wait) = oneshot::channel();
+    let input: Box<dyn BatchStream> = Box::new(BarrierBatchStream {
+        schema: Arc::clone(&schema),
+        batches: VecDeque::from([
+            guard_batch(Arc::clone(&schema), 14, "physical-first"),
+            guard_batch(Arc::clone(&schema), 15, "must-not-arrive"),
+        ]),
+        emitted: 0,
+        barrier_reached: Some(barrier_reached),
+        release: Some(release_wait),
+    });
+    let pool = SqlServerPool::new(proxied_live_config(proxy.port), 1).expect("proxied pool");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = prepare_write(
+        &pool,
+        &write_operation("write_guard_probe", WriteMode::Append),
+        schema,
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare proxied write");
+    let writer_cancellation = cancellation.clone();
+    let writer =
+        tokio::spawn(async move { write_prepared(prepared, input, &writer_cancellation).await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), barrier_wait)
+        .await
+        .expect("writer must reach physical cut barrier")
+        .expect("writer barrier sender");
+    proxy.cut().await;
+    release.send(()).expect("release writer after TDS cut");
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("writer must terminate after physical cut")
+        .expect("writer task")
+        .expect_err("physical write cut must not succeed");
+
+    assert_eq!(error.category, ErrorCategory::Io);
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            guard_id_count(&mut admin, 14, &cancellation),
+        )
+        .await
+        .expect("server must release target after physical cut"),
+        0
+    );
+    assert_eq!(guard_id_count(&mut admin, 15, &cancellation).await, 0);
+    assert_eq!(guard_id_count(&mut admin, 99, &cancellation).await, 1);
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live e taglio fisico della risposta commit TDS"]
+async fn live_physical_tds_cut_after_server_commit_is_outcome_unknown() {
+    let cancellation = CancellationToken::new();
+    let direct_config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&direct_config, &cancellation)
+        .await
+        .expect("admin");
+    normalize_guard_fixture(&mut admin, &cancellation).await;
+    let proxy = TcpCutProxy::start(direct_config.host(), direct_config.port()).await;
+
+    let schema = guard_schema();
+    let (barrier_reached, barrier_wait) = oneshot::channel();
+    let (release, release_wait) = oneshot::channel();
+    let input: Box<dyn BatchStream> = Box::new(BarrierBatchStream {
+        schema: Arc::clone(&schema),
+        batches: VecDeque::from([guard_batch(Arc::clone(&schema), 16, "physical-commit")]),
+        emitted: 0,
+        barrier_reached: Some(barrier_reached),
+        release: Some(release_wait),
+    });
+    let pool = SqlServerPool::new(proxied_live_config(proxy.port), 1).expect("proxied pool");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = prepare_write(
+        &pool,
+        &write_operation("write_guard_probe", WriteMode::Append),
+        schema,
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare proxied commit");
+    let writer_cancellation = cancellation.clone();
+    let writer = tokio::spawn(async move {
+        crate::write::write_prepared_with_fault(
+            prepared,
+            input,
+            &writer_cancellation,
+            crate::write::WriteFaultPoint::DelayCommitResponse,
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), barrier_wait)
+        .await
+        .expect("writer must reach commit barrier")
+        .expect("commit barrier sender");
+    release.send(()).expect("release delayed commit");
+    let committed_rows = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        guard_id_count(&mut admin, 16, &cancellation),
+    )
+    .await
+    .expect("independent session must observe committed row");
+    assert_eq!(committed_rows, 1);
+    proxy.cut().await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("writer must terminate after commit response cut")
+        .expect("writer task")
+        .expect("commit response loss is represented as an outcome");
+
+    assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);
+    assert_eq!(outcome.rows.received, 1);
+    assert_eq!(outcome.rows.confirmed, 0);
+    let recovery = outcome.recovery.expect("recovery contract");
+    assert!(!recovery.automatic_retry_allowed);
+    assert!(recovery.verification_action.is_some());
+    assert_eq!(guard_id_count(&mut admin, 16, &cancellation).await, 1);
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta lo schema guard"]
 async fn live_schema_drift_after_prepare_fails_before_mutation() {
     let cancellation = CancellationToken::new();
@@ -864,5 +1116,42 @@ impl BatchStream for VecBatchStream {
 
     fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
         Box::pin(async move { Ok(self.batches.pop_front()) })
+    }
+}
+
+struct BarrierBatchStream {
+    schema: SchemaRef,
+    batches: VecDeque<RecordBatch>,
+    emitted: usize,
+    barrier_reached: Option<oneshot::Sender<()>>,
+    release: Option<oneshot::Receiver<()>>,
+}
+
+impl BatchStream for BarrierBatchStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+        Box::pin(async move {
+            if self.emitted == 1 {
+                if let Some(barrier_reached) = self.barrier_reached.take() {
+                    barrier_reached
+                        .send(())
+                        .expect("physical fault barrier receiver");
+                }
+                if let Some(release) = self.release.take() {
+                    release.await.expect("physical fault barrier release");
+                }
+            }
+            let batch = self.batches.pop_front();
+            if batch.is_some() {
+                self.emitted = self
+                    .emitted
+                    .checked_add(1)
+                    .expect("test batch counter overflow");
+            }
+            Ok(batch)
+        })
     }
 }

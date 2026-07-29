@@ -30,6 +30,8 @@ pub enum WriteFaultPoint {
     BeforeCommit,
     TransportLostAfterFirstInsert,
     CommitConfirmationLost,
+    #[cfg(test)]
+    DelayCommitResponse,
 }
 
 pub struct PreparedSqlServerWrite {
@@ -257,7 +259,8 @@ async fn write_prepared_inner(
         error.execution_id = Some(execution_id);
         return Err(rollback_after_error(&mut pooled, error).await);
     }
-    if pooled.session_mut()?.commit(control.token()).await.is_ok() {
+    let commit_result = commit_session(&mut pooled, control.token(), fault).await;
+    if commit_result.is_ok() {
         if fault == Some(WriteFaultPoint::CommitConfirmationLost) {
             pooled.quarantine();
             return unknown_commit_outcome(&prepared, execution_id, received);
@@ -286,6 +289,30 @@ async fn write_prepared_inner(
         pooled.quarantine();
         unknown_commit_outcome(&prepared, execution_id, received)
     }
+}
+
+#[cfg(test)]
+async fn commit_session(
+    pooled: &mut PooledSqlServerSession,
+    cancellation: &CancellationToken,
+    fault: Option<WriteFaultPoint>,
+) -> Result<()> {
+    if fault == Some(WriteFaultPoint::DelayCommitResponse) {
+        return pooled
+            .session_mut()?
+            .commit_with_delayed_response(cancellation)
+            .await;
+    }
+    pooled.session_mut()?.commit(cancellation).await
+}
+
+#[cfg(not(test))]
+async fn commit_session(
+    pooled: &mut PooledSqlServerSession,
+    cancellation: &CancellationToken,
+    _fault: Option<WriteFaultPoint>,
+) -> Result<()> {
+    pooled.session_mut()?.commit(cancellation).await
 }
 
 fn unknown_commit_outcome(

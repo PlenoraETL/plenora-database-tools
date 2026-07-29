@@ -151,6 +151,29 @@ impl SqlServerSession {
         Ok(())
     }
 
+    #[cfg(test)]
+    /// Apre esclusivamente nei test una finestra tra commit server e risposta.
+    ///
+    /// # Errors
+    ///
+    /// Fallisce se la sessione non è in transazione o se il batch di controllo
+    /// non viene confermato integralmente.
+    pub async fn commit_with_delayed_response(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_state(SessionState::Transaction, ErrorPhase::Commit)?;
+        self.run_control(
+            "COMMIT TRANSACTION; WAITFOR DELAY '00:00:10';",
+            ErrorPhase::Commit,
+            RemoteEffect::Unknown,
+            cancellation,
+        )
+        .await?;
+        let _ = self.transaction.apply(TransactionEvent::CommitSucceeded);
+        Ok(())
+    }
+
     /// Esegue rollback e rende la connessione riusabile solo dopo conferma.
     ///
     /// # Errors
@@ -255,7 +278,12 @@ impl SqlServerSession {
                 Err(timeout_error(phase, RemoteEffect::None))
             }
             QueryOutcome::Driver(error) => {
-                let public = driver_error(&error, phase, RemoteEffect::None);
+                let requested_effect = if in_transaction && error.code().is_none() {
+                    RemoteEffect::Unknown
+                } else {
+                    RemoteEffect::None
+                };
+                let public = driver_error(&error, phase, requested_effect);
                 if in_transaction && error.code().is_some() {
                     let _ = self.transaction.apply(TransactionEvent::StatementFailed);
                 } else {
@@ -296,7 +324,12 @@ impl SqlServerSession {
                 Err(timeout_error(ErrorPhase::Write, RemoteEffect::Unknown))
             }
             WriteQueryOutcome::Driver(error) => {
-                let public = driver_error(&error, ErrorPhase::Write, RemoteEffect::None);
+                let requested_effect = if error.code().is_none() {
+                    RemoteEffect::Unknown
+                } else {
+                    RemoteEffect::None
+                };
+                let public = driver_error(&error, ErrorPhase::Write, requested_effect);
                 if error.code().is_some() {
                     let _ = self.transaction.apply(TransactionEvent::StatementFailed);
                 } else {
