@@ -54,6 +54,17 @@ Da PowerShell o da un altro terminale:
 python scripts\check_pre_database.py
 ```
 
+Lo stato di rilascio corrente è dichiarato in
+[`release/development.json`](release/development.json). Il manifesto non
+dichiara un RC di componente o di sistema; registra separatamente evidenze,
+limiti e blocchi aperti. Il relativo gate, incluso nel controllo precedente, è
+eseguibile anche da solo:
+
+```powershell
+python scripts\check_release_manifest.py --repo . release\development.json
+python scripts\test_check_release_manifest.py
+```
+
 Il comando valida sorgenti, JSON Schema, esempi, golden cases, manifest,
 documentazione, rustfmt, Clippy, test Python/Rust e CLI. Non apre connessioni
 database.

@@ -1,6 +1,6 @@
 services:
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: mcr.microsoft.com/mssql/server@sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56
     container_name: dataflow-sqlserver
     environment:
       ACCEPT_EULA: "Y"
@@ -23,7 +23,7 @@ services:
     restart: "no"
 
   sqlserver-init:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: mcr.microsoft.com/mssql/server@sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56
     container_name: dataflow-sqlserver-init
     depends_on:
       sqlserver:
