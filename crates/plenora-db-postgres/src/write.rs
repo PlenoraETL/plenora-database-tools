@@ -18,6 +18,7 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use futures_util::SinkExt;
 use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbGeometryMetadata};
+use plenora_database_core::field_contract::validate_schema_contract;
 #[cfg(test)]
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
@@ -101,6 +102,7 @@ fn compile_schema_plan(
             "write PostgreSQL richiede almeno un campo",
         ));
     }
+    validate_schema_contract(schema)?;
     for field in schema.fields() {
         Identifier::new(field.name().clone())?;
     }
@@ -1306,7 +1308,7 @@ fn divergent_canonical_and_legacy_metadata_is_rejected() {
         .collect(),
     );
     let error = FieldContract::parse(&field).expect_err("metadata divergence");
-    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.category, ErrorCategory::DataMapping);
 }
 
 #[test]
@@ -1321,6 +1323,7 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
             "resolved".to_owned(),
         ),
         (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+        (protocol::GEOMETRY_CRS_ID.to_owned(), "EPSG:4326".to_owned()),
     ]
     .into_iter()
     .collect();

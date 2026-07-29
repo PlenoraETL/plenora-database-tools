@@ -41,6 +41,7 @@ Documenti principali:
 - [safety case PostgreSQL/PostGIS](docs/postgres/SAFETY-CASE.md);
 - [compatibilità PostgreSQL/PostGIS](docs/postgres/COMPATIBILITY.md);
 - [campagna prestazionale PostgreSQL/PostGIS](docs/postgres/PERFORMANCE.md);
+- [contratto canonico Arrow condiviso](docs/adr/0011-canonical-field-contract.md);
 - [decisioni che richiedono i target](docs/phase-0/open-decisions.md);
 - [contratti v1](contracts/v1/README.md);
 - [benchmark Fase 0](benchmarks/README.md).
@@ -62,6 +63,16 @@ Il gate live del riferimento PostgreSQL/PostGIS è:
 ```powershell
 python scripts\check_postgres_reference.py
 ```
+
+La verifica offline di un dataset Arrow IPC, senza connessione a database, è:
+
+```powershell
+cargo run --locked -p plenora-database-cli -- inspect-dataset dataset.arrow
+```
+
+Il comando valida la versione del contratto e i metadati canonici nel core,
+ispeziona ogni cella WKB/EWKB con limiti hard e produce un singolo JSON su
+stdout. Un conflitto fra rappresentazioni CRS termina con codice non zero.
 
 Le dipendenze del solo tooling Python sono congelate in
 `requirements-phase0.txt`. Non sono dipendenze runtime della futura libreria

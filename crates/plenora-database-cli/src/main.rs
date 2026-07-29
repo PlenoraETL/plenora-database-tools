@@ -28,12 +28,19 @@ async fn run() -> Result<(), String> {
     let mut args = collected.into_iter();
     let command = args.next().ok_or_else(usage)?;
     match command.as_str() {
+        "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
         "postgres-probe" => postgres_probe(&mut args).await,
         "postgres-describe" => postgres_describe(&mut args).await,
         "postgres-read-summary" => postgres_read_summary(&mut args).await,
         _ => Err(usage()),
     }
+}
+
+fn inspect_dataset(args: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    let path = one_argument(args, "manca il percorso del dataset Arrow IPC")?;
+    let report = inspect_dataset::inspect(&path)?;
+    print_json(&report)
 }
 
 fn validate_plan(args: &mut impl Iterator<Item = String>) -> Result<(), String> {
@@ -194,6 +201,7 @@ fn print_json(value: &serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "uso:",
+        "  plenora-database inspect-dataset <file.arrow>",
         "  plenora-database validate-plan <file>",
         "  plenora-database postgres-probe <dsn-env>",
         "  plenora-database postgres-describe <dsn-env> <schema> <object>",
@@ -201,3 +209,4 @@ fn usage() -> String {
     ]
     .join("\n")
 }
+mod inspect_dataset;

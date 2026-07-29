@@ -29,9 +29,9 @@ impl WriteColumnPlan {
         let contract = FieldContract::parse(field)?;
         Ok(Self {
             data_type: field.data_type().clone(),
-            postgres_type: pg_type(contract)?,
+            postgres_type: pg_type(&contract)?,
             native_type: contract.native_type.map(str::to_owned),
-            native_declaration_sql: native_declaration_sql(contract),
+            native_declaration_sql: native_declaration_sql(&contract),
             geometry_type: contract.geometry_type.map(str::to_owned),
             dimensions: contract.dimensions.map(str::to_owned),
             srid: contract.srid,

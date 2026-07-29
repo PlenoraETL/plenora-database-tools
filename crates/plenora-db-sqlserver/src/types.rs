@@ -106,7 +106,7 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         Ok(Self {
             columns,
-            schema: Arc::new(Schema::new(fields)),
+            schema: contract_schema(fields),
             sql: format!(
                 "SELECT {projection} FROM {} ORDER BY (SELECT NULL);",
                 renderer.quote_object(&object)
@@ -198,7 +198,7 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         Ok(Self {
             columns,
-            schema: Arc::new(Schema::new(fields)),
+            schema: contract_schema(fields),
             sql,
             bind_names,
             structural_fingerprint: description.token.structural_fingerprint.clone(),
@@ -216,7 +216,7 @@ impl SqlServerReadPlan {
             .iter()
             .map(SqlServerColumnSpec::arrow_field)
             .collect::<Vec<_>>();
-        self.schema = Arc::new(Schema::new(fields));
+        self.schema = contract_schema(fields);
         Ok(())
     }
 }
@@ -513,6 +513,12 @@ impl SqlServerColumnSpec {
                 "geoarrow.wkb".to_owned(),
             );
             metadata.insert(protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned());
+            metadata.insert(protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned());
+            metadata.insert(
+                protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                "mixed".to_owned(),
+            );
+            metadata.insert(protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned());
             metadata.insert(
                 protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
                 match semantics {
@@ -531,6 +537,16 @@ impl SqlServerColumnSpec {
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
     }
+}
+
+fn contract_schema(fields: Vec<Field>) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
 }
 
 fn sql_server_identifier(value: &str) -> Result<Identifier> {

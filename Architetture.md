@@ -293,6 +293,7 @@ Contiene esclusivamente fondamenta portabili:
 - errori sanitizzati;
 - contratti e `FieldId`;
 - CRS e metadata GeoArrow-WKB;
+- giudice unico del contratto canonico Arrow, condiviso da tutti i provider;
 - limiti;
 - capability model;
 - piano pubblico e output comuni;
@@ -301,6 +302,12 @@ Contiene esclusivamente fondamenta portabili:
 - mapping policy e `LossReport`.
 
 Non contiene client concreti, runtime async, pool o dialect SQL.
+
+I crate provider possono aggiungere adattatori per il proprio sotto-namespace
+(`plenora.postgres.*`, `plenora.sqlserver.*`), ma non possono duplicare il
+giudizio sulle chiavi canoniche. PostgreSQL conserva nel proprio adattatore
+solo tipo/dichiarazione/type-kind nativi; PostgreSQL e SQL Server chiamano
+entrambi `plenora_database_core::field_contract::FieldContract`.
 
 ### 3.2 `plenora-database-sql`
 
