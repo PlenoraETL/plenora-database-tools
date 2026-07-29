@@ -1,10 +1,12 @@
 use crate::query::lower_query;
 use crate::read::read_operation;
 use crate::read::MAX_CONFIGURED_BATCH_ROWS;
-use crate::write::prepare_write_with_external_contract_leases;
+use crate::write::{
+    prepare_write_with_external_contract_leases, prepare_write_with_mode as prepare_driver_write,
+};
 use crate::{
-    describe_object, list_objects, list_schemas, prepare_write as prepare_driver_write,
-    probe_server, write_prepared, SqlServerConfig, SqlServerPool,
+    describe_object, list_objects, list_schemas, probe_server, write_prepared, SqlServerConfig,
+    SqlServerInsertMode, SqlServerPool,
 };
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
@@ -50,6 +52,7 @@ pub struct SqlServerProvider {
     config: SqlServerConfig,
     batch_rows: usize,
     max_connections: usize,
+    insert_mode: SqlServerInsertMode,
     cached_pool: Mutex<Option<CachedPool>>,
 }
 
@@ -60,6 +63,7 @@ impl std::fmt::Debug for SqlServerProvider {
             .field("config", &self.config)
             .field("batch_rows", &self.batch_rows)
             .field("max_connections", &self.max_connections)
+            .field("insert_mode", &self.insert_mode)
             .field(
                 "pool_initialized",
                 &lock_recover(&self.cached_pool).is_some(),
@@ -95,8 +99,17 @@ impl SqlServerProvider {
             config,
             batch_rows,
             max_connections,
+            insert_mode: SqlServerInsertMode::Prepared,
             cached_pool: Mutex::new(None),
         })
+    }
+
+    /// Seleziona esplicitamente il codec write. Il default resta
+    /// [`SqlServerInsertMode::Prepared`].
+    #[must_use]
+    pub const fn with_insert_mode(mut self, insert_mode: SqlServerInsertMode) -> Self {
+        self.insert_mode = insert_mode;
+        self
     }
 
     fn pool_for(&self, secret: &SecretString) -> Result<Arc<SqlServerPool>> {
@@ -265,7 +278,7 @@ impl Provider for SqlServerProvider {
                     upsert: false,
                     replace: false,
                     delete_by_keys: false,
-                    bulk: false,
+                    bulk: true,
                     array_binding: false,
                     returning: false,
                     apply_edits: false,
@@ -382,6 +395,7 @@ impl Provider for SqlServerProvider {
                 Arc::clone(&input_schema),
                 budget,
                 cancellation,
+                self.insert_mode,
             )
             .await?;
             let loss_report = driver_prepared.loss_report().clone();
@@ -425,6 +439,7 @@ impl Provider for SqlServerProvider {
                 input_schema,
                 budget,
                 cancellation,
+                self.insert_mode,
             )
             .await?;
             let result = write_prepared(driver_prepared, input, cancellation).await;

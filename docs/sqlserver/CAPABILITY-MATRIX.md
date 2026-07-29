@@ -37,7 +37,11 @@ Legenda:
 | Perdita trasporto in write | nessun falso successo, `Unknown` e recovery | live-proven con taglio socket TDS |
 | Blackhole durante read | timeout, effetto `None`, connessione quarantinata | live-proven |
 | Risposta rollback persa | `Unknown/RequiresRecovery` anche con rollback server osservato | live-proven con blackhole |
-| Bulk write | TDS bulk con preflight e differential test | live-required |
+| Bulk write | opt-in; colonne complete/in ordine, scalari verificati, un request bounded per batch | live-proven |
+| Bulk differential | prepared/TDS bulk, 100 righe in 4 batch, zero differenze | live-proven |
+| Bulk rollback | conflitto nel secondo request ripristina il primo batch | live-proven |
+| Bulk tipi verificati | bit, interi, real/float, decimal scala 0–37, nvarchar, varbinary | live-proven |
+| Bulk tipi esclusi | temporali, money, XML/UUID, spatial/UDT e varianti non provate | reject; percorso prepared |
 | `MERGE` | non usato come default | reject |
 | `geometry` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |
 | `geography` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |

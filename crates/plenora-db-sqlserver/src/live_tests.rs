@@ -1,7 +1,7 @@
 use crate::{
-    describe_object, list_objects, list_schemas, prepare_write, probe_server, read_object,
-    write_prepared, CertificatePolicy, SqlServerConfig, SqlServerPool, SqlServerProvider,
-    SqlServerSession,
+    describe_object, list_objects, list_schemas, prepare_write, prepare_write_with_mode,
+    probe_server, read_object, write_prepared, CertificatePolicy, SqlServerConfig,
+    SqlServerInsertMode, SqlServerPool, SqlServerProvider, SqlServerSession,
 };
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, Decimal128Array, Int32Array, StringArray,
@@ -516,6 +516,64 @@ async fn live_common_provider_contract_read_and_write() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta la fixture guard"]
+async fn live_common_provider_executes_opt_in_tds_bulk() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    normalize_guard_fixture(&mut admin, &cancellation).await;
+    let provider = SqlServerProvider::new(config, 8, 2)
+        .expect("bulk provider")
+        .with_insert_mode(SqlServerInsertMode::TdsBulk);
+    let secret = live_secret();
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("bulk capabilities");
+    assert!(capabilities.writes.bulk);
+
+    let schema = guard_schema();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let operation = write_operation("write_guard_probe", WriteMode::Append);
+    let prepared = provider
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider bulk prepare");
+    let outcome = provider
+        .write(
+            &secret,
+            prepared,
+            Box::new(VecBatchStream {
+                schema: Arc::clone(&schema),
+                batches: VecDeque::from([guard_batch(schema, 72, "provider-bulk")]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider bulk write");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.confirmed, 1);
+    assert_eq!(guard_id_count(&mut admin, 72, &cancellation).await, 1);
+    admin
+        .execute_query(
+            Query::new("DELETE FROM [plenora_test].[write_guard_probe] WHERE [id] = 72;"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("provider bulk cleanup");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito"]
 async fn live_self_signed_tls_is_rejected_by_default() {
     let cancellation = CancellationToken::new();
@@ -869,6 +927,283 @@ FROM
         .try_get(0)
         .expect("differential count");
     assert_eq!(differences, Some(0));
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture isolate"]
+#[allow(clippy::too_many_lines)]
+async fn live_tds_bulk_round_trips_verified_scalar_types() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[bulk_native_probe]; \
+                 CREATE TABLE [plenora_test].[bulk_native_probe] \
+                 ( \
+                    [id] int NOT NULL PRIMARY KEY, [flag] bit NULL, \
+                    [unsigned_small] tinyint NULL, [signed_small] smallint NULL, \
+                    [signed_big] bigint NULL, [single_value] real NULL, \
+                    [double_value] float(53) NULL, \
+                    [exact_value] decimal(20, 6) NULL, \
+                    [label] nvarchar(100) NULL, [payload] varbinary(32) NULL \
+                 );",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create native bulk fixture");
+    let columns = [
+        "id",
+        "flag",
+        "unsigned_small",
+        "signed_small",
+        "signed_big",
+        "single_value",
+        "double_value",
+        "exact_value",
+        "label",
+        "payload",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let pool = SqlServerPool::new(config, 2).expect("pool");
+    let read_budget = ResourceBudget::new(ResourceLimits::default()).expect("read budget");
+    let source = crate::read::read_operation(
+        &pool,
+        &ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: "stream_probe".to_owned(),
+                layer_id: None,
+            },
+            projection: columns,
+            order_by: Vec::new(),
+            row_limit: None,
+            filter: None,
+        },
+        &ParameterBag::default(),
+        2,
+        &read_budget,
+        &cancellation,
+    )
+    .await
+    .expect("native source");
+    let schema = source.schema();
+    let write_budget = ResourceBudget::new(ResourceLimits::default()).expect("write budget");
+    let prepared = prepare_write_with_mode(
+        &pool,
+        &write_operation("bulk_native_probe", WriteMode::Append),
+        schema,
+        &write_budget,
+        &cancellation,
+        SqlServerInsertMode::TdsBulk,
+    )
+    .await
+    .expect("prepare native bulk");
+    let outcome = write_prepared(prepared, source, &cancellation)
+        .await
+        .expect("native bulk write");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.confirmed, 5);
+    let mut differences = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM \
+                 ((SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
+                          [single_value], [double_value], [exact_value], \
+                          [label], [payload] \
+                   FROM [plenora_test].[stream_probe] \
+                   EXCEPT \
+                   SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
+                          [single_value], [double_value], [exact_value], \
+                          [label], [payload] \
+                   FROM [plenora_test].[bulk_native_probe]) \
+                  UNION ALL \
+                  (SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
+                          [single_value], [double_value], [exact_value], \
+                          [label], [payload] \
+                   FROM [plenora_test].[bulk_native_probe] \
+                   EXCEPT \
+                   SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
+                          [single_value], [double_value], [exact_value], \
+                          [label], [payload] \
+                   FROM [plenora_test].[stream_probe])) AS d;",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("native differential");
+    let count = differences
+        .pop()
+        .and_then(|mut rows| rows.pop())
+        .expect("native difference row")
+        .try_get::<i64, _>(0)
+        .expect("native difference count");
+    assert_eq!(count, Some(0));
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[bulk_native_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup native bulk fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture isolate"]
+async fn live_tds_bulk_matches_prepared_across_multiple_batches() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[bulk_prepared_probe]; \
+                 DROP TABLE IF EXISTS [plenora_test].[bulk_tds_probe]; \
+                 CREATE TABLE [plenora_test].[bulk_prepared_probe] \
+                    ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(100) NOT NULL); \
+                 CREATE TABLE [plenora_test].[bulk_tds_probe] \
+                    ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(100) NOT NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create differential fixtures");
+
+    let schema = guard_schema();
+    let pool = SqlServerPool::new(config, 2).expect("pool");
+    let prepared_budget = ResourceBudget::new(ResourceLimits::default()).expect("prepared budget");
+    let prepared = prepare_write(
+        &pool,
+        &write_operation("bulk_prepared_probe", WriteMode::Append),
+        Arc::clone(&schema),
+        &prepared_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare row codec");
+    let prepared_outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: differential_batches(&schema),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("prepared differential write");
+
+    let bulk_budget = ResourceBudget::new(ResourceLimits::default()).expect("bulk budget");
+    let bulk = prepare_write_with_mode(
+        &pool,
+        &write_operation("bulk_tds_probe", WriteMode::Append),
+        Arc::clone(&schema),
+        &bulk_budget,
+        &cancellation,
+        SqlServerInsertMode::TdsBulk,
+    )
+    .await
+    .expect("prepare TDS bulk");
+    let bulk_outcome = write_prepared(
+        bulk,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: differential_batches(&schema),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("TDS bulk differential write");
+
+    assert_eq!(prepared_outcome.status, WriteStatus::Committed);
+    assert_eq!(bulk_outcome.status, WriteStatus::Committed);
+    assert_eq!(prepared_outcome.rows.confirmed, 100);
+    assert_eq!(bulk_outcome.rows.confirmed, 100);
+    let mut differences = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM \
+                 ((SELECT [id], [label] FROM [plenora_test].[bulk_prepared_probe] \
+                   EXCEPT SELECT [id], [label] FROM [plenora_test].[bulk_tds_probe]) \
+                  UNION ALL \
+                  (SELECT [id], [label] FROM [plenora_test].[bulk_tds_probe] \
+                   EXCEPT SELECT [id], [label] FROM [plenora_test].[bulk_prepared_probe])) AS d;",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("differential compare");
+    let count = differences
+        .pop()
+        .and_then(|mut rows| rows.pop())
+        .expect("difference row")
+        .try_get::<i64, _>(0)
+        .expect("difference count");
+    assert_eq!(count, Some(0));
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE [plenora_test].[bulk_prepared_probe]; \
+                 DROP TABLE [plenora_test].[bulk_tds_probe];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup differential fixtures");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica rollback TDS bulk"]
+async fn live_tds_bulk_constraint_failure_rolls_back_prior_batches() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    normalize_guard_fixture(&mut admin, &cancellation).await;
+    let schema = guard_schema();
+    let input: Box<dyn BatchStream> = Box::new(VecBatchStream {
+        schema: Arc::clone(&schema),
+        batches: VecDeque::from([
+            guard_batch(Arc::clone(&schema), 71, "first-bulk"),
+            guard_batch(Arc::clone(&schema), 71, "duplicate-bulk"),
+        ]),
+    });
+    let pool = SqlServerPool::new(config, 1).expect("pool");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = prepare_write_with_mode(
+        &pool,
+        &write_operation("write_guard_probe", WriteMode::Append),
+        schema,
+        &budget,
+        &cancellation,
+        SqlServerInsertMode::TdsBulk,
+    )
+    .await
+    .expect("prepare bulk guard");
+    let error = write_prepared(prepared, input, &cancellation)
+        .await
+        .expect_err("duplicate bulk key must fail");
+    assert!(matches!(
+        error.category,
+        ErrorCategory::Conflict | ErrorCategory::Execution
+    ));
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(guard_id_count(&mut admin, 71, &cancellation).await, 0);
+    assert_eq!(guard_id_count(&mut admin, 99, &cancellation).await, 1);
 }
 
 #[tokio::test]
@@ -1573,6 +1908,27 @@ fn guard_batch(schema: SchemaRef, id: i32, label: &str) -> RecordBatch {
         ],
     )
     .expect("guard batch")
+}
+
+fn differential_batches(schema: &SchemaRef) -> VecDeque<RecordBatch> {
+    (0_i32..4)
+        .map(|batch_index| {
+            let start = batch_index * 25;
+            let ids = (start..start + 25).collect::<Vec<_>>();
+            let labels = ids
+                .iter()
+                .map(|id| format!("bulk-row-{id:03}"))
+                .collect::<Vec<_>>();
+            RecordBatch::try_new(
+                Arc::clone(schema),
+                vec![
+                    Arc::new(Int32Array::from(ids)),
+                    Arc::new(StringArray::from(labels)),
+                ],
+            )
+            .expect("differential batch")
+        })
+        .collect()
 }
 
 struct VecBatchStream {
