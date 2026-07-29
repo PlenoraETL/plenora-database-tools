@@ -866,10 +866,10 @@ verificati sul riferimento SQL Server 2022. Anche prepared write
 I confini pre-commit, perdita trasporto e conferma commit persa sono coperti da
 fault deterministici interni ai test: nessun hook entra nell'API pubblica.
 Un proxy TCP di test prova inoltre il taglio fisico del socket TDS durante
-write e dopo il commit server ma prima della conferma client. Bulk, le altre
-modalità di write, network shaping su read/rollback e i profili spatial avanzati
-restano unità distinte e diventeranno capability solo dopo la relativa prova
-live.
+write e dopo il commit server ma prima della conferma client, oltre al blackhole
+durante read e dopo rollback server. Bulk, le altre modalità di write,
+latenza/packet loss su read/rollback e i profili spatial avanzati restano unità
+distinte e diventeranno capability solo dopo la relativa prova live.
 
 `replace` non significa automaticamente atomic rename. L'output dichiara la
 garanzia realmente ottenuta.

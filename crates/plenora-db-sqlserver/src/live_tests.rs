@@ -22,8 +22,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tiberius::Query;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 use tokio::task::JoinHandle;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxyMode {
+    Forward,
+    Blackhole,
+    Cut,
+}
 
 fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
     let host = std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".to_owned());
@@ -49,10 +56,22 @@ fn proxied_live_config(port: u16) -> SqlServerConfig {
         .with_certificate_policy(CertificatePolicy::TrustServerCertificate)
 }
 
+fn live_admin_config() -> SqlServerConfig {
+    let host = std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".to_owned());
+    let database =
+        std::env::var("PLENORA_SQLSERVER_DATABASE").unwrap_or_else(|_| "dataflow_test".to_owned());
+    let password = std::env::var("PLENORA_SQLSERVER_SA_PASSWORD")
+        .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
+    SqlServerConfig::new(host, database, "sa", SecretString::new(password))
+        .with_certificate_policy(CertificatePolicy::TrustServerCertificate)
+}
+
 struct TcpCutProxy {
     port: u16,
-    cut: watch::Sender<bool>,
+    mode: watch::Sender<ProxyMode>,
     active_connections: Arc<AtomicUsize>,
+    blackholed_connections: Arc<AtomicUsize>,
+    mode_applied: Arc<Notify>,
     connection_dropped: Arc<Notify>,
     accept_task: JoinHandle<()>,
 }
@@ -64,17 +83,24 @@ impl TcpCutProxy {
             .expect("bind TDS cut proxy");
         let port = listener.local_addr().expect("proxy local address").port();
         let upstream = format!("{upstream_host}:{upstream_port}");
-        let (cut, mut accept_cut) = watch::channel(false);
+        let (mode, mut accept_mode) = watch::channel(ProxyMode::Forward);
         let active_connections = Arc::new(AtomicUsize::new(0));
+        let blackholed_connections = Arc::new(AtomicUsize::new(0));
+        let mode_applied = Arc::new(Notify::new());
         let connection_dropped = Arc::new(Notify::new());
         let task_active = Arc::clone(&active_connections);
+        let task_blackholed = Arc::clone(&blackholed_connections);
+        let task_mode_applied = Arc::clone(&mode_applied);
         let task_dropped = Arc::clone(&connection_dropped);
         let accept_task = tokio::spawn(async move {
             loop {
                 let accepted = tokio::select! {
-                    changed = accept_cut.changed() => {
-                        assert!(changed.is_ok(), "proxy cut sender dropped unexpectedly");
-                        break;
+                    changed = accept_mode.changed() => {
+                        assert!(changed.is_ok(), "proxy mode sender dropped unexpectedly");
+                        if *accept_mode.borrow() == ProxyMode::Cut {
+                            break;
+                        }
+                        continue;
                     }
                     accepted = listener.accept() => accepted,
                 };
@@ -84,24 +110,42 @@ impl TcpCutProxy {
                     .expect("connect proxy upstream");
                 client.set_nodelay(true).expect("client proxy nodelay");
                 server.set_nodelay(true).expect("server proxy nodelay");
-                let mut connection_cut = accept_cut.clone();
+                let mut connection_mode = accept_mode.clone();
                 let active = Arc::clone(&task_active);
+                let blackholed = Arc::clone(&task_blackholed);
+                let mode_applied = Arc::clone(&task_mode_applied);
                 let dropped = Arc::clone(&task_dropped);
                 active.fetch_add(1, Ordering::AcqRel);
                 tokio::spawn(async move {
-                    {
-                        let transfer = tokio::io::copy_bidirectional(&mut client, &mut server);
-                        tokio::pin!(transfer);
-                        tokio::select! {
-                            changed = connection_cut.changed() => {
-                                assert!(changed.is_ok(), "proxy cut sender dropped");
+                    'connection: loop {
+                        let current_mode = *connection_mode.borrow();
+                        match current_mode {
+                            ProxyMode::Forward => {
+                                let transfer =
+                                    tokio::io::copy_bidirectional(&mut client, &mut server);
+                                tokio::pin!(transfer);
+                                tokio::select! {
+                                    changed = connection_mode.changed() => {
+                                        assert!(changed.is_ok(), "proxy mode sender dropped");
+                                    }
+                                    result = &mut transfer => {
+                                        assert!(
+                                            result.is_ok()
+                                                || *connection_mode.borrow() == ProxyMode::Cut,
+                                            "unexpected proxy TDS transfer failure"
+                                        );
+                                        break 'connection;
+                                    }
+                                }
                             }
-                            result = &mut transfer => {
-                                assert!(
-                                    result.is_ok() || *connection_cut.borrow(),
-                                    "unexpected proxy TDS transfer failure"
-                                );
+                            ProxyMode::Blackhole => {
+                                blackholed.fetch_add(1, Ordering::AcqRel);
+                                mode_applied.notify_waiters();
+                                let changed = connection_mode.changed().await;
+                                blackholed.fetch_sub(1, Ordering::AcqRel);
+                                assert!(changed.is_ok(), "proxy mode sender dropped");
                             }
+                            ProxyMode::Cut => break,
                         }
                     }
                     drop(client);
@@ -113,11 +157,32 @@ impl TcpCutProxy {
         });
         Self {
             port,
-            cut,
+            mode,
             active_connections,
+            blackholed_connections,
+            mode_applied,
             connection_dropped,
             accept_task,
         }
+    }
+
+    async fn blackhole(&self) {
+        let active = self.active_connections.load(Ordering::Acquire);
+        assert!(active > 0, "blackhole requires an active connection");
+        self.mode
+            .send(ProxyMode::Blackhole)
+            .expect("signal TDS blackhole");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let applied = self.mode_applied.notified();
+                if self.blackholed_connections.load(Ordering::Acquire) == active {
+                    break;
+                }
+                applied.await;
+            }
+        })
+        .await
+        .expect("all proxied TDS connections must enter blackhole");
     }
 
     async fn cut(&self) {
@@ -125,7 +190,9 @@ impl TcpCutProxy {
             self.active_connections.load(Ordering::Acquire) > 0,
             "physical fault requires an active proxied connection"
         );
-        self.cut.send(true).expect("signal physical TDS cut");
+        self.mode
+            .send(ProxyMode::Cut)
+            .expect("signal physical TDS cut");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let dropped = self.connection_dropped.notified();
@@ -142,6 +209,7 @@ impl TcpCutProxy {
 
 impl Drop for TcpCutProxy {
     fn drop(&mut self) {
+        let _send_result = self.mode.send(ProxyMode::Cut);
         self.accept_task.abort();
     }
 }
@@ -756,6 +824,53 @@ async fn live_fault_commit_confirmation_lost_is_outcome_unknown() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live e blackhole fisico durante read TDS"]
+async fn live_physical_blackhole_during_read_times_out_and_quarantines() {
+    let cancellation = CancellationToken::new();
+    let direct_config = live_config(CertificatePolicy::TrustServerCertificate);
+    let proxy = TcpCutProxy::start(direct_config.host(), direct_config.port()).await;
+    let config = proxied_live_config(proxy.port)
+        .with_application_name("plenora-blackhole-read")
+        .with_timeouts(
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(2),
+        );
+    let mut session = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("proxied read session");
+    let mut admin = SqlServerSession::open(&live_admin_config(), &cancellation)
+        .await
+        .expect("server-state admin");
+    let (sender, _receiver) = mpsc::channel(1);
+    let worker_cancellation = cancellation.clone();
+    let worker = tokio::spawn(async move {
+        let result = session
+            .pump_query_rows(
+                Query::new("WAITFOR DELAY '00:00:10'; SELECT 1 AS [value];"),
+                sender,
+                &worker_cancellation,
+            )
+            .await;
+        (result, session)
+    });
+
+    wait_for_application_request(&mut admin, "plenora-blackhole-read", &cancellation).await;
+    proxy.blackhole().await;
+    let (result, session) = tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+        .await
+        .expect("read must time out under blackhole")
+        .expect("read worker");
+    let error = result.expect_err("blackholed read must not succeed");
+    assert_eq!(error.category, ErrorCategory::Timeout);
+    assert_eq!(error.phase, ErrorPhase::Read);
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    assert!(!session.is_reusable());
+    proxy.cut().await;
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live e taglio fisico del trasporto TDS durante write"]
 async fn live_physical_tds_cut_during_write_requires_recovery() {
     let cancellation = CancellationToken::new();
@@ -892,6 +1007,82 @@ async fn live_physical_tds_cut_after_server_commit_is_outcome_unknown() {
     assert!(!recovery.automatic_retry_allowed);
     assert!(recovery.verification_action.is_some());
     assert_eq!(guard_id_count(&mut admin, 16, &cancellation).await, 1);
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live e blackhole della risposta rollback TDS"]
+async fn live_physical_blackhole_after_server_rollback_requires_recovery() {
+    let cancellation = CancellationToken::new();
+    let direct_config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&direct_config, &cancellation)
+        .await
+        .expect("admin");
+    normalize_guard_fixture(&mut admin, &cancellation).await;
+    let proxy = TcpCutProxy::start(direct_config.host(), direct_config.port()).await;
+
+    let schema = guard_schema();
+    let (barrier_reached, barrier_wait) = oneshot::channel();
+    let (release, release_wait) = oneshot::channel();
+    let input: Box<dyn BatchStream> = Box::new(BarrierBatchStream {
+        schema: Arc::clone(&schema),
+        batches: VecDeque::from([guard_batch(Arc::clone(&schema), 17, "rollback-blackhole")]),
+        emitted: 0,
+        barrier_reached: Some(barrier_reached),
+        release: Some(release_wait),
+    });
+    let config = proxied_live_config(proxy.port).with_timeouts(
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(2),
+    );
+    let pool = SqlServerPool::new(config, 1).expect("proxied pool");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = prepare_write(
+        &pool,
+        &write_operation("write_guard_probe", WriteMode::Append),
+        schema,
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare proxied rollback");
+    let writer_cancellation = cancellation.clone();
+    let writer = tokio::spawn(async move {
+        crate::write::write_prepared_with_fault(
+            prepared,
+            input,
+            &writer_cancellation,
+            crate::write::WriteFaultPoint::DelayRollbackResponse,
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), barrier_wait)
+        .await
+        .expect("writer must reach rollback barrier")
+        .expect("rollback barrier sender");
+    release.send(()).expect("release delayed rollback");
+    let rolled_back_rows = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        guard_id_count(&mut admin, 17, &cancellation),
+    )
+    .await
+    .expect("independent session must observe server rollback");
+    assert_eq!(rolled_back_rows, 0);
+    proxy.blackhole().await;
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("writer must terminate after rollback response blackhole")
+        .expect("writer task")
+        .expect_err("lost rollback response must not become success");
+
+    assert_eq!(error.category, ErrorCategory::Execution);
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert!(error.execution_id.is_some());
+    assert_eq!(guard_id_count(&mut admin, 99, &cancellation).await, 1);
+    proxy.cut().await;
 }
 
 #[tokio::test]
@@ -1091,6 +1282,38 @@ async fn guard_id_count(
         .try_get::<i64, _>(0)
         .expect("guard count type")
         .expect("guard count value")
+}
+
+async fn wait_for_application_request(
+    admin: &mut SqlServerSession,
+    application_name: &str,
+    cancellation: &CancellationToken,
+) {
+    for _ in 0..100 {
+        let mut query = Query::new(
+            "SELECT COUNT_BIG(*) \
+             FROM sys.dm_exec_requests AS r \
+             INNER JOIN sys.dm_exec_sessions AS s ON s.session_id = r.session_id \
+             WHERE s.program_name = @P1 AND r.session_id <> @@SPID;",
+        );
+        query.bind(application_name.to_owned());
+        let mut results = admin
+            .execute_query(query, ErrorPhase::Probe, cancellation)
+            .await
+            .expect("observe active SQL Server request");
+        let count = results
+            .pop()
+            .and_then(|mut rows| rows.pop())
+            .expect("active request count row")
+            .try_get::<i64, _>(0)
+            .expect("active request count type")
+            .expect("active request count value");
+        if count > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("SQL Server request did not reach the observed execution phase");
 }
 
 fn guard_batch(schema: SchemaRef, id: i32, label: &str) -> RecordBatch {

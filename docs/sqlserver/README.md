@@ -38,8 +38,11 @@ self-signed, probe, catalogo, mapping Arrow e streaming bounded di scalari,
 `geometry` e `geography`, oltre a prepared write `append`/`truncate_insert` in
 singola transazione. Include fault deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
-verifica da una sessione indipendente.
+verifica da una sessione indipendente. Copre inoltre blackhole durante read e
+dopo rollback server.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
 certificati verificabili e campagne dedicate per bulk, altre modalità di write,
-network shaping su read/rollback e profili spatial avanzati. La matrice completa
-è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
+latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La
+matrice completa è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
+La campagna cumulativa di coverage è descritta in
+[COVERAGE.md](COVERAGE.md).

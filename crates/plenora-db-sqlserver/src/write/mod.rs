@@ -32,6 +32,8 @@ pub enum WriteFaultPoint {
     CommitConfirmationLost,
     #[cfg(test)]
     DelayCommitResponse,
+    #[cfg(test)]
+    DelayRollbackResponse,
 }
 
 pub struct PreparedSqlServerWrite {
@@ -259,6 +261,16 @@ async fn write_prepared_inner(
         error.execution_id = Some(execution_id);
         return Err(rollback_after_error(&mut pooled, error).await);
     }
+    #[cfg(test)]
+    if fault == Some(WriteFaultPoint::DelayRollbackResponse) {
+        let mut error = write_error(
+            ErrorCategory::Execution,
+            ErrorPhase::Write,
+            "errore pre-commit SQL Server con risposta rollback non disponibile",
+        );
+        error.execution_id = Some(execution_id);
+        return Err(rollback_after_error_with_delayed_response(&mut pooled, error).await);
+    }
     let commit_result = commit_session(&mut pooled, control.token(), fault).await;
     if commit_result.is_ok() {
         if fault == Some(WriteFaultPoint::CommitConfirmationLost) {
@@ -389,7 +401,30 @@ async fn lock_and_verify_schema(
 
 async fn rollback_after_error(
     pooled: &mut PooledSqlServerSession,
+    original: DatabaseError,
+) -> DatabaseError {
+    rollback_after_error_inner(pooled, original, RollbackMode::Normal).await
+}
+
+#[cfg(test)]
+async fn rollback_after_error_with_delayed_response(
+    pooled: &mut PooledSqlServerSession,
+    original: DatabaseError,
+) -> DatabaseError {
+    rollback_after_error_inner(pooled, original, RollbackMode::DelayedResponse).await
+}
+
+#[derive(Clone, Copy)]
+enum RollbackMode {
+    Normal,
+    #[cfg(test)]
+    DelayedResponse,
+}
+
+async fn rollback_after_error_inner(
+    pooled: &mut PooledSqlServerSession,
     mut original: DatabaseError,
+    mode: RollbackMode,
 ) -> DatabaseError {
     if matches!(
         pooled.session().map(SqlServerSession::state),
@@ -397,7 +432,7 @@ async fn rollback_after_error(
     ) {
         let recovery = CancellationToken::new();
         let rollback = match pooled.session_mut() {
-            Ok(session) => session.rollback(&recovery).await,
+            Ok(session) => rollback_session(session, &recovery, mode).await,
             Err(error) => Err(error),
         };
         if rollback.is_err() {
@@ -418,6 +453,27 @@ async fn rollback_after_error(
         pooled.quarantine();
     }
     original
+}
+
+#[cfg(test)]
+async fn rollback_session(
+    session: &mut SqlServerSession,
+    cancellation: &CancellationToken,
+    mode: RollbackMode,
+) -> Result<()> {
+    if matches!(mode, RollbackMode::DelayedResponse) {
+        return session.rollback_with_delayed_response(cancellation).await;
+    }
+    session.rollback(cancellation).await
+}
+
+#[cfg(not(test))]
+async fn rollback_session(
+    session: &mut SqlServerSession,
+    cancellation: &CancellationToken,
+    _mode: RollbackMode,
+) -> Result<()> {
+    session.rollback(cancellation).await
 }
 
 fn transport_loss_error(execution_id: &str) -> DatabaseError {

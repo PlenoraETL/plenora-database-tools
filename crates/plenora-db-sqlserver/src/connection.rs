@@ -197,6 +197,34 @@ impl SqlServerSession {
         Ok(())
     }
 
+    #[cfg(test)]
+    /// Apre esclusivamente nei test una finestra tra rollback server e risposta.
+    ///
+    /// # Errors
+    ///
+    /// Fallisce se la sessione non è in transazione o se il batch di controllo
+    /// non viene confermato integralmente.
+    pub async fn rollback_with_delayed_response(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if !matches!(
+            self.state(),
+            SessionState::Transaction | SessionState::Uncommittable
+        ) {
+            return Err(state_error(ErrorPhase::Rollback));
+        }
+        self.run_control(
+            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; WAITFOR DELAY '00:00:10';",
+            ErrorPhase::Rollback,
+            RemoteEffect::Unknown,
+            cancellation,
+        )
+        .await?;
+        let _ = self.transaction.apply(TransactionEvent::RollbackSucceeded);
+        Ok(())
+    }
+
     fn require_state(&self, expected: SessionState, phase: ErrorPhase) -> Result<()> {
         if self.state() != expected || self.client.is_none() {
             return Err(state_error(phase));

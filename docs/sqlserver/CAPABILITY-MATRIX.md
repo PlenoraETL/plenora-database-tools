@@ -31,6 +31,8 @@ Legenda:
 | Commit incerto | `OutcomeUnknown`, retry automatico vietato | live-proven con risposta TDS fisicamente interrotta |
 | Fault pre-commit | rollback verificato, effetto `RolledBack` | live-proven |
 | Perdita trasporto in write | nessun falso successo, `Unknown` e recovery | live-proven con taglio socket TDS |
+| Blackhole durante read | timeout, effetto `None`, connessione quarantinata | live-proven |
+| Risposta rollback persa | `Unknown/RequiresRecovery` anche con rollback server osservato | live-proven con blackhole |
 | Bulk write | TDS bulk con preflight e differential test | live-required |
 | `MERGE` | non usato come default | reject |
 | `geometry` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |
@@ -63,5 +65,5 @@ Il riferimento minimo è SQL Server 2022. Prima del freeze del provider:
 - Azure SQL Database;
 - TLS verificato e test negativo per hostname/CA;
 - `geometry` e `geography` con SRID compatibili e incompatibili;
-- fault di rete tramite blackhole, latenza e packet loss su lettura e rollback;
+- fault di rete tramite latenza e packet loss su lettura e rollback;
 - il taglio socket fisico su scrittura e risposta commit è già live-proven.

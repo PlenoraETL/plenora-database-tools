@@ -67,7 +67,12 @@ La suite live seriale ha verificato:
     sentinel preservato;
 26. commit server seguito da finestra di risposta TDS ritardata, riga osservata
     da una sessione indipendente e socket fisicamente chiuso prima della
-    conferma client: `OutcomeUnknown` e retry automatico vietato.
+    conferma client: `OutcomeUnknown` e retry automatico vietato;
+27. blackhole con socket mantenuto aperto mentre SQL Server espone una richiesta
+    read attiva: timeout, nessun effetto remoto e sessione non riusabile;
+28. rollback server osservato da una sessione indipendente seguito da blackhole
+    della risposta TDS: errore `Unknown/RequiresRecovery`, mai falso rollback
+    confermato.
 
 Comando della prova:
 
@@ -75,7 +80,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **15 superati, 0 falliti**.
+Esito: **17 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
@@ -83,14 +88,15 @@ Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
 - bulk write e modalità create/replace/update/upsert/delete-by-keys;
-- blackhole, latenza e packet loss durante read e rollback;
+- latenza finita e packet loss durante read e rollback;
 - profili spatial Z/M e `FullGlobe` (oggi rifiutati);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
 - altre build SQL Server e Azure SQL.
 
-La suite combina fault deterministici interni e un proxy TCP che chiude
-materialmente entrambi i socket TDS. Le barriere sono legate alle fasi
-transazionali e non a sleep probabilistici. Gli hook restano compilati solo nei
-test e non ampliano l'API pubblica.
+La suite combina fault deterministici interni e un proxy TCP capace di chiudere
+materialmente entrambi i socket oppure mantenerli aperti senza inoltrare byte.
+Le barriere sono legate alle fasi transazionali o a richieste osservate sul
+server, non a sleep probabilistici. Gli hook restano compilati solo nei test e
+non ampliano l'API pubblica.
 
 Tali proprietà restano non pubblicizzate.
