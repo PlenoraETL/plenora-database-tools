@@ -110,6 +110,11 @@ impl ParameterBag {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

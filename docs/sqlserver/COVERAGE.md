@@ -11,9 +11,9 @@ I risultati vengono uniti prima di applicare le soglie production-focused.
 
 | Metrica | Risultato | Soglia | Esito |
 |---|---:|---:|---|
-| regioni | 80,41% | 77% | superata |
-| funzioni | 80,98% | 79% | superata |
-| linee | 82,12% | 80% | superata |
+| regioni | 79,96% | 77% | superata |
+| funzioni | 81,12% | 79% | superata |
+| linee | 81,80% | 80% | superata |
 
 ## Percorsi SQL Server principali
 
@@ -23,10 +23,13 @@ I risultati vengono uniti prima di applicare le soglie production-focused.
 | `catalog/schema.rs` | 99,12% |
 | `config.rs` | 94,34% |
 | `connection.rs` | 77,91% |
-| `read.rs` | 77,23% |
-| `types.rs` | 90,07% |
+| `parameter.rs` | 61,60% |
+| `provider.rs` | 90,26% |
+| `query.rs` | 72,20% |
+| `read.rs` | 79,70% |
+| `types.rs` | 78,38% |
 | `write/codec.rs` | 83,52% |
-| `write/mod.rs` | 79,47% |
+| `write/mod.rs` | 78,22% |
 
 Le soglie sono cumulative, non minimi per singolo file. I valori locali
 dimostrano che il workflow aggiornato è eseguibile; l'artefatto GitHub Actions

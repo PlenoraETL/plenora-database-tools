@@ -1,12 +1,17 @@
 use crate::catalog::{SqlServerColumn, SqlServerObjectDescription};
 use plenora_database_core::arrow::schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use plenora_database_core::geometry::SpatialSemantics;
+use plenora_database_core::plan::{
+    ComparisonOperator, FilterExpression, ReadOperation, SortDirection,
+};
 use plenora_database_core::protocol;
 use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
 };
-use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
-use std::collections::HashMap;
+use plenora_database_sql::{
+    Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
+};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +61,7 @@ pub struct SqlServerReadPlan {
     pub columns: Vec<SqlServerColumnSpec>,
     pub schema: SchemaRef,
     pub sql: String,
+    pub bind_names: Vec<String>,
     pub structural_fingerprint: String,
 }
 
@@ -105,6 +111,96 @@ impl SqlServerReadPlan {
                 "SELECT {projection} FROM {} ORDER BY (SELECT NULL);",
                 renderer.quote_object(&object)
             ),
+            bind_names: Vec::new(),
+            structural_fingerprint: description.token.structural_fingerprint.clone(),
+        })
+    }
+
+    /// Compila projection, filtri, ordinamento e limite del contratto read
+    /// comune mantenendo tutti i valori fuori dal testo SQL.
+    pub(crate) fn compile_operation(
+        description: &SqlServerObjectDescription,
+        operation: &ReadOperation,
+    ) -> Result<Self> {
+        if description.columns.is_empty() {
+            return Err(prepare_error(
+                ErrorCategory::Schema,
+                "oggetto SQL Server privo di colonne leggibili",
+            ));
+        }
+        let renderer = sql_server_renderer();
+        let available = description
+            .columns
+            .iter()
+            .map(SqlServerColumnSpec::from_catalog)
+            .collect::<Result<Vec<_>>>()?;
+        let columns = select_columns(&available, &operation.projection)?;
+        let projection = columns
+            .iter()
+            .map(|column| column.projection(&renderer))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        let object = ObjectName {
+            catalog: None,
+            schema: Some(sql_server_identifier(&description.schema)?),
+            object: sql_server_identifier(&description.name)?,
+        };
+        let mut sql = String::from("SELECT ");
+        if let Some(limit) = operation.row_limit {
+            sql.push_str("TOP (");
+            sql.push_str(&limit.to_string());
+            sql.push_str(") ");
+        }
+        sql.push_str(&projection);
+        sql.push_str(" FROM ");
+        sql.push_str(&renderer.quote_object(&object));
+
+        let mut bind_names = Vec::new();
+        if let Some(filter) = &operation.filter {
+            ensure_filter_columns(filter, &available)?;
+            let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
+            sql.push_str(" WHERE ");
+            sql.push_str(&rendered_filter.sql);
+            bind_names.extend(rendered_filter.binds.into_iter().map(|bind| bind.name));
+        }
+        if operation.order_by.is_empty() {
+            sql.push_str(" ORDER BY (SELECT NULL)");
+        } else {
+            let available_names = available
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let ordering = operation
+                .order_by
+                .iter()
+                .map(|order| {
+                    if !available_names.contains(order.field.as_str()) {
+                        return Err(prepare_error(
+                            ErrorCategory::NotFound,
+                            "colonna ORDER BY SQL Server non trovata",
+                        ));
+                    }
+                    let field = renderer.quote_identifier(&sql_server_identifier(&order.field)?);
+                    let direction = match order.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    };
+                    Ok(format!("{field} {direction}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            sql.push_str(" ORDER BY ");
+            sql.push_str(&ordering.join(", "));
+        }
+        sql.push(';');
+        let fields = columns
+            .iter()
+            .map(SqlServerColumnSpec::arrow_field)
+            .collect::<Vec<_>>();
+        Ok(Self {
+            columns,
+            schema: Arc::new(Schema::new(fields)),
+            sql,
+            bind_names,
             structural_fingerprint: description.token.structural_fingerprint.clone(),
         })
     }
@@ -122,6 +218,158 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         self.schema = Arc::new(Schema::new(fields));
         Ok(())
+    }
+}
+
+const fn sql_server_renderer() -> Renderer {
+    Renderer::new(
+        Dialect::SqlServer,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+}
+
+fn select_columns(
+    available: &[SqlServerColumnSpec],
+    projection: &[String],
+) -> Result<Vec<SqlServerColumnSpec>> {
+    if projection.is_empty() {
+        return Ok(available.to_vec());
+    }
+    let by_name = available
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect::<HashMap<_, _>>();
+    projection
+        .iter()
+        .map(|name| {
+            by_name.get(name.as_str()).map_or_else(
+                || {
+                    Err(prepare_error(
+                        ErrorCategory::NotFound,
+                        "colonna projection SQL Server non trovata",
+                    ))
+                },
+                |column| Ok((*column).clone()),
+            )
+        })
+        .collect()
+}
+
+fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
+    match expression {
+        FilterExpression::And { args } => Ok(Expression::And(
+            args.iter()
+                .map(convert_filter)
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        FilterExpression::Or { args } => Ok(Expression::Or(
+            args.iter()
+                .map(convert_filter)
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        FilterExpression::Eq { field, parameter } => {
+            comparison(field, ComparisonOperator::Eq, parameter)
+        }
+        FilterExpression::Ne { field, parameter } => {
+            comparison(field, ComparisonOperator::Ne, parameter)
+        }
+        FilterExpression::Lt { field, parameter } => {
+            comparison(field, ComparisonOperator::Lt, parameter)
+        }
+        FilterExpression::Lte { field, parameter } => {
+            comparison(field, ComparisonOperator::Lte, parameter)
+        }
+        FilterExpression::Gt { field, parameter } => {
+            comparison(field, ComparisonOperator::Gt, parameter)
+        }
+        FilterExpression::Gte { field, parameter } => {
+            comparison(field, ComparisonOperator::Gte, parameter)
+        }
+        FilterExpression::IsNull { field } => Ok(Expression::IsNull(sql_server_identifier(field)?)),
+        FilterExpression::IsNotNull { field } => {
+            Ok(Expression::IsNotNull(sql_server_identifier(field)?))
+        }
+        FilterExpression::In { field, parameters } => Ok(Expression::In {
+            field: sql_server_identifier(field)?,
+            parameters: parameters.clone(),
+        }),
+        FilterExpression::Between {
+            field,
+            lower_parameter,
+            upper_parameter,
+        } => Ok(Expression::Between {
+            field: sql_server_identifier(field)?,
+            lower_parameter: lower_parameter.clone(),
+            upper_parameter: upper_parameter.clone(),
+        }),
+        FilterExpression::Like {
+            field,
+            parameter,
+            case_insensitive,
+        } => {
+            if *case_insensitive {
+                return Err(prepare_error(
+                    ErrorCategory::Unsupported,
+                    "LIKE case-insensitive SQL Server richiede collation esplicita",
+                ));
+            }
+            Ok(Expression::Like {
+                field: sql_server_identifier(field)?,
+                parameter: parameter.clone(),
+                case_insensitive: false,
+            })
+        }
+        FilterExpression::Spatial { .. } => Err(prepare_error(
+            ErrorCategory::Unsupported,
+            "filtro spatial SQL Server richiede tipo e SRID risolti",
+        )),
+    }
+}
+
+fn comparison(field: &str, operator: ComparisonOperator, parameter: &str) -> Result<Expression> {
+    Ok(Expression::Compare {
+        field: sql_server_identifier(field)?,
+        operator,
+        parameter: parameter.to_owned(),
+    })
+}
+
+fn ensure_filter_columns(
+    expression: &FilterExpression,
+    columns: &[SqlServerColumnSpec],
+) -> Result<()> {
+    fn visit(expression: &FilterExpression, available: &BTreeSet<&str>) -> bool {
+        match expression {
+            FilterExpression::And { args } | FilterExpression::Or { args } => {
+                args.iter().all(|argument| visit(argument, available))
+            }
+            FilterExpression::Eq { field, .. }
+            | FilterExpression::Ne { field, .. }
+            | FilterExpression::Lt { field, .. }
+            | FilterExpression::Lte { field, .. }
+            | FilterExpression::Gt { field, .. }
+            | FilterExpression::Gte { field, .. }
+            | FilterExpression::IsNull { field }
+            | FilterExpression::IsNotNull { field }
+            | FilterExpression::In { field, .. }
+            | FilterExpression::Between { field, .. }
+            | FilterExpression::Like { field, .. }
+            | FilterExpression::Spatial { field, .. } => available.contains(field.as_str()),
+        }
+    }
+    let available = columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if visit(expression, &available) {
+        Ok(())
+    } else {
+        Err(prepare_error(
+            ErrorCategory::NotFound,
+            "colonna filtro SQL Server non trovata",
+        ))
     }
 }
 

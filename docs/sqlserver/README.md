@@ -10,10 +10,12 @@ il riferimento comportamentale, non un modello da copiare alla cieca.
 | 0 | ADR, baseline, matrice capability e gate di evidenza | offline |
 | 1 | renderer T-SQL fail-closed e limiti strutturali | testabile offline |
 | 2 | crate provider e confini architetturali | testabile offline |
-| 3 | configurazione TDS/TLS, bootstrap, pool e recovery state machine | testabile offline; integrazione live pendente |
+| 3 | configurazione TDS/TLS, bootstrap, pool e recovery state machine | verificato sul riferimento SQL Server 2022 |
 | 4 | probe, catalogo, vincoli, indici e schema token | verificato sul riferimento SQL Server 2022 |
 | 5 | mapping SQL Server→Arrow e read stream bounded | verificato sul riferimento SQL Server 2022 |
 | 6 | prepared write, transazione, schema guard e rollback | verificato sul riferimento SQL Server 2022 |
+| 7 | trait comune `Provider`, capability e testkit di conformità | verificato sul riferimento SQL Server 2022 |
+| 8 | read comune e `QueryOperation` a singola source | verificato sul riferimento SQL Server 2022 |
 
 Il crate usa un client TDS diretto. Non introduce un ORM: AST, mapping Arrow,
 policy di perdita e outcome restano nei contratti Plenora.
@@ -40,6 +42,11 @@ singola transazione. Include fault deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e
 dopo rollback server.
+La stessa campagna attraversa ora il trait comune `Provider`: test connection,
+capability, catalogo, projection/filter/order/limit bindati, profilo
+`QueryOperation` a singola source e round-trip prepared write. Le forme
+relazionali che richiedono inferenza dello schema output — join, CTE,
+aggregati, window, set operation e spatial — restano fail-closed.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
 certificati verificabili e campagne dedicate per bulk, altre modalità di write,
 latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La

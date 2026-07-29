@@ -41,8 +41,8 @@ pub struct PreparedSqlServerWrite {
     plan: WritePlan,
     pool: Arc<SqlServerPool>,
     budget: ResourceBudget,
-    _operation_lease: ResourceLease,
-    _columns_lease: ResourceLease,
+    _operation_lease: Option<ResourceLease>,
+    _columns_lease: Option<ResourceLease>,
     loss_report: LossReport,
 }
 
@@ -79,6 +79,32 @@ pub async fn prepare_write(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<PreparedSqlServerWrite> {
+    prepare_write_inner(pool, operation, input_schema, budget, cancellation, true).await
+}
+
+/// Variante usata dall'adattatore del trait comune.
+///
+/// Il [`plenora_database_core::provider::PreparedWrite`] mantiene già i lease
+/// di operazione e colonne tra prepare ed execute. Acquisirli una seconda
+/// volta renderebbe il risultato dipendente da limiti maggiori del necessario.
+pub async fn prepare_write_with_external_contract_leases(
+    pool: &Arc<SqlServerPool>,
+    operation: &WriteOperation,
+    input_schema: SchemaRef,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<PreparedSqlServerWrite> {
+    prepare_write_inner(pool, operation, input_schema, budget, cancellation, false).await
+}
+
+async fn prepare_write_inner(
+    pool: &Arc<SqlServerPool>,
+    operation: &WriteOperation,
+    input_schema: SchemaRef,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    acquire_contract_leases: bool,
+) -> Result<PreparedSqlServerWrite> {
     budget.ensure_active()?;
     plan::validate_operation(operation)?;
     if input_schema.fields().is_empty() {
@@ -92,10 +118,14 @@ pub async fn prepare_write(
         sql_identifier(field.name())?;
     }
     sql_identifier(&operation.target.object)?;
-    let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+    let operation_lease = acquire_contract_leases
+        .then(|| budget.try_lease(ResourceKind::ConcurrentOperations, 1))
+        .transpose()?;
     let columns = u64::try_from(input_schema.fields().len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
-    let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
+    let columns_lease = acquire_contract_leases
+        .then(|| budget.try_lease(ResourceKind::Columns, columns))
+        .transpose()?;
     let control = BudgetCancellation::new(cancellation, budget);
     let schema = operation.target.schema.as_deref().ok_or_else(|| {
         write_error(

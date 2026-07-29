@@ -1,6 +1,7 @@
 use crate::{
     describe_object, list_objects, list_schemas, prepare_write, probe_server, read_object,
-    write_prepared, CertificatePolicy, SqlServerConfig, SqlServerPool, SqlServerSession,
+    write_prepared, CertificatePolicy, SqlServerConfig, SqlServerPool, SqlServerProvider,
+    SqlServerSession,
 };
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, Decimal128Array, Int32Array, StringArray,
@@ -9,15 +10,21 @@ use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaR
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteStatus;
 use plenora_database_core::plan::{
-    ObjectRef, SridPolicy, TransactionProfile, WriteMode, WriteOperation,
+    FilterExpression, ObjectRef, Operation, OrderBy, ReadOperation, SortDirection, SridPolicy,
+    TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::protocol;
-use plenora_database_core::provider::{BatchStream, ProviderFuture, SecretString};
+use plenora_database_core::provider::{
+    BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
+};
+use plenora_database_core::query::{
+    ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+};
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
     RetryDisposition,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tiberius::Query;
@@ -42,6 +49,18 @@ fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
     SqlServerConfig::new(host, database, username, SecretString::new(password))
         .with_certificate_policy(policy)
+}
+
+fn live_secret() -> SecretString {
+    SecretString::new(
+        std::env::var("PLENORA_SQLSERVER_PASSWORD")
+            .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned()),
+    )
+}
+
+fn live_provider() -> SqlServerProvider {
+    SqlServerProvider::new(live_config(CertificatePolicy::TrustServerCertificate), 2, 3)
+        .expect("live provider")
 }
 
 fn proxied_live_config(port: u16) -> SqlServerConfig {
@@ -265,6 +284,235 @@ async fn live_reference_probe_and_catalog() {
     assert!(description.indexes.iter().any(|index| index.primary_key));
     assert_eq!(description.token.structural_fingerprint.len(), 64);
     assert!(session.is_reusable());
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta la fixture write"]
+#[allow(clippy::too_many_lines)]
+async fn live_common_provider_contract_read_and_write() {
+    let provider = live_provider();
+    let secret = live_secret();
+    let supported = [
+        Operation::DatabaseListCatalogs,
+        Operation::DatabaseListSchemas { source: None },
+        Operation::DatabaseListObjects {
+            source: Some(ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: String::new(),
+                layer_id: None,
+            }),
+        },
+        Operation::DatabaseDescribeObject {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: "catalog_probe".to_owned(),
+                layer_id: None,
+            },
+        },
+    ];
+    let report = plenora_database_testkit::verify_provider_contract(
+        &provider,
+        &secret,
+        &supported,
+        Some(&Operation::ArcgisTestConnection),
+    )
+    .await
+    .expect("common provider conformance");
+    assert_eq!(
+        report.provider,
+        plenora_database_core::plan::ProviderKind::Sqlserver
+    );
+    assert_eq!(report.inspected_operations.len(), supported.len());
+    assert!(report.pre_cancelled_connection_verified);
+    assert!(report.unsupported_inspection_verified);
+
+    let cancellation = CancellationToken::new();
+    let bounded_operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "stream_probe".to_owned(),
+            layer_id: None,
+        },
+        projection: vec!["id".to_owned(), "label".to_owned()],
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Desc,
+        }],
+        row_limit: Some(2),
+        filter: Some(FilterExpression::Gte {
+            field: "id".to_owned(),
+            parameter: "minimum_id".to_owned(),
+        }),
+    };
+    let bounded_parameters = ParameterBag::new(BTreeMap::from([(
+        "minimum_id".to_owned(),
+        ParameterValue::I32(3),
+    )]));
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("source".to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let query_operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: bounded_operation.source.clone(),
+            alias: Some("source".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![
+            QueryProjection {
+                expression: column("id"),
+                alias: None,
+            },
+            QueryProjection {
+                expression: column("label"),
+                alias: None,
+            },
+        ],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column("id")),
+            operator: plenora_database_core::plan::ComparisonOperator::Gte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "minimum_id".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("id"),
+            direction: SortDirection::Desc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(2),
+        row_offset: None,
+        locking: None,
+    };
+    let query_budget = ResourceBudget::new(ResourceLimits::default()).expect("query budget");
+    let mut query_stream = provider
+        .query(
+            &secret,
+            &query_operation,
+            &bounded_parameters,
+            &query_budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider QueryOperation");
+    let query_batch = query_stream
+        .next_batch()
+        .await
+        .expect("query batch")
+        .expect("query rows");
+    let query_ids = query_batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("query ids");
+    assert_eq!(query_ids.values(), &[5, 4]);
+    assert!(query_stream
+        .next_batch()
+        .await
+        .expect("query end")
+        .is_none());
+
+    let bounded_budget = ResourceBudget::new(ResourceLimits::default()).expect("bounded budget");
+    let mut bounded = provider
+        .read(
+            &secret,
+            &bounded_operation,
+            &bounded_parameters,
+            &bounded_budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider bounded read");
+    assert_eq!(bounded.schema().fields().len(), 2);
+    let batch = bounded
+        .next_batch()
+        .await
+        .expect("bounded batch")
+        .expect("bounded rows");
+    let ids = batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("bounded ids");
+    assert_eq!(ids.values(), &[5, 4]);
+    assert!(bounded.next_batch().await.expect("bounded end").is_none());
+
+    let read_operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "stream_probe".to_owned(),
+            layer_id: None,
+        },
+        projection: Vec::new(),
+        order_by: Vec::new(),
+        row_limit: None,
+        filter: None,
+    };
+    let read_budget = ResourceBudget::new(ResourceLimits::default()).expect("read budget");
+    let source = provider
+        .read(
+            &secret,
+            &read_operation,
+            &ParameterBag::default(),
+            &read_budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider read");
+    let input_schema = source.schema();
+
+    let write_operation = write_operation("write_probe", WriteMode::TruncateInsert);
+    let write_budget = ResourceBudget::new(ResourceLimits::default()).expect("write budget");
+    let prepared = provider
+        .prepare_write(
+            &secret,
+            &write_operation,
+            input_schema,
+            &write_budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider prepare write");
+    let outcome = provider
+        .write(&secret, prepared, source, &write_budget, &cancellation)
+        .await
+        .expect("provider write");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.confirmed, 5);
+
+    let verify_operation = ReadOperation {
+        source: ObjectRef {
+            object: "write_probe".to_owned(),
+            ..read_operation.source
+        },
+        ..read_operation
+    };
+    let verify_budget = ResourceBudget::new(ResourceLimits::default()).expect("verify budget");
+    let mut verify = provider
+        .read(
+            &secret,
+            &verify_operation,
+            &ParameterBag::default(),
+            &verify_budget,
+            &cancellation,
+        )
+        .await
+        .expect("provider verify");
+    let mut rows = 0_usize;
+    while let Some(batch) = verify.next_batch().await.expect("verify batch") {
+        rows = rows.saturating_add(batch.num_rows());
+    }
+    assert_eq!(rows, 5);
 }
 
 #[tokio::test]
