@@ -64,3 +64,5 @@ latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La
 matrice completa è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
 La campagna cumulativa di coverage è descritta in
 [COVERAGE.md](COVERAGE.md).
+Il gate autonomo con evidenza riproducibile è descritto in
+[ASSURANCE.md](ASSURANCE.md).
