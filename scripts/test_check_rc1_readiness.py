@@ -29,6 +29,16 @@ def head_revision() -> str:
     return completed.stdout.strip()
 
 
+def git_revision(value: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", value],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
 def evidence(identity: str, revision: str, run_id: int) -> dict:
     return {
         "id": identity,
@@ -76,7 +86,7 @@ def conforming(revision: str) -> dict:
         "manifest_version": 1,
         "component": "plenora-database-tools",
         "component_version": "0.1.0-rc.1",
-        "status": "rc1_candidate_ready",
+        "status": "component_rc_tagged",
         "revision": revision,
         "verification_claim": "verified_internally",
         "independent_review": False,
@@ -85,7 +95,7 @@ def conforming(revision: str) -> dict:
             "system_rc": False,
             "avionic_certification": False,
         },
-        "candidate": {"decision": "ready", "code_freeze": True},
+        "candidate": {"decision": "tagged", "code_freeze": True},
         "evidence": [
             evidence("postgres_reference", revision, 1),
             evidence("sqlserver_reference", revision, 2),
@@ -116,8 +126,22 @@ def conforming(revision: str) -> dict:
         "release_action": {
             "allowed": True,
             "tag": "v0.1.0-rc.1",
-            "tag_created": False,
-            "reason": "candidato autorizzato",
+            "tag_created": True,
+            "tag_target": git_revision("v0.1.0-rc.1^{commit}"),
+            "tag_object": git_revision("v0.1.0-rc.1^{tag}"),
+            "tag_form": "annotated_unsigned",
+            "created_on": "2026-07-30",
+            "pre_tag_ci": [
+                evidence(
+                    identity,
+                    git_revision("v0.1.0-rc.1^{commit}"),
+                    index,
+                )
+                for index, identity in enumerate(
+                    sorted(gate.REQUIRED_PRE_TAG_CI), start=10
+                )
+            ],
+            "reason": "tag creato dopo i gate pre-tag",
         },
     }
 
@@ -222,6 +246,20 @@ def main() -> int:
     cases.append(
         ("release negata", release_allowed, "release_action.allowed deve essere true")
     )
+
+    wrong_tag_target = deepcopy(base)
+    wrong_tag_target["release_action"]["tag_target"] = "0" * 40
+    cases.append(
+        (
+            "tag target divergente",
+            wrong_tag_target,
+            "tag_target non coincide",
+        )
+    )
+
+    missing_pre_tag = deepcopy(base)
+    missing_pre_tag["release_action"]["pre_tag_ci"].pop()
+    cases.append(("pre-tag omesso", missing_pre_tag, "pre_tag_ci mancanti"))
 
     failures: list[str] = []
     for label, document, expected in cases:

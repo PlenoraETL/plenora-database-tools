@@ -2,15 +2,15 @@
   "manifest_version": 1,
   "component": "plenora-database-tools",
   "component_version": "0.1.0-rc.1",
-  "status": "superseded_by_rc1_candidate",
-  "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
+  "status": "superseded_by_tagged_rc1",
+  "revision": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
   "claims": {
     "component_rc": true,
     "system_rc": false,
     "avionic_certification": false
   },
   "rc1_scope": {
-    "status": "ready_verified_internally",
+    "status": "tagged_verified_internally",
     "assurance_detail": "La distinzione autoritativa fra verified_live e declared_not_verified_live per ciascuna riduzione e in release/rc1-readiness.json.",
     "included_reference_profiles": [
       "PostgreSQL 16 con PostGIS 3.4",
