@@ -21,7 +21,27 @@ pub(super) struct WriteColumnPlan {
     pub(super) native_type: String,
     pub(super) native_declaration: String,
     pub(super) nullable: bool,
+    pub(super) collation: Option<String>,
     pub(super) spatial_srid: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum TargetLifecycle {
+    Existing {
+        lock_sql: String,
+        truncate_sql: Option<String>,
+        schema_fingerprint: String,
+    },
+    Create {
+        create_sql: String,
+    },
+    Replace {
+        lock_sql: String,
+        schema_fingerprint: String,
+        create_sql: String,
+        staging_object: String,
+        backup_object: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -33,16 +53,14 @@ pub(super) struct WritePlan {
     pub(super) key_input_indices: Vec<usize>,
     pub(super) bulk_table: String,
     pub(super) bulk_columns_aligned: bool,
-    pub(super) lock_sql: String,
-    pub(super) truncate_sql: Option<String>,
-    pub(super) schema_fingerprint: String,
+    pub(super) lifecycle: TargetLifecycle,
     pub(super) schema: String,
     pub(super) object: String,
 }
 
 impl WritePlan {
     #[allow(clippy::too_many_lines)]
-    pub(super) fn compile(
+    pub(super) fn compile_existing(
         description: &SqlServerObjectDescription,
         operation: &WriteOperation,
         input_schema: SchemaRef,
@@ -103,6 +121,7 @@ impl WritePlan {
                 native_type: target_spec.native_type,
                 native_declaration: target_spec.native_declaration,
                 nullable: target.nullable,
+                collation: target.collation.clone(),
                 spatial_srid,
             });
         }
@@ -146,17 +165,288 @@ impl WritePlan {
             key_input_indices: row_statement.key_input_indices,
             bulk_table: quoted_object.clone(),
             bulk_columns_aligned,
-            lock_sql: format!(
-                "SELECT TOP (0) 1 AS [plenora_lock] FROM {quoted_object} \
-                 WITH (TABLOCKX, HOLDLOCK);"
-            ),
-            truncate_sql: (operation.mode == WriteMode::TruncateInsert)
-                .then(|| format!("TRUNCATE TABLE {quoted_object};")),
-            schema_fingerprint: description.token.structural_fingerprint.clone(),
+            lifecycle: TargetLifecycle::Existing {
+                lock_sql: lock_sql(&quoted_object),
+                truncate_sql: (operation.mode == WriteMode::TruncateInsert)
+                    .then(|| format!("TRUNCATE TABLE {quoted_object};")),
+                schema_fingerprint: description.token.structural_fingerprint.clone(),
+            },
             schema: description.schema.clone(),
             object: description.name.clone(),
         })
     }
+
+    pub(super) fn compile_create(
+        operation: &WriteOperation,
+        input_schema: SchemaRef,
+    ) -> Result<Self> {
+        compile_new_target(operation, input_schema, &operation.target.object, None)
+    }
+
+    pub(super) fn compile_replace(
+        description: &SqlServerObjectDescription,
+        operation: &WriteOperation,
+        input_schema: SchemaRef,
+        staging_object: &str,
+        backup_object: &str,
+    ) -> Result<Self> {
+        validate_replace_description(description, operation)?;
+        compile_new_target(
+            operation,
+            input_schema,
+            staging_object,
+            Some((description, staging_object, backup_object)),
+        )
+    }
+}
+
+fn compile_new_target(
+    operation: &WriteOperation,
+    input_schema: SchemaRef,
+    write_object: &str,
+    replacement: Option<(&SqlServerObjectDescription, &str, &str)>,
+) -> Result<WritePlan> {
+    validate_operation(operation)?;
+    if input_schema.fields().is_empty() {
+        return Err(plan_error(
+            ErrorCategory::InvalidPlan,
+            "create/replace SQL Server richiede almeno una colonna",
+        ));
+    }
+    validate_schema_contract(&input_schema)?;
+    let renderer = Renderer::new(
+        Dialect::SqlServer,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    );
+    let schema = operation.target.schema.as_deref().ok_or_else(|| {
+        plan_error(
+            ErrorCategory::InvalidPlan,
+            "create/replace SQL Server richiede schema",
+        )
+    })?;
+    let quoted_write_object = renderer.quote_object(&ObjectName {
+        catalog: None,
+        schema: Some(sql_identifier(schema)?),
+        object: sql_identifier(write_object)?,
+    });
+    let mut columns = Vec::with_capacity(input_schema.fields().len());
+    for (input_index, field) in input_schema.fields().iter().enumerate() {
+        let spec = SqlServerColumnSpec::from_create_field(field)?;
+        validate_arrow_type(field, &spec)?;
+        let spatial_srid = validate_spatial_contract(field, &spec, None)?;
+        if let Some(collation) = &spec.collation {
+            validate_collation_name(collation)?;
+            if !matches!(
+                spec.native_type.as_str(),
+                "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext"
+            ) {
+                return Err(plan_error(
+                    ErrorCategory::DataMapping,
+                    "collation SQL Server ammessa soltanto sui tipi testuali",
+                ));
+            }
+        }
+        columns.push(WriteColumnPlan {
+            input_index,
+            name: field.name().clone(),
+            kind: spec.kind,
+            native_type: spec.native_type,
+            native_declaration: spec.native_declaration,
+            nullable: field.is_nullable(),
+            collation: spec.collation,
+            spatial_srid,
+        });
+    }
+    validate_mutation_columns(operation, &columns)?;
+    validate_parameter_count(&columns)?;
+    let row_statement =
+        super::sql::compile_row_statement(operation, &columns, &renderer, &quoted_write_object)?;
+    let create_sql = create_table_sql(&renderer, &quoted_write_object, &columns, &operation.keys)?;
+    let lifecycle = if let Some((description, staging_object, backup_object)) = replacement {
+        let quoted_original = renderer.quote_object(&ObjectName {
+            catalog: None,
+            schema: Some(sql_identifier(&description.schema)?),
+            object: sql_identifier(&description.name)?,
+        });
+        TargetLifecycle::Replace {
+            lock_sql: lock_sql(&quoted_original),
+            schema_fingerprint: description.token.structural_fingerprint.clone(),
+            create_sql,
+            staging_object: staging_object.to_owned(),
+            backup_object: backup_object.to_owned(),
+        }
+    } else {
+        TargetLifecycle::Create { create_sql }
+    };
+    Ok(WritePlan {
+        input_schema,
+        columns,
+        mode: operation.mode,
+        row_sql: row_statement.sql,
+        key_input_indices: row_statement.key_input_indices,
+        bulk_table: quoted_write_object,
+        bulk_columns_aligned: true,
+        lifecycle,
+        schema: schema.to_owned(),
+        object: operation.target.object.clone(),
+    })
+}
+
+fn validate_parameter_count(columns: &[WriteColumnPlan]) -> Result<()> {
+    let count = columns.iter().try_fold(0_usize, |count, column| {
+        count
+            .checked_add(if column.spatial_srid.is_some() { 2 } else { 1 })
+            .ok_or_else(|| {
+                plan_error(
+                    ErrorCategory::ResourceLimit,
+                    "overflow parametri write SQL Server",
+                )
+            })
+    })?;
+    if count > crate::MAX_BIND_PARAMETERS {
+        return Err(plan_error(
+            ErrorCategory::ResourceLimit,
+            "write SQL Server oltre 2100 parametri per riga",
+        ));
+    }
+    Ok(())
+}
+
+fn lock_sql(quoted_object: &str) -> String {
+    format!(
+        "SELECT TOP (1) 1 AS [plenora_lock] FROM {quoted_object} \
+         WITH (TABLOCKX, HOLDLOCK);"
+    )
+}
+
+fn create_table_sql(
+    renderer: &Renderer,
+    quoted_object: &str,
+    columns: &[WriteColumnPlan],
+    keys: &[String],
+) -> Result<String> {
+    let mut definitions = columns
+        .iter()
+        .map(|column| {
+            let name = renderer.quote_identifier(&sql_identifier(&column.name)?);
+            let collation = if let Some(value) = &column.collation {
+                validate_collation_name(value)?;
+                format!(" COLLATE {value}")
+            } else {
+                String::new()
+            };
+            let nullable = if column.nullable {
+                " NULL"
+            } else {
+                " NOT NULL"
+            };
+            Ok(format!(
+                "{name} {}{collation}{nullable}",
+                column.native_declaration
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !keys.is_empty() {
+        let mut quoted_keys = Vec::with_capacity(keys.len());
+        for key in keys {
+            let column = columns
+                .iter()
+                .find(|column| column.name == *key)
+                .ok_or_else(|| {
+                    plan_error(
+                        ErrorCategory::InvalidPlan,
+                        format!("chiave create SQL Server assente: {key}"),
+                    )
+                })?;
+            if column.nullable {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "chiave primaria create SQL Server non puo essere nullable",
+                ));
+            }
+            quoted_keys.push(renderer.quote_identifier(&sql_identifier(key)?));
+        }
+        definitions.push(format!("PRIMARY KEY ({})", quoted_keys.join(", ")));
+    }
+    Ok(format!(
+        "CREATE TABLE {quoted_object} ({});",
+        definitions.join(", ")
+    ))
+}
+
+fn validate_collation_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS
+        || !value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(plan_error(
+            ErrorCategory::DataMapping,
+            "collation SQL Server fuori dalla grammatica ammessa",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_replace_description(
+    description: &SqlServerObjectDescription,
+    operation: &WriteOperation,
+) -> Result<()> {
+    if description.kind != "USER_TABLE"
+        || description.temporal_type != 0
+        || description.memory_optimized
+    {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "replace SQL Server limitato a USER_TABLE non temporal e non memory-optimized",
+        ));
+    }
+    if description.columns.iter().any(|column| {
+        !is_writable(column)
+            || column.default_definition.is_some()
+            || column.computed_definition.is_some()
+    }) {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "replace SQL Server non preserva identity/computed/generated/default",
+        ));
+    }
+    let unsupported_constraint = description.constraints.iter().any(|constraint| {
+        if constraint.kind != "PRIMARY_KEY_CONSTRAINT" {
+            return true;
+        }
+        constraint.columns.as_deref().is_none_or(|columns| {
+            columns
+                .split(',')
+                .ne(operation.keys.iter().map(String::as_str))
+        })
+    });
+    if unsupported_constraint
+        || description.indexes.iter().any(|index| {
+            !index.primary_key
+                || index.kind != "CLUSTERED"
+                || !index.unique
+                || index.disabled
+                || index.filtered
+        })
+        || description
+            .columns
+            .iter()
+            .any(|column| column.type_schema != "sys")
+    {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "replace SQL Server rifiuta UDT, vincoli o indici non rappresentati dal piano",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
@@ -223,23 +513,17 @@ fn bulk_columns_are_aligned(
 }
 
 pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
-    if !matches!(
-        operation.mode,
-        WriteMode::Append
-            | WriteMode::TruncateInsert
-            | WriteMode::Update
-            | WriteMode::Upsert
-            | WriteMode::DeleteByKeys
-    ) {
+    let profile_supported = match operation.mode {
+        WriteMode::Replace => matches!(
+            operation.transaction_profile,
+            TransactionProfile::SingleTransaction | TransactionProfile::StagedSwap
+        ),
+        _ => operation.transaction_profile == TransactionProfile::SingleTransaction,
+    };
+    if !profile_supported {
         return Err(plan_error(
             ErrorCategory::Unsupported,
-            "write SQL Server non supporta ancora create/replace",
-        ));
-    }
-    if operation.transaction_profile != TransactionProfile::SingleTransaction {
-        return Err(plan_error(
-            ErrorCategory::Unsupported,
-            "write SQL Server richiede single_transaction",
+            "transaction_profile incompatibile col lifecycle SQL Server",
         ));
     }
     if operation.allow_partial || operation.create_spatial_index {
@@ -321,7 +605,14 @@ fn validate_mutation_shape(operation: &WriteOperation) -> Result<()> {
                 ));
             }
         }
-        WriteMode::Create | WriteMode::Replace => {}
+        WriteMode::Create | WriteMode::Replace => {
+            if !operation.update_columns.is_empty() {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "create/replace non accettano update_columns",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -546,8 +837,10 @@ pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SqlServerConstraint, SqlServerIndex, SqlServerSchemaToken};
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::plan::{ObjectRef, SridPolicy};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn operation(mode: WriteMode) -> WriteOperation {
@@ -573,11 +866,14 @@ mod tests {
     fn write_modes_and_required_key_shapes_are_explicit_before_io() {
         assert!(validate_operation(&operation(WriteMode::Append)).is_ok());
         assert!(validate_operation(&operation(WriteMode::TruncateInsert)).is_ok());
-        for mode in [WriteMode::Create, WriteMode::Replace] {
-            let error = validate_operation(&operation(mode)).expect_err("unsupported mode");
-            assert_eq!(error.category, ErrorCategory::Unsupported);
-            assert_eq!(error.phase, ErrorPhase::Prepare);
-        }
+        assert!(validate_operation(&operation(WriteMode::Create)).is_ok());
+        assert!(validate_operation(&operation(WriteMode::Replace)).is_ok());
+        let mut staged_replace = operation(WriteMode::Replace);
+        staged_replace.transaction_profile = TransactionProfile::StagedSwap;
+        assert!(validate_operation(&staged_replace).is_ok());
+        let mut staged_append = operation(WriteMode::Append);
+        staged_append.transaction_profile = TransactionProfile::StagedSwap;
+        assert!(validate_operation(&staged_append).is_err());
         for mode in [
             WriteMode::Update,
             WriteMode::Upsert,
@@ -623,6 +919,7 @@ mod tests {
                     native_type: "int".to_owned(),
                     native_declaration: "int".to_owned(),
                     nullable: false,
+                    collation: None,
                     spatial_srid: None,
                 }],
                 mode: WriteMode::Append,
@@ -630,9 +927,11 @@ mod tests {
                 key_input_indices: Vec::new(),
                 bulk_table: "[dbo].[target]".to_owned(),
                 bulk_columns_aligned: false,
-                lock_sql: String::new(),
-                truncate_sql: None,
-                schema_fingerprint: "fingerprint".to_owned(),
+                lifecycle: TargetLifecycle::Existing {
+                    lock_sql: String::new(),
+                    truncate_sql: None,
+                    schema_fingerprint: "fingerprint".to_owned(),
+                },
                 schema: "dbo".to_owned(),
                 object: "target".to_owned(),
             };
@@ -661,5 +960,130 @@ mod tests {
         };
         plan.columns[0].native_type = "money".to_owned();
         assert!(validate_bulk_profile(&plan).is_err());
+    }
+
+    #[test]
+    fn create_plan_compiles_quoted_atomic_ddl_and_primary_key() {
+        let mut text_metadata = HashMap::new();
+        text_metadata.insert(
+            protocol::SQLSERVER_COLLATION.to_owned(),
+            "Latin1_General_100_BIN2".to_owned(),
+        );
+        let schema = Arc::new(plenora_database_core::arrow::Schema::new(vec![
+            Field::new("asset id", DataType::Int32, false),
+            Field::new("label", DataType::Utf8, true).with_metadata(text_metadata),
+        ]));
+        let mut create = operation(WriteMode::Create);
+        create.target.object = "asset registry".to_owned();
+        create.keys = vec!["asset id".to_owned()];
+        let plan = WritePlan::compile_create(&create, schema).expect("create plan");
+        let TargetLifecycle::Create { create_sql } = plan.lifecycle else {
+            panic!("create lifecycle")
+        };
+        assert!(create_sql.starts_with("CREATE TABLE [dbo].[asset registry]"));
+        assert!(create_sql.contains("[asset id] int NOT NULL"));
+        assert!(create_sql.contains("[label] nvarchar(max) COLLATE Latin1_General_100_BIN2 NULL"));
+        assert!(create_sql.contains("PRIMARY KEY ([asset id])"));
+        assert!(plan.row_sql.contains("INSERT INTO [dbo].[asset registry]"));
+    }
+
+    #[test]
+    fn create_plan_rejects_nullable_or_missing_primary_keys() {
+        let nullable = Arc::new(plenora_database_core::arrow::Schema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )]));
+        let mut create = operation(WriteMode::Create);
+        create.keys = vec!["id".to_owned()];
+        assert!(WritePlan::compile_create(&create, nullable).is_err());
+
+        let schema = Arc::new(plenora_database_core::arrow::Schema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]));
+        create.keys = vec!["missing".to_owned()];
+        assert!(WritePlan::compile_create(&create, schema).is_err());
+
+        let mut malicious_metadata = HashMap::new();
+        malicious_metadata.insert(
+            protocol::SQLSERVER_COLLATION.to_owned(),
+            "Latin1_General_100_BIN2;DROP_TABLE".to_owned(),
+        );
+        let malicious = Arc::new(plenora_database_core::arrow::Schema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )
+        .with_metadata(malicious_metadata)]));
+        create.keys = vec!["id".to_owned()];
+        assert!(WritePlan::compile_create(&create, malicious).is_err());
+    }
+
+    #[test]
+    fn replace_preserves_composite_primary_key_order() {
+        let column = |ordinal, name: &str| SqlServerColumn {
+            ordinal,
+            name: name.to_owned(),
+            type_schema: "sys".to_owned(),
+            native_type: "int".to_owned(),
+            max_length: 4,
+            precision: 10,
+            scale: 0,
+            nullable: false,
+            identity: false,
+            computed: false,
+            generated_always_type: 0,
+            collation: None,
+            default_definition: None,
+            computed_definition: None,
+            computed_persisted: false,
+        };
+        let description = SqlServerObjectDescription {
+            database_id: 1,
+            object_id: 2,
+            catalog: "db".to_owned(),
+            schema: "dbo".to_owned(),
+            name: "target".to_owned(),
+            kind: "USER_TABLE".to_owned(),
+            temporal_type: 0,
+            memory_optimized: false,
+            durability: None,
+            columns: vec![column(1, "tenant_id"), column(2, "asset_id")],
+            constraints: vec![SqlServerConstraint {
+                name: "PK_target".to_owned(),
+                kind: "PRIMARY_KEY_CONSTRAINT".to_owned(),
+                definition: None,
+                columns: Some("tenant_id,asset_id".to_owned()),
+                referenced_object: None,
+                disabled: false,
+                not_trusted: false,
+            }],
+            indexes: vec![SqlServerIndex {
+                index_id: 1,
+                name: Some("PK_target".to_owned()),
+                kind: "CLUSTERED".to_owned(),
+                unique: true,
+                primary_key: true,
+                unique_constraint: false,
+                disabled: false,
+                filtered: false,
+                filter_definition: None,
+                columns: Some("tenant_id:1:0:0,asset_id:2:0:0".to_owned()),
+            }],
+            token: SqlServerSchemaToken {
+                schema_version: 1,
+                database_id: 1,
+                object_id: 2,
+                structural_fingerprint: "fingerprint".to_owned(),
+            },
+        };
+        let mut replace = operation(WriteMode::Replace);
+        replace.keys = vec!["tenant_id".to_owned(), "asset_id".to_owned()];
+        validate_replace_description(&description, &replace).expect("same PK order");
+        replace.keys.reverse();
+        let error = validate_replace_description(&description, &replace).expect_err("reordered PK");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 }

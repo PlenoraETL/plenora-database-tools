@@ -30,9 +30,15 @@ Legenda:
 | Codec scalari read | booleani, interi, float, decimal/money, testo, binari e temporali | live-proven |
 | Budget read | righe, colonne, memoria, output, componenti geometriche e deadline | offline + live-proven |
 | Prepared write | bind TDS tipizzati: `append`, `truncate_insert`, `update`, `upsert`, `delete_by_keys` | live-proven |
+| Create | DDL allow-list da schema Arrow, identificatori quotati, PK opzionale e transazione unica | live-proven |
+| Replace | staging nella stessa transazione, schema guard sotto lock e swap con rename atomici | live-proven |
+| Visibilità replace | il target originale resta leggibile durante il caricamento; lock esclusivo solo alla pubblicazione | live-proven |
+| Dipendenze replace | FK entranti, trigger, permessi, dipendenze/RLS, tracking/CDC/replica, proprietà estese, statistiche/full-text/audit e storage non riproducibile sono rifiutati | offline + live-proven per FK |
 | Keyed DML | indice univoco non filtrato obbligatorio; chiavi NULL rifiutate; conteggi insert/update/delete distinti | live-proven |
 | Upsert concurrency | `UPDATE` con `UPDLOCK,HOLDLOCK` + `INSERT` condizionale; `MERGE` escluso | live-proven |
 | Write transaction | `single_transaction`, lock target e schema guard | live-proven |
+| DDL transazionale | create, staging, rename e drop partecipano al rollback completo | live-proven |
+| Staged swap | nessuna finestra con target assente; commit incerto vieta retry automatico | live-proven |
 | Rollback | vincolo nel batch successivo ripristina truncate e batch precedenti | live-proven |
 | Commit incerto | `OutcomeUnknown`, retry automatico vietato | live-proven con risposta TDS fisicamente interrotta |
 | Fault pre-commit | rollback verificato, effetto `RolledBack` | live-proven |

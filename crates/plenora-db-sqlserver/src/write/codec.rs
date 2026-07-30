@@ -441,6 +441,7 @@ fn mapping_error(message: impl Into<String>) -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::write::plan::TargetLifecycle;
     use plenora_database_core::arrow::{DataType, Field, Schema};
     use plenora_database_core::plan::WriteMode;
     use std::sync::Arc;
@@ -480,6 +481,7 @@ mod tests {
                 native_type: "int".to_owned(),
                 native_declaration: "int".to_owned(),
                 nullable: true,
+                collation: None,
                 spatial_srid: None,
             }],
             mode: WriteMode::DeleteByKeys,
@@ -487,9 +489,11 @@ mod tests {
             key_input_indices: vec![0],
             bulk_table: String::new(),
             bulk_columns_aligned: false,
-            lock_sql: String::new(),
-            truncate_sql: None,
-            schema_fingerprint: String::new(),
+            lifecycle: TargetLifecycle::Existing {
+                lock_sql: String::new(),
+                truncate_sql: None,
+                schema_fingerprint: String::new(),
+            },
             schema: "dbo".to_owned(),
             object: "target".to_owned(),
         };

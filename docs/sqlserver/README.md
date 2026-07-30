@@ -18,6 +18,7 @@ il riferimento comportamentale, non un modello da copiare alla cieca.
 | 8 | read comune e `QueryOperation` a singola source | verificato sul riferimento SQL Server 2022 |
 | 9 | TDS bulk opt-in, differential e rollback multi-batch | verificato sul riferimento SQL Server 2022 |
 | 10 | `QueryOperation` relazionale, schema output server-authoritative e codec nativi | verificato sul riferimento SQL Server 2022 |
+| 11 | create atomico e replace staged-swap con rollback, recovery e visibilità concorrente | verificato sul riferimento SQL Server 2022 |
 
 Il crate usa un client TDS diretto. Non introduce un ORM: AST, mapping Arrow,
 policy di perdita e outcome restano nei contratti Plenora.
@@ -56,10 +57,16 @@ prepared write e `QueryOperation` relazionali con CTE, join, group/having,
 aggregati, window, set operation e offset/fetch. Lo schema Arrow dell'output è
 derivato dal server prima dell'esecuzione e confrontato con i metadati TDS
 effettivi; questo copre anche risultati vuoti senza rieseguire la query. I
+percorsi `create` e `replace` compilano il DDL da una grammatica chiusa.
+`Replace` carica una tabella staging senza bloccare i lettori del target e
+prende il lock esclusivo soltanto per ricontrollare schema e dipendenze,
+rinominare original/staging e rimuovere il backup nella stessa transazione.
+Errori di caricamento o pre-commit ripristinano il target originale senza
+oggetti residui; una conferma di commit persa resta `OutcomeUnknown`. I
 risultati spatial non convertiti esplicitamente in WKB, i lateral join, il
 locking e le forme prive di un nome output deterministico restano fail-closed.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
-certificati verificabili e campagne dedicate per altre modalità di write,
+certificati verificabili,
 latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La
 matrice completa è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
 La campagna cumulativa di coverage è descritta in

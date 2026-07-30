@@ -109,7 +109,9 @@ pub(super) fn compile_row_statement(
             .collect::<Result<Vec<_>>>()
     };
     let sql = match operation.mode {
-        WriteMode::Append | WriteMode::TruncateInsert => insert_sql(),
+        WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert => {
+            insert_sql()
+        }
         WriteMode::Update => format!(
             "UPDATE {quoted_object} WITH (UPDLOCK, HOLDLOCK) SET {} \
              OUTPUT 2 AS [plenora_action] WHERE {};",
@@ -146,12 +148,6 @@ pub(super) fn compile_row_statement(
                 quoted_columns.join(", "),
                 insert_expressions.join(", ")
             )
-        }
-        WriteMode::Create | WriteMode::Replace => {
-            return Err(plan_error(
-                ErrorCategory::Unsupported,
-                "create/replace SQL Server non ancora supportati",
-            ));
         }
     };
     Ok(RowStatement {
@@ -219,6 +215,7 @@ mod tests {
                 native_type: "int".to_owned(),
                 native_declaration: "int".to_owned(),
                 nullable: false,
+                collation: None,
                 spatial_srid: None,
             },
             WriteColumnPlan {
@@ -228,6 +225,7 @@ mod tests {
                 native_type: "nvarchar".to_owned(),
                 native_declaration: "nvarchar(100)".to_owned(),
                 nullable: false,
+                collation: None,
                 spatial_srid: None,
             },
         ]

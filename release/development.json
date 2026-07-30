@@ -3,7 +3,7 @@
   "component": "plenora-database-tools",
   "component_version": "0.1.0",
   "status": "development",
-  "revision": "1ca0208b513aace3738b748c9d76619133208b0f",
+  "revision": "9fbcda3db351836a26020544f1a6e9f4938a284d",
   "claims": {
     "component_rc": false,
     "system_rc": false,
@@ -119,11 +119,6 @@
       "id": "PLN-DB-SQLSERVER-SPATIAL",
       "description": "La RC1 proposta supporta soltanto geometry/geography XY con SRID esplicito; Z, M, ZM e FullGlobe sono esclusi e devono fallire chiusi.",
       "exit_condition": "Contratto Arrow dimensionale ratificato, codec esatto senza perdita, budget dedicati e prove live positive/negative per geometry e geography."
-    },
-    {
-      "id": "PLN-DB-SQLSERVER-LIFECYCLE",
-      "description": "Create e replace con staging/swap transazionale non sono ancora implementati; senza questo blocco la revisione non e candidata RC1.",
-      "exit_condition": "Create e replace atomici qualificati live, inclusi schema drift, rollback, commit incerto, cleanup e dipendenze non preservabili."
     },
     {
       "id": "PLN-DB-SQLSERVER-TLS",

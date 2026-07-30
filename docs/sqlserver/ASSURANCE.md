@@ -26,6 +26,11 @@ i log Compose e lo stato dei container.
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
 - schema drift fail-closed;
 - rollback e outcome di commit incerto;
+- create atomico e replace con staged swap transazionale;
+- profilo create/replace completo sui 19 tipi scalari, temporali e spatial
+  della fixture di riferimento;
+- rollback dello staging e dei rename, cleanup, dipendenze fail-closed e
+  leggibilita del vecchio target durante il caricamento;
 - taglio e blackhole fisici del trasporto TDS.
 
 ## Gap non coperti dal gate v1
@@ -33,7 +38,6 @@ i log Compose e lo stato dei container.
 - SQL Server 2019, 2025 e Azure SQL;
 - TLS positivo con CA privata e hostname matching;
 - spatial Z/M, `FullGlobe` e AST spatial tipizzato;
-- create/replace;
 - catalogo temporal/graph/external e partizioni.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una

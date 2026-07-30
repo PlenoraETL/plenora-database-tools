@@ -1,10 +1,11 @@
 mod codec;
+mod lifecycle;
 mod plan;
 mod resources;
 mod sql;
 
 use crate::{describe_object, PooledSqlServerSession, SqlServerPool, SqlServerSession};
-use plan::WritePlan;
+use plan::{TargetLifecycle, WritePlan};
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::loss::LossReport;
 use plenora_database_core::outcome::{
@@ -25,6 +26,7 @@ use std::sync::Arc;
 use tiberius::{FromSql, Query, Row};
 
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static LIFECYCLE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MutationCounts {
@@ -92,10 +94,19 @@ pub struct PreparedSqlServerWrite {
 
 impl std::fmt::Debug for PreparedSqlServerWrite {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let target_schema_fingerprint = match &self.plan.lifecycle {
+            TargetLifecycle::Existing {
+                schema_fingerprint, ..
+            }
+            | TargetLifecycle::Replace {
+                schema_fingerprint, ..
+            } => Some(schema_fingerprint.as_str()),
+            TargetLifecycle::Create { .. } => None,
+        };
         formatter
             .debug_struct("PreparedSqlServerWrite")
             .field("operation", &self.operation)
-            .field("target_schema_fingerprint", &self.plan.schema_fingerprint)
+            .field("target_schema_fingerprint", &target_schema_fingerprint)
             .field("columns", &self.plan.columns.len())
             .field("insert_mode", &self.insert_mode)
             .field("loss_report", &self.loss_report)
@@ -227,21 +238,14 @@ async fn prepare_write_inner(
     })?;
     sql_identifier(schema)?;
     let mut pooled = pool.checkout(control.token()).await?;
-    let description = describe_object(
-        pooled.session_mut()?,
+    let plan = compile_write_plan(
+        &mut pooled,
+        operation,
         schema,
-        &operation.target.object,
+        Arc::clone(&input_schema),
         control.token(),
     )
     .await?;
-    let observed_srids =
-        inspect_target_spatial_srids(pooled.session_mut()?, &description, control.token()).await?;
-    let plan = WritePlan::compile(
-        &description,
-        operation,
-        Arc::clone(&input_schema),
-        &observed_srids,
-    )?;
     if insert_mode == SqlServerInsertMode::TdsBulk {
         plan::validate_bulk_profile(&plan)?;
     }
@@ -261,6 +265,79 @@ async fn prepare_write_inner(
         loss_report,
         insert_mode,
     })
+}
+
+async fn compile_write_plan(
+    pooled: &mut PooledSqlServerSession,
+    operation: &WriteOperation,
+    schema: &str,
+    input_schema: SchemaRef,
+    cancellation: &CancellationToken,
+) -> Result<WritePlan> {
+    match operation.mode {
+        plenora_database_core::plan::WriteMode::Create => {
+            if lifecycle::object_exists(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                cancellation,
+            )
+            .await?
+            {
+                return Err(write_error(
+                    ErrorCategory::Schema,
+                    ErrorPhase::Prepare,
+                    "target create SQL Server gia esistente",
+                ));
+            }
+            WritePlan::compile_create(operation, input_schema)
+        }
+        plenora_database_core::plan::WriteMode::Replace => {
+            let description = describe_object(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                cancellation,
+            )
+            .await?;
+            lifecycle::validate_replace_external_state(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?;
+            let nonce = LIFECYCLE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let staging = lifecycle::derived_object_name(&operation.target.object, "stage", nonce)?;
+            let backup = lifecycle::derived_object_name(&operation.target.object, "backup", nonce)?;
+            if lifecycle::object_exists(pooled.session_mut()?, schema, &staging, cancellation)
+                .await?
+                || lifecycle::object_exists(pooled.session_mut()?, schema, &backup, cancellation)
+                    .await?
+            {
+                return Err(write_error(
+                    ErrorCategory::Schema,
+                    ErrorPhase::Prepare,
+                    "collisione oggetto lifecycle SQL Server",
+                ));
+            }
+            WritePlan::compile_replace(&description, operation, input_schema, &staging, &backup)
+        }
+        _ => {
+            let description = describe_object(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                cancellation,
+            )
+            .await?;
+            let observed_srids =
+                inspect_target_spatial_srids(pooled.session_mut()?, &description, cancellation)
+                    .await?;
+            WritePlan::compile_existing(&description, operation, input_schema, &observed_srids)
+        }
+    }
 }
 
 /// Esegue il piano preparato in una singola transazione SQL Server.
@@ -312,17 +389,10 @@ async fn write_prepared_inner(
     let mut pooled = prepared.pool.checkout(control.token()).await?;
     pooled.disallow_reuse();
     pooled.session_mut()?.begin(control.token()).await?;
-    if let Err(error) = lock_and_verify_schema(&mut pooled, &prepared.plan, control.token()).await {
+    if let Err(error) =
+        prepare_transaction_target(&mut pooled, &prepared.plan, control.token()).await
+    {
         return Err(rollback_after_error(&mut pooled, error).await);
-    }
-    if let Some(sql) = &prepared.plan.truncate_sql {
-        let result = pooled
-            .session_mut()?
-            .execute_write_query(Query::new(sql.clone()), control.token())
-            .await;
-        if let Err(error) = result {
-            return Err(rollback_after_error(&mut pooled, error).await);
-        }
     }
 
     let mut received = 0_u64;
@@ -383,6 +453,11 @@ async fn write_prepared_inner(
             return Err(rollback_after_error(&mut pooled, error).await);
         }
     }
+    if let Err(error) =
+        finalize_transaction_target(&mut pooled, &prepared.plan, control.token()).await
+    {
+        return Err(rollback_after_error(&mut pooled, error).await);
+    }
     if fault == Some(WriteFaultPoint::BeforeCommit) {
         let mut error = write_error(
             ErrorCategory::Timeout,
@@ -411,7 +486,9 @@ async fn write_prepared_inner(
         pooled.allow_reuse_after_drain()?;
         let (inserted, updated, deleted) = match prepared.plan.mode {
             plenora_database_core::plan::WriteMode::Append
-            | plenora_database_core::plan::WriteMode::TruncateInsert => {
+            | plenora_database_core::plan::WriteMode::TruncateInsert
+            | plenora_database_core::plan::WriteMode::Create
+            | plenora_database_core::plan::WriteMode::Replace => {
                 (Some(mutations.inserted), None, None)
             }
             plenora_database_core::plan::WriteMode::Update => {
@@ -422,14 +499,6 @@ async fn write_prepared_inner(
             }
             plenora_database_core::plan::WriteMode::DeleteByKeys => {
                 (Some(0), Some(0), Some(mutations.deleted))
-            }
-            plenora_database_core::plan::WriteMode::Create
-            | plenora_database_core::plan::WriteMode::Replace => {
-                return Err(write_error(
-                    ErrorCategory::Protocol,
-                    ErrorPhase::Write,
-                    "modalita SQL Server non compilabile presente nel piano",
-                ));
             }
         };
         let outcome = WriteOutcome {
@@ -565,6 +634,8 @@ fn unknown_commit_outcome(
             last_certain_phase: CertainPhase::CommitOrEditRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
+            // Il DDL e i rename sono nella stessa transazione: dopo una
+            // conferma persa lo staging o è già il target, o non esiste.
             staging_object: None,
             verification_action: Some(format!(
                 "verificare il target [{}].[{}] prima di ogni retry",
@@ -576,15 +647,82 @@ fn unknown_commit_outcome(
     Ok(outcome)
 }
 
+async fn prepare_transaction_target(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    match &plan.lifecycle {
+        TargetLifecycle::Existing {
+            lock_sql,
+            truncate_sql,
+            schema_fingerprint,
+        } => {
+            lock_and_verify_schema(pooled, plan, lock_sql, schema_fingerprint, cancellation)
+                .await?;
+            if let Some(sql) = truncate_sql {
+                pooled
+                    .session_mut()?
+                    .execute_write_query(Query::new(sql.clone()), cancellation)
+                    .await?;
+            }
+        }
+        TargetLifecycle::Create { create_sql } | TargetLifecycle::Replace { create_sql, .. } => {
+            pooled
+                .session_mut()?
+                .execute_write_query(Query::new(create_sql.clone()), cancellation)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn finalize_transaction_target(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    if let TargetLifecycle::Replace {
+        lock_sql,
+        schema_fingerprint,
+        staging_object,
+        backup_object,
+        ..
+    } = &plan.lifecycle
+    {
+        lock_and_verify_schema(pooled, plan, lock_sql, schema_fingerprint, cancellation).await?;
+        lifecycle::validate_replace_external_state(
+            pooled.session_mut()?,
+            &plan.schema,
+            &plan.object,
+            ErrorPhase::Write,
+            cancellation,
+        )
+        .await?;
+        lifecycle::publish_replacement(
+            pooled.session_mut()?,
+            &plan.schema,
+            &plan.object,
+            staging_object,
+            backup_object,
+            cancellation,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn lock_and_verify_schema(
     pooled: &mut PooledSqlServerSession,
     plan: &WritePlan,
+    lock_sql: &str,
+    schema_fingerprint: &str,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let results = pooled
         .session_mut()?
         .execute_query(
-            Query::new(plan.lock_sql.clone()),
+            Query::new(lock_sql.to_owned()),
             ErrorPhase::Write,
             cancellation,
         )
@@ -603,7 +741,7 @@ async fn lock_and_verify_schema(
         cancellation,
     )
     .await?;
-    if current.token.structural_fingerprint != plan.schema_fingerprint {
+    if current.token.structural_fingerprint != schema_fingerprint {
         return Err(write_error(
             ErrorCategory::Schema,
             ErrorPhase::Write,
@@ -747,6 +885,8 @@ fn row_mutation(
         (
             plenora_database_core::plan::WriteMode::Append
             | plenora_database_core::plan::WriteMode::TruncateInsert
+            | plenora_database_core::plan::WriteMode::Create
+            | plenora_database_core::plan::WriteMode::Replace
             | plenora_database_core::plan::WriteMode::Upsert,
             Some(1),
         ) => Ok(MutationCounts {

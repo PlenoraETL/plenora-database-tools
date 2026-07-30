@@ -271,11 +271,11 @@ impl Provider for SqlServerProvider {
                     resumable: false,
                 },
                 writes: WriteCapabilities {
-                    create: false,
+                    create: true,
                     append: true,
                     update: true,
                     upsert: true,
-                    replace: false,
+                    replace: true,
                     delete_by_keys: true,
                     bulk: true,
                     array_binding: false,
@@ -287,8 +287,8 @@ impl Provider for SqlServerProvider {
                 transactions: TransactionCapabilities {
                     single_transaction: true,
                     savepoints: false,
-                    transactional_ddl: false,
-                    staged_swap: false,
+                    transactional_ddl: true,
+                    staged_swap: true,
                     scope: TransactionScope::Transaction,
                 },
                 spatial: SpatialCapabilities {
