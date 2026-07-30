@@ -58,7 +58,8 @@ class SqlServerPerformanceTests(unittest.TestCase):
             "platform": "test",
             "machine": "x86_64",
             "cpu_count": 8,
-            "sqlserver_image": "sha256:test",
+            "sqlserver_reference": "mcr.microsoft.com/mssql/server@sha256:test",
+            "sqlserver_runtime_image": "sha256:test-runtime",
             "rust_image": "rust:test",
             "campaign": "test",
         }

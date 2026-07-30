@@ -25,6 +25,7 @@ DEFAULT_BUDGET = ROOT / "benchmarks/baseline/sqlserver-performance-budget.json"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
+EXPECTED_REFERENCE = f"mcr.microsoft.com/mssql/server@{EXPECTED_IMAGE}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,21 +98,32 @@ def docker_state() -> None:
 
 def environment_identity(manifest: dict[str, Any]) -> dict[str, Any]:
     completed = subprocess.run(
-        ["docker", "inspect", "--format", "{{.Image}}", "dataflow-sqlserver"],
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{.Config.Image}}|{{.Image}}",
+            "dataflow-sqlserver",
+        ],
         cwd=ROOT,
         check=False,
         text=True,
         capture_output=True,
         timeout=30,
     )
-    image = completed.stdout.strip()
-    if completed.returncode or image != EXPECTED_IMAGE:
+    identity = completed.stdout.strip().split("|")
+    if (
+        completed.returncode
+        or len(identity) != 2
+        or (identity[0] != EXPECTED_REFERENCE and identity[1] != EXPECTED_IMAGE)
+    ):
         raise RuntimeError("immagine SQL Server prestazionale non conforme")
     return {
         "platform": platform.system().lower(),
         "machine": platform.machine().lower(),
         "cpu_count": os.cpu_count(),
-        "sqlserver_image": image,
+        "sqlserver_reference": identity[0],
+        "sqlserver_runtime_image": identity[1],
         "rust_image": IMAGE,
         "campaign": manifest["campaign"],
     }
@@ -271,7 +283,8 @@ def compare_baseline(
         "platform",
         "machine",
         "cpu_count",
-        "sqlserver_image",
+        "sqlserver_reference",
+        "sqlserver_runtime_image",
         "rust_image",
         "campaign",
     )
