@@ -120,14 +120,22 @@ def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
     )
 
 
-def validate_image_pin() -> None:
+def validate_image_pin() -> dict[str, str]:
     compose = (ROOT / "docker-compose.sqlserver.yml").read_text(encoding="utf-8")
     reference = f"mcr.microsoft.com/mssql/server@{EXPECTED_IMAGE}"
     if compose.count(reference) != 2:
         raise RuntimeError("digest SQL Server non fissato per entrambi i servizi")
-    image = docker_value(["inspect", "--format", "{{.Image}}", CONTAINER])
-    if image != EXPECTED_IMAGE:
+    configured_image = docker_value(
+        ["inspect", "--format", "{{.Config.Image}}", CONTAINER]
+    )
+    image_id = docker_value(["inspect", "--format", "{{.Image}}", CONTAINER])
+    if configured_image != reference and image_id != EXPECTED_IMAGE:
         raise RuntimeError("container SQL Server diverso dal digest di riferimento")
+    return {
+        "configured_reference": configured_image,
+        "runtime_image_id": image_id,
+        "expected_digest": EXPECTED_IMAGE,
+    }
 
 
 def server_identity() -> dict[str, str]:
@@ -198,7 +206,7 @@ def main() -> int:
         )
         if state != "running|healthy":
             raise RuntimeError("container SQL Server non healthy")
-        validate_image_pin()
+        image_identity = validate_image_pin()
         identity = server_identity()
         run_cargo(
             [
@@ -246,7 +254,7 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "database_connections_opened": True,
         "secrets_persisted": False,
-        "container_image": EXPECTED_IMAGE,
+        "container_image": image_identity,
         "server": identity,
         "live_tests": {
             "expected": EXPECTED_LIVE_TESTS,
