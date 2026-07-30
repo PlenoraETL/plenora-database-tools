@@ -364,14 +364,14 @@ async fn compile_write_plan(
                 cancellation,
             )
             .await?;
-            let observed_srids =
-                inspect_target_spatial_srids(pooled.session_mut()?, &description, cancellation)
+            let observed_spatial =
+                inspect_target_spatial_contracts(pooled.session_mut()?, &description, cancellation)
                     .await?;
             WritePlan::compile_existing(
                 &description,
                 operation,
                 input_schema,
-                &observed_srids,
+                &observed_spatial,
                 schema_evolution,
             )
         }
@@ -964,11 +964,11 @@ fn row_mutation(
     }
 }
 
-async fn inspect_target_spatial_srids(
+async fn inspect_target_spatial_contracts(
     session: &mut SqlServerSession,
     description: &crate::SqlServerObjectDescription,
     cancellation: &CancellationToken,
-) -> Result<HashMap<String, Option<u32>>> {
+) -> Result<HashMap<String, plan::ObservedSpatialContract>> {
     let renderer = Renderer::new(
         Dialect::SqlServer,
         DialectCapabilities {
@@ -977,7 +977,7 @@ async fn inspect_target_spatial_srids(
     );
     let schema = renderer.quote_identifier(&sql_identifier(&description.schema)?);
     let object = renderer.quote_identifier(&sql_identifier(&description.name)?);
-    let mut srids = HashMap::new();
+    let mut contracts = HashMap::new();
     for column in &description.columns {
         if !matches!(column.native_type.as_str(), "geometry" | "geography") {
             continue;
@@ -986,8 +986,10 @@ async fn inspect_target_spatial_srids(
         let sql = format!(
             "SELECT COUNT_BIG(DISTINCT CASE WHEN {name} IS NULL THEN NULL ELSE {name}.STSrid END), \
              MIN(CASE WHEN {name} IS NULL THEN NULL ELSE {name}.STSrid END), \
-             COALESCE(MAX(CONVERT(int, {name}.HasZ)), 0), \
-             COALESCE(MAX(CONVERT(int, {name}.HasM)), 0), \
+             COUNT_BIG(DISTINCT CASE WHEN {name} IS NULL THEN NULL ELSE \
+             CONVERT(int, {name}.HasZ) * 2 + CONVERT(int, {name}.HasM) END), \
+             MIN(CASE WHEN {name} IS NULL THEN NULL ELSE \
+             CONVERT(int, {name}.HasZ) * 2 + CONVERT(int, {name}.HasM) END), \
              COALESCE(SUM(CONVERT(bigint, CASE WHEN {name}.STGeometryType() = N'FullGlobe' \
              THEN 1 ELSE 0 END)), 0) FROM {schema}.{object};"
         );
@@ -1024,8 +1026,8 @@ async fn inspect_target_spatial_srids(
         })?;
         let distinct: i64 = required(&row, 0, "distinct SRID")?;
         let srid: Option<i32> = optional(&row, 1, "SRID")?;
-        let has_z: i32 = required(&row, 2, "HasZ")?;
-        let has_m: i32 = required(&row, 3, "HasM")?;
+        let dimension_count: i64 = required(&row, 2, "numero profili dimensionali")?;
+        let dimension_code: Option<i32> = optional(&row, 3, "profilo dimensionale")?;
         let full_globe: i64 = required(&row, 4, "FullGlobe")?;
         if distinct > 1 {
             return Err(write_error(
@@ -1034,13 +1036,15 @@ async fn inspect_target_spatial_srids(
                 "target SQL Server contiene SRID misti",
             ));
         }
-        if has_z > 0 || has_m > 0 || full_globe > 0 {
+        if full_globe > 0 {
             return Err(write_error(
                 ErrorCategory::Unsupported,
                 ErrorPhase::Prepare,
-                "target spatial SQL Server fuori dal profilo XY strict",
+                "target spatial SQL Server contiene FullGlobe",
             ));
         }
+        let dimensions =
+            crate::types::spatial_dimensions_from_profile(dimension_count, dimension_code)?;
         let srid = srid
             .map(|value| {
                 u32::try_from(value).map_err(|_| {
@@ -1052,9 +1056,16 @@ async fn inspect_target_spatial_srids(
                 })
             })
             .transpose()?;
-        srids.insert(column.name.clone(), srid);
+        contracts.insert(
+            column.name.clone(),
+            plan::ObservedSpatialContract {
+                srid,
+                dimensions: (dimensions != plenora_database_core::geometry::Dimensions::Unknown)
+                    .then_some(dimensions),
+            },
+        );
     }
-    Ok(srids)
+    Ok(contracts)
 }
 
 fn required<'a, T>(row: &'a Row, index: usize, name: &str) -> Result<T>

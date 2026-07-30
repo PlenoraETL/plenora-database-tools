@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::{
 };
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::ewkb::inspect_ewkb_detailed;
+use plenora_database_core::protocol;
 use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
 };
@@ -87,13 +88,22 @@ pub(super) fn inspect_batch(
                         ));
                     }
                     let inspection = inspect_ewkb_detailed(value, remaining, nesting_depth)?;
-                    if inspection.root.srid.is_some()
-                        || inspection.root.has_z
-                        || inspection.root.has_m
-                    {
+                    if inspection.root.srid.is_some() {
                         return Err(mapping_error(
-                            "write SQL Server richiede WKB XY puro senza header EWKB",
+                            "write SQL Server richiede WKB senza SRID embedded",
                         ));
+                    }
+                    let expected_dimensions = plan
+                        .input_schema
+                        .field(column.input_index)
+                        .metadata()
+                        .get(protocol::GEOMETRY_DIMENSIONS)
+                        .map(String::as_str)
+                        .ok_or_else(|| {
+                            mapping_error("dimensioni spatial assenti dal piano Arrow")
+                        })?;
+                    if inspection.root.dimensions_label() != expected_dimensions {
+                        return Err(mapping_error("dimensioni WKB diverse dal contratto Arrow"));
                     }
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)

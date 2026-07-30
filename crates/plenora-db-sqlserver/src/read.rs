@@ -2,7 +2,7 @@ use crate::arrow::SqlServerColumnBuffer;
 use crate::catalog::describe_object;
 use crate::parameter::bind_parameters;
 use crate::query::{describe_query, render_query, validate_query_sources};
-use crate::types::SqlServerReadPlan;
+use crate::types::{spatial_dimensions_from_profile, SqlServerReadPlan};
 use crate::SqlServerPool;
 use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
@@ -32,9 +32,8 @@ pub const MAX_CONFIGURED_BATCH_ROWS: usize = 65_536;
 ///
 /// # Errors
 ///
-/// Fallisce chiuso per schema instabile, tipo non supportato, SRID misti,
-/// geometrie Z/M/FullGlobe nel profilo iniziale, budget insufficiente o errore
-/// TDS.
+/// Fallisce chiuso per schema instabile, tipo non supportato, SRID o profili
+/// dimensionali misti, `FullGlobe`, budget insufficiente o errore TDS.
 #[allow(clippy::significant_drop_tightening)]
 pub async fn read_object(
     pool: &Arc<SqlServerPool>,
@@ -575,8 +574,12 @@ async fn preflight_spatial(
              {quoted_column}.STSrid END), MIN(CASE WHEN {quoted_column} IS NULL THEN NULL ELSE \
              {quoted_column}.STSrid END), COALESCE(SUM(CONVERT(bigint, CASE WHEN \
              {quoted_column}.STGeometryType() = N'FullGlobe' THEN 1 ELSE 0 END)), 0), \
-             COALESCE(MAX(CONVERT(tinyint, {quoted_column}.HasZ)), 0), \
-             COALESCE(MAX(CONVERT(tinyint, {quoted_column}.HasM)), 0) \
+             COUNT_BIG(DISTINCT CASE WHEN {quoted_column} IS NULL THEN NULL ELSE \
+             CONVERT(int, {quoted_column}.HasZ) * 2 + \
+             CONVERT(int, {quoted_column}.HasM) END), \
+             MIN(CASE WHEN {quoted_column} IS NULL THEN NULL ELSE \
+             CONVERT(int, {quoted_column}.HasZ) * 2 + \
+             CONVERT(int, {quoted_column}.HasM) END) \
              FROM {quoted_schema}.{quoted_object};"
         );
         let mut results = session
@@ -602,10 +605,8 @@ async fn preflight_spatial(
         let srid_count: i64 = required(&row, 0, "numero SRID")?;
         let srid: Option<i32> = optional(&row, 1, "SRID")?;
         let full_globe: i64 = required(&row, 2, "FullGlobe")?;
-        // COALESCE con il literal intero promuove il risultato MAX(tinyint)
-        // a `int` secondo la precedence T-SQL.
-        let has_z: i32 = required(&row, 3, "HasZ")?;
-        let has_m: i32 = required(&row, 4, "HasM")?;
+        let dimension_count: i64 = required(&row, 3, "numero profili dimensionali")?;
+        let dimension_code: Option<i32> = optional(&row, 4, "profilo dimensionale")?;
         if srid_count > 1 {
             return Err(read_error(
                 ErrorCategory::DataMapping,
@@ -613,13 +614,14 @@ async fn preflight_spatial(
                 "colonna spatial SQL Server con SRID misti",
             ));
         }
-        if full_globe > 0 || has_z > 0 || has_m > 0 {
+        if full_globe > 0 {
             return Err(read_error(
                 ErrorCategory::Unsupported,
                 ErrorPhase::Prepare,
-                "profilo spatial SQL Server iniziale limitato a geometrie XY non FullGlobe",
+                "FullGlobe SQL Server non rappresentabile nel profilo WKB",
             ));
         }
+        let dimensions = spatial_dimensions_from_profile(dimension_count, dimension_code)?;
         let srid = srid
             .map(|value| {
                 u32::try_from(value).map_err(|_| {
@@ -631,7 +633,7 @@ async fn preflight_spatial(
                 })
             })
             .transpose()?;
-        plan.apply_spatial_srid(index, srid)?;
+        plan.apply_spatial_contract(index, srid, dimensions)?;
     }
     Ok(())
 }
@@ -711,6 +713,7 @@ fn read_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plenora_database_core::geometry::Dimensions;
     use plenora_database_core::ResourceLimits;
 
     #[test]
@@ -725,5 +728,46 @@ mod tests {
     fn reservations_fail_before_zero_or_missing_geometry_budget() {
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         assert!(BatchReservation::new(&budget, 0, &[]).is_err());
+    }
+
+    #[test]
+    fn spatial_dimension_profile_is_exact_and_fail_closed() {
+        assert_eq!(
+            spatial_dimensions_from_profile(0, None).expect("empty"),
+            Dimensions::Unknown
+        );
+        assert_eq!(
+            spatial_dimensions_from_profile(1, Some(0)).expect("xy"),
+            Dimensions::Xy
+        );
+        assert_eq!(
+            spatial_dimensions_from_profile(1, Some(1)).expect("xym"),
+            Dimensions::Xym
+        );
+        assert_eq!(
+            spatial_dimensions_from_profile(1, Some(2)).expect("xyz"),
+            Dimensions::Xyz
+        );
+        assert_eq!(
+            spatial_dimensions_from_profile(1, Some(3)).expect("xyzm"),
+            Dimensions::Xyzm
+        );
+        assert_eq!(
+            spatial_dimensions_from_profile(2, Some(0))
+                .expect_err("mixed profiles")
+                .category,
+            ErrorCategory::DataMapping
+        );
+        for incoherent in [
+            spatial_dimensions_from_profile(-1, None),
+            spatial_dimensions_from_profile(0, Some(0)),
+            spatial_dimensions_from_profile(1, None),
+            spatial_dimensions_from_profile(1, Some(4)),
+        ] {
+            assert_eq!(
+                incoherent.expect_err("incoherent profile").category,
+                ErrorCategory::Protocol
+            );
+        }
     }
 }
