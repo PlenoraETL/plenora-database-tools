@@ -2,13 +2,13 @@ use crate::{
     describe_object, list_objects, list_schemas, prepare_write, prepare_write_with_mode,
     probe_server, read_object, write_prepared, CertificatePolicy, SqlServerColumnKind,
     SqlServerColumnSpec, SqlServerConfig, SqlServerInsertMode, SqlServerPool, SqlServerProvider,
-    SqlServerSession, SqlServerWireEncoding,
+    SqlServerSchemaEvolution, SqlServerSession, SqlServerWireEncoding,
 };
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, Decimal128Array, Int32Array, Int64Array, StringArray,
 };
 use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaRef};
-use plenora_database_core::loss::MappingPolicy;
+use plenora_database_core::loss::{LossSeverity, MappingPolicy};
 use plenora_database_core::outcome::WriteStatus;
 use plenora_database_core::plan::{
     FilterExpression, ObjectRef, Operation, OrderBy, ReadOperation, SortDirection, SridPolicy,
@@ -2485,6 +2485,195 @@ async fn live_physical_blackhole_after_server_rollback_requires_recovery() {
     assert!(error.execution_id.is_some());
     assert_eq!(guard_id_count(&mut admin, 99, &cancellation).await, 1);
     proxy.cut().await;
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica schema evolution transazionale"]
+#[allow(clippy::too_many_lines)]
+async fn live_additive_schema_evolution_is_opt_in_atomic_and_reported() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("schema evolution admin");
+    let reset = || {
+        Query::new(
+            "DROP TABLE IF EXISTS [plenora_test].[schema_evolution_probe]; \
+             CREATE TABLE [plenora_test].[schema_evolution_probe] \
+             ([id] int NOT NULL PRIMARY KEY);",
+        )
+    };
+    admin
+        .execute_query(reset(), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("schema evolution fixture");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("note", DataType::Utf8, true),
+    ]));
+    let operation = write_operation("schema_evolution_probe", WriteMode::Append);
+    let secret = live_secret();
+    let disabled = SqlServerProvider::new(config.clone(), 16, 1).expect("disabled provider");
+    let disabled_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("disabled evolution budget");
+    let Err(disabled_error) = disabled
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &disabled_budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("schema evolution must be opt-in");
+    };
+    assert_eq!(disabled_error.category, ErrorCategory::Schema);
+
+    let provider = SqlServerProvider::new(config.clone(), 16, 1)
+        .expect("evolution provider")
+        .with_schema_evolution(SqlServerSchemaEvolution::AddNullableColumns);
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("evolution budget");
+    let prepared = provider
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare additive evolution");
+    assert_eq!(prepared.loss_report.losses.len(), 1);
+    assert_eq!(
+        prepared.loss_report.losses[0].severity,
+        LossSeverity::Information
+    );
+    let before: i64 = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM sys.columns \
+                 WHERE object_id = OBJECT_ID(N'plenora_test.schema_evolution_probe') \
+                   AND name = N'note';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("inspect prepare side effects")
+        .remove(0)
+        .remove(0)
+        .get(0)
+        .expect("prepare side effect count");
+    assert_eq!(before, 0, "prepare must not mutate the target");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])),
+            Arc::new(StringArray::from(vec![Some("a"), None])),
+        ],
+    )
+    .expect("schema evolution batch");
+    let input: Box<dyn BatchStream> = Box::new(VecBatchStream {
+        schema: Arc::clone(&schema),
+        batches: VecDeque::from([batch]),
+    });
+    let outcome = provider
+        .write(&secret, prepared, input, &budget, &cancellation)
+        .await
+        .expect("execute additive evolution");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+
+    let committed: i64 = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM [plenora_test].[schema_evolution_probe] \
+                 WHERE ([id] = 1 AND [note] = N'a') OR ([id] = 2 AND [note] IS NULL);",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify evolved rows")
+        .remove(0)
+        .remove(0)
+        .get(0)
+        .expect("evolved row count");
+    assert_eq!(committed, 2);
+
+    admin
+        .execute_query(reset(), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("reset rollback fixture");
+    let rollback_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("rollback evolution budget");
+    let rollback_prepared = provider
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &rollback_budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare rollback evolution");
+    let duplicate = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![3, 3])),
+            Arc::new(StringArray::from(vec![Some("first"), Some("duplicate")])),
+        ],
+    )
+    .expect("duplicate evolution batch");
+    let duplicate_input: Box<dyn BatchStream> = Box::new(VecBatchStream {
+        schema,
+        batches: VecDeque::from([duplicate]),
+    });
+    provider
+        .write(
+            &secret,
+            rollback_prepared,
+            duplicate_input,
+            &rollback_budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("duplicate key must roll back DDL and rows");
+    let rollback_state = admin
+        .execute_query(
+            Query::new(
+                "SELECT \
+                   COUNT_BIG(CASE WHEN c.name = N'note' THEN 1 END), \
+                   (SELECT COUNT_BIG(*) FROM [plenora_test].[schema_evolution_probe]) \
+                 FROM sys.columns AS c \
+                 WHERE c.object_id = OBJECT_ID(N'plenora_test.schema_evolution_probe');",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify evolution rollback")
+        .remove(0)
+        .remove(0);
+    assert_eq!(
+        rollback_state
+            .get::<i64, _>(0)
+            .expect("rolled back column count"),
+        0
+    );
+    assert_eq!(
+        rollback_state.get::<i64, _>(1).expect("rolled back rows"),
+        0
+    );
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[schema_evolution_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup schema evolution fixture");
 }
 
 #[tokio::test]

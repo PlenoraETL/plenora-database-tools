@@ -40,7 +40,7 @@ pub use types::{
 };
 pub use write::{
     prepare_write, prepare_write_with_mode, write_prepared, PreparedSqlServerWrite,
-    SqlServerInsertMode,
+    SqlServerInsertMode, SqlServerSchemaEvolution,
 };
 
 /// Limite documentato dal provider per una singola richiesta.

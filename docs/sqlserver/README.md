@@ -74,3 +74,8 @@ La campagna cumulativa di coverage è descritta in
 Il gate autonomo con evidenza riproducibile è descritto in
 [ASSURANCE.md](ASSURANCE.md).
 La baseline di regressione è descritta in [PERFORMANCE.md](PERFORMANCE.md).
+Lo schema evolution additivo è opt-in tramite
+`SqlServerSchemaEvolution::AddNullableColumns`: ammette soltanto nuove colonne
+nullable e applica `ALTER TABLE` insieme ai dati nella stessa transazione.
+La convergenza residua con PostgreSQL/PostGIS è tracciata in
+[CONVERGENCE.md](CONVERGENCE.md).

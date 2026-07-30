@@ -70,6 +70,13 @@ pub enum SqlServerInsertMode {
     TdsBulk,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqlServerSchemaEvolution {
+    #[default]
+    Disabled,
+    AddNullableColumns,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteFaultPoint {
     BeforeCommit,
@@ -169,6 +176,29 @@ pub async fn prepare_write_with_mode(
         cancellation,
         true,
         insert_mode,
+        SqlServerSchemaEvolution::Disabled,
+    )
+    .await
+}
+
+pub async fn prepare_write_with_options(
+    pool: &Arc<SqlServerPool>,
+    operation: &WriteOperation,
+    input_schema: SchemaRef,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    insert_mode: SqlServerInsertMode,
+    schema_evolution: SqlServerSchemaEvolution,
+) -> Result<PreparedSqlServerWrite> {
+    prepare_write_inner(
+        pool,
+        operation,
+        input_schema,
+        budget,
+        cancellation,
+        true,
+        insert_mode,
+        schema_evolution,
     )
     .await
 }
@@ -185,6 +215,7 @@ pub async fn prepare_write_with_external_contract_leases(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     insert_mode: SqlServerInsertMode,
+    schema_evolution: SqlServerSchemaEvolution,
 ) -> Result<PreparedSqlServerWrite> {
     prepare_write_inner(
         pool,
@@ -194,10 +225,12 @@ pub async fn prepare_write_with_external_contract_leases(
         cancellation,
         false,
         insert_mode,
+        schema_evolution,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_write_inner(
     pool: &Arc<SqlServerPool>,
     operation: &WriteOperation,
@@ -206,6 +239,7 @@ async fn prepare_write_inner(
     cancellation: &CancellationToken,
     acquire_contract_leases: bool,
     insert_mode: SqlServerInsertMode,
+    schema_evolution: SqlServerSchemaEvolution,
 ) -> Result<PreparedSqlServerWrite> {
     budget.ensure_active()?;
     plan::validate_operation(operation)?;
@@ -244,17 +278,14 @@ async fn prepare_write_inner(
         schema,
         Arc::clone(&input_schema),
         control.token(),
+        schema_evolution,
     )
     .await?;
     if insert_mode == SqlServerInsertMode::TdsBulk {
         plan::validate_bulk_profile(&plan)?;
     }
     drop(pooled);
-    let loss_report = LossReport {
-        schema_version: 1,
-        policy: operation.mapping_policy,
-        losses: Vec::new(),
-    };
+    let loss_report = plan.loss_report(operation.mapping_policy)?;
     Ok(PreparedSqlServerWrite {
         operation: operation.clone(),
         plan,
@@ -273,6 +304,7 @@ async fn compile_write_plan(
     schema: &str,
     input_schema: SchemaRef,
     cancellation: &CancellationToken,
+    schema_evolution: SqlServerSchemaEvolution,
 ) -> Result<WritePlan> {
     match operation.mode {
         plenora_database_core::plan::WriteMode::Create => {
@@ -335,7 +367,13 @@ async fn compile_write_plan(
             let observed_srids =
                 inspect_target_spatial_srids(pooled.session_mut()?, &description, cancellation)
                     .await?;
-            WritePlan::compile_existing(&description, operation, input_schema, &observed_srids)
+            WritePlan::compile_existing(
+                &description,
+                operation,
+                input_schema,
+                &observed_srids,
+                schema_evolution,
+            )
         }
     }
 }
@@ -656,10 +694,17 @@ async fn prepare_transaction_target(
         TargetLifecycle::Existing {
             lock_sql,
             truncate_sql,
+            add_columns_sql,
             schema_fingerprint,
         } => {
             lock_and_verify_schema(pooled, plan, lock_sql, schema_fingerprint, cancellation)
                 .await?;
+            for sql in add_columns_sql {
+                pooled
+                    .session_mut()?
+                    .execute_write_query(Query::new(sql.clone()), cancellation)
+                    .await?;
+            }
             if let Some(sql) = truncate_sql {
                 pooled
                     .session_mut()?
