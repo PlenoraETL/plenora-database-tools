@@ -19,7 +19,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 23
+EXPECTED_LIVE_TESTS = 24
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -271,6 +271,7 @@ def main() -> int:
             "bounded_arrow_read",
             "geometry_geography_xy_roundtrip",
             "prepared_write_reference_types",
+            "keyed_update_upsert_delete",
             "tds_bulk_differential",
             "rich_query_cte_join_aggregate_window_set_offset",
             "empty_result_schema_description",
@@ -286,7 +287,7 @@ def main() -> int:
             "sqlserver_2019_2025_azure_matrix",
             "private_ca_positive_tls",
             "spatial_z_m_fullglobe",
-            "write_create_replace_update_upsert_delete_by_keys",
+            "write_create_replace",
             "extended_temporal_graph_partition_catalog",
         ],
     }

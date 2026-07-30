@@ -29,7 +29,9 @@ Legenda:
 | Query AST ricco | CTE, join, aggregate/group/having, window, set operation e offset/fetch; schema output derivato dal server e verificato contro TDS | live-proven |
 | Codec scalari read | booleani, interi, float, decimal/money, testo, binari e temporali | live-proven |
 | Budget read | righe, colonne, memoria, output, componenti geometriche e deadline | offline + live-proven |
-| Prepared write | bind TDS tipizzati, `append` e `truncate_insert` | live-proven |
+| Prepared write | bind TDS tipizzati: `append`, `truncate_insert`, `update`, `upsert`, `delete_by_keys` | live-proven |
+| Keyed DML | indice univoco non filtrato obbligatorio; chiavi NULL rifiutate; conteggi insert/update/delete distinti | live-proven |
+| Upsert concurrency | `UPDATE` con `UPDLOCK,HOLDLOCK` + `INSERT` condizionale; `MERGE` escluso | live-proven |
 | Write transaction | `single_transaction`, lock target e schema guard | live-proven |
 | Rollback | vincolo nel batch successivo ripristina truncate e batch precedenti | live-proven |
 | Commit incerto | `OutcomeUnknown`, retry automatico vietato | live-proven con risposta TDS fisicamente interrotta |

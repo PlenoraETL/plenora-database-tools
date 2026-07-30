@@ -1,6 +1,7 @@
 mod codec;
 mod plan;
 mod resources;
+mod sql;
 
 use crate::{describe_object, PooledSqlServerSession, SqlServerPool, SqlServerSession};
 use plan::WritePlan;
@@ -24,6 +25,36 @@ use std::sync::Arc;
 use tiberius::{FromSql, Query, Row};
 
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MutationCounts {
+    confirmed: u64,
+    inserted: u64,
+    updated: u64,
+    deleted: u64,
+}
+
+impl MutationCounts {
+    fn checked_add(&mut self, other: Self) -> Result<()> {
+        self.confirmed = self
+            .confirmed
+            .checked_add(other.confirmed)
+            .ok_or_else(|| DatabaseError::resource_limit("conteggio confermato write overflow"))?;
+        self.inserted = self
+            .inserted
+            .checked_add(other.inserted)
+            .ok_or_else(|| DatabaseError::resource_limit("conteggio insert write overflow"))?;
+        self.updated = self
+            .updated
+            .checked_add(other.updated)
+            .ok_or_else(|| DatabaseError::resource_limit("conteggio update write overflow"))?;
+        self.deleted = self
+            .deleted
+            .checked_add(other.deleted)
+            .ok_or_else(|| DatabaseError::resource_limit("conteggio delete write overflow"))?;
+        Ok(())
+    }
+}
 
 /// Codec usato dal percorso append/truncate-insert SQL Server.
 ///
@@ -295,6 +326,7 @@ async fn write_prepared_inner(
     }
 
     let mut received = 0_u64;
+    let mut mutations = MutationCounts::default();
     loop {
         let batch = match input.next_batch_with_cancellation(control.token()).await {
             Ok(Some(batch)) => batch,
@@ -340,10 +372,14 @@ async fn write_prepared_inner(
                 .await
             }
         };
-        if let Err(error) = batch_result {
+        let batch_mutations = match batch_result {
+            Ok(mutations) => mutations,
+            Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
+        };
+        if let Err(error) = reservation.commit() {
             return Err(rollback_after_error(&mut pooled, error).await);
         }
-        if let Err(error) = reservation.commit() {
+        if let Err(error) = mutations.checked_add(batch_mutations) {
             return Err(rollback_after_error(&mut pooled, error).await);
         }
     }
@@ -373,6 +409,29 @@ async fn write_prepared_inner(
             return unknown_commit_outcome(&prepared, execution_id, received);
         }
         pooled.allow_reuse_after_drain()?;
+        let (inserted, updated, deleted) = match prepared.plan.mode {
+            plenora_database_core::plan::WriteMode::Append
+            | plenora_database_core::plan::WriteMode::TruncateInsert => {
+                (Some(mutations.inserted), None, None)
+            }
+            plenora_database_core::plan::WriteMode::Update => {
+                (Some(0), Some(mutations.updated), Some(0))
+            }
+            plenora_database_core::plan::WriteMode::Upsert => {
+                (Some(mutations.inserted), Some(mutations.updated), Some(0))
+            }
+            plenora_database_core::plan::WriteMode::DeleteByKeys => {
+                (Some(0), Some(0), Some(mutations.deleted))
+            }
+            plenora_database_core::plan::WriteMode::Create
+            | plenora_database_core::plan::WriteMode::Replace => {
+                return Err(write_error(
+                    ErrorCategory::Protocol,
+                    ErrorPhase::Write,
+                    "modalita SQL Server non compilabile presente nel piano",
+                ));
+            }
+        };
         let outcome = WriteOutcome {
             schema_version: 1,
             status: WriteStatus::Committed,
@@ -380,12 +439,12 @@ async fn write_prepared_inner(
             provider: ProviderKind::Sqlserver,
             rows: RowCounts {
                 received,
-                confirmed: received,
-                inserted: Some(received),
-                updated: None,
-                deleted: None,
+                confirmed: mutations.confirmed,
+                inserted,
+                updated,
+                deleted,
                 failed: 0,
-                skipped: 0,
+                skipped: received.saturating_sub(mutations.confirmed),
             },
             layer_outcomes: Vec::new(),
             recovery: None,
@@ -405,26 +464,21 @@ async fn execute_prepared_batch(
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
     execution_id: &str,
-) -> Result<()> {
+) -> Result<MutationCounts> {
+    let mut mutations = MutationCounts::default();
     for row in 0..batch.num_rows() {
         let query = codec::bind_row(plan, batch, row)?;
         let results = pooled
             .session_mut()?
             .execute_query(query, ErrorPhase::Write, cancellation)
             .await?;
-        if !one_insert_confirmed(&results)? {
-            return Err(write_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                "INSERT SQL Server senza conferma OUTPUT univoca",
-            ));
-        }
+        mutations.checked_add(row_mutation(&results, plan.mode)?)?;
         if fault == Some(WriteFaultPoint::TransportLostAfterFirstInsert) {
             pooled.quarantine();
             return Err(transport_loss_error(execution_id));
         }
     }
-    Ok(())
+    Ok(mutations)
 }
 
 async fn execute_bulk_batch(
@@ -434,7 +488,7 @@ async fn execute_bulk_batch(
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
     execution_id: &str,
-) -> Result<()> {
+) -> Result<MutationCounts> {
     let rows = codec::bulk_rows(plan, batch)?;
     let expected = u64::try_from(batch.num_rows())
         .map_err(|_| DatabaseError::resource_limit("righe bulk non rappresentabili"))?;
@@ -455,7 +509,12 @@ async fn execute_bulk_batch(
             return Err(transport_loss_error(execution_id));
         }
     }
-    Ok(())
+    Ok(MutationCounts {
+        confirmed: expected,
+        inserted: expected,
+        updated: 0,
+        deleted: 0,
+    })
 }
 
 #[cfg(test)]
@@ -644,18 +703,80 @@ fn transport_loss_error(execution_id: &str) -> DatabaseError {
     }
 }
 
-fn one_insert_confirmed(results: &[Vec<Row>]) -> Result<bool> {
-    if results.len() != 1 || results.first().is_none_or(|rows| rows.len() != 1) {
-        return Ok(false);
+fn row_mutation(
+    results: &[Vec<Row>],
+    mode: plenora_database_core::plan::WriteMode,
+) -> Result<MutationCounts> {
+    if results.len() != 1 {
+        return Err(write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "DML SQL Server con numero di result set inatteso",
+        ));
     }
-    let value: Option<i32> = results[0][0].try_get(0).map_err(|_| {
+    let Some(row) = results[0].first() else {
+        if matches!(
+            mode,
+            plenora_database_core::plan::WriteMode::Update
+                | plenora_database_core::plan::WriteMode::Upsert
+                | plenora_database_core::plan::WriteMode::DeleteByKeys
+        ) {
+            return Ok(MutationCounts::default());
+        }
+        return Err(write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "INSERT SQL Server senza conferma OUTPUT",
+        ));
+    };
+    if results[0].len() != 1 {
+        return Err(write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "DML SQL Server ha mutato piu righe per un record Arrow",
+        ));
+    }
+    let value: Option<i32> = row.try_get(0).map_err(|_| {
         write_error(
             ErrorCategory::DataMapping,
             ErrorPhase::Write,
-            "tipo OUTPUT INSERT SQL Server incompatibile",
+            "tipo OUTPUT DML SQL Server incompatibile",
         )
     })?;
-    Ok(value == Some(1))
+    match (mode, value) {
+        (
+            plenora_database_core::plan::WriteMode::Append
+            | plenora_database_core::plan::WriteMode::TruncateInsert
+            | plenora_database_core::plan::WriteMode::Upsert,
+            Some(1),
+        ) => Ok(MutationCounts {
+            confirmed: 1,
+            inserted: 1,
+            updated: 0,
+            deleted: 0,
+        }),
+        (
+            plenora_database_core::plan::WriteMode::Update
+            | plenora_database_core::plan::WriteMode::Upsert,
+            Some(2),
+        ) => Ok(MutationCounts {
+            confirmed: 1,
+            inserted: 0,
+            updated: 1,
+            deleted: 0,
+        }),
+        (plenora_database_core::plan::WriteMode::DeleteByKeys, Some(3)) => Ok(MutationCounts {
+            confirmed: 1,
+            inserted: 0,
+            updated: 0,
+            deleted: 1,
+        }),
+        _ => Err(write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "codice OUTPUT DML SQL Server incompatibile col piano",
+        )),
+    }
 }
 
 async fn inspect_target_spatial_srids(
