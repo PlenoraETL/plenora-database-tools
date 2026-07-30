@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "profile": "sqlserver-2022-reference-narrow",
+  "limits": {
+    "read_p95_micros_max": 3000000,
+    "read_median_rows_per_second_min": 500,
+    "prepared_p95_micros_max": 10000000,
+    "prepared_median_rows_per_second_min": 100,
+    "tds_bulk_p95_micros_max": 5000000,
+    "tds_bulk_median_rows_per_second_min": 200,
+    "create_p95_micros_max": 10000000,
+    "create_median_rows_per_second_min": 100,
+    "replace_p95_micros_max": 15000000,
+    "replace_median_rows_per_second_min": 75,
+    "peak_rss_bytes_max": 536870912
+  },
+  "regression": {
+    "p95_latency_multiplier_max": 1.75,
+    "median_throughput_ratio_min": 0.55
+  }
+}

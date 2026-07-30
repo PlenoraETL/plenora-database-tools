@@ -116,3 +116,20 @@ totale, p95 e i contatori `query_typed_fast_paths`/
 `query_prepared_fallbacks`.
 
 La specifica completa è in `docs/postgres/PERFORMANCE.md`.
+
+## SQL Server
+
+La campagna SQL Server usa il manifest
+`manifests/sqlserver-performance-reference.json`, il budget assoluto
+`baseline/sqlserver-performance-budget.json` e la baseline congelata
+`baseline/sqlserver2022-performance-reference.json`.
+
+```powershell
+python scripts\check_sqlserver_performance.py `
+  --baseline benchmarks/baseline/sqlserver2022-performance-reference.json `
+  --output assurance-results/sqlserver-performance.json
+```
+
+Read, prepared, TDS bulk, create e replace vengono misurati sul provider reale;
+ogni scrittura deve confermare tutte le righe e il differenziale SQL deve
+restare a zero. La specifica è in `docs/sqlserver/PERFORMANCE.md`.

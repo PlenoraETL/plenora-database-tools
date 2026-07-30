@@ -65,8 +65,12 @@ Legenda:
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |
 | TLS self-signed negativo | policy `Verify` rifiuta la fixture | live-proven |
 | TLS self-signed opt-out | connessione solo con eccezione esplicita | live-proven |
+| TLS CA privata | catena valida e hostname matching accettati; mismatch rifiutato | live-proven post-RC1 |
+| Rotazione certificato | nuovo certificato server, CA stabile e riconnessione verificata | live-proven post-RC1 |
 | SRID misti read | rifiuto prima dello streaming | live-proven |
-| Z/M read | rifiuto nel profilo XY iniziale | live-proven per Z |
+| Z/M/ZM read | rifiuto nel profilo XY iniziale per geometry e geography | live-proven post-RC1 |
+| FullGlobe read | rifiuto prima dello streaming | live-proven post-RC1 |
+| Z/M/ZM write | header EWKB rifiutato prima della mutazione per geometry e geography | live-proven post-RC1 |
 | Drop stream parziale | cancellazione e quarantena, nessun riuso | live-proven |
 | Differential read/write | zero differenze su scalari, temporali, XML/UUID e spatial | live-proven |
 | Schema drift write | rifiuto dopo prepare e prima della prima mutazione | live-proven |
@@ -81,7 +85,6 @@ Il riferimento minimo è SQL Server 2022. Prima del freeze del provider:
 - SQL Server 2022;
 - SQL Server 2025;
 - Azure SQL Database;
-- TLS verificato e test negativo per hostname/CA;
 - `geometry` e `geography` con SRID compatibili e incompatibili;
 - fault di rete tramite latenza e packet loss su lettura e rollback;
 - il taglio socket fisico su scrittura e risposta commit è già live-proven.

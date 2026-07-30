@@ -1,0 +1,234 @@
+{
+  "baseline_comparison": {
+    "status": "not_requested"
+  },
+  "environment": {
+    "campaign": "sqlserver-2022-reference-narrow",
+    "cpu_count": 32,
+    "machine": "amd64",
+    "platform": "windows",
+    "rust_image": "rust:1.92",
+    "sqlserver_image": "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
+  },
+  "gate": "sqlserver-performance-v1",
+  "generated_at": "2026-07-30T21:36:55.349136+00:00",
+  "manifest": {
+    "batch_rows": 256,
+    "campaign": "sqlserver-2022-reference-narrow",
+    "repeat": 3,
+    "rows": 2000,
+    "schema_version": 1,
+    "warmup": 1
+  },
+  "raw": {
+    "batch_rows": 256,
+    "lifecycle": [
+      {
+        "iteration": 0,
+        "mode": "create",
+        "rows": 2000,
+        "rows_per_second": 7013,
+        "total_micros": 285147
+      },
+      {
+        "iteration": 0,
+        "mode": "replace",
+        "rows": 2000,
+        "rows_per_second": 6522,
+        "total_micros": 306622
+      },
+      {
+        "iteration": 1,
+        "mode": "create",
+        "rows": 2000,
+        "rows_per_second": 6029,
+        "total_micros": 331718
+      },
+      {
+        "iteration": 1,
+        "mode": "replace",
+        "rows": 2000,
+        "rows_per_second": 6740,
+        "total_micros": 296734
+      },
+      {
+        "iteration": 2,
+        "mode": "create",
+        "rows": 2000,
+        "rows_per_second": 6552,
+        "total_micros": 305224
+      },
+      {
+        "iteration": 2,
+        "mode": "replace",
+        "rows": 2000,
+        "rows_per_second": 6211,
+        "total_micros": 321991
+      }
+    ],
+    "peak_rss_bytes": 6574080,
+    "profile": "narrow",
+    "reads": [
+      {
+        "batches": 8,
+        "first_batch_micros": 17378,
+        "iteration": 0,
+        "materialized_bytes": 68064,
+        "prepare_micros": 9248,
+        "rows": 2000,
+        "rows_per_second": 27550,
+        "total_micros": 72593
+      },
+      {
+        "batches": 8,
+        "first_batch_micros": 16781,
+        "iteration": 1,
+        "materialized_bytes": 68064,
+        "prepare_micros": 8630,
+        "rows": 2000,
+        "rows_per_second": 27660,
+        "total_micros": 72304
+      },
+      {
+        "batches": 8,
+        "first_batch_micros": 16944,
+        "iteration": 2,
+        "materialized_bytes": 68064,
+        "prepare_micros": 8930,
+        "rows": 2000,
+        "rows_per_second": 27824,
+        "total_micros": 71878
+      }
+    ],
+    "repeat": 3,
+    "rows": 2000,
+    "schema_version": 1,
+    "warmup": 1,
+    "writes": [
+      {
+        "differences": 0,
+        "execute_micros": 291096,
+        "iteration": 0,
+        "mode": "prepared",
+        "prepare_micros": 4439,
+        "rows": 2000,
+        "rows_per_second": 6767,
+        "total_micros": 295535
+      },
+      {
+        "differences": 0,
+        "execute_micros": 20775,
+        "iteration": 0,
+        "mode": "tds_bulk",
+        "prepare_micros": 4628,
+        "rows": 2000,
+        "rows_per_second": 78730,
+        "total_micros": 25403
+      },
+      {
+        "differences": 0,
+        "execute_micros": 290783,
+        "iteration": 1,
+        "mode": "prepared",
+        "prepare_micros": 4330,
+        "rows": 2000,
+        "rows_per_second": 6777,
+        "total_micros": 295113
+      },
+      {
+        "differences": 0,
+        "execute_micros": 21152,
+        "iteration": 1,
+        "mode": "tds_bulk",
+        "prepare_micros": 4486,
+        "rows": 2000,
+        "rows_per_second": 78009,
+        "total_micros": 25638
+      },
+      {
+        "differences": 0,
+        "execute_micros": 506555,
+        "iteration": 2,
+        "mode": "prepared",
+        "prepare_micros": 4378,
+        "rows": 2000,
+        "rows_per_second": 3914,
+        "total_micros": 510933
+      },
+      {
+        "differences": 0,
+        "execute_micros": 21038,
+        "iteration": 2,
+        "mode": "tds_bulk",
+        "prepare_micros": 4468,
+        "rows": 2000,
+        "rows_per_second": 78412,
+        "total_micros": 25506
+      }
+    ]
+  },
+  "schema_version": 1,
+  "status": "passed",
+  "summary": {
+    "create_rows_per_second": {
+      "max": 7013.0,
+      "median": 6552.0,
+      "min": 6029.0,
+      "p95": 7013.0
+    },
+    "create_total_micros": {
+      "max": 331718.0,
+      "median": 305224.0,
+      "min": 285147.0,
+      "p95": 331718.0
+    },
+    "prepared_rows_per_second": {
+      "max": 6777.0,
+      "median": 6767.0,
+      "min": 3914.0,
+      "p95": 6777.0
+    },
+    "prepared_total_micros": {
+      "max": 510933.0,
+      "median": 295535.0,
+      "min": 295113.0,
+      "p95": 510933.0
+    },
+    "read_rows_per_second": {
+      "max": 27824.0,
+      "median": 27660.0,
+      "min": 27550.0,
+      "p95": 27824.0
+    },
+    "read_total_micros": {
+      "max": 72593.0,
+      "median": 72304.0,
+      "min": 71878.0,
+      "p95": 72593.0
+    },
+    "replace_rows_per_second": {
+      "max": 6740.0,
+      "median": 6522.0,
+      "min": 6211.0,
+      "p95": 6740.0
+    },
+    "replace_total_micros": {
+      "max": 321991.0,
+      "median": 306622.0,
+      "min": 296734.0,
+      "p95": 321991.0
+    },
+    "tds_bulk_rows_per_second": {
+      "max": 78730.0,
+      "median": 78412.0,
+      "min": 78009.0,
+      "p95": 78730.0
+    },
+    "tds_bulk_total_micros": {
+      "max": 25638.0,
+      "median": 25506.0,
+      "min": 25403.0,
+      "p95": 25638.0
+    }
+  }
+}
