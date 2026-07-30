@@ -2,19 +2,19 @@
   "manifest_version": 1,
   "component": "plenora-database-tools",
   "component_version": "0.1.0-rc.1",
-  "status": "rc1_rebaseline_pending",
-  "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+  "status": "rc1_candidate_ready",
+  "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
   "verification_claim": "verified_internally",
   "independent_review": false,
   "claims": {
-    "component_rc": false,
+    "component_rc": true,
     "system_rc": false,
     "avionic_certification": false
   },
   "candidate": {
-    "decision": "rebaseline_pending",
-    "code_freeze": false,
-    "baseline_note": "La sola modifica ammessa rispetto alla baseline precedente e l'allineamento SemVer dei manifesti Cargo a 0.1.0-rc.1. La nuova revisione candidata e le relative evidenze devono ancora essere registrate."
+    "decision": "ready",
+    "code_freeze": true,
+    "baseline_note": "La revisione e la baseline tecnica congelata di 0.1.0-rc.1. Ogni modifica ai percorsi di produzione o agli input delle evidenze richiede una nuova baseline e la ripetizione dei gate applicabili."
   },
   "scope": {
     "included_reference_profiles": [
@@ -22,49 +22,43 @@
       "SQL Server 2022 Developer 16.0.4255.1 con compatibility level 160",
       "SQL Server geometry/geography XY con SRID esplicito"
     ],
-    "release_label_note": "L'identificatore del candidato e le versioni dei sette crate sono allineati a 0.1.0-rc.1; la creazione del tag attende la nuova baseline e i gate applicabili."
+    "release_label_note": "L'identificatore del candidato e le versioni dei sette crate sono allineati a 0.1.0-rc.1. Il tag annotato v0.1.0-rc.1 e autorizzato dopo la CI verde del record pre-tag."
   },
   "evidence": [
     {
       "id": "postgres_reference",
       "status": "passed",
-      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
-      "run_id": 30529617537,
-      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617537",
+      "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
+      "run_id": 30548540038,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548540038",
       "result": "Gate PostgreSQL 16/PostGIS 3.4 live superato."
     },
     {
       "id": "sqlserver_reference",
       "status": "passed",
-      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
-      "run_id": 30529617590,
-      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617590",
+      "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
+      "run_id": 30548543561,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548543561",
       "result": "28/28 prove live SQL Server, 49 prove offline e Clippy superati."
     },
     {
       "id": "workspace_coverage",
       "status": "passed",
-      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
-      "run_id": 30542814028,
-      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30542814028",
+      "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
+      "run_id": 30548539965,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548539965",
       "result": "Soglie di coverage di produzione superate: linee 80%, funzioni 79%, regioni 77%."
     },
     {
       "id": "release_manifest",
       "status": "passed",
-      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
-      "run_id": 30529617743,
-      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617743",
+      "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
+      "run_id": 30548541207,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548541207",
       "result": "Gate C1-C4 superato senza errori; gli avvisi riguardano revisioni di repository esterni."
     }
   ],
-  "component_rc_blockers": [
-    {
-      "id": "PLN-DB-REBASELINE",
-      "description": "Il delta SemVer Cargo richiede una nuova revisione candidata e la ripetizione dei gate applicabili prima del tag.",
-      "exit_condition": "Registrare la revisione con versioni 0.1.0-rc.1 e sostituire le evidenze con run verdi prodotti da quella revisione."
-    }
-  ],
+  "component_rc_blockers": [],
   "open_assurance_attributes": [
     {
       "id": "PLN-DB-REVIEW",
@@ -227,9 +221,9 @@
     }
   ],
   "release_action": {
-    "allowed": false,
-    "tag": null,
+    "allowed": true,
+    "tag": "v0.1.0-rc.1",
     "tag_created": false,
-    "reason": "Attendere la nuova baseline SemVer e le relative evidenze; la review indipendente non blocca una RC verified_internally."
+    "reason": "Baseline 0.1.0-rc.1 e quattro gate verdi sulla stessa revisione; R0.4/C4.2 autorizzano il claim verified_internally senza review."
   }
 }

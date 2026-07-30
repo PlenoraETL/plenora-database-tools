@@ -2,14 +2,14 @@
 
 ## Esito
 
-La baseline tecnica precedente
-`29cd9d0e1496989265dde238f9f3c6870f602eac` ha completato i gate, ma la
-preparazione del tag ha allineato le versioni Cargo a `0.1.0-rc.1`. È quindi in
-corso un rebaseline limitato al delta SemVer: prima del tag devono essere
-registrate la nuova revisione e le evidenze prodotte da essa. Non sono
-dichiarate né una RC di sistema né una certificazione avionica.
+La baseline tecnica
+`5d644461c882e5f97efafc32e2af4f7d3552d70f` è congelata come candidata
+`0.1.0-rc.1`. I quattro gate applicabili sono verdi sulla stessa revisione e il
+tag annotato `v0.1.0-rc.1` è autorizzato dopo la CI del record pre-tag. Il claim
+è `verified_internally`; non sono dichiarate né una RC di sistema né una
+certificazione avionica.
 
-Il manifesto verificabile è
+Il manifesto verificabile e autoritativo è
 [`release/rc1-readiness.json`](../release/rc1-readiness.json). Il gate è
 fail-closed: controlla la baseline, le evidenze, i claim, il blocco della review,
 le dipendenze esterne e le riduzioni di copertura.
@@ -23,17 +23,17 @@ Il candidato comprende:
 - `geometry` e `geography` SQL Server XY con SRID esplicito.
 
 `0.1.0-rc.1` è l'etichetta del candidato nel manifesto e la versione dei sette
-crate. Il gate ammette durante il rebaseline soltanto le modifiche a
-`Cargo.toml` e `Cargo.lock` necessarie a questo allineamento.
+crate. La baseline precedente è stata sostituita deliberatamente dopo
+l'allineamento SemVer e la ripetizione delle evidenze.
 
 ## Evidenze sulla baseline
 
 | Gate | Esito | Esecuzione |
 | --- | --- | --- |
-| PostgreSQL/PostGIS reference | superato | [30529617537](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617537) |
-| SQL Server reference | 28/28 live, 49 offline, Clippy pulito | [30529617590](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617590) |
-| Coverage workspace | soglie linee 80%, funzioni 79%, regioni 77% superate | [30542814028](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30542814028) |
-| Manifesto C1-C4 | superato senza errori | [30529617743](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617743) |
+| PostgreSQL/PostGIS reference | superato | [30548540038](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548540038) |
+| SQL Server reference | 28/28 live, 49 offline, Clippy pulito | [30548543561](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548543561) |
+| Coverage workspace | soglie linee 80%, funzioni 79%, regioni 77% superate | [30548539965](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548539965) |
+| Manifesto C1-C4 | superato senza errori | [30548541207](https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30548541207) |
 
 Ogni evidenza è registrata sulla stessa revisione completa. I link non sono
 considerati prova sufficiente da soli: il manifesto associa anche identificativo,
@@ -102,11 +102,9 @@ applicabili e aggiornare tutte le evidenze. Modifiche soltanto documentali o al
 gate di readiness non spostano automaticamente la baseline tecnica, ma devono
 comunque passare la CI.
 
-Nello stato `rebaseline_pending` il tag non è autorizzato. Il checker richiede
-che il solo delta congelato sia l'allineamento SemVer di `Cargo.toml` e
-`Cargo.lock`; la transizione a `ready` richiede una nuova revisione e nuove
-evidenze. La review indipendente resta aperta e potrà promuovere separatamente il
-claim, ma non è una condizione del tag `verified_internally`.
+Nello stato `ready` il tag è autorizzato ma non ancora dichiarato come creato.
+La review indipendente resta aperta e potrà promuovere separatamente il claim,
+ma non è una condizione del tag `verified_internally`.
 
 ## Esecuzione locale
 

@@ -54,19 +54,17 @@ Da PowerShell o da un altro terminale:
 python scripts\check_pre_database.py
 ```
 
-Lo stato di rilascio corrente è dichiarato in
-[`release/development.json`](release/development.json). Il manifesto non
-dichiara un RC di componente o di sistema; registra separatamente evidenze,
-limiti e blocchi aperti. Il relativo gate, incluso nel controllo precedente, è
-eseguibile anche da solo:
+Lo stato di rilascio corrente è dichiarato nel manifesto autoritativo
+[`release/rc1-readiness.json`](release/rc1-readiness.json).
+[`release/development.json`](release/development.json) è mantenuto come record
+superseded. Il relativo gate generale è eseguibile anche da solo:
 
 ```powershell
-python scripts\check_release_manifest.py --repo . release\development.json
+python scripts\check_release_manifest.py --repo . release\development.json release\rc1-readiness.json
 python scripts\test_check_release_manifest.py
 ```
 
-La baseline tecnica proposta per RC1, ancora bloccata dalla revisione
-indipendente, è descritta in
+La baseline tecnica RC1, autorizzata con claim `verified_internally`, è descritta in
 [`docs/RC1-READINESS.md`](docs/RC1-READINESS.md) e registrata nel manifesto
 [`release/rc1-readiness.json`](release/rc1-readiness.json). Il gate dedicato
 impedisce claim prematuri e divergenze fra baseline ed evidenze:

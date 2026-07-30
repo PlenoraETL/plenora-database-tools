@@ -154,6 +154,27 @@ def production_tree_matches(repository: Path, revision: str) -> bool:
     return completed.returncode == 0 and not completed.stdout.strip()
 
 
+def workspace_versions_match(repository: Path) -> bool:
+    """Verifica che manifesti e lockfile dichiarino la stessa RC."""
+    try:
+        cargo = tomllib.loads(
+            (repository / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        if cargo.get("workspace", {}).get("package", {}).get("version") != "0.1.0-rc.1":
+            return False
+        lock = tomllib.loads(
+            (repository / "Cargo.lock").read_text(encoding="utf-8")
+        )
+    except (OSError, subprocess.SubprocessError, tomllib.TOMLDecodeError):
+        return False
+    versions = {
+        package.get("name"): package.get("version")
+        for package in lock.get("package", [])
+        if package.get("name") in WORKSPACE_PACKAGES
+    }
+    return versions == {name: "0.1.0-rc.1" for name in WORKSPACE_PACKAGES}
+
+
 def pending_packaging_delta_matches(repository: Path, revision: str) -> bool:
     """Ammette soltanto l'allineamento SemVer dei manifesti Cargo."""
     try:
@@ -173,31 +194,18 @@ def pending_packaging_delta_matches(repository: Path, revision: str) -> bool:
             text=True,
             timeout=20,
         )
-        if completed.returncode != 0:
-            return False
-        changed = {
-            line.strip().replace("\\", "/")
-            for line in completed.stdout.splitlines()
-            if line.strip()
-        }
-        if changed != {"Cargo.toml", "Cargo.lock"}:
-            return False
-        cargo = tomllib.loads(
-            (repository / "Cargo.toml").read_text(encoding="utf-8")
-        )
-        if cargo.get("workspace", {}).get("package", {}).get("version") != "0.1.0-rc.1":
-            return False
-        lock = tomllib.loads(
-            (repository / "Cargo.lock").read_text(encoding="utf-8")
-        )
-    except (OSError, subprocess.SubprocessError, tomllib.TOMLDecodeError):
+    except (OSError, subprocess.SubprocessError):
         return False
-    versions = {
-        package.get("name"): package.get("version")
-        for package in lock.get("package", [])
-        if package.get("name") in WORKSPACE_PACKAGES
+    if completed.returncode != 0:
+        return False
+    changed = {
+        line.strip().replace("\\", "/")
+        for line in completed.stdout.splitlines()
+        if line.strip()
     }
-    return versions == {name: "0.1.0-rc.1" for name in WORKSPACE_PACKAGES}
+    return changed == {"Cargo.toml", "Cargo.lock"} and workspace_versions_match(
+        repository
+    )
 
 
 def keyed_items(
@@ -253,6 +261,8 @@ def check(document: dict, repository: Path) -> list[str]:
         errors.append("component deve essere plenora-database-tools")
     if document.get("component_version") != "0.1.0-rc.1":
         errors.append("component_version deve essere 0.1.0-rc.1")
+    if not workspace_versions_match(repository):
+        errors.append("tutti i crate e Cargo.lock devono dichiarare 0.1.0-rc.1")
     expected_status = {
         "rebaseline_pending": "rc1_rebaseline_pending",
         "ready": "rc1_candidate_ready",

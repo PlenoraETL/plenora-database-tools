@@ -234,7 +234,11 @@ def main() -> int:
         errors = gate.check(base, ROOT)
     if not any("percorsi di produzione divergono" in error for error in errors):
         failures.append(f"freeze divergente: errore non rilevato {errors}")
-    total = len(cases) + 1
+    with patch.object(gate, "workspace_versions_match", return_value=False):
+        errors = gate.check(base, ROOT)
+    if not any("tutti i crate e Cargo.lock" in error for error in errors):
+        failures.append(f"versione workspace divergente: errore non rilevato {errors}")
+    total = len(cases) + 2
     print(f"{total - len(failures)}/{total} verifiche superate")
     for failure in failures:
         print(f"FALLITO {failure}")
