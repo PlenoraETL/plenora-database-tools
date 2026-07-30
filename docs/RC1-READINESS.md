@@ -2,10 +2,12 @@
 
 ## Esito
 
-La baseline tecnica `29cd9d0e1496989265dde238f9f3c6870f602eac` è congelata
-come candidato a `0.1.0-rc.1`, ma **non è una RC**. Il solo blocco della RC di
-componente è la revisione indipendente della baseline. Non sono dichiarate né
-una RC di sistema né una certificazione avionica.
+La baseline tecnica precedente
+`29cd9d0e1496989265dde238f9f3c6870f602eac` ha completato i gate, ma la
+preparazione del tag ha allineato le versioni Cargo a `0.1.0-rc.1`. È quindi in
+corso un rebaseline limitato al delta SemVer: prima del tag devono essere
+registrate la nuova revisione e le evidenze prodotte da essa. Non sono
+dichiarate né una RC di sistema né una certificazione avionica.
 
 Il manifesto verificabile è
 [`release/rc1-readiness.json`](../release/rc1-readiness.json). Il gate è
@@ -20,9 +22,9 @@ Il candidato comprende:
 - SQL Server 2022 Developer `16.0.4255.1`, compatibility level 160;
 - `geometry` e `geography` SQL Server XY con SRID esplicito.
 
-`0.1.0-rc.1` è per ora l'etichetta del candidato nel manifesto. Le versioni dei
-crate restano `0.1.0` fino alla chiusura della review e alla preparazione
-deliberata del tag.
+`0.1.0-rc.1` è l'etichetta del candidato nel manifesto e la versione dei sette
+crate. Il gate ammette durante il rebaseline soltanto le modifiche a
+`Cargo.toml` e `Cargo.lock` necessarie a questo allineamento.
 
 ## Evidenze sulla baseline
 
@@ -39,8 +41,11 @@ stato e baseline, e il gate verifica la coerenza meccanicamente.
 
 ## Decisione e dipendenze
 
-La revisione indipendente (`PLN-DB-REVIEW`) è il solo blocker della RC di
-componente. Deve registrare almeno:
+La revisione indipendente (`PLN-DB-REVIEW`) è un attributo di assurance aperto,
+non un blocker della RC di componente. R0.4 limita il claim corrente a
+`verified_internally`; C4.2 richiede di dichiarare separatamente che la review
+non è avvenuta, ma non vieta il tag. Una futura promozione a
+`verified_independently` dovrà registrare almeno:
 
 1. identità e indipendenza del revisore;
 2. revisione esatta esaminata;
@@ -97,10 +102,11 @@ applicabili e aggiornare tutte le evidenze. Modifiche soltanto documentali o al
 gate di readiness non spostano automaticamente la baseline tecnica, ma devono
 comunque passare la CI.
 
-Il file `release/rc1-readiness.json` è deliberatamente bloccato. Il checker
-rifiuta anche una modifica manuale a `ready`: la promozione richiede un nuovo
-manifesto, separato e verificato, che registri la review indipendente. Nessun tag
-RC è autorizzato dal presente documento.
+Nello stato `rebaseline_pending` il tag non è autorizzato. Il checker richiede
+che il solo delta congelato sia l'allineamento SemVer di `Cargo.toml` e
+`Cargo.lock`; la transizione a `ready` richiede una nuova revisione e nuove
+evidenze. La review indipendente resta aperta e potrà promuovere separatamente il
+claim, ma non è una condizione del tag `verified_internally`.
 
 ## Esecuzione locale
 

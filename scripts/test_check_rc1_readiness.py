@@ -76,7 +76,7 @@ def conforming(revision: str) -> dict:
         "manifest_version": 1,
         "component": "plenora-database-tools",
         "component_version": "0.1.0-rc.1",
-        "status": "rc1_candidate_blocked",
+        "status": "rc1_rebaseline_pending",
         "revision": revision,
         "verification_claim": "verified_internally",
         "independent_review": False,
@@ -85,7 +85,7 @@ def conforming(revision: str) -> dict:
             "system_rc": False,
             "avionic_certification": False,
         },
-        "candidate": {"decision": "blocked", "code_freeze": True},
+        "candidate": {"decision": "rebaseline_pending", "code_freeze": False},
         "evidence": [
             evidence("postgres_reference", revision, 1),
             evidence("sqlserver_reference", revision, 2),
@@ -94,9 +94,18 @@ def conforming(revision: str) -> dict:
         ],
         "component_rc_blockers": [
             {
+                "id": "PLN-DB-REBASELINE",
+                "description": "rebaseline richiesto",
+                "exit_condition": "nuova evidenza registrata",
+            }
+        ],
+        "open_assurance_attributes": [
+            {
                 "id": "PLN-DB-REVIEW",
-                "description": "review richiesta",
-                "exit_condition": "review registrata",
+                "status": "pending_eligible_reviewer",
+                "blocks_component_rc_release": False,
+                "description": "review non eseguita",
+                "promotion_condition": "review registrata",
             }
         ],
         "external_dependencies": [
@@ -113,7 +122,8 @@ def conforming(revision: str) -> dict:
         "release_action": {
             "allowed": False,
             "tag": None,
-            "reason": "review non completata",
+            "tag_created": False,
+            "reason": "rebaseline non completato",
         },
     }
 
@@ -139,13 +149,25 @@ def main() -> int:
     wrong_url["evidence"][0]["url"] = "https://example.invalid/run"
     cases.append(("URL incoerente", wrong_url, "URL incoerente"))
 
-    no_review_block = deepcopy(base)
-    no_review_block["component_rc_blockers"] = []
-    cases.append(("review omessa", no_review_block, "PLN-DB-REVIEW"))
+    no_review_attribute = deepcopy(base)
+    no_review_attribute["open_assurance_attributes"] = []
+    cases.append(
+        (
+            "review omessa",
+            no_review_attribute,
+            "PLN-DB-REVIEW deve restare un attributo",
+        )
+    )
 
     premature_claim = deepcopy(base)
     premature_claim["claims"]["component_rc"] = True
-    cases.append(("claim prematuro", premature_claim, "component_rc deve essere false"))
+    cases.append(
+        (
+            "claim prematuro",
+            premature_claim,
+            "component_rc deve essere false durante il rebaseline",
+        )
+    )
 
     system_claim = deepcopy(base)
     system_claim["claims"]["system_rc"] = True
@@ -214,10 +236,10 @@ def main() -> int:
             failures.append(f"{label}: errori inattesi {errors}")
         elif expected is not None and not any(expected in error for error in errors):
             failures.append(f"{label}: atteso {expected!r}, ottenuto {errors}")
-    with patch.object(gate, "production_tree_matches", return_value=False):
+    with patch.object(gate, "pending_packaging_delta_matches", return_value=False):
         errors = gate.check(base, ROOT)
-    if not any("percorsi di produzione divergono" in error for error in errors):
-        failures.append(f"freeze divergente: errore non rilevato {errors}")
+    if not any("soltanto il delta SemVer Cargo" in error for error in errors):
+        failures.append(f"delta packaging divergente: errore non rilevato {errors}")
     total = len(cases) + 1
     print(f"{total - len(failures)}/{total} verifiche superate")
     for failure in failures:

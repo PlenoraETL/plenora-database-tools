@@ -107,11 +107,6 @@
       "exit_condition": "Qualifica esterna completa delle direzioni e delle proprieta richieste."
     },
     {
-      "id": "PLN-DB-REVIEW",
-      "description": "Nessun revisore indipendente eleggibile e registrato.",
-      "exit_condition": "Revisione indipendente della revisione candidata con identita, comandi, rilievi ed esito registrati."
-    },
-    {
       "id": "PLN-DB-PROVIDERS",
       "description": "La RC1 proposta copre SQL Server 2022 16.0.4255.1/compat 160; SQL Server 2019, 2025 e Azure SQL sono esplicitamente esclusi e non costituiscono compatibilita implicita.",
       "exit_condition": "Campagna live equivalente su ciascuna piattaforma esclusa, con immagine/build immutabile, oppure mantenimento esplicito dell'esclusione in ogni manifesto candidato."
@@ -125,6 +120,15 @@
       "id": "PLN-DB-SQLSERVER-TLS",
       "description": "La policy Verify e il rifiuto self-signed sono provati, ma una catena positiva con CA privata e hostname matching non e ancora qualificata ed e esclusa dalla RC1 proposta.",
       "exit_condition": "Fixture CA privata riproducibile, hostname positivo/negativo, rotazione del certificato e artefatto CI conservato."
+    }
+  ],
+  "open_assurance_attributes": [
+    {
+      "id": "PLN-DB-REVIEW",
+      "status": "pending_eligible_reviewer",
+      "blocks_component_rc_release": false,
+      "description": "Nessun revisore indipendente eleggibile e registrato; il claim massimo resta verified_internally.",
+      "promotion_condition": "Revisione indipendente della baseline con identita, comandi, rilievi, chiusure ed esito registrati."
     }
   ]
 }

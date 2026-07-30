@@ -13,6 +13,7 @@ import argparse
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 
@@ -99,6 +100,15 @@ FROZEN_PATHS = (
     ":(exclude)scripts/test_check_rc1_readiness.py",
     "tests",
 )
+WORKSPACE_PACKAGES = {
+    "plenora-database-cli",
+    "plenora-database-core",
+    "plenora-database-engine",
+    "plenora-database-sql",
+    "plenora-database-testkit",
+    "plenora-db-postgres",
+    "plenora-db-sqlserver",
+}
 
 
 def git_success(repository: Path, arguments: list[str]) -> bool:
@@ -144,6 +154,52 @@ def production_tree_matches(repository: Path, revision: str) -> bool:
     return completed.returncode == 0 and not completed.stdout.strip()
 
 
+def pending_packaging_delta_matches(repository: Path, revision: str) -> bool:
+    """Ammette soltanto l'allineamento SemVer dei manifesti Cargo."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "diff",
+                "--name-only",
+                revision,
+                "--",
+                *FROZEN_PATHS,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if completed.returncode != 0:
+            return False
+        changed = {
+            line.strip().replace("\\", "/")
+            for line in completed.stdout.splitlines()
+            if line.strip()
+        }
+        if changed != {"Cargo.toml", "Cargo.lock"}:
+            return False
+        cargo = tomllib.loads(
+            (repository / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        if cargo.get("workspace", {}).get("package", {}).get("version") != "0.1.0-rc.1":
+            return False
+        lock = tomllib.loads(
+            (repository / "Cargo.lock").read_text(encoding="utf-8")
+        )
+    except (OSError, subprocess.SubprocessError, tomllib.TOMLDecodeError):
+        return False
+    versions = {
+        package.get("name"): package.get("version")
+        for package in lock.get("package", [])
+        if package.get("name") in WORKSPACE_PACKAGES
+    }
+    return versions == {name: "0.1.0-rc.1" for name in WORKSPACE_PACKAGES}
+
+
 def keyed_items(
     document: dict,
     field: str,
@@ -169,6 +225,12 @@ def keyed_items(
 
 def check(document: dict, repository: Path) -> list[str]:
     errors: list[str] = []
+    candidate_value = document.get("candidate")
+    decision = (
+        candidate_value.get("decision")
+        if isinstance(candidate_value, dict)
+        else None
+    )
     revision = document.get("revision")
     if not isinstance(revision, str) or not REVISION.fullmatch(revision):
         errors.append("revision deve contenere 40 cifre esadecimali")
@@ -177,6 +239,11 @@ def check(document: dict, repository: Path) -> list[str]:
         errors.append("revision non esiste nella storia locale")
     elif not git_success(repository, ["merge-base", "--is-ancestor", revision, "HEAD"]):
         errors.append("revision non e un antenato del checkout corrente")
+    elif decision == "rebaseline_pending":
+        if not pending_packaging_delta_matches(repository, revision):
+            errors.append(
+                "il rebaseline pending deve contenere soltanto il delta SemVer Cargo"
+            )
     elif not production_tree_matches(repository, revision):
         errors.append("i percorsi di produzione divergono dalla baseline congelata")
 
@@ -186,10 +253,15 @@ def check(document: dict, repository: Path) -> list[str]:
         errors.append("component deve essere plenora-database-tools")
     if document.get("component_version") != "0.1.0-rc.1":
         errors.append("component_version deve essere 0.1.0-rc.1")
-    if document.get("status") != "rc1_candidate_blocked":
-        errors.append("status deve essere rc1_candidate_blocked")
+    expected_status = {
+        "rebaseline_pending": "rc1_rebaseline_pending",
+        "ready": "rc1_candidate_ready",
+        "tagged": "component_rc_tagged",
+    }.get(decision)
+    if document.get("status") != expected_status:
+        errors.append(f"status deve essere {expected_status}")
     if document.get("verification_claim") != "verified_internally":
-        errors.append("il candidato bloccato puo dichiarare solo verified_internally")
+        errors.append("la RC senza review puo dichiarare solo verified_internally")
     if document.get("independent_review") is not False:
         errors.append("independent_review deve restare false fino alla review")
 
@@ -202,36 +274,47 @@ def check(document: dict, repository: Path) -> list[str]:
     if claims.get("avionic_certification") is not False:
         errors.append("avionic_certification deve essere false")
 
-    candidate = document.get("candidate")
+    candidate = candidate_value
     if not isinstance(candidate, dict):
         errors.append("candidate deve essere un oggetto")
         candidate = {}
     decision = candidate.get("decision")
-    if decision not in ("blocked", "ready"):
-        errors.append("candidate.decision deve essere blocked oppure ready")
-    if candidate.get("code_freeze") is not True:
-        errors.append("candidate.code_freeze deve essere true")
+    if decision not in ("rebaseline_pending", "ready", "tagged"):
+        errors.append(
+            "candidate.decision deve essere rebaseline_pending, ready oppure tagged"
+        )
+    expected_freeze = decision != "rebaseline_pending"
+    if candidate.get("code_freeze") is not expected_freeze:
+        errors.append(f"candidate.code_freeze deve essere {expected_freeze}")
 
     blockers = keyed_items(document, "component_rc_blockers", "id", errors)
-    if decision == "blocked":
+    if decision == "rebaseline_pending":
         if claims.get("component_rc") is not False:
-            errors.append("component_rc deve essere false mentre il candidato e bloccato")
-        if "PLN-DB-REVIEW" not in blockers:
-            errors.append("il candidato bloccato deve dichiarare PLN-DB-REVIEW")
-        else:
-            review = blockers["PLN-DB-REVIEW"]
-            for field in ("description", "exit_condition"):
-                if not review.get(field):
-                    errors.append(f"PLN-DB-REVIEW deve dichiarare {field}")
-    elif decision == "ready":
+            errors.append("component_rc deve essere false durante il rebaseline")
+        if set(blockers) != {"PLN-DB-REBASELINE"}:
+            errors.append(
+                "il rebaseline pending deve avere soltanto PLN-DB-REBASELINE"
+            )
+    elif decision in ("ready", "tagged"):
         if blockers:
-            errors.append("un candidato ready non puo avere component_rc_blockers")
+            errors.append("una RC pronta o taggata non puo avere component_rc_blockers")
         if claims.get("component_rc") is not True:
-            errors.append("un candidato ready deve dichiarare component_rc true")
-        errors.append(
-            "la transizione ready richiede un manifesto separato con review "
-            "indipendente registrata; questo file e deliberatamente bloccato"
-        )
+            errors.append("una RC pronta o taggata deve dichiarare component_rc true")
+
+    assurance_attributes = keyed_items(
+        document, "open_assurance_attributes", "id", errors
+    )
+    review = assurance_attributes.get("PLN-DB-REVIEW")
+    if review is None:
+        errors.append("PLN-DB-REVIEW deve restare un attributo di assurance aperto")
+    else:
+        if review.get("status") != "pending_eligible_reviewer":
+            errors.append("PLN-DB-REVIEW deve restare pending_eligible_reviewer")
+        if review.get("blocks_component_rc_release") is not False:
+            errors.append("PLN-DB-REVIEW non deve bloccare la RC verified_internally")
+        for field in ("description", "promotion_condition"):
+            if not review.get(field):
+                errors.append(f"PLN-DB-REVIEW deve dichiarare {field}")
 
     dependencies = keyed_items(document, "external_dependencies", "id", errors)
     missing_dependencies = REQUIRED_EXTERNAL_DEPENDENCIES - dependencies.keys()
@@ -397,10 +480,23 @@ def check(document: dict, repository: Path) -> list[str]:
     if not isinstance(release_action, dict):
         errors.append("release_action deve essere un oggetto")
     else:
-        if release_action.get("allowed") is not False:
-            errors.append("release_action.allowed deve essere false")
-        if release_action.get("tag") is not None:
-            errors.append("release_action.tag deve essere null")
+        expected_allowed = decision in ("ready", "tagged")
+        if release_action.get("allowed") is not expected_allowed:
+            errors.append(
+                "release_action.allowed deve essere "
+                f"{str(expected_allowed).lower()}"
+            )
+        expected_tag = (
+            "v0.1.0-rc.1" if decision in ("ready", "tagged") else None
+        )
+        if release_action.get("tag") != expected_tag:
+            errors.append(f"release_action.tag deve essere {expected_tag!r}")
+        expected_created = decision == "tagged"
+        if release_action.get("tag_created") is not expected_created:
+            errors.append(
+                "release_action.tag_created deve essere "
+                f"{str(expected_created).lower()}"
+            )
         if not release_action.get("reason"):
             errors.append("release_action.reason deve essere dichiarato")
 
