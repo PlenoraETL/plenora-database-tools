@@ -43,6 +43,35 @@ def evidence(identity: str, revision: str, run_id: int) -> dict:
 
 
 def conforming(revision: str) -> dict:
+    reductions = []
+    for area in sorted(gate.REQUIRED_SCOPE_REDUCTIONS):
+        status = gate.EXPECTED_ASSURANCE_STATUS[area]
+        verified = [
+            {
+                "claim": "prova live limitata",
+                "evidence_id": "sqlserver_reference",
+                "test": test,
+            }
+            for test in sorted(gate.REQUIRED_VERIFIED_TESTS[area])
+        ]
+        reductions.append(
+            {
+                "area": area,
+                "scope": "fuori perimetro",
+                "runtime_policy": "fail_closed",
+                "exit_condition": "campagna dedicata",
+                "assurance": {
+                    "status": status,
+                    "verified_live": verified,
+                    "declared_not_verified_live": [
+                        {"claim_id": claim_id, "claim": "non provato live"}
+                        for claim_id in sorted(
+                            gate.REQUIRED_UNVERIFIED_CLAIMS[area]
+                        )
+                    ],
+                },
+            }
+        )
     return {
         "manifest_version": 1,
         "component": "plenora-database-tools",
@@ -80,15 +109,7 @@ def conforming(revision: str) -> dict:
             }
             for identity in sorted(gate.REQUIRED_EXTERNAL_DEPENDENCIES)
         ],
-        "declared_scope_reductions": [
-            {
-                "area": area,
-                "scope": "fuori perimetro",
-                "runtime_policy": "fail_closed",
-                "exit_condition": "campagna dedicata",
-            }
-            for area in sorted(gate.REQUIRED_SCOPE_REDUCTIONS)
-        ],
+        "declared_scope_reductions": reductions,
         "release_action": {
             "allowed": False,
             "tag": None,
@@ -140,6 +161,44 @@ def main() -> int:
     missing_reduction["declared_scope_reductions"].pop()
     cases.append(
         ("scope omesso", missing_reduction, "declared_scope_reductions mancanti")
+    )
+
+    missing_assurance = deepcopy(base)
+    del missing_assurance["declared_scope_reductions"][0]["assurance"]
+    cases.append(("assurance omessa", missing_assurance, "senza assurance"))
+
+    missing_unverified_claim = deepcopy(base)
+    missing_unverified_claim["declared_scope_reductions"][0]["assurance"][
+        "declared_not_verified_live"
+    ].pop()
+    cases.append(
+        (
+            "claim non verificato omesso",
+            missing_unverified_claim,
+            "claim non verificati mancanti",
+        )
+    )
+
+    unknown_evidence = deepcopy(base)
+    partial = next(
+        reduction
+        for reduction in unknown_evidence["declared_scope_reductions"]
+        if reduction["assurance"]["status"] == "partially_verified_live"
+    )
+    partial["assurance"]["verified_live"][0]["evidence_id"] = "missing"
+    cases.append(
+        ("prova senza evidenza", unknown_evidence, "riferisce evidenza assente")
+    )
+
+    fictitious_test = deepcopy(base)
+    partial = next(
+        reduction
+        for reduction in fictitious_test["declared_scope_reductions"]
+        if reduction["assurance"]["status"] == "partially_verified_live"
+    )
+    partial["assurance"]["verified_live"][0]["test"] = "live_nonexistent"
+    cases.append(
+        ("test live fittizio", fictitious_test, "test verified_live mancanti")
     )
 
     release_allowed = deepcopy(base)

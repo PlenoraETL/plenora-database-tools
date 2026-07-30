@@ -93,25 +93,128 @@
       "area": "sqlserver_version_matrix",
       "scope": "SQL Server 2019, SQL Server 2025 e Azure SQL non sono qualificati ne coperti.",
       "runtime_policy": "Nessuna capability o compatibilita implicita oltre SQL Server 2022/compatibility level 160.",
-      "exit_condition": "Campagna live equivalente su ogni piattaforma aggiunta, con build riproducibile."
+      "exit_condition": "Campagna live equivalente su ogni piattaforma aggiunta, con build riproducibile.",
+      "assurance": {
+        "status": "partially_verified_live",
+        "verified_live": [
+          {
+            "claim": "Il solo profilo di riferimento SQL Server 2022 espone product version 16.x e compatibility level 160.",
+            "evidence_id": "sqlserver_reference",
+            "test": "live_reference_probe_and_catalog"
+          }
+        ],
+        "declared_not_verified_live": [
+          {
+            "claim_id": "sqlserver_2019",
+            "claim": "SQL Server 2019 non e stato eseguito nella campagna live."
+          },
+          {
+            "claim_id": "sqlserver_2025",
+            "claim": "SQL Server 2025 non e stato eseguito nella campagna live."
+          },
+          {
+            "claim_id": "azure_sql",
+            "claim": "Azure SQL non e stato eseguito nella campagna live."
+          }
+        ]
+      }
     },
     {
       "area": "sqlserver_spatial_dimensions",
       "scope": "geometry/geography Z, M, ZM e FullGlobe non sono supportati.",
       "runtime_policy": "Rifiuto fail-closed; nessuna riduzione silenziosa a XY.",
-      "exit_condition": "Contratto dimensionale ratificato, codec senza perdita e prove live positive e negative."
+      "exit_condition": "Contratto dimensionale ratificato, codec senza perdita e prove live positive e negative.",
+      "assurance": {
+        "status": "partially_verified_live",
+        "verified_live": [
+          {
+            "claim": "Una geometry Z sul bordo di lettura viene rifiutata con ErrorCategory::Unsupported, senza riduzione a XY.",
+            "evidence_id": "sqlserver_reference",
+            "test": "live_spatial_preflight_rejects_mixed_srid_and_z"
+          }
+        ],
+        "declared_not_verified_live": [
+          {
+            "claim_id": "spatial_z_other_paths",
+            "claim": "Il rifiuto di geography Z e degli altri bordi Z resta dichiarato ma non verificato live."
+          },
+          {
+            "claim_id": "spatial_m",
+            "claim": "Il rifiuto di geometry/geography M resta dichiarato ma non verificato live."
+          },
+          {
+            "claim_id": "spatial_zm",
+            "claim": "Il rifiuto di geometry/geography ZM resta dichiarato ma non verificato live."
+          },
+          {
+            "claim_id": "spatial_fullglobe",
+            "claim": "Il rifiuto di geography FullGlobe resta dichiarato ma non verificato live."
+          }
+        ]
+      }
     },
     {
       "area": "sqlserver_private_ca",
       "scope": "La catena TLS positiva con CA privata e hostname matching non e qualificata.",
       "runtime_policy": "La verifica del certificato resta il default; TrustServerCertificate richiede opt-out esplicito.",
-      "exit_condition": "Fixture CA privata riproducibile con casi hostname positivi e negativi e rotazione del certificato."
+      "exit_condition": "Fixture CA privata riproducibile con casi hostname positivi e negativi e rotazione del certificato.",
+      "assurance": {
+        "status": "partially_verified_live",
+        "verified_live": [
+          {
+            "claim": "Il certificato self-signed del riferimento viene rifiutato quando la policy e Verify.",
+            "evidence_id": "sqlserver_reference",
+            "test": "live_self_signed_tls_is_rejected_by_default"
+          },
+          {
+            "claim": "L'opt-out TrustServerCertificate esplicito consente la connessione al riferimento self-signed.",
+            "evidence_id": "sqlserver_reference",
+            "test": "live_reference_probe_and_catalog"
+          }
+        ],
+        "declared_not_verified_live": [
+          {
+            "claim_id": "private_ca_positive_chain",
+            "claim": "Una catena positiva con CA privata non e stata verificata live."
+          },
+          {
+            "claim_id": "private_ca_hostname_cases",
+            "claim": "I casi hostname matching e mismatch con CA privata non sono stati verificati live."
+          },
+          {
+            "claim_id": "private_ca_rotation",
+            "claim": "La rotazione del certificato della CA privata non e stata verificata live."
+          }
+        ]
+      }
     },
     {
       "area": "sqlserver_extended_catalog",
       "scope": "Temporal, graph, external table e catalogo partizioni esteso non sono coperti.",
       "runtime_policy": "Nessuna capability avanzata implicita.",
-      "exit_condition": "Inventario, implementazione fail-closed e campagna live dedicata per ogni famiglia aggiunta."
+      "exit_condition": "Inventario, implementazione fail-closed e campagna live dedicata per ogni famiglia aggiunta.",
+      "assurance": {
+        "status": "declared_only",
+        "verified_live": [],
+        "declared_not_verified_live": [
+          {
+            "claim_id": "temporal_catalog",
+            "claim": "Il catalogo temporal non e stato verificato live."
+          },
+          {
+            "claim_id": "graph_catalog",
+            "claim": "Il catalogo graph non e stato verificato live."
+          },
+          {
+            "claim_id": "external_table_catalog",
+            "claim": "Il catalogo external table non e stato verificato live."
+          },
+          {
+            "claim_id": "partition_catalog",
+            "claim": "Il catalogo partizioni esteso non e stato verificato live."
+          }
+        ]
+      }
     }
   ],
   "release_action": {
