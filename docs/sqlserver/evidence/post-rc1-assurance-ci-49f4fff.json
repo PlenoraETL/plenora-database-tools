@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "component": "plenora-database-tools",
+  "provider": "sqlserver",
+  "evidence_kind": "post_rc1_assurance_ci_verification",
+  "status": "verified_ci",
+  "observed_on": "2026-07-30",
+  "source_evidence": "docs/sqlserver/evidence/post-rc1-assurance-10a055d.json",
+  "revisions": {
+    "technical_source_revision": "10a055de230afa655bd749135fe082297fb82190",
+    "pull_request_candidate_revision": "ece39dbd6367a71928cbf93342c989bd0a6c586b",
+    "published_main_revision": "49f4fff9385e787915aee36dd31c5034bca7c762",
+    "verified_tree": "d35fe7cbc361be7af5e8b67619e4ab91038cf3cc",
+    "merge_method": "rebase"
+  },
+  "tree_identity": {
+    "pull_request_candidate_tree": "d35fe7cbc361be7af5e8b67619e4ab91038cf3cc",
+    "published_main_tree": "d35fe7cbc361be7af5e8b67619e4ab91038cf3cc",
+    "byte_identical": true,
+    "note": "Il repository vieta i merge commit. Il rebase ha cambiato gli SHA dei commit ma non l'albero verificato."
+  },
+  "pull_request": {
+    "number": 29,
+    "url": "https://github.com/PlenoraETL/plenora-database-tools/pull/29"
+  },
+  "pull_request_ci": {
+    "sqlserver_assurance": {
+      "run_id": 30584997007,
+      "status": "passed",
+      "live_result": "30/30",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30584997007"
+    },
+    "workspace_coverage": {
+      "run_id": 30584996832,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30584996832"
+    },
+    "postgres_postgis_regression": {
+      "run_id": 30584997557,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30584997557"
+    },
+    "release_manifest": {
+      "run_id": 30584997399,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30584997399"
+    }
+  },
+  "published_main_ci": {
+    "sqlserver_assurance": {
+      "run_id": 30585346644,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30585346644"
+    },
+    "postgres_postgis_regression": {
+      "run_id": 30585346645,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30585346645"
+    },
+    "release_manifest": {
+      "run_id": 30585346679,
+      "status": "passed",
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30585346679"
+    }
+  },
+  "qualification_notes": [
+    "La coverage completa gira sulla pull request; il workflow non e configurato per i push su main.",
+    "L'identita dell'albero rende applicabile alla revisione pubblicata la coverage superata dal candidato.",
+    "Il confronto prestazionale relativo e valido solo su ambienti equivalenti; il budget assoluto resta obbligatorio in CI.",
+    "Questa evidenza non modifica retroattivamente il manifesto o il risultato della RC1 taggata."
+  ]
+}
