@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "component": "plenora-database-tools",
   "component_version": "0.1.0-rc.1",
-  "status": "rc1_candidate_ready",
+  "status": "component_rc_tagged",
   "revision": "5d644461c882e5f97efafc32e2af4f7d3552d70f",
   "verification_claim": "verified_internally",
   "independent_review": false,
@@ -12,7 +12,7 @@
     "avionic_certification": false
   },
   "candidate": {
-    "decision": "ready",
+    "decision": "tagged",
     "code_freeze": true,
     "baseline_note": "La revisione e la baseline tecnica congelata di 0.1.0-rc.1. Ogni modifica ai percorsi di produzione o agli input delle evidenze richiede una nuova baseline e la ripetizione dei gate applicabili."
   },
@@ -22,7 +22,7 @@
       "SQL Server 2022 Developer 16.0.4255.1 con compatibility level 160",
       "SQL Server geometry/geography XY con SRID esplicito"
     ],
-    "release_label_note": "L'identificatore del candidato e le versioni dei sette crate sono allineati a 0.1.0-rc.1. Il tag annotato v0.1.0-rc.1 e autorizzato dopo la CI verde del record pre-tag."
+    "release_label_note": "L'identificatore e le versioni dei sette crate sono allineati a 0.1.0-rc.1. Il tag annotato e non firmato v0.1.0-rc.1 e stato creato sul record pre-tag verde."
   },
   "evidence": [
     {
@@ -223,7 +223,41 @@
   "release_action": {
     "allowed": true,
     "tag": "v0.1.0-rc.1",
-    "tag_created": false,
-    "reason": "Baseline 0.1.0-rc.1 e quattro gate verdi sulla stessa revisione; R0.4/C4.2 autorizzano il claim verified_internally senza review."
+    "tag_created": true,
+    "tag_target": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
+    "tag_object": "7c78a73c26a29cb2837dc5495a365ecdb9c5fb68",
+    "tag_form": "annotated_unsigned",
+    "created_on": "2026-07-30",
+    "pre_tag_ci": [
+      {
+        "id": "postgres_reference",
+        "status": "passed",
+        "revision": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
+        "run_id": 30549269089,
+        "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30549269089"
+      },
+      {
+        "id": "sqlserver_reference",
+        "status": "passed",
+        "revision": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
+        "run_id": 30549269050,
+        "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30549269050"
+      },
+      {
+        "id": "workspace_coverage",
+        "status": "passed",
+        "revision": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
+        "run_id": 30549269032,
+        "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30549269032"
+      },
+      {
+        "id": "release_manifest",
+        "status": "passed",
+        "revision": "b541c61dd1c286cdf2e808e17eefd133d7c9ba20",
+        "run_id": 30549273348,
+        "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30549273348"
+      }
+    ],
+    "reason": "Baseline 0.1.0-rc.1 e quattro gate pre-tag verdi; R0.4/C4.2 autorizzano il claim verified_internally senza review."
   }
 }

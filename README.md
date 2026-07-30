@@ -64,7 +64,7 @@ python scripts\check_release_manifest.py --repo . release\development.json relea
 python scripts\test_check_release_manifest.py
 ```
 
-La baseline tecnica RC1, autorizzata con claim `verified_internally`, è descritta in
+La RC1 taggata con claim `verified_internally` è descritta in
 [`docs/RC1-READINESS.md`](docs/RC1-READINESS.md) e registrata nel manifesto
 [`release/rc1-readiness.json`](release/rc1-readiness.json). Il gate dedicato
 impedisce claim prematuri e divergenze fra baseline ed evidenze:

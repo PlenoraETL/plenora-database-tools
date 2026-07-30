@@ -3,10 +3,10 @@
 ## Esito
 
 La baseline tecnica
-`5d644461c882e5f97efafc32e2af4f7d3552d70f` è congelata come candidata
-`0.1.0-rc.1`. I quattro gate applicabili sono verdi sulla stessa revisione e il
-tag annotato `v0.1.0-rc.1` è autorizzato dopo la CI del record pre-tag. Il claim
-è `verified_internally`; non sono dichiarate né una RC di sistema né una
+`5d644461c882e5f97efafc32e2af4f7d3552d70f` è congelata e il tag annotato,
+non firmato, `v0.1.0-rc.1` è stato creato sul record pre-tag
+`b541c61dd1c286cdf2e808e17eefd133d7c9ba20`. Il claim è
+`verified_internally`; non sono dichiarate né una RC di sistema né una
 certificazione avionica.
 
 Il manifesto verificabile e autoritativo è
@@ -102,9 +102,10 @@ applicabili e aggiornare tutte le evidenze. Modifiche soltanto documentali o al
 gate di readiness non spostano automaticamente la baseline tecnica, ma devono
 comunque passare la CI.
 
-Nello stato `ready` il tag è autorizzato ma non ancora dichiarato come creato.
-La review indipendente resta aperta e potrà promuovere separatamente il claim,
-ma non è una condizione del tag `verified_internally`.
+Nello stato `tagged` il gate verifica il target e l'oggetto del tag annotato,
+oltre ai quattro run pre-tag sul record di rilascio. La review indipendente resta
+aperta e potrà promuovere separatamente il claim, ma non è una condizione del
+tag `verified_internally`.
 
 ## Esecuzione locale
 

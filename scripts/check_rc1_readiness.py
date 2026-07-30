@@ -24,6 +24,7 @@ REQUIRED_EVIDENCE = {
     "workspace_coverage",
     "release_manifest",
 }
+REQUIRED_PRE_TAG_CI = REQUIRED_EVIDENCE
 REQUIRED_EXTERNAL_DEPENDENCIES = {
     "PLN-DB-R46",
     "PLN-DB-R153",
@@ -123,6 +124,22 @@ def git_success(repository: Path, arguments: list[str]) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0
+
+
+def git_output(repository: Path, arguments: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
 
 
 def production_tree_matches(repository: Path, revision: str) -> bool:
@@ -509,6 +526,60 @@ def check(document: dict, repository: Path) -> list[str]:
             )
         if not release_action.get("reason"):
             errors.append("release_action.reason deve essere dichiarato")
+        if decision == "tagged":
+            target = release_action.get("tag_target")
+            tag_object = release_action.get("tag_object")
+            resolved_target = git_output(
+                repository, ["rev-parse", "v0.1.0-rc.1^{commit}"]
+            )
+            resolved_object = git_output(
+                repository, ["rev-parse", "v0.1.0-rc.1^{tag}"]
+            )
+            if target != resolved_target or not isinstance(target, str):
+                errors.append(
+                    "release_action.tag_target non coincide con v0.1.0-rc.1"
+                )
+            if tag_object != resolved_object or not isinstance(tag_object, str):
+                errors.append(
+                    "release_action.tag_object non coincide con il tag annotato"
+                )
+            if release_action.get("tag_form") != "annotated_unsigned":
+                errors.append(
+                    "release_action.tag_form deve essere annotated_unsigned"
+                )
+            if not release_action.get("created_on"):
+                errors.append("release_action.created_on deve essere dichiarato")
+            pre_tag = keyed_items(
+                release_action, "pre_tag_ci", "id", errors
+            )
+            missing_pre_tag = REQUIRED_PRE_TAG_CI - pre_tag.keys()
+            if missing_pre_tag:
+                errors.append(
+                    "pre_tag_ci mancanti: "
+                    + ", ".join(sorted(missing_pre_tag))
+                )
+            for identity in REQUIRED_PRE_TAG_CI & pre_tag.keys():
+                item = pre_tag[identity]
+                if item.get("status") != "passed":
+                    errors.append(f"pre_tag_ci {identity} non passed")
+                if item.get("revision") != target:
+                    errors.append(
+                        f"pre_tag_ci {identity} non fissata al tag target"
+                    )
+                run_id = item.get("run_id")
+                expected_url = (
+                    "https://github.com/PlenoraETL/"
+                    "plenora-database-tools/actions/runs/"
+                    f"{run_id}"
+                )
+                if (
+                    not isinstance(run_id, int)
+                    or run_id <= 0
+                    or item.get("url") != expected_url
+                ):
+                    errors.append(
+                        f"pre_tag_ci {identity} con run o URL incoerente"
+                    )
 
     return errors
 

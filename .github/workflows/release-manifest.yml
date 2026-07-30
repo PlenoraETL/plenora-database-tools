@@ -44,7 +44,7 @@ jobs:
       - name: Prove the gate rejects invalid manifests
         run: python3 scripts/test_check_release_manifest.py
 
-      - name: Validate the blocked RC1 candidate
+      - name: Validate the RC1 release state
         run: |
           python3 scripts/check_rc1_readiness.py \
             --repo . \
