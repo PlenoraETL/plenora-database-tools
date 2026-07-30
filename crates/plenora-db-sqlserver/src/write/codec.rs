@@ -492,10 +492,12 @@ mod tests {
             lifecycle: TargetLifecycle::Existing {
                 lock_sql: String::new(),
                 truncate_sql: None,
+                add_columns_sql: Vec::new(),
                 schema_fingerprint: String::new(),
             },
             schema: "dbo".to_owned(),
             object: "target".to_owned(),
+            added_columns: Vec::new(),
         };
         let error =
             inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");

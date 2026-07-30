@@ -5,6 +5,9 @@ use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit}
 use plenora_database_core::field_contract::{
     validate_schema_contract, FieldContract as CanonicalFieldContract,
 };
+use plenora_database_core::loss::{
+    LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
+};
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
 use plenora_database_core::{
@@ -30,6 +33,7 @@ pub(super) enum TargetLifecycle {
     Existing {
         lock_sql: String,
         truncate_sql: Option<String>,
+        add_columns_sql: Vec<String>,
         schema_fingerprint: String,
     },
     Create {
@@ -56,6 +60,14 @@ pub(super) struct WritePlan {
     pub(super) lifecycle: TargetLifecycle,
     pub(super) schema: String,
     pub(super) object: String,
+    pub(super) added_columns: Vec<AddedColumn>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AddedColumn {
+    pub(super) input_index: usize,
+    pub(super) source_type: String,
+    pub(super) native_declaration: String,
 }
 
 impl WritePlan {
@@ -65,6 +77,7 @@ impl WritePlan {
         operation: &WriteOperation,
         input_schema: SchemaRef,
         observed_srids: &HashMap<String, Option<u32>>,
+        schema_evolution: super::SqlServerSchemaEvolution,
     ) -> Result<Self> {
         validate_operation(operation)?;
         if input_schema.fields().is_empty() {
@@ -87,20 +100,72 @@ impl WritePlan {
         };
         let quoted_object = renderer.quote_object(&object_name);
         let mut columns = Vec::with_capacity(input_schema.fields().len());
+        let mut added_columns = Vec::new();
+        let mut add_columns_sql = Vec::new();
         for (input_index, field) in input_schema.fields().iter().enumerate() {
             let target = description
                 .columns
                 .iter()
-                .find(|column| column.name == field.name().as_str())
-                .ok_or_else(|| {
-                    plan_error(
+                .find(|column| column.name == field.name().as_str());
+            let Some(target) = target else {
+                let evolution_allowed = schema_evolution
+                    == super::SqlServerSchemaEvolution::AddNullableColumns
+                    && supports_additive_evolution(operation.mode);
+                if !evolution_allowed {
+                    return Err(plan_error(
                         ErrorCategory::Schema,
                         format!(
                             "colonna Arrow assente nel target SQL Server: {}",
                             field.name()
                         ),
-                    )
-                })?;
+                    ));
+                }
+                if !field.is_nullable() {
+                    return Err(plan_error(
+                        ErrorCategory::Schema,
+                        format!(
+                            "schema evolution SQL Server ammette solo colonne nullable: {}",
+                            field.name()
+                        ),
+                    ));
+                }
+                if operation.keys.iter().any(|key| key == field.name()) {
+                    return Err(plan_error(
+                        ErrorCategory::InvalidPlan,
+                        "schema evolution SQL Server non puo aggiungere una chiave",
+                    ));
+                }
+                let target_spec = SqlServerColumnSpec::from_create_field(field)?;
+                validate_arrow_type(field, &target_spec)?;
+                let spatial_srid = validate_spatial_contract(field, &target_spec, None)?;
+                if let Some(collation) = &target_spec.collation {
+                    validate_collation_name(collation)?;
+                }
+                let quoted_column = renderer.quote_identifier(&sql_identifier(field.name())?);
+                let mut definition = format!("{quoted_column} {}", target_spec.native_declaration);
+                if let Some(collation) = &target_spec.collation {
+                    definition.push_str(" COLLATE ");
+                    definition.push_str(collation);
+                }
+                definition.push_str(" NULL");
+                add_columns_sql.push(format!("ALTER TABLE {quoted_object} ADD {definition};"));
+                added_columns.push(AddedColumn {
+                    input_index,
+                    source_type: field.data_type().to_string(),
+                    native_declaration: target_spec.native_declaration.clone(),
+                });
+                columns.push(WriteColumnPlan {
+                    input_index,
+                    name: field.name().clone(),
+                    kind: target_spec.kind,
+                    native_type: target_spec.native_type,
+                    native_declaration: target_spec.native_declaration,
+                    nullable: true,
+                    collation: target_spec.collation,
+                    spatial_srid,
+                });
+                continue;
+            };
             if !is_writable(target) {
                 return Err(plan_error(
                     ErrorCategory::Schema,
@@ -169,10 +234,12 @@ impl WritePlan {
                 lock_sql: lock_sql(&quoted_object),
                 truncate_sql: (operation.mode == WriteMode::TruncateInsert)
                     .then(|| format!("TRUNCATE TABLE {quoted_object};")),
+                add_columns_sql,
                 schema_fingerprint: description.token.structural_fingerprint.clone(),
             },
             schema: description.schema.clone(),
             object: description.name.clone(),
+            added_columns,
         })
     }
 
@@ -198,6 +265,37 @@ impl WritePlan {
             Some((description, staging_object, backup_object)),
         )
     }
+
+    pub(super) fn loss_report(&self, policy: MappingPolicy) -> Result<LossReport> {
+        let losses = self
+            .added_columns
+            .iter()
+            .map(|column| {
+                Ok(MappingLoss {
+                    field_id: u32::try_from(column.input_index).map_err(|_| {
+                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
+                    })?,
+                    category: LossCategory::NativeType,
+                    severity: LossSeverity::Information,
+                    reason: "colonna aggiunta al target SQL Server come nullable".to_owned(),
+                    source_type: Some(column.source_type.clone()),
+                    target_type: Some(column.native_declaration.clone()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(LossReport {
+            schema_version: 1,
+            policy,
+            losses,
+        })
+    }
+}
+
+const fn supports_additive_evolution(mode: WriteMode) -> bool {
+    matches!(
+        mode,
+        WriteMode::Append | WriteMode::TruncateInsert | WriteMode::Update | WriteMode::Upsert
+    )
 }
 
 fn compile_new_target(
@@ -291,6 +389,7 @@ fn compile_new_target(
         lifecycle,
         schema: schema.to_owned(),
         object: operation.target.object.clone(),
+        added_columns: Vec::new(),
     })
 }
 
@@ -837,8 +936,10 @@ pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SqlServerConstraint, SqlServerIndex, SqlServerSchemaToken};
-    use plenora_database_core::loss::MappingPolicy;
+    use crate::{
+        SqlServerConstraint, SqlServerIndex, SqlServerSchemaEvolution, SqlServerSchemaToken,
+    };
+    use plenora_database_core::loss::{LossSeverity, MappingPolicy};
     use plenora_database_core::plan::{ObjectRef, SridPolicy};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -930,10 +1031,12 @@ mod tests {
                 lifecycle: TargetLifecycle::Existing {
                     lock_sql: String::new(),
                     truncate_sql: None,
+                    add_columns_sql: Vec::new(),
                     schema_fingerprint: "fingerprint".to_owned(),
                 },
                 schema: "dbo".to_owned(),
                 object: "target".to_owned(),
+                added_columns: Vec::new(),
             };
         assert_eq!(
             validate_bulk_profile(&plan)
@@ -1019,6 +1122,95 @@ mod tests {
         .with_metadata(malicious_metadata)]));
         create.keys = vec!["id".to_owned()];
         assert!(WritePlan::compile_create(&create, malicious).is_err());
+    }
+
+    #[test]
+    fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
+        let description = SqlServerObjectDescription {
+            database_id: 1,
+            object_id: 2,
+            catalog: "db".to_owned(),
+            schema: "dbo".to_owned(),
+            name: "target".to_owned(),
+            kind: "USER_TABLE".to_owned(),
+            temporal_type: 0,
+            memory_optimized: false,
+            durability: None,
+            columns: vec![SqlServerColumn {
+                ordinal: 1,
+                name: "id".to_owned(),
+                type_schema: "sys".to_owned(),
+                native_type: "int".to_owned(),
+                max_length: 4,
+                precision: 10,
+                scale: 0,
+                nullable: false,
+                identity: false,
+                computed: false,
+                generated_always_type: 0,
+                collation: None,
+                default_definition: None,
+                computed_definition: None,
+                computed_persisted: false,
+            }],
+            constraints: Vec::new(),
+            indexes: Vec::new(),
+            token: SqlServerSchemaToken {
+                schema_version: 1,
+                database_id: 1,
+                object_id: 2,
+                structural_fingerprint: "fingerprint".to_owned(),
+            },
+        };
+        let schema = Arc::new(plenora_database_core::arrow::Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("note", DataType::Utf8, true),
+        ]));
+        let append = operation(WriteMode::Append);
+        assert!(WritePlan::compile_existing(
+            &description,
+            &append,
+            Arc::clone(&schema),
+            &HashMap::new(),
+            SqlServerSchemaEvolution::Disabled,
+        )
+        .is_err());
+        let plan = WritePlan::compile_existing(
+            &description,
+            &append,
+            Arc::clone(&schema),
+            &HashMap::new(),
+            SqlServerSchemaEvolution::AddNullableColumns,
+        )
+        .expect("add nullable column");
+        let TargetLifecycle::Existing {
+            add_columns_sql, ..
+        } = &plan.lifecycle
+        else {
+            panic!("existing lifecycle");
+        };
+        assert_eq!(
+            add_columns_sql,
+            &["ALTER TABLE [dbo].[target] ADD [note] nvarchar(max) NULL;"]
+        );
+        let report = plan
+            .loss_report(MappingPolicy::Strict)
+            .expect("loss report");
+        assert_eq!(report.losses.len(), 1);
+        assert_eq!(report.losses[0].severity, LossSeverity::Information);
+
+        let non_nullable = Arc::new(plenora_database_core::arrow::Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("required", DataType::Utf8, false),
+        ]));
+        assert!(WritePlan::compile_existing(
+            &description,
+            &append,
+            non_nullable,
+            &HashMap::new(),
+            SqlServerSchemaEvolution::AddNullableColumns,
+        )
+        .is_err());
     }
 
     #[test]

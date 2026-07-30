@@ -1,11 +1,11 @@
 use crate::read::MAX_CONFIGURED_BATCH_ROWS;
 use crate::read::{read_operation, read_query_operation};
 use crate::write::{
-    prepare_write_with_external_contract_leases, prepare_write_with_mode as prepare_driver_write,
+    prepare_write_with_external_contract_leases, prepare_write_with_options as prepare_driver_write,
 };
 use crate::{
     describe_object, list_objects, list_schemas, probe_server, write_prepared, SqlServerConfig,
-    SqlServerInsertMode, SqlServerPool,
+    SqlServerInsertMode, SqlServerPool, SqlServerSchemaEvolution,
 };
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
@@ -52,6 +52,7 @@ pub struct SqlServerProvider {
     batch_rows: usize,
     max_connections: usize,
     insert_mode: SqlServerInsertMode,
+    schema_evolution: SqlServerSchemaEvolution,
     cached_pool: Mutex<Option<CachedPool>>,
 }
 
@@ -63,6 +64,7 @@ impl std::fmt::Debug for SqlServerProvider {
             .field("batch_rows", &self.batch_rows)
             .field("max_connections", &self.max_connections)
             .field("insert_mode", &self.insert_mode)
+            .field("schema_evolution", &self.schema_evolution)
             .field(
                 "pool_initialized",
                 &lock_recover(&self.cached_pool).is_some(),
@@ -99,6 +101,7 @@ impl SqlServerProvider {
             batch_rows,
             max_connections,
             insert_mode: SqlServerInsertMode::Prepared,
+            schema_evolution: SqlServerSchemaEvolution::Disabled,
             cached_pool: Mutex::new(None),
         })
     }
@@ -108,6 +111,15 @@ impl SqlServerProvider {
     #[must_use]
     pub const fn with_insert_mode(mut self, insert_mode: SqlServerInsertMode) -> Self {
         self.insert_mode = insert_mode;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_schema_evolution(
+        mut self,
+        schema_evolution: SqlServerSchemaEvolution,
+    ) -> Self {
+        self.schema_evolution = schema_evolution;
         self
     }
 
@@ -394,6 +406,7 @@ impl Provider for SqlServerProvider {
                 budget,
                 cancellation,
                 self.insert_mode,
+                self.schema_evolution,
             )
             .await?;
             let loss_report = driver_prepared.loss_report().clone();
@@ -438,6 +451,7 @@ impl Provider for SqlServerProvider {
                 budget,
                 cancellation,
                 self.insert_mode,
+                self.schema_evolution,
             )
             .await?;
             let result = write_prepared(driver_prepared, input, cancellation).await;

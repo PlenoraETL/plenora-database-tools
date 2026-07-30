@@ -74,6 +74,7 @@ Legenda:
 | Drop stream parziale | cancellazione e quarantena, nessun riuso | live-proven |
 | Differential read/write | zero differenze su scalari, temporali, XML/UUID e spatial | live-proven |
 | Schema drift write | rifiuto dopo prepare e prima della prima mutazione | live-proven |
+| Schema evolution | opt-in, sole colonne nullable additive; DDL e dati nella stessa transazione | live-proven |
 | `time(7)` / `datetime2(7)` a 100 ns | rifiuto se non rappresentabile esattamente in Arrow µs | live-proven |
 | `datetimeoffset` | testo RFC3339/ISO 127: offset per riga e 100 ns preservati | live-proven |
 

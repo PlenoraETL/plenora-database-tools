@@ -34,6 +34,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
 - schema drift fail-closed;
+- schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
+  congiunto di DDL e dati;
 - rollback e outcome di commit incerto;
 - create atomico e replace con staged swap transazionale;
 - profilo create/replace completo sui 19 tipi scalari, temporali e spatial
