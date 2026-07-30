@@ -375,7 +375,7 @@ def main() -> int:
             "offline_unit_tests",
             "provider_common_conformance",
             "bounded_arrow_read",
-            "geometry_geography_xy_roundtrip",
+            "geometry_geography_xy_z_m_zm_roundtrip",
             "prepared_write_reference_types",
             "keyed_update_upsert_delete",
             "tds_bulk_differential",
@@ -396,7 +396,7 @@ def main() -> int:
         ],
         "open_non_blocking": [
             "sqlserver_2019_2025_azure_matrix",
-            "spatial_z_m_fullglobe_unexercised_boundaries",
+            "spatial_fullglobe_unexercised_boundary",
             "extended_temporal_graph_partition_catalog",
         ],
     }

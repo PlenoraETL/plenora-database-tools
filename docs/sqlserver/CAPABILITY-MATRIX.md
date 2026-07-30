@@ -51,8 +51,8 @@ Legenda:
 | Bulk tipi verificati | bit, interi, real/float, decimal scala 0–37, nvarchar, varbinary | live-proven |
 | Bulk tipi esclusi | temporali, money, XML/UUID, spatial/UDT e varianti non provate | reject; percorso prepared |
 | `MERGE` | non usato come default | reject |
-| `geometry` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |
-| `geography` | WKB GeoArrow, semantica nativa preservata | live-proven per XY |
+| `geometry` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |
+| `geography` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |
 | SRID | sempre esplicito per input spatial | offline + live-required |
 | Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
 | `FullGlobe` | rifiutato in strict | reject |
@@ -68,9 +68,9 @@ Legenda:
 | TLS CA privata | catena valida e hostname matching accettati; mismatch rifiutato | live-proven post-RC1 |
 | Rotazione certificato | nuovo certificato server, CA stabile e riconnessione verificata | live-proven post-RC1 |
 | SRID misti read | rifiuto prima dello streaming | live-proven |
-| Z/M/ZM read | rifiuto nel profilo XY iniziale per geometry e geography | live-proven post-RC1 |
+| Z/M/ZM read | WKB ISO lossless con dimensioni uniformi per colonna; profili misti rifiutati | live-proven |
 | FullGlobe read | rifiuto prima dello streaming | live-proven post-RC1 |
-| Z/M/ZM write | header EWKB rifiutato prima della mutazione per geometry e geography | live-proven post-RC1 |
+| Z/M/ZM write | WKB ISO geometry/geography verificato contro il contratto Arrow | live-proven |
 | Drop stream parziale | cancellazione e quarantena, nessun riuso | live-proven |
 | Differential read/write | zero differenze su scalari, temporali, XML/UUID e spatial | live-proven |
 | Schema drift write | rifiuto dopo prepare e prima della prima mutazione | live-proven |

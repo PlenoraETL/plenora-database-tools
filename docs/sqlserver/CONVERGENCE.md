@@ -10,7 +10,7 @@ capability, prova live, documentazione e gate concordano.
 | Write atomica e recovery | completo | completo | mantenere fault injection e staged swap |
 | Schema evolution additiva | nullable, opt-in | nullable, opt-in | **chiusa**: DDL+dati atomici e rollback live |
 | Spatial XY | completo | completo | mantenere roundtrip geometry/geography |
-| Spatial Z/M/ZM | lossless | fail-closed | codec lossless e differenziale live |
+| Spatial Z/M/ZM | lossless | lossless | **chiusa**: WKB ISO e differenziale live |
 | AST spatial | catalogo tipizzato | fail-closed | sottoinsieme SQL Server tipizzato e capability esatta |
 | Indice spatial | GiST+bbox/KNN | non pubblicizzato | create/introspection/plan proof live |
 | Catalogo avanzato | partizioni, viste, RLS/ACL | parziale | temporal/graph/external/partizioni osservati |

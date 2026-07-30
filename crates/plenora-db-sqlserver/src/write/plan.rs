@@ -5,6 +5,7 @@ use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit}
 use plenora_database_core::field_contract::{
     validate_schema_contract, FieldContract as CanonicalFieldContract,
 };
+use plenora_database_core::geometry::Dimensions;
 use plenora_database_core::loss::{
     LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
 };
@@ -26,6 +27,12 @@ pub(super) struct WriteColumnPlan {
     pub(super) nullable: bool,
     pub(super) collation: Option<String>,
     pub(super) spatial_srid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ObservedSpatialContract {
+    pub(super) srid: Option<u32>,
+    pub(super) dimensions: Option<Dimensions>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +83,7 @@ impl WritePlan {
         description: &SqlServerObjectDescription,
         operation: &WriteOperation,
         input_schema: SchemaRef,
-        observed_srids: &HashMap<String, Option<u32>>,
+        observed_spatial: &HashMap<String, ObservedSpatialContract>,
         schema_evolution: super::SqlServerSchemaEvolution,
     ) -> Result<Self> {
         validate_operation(operation)?;
@@ -174,11 +181,8 @@ impl WritePlan {
             }
             let target_spec = SqlServerColumnSpec::from_catalog(target)?;
             validate_arrow_type(field, &target_spec)?;
-            let spatial_srid = validate_spatial_contract(
-                field,
-                &target_spec,
-                observed_srids.get(&target.name).copied().flatten(),
-            )?;
+            let spatial_srid =
+                validate_spatial_contract(field, &target_spec, observed_spatial.get(&target.name))?;
             columns.push(WriteColumnPlan {
                 input_index,
                 name: target.name.clone(),
@@ -824,7 +828,7 @@ fn validate_arrow_type(field: &Field, target: &SqlServerColumnSpec) -> Result<()
 fn validate_spatial_contract(
     field: &Field,
     target: &SqlServerColumnSpec,
-    observed_srid: Option<u32>,
+    observed: Option<&ObservedSpatialContract>,
 ) -> Result<Option<u32>> {
     let Some(semantics) = target.kind.spatial_semantics() else {
         return Ok(None);
@@ -852,13 +856,25 @@ fn validate_spatial_contract(
             "semantica geometry/geography Arrow incompatibile col target",
         ));
     }
-    if contract
-        .dimensions
-        .is_some_and(|dimensions| dimensions != "xy")
+    let source_dimensions = match contract.dimensions {
+        Some("xy") => Dimensions::Xy,
+        Some("xyz") => Dimensions::Xyz,
+        Some("xym") => Dimensions::Xym,
+        Some("xyzm") => Dimensions::Xyzm,
+        _ => {
+            return Err(plan_error(
+                ErrorCategory::DataMapping,
+                "write spatial SQL Server richiede dimensioni WKB esplicite",
+            ));
+        }
+    };
+    if observed
+        .and_then(|value| value.dimensions)
+        .is_some_and(|target_dimensions| target_dimensions != source_dimensions)
     {
         return Err(plan_error(
-            ErrorCategory::Unsupported,
-            "write spatial SQL Server iniziale supporta soltanto XY",
+            ErrorCategory::DataMapping,
+            "dimensioni Arrow diverse dai valori esistenti nel target SQL Server",
         ));
     }
     let source_srid = contract.srid.ok_or_else(|| {
@@ -867,7 +883,10 @@ fn validate_spatial_contract(
             "SRID Arrow obbligatorio per write spatial SQL Server",
         )
     })?;
-    if observed_srid.is_some_and(|target_srid| target_srid != source_srid) {
+    if observed
+        .and_then(|value| value.srid)
+        .is_some_and(|target_srid| target_srid != source_srid)
+    {
         return Err(plan_error(
             ErrorCategory::DataMapping,
             "SRID Arrow diverso dai valori esistenti nel target SQL Server",

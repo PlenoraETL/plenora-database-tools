@@ -310,7 +310,12 @@ impl Provider for SqlServerProvider {
                     geography: probe.geography_type_id.is_some(),
                     spatial_index: false,
                     mixed_geometry_types: false,
-                    dimensions: vec![Dimensions::Xy],
+                    dimensions: vec![
+                        Dimensions::Xy,
+                        Dimensions::Xyz,
+                        Dimensions::Xym,
+                        Dimensions::Xyzm,
+                    ],
                     functions: Vec::new(),
                 },
                 limits: ProviderLimits {

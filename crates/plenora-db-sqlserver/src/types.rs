@@ -1,6 +1,6 @@
 use crate::catalog::{SqlServerColumn, SqlServerObjectDescription};
 use plenora_database_core::arrow::schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use plenora_database_core::geometry::SpatialSemantics;
+use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::{
     ComparisonOperator, FilterExpression, ReadOperation, SortDirection,
 };
@@ -13,6 +13,26 @@ use plenora_database_sql::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+
+pub fn spatial_dimensions_from_profile(count: i64, code: Option<i32>) -> Result<Dimensions> {
+    if count > 1 {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "colonna spatial SQL Server con dimensioni miste",
+        ));
+    }
+    match (count, code) {
+        (0, None) => Ok(Dimensions::Unknown),
+        (1, Some(0)) => Ok(Dimensions::Xy),
+        (1, Some(1)) => Ok(Dimensions::Xym),
+        (1, Some(2)) => Ok(Dimensions::Xyz),
+        (1, Some(3)) => Ok(Dimensions::Xyzm),
+        _ => Err(prepare_error(
+            ErrorCategory::Protocol,
+            "profilo dimensionale SQL Server incoerente",
+        )),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlServerColumnKind {
@@ -64,6 +84,7 @@ pub struct SqlServerColumnSpec {
     pub collation: Option<String>,
     pub kind: SqlServerColumnKind,
     pub spatial_srid: Option<u32>,
+    pub spatial_dimensions: Option<Dimensions>,
     pub wire_encoding: SqlServerWireEncoding,
 }
 
@@ -216,12 +237,18 @@ impl SqlServerReadPlan {
         })
     }
 
-    pub(crate) fn apply_spatial_srid(&mut self, index: usize, srid: Option<u32>) -> Result<()> {
+    pub(crate) fn apply_spatial_contract(
+        &mut self,
+        index: usize,
+        srid: Option<u32>,
+        dimensions: Dimensions,
+    ) -> Result<()> {
         let column = self
             .columns
             .get_mut(index)
             .ok_or_else(|| prepare_error(ErrorCategory::Internal, "indice spatial non valido"))?;
         column.spatial_srid = srid;
+        column.spatial_dimensions = Some(dimensions);
         let fields = self
             .columns
             .iter()
@@ -425,6 +452,7 @@ impl SqlServerColumnSpec {
             collation: column.collation.clone(),
             kind,
             spatial_srid: None,
+            spatial_dimensions: None,
             wire_encoding: SqlServerWireEncoding::Projected,
         })
     }
@@ -458,6 +486,7 @@ impl SqlServerColumnSpec {
             collation: field.metadata().get(protocol::SQLSERVER_COLLATION).cloned(),
             kind,
             spatial_srid: None,
+            spatial_dimensions: None,
             wire_encoding: SqlServerWireEncoding::Projected,
         })
     }
@@ -490,6 +519,7 @@ impl SqlServerColumnSpec {
             collation,
             kind,
             spatial_srid: None,
+            spatial_dimensions: None,
             wire_encoding: SqlServerWireEncoding::Native,
         })
     }
@@ -578,7 +608,7 @@ impl SqlServerColumnSpec {
                 format!("CONVERT(nvarchar(40), {quoted}, 127)")
             }
             (SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography, _) => {
-                format!("{quoted}.STAsBinary()")
+                format!("{quoted}.AsBinaryZM()")
             }
             _ => quoted.clone(),
         };
@@ -625,7 +655,17 @@ impl SqlServerColumnSpec {
                 "geoarrow.wkb".to_owned(),
             );
             metadata.insert(protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned());
-            metadata.insert(protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned());
+            let dimensions = match self.spatial_dimensions.unwrap_or(Dimensions::Unknown) {
+                Dimensions::Xy => "xy",
+                Dimensions::Xyz => "xyz",
+                Dimensions::Xym => "xym",
+                Dimensions::Xyzm => "xyzm",
+                Dimensions::Unknown => "unknown",
+            };
+            metadata.insert(
+                protocol::GEOMETRY_DIMENSIONS.to_owned(),
+                dimensions.to_owned(),
+            );
             metadata.insert(
                 protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
                 "mixed".to_owned(),

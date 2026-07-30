@@ -11,10 +11,9 @@ Il gate usa SQL Server 2022 fissato per digest, verifica identità e stato del
 server, esegue Clippy con warning negati, unit test e l'intera matrice live in
 serie. La baseline post-RC1 aggiunge una CA privata, il controllo positivo e
 negativo del nome host, la rotazione con impronta server diversa e CA stabile,
-e il rifiuto live di Z/M/ZM/FullGlobe. Il conteggio dei test live è un
-cricchetto deliberato: un'aggiunta o una
-rimozione richiede l'aggiornamento esplicito del gate e della relativa
-evidenza.
+e il roundtrip lossless Z/M/ZM con rifiuto di profili misti e FullGlobe. Il
+conteggio dei test live è un cricchetto deliberato: un'aggiunta o una rimozione
+richiede l'aggiornamento esplicito del gate e della relativa evidenza.
 
 In CI il risultato machine-readable, il log completo e le identità di
 toolchain/container sono conservati per 90 giorni. Un fallimento conserva anche
@@ -29,7 +28,7 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 ## Scope dimostrato
 
 - bootstrap TDS/TLS, pool bounded e recovery;
-- read Arrow bounded, `geometry` e `geography` XY;
+- read Arrow bounded, `geometry` e `geography` XY/XYZ/XYM/XYZM;
 - prepared write e TDS bulk differenziale;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
@@ -44,13 +43,14 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
   leggibilita del vecchio target durante il caricamento;
 - taglio e blackhole fisici del trasporto TDS.
 - catena TLS privata, hostname match/mismatch e rotazione;
-- rifiuto pre-stream/pre-mutation di geometry/geography Z, M, ZM e FullGlobe;
+- roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
+  dimensioni miste e FullGlobe;
 - gate prestazionale separato su read, prepared, TDS bulk, create e replace.
 
 ## Gap non coperti dal gate v1
 
 - SQL Server 2019, 2025 e Azure SQL;
-- supporto lossless spatial Z/M/ZM e `FullGlobe` (il rifiuto è provato);
+- supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
 - AST spatial tipizzato;
 - catalogo temporal/graph/external e partizioni.
 

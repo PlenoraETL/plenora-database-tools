@@ -42,9 +42,10 @@ La suite live seriale ha verificato:
 11. mapping Arrow di booleani, interi signed/unsigned, float, decimal/money,
     testo, binari, UUID/XML proiettati e tipi temporali;
 12. lettura di cinque righe in tre batch bounded `2/2/1`;
-13. `geometry` e `geography` XY come GeoArrow WKB con SRID 4326;
-14. rifiuto fail-closed di SRID misti e, nella baseline post-RC1, di
-    geometry/geography Z, M, ZM e geography FullGlobe;
+13. `geometry` e `geography` XY, XYZ, XYM e XYZM come GeoArrow WKB con SRID
+    e dimensioni preservati;
+14. rifiuto fail-closed di SRID o profili dimensionali misti e di geography
+    FullGlobe;
 15. quarantena della connessione dopo drop di uno stream non drenato;
 16. prepared write TDS di tutti i tipi della fixture, inclusi UUID/XML,
     decimal, temporali, geometry e geography;
@@ -115,8 +116,8 @@ La suite live seriale ha verificato:
 43. `create` e `replace` sui 19 tipi del profilo di riferimento, inclusi
     decimal/money, temporali, UUID/XML, collation, geometry e geography, con
     dichiarazioni native rilette dal catalogo identiche a quelle sorgenti.
-44. input EWKB Z, M e ZM per geometry e geography rifiutati prima di modificare
-    il target, con conteggio server invariato;
+44. roundtrip WKB ISO Z, M e ZM per geometry e geography con metadati
+    dimensionali e byte WKB preservati;
 45. CA privata accettata con hostname matching, mismatch rifiutato, rotazione
     del certificato server con CA stabile e riconnessione verificata.
 
@@ -126,7 +127,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **30 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **31 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -137,8 +138,7 @@ Questa prova non dimostra ancora:
 - `QueryOperation` lateral/APPLY, locking, output spatial UDT nudo e forme
   calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;
-- supporto lossless ai profili spatial Z/M/ZM e `FullGlobe` (il rifiuto è
-  provato);
+- supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
 - altre build SQL Server e Azure SQL.
 
