@@ -1,0 +1,122 @@
+{
+  "manifest_version": 1,
+  "component": "plenora-database-tools",
+  "component_version": "0.1.0-rc.1",
+  "status": "rc1_candidate_blocked",
+  "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+  "verification_claim": "verified_internally",
+  "independent_review": false,
+  "claims": {
+    "component_rc": false,
+    "system_rc": false,
+    "avionic_certification": false
+  },
+  "candidate": {
+    "decision": "blocked",
+    "code_freeze": true,
+    "baseline_note": "La revisione e la baseline tecnica congelata. Ogni modifica al codice di produzione richiede una nuova baseline e la ripetizione delle evidenze applicabili."
+  },
+  "scope": {
+    "included_reference_profiles": [
+      "PostgreSQL 16 con PostGIS 3.4",
+      "SQL Server 2022 Developer 16.0.4255.1 con compatibility level 160",
+      "SQL Server geometry/geography XY con SRID esplicito"
+    ],
+    "release_label_note": "0.1.0-rc.1 e l'identificatore del candidato; i crate restano a 0.1.0 finche la revisione indipendente non autorizza la preparazione del tag."
+  },
+  "evidence": [
+    {
+      "id": "postgres_reference",
+      "status": "passed",
+      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+      "run_id": 30529617537,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617537",
+      "result": "Gate PostgreSQL 16/PostGIS 3.4 live superato."
+    },
+    {
+      "id": "sqlserver_reference",
+      "status": "passed",
+      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+      "run_id": 30529617590,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617590",
+      "result": "28/28 prove live SQL Server, 49 prove offline e Clippy superati."
+    },
+    {
+      "id": "workspace_coverage",
+      "status": "passed",
+      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+      "run_id": 30542814028,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30542814028",
+      "result": "Soglie di coverage di produzione superate: linee 80%, funzioni 79%, regioni 77%."
+    },
+    {
+      "id": "release_manifest",
+      "status": "passed",
+      "revision": "29cd9d0e1496989265dde238f9f3c6870f602eac",
+      "run_id": 30529617743,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30529617743",
+      "result": "Gate C1-C4 superato senza errori; gli avvisi riguardano revisioni di repository esterni."
+    }
+  ],
+  "component_rc_blockers": [
+    {
+      "id": "PLN-DB-REVIEW",
+      "description": "La baseline non e stata esaminata da un revisore indipendente eleggibile.",
+      "exit_condition": "Registrare identita e indipendenza del revisore, baseline esatta, comandi, rilievi, loro chiusura ed esito finale."
+    }
+  ],
+  "external_dependencies": [
+    {
+      "id": "PLN-DB-R46",
+      "owner": "plenora-contracts",
+      "description": "R4.6, che separa rilevazione delle incoerenze CRS e policy per ruolo, e ancora proposta.",
+      "exit_condition": "Ratifica di R4.6 prima dell'adozione del validatore trasversale.",
+      "component_rc_effect": "Non blocca la RC del componente nel perimetro dichiarato; blocca l'estrazione e l'adozione trasversale."
+    },
+    {
+      "id": "PLN-DB-R153",
+      "owner": "plenora-contracts",
+      "description": "La sezione 15.3 sul crate normativo condiviso e ancora proposta.",
+      "exit_condition": "Ratifica della sezione 15.3 e pubblicazione di una baseline consumabile.",
+      "component_rc_effect": "Non blocca la RC del componente nel perimetro dichiarato; blocca la convergenza dei contratti fra componenti."
+    },
+    {
+      "id": "PLN-DB-SYSTEM",
+      "owner": "plenora-contracts/conformance",
+      "description": "La qualifica dell'intero sistema non e soddisfatta; il risultato database-tools e arrow_to_contract e non dimostra preservazione arrow_to_arrow.",
+      "exit_condition": "Qualifica esterna completa delle direzioni e delle proprieta richieste.",
+      "component_rc_effect": "Non blocca la RC del componente secondo C3; impedisce qualsiasi claim di system RC."
+    }
+  ],
+  "declared_scope_reductions": [
+    {
+      "area": "sqlserver_version_matrix",
+      "scope": "SQL Server 2019, SQL Server 2025 e Azure SQL non sono qualificati ne coperti.",
+      "runtime_policy": "Nessuna capability o compatibilita implicita oltre SQL Server 2022/compatibility level 160.",
+      "exit_condition": "Campagna live equivalente su ogni piattaforma aggiunta, con build riproducibile."
+    },
+    {
+      "area": "sqlserver_spatial_dimensions",
+      "scope": "geometry/geography Z, M, ZM e FullGlobe non sono supportati.",
+      "runtime_policy": "Rifiuto fail-closed; nessuna riduzione silenziosa a XY.",
+      "exit_condition": "Contratto dimensionale ratificato, codec senza perdita e prove live positive e negative."
+    },
+    {
+      "area": "sqlserver_private_ca",
+      "scope": "La catena TLS positiva con CA privata e hostname matching non e qualificata.",
+      "runtime_policy": "La verifica del certificato resta il default; TrustServerCertificate richiede opt-out esplicito.",
+      "exit_condition": "Fixture CA privata riproducibile con casi hostname positivi e negativi e rotazione del certificato."
+    },
+    {
+      "area": "sqlserver_extended_catalog",
+      "scope": "Temporal, graph, external table e catalogo partizioni esteso non sono coperti.",
+      "runtime_policy": "Nessuna capability avanzata implicita.",
+      "exit_condition": "Inventario, implementazione fail-closed e campagna live dedicata per ogni famiglia aggiunta."
+    }
+  ],
+  "release_action": {
+    "allowed": false,
+    "tag": null,
+    "reason": "La revisione indipendente e l'unico blocker della RC di componente."
+  }
+}

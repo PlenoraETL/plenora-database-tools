@@ -65,6 +65,17 @@ python scripts\check_release_manifest.py --repo . release\development.json
 python scripts\test_check_release_manifest.py
 ```
 
+La baseline tecnica proposta per RC1, ancora bloccata dalla revisione
+indipendente, è descritta in
+[`docs/RC1-READINESS.md`](docs/RC1-READINESS.md) e registrata nel manifesto
+[`release/rc1-readiness.json`](release/rc1-readiness.json). Il gate dedicato
+impedisce claim prematuri e divergenze fra baseline ed evidenze:
+
+```powershell
+python scripts\check_rc1_readiness.py --repo . release\rc1-readiness.json
+python scripts\test_check_rc1_readiness.py
+```
+
 Il comando valida sorgenti, JSON Schema, esempi, golden cases, manifest,
 documentazione, rustfmt, Clippy, test Python/Rust e CLI. Non apre connessioni
 database.
