@@ -1,0 +1,111 @@
+name: SQL Server assurance
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/sqlserver-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "crates/plenora-database-sql/**"
+      - "crates/plenora-database-testkit/**"
+      - "crates/plenora-db-sqlserver/**"
+      - "docker-compose.sqlserver.yml"
+      - "docker/sqlserver/init/**"
+      - "scripts/check_sqlserver_reference.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlserver-assurance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sqlserver:
+    name: SQL Server 2022 reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.92.0
+      PLENORA_SQLSERVER_GATE_HOST_CARGO: "1"
+      PLENORA_SQLSERVER_HOST: 127.0.0.1
+      PLENORA_SQLSERVER_DATABASE: dataflow_test
+      PLENORA_SQLSERVER_USER: dataflow
+      PLENORA_SQLSERVER_PASSWORD: DataFlow_Test_2026!
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Validate and start the pinned reference
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.sqlserver.yml config --quiet
+          docker compose -f docker-compose.sqlserver.yml up -d --wait
+          test "$(docker wait dataflow-sqlserver-init)" = "0"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+            --profile minimal \
+            --component clippy
+
+      - name: Run the SQL Server reference gate
+        run: |
+          python3 scripts/check_sqlserver_reference.py 2>&1 \
+            | tee assurance-results/sqlserver-reference.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/sqlserver-reference.log \
+            assurance-results/sqlserver-reference.json
+
+      - name: Record reproducibility identities
+        run: |
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            rustc --version --verbose
+            cargo --version --verbose
+            docker --version
+            docker compose version
+            docker image inspect \
+              mcr.microsoft.com/mssql/server@sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56 \
+              --format '{{.Id}} {{json .RepoDigests}}'
+          } | tee assurance-results/sqlserver-environment.txt
+
+      - name: Verify the candidate remained unchanged
+        run: git diff --exit-code -- .
+
+      - name: Capture diagnostics
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/sqlserver-containers.txt
+          docker compose -f docker-compose.sqlserver.yml logs --no-color \
+            > assurance-results/sqlserver-compose.log 2>&1 || true
+
+      - name: Preserve assurance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sqlserver-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Stop SQL Server and remove ephemeral volumes
+        if: always()
+        run: |
+          docker compose -f docker-compose.sqlserver.yml down --volumes \
+            --remove-orphans || true
