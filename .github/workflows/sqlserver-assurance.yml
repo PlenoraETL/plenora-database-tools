@@ -17,7 +17,12 @@ on:
       - "crates/plenora-db-sqlserver/**"
       - "docker-compose.sqlserver.yml"
       - "docker/sqlserver/init/**"
+      - "docker/sqlserver/tls/**"
       - "scripts/check_sqlserver_reference.py"
+      - "scripts/check_sqlserver_performance.py"
+      - "benchmarks/manifests/sqlserver-performance-reference.json"
+      - "benchmarks/baseline/sqlserver-performance-budget.json"
+      - "benchmarks/baseline/sqlserver2022-performance-reference.json"
   workflow_dispatch:
 
 permissions:
@@ -69,6 +74,14 @@ jobs:
             'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
             assurance-results/sqlserver-reference.log \
             assurance-results/sqlserver-reference.json
+
+      - name: Run the SQL Server performance budget and comparable-baseline gate
+        run: |
+          python3 -m unittest tests.test_sqlserver_performance
+          python3 scripts/check_sqlserver_performance.py \
+            --baseline benchmarks/baseline/sqlserver2022-performance-reference.json \
+            --output assurance-results/sqlserver-performance.json 2>&1 \
+            | tee assurance-results/sqlserver-performance.log
 
       - name: Record reproducibility identities
         run: |

@@ -268,15 +268,25 @@ def main() -> int:
             failures.append(f"{label}: errori inattesi {errors}")
         elif expected is not None and not any(expected in error for error in errors):
             failures.append(f"{label}: atteso {expected!r}, ottenuto {errors}")
+    ready = deepcopy(base)
+    ready["status"] = "rc1_candidate_ready"
+    ready["candidate"]["decision"] = "ready"
+    ready["release_action"]["tag_created"] = False
     with patch.object(gate, "production_tree_matches", return_value=False):
-        errors = gate.check(base, ROOT)
+        errors = gate.check(ready, ROOT)
     if not any("percorsi di produzione divergono" in error for error in errors):
-        failures.append(f"freeze divergente: errore non rilevato {errors}")
+        failures.append(f"freeze pre-tag divergente: errore non rilevato {errors}")
+    with patch.object(gate, "production_tree_matches", return_value=False):
+        tagged_errors = gate.check(base, ROOT)
+    if any("percorsi di produzione divergono" in error for error in tagged_errors):
+        failures.append(
+            f"freeze post-tag applicato al checkout corrente: {tagged_errors}"
+        )
     with patch.object(gate, "workspace_versions_match", return_value=False):
         errors = gate.check(base, ROOT)
     if not any("tutti i crate e Cargo.lock" in error for error in errors):
         failures.append(f"versione workspace divergente: errore non rilevato {errors}")
-    total = len(cases) + 2
+    total = len(cases) + 3
     print(f"{total - len(failures)}/{total} verifiche superate")
     for failure in failures:
         print(f"FALLITO {failure}")

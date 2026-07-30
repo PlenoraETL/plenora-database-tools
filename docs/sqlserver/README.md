@@ -65,11 +65,12 @@ Errori di caricamento o pre-commit ripristinano il target originale senza
 oggetti residui; una conferma di commit persa resta `OutcomeUnknown`. I
 risultati spatial non convertiti esplicitamente in WKB, i lateral join, il
 locking e le forme prive di un nome output deterministico restano fail-closed.
-L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). Servono ancora
-certificati verificabili,
-latenza/packet loss su read e rollback, oltre ai profili spatial avanzati. La
+L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). La baseline post-RC1
+copre anche CA privata, hostname e rotazione; restano latenza/packet loss su
+read e rollback, oltre al supporto lossless dei profili spatial avanzati. La
 matrice completa è in [CAPABILITY-MATRIX.md](CAPABILITY-MATRIX.md).
 La campagna cumulativa di coverage è descritta in
 [COVERAGE.md](COVERAGE.md).
 Il gate autonomo con evidenza riproducibile è descritto in
 [ASSURANCE.md](ASSURANCE.md).
+La baseline di regressione è descritta in [PERFORMANCE.md](PERFORMANCE.md).

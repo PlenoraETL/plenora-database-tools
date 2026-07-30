@@ -1,5 +1,6 @@
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tiberius::{AuthMethod, Config, EncryptionLevel};
 
@@ -23,6 +24,7 @@ pub struct SqlServerConfig {
     password: SecretString,
     application_name: String,
     certificate_policy: CertificatePolicy,
+    private_ca_certificate: Option<PathBuf>,
     connect_timeout: Duration,
     operation_timeout: Duration,
     acquire_timeout: Duration,
@@ -39,6 +41,7 @@ impl std::fmt::Debug for SqlServerConfig {
             .field("password", &"[REDACTED]")
             .field("application_name", &self.application_name)
             .field("certificate_policy", &self.certificate_policy)
+            .field("private_ca_certificate", &self.private_ca_certificate)
             .field("connect_timeout", &self.connect_timeout)
             .field("operation_timeout", &self.operation_timeout)
             .field("acquire_timeout", &self.acquire_timeout)
@@ -62,6 +65,7 @@ impl SqlServerConfig {
             password,
             application_name: "plenora-database-tools".to_owned(),
             certificate_policy: CertificatePolicy::Verify,
+            private_ca_certificate: None,
             connect_timeout: Duration::from_secs(10),
             operation_timeout: Duration::from_secs(30),
             acquire_timeout: Duration::from_secs(10),
@@ -83,6 +87,17 @@ impl SqlServerConfig {
     #[must_use]
     pub const fn with_certificate_policy(mut self, policy: CertificatePolicy) -> Self {
         self.certificate_policy = policy;
+        self
+    }
+
+    /// Aggiunge una singola CA privata alla trust store della connessione.
+    ///
+    /// La verifica della catena e del nome host resta obbligatoria. Il file
+    /// deve essere una CA PEM, CRT o DER leggibile; non è compatibile con
+    /// [`CertificatePolicy::TrustServerCertificate`].
+    #[must_use]
+    pub fn with_private_ca_certificate(mut self, path: impl Into<PathBuf>) -> Self {
+        self.private_ca_certificate = Some(path.into());
         self
     }
 
@@ -127,6 +142,11 @@ impl SqlServerConfig {
     #[must_use]
     pub const fn certificate_policy(&self) -> CertificatePolicy {
         self.certificate_policy
+    }
+
+    #[must_use]
+    pub fn private_ca_certificate(&self) -> Option<&Path> {
+        self.private_ca_certificate.as_deref()
     }
 
     #[must_use]
@@ -176,6 +196,34 @@ impl SqlServerConfig {
                 "configurazione SQL Server: timeout nullo",
             ));
         }
+        if let Some(path) = &self.private_ca_certificate {
+            if self.certificate_policy == CertificatePolicy::TrustServerCertificate {
+                return Err(invalid_configuration(
+                    "configurazione SQL Server: CA privata incompatibile con TrustServerCertificate",
+                ));
+            }
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase);
+            if !matches!(extension.as_deref(), Some("pem" | "crt" | "der")) {
+                return Err(invalid_configuration(
+                    "configurazione SQL Server: estensione CA privata non supportata",
+                ));
+            }
+            let metadata = std::fs::File::open(path)
+                .and_then(|file| file.metadata())
+                .map_err(|_| {
+                    invalid_configuration(
+                        "configurazione SQL Server: file CA privata assente o non leggibile",
+                    )
+                })?;
+            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1_048_576 {
+                return Err(invalid_configuration(
+                    "configurazione SQL Server: file CA privata vuoto o oltre 1 MiB",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -193,6 +241,8 @@ impl SqlServerConfig {
         config.encryption(EncryptionLevel::Required);
         if self.certificate_policy == CertificatePolicy::TrustServerCertificate {
             config.trust_cert();
+        } else if let Some(path) = &self.private_ca_certificate {
+            config.trust_cert_ca(path.to_string_lossy());
         }
         Ok(config)
     }
@@ -261,5 +311,62 @@ mod tests {
             CertificatePolicy::TrustServerCertificate
         );
         unsafe_config.driver_config().expect("valid driver config");
+    }
+
+    #[test]
+    fn private_ca_requires_a_readable_supported_file() {
+        let missing = std::env::temp_dir().join(format!(
+            "plenora-sqlserver-missing-ca-{}.pem",
+            std::process::id()
+        ));
+        let error = config("secret")
+            .with_private_ca_certificate(&missing)
+            .validate()
+            .expect_err("missing private CA must fail before network I/O");
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+
+        let empty = std::env::temp_dir().join(format!(
+            "plenora-sqlserver-empty-ca-{}.pem",
+            std::process::id()
+        ));
+        std::fs::write(&empty, []).expect("write empty CA fixture");
+        let error = config("secret")
+            .with_private_ca_certificate(&empty)
+            .validate()
+            .expect_err("empty private CA must fail before network I/O");
+        std::fs::remove_file(&empty).expect("remove empty CA fixture");
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+
+        let unsupported =
+            std::env::temp_dir().join(format!("plenora-sqlserver-ca-{}.txt", std::process::id()));
+        std::fs::write(&unsupported, b"not-a-certificate").expect("write unsupported CA fixture");
+        let error = config("secret")
+            .with_private_ca_certificate(&unsupported)
+            .validate()
+            .expect_err("unsupported private CA extension");
+        std::fs::remove_file(&unsupported).expect("remove unsupported CA fixture");
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+    }
+
+    #[test]
+    fn private_ca_cannot_disable_certificate_verification() {
+        let fixture = std::env::temp_dir().join(format!(
+            "plenora-sqlserver-private-ca-{}.pem",
+            std::process::id()
+        ));
+        std::fs::write(&fixture, b"test-only-ca").expect("write private CA fixture");
+        let verified = config("secret").with_private_ca_certificate(&fixture);
+        assert_eq!(verified.private_ca_certificate(), Some(fixture.as_path()));
+        verified
+            .driver_config()
+            .expect("private CA verification config");
+
+        let unsafe_config =
+            verified.with_certificate_policy(CertificatePolicy::TrustServerCertificate);
+        let error = unsafe_config
+            .validate()
+            .expect_err("private CA and trust-all must be mutually exclusive");
+        std::fs::remove_file(&fixture).expect("remove private CA fixture");
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
     }
 }

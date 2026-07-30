@@ -27,7 +27,7 @@ use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
     RetryDisposition,
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tiberius::Query;
@@ -52,6 +52,19 @@ fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
     SqlServerConfig::new(host, database, username, SecretString::new(password))
         .with_certificate_policy(policy)
+}
+
+fn private_ca_live_config(host: String) -> SqlServerConfig {
+    let database =
+        std::env::var("PLENORA_SQLSERVER_DATABASE").unwrap_or_else(|_| "dataflow_test".to_owned());
+    let username =
+        std::env::var("PLENORA_SQLSERVER_USER").unwrap_or_else(|_| "dataflow".to_owned());
+    let password = std::env::var("PLENORA_SQLSERVER_PASSWORD")
+        .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
+    let ca = std::env::var_os("PLENORA_SQLSERVER_PRIVATE_CA")
+        .expect("PLENORA_SQLSERVER_PRIVATE_CA required for the private CA campaign");
+    SqlServerConfig::new(host, database, username, SecretString::new(password))
+        .with_private_ca_certificate(ca)
 }
 
 fn live_secret() -> SecretString {
@@ -1029,6 +1042,26 @@ async fn live_self_signed_tls_is_rejected_by_default() {
 }
 
 #[tokio::test]
+#[ignore = "richiede la fixture SQL Server live con CA privata"]
+async fn live_private_ca_tls_validates_chain_and_hostname() {
+    let cancellation = CancellationToken::new();
+    let verified_host =
+        std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".to_owned());
+    let verified = SqlServerSession::open(&private_ca_live_config(verified_host), &cancellation)
+        .await
+        .expect("private CA chain and matching hostname must be accepted");
+    assert!(verified.is_reusable());
+    drop(verified);
+
+    let mismatch_host = std::env::var("PLENORA_SQLSERVER_MISMATCH_HOST")
+        .unwrap_or_else(|_| "sqlserver-hostname-mismatch".to_owned());
+    let error = SqlServerSession::open(&private_ca_live_config(mismatch_host), &cancellation)
+        .await
+        .expect_err("private CA must not bypass hostname verification");
+    assert_eq!(error.category, ErrorCategory::Authentication);
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture"]
 async fn live_schema_token_detects_ddl() {
     let cancellation = CancellationToken::new();
@@ -1175,7 +1208,8 @@ async fn live_drop_of_partial_stream_quarantines_connection() {
 
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
-async fn live_spatial_preflight_rejects_mixed_srid_and_z() {
+#[allow(clippy::too_many_lines)]
+async fn live_spatial_preflight_rejects_mixed_srid_z_m_zm_and_fullglobe() {
     let cancellation = CancellationToken::new();
     let config = live_config(CertificatePolicy::TrustServerCertificate);
     let mut admin = SqlServerSession::open(&config, &cancellation)
@@ -1187,7 +1221,8 @@ IF OBJECT_ID(N'plenora_test.spatial_guard_probe', N'U') IS NOT NULL
 CREATE TABLE [plenora_test].[spatial_guard_probe]
 (
     [id] int NOT NULL PRIMARY KEY,
-    [shape] geometry NOT NULL
+    [shape] geometry NULL,
+    [position] geography NULL
 );
 ";
     admin
@@ -1197,7 +1232,7 @@ CREATE TABLE [plenora_test].[spatial_guard_probe]
     admin
         .execute_query(
             Query::new(
-                "INSERT INTO [plenora_test].[spatial_guard_probe] VALUES \
+                "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [shape]) VALUES \
                  (1, geometry::STGeomFromText('POINT (1 2)', 4326)), \
                  (2, geometry::STGeomFromText('POINT (1 2)', 3857));",
             ),
@@ -1223,32 +1258,73 @@ CREATE TABLE [plenora_test].[spatial_guard_probe]
     };
     assert_eq!(mixed_error.category, ErrorCategory::DataMapping);
 
-    admin
-        .execute_query(
-            Query::new(
-                "TRUNCATE TABLE [plenora_test].[spatial_guard_probe]; \
-                 INSERT INTO [plenora_test].[spatial_guard_probe] VALUES \
-                 (1, geometry::STGeomFromText('POINT (1 2 3)', 4326));",
-            ),
-            ErrorPhase::Write,
+    for (label, insert) in [
+        (
+            "geometry Z",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [shape]) VALUES \
+             (1, geometry::STGeomFromText('POINT (1 2 3)', 4326));",
+        ),
+        (
+            "geometry M",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [shape]) VALUES \
+             (1, geometry::STGeomFromText('POINT (1 2 NULL 4)', 4326));",
+        ),
+        (
+            "geometry ZM",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [shape]) VALUES \
+             (1, geometry::STGeomFromText('POINT (1 2 3 4)', 4326));",
+        ),
+        (
+            "geography Z",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [position]) VALUES \
+             (1, geography::STGeomFromText('POINT (1 2 3)', 4326));",
+        ),
+        (
+            "geography M",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [position]) VALUES \
+             (1, geography::STGeomFromText('POINT (1 2 NULL 4)', 4326));",
+        ),
+        (
+            "geography ZM",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [position]) VALUES \
+             (1, geography::STGeomFromText('POINT (1 2 3 4)', 4326));",
+        ),
+        (
+            "geography FullGlobe",
+            "INSERT INTO [plenora_test].[spatial_guard_probe] ([id], [position]) VALUES \
+             (1, geography::STGeomFromText('FULLGLOBE', 4326));",
+        ),
+    ] {
+        admin
+            .execute_query(
+                Query::new(format!(
+                    "TRUNCATE TABLE [plenora_test].[spatial_guard_probe]; {insert}"
+                )),
+                ErrorPhase::Write,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} fixture: {error}"));
+        let budget = ResourceBudget::new(ResourceLimits::default())
+            .unwrap_or_else(|error| panic!("{label} budget: {error}"));
+        let Err(error) = read_object(
+            &pool,
+            "plenora_test",
+            "spatial_guard_probe",
+            2,
+            &budget,
             &cancellation,
         )
         .await
-        .expect("Z fixture");
-    let budget = ResourceBudget::new(ResourceLimits::default()).expect("second budget");
-    let Err(z_error) = read_object(
-        &pool,
-        "plenora_test",
-        "spatial_guard_probe",
-        2,
-        &budget,
-        &cancellation,
-    )
-    .await
-    else {
-        panic!("Z geometry must fail closed");
-    };
-    assert_eq!(z_error.category, ErrorCategory::Unsupported);
+        else {
+            panic!("{label} must fail closed");
+        };
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{label} rejected with the wrong category"
+        );
+    }
     admin
         .execute_query(
             Query::new("DROP TABLE [plenora_test].[spatial_guard_probe];"),
@@ -1257,6 +1333,94 @@ CREATE TABLE [plenora_test].[spatial_guard_probe]
         )
         .await
         .expect("cleanup spatial guard");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+async fn live_spatial_write_rejects_z_m_and_zm_before_mutation() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let pool = SqlServerPool::new(config.clone(), 1).expect("pool");
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin session");
+
+    for semantics in ["geometry", "geography"] {
+        admin
+            .execute_query(
+                Query::new(format!(
+                    "DROP TABLE IF EXISTS [plenora_test].[spatial_write_guard]; \
+                     CREATE TABLE [plenora_test].[spatial_write_guard] \
+                     ([shape] {semantics} NULL);"
+                )),
+                ErrorPhase::Write,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics} target fixture: {error}"));
+        let schema = spatial_write_schema(semantics);
+
+        for (dimensions, type_code, coordinates) in [
+            ("Z", 0x8000_0001_u32, &[1.0_f64, 2.0, 3.0][..]),
+            ("M", 0x4000_0001_u32, &[1.0_f64, 2.0, 4.0][..]),
+            ("ZM", 0xC000_0001_u32, &[1.0_f64, 2.0, 3.0, 4.0][..]),
+        ] {
+            let budget =
+                ResourceBudget::new(ResourceLimits::default()).expect("write guard budget");
+            let prepared = prepare_write(
+                &pool,
+                &write_operation("spatial_write_guard", WriteMode::Append),
+                Arc::clone(&schema),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("prepare {semantics} {dimensions} write guard: {error}")
+            });
+            let value = ewkb_point(type_code, coordinates);
+            let batch = spatial_write_batch(Arc::clone(&schema), &value);
+            let error = write_prepared(
+                prepared,
+                Box::new(VecBatchStream {
+                    schema: Arc::clone(&schema),
+                    batches: VecDeque::from([batch]),
+                }),
+                &cancellation,
+            )
+            .await
+            .expect_err("dimensional spatial write must fail closed");
+            assert_eq!(
+                error.category,
+                ErrorCategory::DataMapping,
+                "{semantics} {dimensions} rejected with the wrong category"
+            );
+
+            let results = admin
+                .execute_query(
+                    Query::new("SELECT COUNT_BIG(*) FROM [plenora_test].[spatial_write_guard];"),
+                    ErrorPhase::Probe,
+                    &cancellation,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("verify {semantics} {dimensions} target: {error}"));
+            assert_eq!(
+                results[0][0]
+                    .try_get::<i64, _>(0)
+                    .expect("spatial write guard count type"),
+                Some(0),
+                "{semantics} {dimensions} modified the target"
+            );
+        }
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[spatial_write_guard];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup spatial write guard");
 }
 
 #[tokio::test]
@@ -3137,6 +3301,53 @@ fn guard_schema() -> SchemaRef {
         Field::new("id", DataType::Int32, false),
         Field::new("label", DataType::Utf8, false),
     ]))
+}
+
+fn spatial_write_schema(semantics: &str) -> SchemaRef {
+    let metadata = HashMap::from([
+        (
+            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+            "geoarrow.wkb".to_owned(),
+        ),
+        (protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned()),
+        (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
+        (
+            protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+            "mixed".to_owned(),
+        ),
+        (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
+        (
+            protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+            semantics.to_owned(),
+        ),
+        (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+        (
+            protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+            "declared_unresolved".to_owned(),
+        ),
+    ]);
+    Arc::new(Schema::new_with_metadata(
+        vec![Field::new("shape", DataType::Binary, true).with_metadata(metadata)],
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+}
+
+fn ewkb_point(type_code: u32, coordinates: &[f64]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(5 + std::mem::size_of_val(coordinates));
+    value.push(1);
+    value.extend_from_slice(&type_code.to_le_bytes());
+    for coordinate in coordinates {
+        value.extend_from_slice(&coordinate.to_le_bytes());
+    }
+    value
+}
+
+fn spatial_write_batch(schema: SchemaRef, value: &[u8]) -> RecordBatch {
+    RecordBatch::try_new(schema, vec![Arc::new(BinaryArray::from(vec![Some(value)]))])
+        .expect("spatial write guard batch")
 }
 
 async fn normalize_guard_fixture(admin: &mut SqlServerSession, cancellation: &CancellationToken) {

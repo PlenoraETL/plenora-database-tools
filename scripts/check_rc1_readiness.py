@@ -269,6 +269,12 @@ def check(document: dict, repository: Path) -> list[str]:
             errors.append(
                 "il rebaseline pending deve contenere soltanto il delta SemVer Cargo"
             )
+    elif decision == "tagged":
+        # Dopo la creazione del tag la baseline è l'oggetto Git immutabile,
+        # verificato più sotto insieme a target e tag annotato. Pretendere che
+        # HEAD resti byte-identico renderebbe impossibile qualsiasi sviluppo
+        # post-RC e confonderebbe il freeze del candidato col freeze del repo.
+        pass
     elif not production_tree_matches(repository, revision):
         errors.append("i percorsi di produzione divergono dalla baseline congelata")
 
