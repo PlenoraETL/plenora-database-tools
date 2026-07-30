@@ -38,6 +38,8 @@ jobs:
       PLENORA_SQLSERVER_USER: dataflow
       PLENORA_SQLSERVER_PASSWORD: DataFlow_Test_2026!
       PLENORA_SQLSERVER_SA_PASSWORD: DataFlow_Test_2026!
+      PLENORA_SQLSERVER_PRIVATE_CA: ${{ github.workspace }}/assurance-results/sqlserver-private-ca.pem
+      PLENORA_SQLSERVER_MISMATCH_HOST: 127.0.0.2
       PRODUCTION_IGNORE_REGEX: '(^|/)(plenora-database-cli/src/main\.rs|plenora-db-postgres/src/test_suite\.rs)$'
 
     defaults:
@@ -55,6 +57,10 @@ jobs:
           docker compose -f docker-compose.postgres.yml up -d --wait
           docker compose -f docker-compose.sqlserver.yml up -d --wait
           test "$(docker wait dataflow-sqlserver-init)" = "0"
+          mkdir -p assurance-results
+          docker cp \
+            dataflow-sqlserver:/var/opt/mssql/tls/ca.pem \
+            "$PLENORA_SQLSERVER_PRIVATE_CA"
 
       - name: Install the pinned coverage toolchain
         run: |
