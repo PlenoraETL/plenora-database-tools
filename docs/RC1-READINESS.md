@@ -67,8 +67,25 @@ Restano fuori dal candidato:
 - catena TLS positiva con CA privata e hostname matching;
 - catalogo esteso temporal, graph, external table e partizioni.
 
-Il manifesto conserva per ciascun punto la policy runtime e la condizione
-d'uscita. L'assenza di supporto non deve diventare accettazione silenziosa.
+Il manifesto conserva per ciascun punto la policy runtime, la condizione
+d'uscita e una distinzione obbligatoria fra:
+
+- `verified_live`: comportamento esercitato da un test nominato in una specifica
+  evidenza live;
+- `declared_not_verified_live`: requisito o riduzione dichiarata che la campagna
+  live corrente non dimostra.
+
+La copertura spaziale negativa è deliberatamente descritta come parziale. La
+campagna live prova soltanto che una `geometry Z` viene rifiutata sul bordo di
+lettura senza essere appiattita a XY. Il rifiuto di `geography Z`, degli altri
+bordi Z, di M, ZM e `FullGlobe` resta dichiarato ma non verificato live. Allo
+stesso modo, il riferimento prova SQL Server 2022/compatibility level 160, non
+le piattaforme escluse; prova il rifiuto del certificato self-signed sotto
+`Verify` e l'opt-out esplicito, non una catena positiva con CA privata.
+
+Il catalogo esteso è `declared_only`: nessuna delle quattro famiglie escluse è
+presentata come provata. L'assenza di supporto non deve diventare accettazione
+silenziosa, ma la policy dichiarata non viene confusa con un'evidenza.
 
 ## Regola di congelamento
 

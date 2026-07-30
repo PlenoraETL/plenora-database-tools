@@ -3,7 +3,8 @@
 
 Questo gate non sostituisce la revisione indipendente. Impedisce invece che un
 candidato bloccato venga presentato come RC, che l'evidenza punti a revisioni
-diverse dalla baseline o che una riduzione di scope sparisca dal manifesto.
+diverse dalla baseline, che una riduzione di scope sparisca dal manifesto o che
+un requisito soltanto dichiarato venga presentato come verificato live.
 """
 
 from __future__ import annotations
@@ -32,6 +33,49 @@ REQUIRED_SCOPE_REDUCTIONS = {
     "sqlserver_spatial_dimensions",
     "sqlserver_private_ca",
     "sqlserver_extended_catalog",
+}
+EXPECTED_ASSURANCE_STATUS = {
+    "sqlserver_version_matrix": "partially_verified_live",
+    "sqlserver_spatial_dimensions": "partially_verified_live",
+    "sqlserver_private_ca": "partially_verified_live",
+    "sqlserver_extended_catalog": "declared_only",
+}
+REQUIRED_UNVERIFIED_CLAIMS = {
+    "sqlserver_version_matrix": {
+        "sqlserver_2019",
+        "sqlserver_2025",
+        "azure_sql",
+    },
+    "sqlserver_spatial_dimensions": {
+        "spatial_z_other_paths",
+        "spatial_m",
+        "spatial_zm",
+        "spatial_fullglobe",
+    },
+    "sqlserver_private_ca": {
+        "private_ca_positive_chain",
+        "private_ca_hostname_cases",
+        "private_ca_rotation",
+    },
+    "sqlserver_extended_catalog": {
+        "temporal_catalog",
+        "graph_catalog",
+        "external_table_catalog",
+        "partition_catalog",
+    },
+}
+REQUIRED_VERIFIED_TESTS = {
+    "sqlserver_version_matrix": {
+        "live_reference_probe_and_catalog",
+    },
+    "sqlserver_spatial_dimensions": {
+        "live_spatial_preflight_rejects_mixed_srid_and_z",
+    },
+    "sqlserver_private_ca": {
+        "live_reference_probe_and_catalog",
+        "live_self_signed_tls_is_rejected_by_default",
+    },
+    "sqlserver_extended_catalog": set(),
 }
 FROZEN_PATHS = (
     ".github/workflows",
@@ -212,6 +256,100 @@ def check(document: dict, repository: Path) -> list[str]:
         for field in ("scope", "runtime_policy", "exit_condition"):
             if not reduction.get(field):
                 errors.append(f"riduzione {area} senza {field}")
+        assurance = reduction.get("assurance")
+        if not isinstance(assurance, dict):
+            errors.append(f"riduzione {area} senza assurance")
+            continue
+        expected_status = EXPECTED_ASSURANCE_STATUS.get(area)
+        status = assurance.get("status")
+        if status != expected_status:
+            errors.append(
+                f"riduzione {area} con assurance.status {status!r}; "
+                f"atteso {expected_status!r}"
+            )
+
+        verified = assurance.get("verified_live")
+        if not isinstance(verified, list):
+            errors.append(f"riduzione {area}: verified_live deve essere una lista")
+            verified = []
+        if status == "partially_verified_live" and not verified:
+            errors.append(f"riduzione {area} senza prove verified_live")
+        if status == "declared_only" and verified:
+            errors.append(
+                f"riduzione {area} declared_only non puo avere prove verified_live"
+            )
+        verified_tests: set[str] = set()
+        for index, claim in enumerate(verified):
+            if not isinstance(claim, dict):
+                errors.append(
+                    f"riduzione {area}: verified_live[{index}] deve essere un oggetto"
+                )
+                continue
+            for field in ("claim", "evidence_id", "test"):
+                if not claim.get(field):
+                    errors.append(
+                        f"riduzione {area}: verified_live[{index}] senza {field}"
+                    )
+            test = claim.get("test")
+            if isinstance(test, str) and test:
+                if test in verified_tests:
+                    errors.append(
+                        f"riduzione {area}: test verified_live duplicato {test}"
+                    )
+                verified_tests.add(test)
+            if claim.get("evidence_id") != "sqlserver_reference":
+                errors.append(
+                    f"riduzione {area}: verified_live[{index}] deve riferire "
+                    "sqlserver_reference"
+                )
+        missing_tests = REQUIRED_VERIFIED_TESTS.get(area, set()) - verified_tests
+        unexpected_tests = verified_tests - REQUIRED_VERIFIED_TESTS.get(area, set())
+        if missing_tests:
+            errors.append(
+                f"riduzione {area}: test verified_live mancanti: "
+                + ", ".join(sorted(missing_tests))
+            )
+        if unexpected_tests:
+            errors.append(
+                f"riduzione {area}: test verified_live inattesi: "
+                + ", ".join(sorted(unexpected_tests))
+            )
+
+        unverified = assurance.get("declared_not_verified_live")
+        if not isinstance(unverified, list):
+            errors.append(
+                f"riduzione {area}: declared_not_verified_live deve essere una lista"
+            )
+            unverified = []
+        claim_ids: set[str] = set()
+        for index, claim in enumerate(unverified):
+            if not isinstance(claim, dict):
+                errors.append(
+                    f"riduzione {area}: declared_not_verified_live[{index}] "
+                    "deve essere un oggetto"
+                )
+                continue
+            claim_id = claim.get("claim_id")
+            if not isinstance(claim_id, str) or not claim_id:
+                errors.append(
+                    f"riduzione {area}: declared_not_verified_live[{index}] "
+                    "senza claim_id"
+                )
+            elif claim_id in claim_ids:
+                errors.append(f"riduzione {area}: claim_id duplicato {claim_id}")
+            else:
+                claim_ids.add(claim_id)
+            if not claim.get("claim"):
+                errors.append(
+                    f"riduzione {area}: declared_not_verified_live[{index}] "
+                    "senza claim"
+                )
+        missing_claims = REQUIRED_UNVERIFIED_CLAIMS.get(area, set()) - claim_ids
+        if missing_claims:
+            errors.append(
+                f"riduzione {area}: claim non verificati mancanti: "
+                + ", ".join(sorted(missing_claims))
+            )
 
     evidence = keyed_items(document, "evidence", "id", errors)
     missing_evidence = REQUIRED_EVIDENCE - evidence.keys()
@@ -233,6 +371,27 @@ def check(document: dict, repository: Path) -> list[str]:
         )
         if item.get("url") != expected_url:
             errors.append(f"evidenza {identity} con URL incoerente")
+    for area, reduction in reductions.items():
+        assurance = reduction.get("assurance")
+        if not isinstance(assurance, dict):
+            continue
+        verified = assurance.get("verified_live")
+        if not isinstance(verified, list):
+            continue
+        for index, claim in enumerate(verified):
+            if not isinstance(claim, dict):
+                continue
+            evidence_id = claim.get("evidence_id")
+            if evidence_id not in evidence:
+                errors.append(
+                    f"riduzione {area}: verified_live[{index}] riferisce "
+                    f"evidenza assente {evidence_id!r}"
+                )
+            elif evidence[evidence_id].get("status") != "passed":
+                errors.append(
+                    f"riduzione {area}: verified_live[{index}] riferisce "
+                    f"evidenza non passed {evidence_id!r}"
+                )
 
     release_action = document.get("release_action")
     if not isinstance(release_action, dict):
