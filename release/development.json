@@ -3,7 +3,7 @@
   "component": "plenora-database-tools",
   "component_version": "0.1.0",
   "status": "development",
-  "revision": "9fbcda3db351836a26020544f1a6e9f4938a284d",
+  "revision": "811965ac1a24e3aae6577d4ba8d29e8ee8cff380",
   "claims": {
     "component_rc": false,
     "system_rc": false,
