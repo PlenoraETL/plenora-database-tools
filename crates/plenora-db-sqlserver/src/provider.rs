@@ -273,10 +273,10 @@ impl Provider for SqlServerProvider {
                 writes: WriteCapabilities {
                     create: false,
                     append: true,
-                    update: false,
-                    upsert: false,
+                    update: true,
+                    upsert: true,
                     replace: false,
-                    delete_by_keys: false,
+                    delete_by_keys: true,
                     bulk: true,
                     array_binding: false,
                     returning: false,

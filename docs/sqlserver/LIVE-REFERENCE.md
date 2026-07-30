@@ -99,6 +99,10 @@ La suite live seriale ha verificato:
 38. decodifica nativa esatta di `decimal`, `date`, `time`, `datetime2`,
     `datetimeoffset`, `uniqueidentifier` e `xml`, con rifiuto fail-closed di
     proiezioni calcolate senza nome.
+39. `update`, `upsert` e `delete_by_keys` parametrizzati con chiave univoca
+    verificata da catalogo, contabilizzazione distinta insert/update/delete,
+    chiavi assenti come `skipped`, rifiuto pre-mutation di target non univoci
+    e rollback del primo batch se un vincolo fallisce nel batch successivo.
 
 Comando della prova:
 
@@ -106,14 +110,14 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **23 superati, 0 falliti**.
+Esito: **24 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
 Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
-- bulk per spatial/UDT e modalità create/replace/update/upsert/delete-by-keys;
+- bulk per spatial/UDT e modalità create/replace;
 - `QueryOperation` lateral/APPLY, locking, output spatial UDT nudo e forme
   calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;

@@ -22,6 +22,7 @@ i log Compose e lo stato dei container.
 - bootstrap TDS/TLS, pool bounded e recovery;
 - read Arrow bounded, `geometry` e `geography` XY;
 - prepared write e TDS bulk differenziale;
+- update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
 - schema drift fail-closed;
 - rollback e outcome di commit incerto;
@@ -32,7 +33,7 @@ i log Compose e lo stato dei container.
 - SQL Server 2019, 2025 e Azure SQL;
 - TLS positivo con CA privata e hostname matching;
 - spatial Z/M, `FullGlobe` e AST spatial tipizzato;
-- create/replace/update/upsert/delete-by-keys;
+- create/replace;
 - catalogo temporal/graph/external e partizioni.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una

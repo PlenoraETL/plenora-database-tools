@@ -11,7 +11,7 @@ use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
 };
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub(super) struct WriteColumnPlan {
@@ -28,7 +28,9 @@ pub(super) struct WriteColumnPlan {
 pub(super) struct WritePlan {
     pub(super) input_schema: SchemaRef,
     pub(super) columns: Vec<WriteColumnPlan>,
-    pub(super) insert_sql: String,
+    pub(super) mode: WriteMode,
+    pub(super) row_sql: String,
+    pub(super) key_input_indices: Vec<usize>,
     pub(super) bulk_table: String,
     pub(super) bulk_columns_aligned: bool,
     pub(super) lock_sql: String,
@@ -104,7 +106,12 @@ impl WritePlan {
                 spatial_srid,
             });
         }
-        validate_required_target_columns(description, &columns)?;
+        if matches!(
+            operation.mode,
+            WriteMode::Append | WriteMode::TruncateInsert | WriteMode::Upsert
+        ) {
+            validate_required_target_columns(description, &columns)?;
+        }
         let parameter_count = columns.iter().try_fold(0_usize, |count, column| {
             count
                 .checked_add(if column.spatial_srid.is_some() { 2 } else { 1 })
@@ -121,28 +128,22 @@ impl WritePlan {
                 "write SQL Server oltre 2100 parametri per riga",
             ));
         }
-        let quoted_columns = columns
-            .iter()
-            .map(|column| sql_identifier(&column.name).map(|name| renderer.quote_identifier(&name)))
-            .collect::<Result<Vec<_>>>()?;
-        let mut ordinal = 1_usize;
-        let expressions = columns
-            .iter()
-            .map(|column| {
-                let expression = placeholder_expression(column, ordinal);
-                ordinal = ordinal.saturating_add(if column.spatial_srid.is_some() { 2 } else { 1 });
-                expression
-            })
-            .collect::<Vec<_>>();
+        validate_mutation_columns(operation, &columns)?;
+        if matches!(
+            operation.mode,
+            WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+        ) {
+            validate_unique_key(description, &operation.keys)?;
+        }
+        let row_statement =
+            super::sql::compile_row_statement(operation, &columns, &renderer, &quoted_object)?;
         let bulk_columns_aligned = bulk_columns_are_aligned(description, &columns);
         Ok(Self {
             input_schema,
             columns,
-            insert_sql: format!(
-                "INSERT INTO {quoted_object} ({}) OUTPUT 1 AS [plenora_inserted] VALUES ({});",
-                quoted_columns.join(", "),
-                expressions.join(", ")
-            ),
+            mode: operation.mode,
+            row_sql: row_statement.sql,
+            key_input_indices: row_statement.key_input_indices,
             bulk_table: quoted_object.clone(),
             bulk_columns_aligned,
             lock_sql: format!(
@@ -159,6 +160,12 @@ impl WritePlan {
 }
 
 pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
+    if !matches!(plan.mode, WriteMode::Append | WriteMode::TruncateInsert) {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "TDS bulk supporta soltanto append e truncate_insert",
+        ));
+    }
     if !plan.bulk_columns_aligned {
         return Err(plan_error(
             ErrorCategory::Unsupported,
@@ -218,11 +225,15 @@ fn bulk_columns_are_aligned(
 pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
     if !matches!(
         operation.mode,
-        WriteMode::Append | WriteMode::TruncateInsert
+        WriteMode::Append
+            | WriteMode::TruncateInsert
+            | WriteMode::Update
+            | WriteMode::Upsert
+            | WriteMode::DeleteByKeys
     ) {
         return Err(plan_error(
             ErrorCategory::Unsupported,
-            "fase write SQL Server iniziale supporta append e truncate_insert",
+            "write SQL Server non supporta ancora create/replace",
         ));
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
@@ -231,16 +242,13 @@ pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
             "write SQL Server richiede single_transaction",
         ));
     }
-    if operation.allow_partial
-        || !operation.keys.is_empty()
-        || !operation.update_columns.is_empty()
-        || operation.create_spatial_index
-    {
+    if operation.allow_partial || operation.create_spatial_index {
         return Err(plan_error(
             ErrorCategory::Unsupported,
-            "opzioni write SQL Server incompatibili con append/truncate_insert strict",
+            "write SQL Server richiede esecuzione atomica senza creazione indice",
         ));
     }
+    validate_mutation_shape(operation)?;
     if operation.target.catalog.is_some()
         || operation.target.schema.is_none()
         || operation.target.layer_id.is_some()
@@ -251,6 +259,146 @@ pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_mutation_shape(operation: &WriteOperation) -> Result<()> {
+    let duplicate_keys = operation
+        .keys
+        .iter()
+        .enumerate()
+        .any(|(index, key)| operation.keys[..index].contains(key));
+    let duplicate_updates = operation
+        .update_columns
+        .iter()
+        .enumerate()
+        .any(|(index, name)| operation.update_columns[..index].contains(name));
+    if duplicate_keys || duplicate_updates {
+        return Err(plan_error(
+            ErrorCategory::InvalidPlan,
+            "chiavi e colonne update SQL Server devono essere univoche",
+        ));
+    }
+    if operation
+        .keys
+        .iter()
+        .any(|key| operation.update_columns.contains(key))
+    {
+        return Err(plan_error(
+            ErrorCategory::InvalidPlan,
+            "una chiave SQL Server non puo essere anche colonna update",
+        ));
+    }
+    match operation.mode {
+        WriteMode::Append | WriteMode::TruncateInsert => {
+            if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "append/truncate_insert non accettano keys o update_columns",
+                ));
+            }
+        }
+        WriteMode::Update => {
+            if operation.keys.is_empty() || operation.update_columns.is_empty() {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "update SQL Server richiede keys e update_columns",
+                ));
+            }
+        }
+        WriteMode::Upsert => {
+            if operation.keys.is_empty() {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "upsert SQL Server richiede almeno una chiave",
+                ));
+            }
+        }
+        WriteMode::DeleteByKeys => {
+            if operation.keys.is_empty() || !operation.update_columns.is_empty() {
+                return Err(plan_error(
+                    ErrorCategory::InvalidPlan,
+                    "delete_by_keys richiede keys e non accetta update_columns",
+                ));
+            }
+        }
+        WriteMode::Create | WriteMode::Replace => {}
+    }
+    Ok(())
+}
+
+fn validate_mutation_columns(
+    operation: &WriteOperation,
+    columns: &[WriteColumnPlan],
+) -> Result<()> {
+    for name in operation.keys.iter().chain(&operation.update_columns) {
+        let column = columns
+            .iter()
+            .find(|column| column.name == *name)
+            .ok_or_else(|| {
+                plan_error(
+                    ErrorCategory::InvalidPlan,
+                    format!("chiave o colonna update assente dallo schema Arrow: {name}"),
+                )
+            })?;
+        if operation.keys.contains(name)
+            && matches!(
+                column.kind,
+                SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography
+            )
+        {
+            return Err(plan_error(
+                ErrorCategory::Unsupported,
+                "geometry/geography non sono ammesse come chiavi write SQL Server",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_key(description: &SqlServerObjectDescription, keys: &[String]) -> Result<()> {
+    if keys
+        .iter()
+        .any(|key| key.contains(',') || key.contains(':'))
+    {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "chiavi SQL Server con ',' o ':' non verificabili dal catalogo corrente",
+        ));
+    }
+    let expected = keys.iter().map(String::as_str).collect::<HashSet<_>>();
+    let unique = description.indexes.iter().any(|index| {
+        if !index.unique || index.disabled || index.filtered {
+            return false;
+        }
+        let Some(columns) = index.columns.as_deref().and_then(index_key_columns) else {
+            return false;
+        };
+        columns.len() == expected.len()
+            && columns.iter().map(String::as_str).collect::<HashSet<_>>() == expected
+    });
+    if !unique {
+        return Err(plan_error(
+            ErrorCategory::Schema,
+            "keys write SQL Server prive di indice univoco non filtrato equivalente",
+        ));
+    }
+    Ok(())
+}
+
+fn index_key_columns(encoded: &str) -> Option<Vec<String>> {
+    let mut columns = Vec::new();
+    for item in encoded.split(',') {
+        let (prefix, included) = item.rsplit_once(':')?;
+        let (prefix, _descending) = prefix.rsplit_once(':')?;
+        let (name, ordinal) = prefix.rsplit_once(':')?;
+        let ordinal = ordinal.parse::<usize>().ok()?;
+        let included = included.parse::<u8>().ok()?;
+        if included == 0 && ordinal > 0 {
+            columns.push((ordinal, name.to_owned()));
+        }
+    }
+    columns.sort_by_key(|(ordinal, _)| *ordinal);
+    Some(columns.into_iter().map(|(_, name)| name).collect())
 }
 
 fn validate_arrow_type(field: &Field, target: &SqlServerColumnSpec) -> Result<()> {
@@ -373,31 +521,7 @@ fn is_writable(column: &SqlServerColumn) -> bool {
         && !matches!(column.native_type.as_str(), "timestamp" | "rowversion")
 }
 
-fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> String {
-    let placeholder = format!("@P{ordinal}");
-    match column.kind {
-        SqlServerColumnKind::Decimal { .. } | SqlServerColumnKind::TimestampTz => {
-            format!("CONVERT({}, {placeholder})", column.native_declaration)
-        }
-        SqlServerColumnKind::Utf8 if column.native_type == "uniqueidentifier" => {
-            format!("CONVERT(uniqueidentifier, {placeholder})")
-        }
-        SqlServerColumnKind::Utf8 if column.native_type == "xml" => {
-            format!("CONVERT(xml, {placeholder})")
-        }
-        SqlServerColumnKind::Geometry => format!(
-            "geometry::STGeomFromWKB({placeholder}, @P{})",
-            ordinal.saturating_add(1)
-        ),
-        SqlServerColumnKind::Geography => format!(
-            "geography::STGeomFromWKB({placeholder}, @P{})",
-            ordinal.saturating_add(1)
-        ),
-        _ => placeholder,
-    }
-}
-
-fn sql_identifier(value: &str) -> Result<Identifier> {
+pub(super) fn sql_identifier(value: &str) -> Result<Identifier> {
     if value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS {
         return Err(plan_error(
             ErrorCategory::InvalidPlan,
@@ -407,7 +531,7 @@ fn sql_identifier(value: &str) -> Result<Identifier> {
     Identifier::new(value.to_owned())
 }
 
-fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
+pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
     DatabaseError {
         category,
         phase: ErrorPhase::Prepare,
@@ -446,20 +570,33 @@ mod tests {
     }
 
     #[test]
-    fn initial_write_modes_are_explicit_and_fail_before_io() {
+    fn write_modes_and_required_key_shapes_are_explicit_before_io() {
         assert!(validate_operation(&operation(WriteMode::Append)).is_ok());
         assert!(validate_operation(&operation(WriteMode::TruncateInsert)).is_ok());
-        for mode in [
-            WriteMode::Create,
-            WriteMode::Replace,
-            WriteMode::Update,
-            WriteMode::Upsert,
-            WriteMode::DeleteByKeys,
-        ] {
+        for mode in [WriteMode::Create, WriteMode::Replace] {
             let error = validate_operation(&operation(mode)).expect_err("unsupported mode");
             assert_eq!(error.category, ErrorCategory::Unsupported);
             assert_eq!(error.phase, ErrorPhase::Prepare);
         }
+        for mode in [
+            WriteMode::Update,
+            WriteMode::Upsert,
+            WriteMode::DeleteByKeys,
+        ] {
+            let error = validate_operation(&operation(mode)).expect_err("keys required");
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+        }
+        let mut update = operation(WriteMode::Update);
+        update.keys = vec!["id".to_owned()];
+        update.update_columns = vec!["label".to_owned()];
+        validate_operation(&update).expect("valid update shape");
+        let mut upsert = operation(WriteMode::Upsert);
+        upsert.keys = vec!["id".to_owned()];
+        validate_operation(&upsert).expect("valid upsert shape");
+        let mut delete = operation(WriteMode::DeleteByKeys);
+        delete.keys = vec!["id".to_owned()];
+        validate_operation(&delete).expect("valid delete shape");
     }
 
     #[test]
@@ -488,7 +625,9 @@ mod tests {
                     nullable: false,
                     spatial_srid: None,
                 }],
-                insert_sql: String::new(),
+                mode: WriteMode::Append,
+                row_sql: String::new(),
+                key_input_indices: Vec::new(),
                 bulk_table: "[dbo].[target]".to_owned(),
                 bulk_columns_aligned: false,
                 lock_sql: String::new(),

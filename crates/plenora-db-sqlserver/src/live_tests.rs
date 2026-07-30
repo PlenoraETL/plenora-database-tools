@@ -1375,6 +1375,205 @@ FROM
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+#[allow(clippy::too_many_lines)]
+async fn live_update_upsert_and_delete_by_keys_are_exact_and_atomic() {
+    let cancellation = CancellationToken::new();
+    let provider = live_provider();
+    let secret = live_secret();
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("mutation capabilities");
+    assert!(capabilities.writes.update);
+    assert!(capabilities.writes.upsert);
+    assert!(capabilities.writes.delete_by_keys);
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[mutation_non_unique_probe]; \
+                 DROP TABLE IF EXISTS [plenora_test].[mutation_probe]; \
+                 CREATE TABLE [plenora_test].[mutation_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(100) NOT NULL, \
+                  [score] int NOT NULL, CONSTRAINT [CK_mutation_score] \
+                  CHECK ([score] >= 0)); \
+                 INSERT INTO [plenora_test].[mutation_probe] VALUES \
+                 (1, N'old', 10), (2, N'keep', 20); \
+                 CREATE TABLE [plenora_test].[mutation_non_unique_probe] \
+                 ([id] int NOT NULL, [label] nvarchar(100) NOT NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("mutation fixtures");
+
+    let pool = SqlServerPool::new(config, 2).expect("pool");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("score", DataType::Int32, false),
+    ]));
+    let batch = |ids: Vec<i32>, labels: Vec<&str>, scores: Vec<i32>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(StringArray::from(labels)),
+                Arc::new(Int32Array::from(scores)),
+            ],
+        )
+        .expect("mutation batch")
+    };
+
+    let mut update = write_operation("mutation_probe", WriteMode::Update);
+    update.keys = vec!["id".to_owned()];
+    update.update_columns = vec!["label".to_owned(), "score".to_owned()];
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("update budget");
+    let prepared = prepare_write(&pool, &update, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare update");
+    let outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([batch(vec![1, 9], vec!["updated", "missing"], vec![11, 90])]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("execute update");
+    assert_eq!(outcome.rows.received, 2);
+    assert_eq!(outcome.rows.confirmed, 1);
+    assert_eq!(outcome.rows.updated, Some(1));
+    assert_eq!(outcome.rows.skipped, 1);
+
+    let mut upsert = write_operation("mutation_probe", WriteMode::Upsert);
+    upsert.keys = vec!["id".to_owned()];
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("upsert budget");
+    let prepared = prepare_write(&pool, &upsert, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare upsert");
+    let outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([batch(
+                vec![1, 3],
+                vec!["upserted", "inserted"],
+                vec![12, 30],
+            )]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("execute upsert");
+    assert_eq!(outcome.rows.confirmed, 2);
+    assert_eq!(outcome.rows.inserted, Some(1));
+    assert_eq!(outcome.rows.updated, Some(1));
+
+    let delete_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let delete_batch = RecordBatch::try_new(
+        Arc::clone(&delete_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 9]))],
+    )
+    .expect("delete batch");
+    let mut delete = write_operation("mutation_probe", WriteMode::DeleteByKeys);
+    delete.keys = vec!["id".to_owned()];
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("delete budget");
+    let prepared = prepare_write(
+        &pool,
+        &delete,
+        Arc::clone(&delete_schema),
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare delete");
+    let outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: delete_schema,
+            batches: VecDeque::from([delete_batch]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("execute delete");
+    assert_eq!(outcome.rows.confirmed, 1);
+    assert_eq!(outcome.rows.deleted, Some(1));
+    assert_eq!(outcome.rows.skipped, 1);
+
+    let non_unique_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let mut unsafe_update = write_operation("mutation_non_unique_probe", WriteMode::Update);
+    unsafe_update.keys = vec!["id".to_owned()];
+    unsafe_update.update_columns = vec!["label".to_owned()];
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("negative budget");
+    let error = prepare_write(
+        &pool,
+        &unsafe_update,
+        non_unique_schema,
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect_err("non unique key must fail before mutation");
+    assert_eq!(error.category, ErrorCategory::Schema);
+
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("rollback budget");
+    let prepared = prepare_write(&pool, &update, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare rollback update");
+    let error = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([
+                batch(vec![1], vec!["must-rollback"], vec![13]),
+                batch(vec![3], vec!["invalid"], vec![-1]),
+            ]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect_err("later constraint failure must roll back prior update");
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+
+    let mut results = admin
+        .execute_query(
+            Query::new(
+                "SELECT [id], [label], [score] FROM [plenora_test].[mutation_probe] \
+                 ORDER BY [id];",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify mutations");
+    let rows = results.pop().expect("mutation result set");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].try_get::<i32, _>(0).expect("id"), Some(1));
+    assert_eq!(
+        rows[0].try_get::<&str, _>(1).expect("label"),
+        Some("upserted")
+    );
+    assert_eq!(rows[0].try_get::<i32, _>(2).expect("score"), Some(12));
+    assert_eq!(rows[1].try_get::<i32, _>(0).expect("id"), Some(3));
+    assert_eq!(
+        rows[1].try_get::<&str, _>(1).expect("label"),
+        Some("inserted")
+    );
+    assert_eq!(rows[1].try_get::<i32, _>(2).expect("score"), Some(30));
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta fixture isolate"]
 #[allow(clippy::too_many_lines)]
 async fn live_tds_bulk_round_trips_verified_scalar_types() {

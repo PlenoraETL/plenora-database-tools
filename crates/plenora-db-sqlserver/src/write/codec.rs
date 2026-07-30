@@ -12,6 +12,7 @@ use plenora_database_core::{
 };
 use tiberius::{IntoSql, Query, TokenRow};
 
+#[derive(Debug)]
 pub(super) struct BatchInspection {
     pub(super) rows: u64,
     pub(super) bytes: u64,
@@ -40,6 +41,17 @@ pub(super) fn inspect_batch(
             .ok_or_else(|| DatabaseError::resource_limit("dimensione batch Arrow overflow"))
     })?;
     let mut geometry_components = 0_u64;
+    for &column_index in &plan.key_input_indices {
+        let column = plan
+            .columns
+            .get(column_index)
+            .ok_or_else(|| mapping_error("indice chiave SQL Server fuori dal piano compilato"))?;
+        if batch.column(column.input_index).null_count() > 0 {
+            return Err(mapping_error(
+                "NULL Arrow non ammesso in una chiave write SQL Server",
+            ));
+        }
+    }
     for column in &plan.columns {
         let array = batch.column(column.input_index);
         if !column.nullable && array.null_count() > 0 {
@@ -106,7 +118,7 @@ pub(super) fn bind_row(
     batch: &RecordBatch,
     row: usize,
 ) -> Result<Query<'static>> {
-    let mut query = Query::new(plan.insert_sql.clone());
+    let mut query = Query::new(plan.row_sql.clone());
     for column in &plan.columns {
         let array = batch.column(column.input_index);
         match column.kind {
@@ -429,6 +441,9 @@ fn mapping_error(message: impl Into<String>) -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plenora_database_core::arrow::{DataType, Field, Schema};
+    use plenora_database_core::plan::WriteMode;
+    use std::sync::Arc;
 
     #[test]
     fn decimal_formatter_handles_boundaries_without_abs_overflow() {
@@ -446,5 +461,40 @@ mod tests {
         assert!(time64(-1).is_err());
         assert!(time64(86_400_000_000).is_err());
         assert!(timestamp(i64::MAX).is_err());
+    }
+
+    #[test]
+    fn null_key_is_rejected_before_any_row_is_bound() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![Some(1), None]))],
+        )
+        .expect("nullable key batch");
+        let plan = WritePlan {
+            input_schema: schema,
+            columns: vec![WriteColumnPlan {
+                input_index: 0,
+                name: "id".to_owned(),
+                kind: crate::SqlServerColumnKind::I32,
+                native_type: "int".to_owned(),
+                native_declaration: "int".to_owned(),
+                nullable: true,
+                spatial_srid: None,
+            }],
+            mode: WriteMode::DeleteByKeys,
+            row_sql: String::new(),
+            key_input_indices: vec![0],
+            bulk_table: String::new(),
+            bulk_columns_aligned: false,
+            lock_sql: String::new(),
+            truncate_sql: None,
+            schema_fingerprint: String::new(),
+            schema: "dbo".to_owned(),
+            object: "target".to_owned(),
+        };
+        let error =
+            inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
     }
 }
