@@ -121,11 +121,6 @@
       "exit_condition": "Contratto Arrow dimensionale ratificato, codec esatto senza perdita, budget dedicati e prove live positive/negative per geometry e geography."
     },
     {
-      "id": "PLN-DB-SQLSERVER-LIFECYCLE",
-      "description": "Create e replace con staging/swap transazionale non sono ancora implementati; senza questo blocco la revisione non e candidata RC1.",
-      "exit_condition": "Create e replace atomici qualificati live, inclusi schema drift, rollback, commit incerto, cleanup e dipendenze non preservabili."
-    },
-    {
       "id": "PLN-DB-SQLSERVER-TLS",
       "description": "La policy Verify e il rifiuto self-signed sono provati, ma una catena positiva con CA privata e hostname matching non e ancora qualificata ed e esclusa dalla RC1 proposta.",
       "exit_condition": "Fixture CA privata riproducibile, hostname positivo/negativo, rotazione del certificato e artefatto CI conservato."

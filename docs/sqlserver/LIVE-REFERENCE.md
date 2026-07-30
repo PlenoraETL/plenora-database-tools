@@ -103,6 +103,17 @@ La suite live seriale ha verificato:
     verificata da catalogo, contabilizzazione distinta insert/update/delete,
     chiavi assenti come `skipped`, rifiuto pre-mutation di target non univoci
     e rollback del primo batch se un vincolo fallisce nel batch successivo.
+40. `create` atomico da schema Arrow con grammatica DDL chiusa, primary key
+    esplicita, rifiuto del target esistente e nessun residuo lifecycle.
+41. `replace` su staging con target originale leggibile durante il caricamento,
+    lock/fingerprint/dipendenze ricontrollati alla pubblicazione e swap
+    transazionale senza finestra di assenza.
+42. rollback sia dopo errore nel caricamento sia dopo i rename pre-commit,
+    cleanup verificato, FK entranti rifiutate e commit incerto pubblicato come
+    `OutcomeUnknown` senza retry automatico.
+43. `create` e `replace` sui 19 tipi del profilo di riferimento, inclusi
+    decimal/money, temporali, UUID/XML, collation, geometry e geography, con
+    dichiarazioni native rilette dal catalogo identiche a quelle sorgenti.
 
 Comando della prova:
 
@@ -110,14 +121,14 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito: **24 superati, 0 falliti**.
+Esito: **28 superati, 0 falliti**.
 
 ## Limiti dell'evidenza
 
 Questa prova non dimostra ancora:
 
 - catena TLS privata verificata positivamente e hostname matching;
-- bulk per spatial/UDT e modalità create/replace;
+- TDS bulk per spatial/UDT e per le modalità create/replace;
 - `QueryOperation` lateral/APPLY, locking, output spatial UDT nudo e forme
   calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;

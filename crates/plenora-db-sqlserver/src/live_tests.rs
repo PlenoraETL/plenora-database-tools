@@ -2458,6 +2458,661 @@ async fn live_submicrosecond_temporal_values_fail_closed() {
     assert_eq!(error.category, ErrorCategory::DataMapping);
 }
 
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture lifecycle isolate"]
+#[allow(clippy::too_many_lines)]
+async fn live_create_and_staged_replace_publish_exact_schema_and_rows() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("lifecycle admin");
+    admin
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[lifecycle_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("clean lifecycle fixture");
+
+    let pool = SqlServerPool::new(config, 2).expect("lifecycle pool");
+    let create_schema = guard_schema();
+    let mut create = write_operation("lifecycle_probe", WriteMode::Create);
+    create.keys = vec!["id".to_owned()];
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("create budget");
+    let prepared = prepare_write(
+        &pool,
+        &create,
+        Arc::clone(&create_schema),
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare create");
+    let create_outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&create_schema),
+            batches: VecDeque::from([RecordBatch::try_new(
+                Arc::clone(&create_schema),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2])),
+                    Arc::new(StringArray::from(vec!["first", "second"])),
+                ],
+            )
+            .expect("create batch")]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("execute create");
+    assert_eq!(create_outcome.status, WriteStatus::Committed);
+    assert_eq!(create_outcome.rows.inserted, Some(2));
+
+    let duplicate_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("duplicate create budget");
+    let duplicate_error = prepare_write(
+        &pool,
+        &create,
+        Arc::clone(&create_schema),
+        &duplicate_budget,
+        &cancellation,
+    )
+    .await
+    .expect_err("create existing target");
+    assert_eq!(duplicate_error.category, ErrorCategory::Schema);
+
+    let replace_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("score", DataType::Int32, false),
+    ]));
+    let mut replace = write_operation("lifecycle_probe", WriteMode::Replace);
+    replace.keys = vec!["id".to_owned()];
+    replace.transaction_profile = TransactionProfile::StagedSwap;
+    let replace_budget = ResourceBudget::new(ResourceLimits::default()).expect("replace budget");
+    let prepared = prepare_write(
+        &pool,
+        &replace,
+        Arc::clone(&replace_schema),
+        &replace_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare replace");
+    let replace_outcome = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&replace_schema),
+            batches: VecDeque::from([RecordBatch::try_new(
+                Arc::clone(&replace_schema),
+                vec![
+                    Arc::new(Int32Array::from(vec![7, 8])),
+                    Arc::new(StringArray::from(vec!["new-a", "new-b"])),
+                    Arc::new(Int32Array::from(vec![70, 80])),
+                ],
+            )
+            .expect("replace batch")]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("execute replace");
+    assert_eq!(replace_outcome.status, WriteStatus::Committed);
+    assert_eq!(replace_outcome.rows.inserted, Some(2));
+
+    let results = admin
+        .execute_query(
+            Query::new(
+                "SELECT [id], [label], [score] \
+                 FROM [plenora_test].[lifecycle_probe] ORDER BY [id]; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'lifecycle_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify replacement");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].len(), 2);
+    assert_eq!(results[0][0].try_get::<i32, _>(0).expect("id"), Some(7));
+    assert_eq!(results[0][1].try_get::<i32, _>(2).expect("score"), Some(80));
+    assert_eq!(
+        results[1][0].try_get::<i64, _>(0).expect("orphan count"),
+        Some(0)
+    );
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[lifecycle_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup lifecycle fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e qualifica tutti i tipi create/replace"]
+#[allow(clippy::too_many_lines)]
+async fn live_create_and_replace_round_trip_all_reference_types() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("typed lifecycle admin");
+    admin
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[lifecycle_types_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("clean typed lifecycle fixture");
+    let pool = SqlServerPool::new(config, 3).expect("typed lifecycle pool");
+
+    let source_budget = ResourceBudget::new(ResourceLimits::default()).expect("source budget");
+    let source = read_object(
+        &pool,
+        "plenora_test",
+        "stream_probe",
+        2,
+        &source_budget,
+        &cancellation,
+    )
+    .await
+    .expect("typed create source");
+    let schema = source.schema();
+    let mut create = write_operation("lifecycle_types_probe", WriteMode::Create);
+    create.keys = vec!["id".to_owned()];
+    let create_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("typed create budget");
+    let prepared = prepare_write(
+        &pool,
+        &create,
+        Arc::clone(&schema),
+        &create_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare typed create");
+    let outcome = write_prepared(prepared, source, &cancellation)
+        .await
+        .expect("execute typed create");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.inserted, Some(5));
+
+    let source_description =
+        describe_object(&mut admin, "plenora_test", "stream_probe", &cancellation)
+            .await
+            .expect("source description");
+    let target_description = describe_object(
+        &mut admin,
+        "plenora_test",
+        "lifecycle_types_probe",
+        &cancellation,
+    )
+    .await
+    .expect("created description");
+    let source_specs = source_description
+        .columns
+        .iter()
+        .map(SqlServerColumnSpec::from_catalog)
+        .collect::<plenora_database_core::Result<Vec<_>>>()
+        .expect("source native contracts");
+    let created_specs = target_description
+        .columns
+        .iter()
+        .map(SqlServerColumnSpec::from_catalog)
+        .collect::<plenora_database_core::Result<Vec<_>>>()
+        .expect("created native contracts");
+    assert_eq!(created_specs, source_specs);
+
+    let replacement_source_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("replacement source budget");
+    let replacement_source = read_object(
+        &pool,
+        "plenora_test",
+        "stream_probe",
+        3,
+        &replacement_source_budget,
+        &cancellation,
+    )
+    .await
+    .expect("typed replace source");
+    let mut replace = write_operation("lifecycle_types_probe", WriteMode::Replace);
+    replace.keys = vec!["id".to_owned()];
+    replace.transaction_profile = TransactionProfile::StagedSwap;
+    let replace_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("typed replace budget");
+    let prepared = prepare_write(
+        &pool,
+        &replace,
+        Arc::clone(&schema),
+        &replace_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare typed replace");
+    let outcome = write_prepared(prepared, replacement_source, &cancellation)
+        .await
+        .expect("execute typed replace");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.inserted, Some(5));
+
+    let replaced_description = describe_object(
+        &mut admin,
+        "plenora_test",
+        "lifecycle_types_probe",
+        &cancellation,
+    )
+    .await
+    .expect("replaced description");
+    let replaced_specs = replaced_description
+        .columns
+        .iter()
+        .map(SqlServerColumnSpec::from_catalog)
+        .collect::<plenora_database_core::Result<Vec<_>>>()
+        .expect("replaced native contracts");
+    assert_eq!(replaced_specs, source_specs);
+    let count = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM [plenora_test].[lifecycle_types_probe]; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'lifecycle_types_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify typed replace");
+    assert_eq!(
+        count[0][0].try_get::<i64, _>(0).expect("row count"),
+        Some(5)
+    );
+    assert_eq!(
+        count[1][0].try_get::<i64, _>(0).expect("orphan count"),
+        Some(0)
+    );
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[lifecycle_types_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup typed lifecycle fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica rollback lifecycle"]
+#[allow(clippy::too_many_lines)]
+async fn live_replace_rolls_back_load_and_published_swap_on_failure() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("rollback lifecycle admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[replace_rollback_dependent]; \
+                 DROP TABLE IF EXISTS [plenora_test].[replace_rollback_probe]; \
+                 CREATE TABLE [plenora_test].[replace_rollback_probe] \
+                    ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(max) NOT NULL); \
+                 INSERT INTO [plenora_test].[replace_rollback_probe] \
+                    VALUES (99, N'sentinel');",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("replace rollback fixture");
+    let pool = SqlServerPool::new(config, 2).expect("rollback lifecycle pool");
+    let schema = guard_schema();
+    let mut replace = write_operation("replace_rollback_probe", WriteMode::Replace);
+    replace.keys = vec!["id".to_owned()];
+    replace.transaction_profile = TransactionProfile::StagedSwap;
+
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("constraint budget");
+    let prepared = prepare_write(&pool, &replace, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare duplicate replace");
+    let duplicate_error = write_prepared(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([
+                guard_batch(Arc::clone(&schema), 1, "first"),
+                guard_batch(Arc::clone(&schema), 1, "duplicate"),
+            ]),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect_err("duplicate staged key");
+    assert_eq!(duplicate_error.remote_effect, RemoteEffect::RolledBack);
+
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("fault budget");
+    let prepared = prepare_write(&pool, &replace, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare pre-commit replace");
+    let fault_error = crate::write::write_prepared_with_fault(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([guard_batch(Arc::clone(&schema), 2, "published")]),
+        }),
+        &cancellation,
+        crate::write::WriteFaultPoint::BeforeCommit,
+    )
+    .await
+    .expect_err("rollback published rename");
+    assert_eq!(fault_error.remote_effect, RemoteEffect::RolledBack);
+
+    let verification = admin
+        .execute_query(
+            Query::new(
+                "SELECT [id], [label] FROM [plenora_test].[replace_rollback_probe]; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'replace_rollback_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify lifecycle rollback");
+    assert_eq!(verification[0].len(), 1);
+    assert_eq!(
+        verification[0][0].try_get::<i32, _>(0).expect("sentinel"),
+        Some(99)
+    );
+    assert_eq!(
+        verification[1][0]
+            .try_get::<i64, _>(0)
+            .expect("orphan count"),
+        Some(0)
+    );
+
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("unknown budget");
+    let prepared = prepare_write(&pool, &replace, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare uncertain replace");
+    let uncertain = crate::write::write_prepared_with_fault(
+        prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from([guard_batch(Arc::clone(&schema), 3, "committed-unknown")]),
+        }),
+        &cancellation,
+        crate::write::WriteFaultPoint::CommitConfirmationLost,
+    )
+    .await
+    .expect("commit confirmation loss");
+    assert_eq!(uncertain.status, WriteStatus::OutcomeUnknown);
+    let recovery = uncertain.recovery.expect("replace recovery");
+    assert!(!recovery.automatic_retry_allowed);
+    assert!(recovery.staging_object.is_none());
+    let published = admin
+        .execute_query(
+            Query::new(
+                "SELECT [id] FROM [plenora_test].[replace_rollback_probe]; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'replace_rollback_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify uncertain publish");
+    assert_eq!(published[0].len(), 1);
+    assert_eq!(
+        published[0][0].try_get::<i32, _>(0).expect("new id"),
+        Some(3)
+    );
+    assert_eq!(
+        published[1][0].try_get::<i64, _>(0).expect("orphan count"),
+        Some(0)
+    );
+
+    admin
+        .execute_query(
+            Query::new(
+                "CREATE TABLE [plenora_test].[replace_rollback_dependent] \
+                 ([id] int NOT NULL PRIMARY KEY, \
+                  CONSTRAINT [FK_replace_rollback_dependent] FOREIGN KEY ([id]) \
+                  REFERENCES [plenora_test].[replace_rollback_probe] ([id]));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("dependency foreign key");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("dependency budget");
+    let dependency_error = prepare_write(&pool, &replace, schema, &budget, &cancellation)
+        .await
+        .expect_err("enabled trigger must fail closed");
+    assert_eq!(dependency_error.category, ErrorCategory::Unsupported);
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE [plenora_test].[replace_rollback_dependent]; \
+                 DROP TABLE [plenora_test].[replace_rollback_probe];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup replace rollback");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica visibilita staged swap"]
+#[allow(clippy::too_many_lines)]
+async fn live_replace_keeps_old_target_readable_while_staging_then_publishes_new() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("visibility admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[replace_visibility_probe]; \
+                 CREATE TABLE [plenora_test].[replace_visibility_probe] \
+                    ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(max) NOT NULL); \
+                 INSERT INTO [plenora_test].[replace_visibility_probe] \
+                    VALUES (99, N'old-visible');",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("visibility fixture");
+    let pool = SqlServerPool::new(config, 2).expect("visibility pool");
+    let schema = guard_schema();
+    let mut replace = write_operation("replace_visibility_probe", WriteMode::Replace);
+    replace.keys = vec!["id".to_owned()];
+    replace.transaction_profile = TransactionProfile::StagedSwap;
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("visibility budget");
+    let prepared = prepare_write(&pool, &replace, Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare visibility replace");
+    let (barrier_reached, barrier_wait) = oneshot::channel();
+    let (release, release_wait) = oneshot::channel();
+    let write_cancellation = cancellation.clone();
+    let write_schema = Arc::clone(&schema);
+    let task = tokio::spawn(async move {
+        crate::write::write_prepared(
+            prepared,
+            Box::new(BarrierBatchStream {
+                schema: Arc::clone(&write_schema),
+                batches: VecDeque::from([
+                    guard_batch(Arc::clone(&write_schema), 1, "new-a"),
+                    guard_batch(Arc::clone(&write_schema), 2, "new-b"),
+                ]),
+                emitted: 0,
+                barrier_reached: Some(barrier_reached),
+                release: Some(release_wait),
+            }),
+            &write_cancellation,
+        )
+        .await
+    });
+    barrier_wait.await.expect("staging barrier");
+
+    let old_read = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        admin.execute_query(
+            Query::new(
+                "SELECT [label] FROM [plenora_test].[replace_visibility_probe] WHERE [id] = 99;",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        ),
+    )
+    .await
+    .expect("old target must not be locked during staging")
+    .expect("read old target");
+    assert_eq!(
+        old_read[0][0].try_get::<&str, _>(0).expect("old label"),
+        Some("old-visible")
+    );
+    release.send(()).expect("release staged writer");
+    let outcome = task
+        .await
+        .expect("replace task")
+        .expect("replace committed");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+
+    let new_rows = admin
+        .execute_query(
+            Query::new("SELECT [id] FROM [plenora_test].[replace_visibility_probe] ORDER BY [id];"),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("read published target");
+    assert_eq!(new_rows[0].len(), 2);
+    assert_eq!(
+        new_rows[0][0].try_get::<i32, _>(0).expect("new id"),
+        Some(1)
+    );
+    assert_eq!(
+        new_rows[0][1].try_get::<i32, _>(0).expect("new id"),
+        Some(2)
+    );
+
+    let drift_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("drift replace budget");
+    let prepared = prepare_write(
+        &pool,
+        &replace,
+        Arc::clone(&schema),
+        &drift_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare drift replace");
+    let (drift_reached, drift_wait) = oneshot::channel();
+    let (drift_release, drift_release_wait) = oneshot::channel();
+    let drift_cancellation = cancellation.clone();
+    let drift_schema = Arc::clone(&schema);
+    let drift_task = tokio::spawn(async move {
+        crate::write::write_prepared(
+            prepared,
+            Box::new(BarrierBatchStream {
+                schema: Arc::clone(&drift_schema),
+                batches: VecDeque::from([
+                    guard_batch(Arc::clone(&drift_schema), 5, "must-not-publish"),
+                    guard_batch(Arc::clone(&drift_schema), 6, "must-not-publish"),
+                ]),
+                emitted: 0,
+                barrier_reached: Some(drift_reached),
+                release: Some(drift_release_wait),
+            }),
+            &drift_cancellation,
+        )
+        .await
+    });
+    drift_wait.await.expect("drift staging barrier");
+    admin
+        .execute_query(
+            Query::new(
+                "ALTER TABLE [plenora_test].[replace_visibility_probe] \
+                 ADD [concurrent_drift] int NULL;",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("concurrent target drift");
+    drift_release.send(()).expect("release drift writer");
+    let drift_error = drift_task
+        .await
+        .expect("drift replace task")
+        .expect_err("schema drift must prevent publish");
+    assert_eq!(drift_error.category, ErrorCategory::Schema);
+    assert_eq!(drift_error.remote_effect, RemoteEffect::RolledBack);
+
+    let after_drift = admin
+        .execute_query(
+            Query::new(
+                "SELECT [id] FROM [plenora_test].[replace_visibility_probe] ORDER BY [id]; \
+                 SELECT CASE WHEN COL_LENGTH(\
+                    N'plenora_test.replace_visibility_probe', N'concurrent_drift'\
+                 ) IS NULL THEN 0 ELSE 1 END; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'replace_visibility_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify drift rollback");
+    assert_eq!(after_drift[0].len(), 2);
+    assert_eq!(
+        after_drift[0][0].try_get::<i32, _>(0).expect("old id"),
+        Some(1)
+    );
+    assert_eq!(
+        after_drift[0][1].try_get::<i32, _>(0).expect("old id"),
+        Some(2)
+    );
+    assert_eq!(
+        after_drift[1][0]
+            .try_get::<i32, _>(0)
+            .expect("drift column"),
+        Some(1)
+    );
+    assert_eq!(
+        after_drift[2][0]
+            .try_get::<i64, _>(0)
+            .expect("orphan count"),
+        Some(0)
+    );
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[replace_visibility_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup visibility fixture");
+}
+
 fn write_operation(object: &str, mode: WriteMode) -> WriteOperation {
     WriteOperation {
         target: ObjectRef {

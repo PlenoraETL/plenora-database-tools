@@ -429,6 +429,39 @@ impl SqlServerColumnSpec {
         })
     }
 
+    /// Compila il tipo DDL di una colonna Arrow senza accettare frammenti SQL
+    /// liberi dai metadati.
+    pub(crate) fn from_create_field(field: &Field) -> Result<Self> {
+        let declared = field
+            .metadata()
+            .get(protocol::SQLSERVER_NATIVE_DECLARATION)
+            .cloned()
+            .unwrap_or_else(|| default_create_declaration(field));
+        let (native_declaration, native_type, precision, scale) =
+            validate_create_declaration(&declared)?;
+        if field
+            .metadata()
+            .get(protocol::SQLSERVER_NATIVE_TYPE)
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&native_type))
+        {
+            return Err(prepare_error(
+                ErrorCategory::DataMapping,
+                "native_type e native_declaration SQL Server incoerenti",
+            ));
+        }
+        let kind = column_kind(&native_type, precision, scale)?;
+        Ok(Self {
+            name: field.name().clone(),
+            native_type,
+            native_declaration,
+            nullable: field.is_nullable(),
+            collation: field.metadata().get(protocol::SQLSERVER_COLLATION).cloned(),
+            kind,
+            spatial_srid: None,
+            wire_encoding: SqlServerWireEncoding::Projected,
+        })
+    }
+
     pub(crate) fn from_query_metadata(
         name: String,
         native_declaration: String,
@@ -615,6 +648,172 @@ impl SqlServerColumnSpec {
             );
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
+    }
+}
+
+fn default_create_declaration(field: &Field) -> String {
+    if field.data_type() == &DataType::Binary {
+        match field
+            .metadata()
+            .get(protocol::GEOMETRY_SPATIAL_SEMANTICS)
+            .map(String::as_str)
+        {
+            Some("geometry") => return "geometry".to_owned(),
+            Some("geography") => return "geography".to_owned(),
+            _ => {}
+        }
+    }
+    match field.data_type() {
+        DataType::Boolean => "bit".to_owned(),
+        DataType::UInt8 => "tinyint".to_owned(),
+        DataType::Int16 => "smallint".to_owned(),
+        DataType::Int32 => "int".to_owned(),
+        DataType::Int64 => "bigint".to_owned(),
+        DataType::Float32 => "real".to_owned(),
+        DataType::Float64 => "float".to_owned(),
+        DataType::Utf8 => "nvarchar(max)".to_owned(),
+        DataType::Binary => "varbinary(max)".to_owned(),
+        DataType::Date32 => "date".to_owned(),
+        DataType::Time64(TimeUnit::Microsecond) => "time(6)".to_owned(),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => "datetime2(6)".to_owned(),
+        DataType::Decimal128(precision, scale) => format!("decimal({precision},{scale})"),
+        _ => String::new(),
+    }
+}
+
+fn validate_create_declaration(declaration: &str) -> Result<(String, String, u8, u8)> {
+    let normalized = declaration.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || !normalized.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'(' | b')' | b',')
+        })
+    {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "dichiarazione DDL SQL Server fuori dalla grammatica ammessa",
+        ));
+    }
+    let (native, arguments) = normalized.split_once('(').map_or_else(
+        || (normalized.as_str(), None),
+        |(native, suffix)| (native, suffix.strip_suffix(')')),
+    );
+    if normalized.contains('(') && arguments.is_none() {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "dichiarazione DDL SQL Server con parentesi non bilanciate",
+        ));
+    }
+    let no_arguments = [
+        "bit",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "real",
+        "float",
+        "money",
+        "smallmoney",
+        "date",
+        "datetime",
+        "smalldatetime",
+        "uniqueidentifier",
+        "xml",
+        "text",
+        "ntext",
+        "image",
+        "geometry",
+        "geography",
+    ];
+    let (precision, scale) = match native {
+        "decimal" | "numeric" => {
+            let (precision, scale) = parse_two_u8(arguments, "decimal")?;
+            if precision == 0 || precision > 38 || scale > precision {
+                return Err(prepare_error(
+                    ErrorCategory::DataMapping,
+                    "precisione/scala DDL SQL Server non valida",
+                ));
+            }
+            (precision, scale)
+        }
+        "char" | "binary" => {
+            validate_length(arguments, false, 8_000)?;
+            (0, 0)
+        }
+        "nchar" => {
+            validate_length(arguments, false, 4_000)?;
+            (0, 0)
+        }
+        "varchar" | "varbinary" => {
+            validate_length(arguments, true, 8_000)?;
+            (0, 0)
+        }
+        "nvarchar" => {
+            validate_length(arguments, true, 4_000)?;
+            (0, 0)
+        }
+        "time" | "datetime2" | "datetimeoffset" => {
+            let value = parse_one_u8(arguments, native)?;
+            if value > 7 {
+                return Err(prepare_error(
+                    ErrorCategory::DataMapping,
+                    "scala temporale DDL SQL Server oltre 7",
+                ));
+            }
+            (0, value)
+        }
+        _ if no_arguments.contains(&native) && arguments.is_none() => match native {
+            "money" => (19, 4),
+            "smallmoney" => (10, 4),
+            _ => (0, 0),
+        },
+        _ => {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                format!("tipo DDL SQL Server non ammesso: {normalized}"),
+            ));
+        }
+    };
+    let native = native.to_owned();
+    Ok((normalized, native, precision, scale))
+}
+
+fn parse_one_u8(arguments: Option<&str>, name: &str) -> Result<u8> {
+    arguments
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or_else(|| {
+            prepare_error(
+                ErrorCategory::DataMapping,
+                format!("argomento DDL SQL Server non valido per {name}"),
+            )
+        })
+}
+
+fn parse_two_u8(arguments: Option<&str>, name: &str) -> Result<(u8, u8)> {
+    let mut values = arguments.unwrap_or_default().split(',');
+    let first = values.next().and_then(|value| value.parse::<u8>().ok());
+    let second = values.next().and_then(|value| value.parse::<u8>().ok());
+    if values.next().is_some() || first.is_none() || second.is_none() {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            format!("argomenti DDL SQL Server non validi per {name}"),
+        ));
+    }
+    Ok((first.unwrap_or_default(), second.unwrap_or_default()))
+}
+
+fn validate_length(arguments: Option<&str>, allow_max: bool, maximum: u16) -> Result<()> {
+    let value = arguments.unwrap_or_default();
+    if (allow_max && value == "max")
+        || value
+            .parse::<u16>()
+            .is_ok_and(|length| (1..=maximum).contains(&length))
+    {
+        Ok(())
+    } else {
+        Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "lunghezza DDL SQL Server non valida",
+        ))
     }
 }
 
@@ -828,6 +1027,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
 mod tests {
     use super::*;
     use crate::SqlServerSchemaToken;
+    use std::collections::HashMap;
 
     fn description(native_type: &str, precision: u8, scale: u8) -> SqlServerObjectDescription {
         SqlServerObjectDescription {
@@ -932,5 +1132,65 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn create_type_compilation_uses_safe_defaults_and_exact_metadata() {
+        let default_text = Field::new("label", DataType::Utf8, false);
+        let spec = SqlServerColumnSpec::from_create_field(&default_text).expect("text default");
+        assert_eq!(spec.native_type, "nvarchar");
+        assert_eq!(spec.native_declaration, "nvarchar(max)");
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            protocol::SQLSERVER_NATIVE_TYPE.to_owned(),
+            "nvarchar".to_owned(),
+        );
+        metadata.insert(
+            protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+            "nvarchar(100)".to_owned(),
+        );
+        metadata.insert(
+            protocol::SQLSERVER_COLLATION.to_owned(),
+            "Latin1_General_100_BIN2".to_owned(),
+        );
+        let exact = Field::new("label", DataType::Utf8, false).with_metadata(metadata);
+        let spec = SqlServerColumnSpec::from_create_field(&exact).expect("exact metadata");
+        assert_eq!(spec.native_declaration, "nvarchar(100)");
+        assert_eq!(spec.collation.as_deref(), Some("Latin1_General_100_BIN2"));
+    }
+
+    #[test]
+    fn create_type_compilation_rejects_sql_and_invalid_native_contracts() {
+        for declaration in [
+            "nvarchar(max));drop table dbo.asset;--",
+            "nvarchar(4001)",
+            "decimal(10,11)",
+            "dbo.custom_type",
+        ] {
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+                declaration.to_owned(),
+            );
+            let field = Field::new("value", DataType::Utf8, true).with_metadata(metadata);
+            assert!(
+                SqlServerColumnSpec::from_create_field(&field).is_err(),
+                "{declaration}"
+            );
+        }
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            protocol::SQLSERVER_NATIVE_TYPE.to_owned(),
+            "varchar".to_owned(),
+        );
+        metadata.insert(
+            protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+            "nvarchar(100)".to_owned(),
+        );
+        let mismatch = Field::new("value", DataType::Utf8, true).with_metadata(metadata);
+        let error = SqlServerColumnSpec::from_create_field(&mismatch).expect_err("native mismatch");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
     }
 }
