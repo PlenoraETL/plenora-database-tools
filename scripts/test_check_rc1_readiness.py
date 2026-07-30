@@ -76,29 +76,23 @@ def conforming(revision: str) -> dict:
         "manifest_version": 1,
         "component": "plenora-database-tools",
         "component_version": "0.1.0-rc.1",
-        "status": "rc1_rebaseline_pending",
+        "status": "rc1_candidate_ready",
         "revision": revision,
         "verification_claim": "verified_internally",
         "independent_review": False,
         "claims": {
-            "component_rc": False,
+            "component_rc": True,
             "system_rc": False,
             "avionic_certification": False,
         },
-        "candidate": {"decision": "rebaseline_pending", "code_freeze": False},
+        "candidate": {"decision": "ready", "code_freeze": True},
         "evidence": [
             evidence("postgres_reference", revision, 1),
             evidence("sqlserver_reference", revision, 2),
             evidence("workspace_coverage", revision, 3),
             evidence("release_manifest", revision, 4),
         ],
-        "component_rc_blockers": [
-            {
-                "id": "PLN-DB-REBASELINE",
-                "description": "rebaseline richiesto",
-                "exit_condition": "nuova evidenza registrata",
-            }
-        ],
+        "component_rc_blockers": [],
         "open_assurance_attributes": [
             {
                 "id": "PLN-DB-REVIEW",
@@ -120,10 +114,10 @@ def conforming(revision: str) -> dict:
         ],
         "declared_scope_reductions": reductions,
         "release_action": {
-            "allowed": False,
-            "tag": None,
+            "allowed": True,
+            "tag": "v0.1.0-rc.1",
             "tag_created": False,
-            "reason": "rebaseline non completato",
+            "reason": "candidato autorizzato",
         },
     }
 
@@ -160,12 +154,12 @@ def main() -> int:
     )
 
     premature_claim = deepcopy(base)
-    premature_claim["claims"]["component_rc"] = True
+    premature_claim["claims"]["component_rc"] = False
     cases.append(
         (
             "claim prematuro",
             premature_claim,
-            "component_rc deve essere false durante il rebaseline",
+            "una RC pronta o taggata deve dichiarare component_rc true",
         )
     )
 
@@ -224,9 +218,9 @@ def main() -> int:
     )
 
     release_allowed = deepcopy(base)
-    release_allowed["release_action"]["allowed"] = True
+    release_allowed["release_action"]["allowed"] = False
     cases.append(
-        ("release prematura", release_allowed, "release_action.allowed deve essere false")
+        ("release negata", release_allowed, "release_action.allowed deve essere true")
     )
 
     failures: list[str] = []
@@ -236,10 +230,10 @@ def main() -> int:
             failures.append(f"{label}: errori inattesi {errors}")
         elif expected is not None and not any(expected in error for error in errors):
             failures.append(f"{label}: atteso {expected!r}, ottenuto {errors}")
-    with patch.object(gate, "pending_packaging_delta_matches", return_value=False):
+    with patch.object(gate, "production_tree_matches", return_value=False):
         errors = gate.check(base, ROOT)
-    if not any("soltanto il delta SemVer Cargo" in error for error in errors):
-        failures.append(f"delta packaging divergente: errore non rilevato {errors}")
+    if not any("percorsi di produzione divergono" in error for error in errors):
+        failures.append(f"freeze divergente: errore non rilevato {errors}")
     total = len(cases) + 1
     print(f"{total - len(failures)}/{total} verifiche superate")
     for failure in failures:
