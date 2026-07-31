@@ -8,6 +8,7 @@ use plenora_database_core::arrow::array::{
     Array, BinaryArray, Decimal128Array, Int32Array, Int64Array, StringArray,
 };
 use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaRef};
+use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::loss::{LossSeverity, MappingPolicy};
 use plenora_database_core::outcome::WriteStatus;
 use plenora_database_core::plan::{
@@ -21,7 +22,7 @@ use plenora_database_core::provider::{
 use plenora_database_core::query::{
     ColumnRef, CommonTableExpression, JoinKind, QueryExpression, QueryJoin, QueryOperation,
     QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
-    ScalarFunction,
+    ScalarFunction, SpatialFunction,
 };
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
@@ -437,6 +438,96 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("query end")
         .is_none());
+
+    let spatial_query = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: bounded_operation.source.clone(),
+            alias: Some("source".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column("id"),
+            alias: None,
+        }],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![
+                column("shape"),
+                QueryExpression::Parameter {
+                    name: "needle".to_owned(),
+                },
+            ],
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let spatial_parameters = |srid, semantics| {
+        ParameterBag::new(BTreeMap::from([(
+            "needle".to_owned(),
+            ParameterValue::Wkb {
+                bytes: ewkb_point(1, &[3.0, 3.0]),
+                srid: Some(srid),
+                dimensions: Dimensions::Xy,
+                semantics,
+            },
+        )]))
+    };
+    let spatial_budget = ResourceBudget::new(ResourceLimits::default()).expect("spatial budget");
+    let mut spatial_stream = provider
+        .query(
+            &secret,
+            &spatial_query,
+            &spatial_parameters(4326, SpatialSemantics::Geometry),
+            &spatial_budget,
+            &cancellation,
+        )
+        .await
+        .expect("typed spatial QueryOperation");
+    let spatial_batch = spatial_stream
+        .next_batch()
+        .await
+        .expect("spatial query batch")
+        .expect("spatial query row");
+    let spatial_ids = spatial_batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("spatial query ids");
+    assert_eq!(spatial_ids.values(), &[3]);
+    assert!(spatial_stream
+        .next_batch()
+        .await
+        .expect("spatial query end")
+        .is_none());
+    for invalid in [
+        spatial_parameters(3857, SpatialSemantics::Geometry),
+        spatial_parameters(4326, SpatialSemantics::Geography),
+    ] {
+        let invalid_budget =
+            ResourceBudget::new(ResourceLimits::default()).expect("invalid spatial budget");
+        let Err(error) = provider
+            .query(
+                &secret,
+                &spatial_query,
+                &invalid,
+                &invalid_budget,
+                &cancellation,
+            )
+            .await
+        else {
+            panic!("incompatible spatial contract must fail");
+        };
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+    }
 
     let bounded_budget = ResourceBudget::new(ResourceLimits::default()).expect("bounded budget");
     let mut bounded = provider

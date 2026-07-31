@@ -89,11 +89,7 @@ fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Result<
                 .map_err(|_| parameter_error("parametro JSON SQL Server non serializzabile"))?;
             query.bind(encoded);
         }
-        ParameterValue::Wkb { .. } => {
-            return Err(unsupported(
-                "bind WKB SQL Server richiede tipo spatial e SRID risolti",
-            ));
-        }
+        ParameterValue::Wkb { bytes, .. } => query.bind(bytes.clone()),
         ParameterValue::Null { .. } => {
             return Err(unsupported(
                 "NULL bindato SQL Server richiede un tipo target risolto",
@@ -140,9 +136,11 @@ fn parameter_type(value: &ParameterValue) -> Result<&'static str> {
                 .map_err(|_| parameter_error("parametro JSON SQL Server non serializzabile"))?;
             Ok(string_parameter_type(&encoded))
         }
-        ParameterValue::Wkb { .. } => Err(unsupported(
-            "bind WKB SQL Server richiede tipo spatial e SRID risolti",
-        )),
+        ParameterValue::Wkb { bytes, .. } => Ok(if bytes.len() <= 8_000 {
+            "varbinary(8000)"
+        } else {
+            "varbinary(max)"
+        }),
         ParameterValue::Null { .. } => Err(unsupported(
             "NULL bindato SQL Server richiede un tipo target risolto",
         )),

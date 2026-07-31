@@ -1,7 +1,7 @@
 use crate::arrow::SqlServerColumnBuffer;
 use crate::catalog::describe_object;
 use crate::parameter::bind_parameters;
-use crate::query::{describe_query, render_query, validate_query_sources};
+use crate::query::{describe_query, render_query, validate_query_sources, validate_spatial_inputs};
 use crate::types::{spatial_dimensions_from_profile, SqlServerReadPlan};
 use crate::SqlServerPool;
 use plenora_database_core::arrow::array::{Array, BinaryArray};
@@ -144,13 +144,14 @@ pub async fn read_query_operation(
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
-    let rendered = render_query(operation)?;
+    let rendered = render_query(operation, parameters, budget)?;
     validate_query_sources(operation, database)?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
+    validate_spatial_inputs(pooled.session_mut()?, operation, parameters, &internal).await?;
     let plan = describe_query(pooled.session_mut()?, rendered, parameters, &internal).await?;
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;

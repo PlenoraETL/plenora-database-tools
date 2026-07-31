@@ -3,6 +3,7 @@
 //! L'AST non contiene valori. Il risultato associa il testo SQL ai nomi dei
 //! parametri che il driver dovrà bindare.
 
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::query::{
@@ -13,6 +14,7 @@ use plenora_database_core::query::{
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
 
 const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
@@ -154,9 +156,16 @@ pub struct RenderedSql {
     pub binds: Vec<BindParameter>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlServerSpatialParameter {
+    pub semantics: SpatialSemantics,
+    pub srid: u32,
+}
+
 pub struct Renderer {
     dialect: Dialect,
     capabilities: DialectCapabilities,
+    sql_server_spatial_parameters: BTreeMap<String, SqlServerSpatialParameter>,
 }
 
 impl Renderer {
@@ -165,7 +174,17 @@ impl Renderer {
         Self {
             dialect,
             capabilities,
+            sql_server_spatial_parameters: BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_sql_server_spatial_parameters(
+        mut self,
+        parameters: BTreeMap<String, SqlServerSpatialParameter>,
+    ) -> Self {
+        self.sql_server_spatial_parameters = parameters;
+        self
     }
 
     /// Renderizza una SELECT senza interpolare valori.
@@ -767,11 +786,7 @@ impl Renderer {
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
         if self.dialect == Dialect::SqlServer {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                "spatial SQL Server richiede tipo geometry/geography e SRID risolti",
-            ));
+            return self.render_sql_server_spatial_function(function, arguments, binds);
         }
         let rendered = arguments
             .iter()
@@ -810,6 +825,66 @@ impl Renderer {
             spatial_name(function),
             rendered.join(", ")
         ))
+    }
+
+    fn render_sql_server_spatial_function(
+        &self,
+        function: SpatialFunction,
+        arguments: &[QueryExpression],
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        if !self.capabilities.spatial_intersects {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "AST spatial SQL Server non abilitato",
+            ));
+        }
+        if function != SpatialFunction::Intersects {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "funzione spatial non disponibile nel sottoinsieme SQL Server verificato",
+            ));
+        }
+        let receiver = arguments.first().ok_or_else(|| {
+            DatabaseError::invalid_plan("funzione spatial SQL Server senza ricevitore")
+        })?;
+        let receiver = self.render_sql_server_spatial_operand(receiver, binds)?;
+        let right = arguments.get(1).ok_or_else(|| {
+            DatabaseError::invalid_plan("funzione spatial SQL Server senza secondo operando")
+        })?;
+        let right = self.render_sql_server_spatial_operand(right, binds)?;
+        Ok(format!("({receiver}.STIntersects({right}) = 1)"))
+    }
+
+    fn render_sql_server_spatial_operand(
+        &self,
+        expression: &QueryExpression,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let QueryExpression::Parameter { name } = expression else {
+            return self.render_query_expression(expression, binds);
+        };
+        let profile = self
+            .sql_server_spatial_parameters
+            .get(name)
+            .ok_or_else(|| {
+                DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "parametro spatial SQL Server senza semantica e SRID risolti",
+                )
+            })?;
+        let srid = i32::try_from(profile.srid).map_err(|_| {
+            DatabaseError::invalid_plan("SRID parametro spatial oltre il range int SQL Server")
+        })?;
+        let constructor = match profile.semantics {
+            SpatialSemantics::Geometry => "geometry::STGeomFromWKB",
+            SpatialSemantics::Geography => "geography::STGeomFromWKB",
+        };
+        let value = self.bind(name, binds);
+        Ok(format!("{constructor}({value}, {srid})"))
     }
 
     fn render_query_group(
@@ -1538,6 +1613,40 @@ mod tests {
             error.category,
             plenora_database_core::ErrorCategory::Unsupported
         );
+    }
+
+    #[test]
+    fn sqlserver_spatial_ast_uses_typed_wkb_constructor_and_bound_value() {
+        let mut query = simple_query();
+        query.filter = Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![
+                query_column("e", "shape"),
+                QueryExpression::Parameter {
+                    name: "needle".to_owned(),
+                },
+            ],
+        });
+        let rendered = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .with_sql_server_spatial_parameters(BTreeMap::from([(
+            "needle".to_owned(),
+            SqlServerSpatialParameter {
+                semantics: SpatialSemantics::Geometry,
+                srid: 4_326,
+            },
+        )]))
+        .render_query(&query)
+        .expect("typed SQL Server spatial query");
+        assert!(rendered
+            .sql
+            .contains("([e].[shape].STIntersects(geometry::STGeomFromWKB(@p1, 4326)) = 1)"));
+        assert_eq!(rendered.binds[0].name, "needle");
+        assert!(!rendered.sql.contains("needle"));
     }
 
     #[test]

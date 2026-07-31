@@ -376,6 +376,7 @@ def main() -> int:
             "provider_common_conformance",
             "bounded_arrow_read",
             "geometry_geography_xy_z_m_zm_roundtrip",
+            "typed_spatial_ast_semantics_and_srid_preflight",
             "prepared_write_reference_types",
             "keyed_update_upsert_delete",
             "tds_bulk_differential",
