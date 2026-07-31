@@ -5,7 +5,8 @@ use crate::{
     SqlServerSchemaEvolution, SqlServerSession, SqlServerWireEncoding,
 };
 use plenora_database_core::arrow::array::{
-    Array, BinaryArray, Decimal128Array, Int32Array, Int64Array, StringArray,
+    Array, BinaryArray, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array,
+    StringArray,
 };
 use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaRef};
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
@@ -1062,6 +1063,161 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         panic!("unnamed calculated projection must fail");
     };
     assert_eq!(unnamed_error.category, ErrorCategory::Schema);
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per il sottoinsieme spatial nativo"]
+#[allow(clippy::too_many_lines)]
+async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
+    let cancellation = CancellationToken::new();
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        32,
+        2,
+    )
+    .expect("spatial method provider");
+    let secret = live_secret();
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("spatial method capabilities");
+    assert_eq!(
+        capabilities.spatial.functions,
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS
+    );
+
+    for (field, semantics, coordinates) in [
+        ("shape", SpatialSemantics::Geometry, [3.0, 3.0]),
+        ("position", SpatialSemantics::Geography, [13.0, 43.0]),
+    ] {
+        let column = || QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("source".to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        let needle = || QueryExpression::Parameter {
+            name: "needle".to_owned(),
+        };
+        let unary = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![column()],
+        };
+        let binary = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![column(), needle()],
+        };
+        let projection = [
+            ("geometry_type", unary(SpatialFunction::GeometryType)),
+            ("srid", unary(SpatialFunction::Srid)),
+            ("npoints", unary(SpatialFunction::NPoints)),
+            ("is_empty", unary(SpatialFunction::IsEmpty)),
+            ("is_valid", unary(SpatialFunction::IsValid)),
+            ("is_closed", unary(SpatialFunction::IsClosed)),
+            ("intersects", binary(SpatialFunction::Intersects)),
+            ("contains", binary(SpatialFunction::Contains)),
+            ("within", binary(SpatialFunction::Within)),
+            ("disjoint", binary(SpatialFunction::Disjoint)),
+            ("equals", binary(SpatialFunction::Equals)),
+            ("distance", binary(SpatialFunction::Distance)),
+            ("area", unary(SpatialFunction::Area)),
+            ("length", unary(SpatialFunction::Length)),
+        ]
+        .into_iter()
+        .map(|(alias, expression)| QueryProjection {
+            expression,
+            alias: Some(alias.to_owned()),
+        })
+        .collect();
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_test".to_owned()),
+                    object: "stream_probe".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("source".to_owned()),
+            }),
+            derived_source: None,
+            projection,
+            joins: Vec::new(),
+            filter: Some(binary(SpatialFunction::Equals)),
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "needle".to_owned(),
+            ParameterValue::Wkb {
+                bytes: ewkb_point(1, &coordinates),
+                srid: Some(4_326),
+                dimensions: Dimensions::Xy,
+                semantics,
+            },
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("spatial method budget");
+        let mut stream = provider
+            .query(&secret, &operation, &parameters, &budget, &cancellation)
+            .await
+            .expect("native scalar spatial query");
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("spatial method batch")
+            .expect("spatial method row");
+        assert_eq!(batch.num_rows(), 1);
+        let text = batch
+            .column_by_name("geometry_type")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .expect("geometry type");
+        assert_eq!(text.value(0), "Point");
+        for name in ["srid", "npoints"] {
+            let values = batch
+                .column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+                .expect("integer spatial result");
+            assert_eq!(values.value(0), if name == "srid" { 4_326 } else { 1 });
+        }
+        for (name, expected) in [
+            ("is_empty", false),
+            ("is_valid", true),
+            ("intersects", true),
+            ("contains", true),
+            ("within", true),
+            ("disjoint", false),
+            ("equals", true),
+        ] {
+            let values = batch
+                .column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<BooleanArray>())
+                .expect("boolean spatial result");
+            assert_eq!(values.value(0), expected, "{field}.{name}");
+        }
+        assert!(batch
+            .column_by_name("is_closed")
+            .and_then(|array| array.as_any().downcast_ref::<BooleanArray>())
+            .is_some());
+        for name in ["distance", "area", "length"] {
+            let values = batch
+                .column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<Float64Array>())
+                .expect("numeric spatial result");
+            assert!(values.value(0).abs() <= f64::EPSILON, "{field}.{name}");
+        }
+        assert!(stream
+            .next_batch()
+            .await
+            .expect("spatial method end")
+            .is_none());
+    }
 }
 
 #[tokio::test]

@@ -28,8 +28,26 @@ SELECT
     error_message
 FROM sys.dm_exec_describe_first_result_set(@P1, @P2, 0)
 WHERE is_hidden = 0
+   OR error_number IS NOT NULL
 ORDER BY column_ordinal;
 ";
+
+pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
+    SpatialFunction::GeometryType,
+    SpatialFunction::Srid,
+    SpatialFunction::NPoints,
+    SpatialFunction::IsEmpty,
+    SpatialFunction::IsValid,
+    SpatialFunction::IsClosed,
+    SpatialFunction::Intersects,
+    SpatialFunction::Contains,
+    SpatialFunction::Within,
+    SpatialFunction::Disjoint,
+    SpatialFunction::Equals,
+    SpatialFunction::Distance,
+    SpatialFunction::Area,
+    SpatialFunction::Length,
+];
 
 pub fn render_query(
     operation: &QueryOperation,
@@ -189,7 +207,16 @@ pub async fn validate_spatial_inputs(
     let quoted_object = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
         source.object.object.clone(),
     )?);
+    let mut checked_uses = BTreeSet::new();
     for usage in uses {
+        let use_identity = (
+            usage.column.relation.clone(),
+            usage.column.field.clone(),
+            usage.parameter.clone(),
+        );
+        if !checked_uses.insert(use_identity) {
+            continue;
+        }
         if let Some(relation) = &usage.column.relation {
             let expected = source.alias.as_deref().unwrap_or(&source.object.object);
             if relation != expected {
@@ -337,28 +364,40 @@ fn collect_expression_spatial_uses(
                     "AST spatial SQL Server richiede una colonna come ricevitore",
                 ));
             };
-            if *function != SpatialFunction::Intersects {
+            if sql_server_unary_spatial_function(*function) {
+                if arguments.len() != 1 {
+                    return Err(query_error(
+                        ErrorCategory::Unsupported,
+                        "overload unary spatial SQL Server fuori dal sottoinsieme verificato",
+                    ));
+                }
+                uses.push(SpatialUse {
+                    column: column.clone(),
+                    parameter: None,
+                });
+            } else if sql_server_binary_spatial_function(*function) {
+                if arguments.len() != 2 {
+                    return Err(query_error(
+                        ErrorCategory::Unsupported,
+                        "overload binary spatial SQL Server fuori dal sottoinsieme verificato",
+                    ));
+                }
+                let QueryExpression::Parameter { name } = &arguments[1] else {
+                    return Err(query_error(
+                        ErrorCategory::Unsupported,
+                        "AST spatial SQL Server richiede WKB bindato come secondo operando",
+                    ));
+                };
+                uses.push(SpatialUse {
+                    column: column.clone(),
+                    parameter: Some(name.clone()),
+                });
+            } else {
                 return Err(query_error(
                     ErrorCategory::Unsupported,
                     "funzione spatial fuori dal sottoinsieme SQL Server verificato",
                 ));
             }
-            let QueryExpression::Parameter { name } = arguments.get(1).ok_or_else(|| {
-                query_error(
-                    ErrorCategory::InvalidPlan,
-                    "AST spatial SQL Server senza secondo operando",
-                )
-            })?
-            else {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "AST spatial SQL Server richiede WKB bindato come secondo operando",
-                ));
-            };
-            uses.push(SpatialUse {
-                column: column.clone(),
-                parameter: Some(name.clone()),
-            });
         }
         QueryExpression::Scalar { arguments, .. }
         | QueryExpression::And { arguments }
@@ -418,6 +457,32 @@ fn collect_expression_spatial_uses(
         | QueryExpression::Parameter { .. } => {}
     }
     Ok(())
+}
+
+const fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
+    matches!(
+        function,
+        SpatialFunction::GeometryType
+            | SpatialFunction::Srid
+            | SpatialFunction::NPoints
+            | SpatialFunction::IsEmpty
+            | SpatialFunction::IsValid
+            | SpatialFunction::IsClosed
+            | SpatialFunction::Area
+            | SpatialFunction::Length
+    )
+}
+
+const fn sql_server_binary_spatial_function(function: SpatialFunction) -> bool {
+    matches!(
+        function,
+        SpatialFunction::Intersects
+            | SpatialFunction::Contains
+            | SpatialFunction::Within
+            | SpatialFunction::Disjoint
+            | SpatialFunction::Equals
+            | SpatialFunction::Distance
+    )
 }
 
 fn operation_has_spatial(operation: &QueryOperation) -> bool {
@@ -831,5 +896,63 @@ mod tests {
                 .category,
             ErrorCategory::Unsupported
         );
+    }
+
+    #[test]
+    fn spatial_use_collection_accepts_only_verified_sql_server_signatures() {
+        for function in VERIFIED_SPATIAL_FUNCTIONS {
+            let mut arguments = vec![column("e", "shape")];
+            if sql_server_binary_spatial_function(*function) {
+                arguments.push(QueryExpression::Parameter {
+                    name: "needle".to_owned(),
+                });
+            }
+            let mut uses = Vec::new();
+            collect_expression_spatial_uses(
+                &QueryExpression::Spatial {
+                    function: *function,
+                    arguments,
+                },
+                &mut uses,
+            )
+            .expect("verified spatial signature");
+            assert_eq!(uses.len(), 1);
+            assert_eq!(
+                uses[0].parameter.as_deref(),
+                sql_server_binary_spatial_function(*function).then_some("needle")
+            );
+        }
+
+        for expression in [
+            QueryExpression::Spatial {
+                function: SpatialFunction::Buffer,
+                arguments: vec![
+                    column("e", "shape"),
+                    QueryExpression::Parameter {
+                        name: "distance".to_owned(),
+                    },
+                ],
+            },
+            QueryExpression::Spatial {
+                function: SpatialFunction::IsValid,
+                arguments: vec![
+                    column("e", "shape"),
+                    QueryExpression::Parameter {
+                        name: "flags".to_owned(),
+                    },
+                ],
+            },
+            QueryExpression::Spatial {
+                function: SpatialFunction::Distance,
+                arguments: vec![column("e", "shape"), column("e", "other_shape")],
+            },
+        ] {
+            assert_eq!(
+                collect_expression_spatial_uses(&expression, &mut Vec::new())
+                    .expect_err("unverified spatial signature")
+                    .category,
+                ErrorCategory::Unsupported
+            );
+        }
     }
 }

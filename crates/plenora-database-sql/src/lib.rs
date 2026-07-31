@@ -350,7 +350,19 @@ impl Renderer {
             .projection
             .iter()
             .map(|item| {
-                let mut rendered = self.render_query_expression(&item.expression, binds)?;
+                let mut rendered = match &item.expression {
+                    QueryExpression::Spatial {
+                        function,
+                        arguments,
+                    } if self.dialect == Dialect::SqlServer
+                        && function.returns_boolean(arguments.len()) =>
+                    {
+                        self.render_sql_server_spatial_function_value(
+                            *function, arguments, binds, false,
+                        )?
+                    }
+                    _ => self.render_query_expression(&item.expression, binds)?,
+                };
                 if matches!(
                     &item.expression,
                     QueryExpression::Spatial { function, .. } if function.returns_geometry()
@@ -833,6 +845,16 @@ impl Renderer {
         arguments: &[QueryExpression],
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
+        self.render_sql_server_spatial_function_value(function, arguments, binds, true)
+    }
+
+    fn render_sql_server_spatial_function_value(
+        &self,
+        function: SpatialFunction,
+        arguments: &[QueryExpression],
+        binds: &mut Vec<BindParameter>,
+        predicate_context: bool,
+    ) -> Result<String> {
         if !self.capabilities.spatial_intersects {
             return Err(DatabaseError::unsupported(
                 self.provider_kind(),
@@ -840,22 +862,54 @@ impl Renderer {
                 "AST spatial SQL Server non abilitato",
             ));
         }
-        if function != SpatialFunction::Intersects {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                "funzione spatial non disponibile nel sottoinsieme SQL Server verificato",
-            ));
-        }
         let receiver = arguments.first().ok_or_else(|| {
             DatabaseError::invalid_plan("funzione spatial SQL Server senza ricevitore")
         })?;
         let receiver = self.render_sql_server_spatial_operand(receiver, binds)?;
-        let right = arguments.get(1).ok_or_else(|| {
-            DatabaseError::invalid_plan("funzione spatial SQL Server senza secondo operando")
-        })?;
-        let right = self.render_sql_server_spatial_operand(right, binds)?;
-        Ok(format!("({receiver}.STIntersects({right}) = 1)"))
+        let unary = |method: &str| Ok(format!("{receiver}.{method}()"));
+        let predicate = |call: String| {
+            if predicate_context {
+                format!("({call} = 1)")
+            } else {
+                call
+            }
+        };
+        let unary_predicate = |method: &str| Ok(predicate(format!("{receiver}.{method}()")));
+        let binary = |renderer: &Self,
+                      method: &str,
+                      binds: &mut Vec<BindParameter>|
+         -> Result<String> {
+            let right = arguments.get(1).ok_or_else(|| {
+                DatabaseError::invalid_plan("funzione spatial SQL Server senza secondo operando")
+            })?;
+            let right = renderer.render_sql_server_spatial_operand(right, binds)?;
+            Ok(format!("{receiver}.{method}({right})"))
+        };
+        let binary_predicate =
+            |renderer: &Self, method: &str, binds: &mut Vec<BindParameter>| -> Result<String> {
+                Ok(predicate(binary(renderer, method, binds)?))
+            };
+        match function {
+            SpatialFunction::GeometryType => unary("STGeometryType"),
+            SpatialFunction::Srid => Ok(format!("{receiver}.STSrid")),
+            SpatialFunction::NPoints => unary("STNumPoints"),
+            SpatialFunction::IsEmpty => unary_predicate("STIsEmpty"),
+            SpatialFunction::IsValid => unary_predicate("STIsValid"),
+            SpatialFunction::IsClosed => unary_predicate("STIsClosed"),
+            SpatialFunction::Intersects => binary_predicate(self, "STIntersects", binds),
+            SpatialFunction::Contains => binary_predicate(self, "STContains", binds),
+            SpatialFunction::Within => binary_predicate(self, "STWithin", binds),
+            SpatialFunction::Disjoint => binary_predicate(self, "STDisjoint", binds),
+            SpatialFunction::Equals => binary_predicate(self, "STEquals", binds),
+            SpatialFunction::Distance => binary(self, "STDistance", binds),
+            SpatialFunction::Area => unary("STArea"),
+            SpatialFunction::Length => unary("STLength"),
+            _ => Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "funzione spatial non disponibile nel sottoinsieme SQL Server verificato",
+            )),
+        }
     }
 
     fn render_sql_server_spatial_operand(
@@ -1647,6 +1701,109 @@ mod tests {
             .contains("([e].[shape].STIntersects(geometry::STGeomFromWKB(@p1, 4326)) = 1)"));
         assert_eq!(rendered.binds[0].name, "needle");
         assert!(!rendered.sql.contains("needle"));
+    }
+
+    #[test]
+    fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
+        let renderer = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .with_sql_server_spatial_parameters(BTreeMap::from([(
+            "needle".to_owned(),
+            SqlServerSpatialParameter {
+                semantics: SpatialSemantics::Geography,
+                srid: 4_326,
+            },
+        )]));
+        for (function, fragment) in [
+            (
+                SpatialFunction::GeometryType,
+                "[e].[shape].STGeometryType()",
+            ),
+            (SpatialFunction::Srid, "[e].[shape].STSrid"),
+            (SpatialFunction::NPoints, "[e].[shape].STNumPoints()"),
+            (SpatialFunction::IsEmpty, "[e].[shape].STIsEmpty()"),
+            (SpatialFunction::IsValid, "[e].[shape].STIsValid()"),
+            (SpatialFunction::IsClosed, "[e].[shape].STIsClosed()"),
+            (SpatialFunction::Area, "[e].[shape].STArea()"),
+            (SpatialFunction::Length, "[e].[shape].STLength()"),
+        ] {
+            let mut query = simple_query();
+            query.projection[0] = QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function,
+                    arguments: vec![query_column("e", "shape")],
+                },
+                alias: Some("value".to_owned()),
+            };
+            let rendered_sql = renderer.render_query(&query).expect("unary spatial method");
+            assert!(rendered_sql.sql.contains(fragment), "{function:?}");
+            if function.returns_boolean(1) {
+                assert!(!rendered_sql.sql.contains("CASE WHEN"));
+                assert!(!rendered_sql.sql.contains(" = 1) AS [value]"));
+            }
+            assert!(rendered_sql.binds.is_empty());
+        }
+        for (function, method) in [
+            (SpatialFunction::Intersects, "STIntersects"),
+            (SpatialFunction::Contains, "STContains"),
+            (SpatialFunction::Within, "STWithin"),
+            (SpatialFunction::Disjoint, "STDisjoint"),
+            (SpatialFunction::Equals, "STEquals"),
+            (SpatialFunction::Distance, "STDistance"),
+        ] {
+            let mut query = simple_query();
+            query.projection[0] = QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function,
+                    arguments: vec![
+                        query_column("e", "shape"),
+                        QueryExpression::Parameter {
+                            name: "needle".to_owned(),
+                        },
+                    ],
+                },
+                alias: Some("value".to_owned()),
+            };
+            let rendered_sql = renderer
+                .render_query(&query)
+                .expect("binary spatial method");
+            assert!(
+                rendered_sql.sql.contains(&format!(
+                    "[e].[shape].{method}(geography::STGeomFromWKB(@p1, 4326))"
+                )),
+                "{function:?}"
+            );
+            if function.returns_boolean(2) {
+                assert!(!rendered_sql.sql.contains("CASE WHEN"));
+                assert!(!rendered_sql.sql.contains(" = 1) AS [value]"));
+            }
+            assert_eq!(rendered_sql.binds[0].name, "needle");
+        }
+
+        let mut unsupported = simple_query();
+        unsupported.projection[0] = QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Buffer,
+                arguments: vec![
+                    query_column("e", "shape"),
+                    QueryExpression::Parameter {
+                        name: "distance".to_owned(),
+                    },
+                ],
+            },
+            alias: Some("value".to_owned()),
+        };
+        assert_eq!(
+            renderer
+                .render_query(&unsupported)
+                .expect_err("unverified spatial method")
+                .category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
     }
 
     #[test]

@@ -32,8 +32,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - prepared write e TDS bulk differenziale;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
-- AST spatial `Intersects` nativo tipizzato su source fisica singola, con WKB
-  bindato e rifiuto live di semantica o SRID discordanti;
+- quattordici metodi AST spatial nativi con output scalare su source fisica
+  singola, WKB bindato, predicati projection mantenuti come `bit` nativo e rifiuto live
+  di semantica o SRID discordanti;
 - schema drift fail-closed;
 - schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
   congiunto di DDL e dati;
