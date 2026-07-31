@@ -308,7 +308,8 @@ impl Provider for SqlServerProvider {
                     write_wkb: true,
                     geometry: probe.geometry_type_id.is_some(),
                     geography: probe.geography_type_id.is_some(),
-                    spatial_index: false,
+                    spatial_index: probe.geometry_type_id.is_some()
+                        && probe.geography_type_id.is_some(),
                     mixed_geometry_types: false,
                     dimensions: vec![
                         Dimensions::Xy,

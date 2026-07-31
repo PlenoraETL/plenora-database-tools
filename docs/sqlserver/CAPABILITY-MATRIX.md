@@ -18,7 +18,7 @@ Legenda:
 | TLS | cifratura richiesta, verifica certificato default | offline + live-required |
 | Trust certificate | solo opt-out esplicito | offline + live-required |
 | MARS | disabilitato | offline + live-required |
-| Sessione | XACT_ABORT ON, implicit transactions OFF, NOCOUNT ON | offline + live-required |
+| Sessione | XACT_ABORT ON, implicit transactions OFF, NOCOUNT ON e opzioni ANSI/ARITHABORT/QUOTED_IDENTIFIER fissate | offline + live-proven |
 | Pool | bounded; riuso solo in stato `Ready` | offline + live-required |
 | Trait comune `Provider` | connection, capability, inspect, read/query e prepared write | live-proven |
 | Cancellazione | quarantena connessione | offline + live-required |
@@ -53,6 +53,8 @@ Legenda:
 | `MERGE` | non usato come default | reject |
 | `geometry` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |
 | `geography` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |
+| Indici spatial | solo create/replace atomici con primary key clustered; `GEOMETRY_AUTO_GRID` con bounding box derivato dai dati e `GEOGRAPHY_AUTO_GRID` | live-proven per creazione, introspezione e access path forzato |
+| Indice `geometry` senza extent | nessun bounding box inventato: errore fail-closed e rollback di tabella/staging | live-proven |
 | SRID | sempre esplicito per input spatial | offline + live-required |
 | Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
 | `FullGlobe` | rifiutato in strict | reject |
@@ -61,7 +63,7 @@ Legenda:
 | Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
 | Introspection estesa | privilegi effettivi, temporal/graph/external e partizioni | live-required |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
-| Catalogo riferimento | schemi, oggetti, colonne, vincoli e indici | live-proven |
+| Catalogo riferimento | schemi, oggetti, colonne, vincoli, indici e metadati di tassellazione/bounding box spatial | live-proven |
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |
 | TLS self-signed negativo | policy `Verify` rifiuta la fixture | live-proven |
 | TLS self-signed opt-out | connessione solo con eccezione esplicita | live-proven |

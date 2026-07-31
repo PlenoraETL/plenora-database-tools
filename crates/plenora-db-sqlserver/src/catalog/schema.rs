@@ -39,7 +39,22 @@ pub struct SqlServerConstraint {
     pub not_trusted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SqlServerSpatialBoundingBox {
+    pub xmin: f64,
+    pub ymin: f64,
+    pub xmax: f64,
+    pub ymax: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SqlServerSpatialIndex {
+    pub spatial_type: String,
+    pub tessellation_scheme: String,
+    pub bounding_box: Option<SqlServerSpatialBoundingBox>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 // I flag di sys.indexes sono combinabili e fanno parte del token strutturale.
 pub struct SqlServerIndex {
@@ -53,6 +68,7 @@ pub struct SqlServerIndex {
     pub filtered: bool,
     pub filter_definition: Option<String>,
     pub columns: Option<String>,
+    pub spatial: Option<SqlServerSpatialIndex>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +79,7 @@ pub struct SqlServerSchemaToken {
     pub structural_fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqlServerObjectDescription {
     pub database_id: i32,
     pub object_id: i32,
@@ -364,10 +380,22 @@ SELECT
         N','
     ) WITHIN GROUP (ORDER BY
         CASE WHEN ic.key_ordinal = 0 THEN 2147483647 ELSE ic.key_ordinal END,
-        ic.index_column_id)
+        ic.index_column_id),
+    si.spatial_index_type_desc,
+    si.tessellation_scheme,
+    sit.bounding_box_xmin,
+    sit.bounding_box_ymin,
+    sit.bounding_box_xmax,
+    sit.bounding_box_ymax
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 JOIN sys.indexes AS i ON i.object_id = o.object_id
+LEFT JOIN sys.spatial_indexes AS si
+  ON si.object_id = i.object_id
+ AND si.index_id = i.index_id
+LEFT JOIN sys.spatial_index_tessellations AS sit
+  ON sit.object_id = i.object_id
+ AND sit.index_id = i.index_id
 LEFT JOIN sys.index_columns AS ic
   ON ic.object_id = i.object_id
  AND ic.index_id = i.index_id
@@ -384,7 +412,13 @@ GROUP BY
     i.is_unique_constraint,
     i.is_disabled,
     i.has_filter,
-    i.filter_definition
+    i.filter_definition,
+    si.spatial_index_type_desc,
+    si.tessellation_scheme,
+    sit.bounding_box_xmin,
+    sit.bounding_box_ymin,
+    sit.bounding_box_xmax,
+    sit.bounding_box_ymax
 ORDER BY i.index_id;
 ",
         schema,
@@ -405,9 +439,55 @@ ORDER BY i.index_id;
                 filtered: required(row, 7, "index_filtered")?,
                 filter_definition: optional_text(row, 8, "index_filter_definition")?,
                 columns: optional_text(row, 9, "index_columns")?,
+                spatial: spatial_index(row)?,
             })
         })
         .collect()
+}
+
+fn spatial_index(row: &tiberius::Row) -> Result<Option<SqlServerSpatialIndex>> {
+    let spatial_type = optional_text(row, 10, "spatial_index_type")?;
+    let tessellation_scheme = optional_text(row, 11, "spatial_tessellation_scheme")?;
+    let bounds = [
+        super::optional::<f64>(row, 12, "spatial_bounding_box_xmin")?,
+        super::optional::<f64>(row, 13, "spatial_bounding_box_ymin")?,
+        super::optional::<f64>(row, 14, "spatial_bounding_box_xmax")?,
+        super::optional::<f64>(row, 15, "spatial_bounding_box_ymax")?,
+    ];
+    match (spatial_type, tessellation_scheme, bounds) {
+        (None, None, [None, None, None, None]) => Ok(None),
+        (Some(spatial_type), Some(tessellation_scheme), [None, None, None, None]) => {
+            Ok(Some(SqlServerSpatialIndex {
+                spatial_type,
+                tessellation_scheme,
+                bounding_box: None,
+            }))
+        }
+        (
+            Some(spatial_type),
+            Some(tessellation_scheme),
+            [Some(xmin), Some(ymin), Some(xmax), Some(ymax)],
+        ) if [xmin, ymin, xmax, ymax]
+            .iter()
+            .all(|value| value.is_finite())
+            && xmin < xmax
+            && ymin < ymax =>
+        {
+            Ok(Some(SqlServerSpatialIndex {
+                spatial_type,
+                tessellation_scheme,
+                bounding_box: Some(SqlServerSpatialBoundingBox {
+                    xmin,
+                    ymin,
+                    xmax,
+                    ymax,
+                }),
+            }))
+        }
+        _ => Err(super::mapping_error(
+            "metadati indice spatial SQL Server incoerenti",
+        )),
+    }
 }
 
 async fn execute_bound(

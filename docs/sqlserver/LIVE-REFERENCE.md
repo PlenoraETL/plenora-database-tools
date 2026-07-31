@@ -1,6 +1,6 @@
 # Evidenza live — SQL Server 2022
 
-Data: 2026-07-30
+Data: 2026-07-31
 
 ## Ambiente
 
@@ -123,6 +123,10 @@ La suite live seriale ha verificato:
 46. `QueryOperation` spatial tipizzata con WKB bindato e `STIntersects`,
     inclusi rifiuti pre-query di SRID e semantica geometry/geography
     discordanti.
+47. indici `GEOMETRY_AUTO_GRID` e `GEOGRAPHY_AUTO_GRID` creati sia in
+    `create` sia in staged `replace`, metadati di tassellazione e bounding box
+    riletti dal catalogo, query geometry eseguita forzando l'access path
+    pubblicato e create senza extent rifiutata con rollback completo.
 
 Comando della prova:
 

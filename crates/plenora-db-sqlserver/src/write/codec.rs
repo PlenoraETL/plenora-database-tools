@@ -508,6 +508,7 @@ mod tests {
             schema: "dbo".to_owned(),
             object: "target".to_owned(),
             added_columns: Vec::new(),
+            spatial_indexes: Vec::new(),
         };
         let error =
             inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");
