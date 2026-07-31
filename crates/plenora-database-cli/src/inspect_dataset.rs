@@ -1,3 +1,4 @@
+use crate::CliResult;
 use arrow_ipc::reader::FileReader;
 use plenora_database_core::arrow::array::{Array, BinaryArray, LargeBinaryArray, RecordBatch};
 use plenora_database_core::arrow::schema::{DataType, SchemaRef};
@@ -18,36 +19,35 @@ const MAX_GEOMETRY_CELLS: u64 = 1_000_000;
 const MAX_GEOMETRY_COMPONENTS: u64 = 16_777_216;
 const MAX_GEOMETRY_DEPTH: u64 = 64;
 
-pub fn inspect(path: impl AsRef<Path>) -> Result<Value, String> {
+pub fn inspect(path: impl AsRef<Path>) -> CliResult<Value> {
     let path = path.as_ref();
     let file_size = fs::metadata(path)
         .map_err(|_| "dataset Arrow IPC non leggibile".to_owned())?
         .len();
     if file_size == 0 || file_size > MAX_IPC_FILE_BYTES {
-        return Err("dataset Arrow IPC vuoto o oltre il limite di 512 MiB".to_owned());
+        return Err("dataset Arrow IPC vuoto o oltre il limite di 512 MiB".into());
     }
     let file = File::open(path).map_err(|_| "dataset Arrow IPC non apribile".to_owned())?;
     let reader = FileReader::try_new(file, None)
         .map_err(|_| "file Arrow IPC non valido o non supportato".to_owned())?;
     let schema = reader.schema();
     if schema.fields().len() > MAX_COLUMNS {
-        return Err("schema Arrow IPC oltre il limite di colonne".to_owned());
+        return Err("schema Arrow IPC oltre il limite di colonne".into());
     }
-    validate_schema_contract(&schema).map_err(|error| error.to_string())?;
+    validate_schema_contract(&schema)?;
 
     let spatial_fields = schema
         .fields()
         .iter()
         .enumerate()
         .map(|(index, field)| FieldContract::parse(field).map(|contract| (index, contract)))
-        .collect::<plenora_database_core::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
+        .collect::<plenora_database_core::Result<Vec<_>>>()?;
 
     let mut field_reports = schema
         .fields()
         .iter()
         .map(|field| {
-            let contract = FieldContract::parse(field).map_err(|error| error.to_string())?;
+            let contract = FieldContract::parse(field)?;
             let mut report = Map::from_iter([
                 ("name".to_owned(), json!(field.name())),
                 ("data_type".to_owned(), json!(field.data_type().to_string())),
@@ -60,7 +60,7 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Value, String> {
             }
             Ok(report)
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, crate::CliError>>()?;
 
     let mut batches = 0_u64;
     let mut rows = 0_u64;
@@ -71,10 +71,10 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Value, String> {
             .checked_add(1)
             .ok_or_else(|| "overflow nel conteggio batch".to_owned())?;
         if batches > MAX_BATCHES {
-            return Err("dataset Arrow IPC oltre il limite di batch".to_owned());
+            return Err("dataset Arrow IPC oltre il limite di batch".into());
         }
         if batch.get_array_memory_size() > MAX_BATCH_MEMORY_BYTES {
-            return Err("RecordBatch Arrow IPC oltre il limite di memoria".to_owned());
+            return Err("RecordBatch Arrow IPC oltre il limite di memoria".into());
         }
         let batch_rows = u64::try_from(batch.num_rows())
             .map_err(|_| "conteggio righe Arrow oltre u64".to_owned())?;
@@ -82,7 +82,7 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<Value, String> {
             .checked_add(batch_rows)
             .ok_or_else(|| "overflow nel conteggio righe".to_owned())?;
         if rows > MAX_ROWS {
-            return Err("dataset Arrow IPC oltre il limite di righe ispezionabili".to_owned());
+            return Err("dataset Arrow IPC oltre il limite di righe ispezionabili".into());
         }
         inspect_batch(
             &schema,
@@ -365,7 +365,28 @@ mod tests {
             &[Some(point_xy())],
         );
         let error = inspect(&fixture.0).expect_err("conflicting CRS");
-        assert!(error.contains("Crs during Validate"));
+        assert_eq!(error.0.category, plenora_database_core::ErrorCategory::Crs);
+        assert_eq!(error.0.phase, plenora_database_core::ErrorPhase::Validate);
+        assert_eq!(
+            error.0.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+        assert_eq!(
+            error.0.retry,
+            plenora_database_core::RetryDisposition::Never
+        );
+        assert_eq!(
+            error.0.message,
+            "identificatore CRS e SRID numerico divergenti"
+        );
+        let envelope: Value =
+            serde_json::from_str(&error.to_json()).expect("CRS error envelope JSON");
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["protocol_version"], 1);
+        assert_eq!(envelope["error"]["category"], "Crs");
+        assert_eq!(envelope["error"]["phase"], "Validate");
+        assert_eq!(envelope["error"]["remote_effect"], "none");
+        assert_eq!(envelope["error"]["retry"], "never");
     }
 
     #[test]
@@ -375,7 +396,7 @@ mod tests {
             &[Some(vec![1, 2, 3])],
         );
         let error = inspect(&fixture.0).expect_err("malformed WKB");
-        assert!(error.contains("batch 0 riga 0"));
+        assert!(error.0.message.contains("batch 0 riga 0"));
     }
 
     #[test]
