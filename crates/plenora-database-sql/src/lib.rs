@@ -912,6 +912,16 @@ impl Renderer {
             |renderer: &Self, method: &str, binds: &mut Vec<BindParameter>| -> Result<String> {
                 Ok(predicate(binary(renderer, method, binds)?))
             };
+        let numeric = |renderer: &Self,
+                       method: &str,
+                       binds: &mut Vec<BindParameter>|
+         -> Result<String> {
+            let argument = arguments.get(1).ok_or_else(|| {
+                DatabaseError::invalid_plan("funzione spatial SQL Server senza argomento numerico")
+            })?;
+            let argument = renderer.render_query_expression(argument, binds)?;
+            Ok(format!("{receiver}.{method}({argument})"))
+        };
         match function {
             SpatialFunction::GeometryType => unary("STGeometryType"),
             SpatialFunction::Srid => Ok(format!("{receiver}.STSrid")),
@@ -929,6 +939,13 @@ impl Renderer {
             SpatialFunction::Length => unary("STLength"),
             SpatialFunction::StartPoint => unary("STStartPoint"),
             SpatialFunction::EndPoint => unary("STEndPoint"),
+            SpatialFunction::PointN => numeric(self, "STPointN", binds),
+            SpatialFunction::Buffer => numeric(self, "STBuffer", binds),
+            SpatialFunction::Intersection => binary(self, "STIntersection", binds),
+            SpatialFunction::Difference => binary(self, "STDifference", binds),
+            SpatialFunction::SymDifference => binary(self, "STSymDifference", binds),
+            SpatialFunction::Union => binary(self, "STUnion", binds),
+            SpatialFunction::ConvexHull => unary("STConvexHull"),
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1758,6 +1775,7 @@ mod tests {
             (SpatialFunction::Length, "[e].[shape].STLength()"),
             (SpatialFunction::StartPoint, "[e].[shape].STStartPoint()"),
             (SpatialFunction::EndPoint, "[e].[shape].STEndPoint()"),
+            (SpatialFunction::ConvexHull, "[e].[shape].STConvexHull()"),
         ] {
             let mut query = simple_query();
             query.projection[0] = QueryProjection {
@@ -1792,6 +1810,10 @@ mod tests {
             (SpatialFunction::Disjoint, "STDisjoint"),
             (SpatialFunction::Equals, "STEquals"),
             (SpatialFunction::Distance, "STDistance"),
+            (SpatialFunction::Intersection, "STIntersection"),
+            (SpatialFunction::Difference, "STDifference"),
+            (SpatialFunction::SymDifference, "STSymDifference"),
+            (SpatialFunction::Union, "STUnion"),
         ] {
             let mut query = simple_query();
             query.projection[0] = QueryProjection {
@@ -1821,17 +1843,37 @@ mod tests {
             }
             assert_eq!(rendered_sql.binds[0].name, "needle");
         }
+        for (function, method, parameter) in [
+            (SpatialFunction::PointN, "STPointN", "point_index"),
+            (SpatialFunction::Buffer, "STBuffer", "distance"),
+        ] {
+            let mut query = simple_query();
+            query.projection[0] = QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function,
+                    arguments: vec![
+                        query_column("e", "shape"),
+                        QueryExpression::Parameter {
+                            name: parameter.to_owned(),
+                        },
+                    ],
+                },
+                alias: Some("value".to_owned()),
+            };
+            let rendered_sql = renderer
+                .render_query(&query)
+                .expect("numeric spatial method");
+            assert!(rendered_sql
+                .sql
+                .contains(&format!("([e].[shape].{method}(@p1)).AsBinaryZM()")));
+            assert_eq!(rendered_sql.binds[0].name, parameter);
+        }
 
         let mut unsupported = simple_query();
         unsupported.projection[0] = QueryProjection {
             expression: QueryExpression::Spatial {
-                function: SpatialFunction::Buffer,
-                arguments: vec![
-                    query_column("e", "shape"),
-                    QueryExpression::Parameter {
-                        name: "distance".to_owned(),
-                    },
-                ],
+                function: SpatialFunction::MakeValid,
+                arguments: vec![query_column("e", "shape")],
             },
             alias: Some("value".to_owned()),
         };

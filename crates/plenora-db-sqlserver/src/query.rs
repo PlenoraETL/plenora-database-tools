@@ -50,6 +50,13 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Length,
     SpatialFunction::StartPoint,
     SpatialFunction::EndPoint,
+    SpatialFunction::PointN,
+    SpatialFunction::Buffer,
+    SpatialFunction::Intersection,
+    SpatialFunction::Difference,
+    SpatialFunction::SymDifference,
+    SpatialFunction::Union,
+    SpatialFunction::ConvexHull,
 ];
 
 const MAX_SPATIAL_OUTPUTS: usize = 64;
@@ -73,6 +80,7 @@ pub fn render_query(
     parameters: &ParameterBag,
     budget: &ResourceBudget,
 ) -> Result<RenderedSql> {
+    validate_bound_spatial_arguments(operation, parameters)?;
     sql_server_renderer()
         .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?)
         .render_query(operation)
@@ -235,7 +243,7 @@ pub async fn validate_spatial_inputs(
         let use_identity = (
             usage.column.relation.clone(),
             usage.column.field.clone(),
-            usage.parameter.clone(),
+            usage.argument.clone(),
         );
         if !checked_uses.insert(use_identity) {
             continue;
@@ -269,14 +277,35 @@ pub async fn validate_spatial_inputs(
                 ));
             }
         };
-        let Some(parameter_name) = usage.parameter else {
-            continue;
+        let parameter_name = match &usage.argument {
+            SpatialArgument::None => continue,
+            SpatialArgument::PointIndex(name) => {
+                if !matches!(parameters.get(name), Some(ParameterValue::I32(value)) if *value >= 1)
+                {
+                    return Err(query_error(
+                        ErrorCategory::InvalidPlan,
+                        "STPointN SQL Server richiede un indice int bindato maggiore o uguale a 1",
+                    ));
+                }
+                continue;
+            }
+            SpatialArgument::Distance(name) => {
+                if !matches!(parameters.get(name), Some(ParameterValue::F64(value)) if value.is_finite())
+                {
+                    return Err(query_error(
+                        ErrorCategory::InvalidPlan,
+                        "STBuffer SQL Server richiede una distanza float finita bindata",
+                    ));
+                }
+                continue;
+            }
+            SpatialArgument::Geometry(name) => name,
         };
         let ParameterValue::Wkb {
             srid: Some(expected_srid),
             semantics,
             ..
-        } = parameters.get(&parameter_name).ok_or_else(|| {
+        } = parameters.get(parameter_name).ok_or_else(|| {
             query_error(
                 ErrorCategory::InvalidPlan,
                 "parametro spatial SQL Server mancante",
@@ -378,9 +407,16 @@ async fn profile_spatial_outputs(
         }
         if !matches!(
             function,
-            SpatialFunction::StartPoint | SpatialFunction::EndPoint
-        ) || arguments.len() != 1
-        {
+            SpatialFunction::StartPoint
+                | SpatialFunction::EndPoint
+                | SpatialFunction::PointN
+                | SpatialFunction::Buffer
+                | SpatialFunction::Intersection
+                | SpatialFunction::Difference
+                | SpatialFunction::SymDifference
+                | SpatialFunction::Union
+                | SpatialFunction::ConvexHull
+        ) {
             return Err(query_error(
                 ErrorCategory::Unsupported,
                 "output spatial SQL Server fuori dal sottoinsieme verificato",
@@ -523,10 +559,54 @@ async fn profile_spatial_outputs(
     Ok(contracts)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum SpatialArgument {
+    None,
+    Geometry(String),
+    PointIndex(String),
+    Distance(String),
+}
+
+fn validate_bound_spatial_arguments(
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+) -> Result<()> {
+    let mut uses = Vec::new();
+    collect_operation_spatial_uses(operation, &mut uses)?;
+    for usage in uses {
+        match usage.argument {
+            SpatialArgument::PointIndex(name)
+                if !matches!(
+                    parameters.get(&name),
+                    Some(ParameterValue::I32(value)) if *value >= 1
+                ) =>
+            {
+                return Err(query_error(
+                    ErrorCategory::InvalidPlan,
+                    "STPointN SQL Server richiede un indice int bindato maggiore o uguale a 1",
+                ));
+            }
+            SpatialArgument::Distance(name)
+                if !matches!(
+                    parameters.get(&name),
+                    Some(ParameterValue::F64(value)) if value.is_finite()
+                ) =>
+            {
+                return Err(query_error(
+                    ErrorCategory::InvalidPlan,
+                    "STBuffer SQL Server richiede una distanza float finita bindata",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct SpatialUse {
     column: ColumnRef,
-    parameter: Option<String>,
+    argument: SpatialArgument,
 }
 
 fn collect_operation_spatial_uses(
@@ -582,7 +662,7 @@ fn collect_expression_spatial_uses(
                 }
                 uses.push(SpatialUse {
                     column: column.clone(),
-                    parameter: None,
+                    argument: SpatialArgument::None,
                 });
             } else if sql_server_binary_spatial_function(*function) {
                 if arguments.len() != 2 {
@@ -599,7 +679,28 @@ fn collect_expression_spatial_uses(
                 };
                 uses.push(SpatialUse {
                     column: column.clone(),
-                    parameter: Some(name.clone()),
+                    argument: SpatialArgument::Geometry(name.clone()),
+                });
+            } else if matches!(function, SpatialFunction::PointN | SpatialFunction::Buffer) {
+                if arguments.len() != 2 {
+                    return Err(query_error(
+                        ErrorCategory::Unsupported,
+                        "overload numerico spatial SQL Server fuori dal sottoinsieme verificato",
+                    ));
+                }
+                let QueryExpression::Parameter { name } = &arguments[1] else {
+                    return Err(query_error(
+                        ErrorCategory::Unsupported,
+                        "AST spatial SQL Server richiede argomento numerico bindato",
+                    ));
+                };
+                uses.push(SpatialUse {
+                    column: column.clone(),
+                    argument: if *function == SpatialFunction::PointN {
+                        SpatialArgument::PointIndex(name.clone())
+                    } else {
+                        SpatialArgument::Distance(name.clone())
+                    },
                 });
             } else {
                 return Err(query_error(
@@ -681,6 +782,7 @@ const fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
             | SpatialFunction::Length
             | SpatialFunction::StartPoint
             | SpatialFunction::EndPoint
+            | SpatialFunction::ConvexHull
     )
 }
 
@@ -693,6 +795,10 @@ const fn sql_server_binary_spatial_function(function: SpatialFunction) -> bool {
             | SpatialFunction::Disjoint
             | SpatialFunction::Equals
             | SpatialFunction::Distance
+            | SpatialFunction::Intersection
+            | SpatialFunction::Difference
+            | SpatialFunction::SymDifference
+            | SpatialFunction::Union
     )
 }
 
@@ -1117,6 +1223,14 @@ mod tests {
                 arguments.push(QueryExpression::Parameter {
                     name: "needle".to_owned(),
                 });
+            } else if *function == SpatialFunction::PointN {
+                arguments.push(QueryExpression::Parameter {
+                    name: "point_index".to_owned(),
+                });
+            } else if *function == SpatialFunction::Buffer {
+                arguments.push(QueryExpression::Parameter {
+                    name: "distance".to_owned(),
+                });
             }
             let mut uses = Vec::new();
             collect_expression_spatial_uses(
@@ -1128,21 +1242,22 @@ mod tests {
             )
             .expect("verified spatial signature");
             assert_eq!(uses.len(), 1);
-            assert_eq!(
-                uses[0].parameter.as_deref(),
-                sql_server_binary_spatial_function(*function).then_some("needle")
-            );
+            let expected = if sql_server_binary_spatial_function(*function) {
+                SpatialArgument::Geometry("needle".to_owned())
+            } else if *function == SpatialFunction::PointN {
+                SpatialArgument::PointIndex("point_index".to_owned())
+            } else if *function == SpatialFunction::Buffer {
+                SpatialArgument::Distance("distance".to_owned())
+            } else {
+                SpatialArgument::None
+            };
+            assert_eq!(uses[0].argument, expected);
         }
 
         for expression in [
             QueryExpression::Spatial {
-                function: SpatialFunction::Buffer,
-                arguments: vec![
-                    column("e", "shape"),
-                    QueryExpression::Parameter {
-                        name: "distance".to_owned(),
-                    },
-                ],
+                function: SpatialFunction::MakeValid,
+                arguments: vec![column("e", "shape")],
             },
             QueryExpression::Spatial {
                 function: SpatialFunction::IsValid,
@@ -1163,6 +1278,37 @@ mod tests {
                     .expect_err("unverified spatial signature")
                     .category,
                 ErrorCategory::Unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_spatial_arguments_fail_before_database_io() {
+        let budget =
+            ResourceBudget::new(plenora_database_core::ResourceLimits::default()).expect("budget");
+        for (function, value) in [
+            (SpatialFunction::PointN, ParameterValue::I32(0)),
+            (SpatialFunction::Buffer, ParameterValue::F64(f64::NAN)),
+        ] {
+            let mut query = base_query();
+            query.projection[0] = QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function,
+                    arguments: vec![
+                        column("e", "shape"),
+                        QueryExpression::Parameter {
+                            name: "value".to_owned(),
+                        },
+                    ],
+                },
+                alias: Some("result".to_owned()),
+            };
+            let parameters = ParameterBag::new(BTreeMap::from([("value".to_owned(), value)]));
+            assert_eq!(
+                render_query(&query, &parameters, &budget)
+                    .expect_err("invalid numeric spatial argument")
+                    .category,
+                ErrorCategory::InvalidPlan
             );
         }
     }

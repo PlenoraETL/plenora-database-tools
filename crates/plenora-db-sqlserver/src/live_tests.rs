@@ -1291,6 +1291,23 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
                     expression: spatial(SpatialFunction::EndPoint),
                     alias: Some("end_point".to_owned()),
                 },
+                QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: SpatialFunction::PointN,
+                        arguments: vec![
+                            QueryExpression::Column {
+                                column: ColumnRef {
+                                    relation: Some("source".to_owned()),
+                                    field: field.to_owned(),
+                                },
+                            },
+                            QueryExpression::Parameter {
+                                name: "point_index".to_owned(),
+                            },
+                        ],
+                    },
+                    alias: Some("point_n".to_owned()),
+                },
             ],
             joins: Vec::new(),
             filter: None,
@@ -1309,14 +1326,17 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
             .query(
                 &secret,
                 &operation,
-                &ParameterBag::default(),
+                &ParameterBag::new(BTreeMap::from([(
+                    "point_index".to_owned(),
+                    ParameterValue::I32(2),
+                )])),
                 &budget,
                 &cancellation,
             )
             .await
             .unwrap_or_else(|error| panic!("{semantics} spatial output: {error}"));
         let output_schema = stream.schema();
-        for name in ["start_point", "end_point"] {
+        for name in ["start_point", "end_point", "point_n"] {
             let metadata = output_schema
                 .field_with_name(name)
                 .expect("spatial output field")
@@ -1330,7 +1350,7 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
             .await
             .expect("spatial output batch")
             .expect("spatial output row");
-        for (name, coordinates) in [("start_point", start), ("end_point", end)] {
+        for (name, coordinates) in [("start_point", start), ("end_point", end), ("point_n", end)] {
             let values = batch
                 .column_by_name(name)
                 .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
@@ -1351,6 +1371,199 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
         )
         .await
         .expect("cleanup spatial output fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per processing spatial geometry/geography"]
+#[allow(clippy::too_many_lines)]
+async fn live_native_spatial_processing_covers_geometry_and_geography() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("spatial processing admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[spatial_processing_probe]; \
+                 CREATE TABLE [plenora_test].[spatial_processing_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 INSERT INTO [plenora_test].[spatial_processing_probe] VALUES \
+                 (1, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326), \
+                     geography::STGeomFromText( \
+                       'POLYGON ((-122.358 47.653, -122.348 47.649, -122.348 47.658, \
+                                  -122.358 47.658, -122.358 47.653))', 4326));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("spatial processing fixture");
+    let provider = SqlServerProvider::new(config, 16, 1).expect("spatial processing provider");
+    let secret = live_secret();
+
+    for (field, semantics, distance, polygon) in [
+        (
+            "shape",
+            SpatialSemantics::Geometry,
+            0.25,
+            vec![[2.0, 2.0], [2.0, 6.0], [6.0, 6.0], [6.0, 2.0], [2.0, 2.0]],
+        ),
+        (
+            "position",
+            SpatialSemantics::Geography,
+            100.0,
+            vec![
+                [-122.351, 47.656],
+                [-122.341, 47.656],
+                [-122.341, 47.661],
+                [-122.351, 47.661],
+                [-122.351, 47.656],
+            ],
+        ),
+    ] {
+        let semantics_label = match semantics {
+            SpatialSemantics::Geometry => "geometry",
+            SpatialSemantics::Geography => "geography",
+        };
+        let column = || QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("source".to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        let parameter = |name: &str| QueryExpression::Parameter {
+            name: name.to_owned(),
+        };
+        let unary = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![column()],
+        };
+        let geometry_binary = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![column(), parameter("needle")],
+        };
+        let projection = [
+            (
+                "buffered",
+                QueryExpression::Spatial {
+                    function: SpatialFunction::Buffer,
+                    arguments: vec![column(), parameter("distance")],
+                },
+            ),
+            (
+                "intersection",
+                geometry_binary(SpatialFunction::Intersection),
+            ),
+            ("difference", geometry_binary(SpatialFunction::Difference)),
+            (
+                "symmetric_difference",
+                geometry_binary(SpatialFunction::SymDifference),
+            ),
+            ("unioned", geometry_binary(SpatialFunction::Union)),
+            ("convex_hull", unary(SpatialFunction::ConvexHull)),
+        ]
+        .into_iter()
+        .map(|(alias, expression)| QueryProjection {
+            expression,
+            alias: Some(alias.to_owned()),
+        })
+        .collect();
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_test".to_owned()),
+                    object: "spatial_processing_probe".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("source".to_owned()),
+            }),
+            derived_source: None,
+            projection,
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let parameters = ParameterBag::new(BTreeMap::from([
+            ("distance".to_owned(), ParameterValue::F64(distance)),
+            (
+                "needle".to_owned(),
+                ParameterValue::Wkb {
+                    bytes: wkb_polygon_xy(&polygon),
+                    srid: Some(4_326),
+                    dimensions: Dimensions::Xy,
+                    semantics,
+                },
+            ),
+        ]));
+        let budget =
+            ResourceBudget::new(ResourceLimits::default()).expect("spatial processing budget");
+        let mut stream = provider
+            .query(&secret, &operation, &parameters, &budget, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("{semantics:?} spatial processing: {error}"));
+        for field in stream.schema().fields() {
+            assert_eq!(field.data_type(), &DataType::Binary);
+            assert_eq!(field.metadata()[protocol::GEOMETRY_DIMENSIONS], "xy");
+            assert_eq!(
+                field.metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+                semantics_label
+            );
+            assert_eq!(field.metadata()[protocol::GEOMETRY_SRID], "4326");
+        }
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("spatial processing batch")
+            .expect("spatial processing row");
+        assert_eq!(batch.num_rows(), 1);
+        for name in [
+            "buffered",
+            "intersection",
+            "difference",
+            "symmetric_difference",
+            "unioned",
+            "convex_hull",
+        ] {
+            let values = batch
+                .column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+                .expect("spatial processing WKB");
+            assert!(!values.is_null(0), "{semantics:?}.{name}");
+            let inspected =
+                plenora_database_core::ewkb::inspect_ewkb_detailed(values.value(0), 1_000_000, 64)
+                    .unwrap_or_else(|error| panic!("{semantics:?}.{name}: {error}"));
+            assert_eq!(inspected.root.dimensions_label(), "xy");
+            assert_eq!(inspected.root.srid, None);
+            assert!(
+                inspected.root.geometry_type_name().is_some(),
+                "{semantics:?}.{name}"
+            );
+        }
+        assert!(stream
+            .next_batch()
+            .await
+            .expect("spatial processing end")
+            .is_none());
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[spatial_processing_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup spatial processing fixture");
 }
 
 #[tokio::test]
@@ -4188,6 +4401,23 @@ fn ewkb_point(type_code: u32, coordinates: &[f64]) -> Vec<u8> {
     value.extend_from_slice(&type_code.to_le_bytes());
     for coordinate in coordinates {
         value.extend_from_slice(&coordinate.to_le_bytes());
+    }
+    value
+}
+
+fn wkb_polygon_xy(points: &[[f64; 2]]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(13 + points.len() * 16);
+    value.push(1);
+    value.extend_from_slice(&3_u32.to_le_bytes());
+    value.extend_from_slice(&1_u32.to_le_bytes());
+    value.extend_from_slice(
+        &u32::try_from(points.len())
+            .expect("numero punti WKB rappresentabile")
+            .to_le_bytes(),
+    );
+    for [x, y] in points {
+        value.extend_from_slice(&x.to_le_bytes());
+        value.extend_from_slice(&y.to_le_bytes());
     }
     value
 }

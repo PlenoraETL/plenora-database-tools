@@ -32,10 +32,12 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - prepared write e TDS bulk differenziale;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
-- sedici metodi AST spatial nativi su source fisica singola, inclusi
-  `StartPoint`/`EndPoint` come WKB Z/M con contratto profilato sul risultato,
-  WKB bindato, predicati projection mantenuti come `bit` nativo e rifiuto live
-  di semantica o SRID discordanti;
+- ventitré metodi AST spatial nativi comuni a `geometry` e `geography` su
+  source fisica singola; nove output geometrici (`StartPoint`, `EndPoint`,
+  `PointN`, `Buffer`, overlay booleani, `Union`, `ConvexHull`) escono come WKB
+  Z/M-safe con contratto profilato sul risultato, argomenti WKB e numerici
+  bindati, predicati projection mantenuti come `bit` nativo e rifiuto live di
+  semantica, SRID o valori numerici non validi;
 - schema drift fail-closed;
 - schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
   congiunto di DDL e dati;

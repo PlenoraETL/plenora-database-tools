@@ -20,7 +20,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 33
+EXPECTED_LIVE_TESTS = 34
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -379,6 +379,7 @@ def main() -> int:
             "typed_spatial_ast_semantics_and_srid_preflight",
             "native_scalar_spatial_methods_geometry_and_geography",
             "native_spatial_output_wkb_zm_contract",
+            "native_spatial_processing_geometry_and_geography",
             "prepared_write_reference_types",
             "keyed_update_upsert_delete",
             "tds_bulk_differential",
