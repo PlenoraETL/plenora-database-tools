@@ -22,8 +22,8 @@ use plenora_database_core::provider::{
 };
 use plenora_database_core::query::{
     ColumnRef, CommonTableExpression, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin,
-    QueryOperation, QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator,
-    QuerySource, ScalarFunction, SpatialFunction,
+    QueryLock, QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryProjection,
+    QuerySetOperation, QuerySetOperator, QuerySource, ScalarFunction, SpatialFunction,
 };
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
@@ -1110,6 +1110,7 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
         let projection = [
             ("geometry_type", unary(SpatialFunction::GeometryType)),
             ("srid", unary(SpatialFunction::Srid)),
+            ("dimensions", unary(SpatialFunction::Dimensions)),
             ("npoints", unary(SpatialFunction::NPoints)),
             ("is_empty", unary(SpatialFunction::IsEmpty)),
             ("is_valid", unary(SpatialFunction::IsValid)),
@@ -1179,12 +1180,17 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             .and_then(|array| array.as_any().downcast_ref::<StringArray>())
             .expect("geometry type");
         assert_eq!(text.value(0), "Point");
-        for name in ["srid", "npoints"] {
+        for name in ["srid", "dimensions", "npoints"] {
             let values = batch
                 .column_by_name(name)
                 .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
                 .expect("integer spatial result");
-            assert_eq!(values.value(0), if name == "srid" { 4_326 } else { 1 });
+            let expected = match name {
+                "srid" => 4_326,
+                "dimensions" => 0,
+                _ => 1,
+            };
+            assert_eq!(values.value(0), expected);
         }
         for (name, expected) in [
             ("is_empty", false),
@@ -1997,6 +2003,530 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
         )
         .await
         .expect("cleanup spatial scope fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live per scope spatial ricorsivi, set e APPLY"]
+#[allow(clippy::too_many_lines)]
+async fn live_spatial_recursive_nested_set_and_cross_apply_are_server_profiled() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("spatial advanced scope admin");
+    admin
+        .execute_query(
+            Query::new(
+                r"
+DROP TABLE IF EXISTS [plenora_test].[spatial_advanced_scope];
+CREATE TABLE [plenora_test].[spatial_advanced_scope]
+(
+    [id] int NOT NULL PRIMARY KEY,
+    [shape] geometry NOT NULL,
+    [position] geography NOT NULL
+);
+INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
+(1, geometry::STGeomFromText('POINT (1 1)', 4326),
+    geography::STGeomFromText('POINT (13 43)', 4326)),
+(2, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326),
+    geography::STGeomFromText(
+      'POLYGON ((12.9 42.9, 13.1 42.9, 13.1 43.1, 12.9 43.1, 12.9 42.9))', 4326));
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("spatial advanced scope fixture");
+    let provider = SqlServerProvider::new(config, 16, 1).expect("advanced scope provider");
+    let secret = live_secret();
+    let source = |alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "spatial_advanced_scope".to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let virtual_source = |name: &str, alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: name.to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let column = |relation: &str, field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some(relation.to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let equals_id = |relation: &str, parameter_name: &str| QueryExpression::Compare {
+        left: Box::new(column(relation, "id")),
+        operator: plenora_database_core::plan::ComparisonOperator::Eq,
+        right: Box::new(QueryExpression::Parameter {
+            name: parameter_name.to_owned(),
+        }),
+    };
+    let operation = |source, projection| QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source),
+        derived_source: None,
+        projection,
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+
+    for (field, semantics) in [("shape", "geometry"), ("position", "geography")] {
+        let spatial_projection = |relation: &str, alias: &str| QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::ConvexHull,
+                arguments: vec![column(relation, field)],
+            },
+            alias: Some(alias.to_owned()),
+        };
+        let mut set_left = operation(
+            source("set_left"),
+            vec![spatial_projection("set_left", "spatial_result")],
+        );
+        set_left.filter = Some(equals_id("set_left", "left_id"));
+        let mut set_right = operation(
+            source("set_right"),
+            vec![spatial_projection("set_right", "spatial_result")],
+        );
+        set_right.filter = Some(equals_id("set_right", "right_id"));
+        set_left.set_operations.push(QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: true,
+            query: Box::new(set_right),
+        });
+        let parameters = ParameterBag::new(BTreeMap::from([
+            ("left_id".to_owned(), ParameterValue::I32(1)),
+            ("right_id".to_owned(), ParameterValue::I32(2)),
+        ]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("set spatial budget");
+        let mut stream = provider
+            .query(&secret, &set_left, &parameters, &budget, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("{semantics}.set: {error}"));
+        assert_eq!(
+            stream.schema().field(0).metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+            semantics
+        );
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("set spatial batch")
+            .expect("set spatial rows");
+        assert_eq!(batch.num_rows(), 2);
+
+        let mut lateral_inner = operation(
+            source("inside"),
+            vec![QueryProjection {
+                expression: column("inside", field),
+                alias: Some("spatial_value".to_owned()),
+            }],
+        );
+        lateral_inner.filter = Some(QueryExpression::Compare {
+            left: Box::new(column("inside", "id")),
+            operator: plenora_database_core::plan::ComparisonOperator::Eq,
+            right: Box::new(column("outside", "id")),
+        });
+        lateral_inner.row_limit = Some(1);
+        let mut apply = operation(
+            source("outside"),
+            vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::ConvexHull,
+                    arguments: vec![column("latest", "spatial_value")],
+                },
+                alias: Some("spatial_result".to_owned()),
+            }],
+        );
+        apply.joins.push(QueryJoin {
+            kind: JoinKind::Cross,
+            source: None,
+            derived_source: Some(QueryDerivedSource {
+                query: Box::new(lateral_inner),
+                alias: "latest".to_owned(),
+            }),
+            lateral: true,
+            on: None,
+        });
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("APPLY spatial budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &apply,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics}.cross_apply: {error}"));
+        assert_eq!(
+            stream.schema().field(0).metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+            semantics
+        );
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("APPLY spatial batch")
+            .expect("APPLY spatial rows");
+        assert_eq!(batch.num_rows(), 2);
+
+        let nested_base = operation(
+            source("nested_base"),
+            vec![QueryProjection {
+                expression: column("nested_base", field),
+                alias: Some("spatial_value".to_owned()),
+            }],
+        );
+        let mut nested_cte = operation(
+            virtual_source("nested_values", "nested"),
+            vec![QueryProjection {
+                expression: column("nested", "spatial_value"),
+                alias: Some("spatial_value".to_owned()),
+            }],
+        );
+        nested_cte
+            .common_table_expressions
+            .push(CommonTableExpression {
+                name: "nested_values".to_owned(),
+                recursive: false,
+                query: Box::new(nested_base),
+            });
+        let nested_outer = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: None,
+            derived_source: Some(QueryDerivedSource {
+                query: Box::new(nested_cte),
+                alias: "scope".to_owned(),
+            }),
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::ConvexHull,
+                    arguments: vec![column("scope", "spatial_value")],
+                },
+                alias: Some("spatial_result".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("nested CTE budget");
+        let Err(nested_error) = provider
+            .query(
+                &secret,
+                &nested_outer,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+        else {
+            panic!("{semantics}.nested_cte must be rejected by SQL Server 2022");
+        };
+        assert_eq!(nested_error.category, ErrorCategory::Unsupported);
+
+        let mut correlated_inner = operation(
+            source("correlated_inside"),
+            vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::Area,
+                    arguments: vec![column("correlated_inside", field)],
+                },
+                alias: Some("area".to_owned()),
+            }],
+        );
+        correlated_inner.filter = Some(QueryExpression::Compare {
+            left: Box::new(column("correlated_inside", "id")),
+            operator: plenora_database_core::plan::ComparisonOperator::Eq,
+            right: Box::new(column("correlated_outside", "id")),
+        });
+        correlated_inner.row_limit = Some(1);
+        let correlated = operation(
+            source("correlated_outside"),
+            vec![QueryProjection {
+                expression: QueryExpression::ScalarSubquery {
+                    query: Box::new(correlated_inner),
+                },
+                alias: Some("spatial_area".to_owned()),
+            }],
+        );
+        let budget =
+            ResourceBudget::new(ResourceLimits::default()).expect("correlated spatial budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &correlated,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics}.correlated: {error}"));
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("correlated spatial batch")
+            .expect("correlated spatial rows");
+        assert_eq!(batch.num_rows(), 2);
+        assert!(batch
+            .column_by_name("spatial_area")
+            .and_then(|array| array.as_any().downcast_ref::<Float64Array>())
+            .is_some());
+
+        let mut anchor = operation(
+            source("anchor"),
+            vec![
+                QueryProjection {
+                    expression: column("anchor", "id"),
+                    alias: Some("id".to_owned()),
+                },
+                QueryProjection {
+                    expression: column("anchor", field),
+                    alias: Some("spatial_value".to_owned()),
+                },
+            ],
+        );
+        anchor.filter = Some(equals_id("anchor", "anchor_id"));
+        let mut recursive = operation(
+            source("next"),
+            vec![
+                QueryProjection {
+                    expression: column("next", "id"),
+                    alias: Some("id".to_owned()),
+                },
+                QueryProjection {
+                    expression: column("next", field),
+                    alias: Some("spatial_value".to_owned()),
+                },
+            ],
+        );
+        recursive.joins.push(QueryJoin {
+            kind: JoinKind::Inner,
+            source: Some(virtual_source("walk", "previous")),
+            derived_source: None,
+            lateral: false,
+            on: Some(QueryExpression::Compare {
+                left: Box::new(column("next", "id")),
+                operator: plenora_database_core::plan::ComparisonOperator::Gt,
+                right: Box::new(column("previous", "id")),
+            }),
+        });
+        recursive.filter = Some(equals_id("next", "recursive_id"));
+        anchor.set_operations.push(QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: true,
+            query: Box::new(recursive),
+        });
+        let mut recursive_query = operation(
+            virtual_source("walk", "scope"),
+            vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::ConvexHull,
+                    arguments: vec![column("scope", "spatial_value")],
+                },
+                alias: Some("spatial_result".to_owned()),
+            }],
+        );
+        recursive_query
+            .common_table_expressions
+            .push(CommonTableExpression {
+                name: "walk".to_owned(),
+                recursive: true,
+                query: Box::new(anchor),
+            });
+        let parameters = ParameterBag::new(BTreeMap::from([
+            ("anchor_id".to_owned(), ParameterValue::I32(1)),
+            ("recursive_id".to_owned(), ParameterValue::I32(2)),
+        ]));
+        let budget =
+            ResourceBudget::new(ResourceLimits::default()).expect("recursive spatial budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &recursive_query,
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics}.recursive: {error}"));
+        assert_eq!(
+            stream.schema().field(0).metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+            semantics
+        );
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("recursive spatial batch")
+            .expect("recursive spatial rows");
+        assert_eq!(batch.num_rows(), 2);
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[spatial_advanced_scope];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup advanced spatial scope fixture");
+}
+
+fn locking_spatial_operation() -> QueryOperation {
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: "stream_probe".to_owned(),
+                layer_id: None,
+            },
+            alias: Some("locked".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Dimensions,
+                arguments: vec![QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("locked".to_owned()),
+                        field: "shape".to_owned(),
+                    },
+                }],
+            },
+            alias: Some("spatial_dimension".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("locked".to_owned()),
+                    field: "id".to_owned(),
+                },
+            }),
+            operator: plenora_database_core::plan::ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "selected_id".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: Some(QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: vec!["locked".to_owned()],
+            wait: QueryLockWait::NoWait,
+        }),
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live e contesa deterministica di un row lock"]
+async fn live_sqlserver_lock_hints_are_nowait_and_spatial_safe() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut blocker = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("locking blocker");
+    blocker
+        .begin(&cancellation)
+        .await
+        .expect("begin locking transaction");
+    blocker
+        .execute_write_query(
+            Query::new(
+                "UPDATE [plenora_test].[stream_probe] \
+                 SET [label] = [label] WHERE [id] = 1;",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("hold exclusive row lock");
+
+    let provider = SqlServerProvider::new(config, 8, 1).expect("locking provider");
+    let operation = locking_spatial_operation();
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "selected_id".to_owned(),
+        ParameterValue::I32(1),
+    )]));
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("locking budget");
+    let error = match provider
+        .query(
+            &live_secret(),
+            &operation,
+            &parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(mut stream) => stream
+            .next_batch()
+            .await
+            .expect_err("NOWAIT query unexpectedly acquired a contended row"),
+    };
+    assert_eq!(error.category, ErrorCategory::Timeout);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+
+    blocker
+        .rollback(&cancellation)
+        .await
+        .expect("release update lock");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &operation,
+            &parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("locking query after release");
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("locking spatial batch")
+        .expect("locking spatial row");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(
+        batch
+            .column_by_name("spatial_dimension")
+            .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+            .expect("spatial dimension")
+            .value(0),
+        0
+    );
 }
 
 #[tokio::test]

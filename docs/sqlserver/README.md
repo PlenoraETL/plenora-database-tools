@@ -63,8 +63,10 @@ prende il lock esclusivo soltanto per ricontrollare schema e dipendenze,
 rinominare original/staging e rimuovere il backup nella stessa transazione.
 Errori di caricamento o pre-commit ripristinano il target originale senza
 oggetti residui; una conferma di commit persa resta `OutcomeUnknown`. I
-risultati spatial non convertiti esplicitamente in WKB, i lateral join, il
-locking e le forme prive di un nome output deterministico restano fail-closed.
+risultati spatial non convertiti esplicitamente in WKB e le forme prive di un
+nome output deterministico restano fail-closed. `CROSS APPLY` e i lock
+`UPDLOCK`/`HOLDLOCK` con attesa o `NOWAIT` sono qualificati live; `OUTER APPLY`
+e le semantiche di lock senza equivalente esatto restano rifiutate.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). La baseline post-RC1
 copre anche CA privata, hostname e rotazione; restano latenza/packet loss su
 read e rollback, oltre al supporto lossless dei profili spatial avanzati. La

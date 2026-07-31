@@ -32,7 +32,7 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - prepared write e TDS bulk differenziale;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
-- ventitré metodi AST spatial nativi comuni a `geometry` e `geography` su
+- 24 metodi AST spatial nativi comuni a `geometry` e `geography` su
   source fisiche singole o join fisici; nove output geometrici (`StartPoint`, `EndPoint`,
   `PointN`, `Buffer`, overlay booleani, `Union`, `ConvexHull`) escono come WKB
   Z/M-safe con contratto profilato sul risultato, argomenti WKB e numerici
@@ -41,7 +41,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - join spatial fra colonne con risoluzione obbligatoria degli alias, verifica
   di semantica/SRID su entrambi gli operandi e token strutturale ricontrollato
   per ogni tabella coinvolta;
-- CTE non ricorsive, derived table e subquery spatial non correlate con
+- CTE non ricorsive e ricorsive top-level, derived table, set operation,
+  `CROSS APPLY` e subquery correlate su valori scalari con operando spatial
+  locale, con
   descrizione autoritativa del tipo nativo, profilo SRID prima del predicato e
   token strutturale di ogni sorgente fisica sottostante;
 - schema drift fail-closed;
@@ -73,8 +75,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - SQL Server 2019, 2025 e Azure SQL;
 - supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
-- CTE spatial ricorsive o annidate in derived table, subquery spatial
-  correlate, lateral/APPLY e set operation spatial;
+- CTE dichiarate dentro una derived table (rifiutate nativamente da SQL Server
+  2022), `OUTER APPLY` e riferimenti spatial esterni dentro subquery correlate;
 - catalogo external table con data source e file format reali.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una

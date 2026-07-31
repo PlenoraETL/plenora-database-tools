@@ -7,9 +7,9 @@ use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::query::{
-    validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLockStrength,
-    QueryLockWait, QueryOperation, QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator,
-    WindowFrame, WindowFrameBound, WindowFrameUnits,
+    validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLock,
+    QueryLockStrength, QueryLockWait, QueryOperation, QuerySetOperator, QuerySource,
+    ScalarFunction, SpatialOperator, WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -482,24 +482,35 @@ impl Renderer {
             query.source.as_ref(),
             query.derived_source.as_ref(),
             false,
+            query.locking.as_ref(),
             binds,
         )?);
         for join in &query.joins {
-            let keyword = match join.kind {
-                JoinKind::Inner => " INNER JOIN ",
-                JoinKind::Left => " LEFT JOIN ",
-                JoinKind::Right => " RIGHT JOIN ",
-                JoinKind::Full => " FULL JOIN ",
-                JoinKind::Cross => " CROSS JOIN ",
+            let sql_server_apply = self.dialect == Dialect::SqlServer && join.lateral;
+            let keyword = match (&join.kind, sql_server_apply) {
+                (JoinKind::Cross, true) => " CROSS APPLY ",
+                (JoinKind::Inner, false) => " INNER JOIN ",
+                (JoinKind::Left, false) => " LEFT JOIN ",
+                (JoinKind::Right, false) => " RIGHT JOIN ",
+                (JoinKind::Full, false) => " FULL JOIN ",
+                (JoinKind::Cross, false) => " CROSS JOIN ",
+                _ => {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "SQL Server qualifica soltanto CROSS APPLY per lateral v1",
+                    ))
+                }
             };
             sql.push_str(keyword);
             sql.push_str(&self.render_query_relation(
                 join.source.as_ref(),
                 join.derived_source.as_ref(),
                 join.lateral,
+                query.locking.as_ref(),
                 binds,
             )?);
-            if join.kind == JoinKind::Cross {
+            if join.kind == JoinKind::Cross || sql_server_apply {
                 if join.on.is_some() {
                     return Err(DatabaseError::invalid_plan("CROSS JOIN con clausola ON"));
                 }
@@ -598,34 +609,39 @@ impl Renderer {
             }
         }
         if let Some(locking) = &query.locking {
-            if self.dialect != Dialect::Postgres {
+            if self.dialect == Dialect::SqlServer {
+                self.validate_sql_server_lock_targets(query, locking)?;
+            } else if self.dialect != Dialect::Postgres {
                 return Err(DatabaseError::unsupported(
                     self.provider_kind(),
                     ErrorPhase::Prepare,
                     "locking avanzato supportato solo da PostgreSQL",
                 ));
             }
-            sql.push_str(match locking.strength {
-                QueryLockStrength::Update => " FOR UPDATE",
-                QueryLockStrength::NoKeyUpdate => " FOR NO KEY UPDATE",
-                QueryLockStrength::Share => " FOR SHARE",
-                QueryLockStrength::KeyShare => " FOR KEY SHARE",
-            });
-            if !locking.relations.is_empty() {
-                sql.push_str(" OF ");
-                let relations = locking
-                    .relations
-                    .iter()
-                    .map(|relation| {
-                        Identifier::new(relation.clone()).map(|identifier| self.quote(&identifier))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                sql.push_str(&relations.join(", "));
-            }
-            match locking.wait {
-                QueryLockWait::Wait => {}
-                QueryLockWait::NoWait => sql.push_str(" NOWAIT"),
-                QueryLockWait::SkipLocked => sql.push_str(" SKIP LOCKED"),
+            if self.dialect == Dialect::Postgres {
+                sql.push_str(match locking.strength {
+                    QueryLockStrength::Update => " FOR UPDATE",
+                    QueryLockStrength::NoKeyUpdate => " FOR NO KEY UPDATE",
+                    QueryLockStrength::Share => " FOR SHARE",
+                    QueryLockStrength::KeyShare => " FOR KEY SHARE",
+                });
+                if !locking.relations.is_empty() {
+                    sql.push_str(" OF ");
+                    let relations = locking
+                        .relations
+                        .iter()
+                        .map(|relation| {
+                            Identifier::new(relation.clone())
+                                .map(|identifier| self.quote(&identifier))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    sql.push_str(&relations.join(", "));
+                }
+                match locking.wait {
+                    QueryLockWait::Wait => {}
+                    QueryLockWait::NoWait => sql.push_str(" NOWAIT"),
+                    QueryLockWait::SkipLocked => sql.push_str(" SKIP LOCKED"),
+                }
             }
         }
         Ok(sql)
@@ -659,15 +675,9 @@ impl Renderer {
         source: Option<&QuerySource>,
         derived: Option<&QueryDerivedSource>,
         lateral: bool,
+        locking: Option<&QueryLock>,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        if lateral && self.dialect == Dialect::SqlServer {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                "subquery laterale SQL Server richiede APPLY tipizzato",
-            ));
-        }
         match (source, derived) {
             (Some(source), None) => {
                 if lateral {
@@ -675,10 +685,19 @@ impl Renderer {
                         "LATERAL richiede una subquery come source",
                     ));
                 }
-                self.render_query_source(source)
+                let mut relation = self.render_query_source(source)?;
+                if let Some(hints) = self.sql_server_lock_hints(source, locking)? {
+                    relation.push_str(" WITH (");
+                    relation.push_str(&hints.join(", "));
+                    relation.push(')');
+                }
+                Ok(relation)
             }
             (None, Some(derived)) => {
-                if lateral && self.dialect != Dialect::Postgres {
+                if lateral
+                    && self.dialect != Dialect::Postgres
+                    && self.dialect != Dialect::SqlServer
+                {
                     return Err(DatabaseError::unsupported(
                         self.provider_kind(),
                         ErrorPhase::Prepare,
@@ -689,13 +708,111 @@ impl Renderer {
                 let alias = self.quote(&Identifier::new(derived.alias.clone())?);
                 Ok(format!(
                     "{}({body}) AS {alias}",
-                    if lateral { "LATERAL " } else { "" }
+                    if lateral && self.dialect == Dialect::Postgres {
+                        "LATERAL "
+                    } else {
+                        ""
+                    }
                 ))
             }
             _ => Err(DatabaseError::invalid_plan(
                 "query richiede una sola source, tabella o subquery",
             )),
         }
+    }
+
+    fn sql_server_lock_hints(
+        &self,
+        source: &QuerySource,
+        locking: Option<&QueryLock>,
+    ) -> Result<Option<Vec<&'static str>>> {
+        if self.dialect != Dialect::SqlServer {
+            return Ok(None);
+        }
+        let Some(locking) = locking else {
+            return Ok(None);
+        };
+        let relation = source.alias.as_deref().unwrap_or(&source.object.object);
+        if !locking.relations.is_empty()
+            && !locking
+                .relations
+                .iter()
+                .any(|candidate| candidate == relation)
+        {
+            return Ok(None);
+        }
+        let strength = match locking.strength {
+            QueryLockStrength::Update => "UPDLOCK",
+            QueryLockStrength::Share => "HOLDLOCK",
+            QueryLockStrength::NoKeyUpdate | QueryLockStrength::KeyShare => {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "forza di locking PostgreSQL senza equivalente SQL Server esatto",
+                ))
+            }
+        };
+        let mut hints = vec![strength];
+        match locking.wait {
+            QueryLockWait::Wait => {}
+            QueryLockWait::NoWait => hints.push("NOWAIT"),
+            QueryLockWait::SkipLocked => {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "READPAST SQL Server non equivale a SKIP LOCKED in ogni isolamento",
+                ))
+            }
+        }
+        Ok(Some(hints))
+    }
+
+    fn validate_sql_server_lock_targets(
+        &self,
+        query: &QueryOperation,
+        locking: &QueryLock,
+    ) -> Result<()> {
+        let mut physical = Vec::new();
+        let mut derived = Vec::new();
+        if let Some(source) = &query.source {
+            physical.push(source.alias.as_deref().unwrap_or(&source.object.object));
+        }
+        if let Some(source) = &query.derived_source {
+            derived.push(source.alias.as_str());
+        }
+        for join in &query.joins {
+            if let Some(source) = &join.source {
+                physical.push(source.alias.as_deref().unwrap_or(&source.object.object));
+            }
+            if let Some(source) = &join.derived_source {
+                derived.push(source.alias.as_str());
+            }
+        }
+        if locking.relations.is_empty() {
+            if !derived.is_empty() {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "locking SQL Server senza target non puo includere derived source",
+                ));
+            }
+            return Ok(());
+        }
+        for target in &locking.relations {
+            if derived.iter().any(|relation| *relation == target) {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "table hint SQL Server non applicabile a una derived source",
+                ));
+            }
+            if !physical.iter().any(|relation| *relation == target) {
+                return Err(DatabaseError::invalid_plan(
+                    "target locking SQL Server non presente fra le source fisiche",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn render_query_expression(
@@ -1000,6 +1117,7 @@ impl Renderer {
         match function {
             SpatialFunction::GeometryType => unary("STGeometryType"),
             SpatialFunction::Srid => Ok(format!("{receiver}.STSrid")),
+            SpatialFunction::Dimensions => unary("STDimension"),
             SpatialFunction::NPoints => unary("STNumPoints"),
             SpatialFunction::IsEmpty => unary_predicate("STIsEmpty"),
             SpatialFunction::IsValid => unary_predicate("STIsValid"),
@@ -1865,6 +1983,7 @@ mod tests {
                 "[e].[shape].STGeometryType()",
             ),
             (SpatialFunction::Srid, "[e].[shape].STSrid"),
+            (SpatialFunction::Dimensions, "[e].[shape].STDimension()"),
             (SpatialFunction::NPoints, "[e].[shape].STNumPoints()"),
             (SpatialFunction::IsEmpty, "[e].[shape].STIsEmpty()"),
             (SpatialFunction::IsValid, "[e].[shape].STIsValid()"),
@@ -1981,6 +2100,122 @@ mod tests {
                 .expect_err("unverified spatial method")
                 .category,
             plenora_database_core::ErrorCategory::Unsupported
+        );
+    }
+
+    #[test]
+    fn sqlserver_renders_cross_apply_without_an_on_clause() {
+        let lateral = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(query_source("details", "d")),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: query_column("d", "shape"),
+                alias: Some("shape".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        let mut query = simple_query();
+        query.joins.push(QueryJoin {
+            kind: JoinKind::Cross,
+            source: None,
+            derived_source: Some(QueryDerivedSource {
+                query: Box::new(lateral),
+                alias: "latest".to_owned(),
+            }),
+            lateral: true,
+            on: None,
+        });
+        let sql = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("CROSS APPLY")
+        .sql;
+        assert!(sql.contains(" CROSS APPLY (SELECT TOP (1)"));
+        assert!(sql.contains(") AS [latest]"));
+        assert!(!sql.contains("LATERAL"));
+    }
+
+    #[test]
+    fn sqlserver_locking_is_explicitly_mapped_to_safe_table_hints() {
+        let renderer = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        );
+        let mut query = simple_query();
+        query.locking = Some(QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: vec!["e".to_owned()],
+            wait: QueryLockWait::NoWait,
+        });
+        let sql = renderer.render_query(&query).expect("UPDLOCK NOWAIT").sql;
+        assert!(sql.contains("[events] AS [e] WITH (UPDLOCK, NOWAIT)"));
+        assert!(!sql.contains("FOR UPDATE"));
+
+        query.locking = Some(QueryLock {
+            strength: QueryLockStrength::Share,
+            relations: Vec::new(),
+            wait: QueryLockWait::Wait,
+        });
+        assert!(renderer
+            .render_query(&query)
+            .expect("shared lock")
+            .sql
+            .contains(" WITH (HOLDLOCK)"));
+
+        query.locking = Some(QueryLock {
+            strength: QueryLockStrength::NoKeyUpdate,
+            relations: vec!["e".to_owned()],
+            wait: QueryLockWait::Wait,
+        });
+        assert_eq!(
+            renderer
+                .render_query(&query)
+                .expect_err("NO KEY UPDATE has no exact T-SQL equivalent")
+                .category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
+
+        query.locking = Some(QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: vec!["e".to_owned()],
+            wait: QueryLockWait::SkipLocked,
+        });
+        assert_eq!(
+            renderer
+                .render_query(&query)
+                .expect_err("READPAST is not portable SKIP LOCKED")
+                .category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
+
+        query.locking = Some(QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: vec!["missing".to_owned()],
+            wait: QueryLockWait::Wait,
+        });
+        assert_eq!(
+            renderer
+                .render_query(&query)
+                .expect_err("unknown lock target")
+                .category,
+            plenora_database_core::ErrorCategory::InvalidPlan
         );
     }
 

@@ -160,6 +160,15 @@ La suite live seriale ha verificato:
 55. definizione, schema binding e opzioni `ANSI_NULLS`/`QUOTED_IDENTIFIER` di
     una view sono osservati. Il token cambia dopo `ALTER VIEW` a colonne
     invariate.
+56. scope spatial ricorsivo e annidato su `geometry` e `geography`: CTE
+    ricorsiva top-level, `UNION ALL`, `CROSS APPLY` e subquery correlata su
+    chiave scalare con operando spatial locale. Una CTE dichiarata dentro una
+    derived table viene rifiutata fail-closed perché SQL Server 2022 non ne
+    ammette la sintassi.
+57. locking query su una riga realmente contesa: `UPDLOCK,NOWAIT` produce
+    errore server 1222 classificato `Timeout`, `retry=Never`, effetto `None`;
+    dopo rollback la stessa query spatial legge la riga e `STDimension()`
+    restituisce il valore atteso.
 
 Comando della prova:
 
@@ -167,7 +176,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **39 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **41 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -175,9 +184,9 @@ Esito post-RC1: **39 superati, 0 falliti**. Il valore RC1 resta storicamente
 Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
-- CTE spatial ricorsive o annidate in derived table, subquery spatial
-  correlate, lateral/APPLY, set operation spatial, locking e forme calcolate
-  senza alias deterministico;
+- CTE dichiarate dentro derived table, `OUTER APPLY`, riferimenti spatial
+  esterni dentro subquery correlate, `SkipLocked` e forme calcolate senza
+  alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;

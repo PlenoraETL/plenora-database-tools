@@ -13,7 +13,7 @@ capability, prova live, documentazione e gate concordano.
 | Spatial XY | completo | completo | mantenere roundtrip geometry/geography |
 | Spatial Z/M/ZM | lossless | lossless | **chiusa**: WKB ISO e differenziale live |
 | Tipi geometrici misti | supportati | Point+Polygon su geometry/geography | **chiusa**: metadata Arrow `mixed` e roundtrip live senza coercizione |
-| AST spatial | catalogo tipizzato | 23 metodi nativi comuni tipizzati | **chiusa per il sottoinsieme comune pubblicato**: accessori, validazione, predicati, misure e processing su source fisiche, join fisici, CTE non ricorsive, derived e subquery non correlate; i nove output geometrici sono WKB Z/M-safe con profilo del risultato e prova live geometry/geography |
+| AST spatial | catalogo tipizzato | 24 metodi nativi comuni tipizzati | **chiusa per il sottoinsieme comune pubblicato**: accessori, validazione, predicati, misure e processing su source fisiche, join, CTE top-level anche ricorsive, derived, set operation, subquery correlate locali e `CROSS APPLY`; i nove output geometrici sono WKB Z/M-safe con profilo del risultato e prova live geometry/geography |
 | Indice spatial | GiST+bbox/KNN | auto-grid `geometry`/`geography` | **chiusa per create/replace**: creazione atomica, catalogo, access path forzato e rollback fail-closed live; nessun claim di equivalenza KNN |
 | Catalogo avanzato | partizioni, viste, RLS/ACL | temporal/graph/partizioni, view, RLS e permessi object/column live-proven; external implementato | fixture external live |
 | Matrice versioni | PostgreSQL 14-18 | SQL Server 2022 | campagne 2019/2025/Azure separate |
