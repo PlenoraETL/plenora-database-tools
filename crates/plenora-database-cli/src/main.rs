@@ -1,9 +1,7 @@
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_database_engine::parse_and_validate;
 use plenora_db_postgres::PostgresProvider;
 use serde_json::json;
@@ -16,11 +14,22 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{}", error.to_json());
+            println!(
+                "{}",
+                error
+                    .to_json()
+                    .unwrap_or_else(|_| ERROR_SERIALIZATION_FALLBACK.to_owned())
+            );
             ExitCode::FAILURE
         }
     }
 }
+
+const ERROR_SERIALIZATION_FALLBACK: &str = concat!(
+    r#"{"status":"error","protocol_version":1,"error":{"category":"internal","#,
+    r#""phase":"finalize","remote_effect":"none","retry":{"kind":"never"},"#,
+    r#""provider":null,"execution_id":null,"message":"errore non serializzabile"}}"#
+);
 
 #[derive(Debug)]
 struct CliError(DatabaseError);
@@ -28,74 +37,13 @@ struct CliError(DatabaseError);
 type CliResult<T> = std::result::Result<T, CliError>;
 
 impl CliError {
-    fn to_json(&self) -> String {
-        let retry = match self.0.retry {
-            RetryDisposition::Never => "never",
-            RetryDisposition::Safe => "safe",
-            RetryDisposition::RequiresIdempotencyKey => "requires_idempotency_key",
-            RetryDisposition::RequiresRecovery => "requires_recovery",
-            RetryDisposition::After(_) => "after",
-        };
-        let mut error = json!({
-            "category": category_name(self.0.category),
-            "phase": phase_name(self.0.phase),
-            "remote_effect": match self.0.remote_effect {
-                RemoteEffect::None => "none",
-                RemoteEffect::RolledBack => "rolled_back",
-                RemoteEffect::Partial => "partial",
-                RemoteEffect::Committed => "committed",
-                RemoteEffect::Unknown => "unknown",
-            },
-            "retry": retry,
-            "message": self.0.message,
-        });
-        if let RetryDisposition::After(delay_ms) = self.0.retry {
-            error["retry_delay_ms"] = json!(delay_ms);
-        }
-        json!({
+    fn to_json(&self) -> Result<String, serde_json::Error> {
+        let error = serde_json::to_value(&self.0)?;
+        serde_json::to_string(&json!({
             "status": "error",
             "protocol_version": 1,
             "error": error,
-        })
-        .to_string()
-    }
-}
-
-const fn category_name(category: ErrorCategory) -> &'static str {
-    match category {
-        ErrorCategory::InvalidPlan => "InvalidPlan",
-        ErrorCategory::InvalidConfiguration => "InvalidConfiguration",
-        ErrorCategory::Schema => "Schema",
-        ErrorCategory::DataMapping => "DataMapping",
-        ErrorCategory::Crs => "Crs",
-        ErrorCategory::Unsupported => "Unsupported",
-        ErrorCategory::NotFound => "NotFound",
-        ErrorCategory::Conflict => "Conflict",
-        ErrorCategory::Authentication => "Authentication",
-        ErrorCategory::Authorization => "Authorization",
-        ErrorCategory::Timeout => "Timeout",
-        ErrorCategory::Cancelled => "Cancelled",
-        ErrorCategory::ResourceLimit => "ResourceLimit",
-        ErrorCategory::Io => "Io",
-        ErrorCategory::Protocol => "Protocol",
-        ErrorCategory::Transient => "Transient",
-        ErrorCategory::Execution => "Execution",
-        ErrorCategory::Internal => "Internal",
-    }
-}
-
-const fn phase_name(phase: ErrorPhase) -> &'static str {
-    match phase {
-        ErrorPhase::Validate => "Validate",
-        ErrorPhase::Connect => "Connect",
-        ErrorPhase::Probe => "Probe",
-        ErrorPhase::Prepare => "Prepare",
-        ErrorPhase::Read => "Read",
-        ErrorPhase::Write => "Write",
-        ErrorPhase::Finalize => "Finalize",
-        ErrorPhase::Commit => "Commit",
-        ErrorPhase::Rollback => "Rollback",
-        ErrorPhase::Cleanup => "Cleanup",
+        }))
     }
 }
 
@@ -299,6 +247,7 @@ mod inspect_dataset;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 
     #[test]
     fn crs_error_envelope_matches_protocol_v1() {
@@ -311,7 +260,8 @@ mod tests {
             execution_id: None,
             message: "identificatore CRS e SRID numerico divergenti".to_owned(),
         })
-        .to_json();
+        .to_json()
+        .expect("serializable error");
         let value: serde_json::Value = serde_json::from_str(&envelope).expect("valid JSON");
         assert_eq!(
             value,
@@ -319,10 +269,12 @@ mod tests {
                 "status": "error",
                 "protocol_version": 1,
                 "error": {
-                    "category": "Crs",
-                    "phase": "Validate",
+                    "category": "crs",
+                    "phase": "validate",
                     "remote_effect": "none",
-                    "retry": "never",
+                    "retry": {"kind": "never"},
+                    "provider": null,
+                    "execution_id": null,
                     "message": "identificatore CRS e SRID numerico divergenti"
                 }
             })
@@ -340,9 +292,22 @@ mod tests {
             execution_id: None,
             message: "servizio temporaneamente non disponibile".to_owned(),
         })
-        .to_json();
+        .to_json()
+        .expect("serializable error");
         let value: serde_json::Value = serde_json::from_str(&envelope).expect("valid JSON");
-        assert_eq!(value["error"]["retry"], "after");
-        assert_eq!(value["error"]["retry_delay_ms"], 250);
+        assert_eq!(value["error"]["retry"]["kind"], "after");
+        assert_eq!(value["error"]["retry"]["delay_ms"], 250);
+    }
+
+    #[test]
+    fn serialization_fallback_is_a_canonical_error_envelope() {
+        let value: serde_json::Value =
+            serde_json::from_str(ERROR_SERIALIZATION_FALLBACK).expect("valid fallback JSON");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["protocol_version"], 1);
+        assert_eq!(value["error"]["category"], "internal");
+        assert_eq!(value["error"]["phase"], "finalize");
+        assert_eq!(value["error"]["remote_effect"], "none");
+        assert_eq!(value["error"]["retry"]["kind"], "never");
     }
 }
