@@ -1119,6 +1119,9 @@ mod tests {
             graph_kind: None,
             external: None,
             partitioning: None,
+            owner: "dbo".to_owned(),
+            security_predicates: Vec::new(),
+            permissions: Vec::new(),
             memory_optimized: false,
             durability: None,
             columns: vec![SqlServerColumn {

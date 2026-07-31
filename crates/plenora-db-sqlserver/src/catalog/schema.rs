@@ -118,6 +118,26 @@ pub struct SqlServerPartitioning {
     pub partition_count: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerSecurityPredicate {
+    pub policy_schema: String,
+    pub policy_name: String,
+    pub policy_enabled: bool,
+    pub policy_schema_bound: bool,
+    pub predicate_definition: String,
+    pub kind: String,
+    pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerPermission {
+    pub grantee: String,
+    pub grantor: String,
+    pub permission: String,
+    pub state: String,
+    pub column: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqlServerObjectDescription {
     pub database_id: i32,
@@ -131,6 +151,9 @@ pub struct SqlServerObjectDescription {
     pub graph_kind: Option<SqlServerGraphKind>,
     pub external: Option<SqlServerExternalTableMetadata>,
     pub partitioning: Option<SqlServerPartitioning>,
+    pub owner: String,
+    pub security_predicates: Vec<SqlServerSecurityPredicate>,
+    pub permissions: Vec<SqlServerPermission>,
     pub memory_optimized: bool,
     pub durability: Option<String>,
     pub columns: Vec<SqlServerColumn>,
@@ -153,11 +176,22 @@ pub async fn describe_object(
 ) -> Result<SqlServerObjectDescription> {
     let identity = load_identity(session, schema, object, cancellation).await?;
     let partitioning = load_partitioning(session, schema, object, cancellation).await?;
+    let security_predicates =
+        load_security_predicates(session, schema, object, cancellation).await?;
+    let permissions = load_permissions(session, schema, object, cancellation).await?;
     let columns = load_columns(session, schema, object, cancellation).await?;
     let constraints = load_constraints(session, schema, object, cancellation).await?;
     let indexes = load_indexes(session, schema, object, cancellation).await?;
-    let encoded = serde_json::to_vec(&(&identity, &partitioning, &columns, &constraints, &indexes))
-        .map_err(|_| super::mapping_error("serializzazione token schema SQL Server fallita"))?;
+    let encoded = serde_json::to_vec(&(
+        &identity,
+        &partitioning,
+        &security_predicates,
+        &permissions,
+        &columns,
+        &constraints,
+        &indexes,
+    ))
+    .map_err(|_| super::mapping_error("serializzazione token schema SQL Server fallita"))?;
     let fingerprint = hex_digest(&encoded)?;
     let token = SqlServerSchemaToken {
         schema_version: 1,
@@ -177,6 +211,9 @@ pub async fn describe_object(
         graph_kind: identity.graph_kind,
         external: identity.external,
         partitioning,
+        owner: identity.owner,
+        security_predicates,
+        permissions,
         memory_optimized: identity.memory_optimized,
         durability: identity.durability,
         columns,
@@ -198,6 +235,7 @@ struct ObjectIdentity {
     temporal: Option<SqlServerTemporalMetadata>,
     graph_kind: Option<SqlServerGraphKind>,
     external: Option<SqlServerExternalTableMetadata>,
+    owner: String,
     memory_optimized: bool,
     durability: Option<String>,
 }
@@ -232,7 +270,8 @@ SELECT
     CAST(CASE WHEN et.object_id IS NULL THEN 0 ELSE 1 END AS bit),
     eds.name,
     eff.name,
-    et.location
+    et.location,
+    COALESCE(USER_NAME(o.principal_id), USER_NAME(s.principal_id))
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 LEFT JOIN sys.tables AS t ON t.object_id = o.object_id
@@ -280,6 +319,7 @@ WHERE s.name = @P1
         temporal,
         graph_kind,
         external,
+        owner: text(row, 21, "owner")?,
         memory_optimized: required(row, 7, "memory_optimized")?,
         durability: optional_text(row, 8, "durability")?,
     })
@@ -415,6 +455,99 @@ WHERE s.name = @P1 AND o.name = @P2;
             "oggetto SQL Server associato a piu strategie di partizionamento",
         )),
     }
+}
+
+async fn load_security_predicates(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SqlServerSecurityPredicate>> {
+    let rows = execute_bound(
+        session,
+        r"
+SELECT
+    policy_schema.name,
+    policy.name,
+    policy.is_enabled,
+    policy.is_schema_bound,
+    predicate.predicate_definition,
+    predicate.predicate_type_desc,
+    predicate.operation_desc
+FROM sys.objects AS target
+JOIN sys.schemas AS target_schema ON target_schema.schema_id = target.schema_id
+JOIN sys.security_predicates AS predicate ON predicate.target_object_id = target.object_id
+JOIN sys.security_policies AS policy ON policy.object_id = predicate.object_id
+JOIN sys.schemas AS policy_schema ON policy_schema.schema_id = policy.schema_id
+WHERE target_schema.name = @P1 AND target.name = @P2
+ORDER BY policy_schema.name, policy.name, predicate.security_predicate_id;
+",
+        schema,
+        object,
+        cancellation,
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(SqlServerSecurityPredicate {
+                policy_schema: text(row, 0, "security_policy_schema")?,
+                policy_name: text(row, 1, "security_policy_name")?,
+                policy_enabled: required(row, 2, "security_policy_enabled")?,
+                policy_schema_bound: required(row, 3, "security_policy_schema_bound")?,
+                predicate_definition: text(row, 4, "security_predicate_definition")?,
+                kind: text(row, 5, "security_predicate_kind")?,
+                operation: optional_text(row, 6, "security_predicate_operation")?,
+            })
+        })
+        .collect()
+}
+
+async fn load_permissions(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SqlServerPermission>> {
+    let rows = execute_bound(
+        session,
+        r"
+SELECT
+    USER_NAME(permission.grantee_principal_id),
+    USER_NAME(permission.grantor_principal_id),
+    permission.permission_name,
+    permission.state_desc,
+    column_metadata.name
+FROM sys.objects AS target
+JOIN sys.schemas AS target_schema ON target_schema.schema_id = target.schema_id
+JOIN sys.database_permissions AS permission
+  ON permission.class = 1
+ AND permission.major_id = target.object_id
+LEFT JOIN sys.columns AS column_metadata
+  ON column_metadata.object_id = target.object_id
+ AND column_metadata.column_id = permission.minor_id
+WHERE target_schema.name = @P1 AND target.name = @P2
+ORDER BY
+    USER_NAME(permission.grantee_principal_id),
+    permission.permission_name,
+    permission.state_desc,
+    permission.minor_id;
+",
+        schema,
+        object,
+        cancellation,
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(SqlServerPermission {
+                grantee: text(row, 0, "permission_grantee")?,
+                grantor: text(row, 1, "permission_grantor")?,
+                permission: text(row, 2, "permission_name")?,
+                state: text(row, 3, "permission_state")?,
+                column: optional_text(row, 4, "permission_column")?,
+            })
+        })
+        .collect()
 }
 
 async fn load_columns(
