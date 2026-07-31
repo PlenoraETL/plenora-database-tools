@@ -51,7 +51,9 @@ conversioni non native restano sul percorso prepared. Include fault
 deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e
-dopo rollback server.
+dopo rollback server, piu una finestra di perdita totale temporanea che
+introduce latenza ma, se inferiore al timeout, preserva risposta e riuso della
+sessione.
 La stessa campagna attraversa ora il trait comune `Provider`: test connection,
 capability, catalogo, projection/filter/order/limit bindati, round-trip
 prepared write e `QueryOperation` relazionali con CTE, join, group/having,

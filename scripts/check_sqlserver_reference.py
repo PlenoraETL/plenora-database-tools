@@ -20,7 +20,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 43
+EXPECTED_LIVE_TESTS = 44
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -402,6 +402,7 @@ def main() -> int:
             "transaction_rollback",
             "physical_tds_cut",
             "physical_tds_blackhole",
+            "temporary_total_packet_loss_and_latency",
             "unknown_commit_outcome",
             "atomic_create",
             "staged_replace_publish",

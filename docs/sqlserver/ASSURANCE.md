@@ -83,7 +83,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
   dataset senza extent rifiutato con rollback e senza oggetti residui;
 - rollback dello staging e dei rename, cleanup, dipendenze fail-closed e
   leggibilita del vecchio target durante il caricamento;
-- taglio e blackhole fisici del trasporto TDS.
+- taglio e blackhole fisici del trasporto TDS;
+- perdita totale temporanea del traffico TDS: latenza indotta, risposta integra
+  e sessione riusabile quando il forwarding riprende entro il timeout.
 - catena TLS privata, hostname match/mismatch e rotazione;
 - roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
   dimensioni miste e FullGlobe;

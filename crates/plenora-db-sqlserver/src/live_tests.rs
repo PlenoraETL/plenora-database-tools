@@ -180,6 +180,7 @@ impl TcpCutProxy {
                                 mode_applied.notify_waiters();
                                 let changed = connection_mode.changed().await;
                                 blackholed.fetch_sub(1, Ordering::AcqRel);
+                                mode_applied.notify_waiters();
                                 assert!(changed.is_ok(), "proxy mode sender dropped");
                             }
                             ProxyMode::Cut => break,
@@ -220,6 +221,23 @@ impl TcpCutProxy {
         })
         .await
         .expect("all proxied TDS connections must enter blackhole");
+    }
+
+    async fn forward(&self) {
+        self.mode
+            .send(ProxyMode::Forward)
+            .expect("restore proxied TDS forwarding");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let applied = self.mode_applied.notified();
+                if self.blackholed_connections.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                applied.await;
+            }
+        })
+        .await
+        .expect("all proxied TDS connections must leave blackhole");
     }
 
     async fn cut(&self) {
@@ -4560,6 +4578,78 @@ async fn live_physical_blackhole_during_read_times_out_and_quarantines() {
     assert_eq!(error.remote_effect, RemoteEffect::None);
     assert_eq!(error.retry, RetryDisposition::Never);
     assert!(!session.is_reusable());
+    proxy.cut().await;
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live e perdita totale temporanea del trasporto TDS"]
+async fn live_temporary_total_packet_loss_adds_latency_without_corruption() {
+    let cancellation = CancellationToken::new();
+    let direct_config = live_config(CertificatePolicy::TrustServerCertificate);
+    let proxy = TcpCutProxy::start(direct_config.host(), direct_config.port()).await;
+    let config = proxied_live_config(proxy.port)
+        .with_application_name("plenora-temporary-packet-loss")
+        .with_timeouts(
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(3),
+            std::time::Duration::from_secs(2),
+        );
+    let mut session = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("proxied packet-loss session");
+    let mut admin = SqlServerSession::open(&live_admin_config(), &cancellation)
+        .await
+        .expect("packet-loss server-state admin");
+    let (sender, mut receiver) = mpsc::channel(1);
+    let worker_cancellation = cancellation.clone();
+    let expected_columns = vec![SqlServerColumnSpec {
+        name: "value".to_owned(),
+        native_type: "int".to_owned(),
+        native_declaration: "int".to_owned(),
+        nullable: false,
+        collation: None,
+        kind: SqlServerColumnKind::I32,
+        spatial_srid: None,
+        spatial_dimensions: None,
+        wire_encoding: SqlServerWireEncoding::Native,
+    }];
+    let worker = tokio::spawn(async move {
+        let result = session
+            .pump_query_rows(
+                Query::new("WAITFOR DELAY '00:00:00.200'; SELECT 1 AS [value];"),
+                sender,
+                &expected_columns,
+                &worker_cancellation,
+            )
+            .await;
+        (result, session)
+    });
+
+    wait_for_application_request(
+        &mut admin,
+        "plenora-temporary-packet-loss",
+        &cancellation,
+    )
+    .await;
+    proxy.blackhole().await;
+    let fault_started = tokio::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    proxy.forward().await;
+
+    let (result, session) = tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+        .await
+        .expect("read must recover after temporary packet loss")
+        .expect("packet-loss worker");
+    result.expect("temporary packet loss below timeout must preserve the response");
+    assert!(fault_started.elapsed() >= std::time::Duration::from_millis(400));
+    assert!(session.is_reusable());
+    let row = receiver
+        .recv()
+        .await
+        .expect("one row expected")
+        .expect("row must decode after forwarding resumes");
+    assert_eq!(row.get::<i32, _>(0), Some(1));
+    assert!(receiver.recv().await.is_none());
     proxy.cut().await;
 }
 

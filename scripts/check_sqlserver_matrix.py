@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
 RUST_IMAGE = "rust:1.92"
-EXPECTED_TESTS = 42
+EXPECTED_TESTS = 43
 
 
 @dataclass(frozen=True)

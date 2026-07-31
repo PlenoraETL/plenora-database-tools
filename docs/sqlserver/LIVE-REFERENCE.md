@@ -175,6 +175,9 @@ La suite live seriale ha verificato:
     riconosciuti senza linearizzazione.
 59. `CircularString` WKB viene scritto e riletto byte per byte su geometry e
     geography, preservando il tipo curvo nativo.
+60. perdita totale temporanea del traffico TDS per 400 ms: la lettura resta
+    sospesa, riprende senza corruzione prima del timeout e la sessione resta
+    riusabile; il blackhole prolungato del punto 27 resta il controllo negativo.
 
 Comando della prova:
 
@@ -182,7 +185,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **43 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **44 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
