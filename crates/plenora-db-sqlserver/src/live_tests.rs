@@ -373,16 +373,17 @@ async fn polybase_external_catalog_is_structural_and_not_implicit() {
 #[ignore = "richiede credenziali Azure SQL e TLS pubblico verificabile"]
 async fn azure_sql_probe_uses_verified_tls_and_native_spatial_types() {
     let cancellation = CancellationToken::new();
-    let mut session = SqlServerSession::open(
-        &live_config(CertificatePolicy::Verify),
-        &cancellation,
-    )
-    .await
-    .expect("open Azure SQL with verified TLS");
+    let mut session =
+        SqlServerSession::open(&live_config(CertificatePolicy::Verify), &cancellation)
+            .await
+            .expect("open Azure SQL with verified TLS");
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe Azure SQL");
-    assert_eq!(probe.engine_edition, 5, "il gate richiede Azure SQL Database");
+    assert_eq!(
+        probe.engine_edition, 5,
+        "il gate richiede Azure SQL Database"
+    );
     assert!(probe.geometry_type_id.is_some());
     assert!(probe.geography_type_id.is_some());
     let schemas = list_schemas(&mut session, &cancellation)
@@ -4638,12 +4639,7 @@ async fn live_temporary_total_packet_loss_adds_latency_without_corruption() {
         (result, session)
     });
 
-    wait_for_application_request(
-        &mut admin,
-        "plenora-temporary-packet-loss",
-        &cancellation,
-    )
-    .await;
+    wait_for_application_request(&mut admin, "plenora-temporary-packet-loss", &cancellation).await;
     proxy.blackhole().await;
     let fault_started = tokio::time::Instant::now();
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;

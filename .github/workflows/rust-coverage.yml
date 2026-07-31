@@ -105,7 +105,9 @@ jobs:
             --no-report \
             -- \
             --ignored \
-            --test-threads=1
+            --test-threads=1 \
+            --skip azure_sql_probe_uses_verified_tls_and_native_spatial_types \
+            --skip polybase_external_catalog_is_structural_and_not_implicit
           cargo llvm-cov report \
             --lcov \
             --output-path assurance-results/coverage-full.lcov
