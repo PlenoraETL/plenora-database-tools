@@ -70,6 +70,7 @@ Legenda:
 | Introspection sicurezza | owner effettivo, predicati RLS e permessi espliciti object/column; tutto incluso nello schema token | live-proven |
 | Introspection view | definizione anche nullable per view cifrate, schema binding, `ANSI_NULLS` e `QUOTED_IDENTIFIER`; tutto incluso nello schema token | live-proven per view non cifrata schema-bound |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
+| Matrice versioni | SQL Server 2019 15.0/compat 150 e SQL Server 2025 17.0/compat 170, immagini fissate per digest | 42/42 live-proven per versione; Azure SQL ha gate read-only opt-in |
 | Catalogo riferimento | schemi, oggetti, colonne, vincoli, indici e metadati di tassellazione/bounding box spatial | live-proven |
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |
 | TLS self-signed negativo | policy `Verify` rifiuta la fixture | live-proven |
@@ -91,9 +92,7 @@ Legenda:
 
 Il riferimento minimo è SQL Server 2022. Prima del freeze del provider:
 
-- SQL Server 2019;
 - SQL Server 2022;
-- SQL Server 2025;
 - Azure SQL Database;
 - `geometry` e `geography` con SRID compatibili e incompatibili;
 - fault di rete tramite latenza e packet loss su lettura e rollback;

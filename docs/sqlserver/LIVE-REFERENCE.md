@@ -199,7 +199,8 @@ Questa prova non dimostra ancora:
 - external table con data source e file format reali sul gate PolyBase
   separato; il riferimento corrente prova `IsPolyBaseInstalled=0` e non
   trasforma l'assenza della feature in successo;
-- altre build SQL Server e Azure SQL.
+- Azure SQL oltre il probe read-only opt-in; SQL Server 2019 e 2025 sono ora
+  coperti dal gate di matrice separato con 42/42 per versione.
 
 La suite combina fault deterministici interni e un proxy TCP capace di chiudere
 materialmente entrambi i socket oppure mantenerli aperti senza inoltrare byte.

@@ -18,6 +18,17 @@ Questo gate fallisce esplicitamente se `IsPolyBaseInstalled` non vale `1`; il
 riferimento 2022 standard fissato per digest vale `0` e non produce quindi un
 claim external artificiale.
 
+La matrice di versione usa immagini Microsoft fissate per digest:
+
+```powershell
+python scripts\check_sqlserver_matrix.py
+```
+
+Qualifica 42 prove live su SQL Server 2019 (15.0/compat 150) e 2025
+(17.0/compat 170). Azure SQL non viene simulato: il workflow manuale
+`sqlserver-azure-assurance.yml` usa secret di environment e TLS verificato per
+un gate read-only che controlla `EngineEdition=5`.
+
 Il gate usa SQL Server 2022 fissato per digest, verifica identità e stato del
 server, esegue Clippy con warning negati, unit test e l'intera matrice live in
 serie. La baseline post-RC1 aggiunge una CA privata, il controllo positivo e
@@ -87,7 +98,7 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 ## Gap non coperti dal gate v1
 
-- SQL Server 2019, 2025 e Azure SQL;
+- equivalenza completa Azure SQL oltre il gate read-only opt-in;
 - supporto lossless `FullGlobe`; Z/M/ZM e i tipi curvi pubblicati sono coperti
   come WKB ISO;
 - CTE dichiarate dentro una derived table (rifiutate nativamente da SQL Server

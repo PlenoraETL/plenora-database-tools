@@ -265,8 +265,16 @@ async fn live_reference_probe_and_catalog() {
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe live");
-    assert!(probe.product_version.starts_with("16."));
-    assert_eq!(probe.compatibility_level, 160);
+    let expected_major =
+        std::env::var("PLENORA_SQLSERVER_EXPECTED_MAJOR").unwrap_or_else(|_| "16".to_owned());
+    let expected_compatibility = std::env::var("PLENORA_SQLSERVER_EXPECTED_COMPATIBILITY")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(160);
+    assert!(probe
+        .product_version
+        .starts_with(&format!("{expected_major}.")));
+    assert_eq!(probe.compatibility_level, expected_compatibility);
     assert!(probe.geometry_type_id.is_some());
     assert!(probe.geography_type_id.is_some());
     assert!(!probe.polybase_installed);
@@ -325,9 +333,9 @@ async fn polybase_external_catalog_is_structural_and_not_implicit() {
     let objects = list_objects(&mut session, Some("plenora_test"), &cancellation)
         .await
         .expect("list external fixture");
-    assert!(objects.iter().any(|object| {
-        object.name == "external_probe" && object.kind == "EXTERNAL_TABLE"
-    }));
+    assert!(objects
+        .iter()
+        .any(|object| { object.name == "external_probe" && object.kind == "EXTERNAL_TABLE" }));
     let description = describe_object(
         &mut session,
         "plenora_test",
@@ -341,6 +349,29 @@ async fn polybase_external_catalog_is_structural_and_not_implicit() {
     assert!(!external.data_source.is_empty());
     assert!(!external.location.is_empty());
     assert_eq!(description.token.structural_fingerprint.len(), 64);
+}
+
+#[tokio::test]
+#[ignore = "richiede credenziali Azure SQL e TLS pubblico verificabile"]
+async fn azure_sql_probe_uses_verified_tls_and_native_spatial_types() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::Verify),
+        &cancellation,
+    )
+    .await
+    .expect("open Azure SQL with verified TLS");
+    let probe = probe_server(&mut session, &cancellation)
+        .await
+        .expect("probe Azure SQL");
+    assert_eq!(probe.engine_edition, 5, "il gate richiede Azure SQL Database");
+    assert!(probe.geometry_type_id.is_some());
+    assert!(probe.geography_type_id.is_some());
+    let schemas = list_schemas(&mut session, &cancellation)
+        .await
+        .expect("list Azure SQL schemas");
+    assert!(!schemas.is_empty());
+    assert!(session.is_reusable());
 }
 
 #[tokio::test]

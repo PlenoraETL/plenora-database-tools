@@ -78,6 +78,8 @@ Il gate autonomo con evidenza riproducibile è descritto in
 [ASSURANCE.md](ASSURANCE.md).
 La stessa pagina documenta il gate PolyBase separato, che richiede una fixture
 external reale e fallisce su un server privo della feature.
+Documenta inoltre la matrice live 2019/2025 fissata per digest e il workflow
+Azure SQL opt-in con TLS verificato.
 La baseline di regressione è descritta in [PERFORMANCE.md](PERFORMANCE.md).
 Lo schema evolution additivo è opt-in tramite
 `SqlServerSchemaEvolution::AddNullableColumns`: ammette soltanto nuove colonne

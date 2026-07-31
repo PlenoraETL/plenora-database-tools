@@ -345,6 +345,8 @@ def main() -> int:
                 "--test-threads=1",
                 "--skip",
                 "polybase_external_catalog_is_structural_and_not_implicit",
+                "--skip",
+                "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
             ],
             capture=True,
         )

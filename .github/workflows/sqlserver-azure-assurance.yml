@@ -1,0 +1,24 @@
+name: Azure SQL opt-in assurance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  azure-sql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: azure-sql-assurance
+    env:
+      PLENORA_SQLSERVER_HOST: ${{ secrets.PLENORA_AZURE_SQL_HOST }}
+      PLENORA_SQLSERVER_DATABASE: ${{ secrets.PLENORA_AZURE_SQL_DATABASE }}
+      PLENORA_SQLSERVER_USER: ${{ secrets.PLENORA_AZURE_SQL_USER }}
+      PLENORA_SQLSERVER_PASSWORD: ${{ secrets.PLENORA_AZURE_SQL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      - name: Run read-only Azure SQL gate with verified TLS
+        run: python3 scripts/check_sqlserver_azure.py
