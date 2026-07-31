@@ -143,6 +143,10 @@ La suite live seriale ha verificato:
     con predicato colonna-colonna, output `Intersection`, alias risolti,
     semantica/SRID verificati su entrambi i lati e token strutturale conservato
     per ogni sorgente.
+52. output e predicati spatial attraverso CTE non ricorsive, derived table e
+    subquery non correlate, su `geometry` e `geography`; tipo nativo, SRID e
+    token di tutte le tabelle fisiche sottostanti sono verificati, incluso il
+    rifiuto live di un parametro con SRID divergente.
 
 Comando della prova:
 
@@ -150,7 +154,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **35 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **36 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -158,9 +162,9 @@ Esito post-RC1: **35 superati, 0 falliti**. Il valore RC1 resta storicamente
 Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
-- `QueryOperation` spatial attraverso CTE/subquery/derived, lateral/APPLY,
-  locking, output geometrici annidati, join con sorgenti non fisiche e forme
-  calcolate senza alias deterministico;
+- CTE spatial ricorsive o annidate in derived table, subquery spatial
+  correlate, lateral/APPLY, set operation spatial, locking e forme calcolate
+  senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;

@@ -41,6 +41,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - join spatial fra colonne con risoluzione obbligatoria degli alias, verifica
   di semantica/SRID su entrambi gli operandi e token strutturale ricontrollato
   per ogni tabella coinvolta;
+- CTE non ricorsive, derived table e subquery spatial non correlate con
+  descrizione autoritativa del tipo nativo, profilo SRID prima del predicato e
+  token strutturale di ogni sorgente fisica sottostante;
 - schema drift fail-closed;
 - schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
   congiunto di DDL e dati;
@@ -65,8 +68,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - SQL Server 2019, 2025 e Azure SQL;
 - supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
-- ulteriori output spatial e AST spatial attraverso CTE, derived table,
-  subquery e sorgenti non fisiche; i join fra tabelle fisiche sono coperti;
+- CTE spatial ricorsive o annidate in derived table, subquery spatial
+  correlate, lateral/APPLY e set operation spatial;
 - catalogo temporal/graph/external e partizioni.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una
