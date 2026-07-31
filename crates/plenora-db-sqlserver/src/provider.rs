@@ -310,7 +310,11 @@ impl Provider for SqlServerProvider {
                     geography: probe.geography_type_id.is_some(),
                     spatial_index: probe.geometry_type_id.is_some()
                         && probe.geography_type_id.is_some(),
-                    mixed_geometry_types: false,
+                    // geometry/geography sono UDT non vincolati a un singolo
+                    // tipo geometrico; il roundtrip mixed Point+Polygon è
+                    // qualificato dal gate live per entrambe le semantiche.
+                    mixed_geometry_types: probe.geometry_type_id.is_some()
+                        || probe.geography_type_id.is_some(),
                     dimensions: vec![
                         Dimensions::Xy,
                         Dimensions::Xyz,

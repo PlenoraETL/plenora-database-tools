@@ -12,6 +12,7 @@ capability, prova live, documentazione e gate concordano.
 | Schema evolution additiva | nullable, opt-in | nullable, opt-in | **chiusa**: DDL+dati atomici e rollback live |
 | Spatial XY | completo | completo | mantenere roundtrip geometry/geography |
 | Spatial Z/M/ZM | lossless | lossless | **chiusa**: WKB ISO e differenziale live |
+| Tipi geometrici misti | supportati | Point+Polygon su geometry/geography | **chiusa**: metadata Arrow `mixed` e roundtrip live senza coercizione |
 | AST spatial | catalogo tipizzato | 23 metodi nativi comuni tipizzati | **chiusa per il sottoinsieme comune pubblicato**: accessori, validazione, predicati, misure e processing su source fisiche, join fisici, CTE non ricorsive, derived e subquery non correlate; i nove output geometrici sono WKB Z/M-safe con profilo del risultato e prova live geometry/geography |
 | Indice spatial | GiST+bbox/KNN | auto-grid `geometry`/`geography` | **chiusa per create/replace**: creazione atomica, catalogo, access path forzato e rollback fail-closed live; nessun claim di equivalenza KNN |
 | Catalogo avanzato | partizioni, viste, RLS/ACL | parziale | temporal/graph/external/partizioni osservati |
