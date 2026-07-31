@@ -265,6 +265,26 @@ impl Renderer {
     ///
     /// Fallisce per query strutturalmente incomplete o funzioni non supportate.
     pub fn render_query(&self, query: &QueryOperation) -> Result<RenderedSql> {
+        self.render_query_with_spatial_encoding(query, true)
+    }
+
+    /// Renderizza una query mantenendo gli output spatial nel tipo nativo.
+    ///
+    /// Questa variante è riservata ai preflight del provider: un output UDT
+    /// SQL Server non è direttamente un contratto Arrow trasportabile.
+    ///
+    /// # Errors
+    ///
+    /// Fallisce per query strutturalmente incomplete o funzioni non supportate.
+    pub fn render_query_native_spatial(&self, query: &QueryOperation) -> Result<RenderedSql> {
+        self.render_query_with_spatial_encoding(query, false)
+    }
+
+    fn render_query_with_spatial_encoding(
+        &self,
+        query: &QueryOperation,
+        encode_spatial_output: bool,
+    ) -> Result<RenderedSql> {
         let mut limits = plenora_database_core::limits::Limits::default();
         if self.dialect == Dialect::SqlServer {
             // È volutamente più conservativo del limite SQL Server espresso
@@ -273,7 +293,7 @@ impl Renderer {
         }
         validate_query_operation(query, &limits)?;
         let mut binds = Vec::new();
-        let sql = self.render_query_inner(query, &mut binds, true)?;
+        let sql = self.render_query_inner(query, &mut binds, encode_spatial_output)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
@@ -366,10 +386,13 @@ impl Renderer {
                 if matches!(
                     &item.expression,
                     QueryExpression::Spatial { function, .. } if function.returns_geometry()
-                ) && self.dialect == Dialect::Postgres
-                    && encode_spatial_output
+                ) && encode_spatial_output
                 {
-                    rendered = format!("ST_AsEWKB({rendered})");
+                    rendered = match self.dialect {
+                        Dialect::Postgres => format!("ST_AsEWKB({rendered})"),
+                        Dialect::SqlServer => format!("({rendered}).AsBinaryZM()"),
+                        _ => rendered,
+                    };
                 }
                 if let Some(alias) = &item.alias {
                     rendered.push_str(" AS ");
@@ -904,6 +927,8 @@ impl Renderer {
             SpatialFunction::Distance => binary(self, "STDistance", binds),
             SpatialFunction::Area => unary("STArea"),
             SpatialFunction::Length => unary("STLength"),
+            SpatialFunction::StartPoint => unary("STStartPoint"),
+            SpatialFunction::EndPoint => unary("STEndPoint"),
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1704,6 +1729,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
         let renderer = Renderer::new(
             Dialect::SqlServer,
@@ -1730,6 +1756,8 @@ mod tests {
             (SpatialFunction::IsClosed, "[e].[shape].STIsClosed()"),
             (SpatialFunction::Area, "[e].[shape].STArea()"),
             (SpatialFunction::Length, "[e].[shape].STLength()"),
+            (SpatialFunction::StartPoint, "[e].[shape].STStartPoint()"),
+            (SpatialFunction::EndPoint, "[e].[shape].STEndPoint()"),
         ] {
             let mut query = simple_query();
             query.projection[0] = QueryProjection {
@@ -1744,6 +1772,16 @@ mod tests {
             if function.returns_boolean(1) {
                 assert!(!rendered_sql.sql.contains("CASE WHEN"));
                 assert!(!rendered_sql.sql.contains(" = 1) AS [value]"));
+            }
+            if function.returns_geometry() {
+                assert!(rendered_sql
+                    .sql
+                    .contains(&format!("({fragment}).AsBinaryZM() AS [value]")));
+                let native = renderer
+                    .render_query_native_spatial(&query)
+                    .expect("native spatial profile");
+                assert!(native.sql.contains(&format!("{fragment} AS [value]")));
+                assert!(!native.sql.contains("AsBinaryZM"));
             }
             assert!(rendered_sql.binds.is_empty());
         }

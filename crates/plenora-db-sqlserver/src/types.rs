@@ -258,6 +258,43 @@ impl SqlServerReadPlan {
         Ok(())
     }
 
+    pub(crate) fn apply_query_spatial_contract(
+        &mut self,
+        index: usize,
+        semantics: SpatialSemantics,
+        srid: Option<u32>,
+        dimensions: Dimensions,
+    ) -> Result<()> {
+        let column = self
+            .columns
+            .get_mut(index)
+            .ok_or_else(|| prepare_error(ErrorCategory::Internal, "indice spatial non valido"))?;
+        if column.kind != SqlServerColumnKind::Binary {
+            return Err(prepare_error(
+                ErrorCategory::Protocol,
+                "output spatial SQL Server non descritto come varbinary",
+            ));
+        }
+        let (kind, native) = match semantics {
+            SpatialSemantics::Geometry => (SqlServerColumnKind::Geometry, "geometry"),
+            SpatialSemantics::Geography => (SqlServerColumnKind::Geography, "geography"),
+        };
+        column.kind = kind;
+        native.clone_into(&mut column.native_type);
+        native.clone_into(&mut column.native_declaration);
+        column.collation = None;
+        column.spatial_srid = srid;
+        column.spatial_dimensions = Some(dimensions);
+        column.wire_encoding = SqlServerWireEncoding::Projected;
+        let fields = self
+            .columns
+            .iter()
+            .map(SqlServerColumnSpec::arrow_field)
+            .collect::<Vec<_>>();
+        self.schema = contract_schema(fields);
+        Ok(())
+    }
+
     pub(crate) fn from_query_result(
         sql: String,
         bind_names: Vec<String>,
@@ -1149,6 +1186,40 @@ mod tests {
         )
         .expect_err("spatial output");
         assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn encoded_query_spatial_output_requires_and_applies_an_explicit_contract() {
+        let binary = SqlServerColumnSpec::from_query_metadata(
+            "start_point".to_owned(),
+            "varbinary(max)".to_owned(),
+            true,
+            None,
+        )
+        .expect("encoded WKB metadata");
+        let mut plan =
+            SqlServerReadPlan::from_query_result("SELECT 1".to_owned(), Vec::new(), vec![binary])
+                .expect("query plan");
+        plan.apply_query_spatial_contract(
+            0,
+            SpatialSemantics::Geography,
+            Some(4_326),
+            Dimensions::Xyzm,
+        )
+        .expect("spatial contract");
+        let field = plan.schema.field(0);
+        assert_eq!(field.data_type(), &DataType::Binary);
+        assert_eq!(
+            field.metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+            "geography"
+        );
+        assert_eq!(field.metadata()[protocol::GEOMETRY_DIMENSIONS], "xyzm");
+        assert_eq!(field.metadata()[protocol::GEOMETRY_SRID], "4326");
+        assert_eq!(
+            plan.columns[0].wire_encoding,
+            SqlServerWireEncoding::Projected
+        );
+        assert!(plan.columns[0].accepts_tds_column_type(tiberius::ColumnType::BigVarBin));
     }
 
     #[test]

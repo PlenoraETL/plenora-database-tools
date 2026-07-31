@@ -151,8 +151,47 @@ pub async fn read_query_operation(
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
-    validate_spatial_inputs(pooled.session_mut()?, operation, parameters, &internal).await?;
-    let plan = describe_query(pooled.session_mut()?, rendered, parameters, &internal).await?;
+    let spatial_validation = validate_spatial_inputs(
+        pooled.session_mut()?,
+        operation,
+        parameters,
+        budget,
+        &internal,
+    )
+    .await?;
+    let mut plan = describe_query(pooled.session_mut()?, rendered, parameters, &internal).await?;
+    for output in spatial_validation.outputs {
+        plan.apply_query_spatial_contract(
+            output.projection_index,
+            output.semantics,
+            output.srid,
+            output.dimensions,
+        )?;
+    }
+    if let Some(expected_token) = spatial_validation.source_token {
+        let source = operation.source.as_ref().ok_or_else(|| {
+            read_error(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Prepare,
+                "query spatial SQL Server senza sorgente da ricontrollare",
+            )
+        })?;
+        let schema = source.object.schema.as_deref().unwrap_or("dbo");
+        let confirmation = describe_object(
+            pooled.session_mut()?,
+            schema,
+            &source.object.object,
+            &internal,
+        )
+        .await?;
+        if confirmation.token != expected_token {
+            return Err(read_error(
+                ErrorCategory::Schema,
+                ErrorPhase::Prepare,
+                "schema SQL Server cambiato durante la preparazione spatial",
+            ));
+        }
+    }
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;

@@ -1221,6 +1221,139 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per output spatial WKB Z/M"]
+#[allow(clippy::too_many_lines)]
+async fn live_native_spatial_outputs_preserve_contract_and_zm() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("spatial output admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[spatial_output_probe]; \
+                 CREATE TABLE [plenora_test].[spatial_output_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 INSERT INTO [plenora_test].[spatial_output_probe] VALUES \
+                 (1, geometry::STGeomFromText('LINESTRING (1 2 3 4, 5 6 7 8)', 4326), \
+                     geography::STGeomFromText('LINESTRING (13 43 3 4, 14 44 7 8)', 4326));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("spatial output fixture");
+    let provider = SqlServerProvider::new(config, 8, 1).expect("spatial output provider");
+    let secret = live_secret();
+
+    for (field, semantics, start, end) in [
+        (
+            "shape",
+            "geometry",
+            [1.0_f64, 2.0, 3.0, 4.0],
+            [5.0_f64, 6.0, 7.0, 8.0],
+        ),
+        (
+            "position",
+            "geography",
+            [13.0_f64, 43.0, 3.0, 4.0],
+            [14.0_f64, 44.0, 7.0, 8.0],
+        ),
+    ] {
+        let spatial = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("source".to_owned()),
+                    field: field.to_owned(),
+                },
+            }],
+        };
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_test".to_owned()),
+                    object: "spatial_output_probe".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("source".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![
+                QueryProjection {
+                    expression: spatial(SpatialFunction::StartPoint),
+                    alias: Some("start_point".to_owned()),
+                },
+                QueryProjection {
+                    expression: spatial(SpatialFunction::EndPoint),
+                    alias: Some("end_point".to_owned()),
+                },
+            ],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("spatial output budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &operation,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics} spatial output: {error}"));
+        let output_schema = stream.schema();
+        for name in ["start_point", "end_point"] {
+            let metadata = output_schema
+                .field_with_name(name)
+                .expect("spatial output field")
+                .metadata();
+            assert_eq!(metadata[protocol::GEOMETRY_DIMENSIONS], "xyzm");
+            assert_eq!(metadata[protocol::GEOMETRY_SPATIAL_SEMANTICS], semantics);
+            assert_eq!(metadata[protocol::GEOMETRY_SRID], "4326");
+        }
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("spatial output batch")
+            .expect("spatial output row");
+        for (name, coordinates) in [("start_point", start), ("end_point", end)] {
+            let values = batch
+                .column_by_name(name)
+                .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+                .expect("spatial output WKB");
+            assert_eq!(values.value(0), ewkb_point(3_001, &coordinates));
+        }
+        assert!(stream
+            .next_batch()
+            .await
+            .expect("spatial output end")
+            .is_none());
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[spatial_output_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup spatial output fixture");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture guard"]
 async fn live_common_provider_executes_opt_in_tds_bulk() {
     let cancellation = CancellationToken::new();
