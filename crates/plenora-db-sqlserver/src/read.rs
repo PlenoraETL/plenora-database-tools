@@ -168,23 +168,16 @@ pub async fn read_query_operation(
             output.dimensions,
         )?;
     }
-    if let Some(expected_token) = spatial_validation.source_token {
-        let source = operation.source.as_ref().ok_or_else(|| {
-            read_error(
-                ErrorCategory::InvalidPlan,
-                ErrorPhase::Prepare,
-                "query spatial SQL Server senza sorgente da ricontrollare",
-            )
-        })?;
-        let schema = source.object.schema.as_deref().unwrap_or("dbo");
+    for expected in spatial_validation.source_tokens {
+        let schema = expected.object.schema.as_deref().unwrap_or("dbo");
         let confirmation = describe_object(
             pooled.session_mut()?,
             schema,
-            &source.object.object,
+            &expected.object.object,
             &internal,
         )
         .await?;
-        if confirmation.token != expected_token {
+        if confirmation.token != expected.token {
             return Err(read_error(
                 ErrorCategory::Schema,
                 ErrorPhase::Prepare,

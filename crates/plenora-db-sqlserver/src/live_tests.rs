@@ -1567,6 +1567,155 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per join spatial tra source fisiche"]
+#[allow(clippy::too_many_lines)]
+async fn live_spatial_join_resolves_columns_and_guards_every_source() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("spatial join admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[spatial_join_right]; \
+                 DROP TABLE IF EXISTS [plenora_test].[spatial_join_left]; \
+                 CREATE TABLE [plenora_test].[spatial_join_left] \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 CREATE TABLE [plenora_test].[spatial_join_right] \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 INSERT INTO [plenora_test].[spatial_join_left] VALUES \
+                 (1, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326), \
+                     geography::STGeomFromText( \
+                       'POLYGON ((-122.358 47.653, -122.348 47.649, -122.348 47.658, \
+                                  -122.358 47.658, -122.358 47.653))', 4326)); \
+                 INSERT INTO [plenora_test].[spatial_join_right] VALUES \
+                 (2, geometry::STGeomFromText('POLYGON ((2 2, 2 6, 6 6, 6 2, 2 2))', 4326), \
+                     geography::STGeomFromText( \
+                       'POLYGON ((-122.351 47.656, -122.341 47.656, -122.341 47.661, \
+                                  -122.351 47.661, -122.351 47.656))', 4326));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("spatial join fixtures");
+    let provider = SqlServerProvider::new(config, 16, 1).expect("spatial join provider");
+    let secret = live_secret();
+
+    for (field, semantics) in [("shape", "geometry"), ("position", "geography")] {
+        let column = |relation: &str| QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some(relation.to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        let intersects = QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![column("left"), column("right")],
+        };
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_test".to_owned()),
+                    object: "spatial_join_left".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("left".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::Intersection,
+                    arguments: vec![column("left"), column("right")],
+                },
+                alias: Some("overlap".to_owned()),
+            }],
+            joins: vec![QueryJoin {
+                kind: JoinKind::Inner,
+                source: Some(QuerySource {
+                    object: ObjectRef {
+                        catalog: None,
+                        schema: Some("plenora_test".to_owned()),
+                        object: "spatial_join_right".to_owned(),
+                        layer_id: None,
+                    },
+                    alias: Some("right".to_owned()),
+                }),
+                derived_source: None,
+                lateral: false,
+                on: Some(intersects),
+            }],
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("spatial join budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &operation,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics} spatial join: {error}"));
+        let output_field = stream
+            .schema()
+            .field_with_name("overlap")
+            .expect("spatial join output")
+            .clone();
+        assert_eq!(output_field.data_type(), &DataType::Binary);
+        assert_eq!(
+            output_field.metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+            semantics
+        );
+        assert_eq!(output_field.metadata()[protocol::GEOMETRY_SRID], "4326");
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("spatial join batch")
+            .expect("spatial join row");
+        let values = batch
+            .column_by_name("overlap")
+            .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+            .expect("spatial join WKB");
+        assert!(!values.is_null(0));
+        let inspected =
+            plenora_database_core::ewkb::inspect_ewkb_detailed(values.value(0), 1_000_000, 64)
+                .expect("spatial join output inspection");
+        assert_eq!(inspected.root.geometry_type_name(), Some("Polygon"));
+        assert!(stream
+            .next_batch()
+            .await
+            .expect("spatial join end")
+            .is_none());
+    }
+
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE [plenora_test].[spatial_join_right]; \
+                 DROP TABLE [plenora_test].[spatial_join_left];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup spatial join fixtures");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture guard"]
 async fn live_common_provider_executes_opt_in_tds_bulk() {
     let cancellation = CancellationToken::new();
