@@ -1,5 +1,5 @@
 use super::plan::{WriteColumnPlan, WritePlan};
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveTime, Utc};
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
     Int16Array, Int32Array, Int64Array, StringArray, Time64MicrosecondArray,
@@ -297,6 +297,16 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     )?
                     .into_sql(),
                 ),
+                crate::SqlServerColumnKind::Utf8 if column.native_type == "uniqueidentifier" => {
+                    let values = downcast::<StringArray>(array.as_ref())?;
+                    let value = (!values.is_null(row_index))
+                        .then(|| {
+                            tiberius::Uuid::parse_str(values.value(row_index))
+                                .map_err(|_| mapping_error("UUID SQL Server non valido"))
+                        })
+                        .transpose()?;
+                    row.push(value.into_sql());
+                }
                 crate::SqlServerColumnKind::Utf8 => {
                     let values = downcast::<StringArray>(array.as_ref())?;
                     row.push(
@@ -313,13 +323,31 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                             .into_sql(),
                     );
                 }
-                crate::SqlServerColumnKind::Date
-                | crate::SqlServerColumnKind::Time
-                | crate::SqlServerColumnKind::Timestamp
-                | crate::SqlServerColumnKind::TimestampTz => {
+                crate::SqlServerColumnKind::Date => {
                     return Err(mapping_error(
-                        "temporali SQL Server non ammessi nel codec TDS bulk",
-                    ));
+                        "date SQL Server non ammesso nel codec TDS bulk verificato",
+                    ))
+                }
+                crate::SqlServerColumnKind::Time => {
+                    let values = downcast::<Time64MicrosecondArray>(array.as_ref())?;
+                    let value = (!values.is_null(row_index))
+                        .then(|| time64(values.value(row_index)))
+                        .transpose()?;
+                    row.push(value.into_sql());
+                }
+                crate::SqlServerColumnKind::Timestamp => {
+                    let values = downcast::<TimestampMicrosecondArray>(array.as_ref())?;
+                    let value = (!values.is_null(row_index))
+                        .then(|| timestamp(values.value(row_index)).map(|value| value.naive_utc()))
+                        .transpose()?;
+                    row.push(value.into_sql());
+                }
+                crate::SqlServerColumnKind::TimestampTz => {
+                    let values = downcast::<StringArray>(array.as_ref())?;
+                    let value = (!values.is_null(row_index))
+                        .then(|| datetimeoffset(values.value(row_index)))
+                        .transpose()?;
+                    row.push(value.into_sql());
                 }
                 crate::SqlServerColumnKind::Decimal { scale, .. } => {
                     let values = downcast::<Decimal128Array>(array.as_ref())?;
@@ -406,6 +434,11 @@ fn time64(microseconds: i64) -> Result<NaiveTime> {
 fn timestamp(microseconds: i64) -> Result<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_micros(microseconds)
         .ok_or_else(|| mapping_error("timestamp Arrow oltre il range SQL Server/chrono"))
+}
+
+fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(value)
+        .map_err(|_| mapping_error("datetimeoffset SQL Server non valido"))
 }
 
 fn decimal_string(value: i128, scale: i8) -> Result<String> {

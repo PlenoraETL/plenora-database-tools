@@ -48,8 +48,8 @@ Legenda:
 | Bulk write | opt-in; colonne complete/in ordine, scalari verificati, un request bounded per batch | live-proven |
 | Bulk differential | prepared/TDS bulk, 100 righe in 4 batch, zero differenze | live-proven |
 | Bulk rollback | conflitto nel secondo request ripristina il primo batch | live-proven |
-| Bulk tipi verificati | bit, interi, real/float, decimal scala 0–37, nvarchar, varbinary | live-proven |
-| Bulk tipi esclusi | temporali, money, XML/UUID, spatial/UDT e varianti non provate | reject; percorso prepared |
+| Bulk tipi verificati | bit, interi, real/float, decimal scala 0–37, nvarchar, varbinary, time, datetime2, datetimeoffset e uniqueidentifier | live-proven con differenziale SQL bidirezionale |
+| Bulk tipi esclusi | date (errore live 4816), datetime/smalldatetime, money, XML, spatial/UDT e varianti non provate | reject; percorso prepared |
 | `MERGE` | non usato come default | reject |
 | `geometry` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |
 | `geography` | WKB GeoArrow, semantica e dimensioni native preservate | live-proven XY/XYZ/XYM/XYZM |

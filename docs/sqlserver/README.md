@@ -46,7 +46,8 @@ self-signed, probe, catalogo, mapping Arrow e streaming bounded di scalari,
 `geometry` e `geography`, oltre a prepared write `append`/`truncate_insert` in
 singola transazione. Il codec `TdsBulk` è opt-in, bounded e ammesso solo per
 tutte le colonne scrivibili nell'ordine del catalogo e per tipi verificati;
-spatial e conversioni non native restano sul percorso prepared. Include fault
+include `time`, `datetime2`, `datetimeoffset` e UUID; `date`, XML, spatial e
+conversioni non native restano sul percorso prepared. Include fault
 deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e

@@ -89,8 +89,9 @@ La suite live seriale ha verificato:
 33. duplicate key nel secondo request bulk con rollback confermato anche per
     le righe già finalizzate dal primo request.
 34. round-trip bulk dei tipi ammessi (`bit`, interi, `real`/`float`,
-    `decimal`, `nvarchar`, `varbinary`) con confronto SQL bidirezionale a zero
-    differenze.
+    `decimal`, `nvarchar`, `varbinary`, `time`, `datetime2`, `datetimeoffset`
+    e `uniqueidentifier`) con confronto SQL bidirezionale a zero differenze;
+    `date` e `xml` restano rifiutati dopo sonda live negativa 4816.
 35. `QueryOperation` relazionale con CTE, inner join, `COUNT_BIG`,
     group-by/having e parametri TDS ripetibili;
 36. funzione window `ROW_NUMBER`, `OFFSET/FETCH` e `UNION ALL`, con valori e

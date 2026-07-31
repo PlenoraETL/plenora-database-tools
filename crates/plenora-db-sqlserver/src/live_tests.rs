@@ -3966,7 +3966,10 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
                     [signed_big] bigint NULL, [single_value] real NULL, \
                     [double_value] float(53) NULL, \
                     [exact_value] decimal(20, 6) NULL, \
-                    [label] nvarchar(100) NULL, [payload] varbinary(32) NULL \
+                    [clock_time] time(7) NULL, [local_timestamp] datetime2(7) NULL, \
+                    [offset_timestamp] datetimeoffset(7) NULL, \
+                    [label] nvarchar(100) NULL, [payload] varbinary(32) NULL, \
+                    [external_id] uniqueidentifier NULL \
                  );",
             ),
             ErrorPhase::Write,
@@ -3983,8 +3986,12 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
         "single_value",
         "double_value",
         "exact_value",
+        "clock_time",
+        "local_timestamp",
+        "offset_timestamp",
         "label",
         "payload",
+        "external_id",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -4034,22 +4041,26 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
                 "SELECT COUNT_BIG(*) FROM \
                  ((SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
                           [single_value], [double_value], [exact_value], \
-                          [label], [payload] \
+                          [clock_time], [local_timestamp], [offset_timestamp], \
+                          [label], [payload], [external_id] \
                    FROM [plenora_test].[stream_probe] \
                    EXCEPT \
                    SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
                           [single_value], [double_value], [exact_value], \
-                          [label], [payload] \
+                          [clock_time], [local_timestamp], [offset_timestamp], \
+                          [label], [payload], [external_id] \
                    FROM [plenora_test].[bulk_native_probe]) \
                   UNION ALL \
                   (SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
                           [single_value], [double_value], [exact_value], \
-                          [label], [payload] \
+                          [clock_time], [local_timestamp], [offset_timestamp], \
+                          [label], [payload], [external_id] \
                    FROM [plenora_test].[bulk_native_probe] \
                    EXCEPT \
                    SELECT [id], [flag], [unsigned_small], [signed_small], [signed_big], \
                           [single_value], [double_value], [exact_value], \
-                          [label], [payload] \
+                          [clock_time], [local_timestamp], [offset_timestamp], \
+                          [label], [payload], [external_id] \
                    FROM [plenora_test].[stream_probe])) AS d;",
             ),
             ErrorPhase::Probe,

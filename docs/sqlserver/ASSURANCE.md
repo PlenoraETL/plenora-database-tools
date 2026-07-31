@@ -29,7 +29,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - bootstrap TDS/TLS, pool bounded e recovery;
 - read Arrow bounded, `geometry` e `geography` XY/XYZ/XYM/XYZM;
-- prepared write e TDS bulk differenziale;
+- prepared write e TDS bulk differenziale, incluso il profilo wire temporale
+  `time`/`datetime2`/`datetimeoffset` e `uniqueidentifier`;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
 - 24 metodi AST spatial nativi comuni a `geometry` e `geography` su
