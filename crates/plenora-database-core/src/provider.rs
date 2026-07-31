@@ -115,6 +115,10 @@ impl ParameterBag {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &ParameterValue)> {
+        self.0.iter()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

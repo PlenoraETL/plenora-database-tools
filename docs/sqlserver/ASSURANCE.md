@@ -32,6 +32,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - prepared write e TDS bulk differenziale;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
+- AST spatial `Intersects` nativo tipizzato su source fisica singola, con WKB
+  bindato e rifiuto live di semantica o SRID discordanti;
 - schema drift fail-closed;
 - schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
   congiunto di DDL e dati;
@@ -51,7 +53,7 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - SQL Server 2019, 2025 e Azure SQL;
 - supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
-- AST spatial tipizzato;
+- output spatial UDT e AST spatial attraverso join, CTE o subquery;
 - catalogo temporal/graph/external e partizioni.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una

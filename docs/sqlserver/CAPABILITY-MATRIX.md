@@ -56,7 +56,7 @@ Legenda:
 | SRID | sempre esplicito per input spatial | offline + live-required |
 | Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
 | `FullGlobe` | rifiutato in strict | reject |
-| Spatial rich AST | fail-closed finché tipo e SRID non sono risolti | offline |
+| Spatial rich AST | solo `Intersects`, WKB bindato, preflight semantica/SRID e source fisica singola; ogni altra funzione rifiutata | offline + live-proven |
 | Output query spatial | richiede conversione WKB e contratto spatial risolto; UDT nudo rifiutato | fail-closed |
 | Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
 | Introspection estesa | privilegi effettivi, temporal/graph/external e partizioni | live-required |

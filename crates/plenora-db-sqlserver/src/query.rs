@@ -3,14 +3,17 @@ use crate::parameter::parameter_declarations;
 use crate::types::{SqlServerColumnSpec, SqlServerReadPlan};
 use crate::SqlServerSession;
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
-use plenora_database_core::provider::ParameterBag;
-use plenora_database_core::query::{QueryExpression, QueryOperation};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::query::{ColumnRef, QueryExpression, QueryOperation, SpatialFunction};
+use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
-use plenora_database_sql::{Dialect, DialectCapabilities, RenderedSql, Renderer};
-use std::collections::BTreeSet;
+use plenora_database_sql::{
+    Dialect, DialectCapabilities, RenderedSql, Renderer, SqlServerSpatialParameter,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use tiberius::{FromSql, Query, Row};
 
 const DESCRIBE_QUERY_SQL: &str = r"
@@ -28,8 +31,79 @@ WHERE is_hidden = 0
 ORDER BY column_ordinal;
 ";
 
-pub fn render_query(operation: &QueryOperation) -> Result<RenderedSql> {
-    sql_server_renderer().render_query(operation)
+pub fn render_query(
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+) -> Result<RenderedSql> {
+    sql_server_renderer()
+        .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?)
+        .render_query(operation)
+}
+
+fn spatial_parameter_profiles(
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+) -> Result<BTreeMap<String, SqlServerSpatialParameter>> {
+    let max_components = budget.limits().geometry_components;
+    let max_depth = budget.limits().nesting_depth;
+    let mut profiles = BTreeMap::new();
+    for (name, value) in parameters.iter() {
+        let ParameterValue::Wkb {
+            bytes,
+            srid,
+            dimensions,
+            semantics,
+        } = value
+        else {
+            continue;
+        };
+        if u64::try_from(bytes.len()).map_or(true, |length| length > budget.limits().cell_bytes) {
+            return Err(DatabaseError::resource_limit(
+                "parametro WKB SQL Server oltre il limite cella",
+            ));
+        }
+        let inspection =
+            plenora_database_core::ewkb::inspect_ewkb_detailed(bytes, max_components, max_depth)?;
+        if inspection.root.srid.is_some() {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "parametro SQL Server richiede WKB senza SRID embedded",
+            ));
+        }
+        let expected = match dimensions {
+            plenora_database_core::geometry::Dimensions::Xy => "xy",
+            plenora_database_core::geometry::Dimensions::Xyz => "xyz",
+            plenora_database_core::geometry::Dimensions::Xym => "xym",
+            plenora_database_core::geometry::Dimensions::Xyzm => "xyzm",
+            plenora_database_core::geometry::Dimensions::Unknown => {
+                return Err(query_error(
+                    ErrorCategory::DataMapping,
+                    "parametro WKB SQL Server richiede dimensioni risolte",
+                ));
+            }
+        };
+        if inspection.root.dimensions_label() != expected {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "dimensioni parametro WKB diverse dal contratto",
+            ));
+        }
+        let srid = srid.ok_or_else(|| {
+            query_error(
+                ErrorCategory::DataMapping,
+                "parametro WKB SQL Server richiede SRID risolto",
+            )
+        })?;
+        profiles.insert(
+            name.clone(),
+            SqlServerSpatialParameter {
+                semantics: *semantics,
+                srid,
+            },
+        );
+    }
+    Ok(profiles)
 }
 
 /// Descrive l'output senza eseguire il piano utente.
@@ -70,6 +144,355 @@ pub async fn describe_query(
     })?;
     let columns = result_columns(&rows)?;
     SqlServerReadPlan::from_query_result(rendered.sql, bind_names, columns)
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn validate_spatial_inputs(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    if !operation_has_spatial(operation) {
+        return Ok(());
+    }
+    let mut uses = Vec::new();
+    collect_operation_spatial_uses(operation, &mut uses)?;
+    if !operation.common_table_expressions.is_empty()
+        || operation.derived_source.is_some()
+        || !operation.joins.is_empty()
+        || !operation.set_operations.is_empty()
+    {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "AST spatial SQL Server iniziale richiede una sola source fisica",
+        ));
+    }
+    if uses.is_empty() {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "AST spatial SQL Server non risolto sulla query principale",
+        ));
+    }
+    let source = operation.source.as_ref().ok_or_else(|| {
+        query_error(
+            ErrorCategory::InvalidPlan,
+            "AST spatial SQL Server senza source fisica",
+        )
+    })?;
+    let schema = source.object.schema.as_deref().unwrap_or("dbo");
+    let description =
+        crate::catalog::describe_object(session, schema, &source.object.object, cancellation)
+            .await?;
+    let renderer = sql_server_renderer();
+    let quoted_schema = renderer.quote_identifier(&plenora_database_sql::Identifier::new(schema)?);
+    let quoted_object = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
+        source.object.object.clone(),
+    )?);
+    for usage in uses {
+        if let Some(relation) = &usage.column.relation {
+            let expected = source.alias.as_deref().unwrap_or(&source.object.object);
+            if relation != expected {
+                return Err(query_error(
+                    ErrorCategory::Schema,
+                    "relazione colonna spatial non risolta sulla source SQL Server",
+                ));
+            }
+        }
+        let column = description
+            .columns
+            .iter()
+            .find(|column| column.name == usage.column.field)
+            .ok_or_else(|| {
+                query_error(
+                    ErrorCategory::Schema,
+                    "colonna spatial SQL Server assente dal catalogo",
+                )
+            })?;
+        let observed_semantics = match column.native_type.as_str() {
+            "geometry" => plenora_database_core::geometry::SpatialSemantics::Geometry,
+            "geography" => plenora_database_core::geometry::SpatialSemantics::Geography,
+            _ => {
+                return Err(query_error(
+                    ErrorCategory::DataMapping,
+                    "funzione spatial applicata a colonna SQL Server non spatial",
+                ));
+            }
+        };
+        let Some(parameter_name) = usage.parameter else {
+            continue;
+        };
+        let ParameterValue::Wkb {
+            srid: Some(expected_srid),
+            semantics,
+            ..
+        } = parameters.get(&parameter_name).ok_or_else(|| {
+            query_error(
+                ErrorCategory::InvalidPlan,
+                "parametro spatial SQL Server mancante",
+            )
+        })?
+        else {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "operando spatial SQL Server richiede un parametro WKB risolto",
+            ));
+        };
+        if *semantics != observed_semantics {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "semantica parametro spatial diversa dalla colonna SQL Server",
+            ));
+        }
+        let quoted_column = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
+            usage.column.field.clone(),
+        )?);
+        let sql = format!(
+            "SELECT COUNT_BIG(DISTINCT {quoted_column}.STSrid), \
+             MIN({quoted_column}.STSrid) FROM {quoted_schema}.{quoted_object} \
+             WHERE {quoted_column} IS NOT NULL;"
+        );
+        let mut results = session
+            .execute_query(Query::new(sql), ErrorPhase::Prepare, cancellation)
+            .await?;
+        let rows = results.pop().ok_or_else(|| {
+            query_error(
+                ErrorCategory::Protocol,
+                "preflight SRID AST spatial senza result set",
+            )
+        })?;
+        if !results.is_empty() || rows.len() != 1 {
+            return Err(query_error(
+                ErrorCategory::Protocol,
+                "preflight SRID AST spatial con cardinalita inattesa",
+            ));
+        }
+        let distinct: i64 = required(&rows[0], 0, "numero SRID spatial")?;
+        let observed_srid: Option<i32> = optional(&rows[0], 1, "SRID spatial")?;
+        if distinct > 1 {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "colonna AST spatial SQL Server con SRID misti",
+            ));
+        }
+        if let Some(observed_srid) = observed_srid {
+            if u32::try_from(observed_srid).ok() != Some(*expected_srid) {
+                return Err(query_error(
+                    ErrorCategory::DataMapping,
+                    "SRID parametro spatial diverso dalla colonna SQL Server",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct SpatialUse {
+    column: ColumnRef,
+    parameter: Option<String>,
+}
+
+fn collect_operation_spatial_uses(
+    operation: &QueryOperation,
+    uses: &mut Vec<SpatialUse>,
+) -> Result<()> {
+    for projection in &operation.projection {
+        collect_expression_spatial_uses(&projection.expression, uses)?;
+    }
+    if let Some(filter) = &operation.filter {
+        collect_expression_spatial_uses(filter, uses)?;
+    }
+    for expression in &operation.group_by {
+        collect_expression_spatial_uses(expression, uses)?;
+    }
+    if let Some(having) = &operation.having {
+        collect_expression_spatial_uses(having, uses)?;
+    }
+    for ordering in &operation.order_by {
+        collect_expression_spatial_uses(&ordering.expression, uses)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn collect_expression_spatial_uses(
+    expression: &QueryExpression,
+    uses: &mut Vec<SpatialUse>,
+) -> Result<()> {
+    match expression {
+        QueryExpression::Spatial {
+            function,
+            arguments,
+        } => {
+            let QueryExpression::Column { column } = arguments.first().ok_or_else(|| {
+                query_error(
+                    ErrorCategory::InvalidPlan,
+                    "AST spatial SQL Server senza ricevitore",
+                )
+            })?
+            else {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "AST spatial SQL Server richiede una colonna come ricevitore",
+                ));
+            };
+            if *function != SpatialFunction::Intersects {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "funzione spatial fuori dal sottoinsieme SQL Server verificato",
+                ));
+            }
+            let QueryExpression::Parameter { name } = arguments.get(1).ok_or_else(|| {
+                query_error(
+                    ErrorCategory::InvalidPlan,
+                    "AST spatial SQL Server senza secondo operando",
+                )
+            })?
+            else {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "AST spatial SQL Server richiede WKB bindato come secondo operando",
+                ));
+            };
+            uses.push(SpatialUse {
+                column: column.clone(),
+                parameter: Some(name.clone()),
+            });
+        }
+        QueryExpression::Scalar { arguments, .. }
+        | QueryExpression::And { arguments }
+        | QueryExpression::Or { arguments } => {
+            for argument in arguments {
+                collect_expression_spatial_uses(argument, uses)?;
+            }
+        }
+        QueryExpression::Compare { left, right, .. }
+        | QueryExpression::SpatialOperator { left, right, .. } => {
+            collect_expression_spatial_uses(left, uses)?;
+            collect_expression_spatial_uses(right, uses)?;
+        }
+        QueryExpression::IsNull { expression, .. } => {
+            collect_expression_spatial_uses(expression, uses)?;
+        }
+        QueryExpression::Window {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        }
+        | QueryExpression::SpatialWindow {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            for argument in arguments.iter().chain(partition_by) {
+                collect_expression_spatial_uses(argument, uses)?;
+            }
+            for ordering in order_by {
+                collect_expression_spatial_uses(&ordering.expression, uses)?;
+            }
+        }
+        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+            if operation_has_spatial(query) {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "AST spatial SQL Server non attraversa subquery correlate",
+                ));
+            }
+        }
+        QueryExpression::InSubquery {
+            expression, query, ..
+        } => {
+            collect_expression_spatial_uses(expression, uses)?;
+            if operation_has_spatial(query) {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "AST spatial SQL Server non attraversa subquery correlate",
+                ));
+            }
+        }
+        QueryExpression::Wildcard { .. }
+        | QueryExpression::Column { .. }
+        | QueryExpression::Parameter { .. } => {}
+    }
+    Ok(())
+}
+
+fn operation_has_spatial(operation: &QueryOperation) -> bool {
+    operation
+        .projection
+        .iter()
+        .any(|projection| expression_has_spatial(&projection.expression))
+        || operation
+            .filter
+            .as_ref()
+            .is_some_and(expression_has_spatial)
+        || operation.group_by.iter().any(expression_has_spatial)
+        || operation
+            .having
+            .as_ref()
+            .is_some_and(expression_has_spatial)
+        || operation
+            .order_by
+            .iter()
+            .any(|ordering| expression_has_spatial(&ordering.expression))
+        || operation
+            .common_table_expressions
+            .iter()
+            .any(|cte| operation_has_spatial(&cte.query))
+        || operation
+            .derived_source
+            .as_ref()
+            .is_some_and(|derived| operation_has_spatial(&derived.query))
+        || operation.joins.iter().any(|join| {
+            join.on.as_ref().is_some_and(expression_has_spatial)
+                || join
+                    .derived_source
+                    .as_ref()
+                    .is_some_and(|derived| operation_has_spatial(&derived.query))
+        })
+        || operation
+            .set_operations
+            .iter()
+            .any(|set| operation_has_spatial(&set.query))
+}
+
+fn expression_has_spatial(expression: &QueryExpression) -> bool {
+    match expression {
+        QueryExpression::Spatial { .. }
+        | QueryExpression::SpatialOperator { .. }
+        | QueryExpression::SpatialWindow { .. } => true,
+        QueryExpression::Scalar { arguments, .. }
+        | QueryExpression::And { arguments }
+        | QueryExpression::Or { arguments } => arguments.iter().any(expression_has_spatial),
+        QueryExpression::Compare { left, right, .. } => {
+            expression_has_spatial(left) || expression_has_spatial(right)
+        }
+        QueryExpression::Window {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            arguments.iter().any(expression_has_spatial)
+                || partition_by.iter().any(expression_has_spatial)
+                || order_by
+                    .iter()
+                    .any(|ordering| expression_has_spatial(&ordering.expression))
+        }
+        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+            operation_has_spatial(query)
+        }
+        QueryExpression::InSubquery {
+            expression, query, ..
+        } => expression_has_spatial(expression) || operation_has_spatial(query),
+        QueryExpression::IsNull { expression, .. } => expression_has_spatial(expression),
+        QueryExpression::Wildcard { .. }
+        | QueryExpression::Column { .. }
+        | QueryExpression::Parameter { .. } => false,
+    }
 }
 
 /// Verifica le sorgenti a ogni profondità dopo che il renderer ha già
@@ -301,7 +724,7 @@ const fn sql_server_renderer() -> Renderer {
     Renderer::new(
         Dialect::SqlServer,
         DialectCapabilities {
-            spatial_intersects: false,
+            spatial_intersects: true,
         },
     )
 }
@@ -385,7 +808,9 @@ mod tests {
             },
             alias: Some("event_count".to_owned()),
         });
-        let rendered = render_query(&query).expect("rendered");
+        let budget =
+            ResourceBudget::new(plenora_database_core::ResourceLimits::default()).expect("budget");
+        let rendered = render_query(&query, &ParameterBag::default(), &budget).expect("rendered");
         assert!(rendered.sql.starts_with("WITH [filtered] AS"));
         assert!(rendered
             .sql

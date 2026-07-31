@@ -20,7 +20,7 @@ use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::query::{QueryOperation, SpatialFunction};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -316,7 +316,7 @@ impl Provider for SqlServerProvider {
                         Dimensions::Xym,
                         Dimensions::Xyzm,
                     ],
-                    functions: Vec::new(),
+                    functions: vec![SpatialFunction::Intersects],
                 },
                 limits: ProviderLimits {
                     // Il core applica già il limite portabile più stretto.

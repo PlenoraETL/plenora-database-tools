@@ -120,6 +120,9 @@ La suite live seriale ha verificato:
     dimensionali e byte WKB preservati;
 45. CA privata accettata con hostname matching, mismatch rifiutato, rotazione
     del certificato server con CA stabile e riconnessione verificata.
+46. `QueryOperation` spatial tipizzata con WKB bindato e `STIntersects`,
+    inclusi rifiuti pre-query di SRID e semantica geometry/geography
+    discordanti.
 
 Comando della prova:
 
@@ -135,8 +138,8 @@ Esito post-RC1: **31 superati, 0 falliti**. Il valore RC1 resta storicamente
 Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
-- `QueryOperation` lateral/APPLY, locking, output spatial UDT nudo e forme
-  calcolate senza alias deterministico;
+- `QueryOperation` spatial attraverso join/CTE/subquery, lateral/APPLY,
+  locking, output spatial UDT nudo e forme calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
