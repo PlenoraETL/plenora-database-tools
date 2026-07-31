@@ -1,0 +1,32 @@
+services:
+  mysql:
+    image: mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+    container_name: dataflow-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "DataFlow_Root_2026!"
+      MYSQL_DATABASE: dataflow_test
+      MYSQL_USER: dataflow
+      MYSQL_PASSWORD: "DataFlow_Test_2026!"
+    ports:
+      - "3306:3306"
+    command:
+      - --require-secure-transport=ON
+      - --local-infile=OFF
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" --ssl-mode=REQUIRED --silent || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: "no"
+
+volumes:
+  mysql_data:
