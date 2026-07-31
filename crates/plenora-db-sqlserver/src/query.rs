@@ -6,7 +6,7 @@ use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::query::{
-    ColumnRef, QueryExpression, QueryOperation, QuerySource, SpatialFunction,
+    ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource, SpatialFunction,
 };
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::{
@@ -17,6 +17,8 @@ use plenora_database_sql::{
     Dialect, DialectCapabilities, RenderedSql, Renderer, SqlServerSpatialParameter,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
 use tiberius::{FromSql, Query, Row};
 
 const DESCRIBE_QUERY_SQL: &str = r"
@@ -199,6 +201,82 @@ pub async fn describe_query(
     SqlServerReadPlan::from_query_result(rendered.sql, bind_names, columns)
 }
 
+async fn describe_native_spatial_types(
+    session: &mut SqlServerSession,
+    sql: String,
+    bind_names: &[String],
+    parameters: &ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Option<SpatialSemantics>>> {
+    let declarations = parameter_declarations(bind_names, parameters)?;
+    let mut query = Query::new(DESCRIBE_QUERY_SQL);
+    query.bind(sql);
+    query.bind(declarations);
+    let mut results = session
+        .execute_query(query, ErrorPhase::Prepare, cancellation)
+        .await?;
+    if results.len() != 1 {
+        return Err(query_error(
+            ErrorCategory::Protocol,
+            "descrizione spatial nativa con numero result set inatteso",
+        ));
+    }
+    let rows = results.pop().ok_or_else(|| {
+        query_error(
+            ErrorCategory::Protocol,
+            "descrizione spatial nativa senza result set",
+        )
+    })?;
+    if rows.is_empty() {
+        return Err(query_error(
+            ErrorCategory::Schema,
+            "descrizione spatial nativa senza colonne",
+        ));
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if let Some(number) = optional::<i32>(row, 6, "error_number")? {
+                return Err(query_error(
+                    ErrorCategory::Schema,
+                    format!("descrizione spatial nativa fallita (codice {number})"),
+                ));
+            }
+            let ordinal = required::<i32>(row, 0, "column_ordinal")?;
+            let expected = i32::try_from(index + 1).map_err(|_| {
+                query_error(
+                    ErrorCategory::ResourceLimit,
+                    "numero colonne spatial native non rappresentabile",
+                )
+            })?;
+            if ordinal != expected {
+                return Err(query_error(
+                    ErrorCategory::Protocol,
+                    "ordinali descrizione spatial nativa non contigui",
+                ));
+            }
+            let user_type = optional::<&str>(row, 5, "user_type_name")?;
+            let system_type = optional::<&str>(row, 3, "system_type_name")?;
+            Ok(spatial_semantics_from_type_name(user_type)
+                .or_else(|| spatial_semantics_from_type_name(system_type)))
+        })
+        .collect()
+}
+
+fn spatial_semantics_from_type_name(value: Option<&str>) -> Option<SpatialSemantics> {
+    let terminal = value?
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|character| character == '[' || character == ']')
+        .to_ascii_lowercase();
+    match terminal.as_str() {
+        "geometry" => Some(SpatialSemantics::Geometry),
+        "geography" => Some(SpatialSemantics::Geography),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn validate_spatial_inputs(
     session: &mut SqlServerSession,
@@ -215,18 +293,33 @@ pub async fn validate_spatial_inputs(
     }
     let mut uses = Vec::new();
     collect_operation_spatial_uses(operation, &mut uses)?;
-    if !operation.common_table_expressions.is_empty()
-        || operation.derived_source.is_some()
-        || !operation.set_operations.is_empty()
+    if !operation.set_operations.is_empty()
         || operation
             .joins
             .iter()
-            .any(|join| join.derived_source.is_some() || join.lateral || join.source.is_none())
+            .any(|join| join.lateral || join.source.is_none() && join.derived_source.is_none())
     {
         return Err(query_error(
             ErrorCategory::Unsupported,
-            "AST spatial SQL Server non supporta ancora CTE, derived, lateral o set operation",
+            "AST spatial SQL Server non supporta ancora lateral o set operation",
         ));
+    }
+    if !operation.common_table_expressions.is_empty()
+        || operation.derived_source.is_some()
+        || operation
+            .joins
+            .iter()
+            .any(|join| join.derived_source.is_some())
+        || operation_contains_spatial_subquery(operation)
+    {
+        return validate_nested_spatial_inputs(
+            session,
+            operation,
+            parameters,
+            budget,
+            cancellation,
+        )
+        .await;
     }
     if uses.is_empty() {
         return Err(query_error(
@@ -405,15 +498,8 @@ pub async fn validate_spatial_inputs(
             }
         }
     }
-    let outputs = profile_spatial_outputs(
-        session,
-        operation,
-        parameters,
-        budget,
-        &sources,
-        cancellation,
-    )
-    .await?;
+    let outputs =
+        profile_spatial_outputs(session, operation, parameters, budget, cancellation).await?;
     Ok(SpatialValidation {
         outputs,
         source_tokens: sources
@@ -424,6 +510,676 @@ pub async fn validate_spatial_inputs(
             })
             .collect(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObservedSpatialColumn {
+    semantics: SpatialSemantics,
+    srid: Option<u32>,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn validate_nested_spatial_inputs(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<SpatialValidation> {
+    let mut objects = Vec::new();
+    collect_physical_spatial_sources(operation, &BTreeSet::new(), &mut objects)?;
+    let mut seen = BTreeSet::new();
+    let mut source_tokens = Vec::new();
+    for object in objects {
+        let identity = (
+            object.catalog.clone(),
+            object.schema.clone(),
+            object.object.clone(),
+        );
+        if !seen.insert(identity) {
+            continue;
+        }
+        let schema = object.schema.as_deref().unwrap_or("dbo");
+        let description =
+            crate::catalog::describe_object(session, schema, &object.object, cancellation).await?;
+        source_tokens.push(SpatialSourceToken {
+            object,
+            token: description.token,
+        });
+    }
+
+    validate_nested_spatial_operation(session, operation, parameters, budget, cancellation).await?;
+    let outputs =
+        profile_spatial_outputs(session, operation, parameters, budget, cancellation).await?;
+    Ok(SpatialValidation {
+        outputs,
+        source_tokens,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn validate_nested_spatial_operation<'a>(
+    session: &'a mut SqlServerSession,
+    operation: &'a QueryOperation,
+    parameters: &'a ParameterBag,
+    budget: &'a ResourceBudget,
+    cancellation: &'a CancellationToken,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        if !operation.set_operations.is_empty() || operation.joins.iter().any(|join| join.lateral) {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "scope spatial SQL Server non supporta lateral o set operation",
+            ));
+        }
+        if operation
+            .common_table_expressions
+            .iter()
+            .any(|cte| cte.recursive)
+        {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "CTE ricorsiva spatial SQL Server non qualificata",
+            ));
+        }
+        if operation
+            .derived_source
+            .as_ref()
+            .is_some_and(|derived| !derived.query.common_table_expressions.is_empty())
+            || operation.joins.iter().any(|join| {
+                join.derived_source
+                    .as_ref()
+                    .is_some_and(|derived| !derived.query.common_table_expressions.is_empty())
+            })
+        {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "CTE annidata in derived source SQL Server non qualificata",
+            ));
+        }
+
+        let mut uses = Vec::new();
+        collect_operation_spatial_uses(operation, &mut uses)?;
+        let local_relations = local_relation_names(operation);
+        for usage in &uses {
+            validate_local_spatial_relation(usage.column.relation.as_deref(), &local_relations)?;
+            if let SpatialArgument::GeometryColumn(other) = &usage.argument {
+                validate_local_spatial_relation(other.relation.as_deref(), &local_relations)?;
+            }
+        }
+        let mut observed = BTreeMap::new();
+        for usage in &uses {
+            let receiver = SpatialColumnRef {
+                relation: usage.column.relation.clone(),
+                field: usage.column.field.clone(),
+            };
+            if !observed.contains_key(&receiver) {
+                let profile = observe_scoped_spatial_column(
+                    session,
+                    operation,
+                    &receiver,
+                    parameters,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+                observed.insert(receiver.clone(), profile);
+            }
+            if let SpatialArgument::GeometryColumn(other) = &usage.argument {
+                if !observed.contains_key(other) {
+                    let profile = observe_scoped_spatial_column(
+                        session,
+                        operation,
+                        other,
+                        parameters,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                    observed.insert(other.clone(), profile);
+                }
+            }
+        }
+        for usage in uses {
+            let receiver = SpatialColumnRef {
+                relation: usage.column.relation,
+                field: usage.column.field,
+            };
+            let receiver_profile = observed.get(&receiver).ok_or_else(|| {
+                query_error(
+                    ErrorCategory::Protocol,
+                    "profilo ricevitore spatial SQL Server non disponibile",
+                )
+            })?;
+            match usage.argument {
+                SpatialArgument::None => {}
+                SpatialArgument::PointIndex(name) => {
+                    if !matches!(
+                        parameters.get(&name),
+                        Some(ParameterValue::I32(value)) if *value >= 1
+                    ) {
+                        return Err(query_error(
+                            ErrorCategory::InvalidPlan,
+                            "STPointN SQL Server richiede un indice int bindato maggiore o uguale a 1",
+                        ));
+                    }
+                }
+                SpatialArgument::Distance(name) => {
+                    if !matches!(
+                        parameters.get(&name),
+                        Some(ParameterValue::F64(value)) if value.is_finite()
+                    ) {
+                        return Err(query_error(
+                            ErrorCategory::InvalidPlan,
+                            "STBuffer SQL Server richiede una distanza float finita bindata",
+                        ));
+                    }
+                }
+                SpatialArgument::Geometry(name) => {
+                    let ParameterValue::Wkb {
+                        srid: Some(expected_srid),
+                        semantics,
+                        ..
+                    } = parameters.get(&name).ok_or_else(|| {
+                        query_error(
+                            ErrorCategory::InvalidPlan,
+                            "parametro spatial SQL Server mancante",
+                        )
+                    })?
+                    else {
+                        return Err(query_error(
+                            ErrorCategory::DataMapping,
+                            "operando spatial SQL Server richiede un parametro WKB risolto",
+                        ));
+                    };
+                    if *semantics != receiver_profile.semantics {
+                        return Err(query_error(
+                            ErrorCategory::DataMapping,
+                            "semantica parametro spatial diversa dallo scope SQL Server",
+                        ));
+                    }
+                    if receiver_profile
+                        .srid
+                        .is_some_and(|observed_srid| observed_srid != *expected_srid)
+                    {
+                        return Err(query_error(
+                            ErrorCategory::DataMapping,
+                            "SRID parametro spatial diverso dallo scope SQL Server",
+                        ));
+                    }
+                }
+                SpatialArgument::GeometryColumn(other) => {
+                    let other_profile = observed.get(&other).ok_or_else(|| {
+                        query_error(
+                            ErrorCategory::Protocol,
+                            "profilo secondo operando spatial SQL Server non disponibile",
+                        )
+                    })?;
+                    if receiver_profile.semantics != other_profile.semantics {
+                        return Err(query_error(
+                            ErrorCategory::DataMapping,
+                            "semantica diversa fra colonne spatial SQL Server",
+                        ));
+                    }
+                    if matches!(
+                        (receiver_profile.srid, other_profile.srid),
+                        (Some(left), Some(right)) if left != right
+                    ) {
+                        return Err(query_error(
+                            ErrorCategory::DataMapping,
+                            "SRID diverso fra colonne spatial SQL Server",
+                        ));
+                    }
+                }
+            }
+        }
+
+        for cte in &operation.common_table_expressions {
+            validate_nested_spatial_operation(
+                session,
+                &cte.query,
+                parameters,
+                budget,
+                cancellation,
+            )
+            .await?;
+        }
+        if let Some(derived) = &operation.derived_source {
+            validate_nested_spatial_operation(
+                session,
+                &derived.query,
+                parameters,
+                budget,
+                cancellation,
+            )
+            .await?;
+        }
+        for join in &operation.joins {
+            if let Some(derived) = &join.derived_source {
+                validate_nested_spatial_operation(
+                    session,
+                    &derived.query,
+                    parameters,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            }
+            if let Some(on) = &join.on {
+                validate_spatial_subqueries(session, on, parameters, budget, cancellation).await?;
+            }
+        }
+        for expression in operation_expressions(operation) {
+            validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
+                .await?;
+        }
+        Ok(())
+    })
+}
+
+async fn observe_scoped_spatial_column(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    column: &SpatialColumnRef,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<ObservedSpatialColumn> {
+    let column_expression = QueryExpression::Column {
+        column: ColumnRef {
+            relation: column.relation.clone(),
+            field: column.field.clone(),
+        },
+    };
+    let native_probe = scoped_probe_operation(
+        operation,
+        QueryProjection {
+            expression: column_expression.clone(),
+            alias: Some("_plenora_spatial_input".to_owned()),
+        },
+        false,
+    );
+    let sql_renderer = sql_server_renderer()
+        .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?);
+    let native_rendered = sql_renderer.render_query_native_spatial(&native_probe)?;
+    let bind_names = native_rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    let native_parameters = parameters_for_binds(parameters, &bind_names)?;
+    let semantics = describe_native_spatial_types(
+        session,
+        native_rendered.sql,
+        &bind_names,
+        &native_parameters,
+        cancellation,
+    )
+    .await?
+    .first()
+    .copied()
+    .flatten()
+    .ok_or_else(|| {
+        query_error(
+            ErrorCategory::DataMapping,
+            "colonna scope SQL Server non descritta come geometry/geography",
+        )
+    })?;
+
+    let srid_probe = scoped_probe_operation(
+        operation,
+        QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Srid,
+                arguments: vec![column_expression],
+            },
+            alias: Some("_plenora_spatial_srid".to_owned()),
+        },
+        true,
+    );
+    let srid_rendered = sql_renderer.render_query_native_spatial(&srid_probe)?;
+    let bind_names = srid_rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    let srid_parameters = parameters_for_binds(parameters, &bind_names)?;
+    let mut query = Query::new(srid_rendered.sql);
+    bind_parameters(&mut query, &bind_names, &srid_parameters)?;
+    let mut results = session
+        .execute_query(query, ErrorPhase::Prepare, cancellation)
+        .await?;
+    if results.len() != 1 {
+        return Err(query_error(
+            ErrorCategory::Protocol,
+            "profilo SRID scope SQL Server con numero result set inatteso",
+        ));
+    }
+    let rows = results.pop().ok_or_else(|| {
+        query_error(
+            ErrorCategory::Protocol,
+            "profilo SRID scope SQL Server senza result set",
+        )
+    })?;
+    let mut srids = BTreeSet::new();
+    for row in &rows {
+        if let Some(srid) = optional::<i32>(row, 0, "SRID scope spatial")? {
+            let srid = u32::try_from(srid).map_err(|_| {
+                query_error(
+                    ErrorCategory::DataMapping,
+                    "SRID scope spatial SQL Server negativo",
+                )
+            })?;
+            srids.insert(srid);
+        }
+    }
+    if srids.len() > 1 {
+        return Err(query_error(
+            ErrorCategory::DataMapping,
+            "colonna scope spatial SQL Server con SRID misti",
+        ));
+    }
+    Ok(ObservedSpatialColumn {
+        semantics,
+        srid: srids.into_iter().next(),
+    })
+}
+
+fn parameters_for_binds(parameters: &ParameterBag, bind_names: &[String]) -> Result<ParameterBag> {
+    let mut values = BTreeMap::new();
+    for name in bind_names {
+        let value = parameters.get(name).ok_or_else(|| {
+            query_error(
+                ErrorCategory::InvalidPlan,
+                "parametro preflight spatial SQL Server mancante",
+            )
+        })?;
+        values.insert(name.clone(), value.clone());
+    }
+    Ok(ParameterBag::new(values))
+}
+
+fn scoped_probe_operation(
+    operation: &QueryOperation,
+    projection: QueryProjection,
+    distinct: bool,
+) -> QueryOperation {
+    let mut probe = operation.clone();
+    probe.projection = vec![projection];
+    // Il predicato può essere proprio l'uso spatial da validare. Profilare
+    // dopo il filtro permetterebbe a un mismatch SRID di produrre zero righe
+    // e quindi di nascondere il contratto della sorgente.
+    probe.filter = None;
+    probe.group_by.clear();
+    probe.having = None;
+    probe.order_by.clear();
+    probe.distinct = distinct;
+    probe.distinct_on.clear();
+    probe.set_operations.clear();
+    probe.row_limit = distinct.then_some(2);
+    probe.row_offset = None;
+    probe.locking = None;
+    probe
+}
+
+fn local_relation_names(operation: &QueryOperation) -> BTreeSet<String> {
+    let mut relations = BTreeSet::new();
+    if let Some(source) = &operation.source {
+        relations.insert(
+            source
+                .alias
+                .clone()
+                .unwrap_or_else(|| source.object.object.clone()),
+        );
+    }
+    if let Some(derived) = &operation.derived_source {
+        relations.insert(derived.alias.clone());
+    }
+    for join in &operation.joins {
+        if let Some(source) = &join.source {
+            relations.insert(
+                source
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| source.object.object.clone()),
+            );
+        }
+        if let Some(derived) = &join.derived_source {
+            relations.insert(derived.alias.clone());
+        }
+    }
+    relations
+}
+
+fn validate_local_spatial_relation(
+    relation: Option<&str>,
+    local_relations: &BTreeSet<String>,
+) -> Result<()> {
+    if relation.is_some_and(|relation| !local_relations.contains(relation)) {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "subquery spatial correlata SQL Server non ancora qualificata",
+        ));
+    }
+    Ok(())
+}
+
+fn operation_expressions(operation: &QueryOperation) -> Vec<&QueryExpression> {
+    let mut expressions = operation
+        .projection
+        .iter()
+        .map(|projection| &projection.expression)
+        .collect::<Vec<_>>();
+    expressions.extend(operation.filter.iter());
+    expressions.extend(operation.group_by.iter());
+    expressions.extend(operation.having.iter());
+    expressions.extend(
+        operation
+            .order_by
+            .iter()
+            .map(|ordering| &ordering.expression),
+    );
+    expressions.extend(operation.distinct_on.iter());
+    expressions
+}
+
+fn validate_spatial_subqueries<'a>(
+    session: &'a mut SqlServerSession,
+    expression: &'a QueryExpression,
+    parameters: &'a ParameterBag,
+    budget: &'a ResourceBudget,
+    cancellation: &'a CancellationToken,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        match expression {
+            QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+                validate_nested_spatial_operation(session, query, parameters, budget, cancellation)
+                    .await?;
+            }
+            QueryExpression::InSubquery {
+                expression, query, ..
+            } => {
+                validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
+                    .await?;
+                validate_nested_spatial_operation(session, query, parameters, budget, cancellation)
+                    .await?;
+            }
+            QueryExpression::Scalar { arguments, .. }
+            | QueryExpression::Spatial { arguments, .. }
+            | QueryExpression::And { arguments }
+            | QueryExpression::Or { arguments } => {
+                for argument in arguments {
+                    validate_spatial_subqueries(
+                        session,
+                        argument,
+                        parameters,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
+            }
+            QueryExpression::Compare { left, right, .. }
+            | QueryExpression::SpatialOperator { left, right, .. } => {
+                validate_spatial_subqueries(session, left, parameters, budget, cancellation)
+                    .await?;
+                validate_spatial_subqueries(session, right, parameters, budget, cancellation)
+                    .await?;
+            }
+            QueryExpression::IsNull { expression, .. } => {
+                validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
+                    .await?;
+            }
+            QueryExpression::Window {
+                arguments,
+                partition_by,
+                order_by,
+                ..
+            }
+            | QueryExpression::SpatialWindow {
+                arguments,
+                partition_by,
+                order_by,
+                ..
+            } => {
+                for argument in arguments.iter().chain(partition_by) {
+                    validate_spatial_subqueries(
+                        session,
+                        argument,
+                        parameters,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
+                for ordering in order_by {
+                    validate_spatial_subqueries(
+                        session,
+                        &ordering.expression,
+                        parameters,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
+            }
+            QueryExpression::Wildcard { .. }
+            | QueryExpression::Column { .. }
+            | QueryExpression::Parameter { .. } => {}
+        }
+        Ok(())
+    })
+}
+
+fn collect_physical_spatial_sources(
+    operation: &QueryOperation,
+    inherited_ctes: &BTreeSet<String>,
+    objects: &mut Vec<ObjectRef>,
+) -> Result<()> {
+    let mut visible_ctes = inherited_ctes.clone();
+    visible_ctes.extend(
+        operation
+            .common_table_expressions
+            .iter()
+            .map(|cte| cte.name.clone()),
+    );
+    for cte in &operation.common_table_expressions {
+        collect_physical_spatial_sources(&cte.query, &visible_ctes, objects)?;
+    }
+    if let Some(source) = &operation.source {
+        collect_physical_source(source, &visible_ctes, objects);
+    }
+    if let Some(derived) = &operation.derived_source {
+        collect_physical_spatial_sources(&derived.query, &visible_ctes, objects)?;
+    }
+    for join in &operation.joins {
+        if let Some(source) = &join.source {
+            collect_physical_source(source, &visible_ctes, objects);
+        }
+        if let Some(derived) = &join.derived_source {
+            collect_physical_spatial_sources(&derived.query, &visible_ctes, objects)?;
+        }
+        if let Some(on) = &join.on {
+            collect_expression_physical_sources(on, &visible_ctes, objects)?;
+        }
+    }
+    for expression in operation_expressions(operation) {
+        collect_expression_physical_sources(expression, &visible_ctes, objects)?;
+    }
+    for set in &operation.set_operations {
+        collect_physical_spatial_sources(&set.query, &visible_ctes, objects)?;
+    }
+    Ok(())
+}
+
+fn collect_physical_source(
+    source: &QuerySource,
+    visible_ctes: &BTreeSet<String>,
+    objects: &mut Vec<ObjectRef>,
+) {
+    let is_cte = source.object.catalog.is_none()
+        && source.object.schema.is_none()
+        && visible_ctes.contains(&source.object.object);
+    if !is_cte {
+        objects.push(source.object.clone());
+    }
+}
+
+fn collect_expression_physical_sources(
+    expression: &QueryExpression,
+    visible_ctes: &BTreeSet<String>,
+    objects: &mut Vec<ObjectRef>,
+) -> Result<()> {
+    match expression {
+        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+            collect_physical_spatial_sources(query, visible_ctes, objects)?;
+        }
+        QueryExpression::InSubquery {
+            expression, query, ..
+        } => {
+            collect_expression_physical_sources(expression, visible_ctes, objects)?;
+            collect_physical_spatial_sources(query, visible_ctes, objects)?;
+        }
+        QueryExpression::Scalar { arguments, .. }
+        | QueryExpression::Spatial { arguments, .. }
+        | QueryExpression::And { arguments }
+        | QueryExpression::Or { arguments } => {
+            for argument in arguments {
+                collect_expression_physical_sources(argument, visible_ctes, objects)?;
+            }
+        }
+        QueryExpression::Compare { left, right, .. }
+        | QueryExpression::SpatialOperator { left, right, .. } => {
+            collect_expression_physical_sources(left, visible_ctes, objects)?;
+            collect_expression_physical_sources(right, visible_ctes, objects)?;
+        }
+        QueryExpression::IsNull { expression, .. } => {
+            collect_expression_physical_sources(expression, visible_ctes, objects)?;
+        }
+        QueryExpression::Window {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        }
+        | QueryExpression::SpatialWindow {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            for argument in arguments.iter().chain(partition_by) {
+                collect_expression_physical_sources(argument, visible_ctes, objects)?;
+            }
+            for ordering in order_by {
+                collect_expression_physical_sources(&ordering.expression, visible_ctes, objects)?;
+            }
+        }
+        QueryExpression::Wildcard { .. }
+        | QueryExpression::Column { .. }
+        | QueryExpression::Parameter { .. } => {}
+    }
+    Ok(())
 }
 
 struct SpatialPhysicalSource {
@@ -509,7 +1265,6 @@ async fn observe_spatial_srid(
 #[derive(Debug, Clone, Copy)]
 struct SpatialOutputCandidate {
     projection_index: usize,
-    semantics: SpatialSemantics,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -518,7 +1273,6 @@ async fn profile_spatial_outputs(
     operation: &QueryOperation,
     parameters: &ParameterBag,
     budget: &ResourceBudget,
-    sources: &[SpatialPhysicalSource],
     cancellation: &CancellationToken,
 ) -> Result<Vec<SpatialOutputContract>> {
     let mut candidates = Vec::new();
@@ -550,38 +1304,13 @@ async fn profile_spatial_outputs(
                 "output spatial SQL Server fuori dal sottoinsieme verificato",
             ));
         }
-        let QueryExpression::Column { column } = &arguments[0] else {
+        let QueryExpression::Column { .. } = &arguments[0] else {
             return Err(query_error(
                 ErrorCategory::Unsupported,
                 "output spatial SQL Server richiede una colonna come ricevitore",
             ));
         };
-        let source = resolve_spatial_source(column, sources)?;
-        let source_column = source
-            .description
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == column.field)
-            .ok_or_else(|| {
-                query_error(
-                    ErrorCategory::Schema,
-                    "colonna output spatial SQL Server assente dal catalogo",
-                )
-            })?;
-        let semantics = match source_column.native_type.as_str() {
-            "geometry" => SpatialSemantics::Geometry,
-            "geography" => SpatialSemantics::Geography,
-            _ => {
-                return Err(query_error(
-                    ErrorCategory::DataMapping,
-                    "output spatial applicato a colonna SQL Server non spatial",
-                ));
-            }
-        };
-        candidates.push(SpatialOutputCandidate {
-            projection_index,
-            semantics,
-        });
+        candidates.push(SpatialOutputCandidate { projection_index });
     }
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -601,24 +1330,42 @@ async fn profile_spatial_outputs(
     }
     let rendered = sql_server_renderer()
         .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?)
-        .render_query_native_spatial(&profile_operation)?;
+        .render_query_native_spatial_parts(&profile_operation)?;
     let bind_names = rendered
         .binds
         .iter()
         .map(|bind| bind.name.clone())
         .collect::<Vec<_>>();
+    let native_types = describe_native_spatial_types(
+        session,
+        format!("{}{}", rendered.with_clause, rendered.body),
+        &bind_names,
+        parameters,
+        cancellation,
+    )
+    .await?;
     let identifier_renderer = sql_server_renderer();
     let derived_alias = identifier_renderer.quote_identifier(
         &plenora_database_sql::Identifier::new("_plenora_spatial_result")?,
     );
     let mut contracts = Vec::with_capacity(candidates.len());
     for candidate in candidates {
+        let semantics = native_types
+            .get(candidate.projection_index)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                query_error(
+                    ErrorCategory::DataMapping,
+                    "output spatial SQL Server non descritto come geometry/geography",
+                )
+            })?;
         let field = identifier_renderer.quote_identifier(&plenora_database_sql::Identifier::new(
             format!("_plenora_spatial_profile_{}", candidate.projection_index),
         )?);
         let value = format!("{derived_alias}.{field}");
         let sql = format!(
-            "SELECT \
+            "{}SELECT \
              COUNT_BIG(DISTINCT CASE WHEN {value} IS NULL THEN NULL ELSE {value}.STSrid END), \
              MIN(CASE WHEN {value} IS NULL THEN NULL ELSE {value}.STSrid END), \
              COALESCE(SUM(CONVERT(bigint, CASE WHEN {value}.STGeometryType() = N'FullGlobe' \
@@ -628,7 +1375,7 @@ async fn profile_spatial_outputs(
              MIN(CASE WHEN {value} IS NULL THEN NULL ELSE \
              CONVERT(int, {value}.HasZ) * 2 + CONVERT(int, {value}.HasM) END) \
              FROM ({}) AS {derived_alias};",
-            rendered.sql
+            rendered.with_clause, rendered.body
         );
         let mut query = Query::new(sql);
         bind_parameters(&mut query, &bind_names, parameters)?;
@@ -681,7 +1428,7 @@ async fn profile_spatial_outputs(
             crate::types::spatial_dimensions_from_profile(dimension_count, dimension_code)?;
         contracts.push(SpatialOutputContract {
             projection_index: candidate.projection_index,
-            semantics: candidate.semantics,
+            semantics,
             srid,
             dimensions,
         });
@@ -753,6 +1500,11 @@ fn collect_operation_spatial_uses(
     for projection in &operation.projection {
         collect_expression_spatial_uses(&projection.expression, uses)?;
     }
+    for join in &operation.joins {
+        if let Some(on) = &join.on {
+            collect_expression_spatial_uses(on, uses)?;
+        }
+    }
     if let Some(filter) = &operation.filter {
         collect_expression_spatial_uses(filter, uses)?;
     }
@@ -764,6 +1516,9 @@ fn collect_operation_spatial_uses(
     }
     for ordering in &operation.order_by {
         collect_expression_spatial_uses(&ordering.expression, uses)?;
+    }
+    for expression in &operation.distinct_on {
+        collect_expression_spatial_uses(expression, uses)?;
     }
     Ok(())
 }
@@ -867,7 +1622,8 @@ fn collect_expression_spatial_uses(
             collect_expression_spatial_uses(left, uses)?;
             collect_expression_spatial_uses(right, uses)?;
         }
-        QueryExpression::IsNull { expression, .. } => {
+        QueryExpression::IsNull { expression, .. }
+        | QueryExpression::InSubquery { expression, .. } => {
             collect_expression_spatial_uses(expression, uses)?;
         }
         QueryExpression::Window {
@@ -889,26 +1645,9 @@ fn collect_expression_spatial_uses(
                 collect_expression_spatial_uses(&ordering.expression, uses)?;
             }
         }
-        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-            if operation_has_spatial(query) {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "AST spatial SQL Server non attraversa subquery correlate",
-                ));
-            }
-        }
-        QueryExpression::InSubquery {
-            expression, query, ..
-        } => {
-            collect_expression_spatial_uses(expression, uses)?;
-            if operation_has_spatial(query) {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "AST spatial SQL Server non attraversa subquery correlate",
-                ));
-            }
-        }
-        QueryExpression::Wildcard { .. }
+        QueryExpression::ScalarSubquery { .. }
+        | QueryExpression::Exists { .. }
+        | QueryExpression::Wildcard { .. }
         | QueryExpression::Column { .. }
         | QueryExpression::Parameter { .. } => {}
     }
@@ -985,6 +1724,65 @@ fn operation_has_spatial(operation: &QueryOperation) -> bool {
             .set_operations
             .iter()
             .any(|set| operation_has_spatial(&set.query))
+}
+
+fn operation_contains_spatial_subquery(operation: &QueryOperation) -> bool {
+    operation_expressions(operation)
+        .into_iter()
+        .any(expression_contains_spatial_subquery)
+        || operation.joins.iter().any(|join| {
+            join.on
+                .as_ref()
+                .is_some_and(expression_contains_spatial_subquery)
+        })
+}
+
+fn expression_contains_spatial_subquery(expression: &QueryExpression) -> bool {
+    match expression {
+        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+            operation_has_spatial(query)
+        }
+        QueryExpression::InSubquery {
+            expression, query, ..
+        } => expression_contains_spatial_subquery(expression) || operation_has_spatial(query),
+        QueryExpression::Scalar { arguments, .. }
+        | QueryExpression::Spatial { arguments, .. }
+        | QueryExpression::And { arguments }
+        | QueryExpression::Or { arguments } => {
+            arguments.iter().any(expression_contains_spatial_subquery)
+        }
+        QueryExpression::Compare { left, right, .. }
+        | QueryExpression::SpatialOperator { left, right, .. } => {
+            expression_contains_spatial_subquery(left)
+                || expression_contains_spatial_subquery(right)
+        }
+        QueryExpression::IsNull { expression, .. } => {
+            expression_contains_spatial_subquery(expression)
+        }
+        QueryExpression::Window {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        }
+        | QueryExpression::SpatialWindow {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            arguments.iter().any(expression_contains_spatial_subquery)
+                || partition_by
+                    .iter()
+                    .any(expression_contains_spatial_subquery)
+                || order_by
+                    .iter()
+                    .any(|ordering| expression_contains_spatial_subquery(&ordering.expression))
+        }
+        QueryExpression::Wildcard { .. }
+        | QueryExpression::Column { .. }
+        | QueryExpression::Parameter { .. } => false,
+    }
 }
 
 fn expression_has_spatial(expression: &QueryExpression) -> bool {
@@ -1356,6 +2154,41 @@ mod tests {
         assert_eq!(
             validate_query_sources(&query, "dataflow_test")
                 .expect_err("cross database")
+                .category,
+            ErrorCategory::Unsupported
+        );
+    }
+
+    #[test]
+    fn spatial_cte_tracks_physical_source_and_rejects_correlation() {
+        let inner = base_query();
+        let mut query = base_query();
+        query.common_table_expressions = vec![CommonTableExpression {
+            name: "filtered".to_owned(),
+            recursive: false,
+            query: Box::new(inner),
+        }];
+        query.source = Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "filtered".to_owned(),
+                layer_id: None,
+            },
+            alias: Some("scope".to_owned()),
+        });
+        let mut objects = Vec::new();
+        collect_physical_spatial_sources(&query, &BTreeSet::new(), &mut objects)
+            .expect("physical CTE sources");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].schema.as_deref(), Some("dbo"));
+        assert_eq!(objects[0].object, "events");
+
+        let relations = local_relation_names(&query);
+        assert!(validate_local_spatial_relation(Some("scope"), &relations).is_ok());
+        assert_eq!(
+            validate_local_spatial_relation(Some("outer"), &relations)
+                .expect_err("correlated spatial relation")
                 .category,
             ErrorCategory::Unsupported
         );

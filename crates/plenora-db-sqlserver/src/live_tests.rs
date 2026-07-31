@@ -21,9 +21,9 @@ use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
 use plenora_database_core::query::{
-    ColumnRef, CommonTableExpression, JoinKind, QueryExpression, QueryJoin, QueryOperation,
-    QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
-    ScalarFunction, SpatialFunction,
+    ColumnRef, CommonTableExpression, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin,
+    QueryOperation, QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator,
+    QuerySource, ScalarFunction, SpatialFunction,
 };
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
@@ -1713,6 +1713,261 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
         )
         .await
         .expect("cleanup spatial join fixtures");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per scope spatial CTE, derived e subquery"]
+#[allow(clippy::too_many_lines)]
+async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("spatial scope admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[spatial_scope_probe]; \
+                 CREATE TABLE [plenora_test].[spatial_scope_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 INSERT INTO [plenora_test].[spatial_scope_probe] VALUES \
+                 (1, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326), \
+                     geography::STGeomFromText( \
+                       'POLYGON ((-122.358 47.653, -122.348 47.649, -122.348 47.658, \
+                                  -122.358 47.658, -122.358 47.653))', 4326));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("spatial scope fixture");
+    let provider = SqlServerProvider::new(config, 16, 1).expect("spatial scope provider");
+    let secret = live_secret();
+    let physical_source = || QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "spatial_scope_probe".to_owned(),
+            layer_id: None,
+        },
+        alias: Some("base".to_owned()),
+    };
+    let virtual_source = |name: &str, alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: name.to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let empty_operation = |source, derived_source, projection| QueryOperation {
+        common_table_expressions: Vec::new(),
+        source,
+        derived_source,
+        projection,
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+
+    for (field, semantics) in [("shape", "geometry"), ("position", "geography")] {
+        let base_column = QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("base".to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        let inner = empty_operation(
+            Some(physical_source()),
+            None,
+            vec![QueryProjection {
+                expression: base_column,
+                alias: Some("spatial_value".to_owned()),
+            }],
+        );
+        let scoped_column = || QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("scope".to_owned()),
+                field: "spatial_value".to_owned(),
+            },
+        };
+        let output_projection = || {
+            vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::ConvexHull,
+                    arguments: vec![scoped_column()],
+                },
+                alias: Some("spatial_result".to_owned()),
+            }]
+        };
+        let mut cte_operation = empty_operation(
+            Some(virtual_source("spatial_scope", "scope")),
+            None,
+            output_projection(),
+        );
+        cte_operation
+            .common_table_expressions
+            .push(CommonTableExpression {
+                name: "spatial_scope".to_owned(),
+                recursive: false,
+                query: Box::new(inner.clone()),
+            });
+        let derived_operation = empty_operation(
+            None,
+            Some(QueryDerivedSource {
+                query: Box::new(inner.clone()),
+                alias: "scope".to_owned(),
+            }),
+            output_projection(),
+        );
+
+        for (scope_kind, operation) in [
+            ("cte", cte_operation.clone()),
+            ("derived", derived_operation),
+        ] {
+            let budget =
+                ResourceBudget::new(ResourceLimits::default()).expect("spatial scope budget");
+            let mut stream = provider
+                .query(
+                    &secret,
+                    &operation,
+                    &ParameterBag::default(),
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{semantics}.{scope_kind}: {error}"));
+            let output = stream
+                .schema()
+                .field_with_name("spatial_result")
+                .expect("scoped spatial output")
+                .clone();
+            assert_eq!(output.data_type(), &DataType::Binary);
+            assert_eq!(
+                output.metadata()[protocol::GEOMETRY_SPATIAL_SEMANTICS],
+                semantics
+            );
+            assert_eq!(output.metadata()[protocol::GEOMETRY_SRID], "4326");
+            let batch = stream
+                .next_batch()
+                .await
+                .expect("spatial scope batch")
+                .expect("spatial scope row");
+            let values = batch
+                .column_by_name("spatial_result")
+                .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+                .expect("scoped spatial WKB");
+            assert!(!values.is_null(0));
+            assert!(stream
+                .next_batch()
+                .await
+                .expect("spatial scope end")
+                .is_none());
+        }
+
+        let mut mismatched = cte_operation;
+        mismatched.filter = Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![
+                scoped_column(),
+                QueryExpression::Parameter {
+                    name: "wrong_srid".to_owned(),
+                },
+            ],
+        });
+        let parameter_semantics = if semantics == "geometry" {
+            SpatialSemantics::Geometry
+        } else {
+            SpatialSemantics::Geography
+        };
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "wrong_srid".to_owned(),
+            ParameterValue::Wkb {
+                bytes: wkb_polygon_xy(&[
+                    [0.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 1.0],
+                    [1.0, 0.0],
+                    [0.0, 0.0],
+                ]),
+                srid: Some(3_857),
+                dimensions: Dimensions::Xy,
+                semantics: parameter_semantics,
+            },
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("mismatch budget");
+        let Err(error) = provider
+            .query(&secret, &mismatched, &parameters, &budget, &cancellation)
+            .await
+        else {
+            panic!("{semantics} CTE accepted mismatched SRID");
+        };
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+
+        let mut scalar_inner = inner;
+        scalar_inner.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Area,
+                arguments: vec![QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("base".to_owned()),
+                        field: field.to_owned(),
+                    },
+                }],
+            },
+            alias: Some("area".to_owned()),
+        }];
+        scalar_inner.row_limit = Some(1);
+        let subquery_operation = empty_operation(
+            Some(physical_source()),
+            None,
+            vec![QueryProjection {
+                expression: QueryExpression::ScalarSubquery {
+                    query: Box::new(scalar_inner),
+                },
+                alias: Some("spatial_area".to_owned()),
+            }],
+        );
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("subquery budget");
+        let mut stream = provider
+            .query(
+                &secret,
+                &subquery_operation,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{semantics}.subquery: {error}"));
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("spatial subquery batch")
+            .expect("spatial subquery row");
+        let values = batch
+            .column_by_name("spatial_area")
+            .and_then(|array| array.as_any().downcast_ref::<Float64Array>())
+            .expect("spatial subquery float");
+        assert!(values.value(0) > 0.0);
+    }
+
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[spatial_scope_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup spatial scope fixture");
 }
 
 #[tokio::test]

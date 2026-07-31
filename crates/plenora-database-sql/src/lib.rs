@@ -156,6 +156,17 @@ pub struct RenderedSql {
     pub binds: Vec<BindParameter>,
 }
 
+/// Parti di una query nativa separabili senza analizzare il testo SQL.
+///
+/// Serve ai preflight provider che devono avvolgere il corpo in una derived
+/// table mantenendo un'eventuale clausola `WITH` al livello sintattico valido.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedQueryParts {
+    pub with_clause: String,
+    pub body: String,
+    pub binds: Vec<BindParameter>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlServerSpatialParameter {
     pub semantics: SpatialSemantics,
@@ -278,6 +289,70 @@ impl Renderer {
     /// Fallisce per query strutturalmente incomplete o funzioni non supportate.
     pub fn render_query_native_spatial(&self, query: &QueryOperation) -> Result<RenderedSql> {
         self.render_query_with_spatial_encoding(query, false)
+    }
+
+    /// Renderizza separatamente la clausola `WITH` e il corpo della query.
+    ///
+    /// SQL Server non ammette `WITH` direttamente dentro una derived table.
+    /// Restituire parti strutturali evita parsing o riscrittura lessicale del
+    /// SQL già renderizzato nei preflight spatial del provider.
+    ///
+    /// # Errors
+    ///
+    /// Applica gli stessi limiti e controlli di
+    /// [`Self::render_query_native_spatial`].
+    pub fn render_query_native_spatial_parts(
+        &self,
+        query: &QueryOperation,
+    ) -> Result<RenderedQueryParts> {
+        let mut limits = plenora_database_core::limits::Limits::default();
+        if self.dialect == Dialect::SqlServer {
+            limits.max_identifier_bytes = SQL_SERVER_MAX_IDENTIFIER_CHARS;
+        }
+        validate_query_operation(query, &limits)?;
+
+        let mut binds = Vec::new();
+        let mut with_clause = String::new();
+        if !query.common_table_expressions.is_empty() {
+            with_clause.push_str("WITH ");
+            if query
+                .common_table_expressions
+                .iter()
+                .any(|cte| cte.recursive)
+            {
+                if !matches!(self.dialect, Dialect::Postgres | Dialect::SqlServer) {
+                    return Err(DatabaseError::unsupported(
+                        self.provider_kind(),
+                        ErrorPhase::Prepare,
+                        "CTE ricorsiva non supportata dal dialect",
+                    ));
+                }
+                if self.dialect == Dialect::Postgres {
+                    with_clause.push_str("RECURSIVE ");
+                }
+            }
+            let ctes = query
+                .common_table_expressions
+                .iter()
+                .map(|cte| {
+                    let name = self.quote(&Identifier::new(cte.name.clone())?);
+                    let body = self.render_query_inner(&cte.query, &mut binds, false)?;
+                    Ok(format!("{name} AS ({body})"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            with_clause.push_str(&ctes.join(", "));
+            with_clause.push(' ');
+        }
+
+        let mut body_query = query.clone();
+        body_query.common_table_expressions.clear();
+        let body = self.render_query_inner(&body_query, &mut binds, false)?;
+        self.validate_bind_count(&binds)?;
+        Ok(RenderedQueryParts {
+            with_clause,
+            body,
+            binds,
+        })
     }
 
     fn render_query_with_spatial_encoding(
@@ -1683,6 +1758,29 @@ mod tests {
         assert!(sql.starts_with("WITH [tree] AS ("));
         assert!(!sql.starts_with("WITH RECURSIVE"));
         assert!(sql.contains("COUNT_BIG([e].[id])"));
+    }
+
+    #[test]
+    fn sqlserver_exposes_cte_and_native_body_without_sql_reparsing() {
+        let cte_body = simple_query();
+        let mut query = simple_query();
+        query.common_table_expressions.push(CommonTableExpression {
+            name: "filtered".to_owned(),
+            recursive: false,
+            query: Box::new(cte_body),
+        });
+        let parts = Renderer::new(
+            Dialect::SqlServer,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query_native_spatial_parts(&query)
+        .expect("structured SQL Server query parts");
+        assert!(parts.with_clause.starts_with("WITH [filtered] AS ("));
+        assert!(!parts.body.contains("WITH [filtered]"));
+        assert!(parts.body.starts_with("SELECT "));
+        assert!(parts.binds.is_empty());
     }
 
     #[test]
