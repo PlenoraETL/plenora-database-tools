@@ -7,6 +7,7 @@ pub use schema::{
     SqlServerGraphKind, SqlServerIndex, SqlServerObjectDescription, SqlServerObjectName,
     SqlServerPartitioning, SqlServerPermission, SqlServerSchemaToken, SqlServerSecurityPredicate,
     SqlServerSpatialBoundingBox, SqlServerSpatialIndex, SqlServerTemporalMetadata,
+    SqlServerViewMetadata,
 };
 
 use crate::error::driver_error;

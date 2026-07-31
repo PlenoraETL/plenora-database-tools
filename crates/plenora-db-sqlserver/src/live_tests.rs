@@ -2343,6 +2343,7 @@ ON [plenora_test].[catalog_rls]
 WITH (STATE = ON, SCHEMABINDING = ON);
 GRANT SELECT ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
 DENY DELETE ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
+GRANT UPDATE ON OBJECT::[plenora_test].[catalog_rls] ([payload]) TO [plenora_catalog_reader];
 ",
             ),
             ErrorPhase::Write,
@@ -2376,6 +2377,12 @@ DENY DELETE ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
             && permission.permission == "DELETE"
             && permission.state == "DENY"
     }));
+    assert!(enabled.permissions.iter().any(|permission| {
+        permission.grantee == "plenora_catalog_reader"
+            && permission.permission == "UPDATE"
+            && permission.state == "GRANT"
+            && permission.column.as_deref() == Some("payload")
+    }));
 
     session
         .execute_query(
@@ -2400,6 +2407,105 @@ DENY DELETE ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
         .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
         .await
         .expect("cleanup RLS catalog fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una view isolata"]
+async fn live_catalog_observes_view_definition_and_session_semantics() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("open live SQL Server");
+    let cleanup = r"
+IF OBJECT_ID(N'plenora_test.catalog_view', N'V') IS NOT NULL
+    DROP VIEW [plenora_test].[catalog_view];
+IF OBJECT_ID(N'plenora_test.catalog_view_source', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_view_source];
+";
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("normalize view catalog fixture");
+    session
+        .execute_query(
+            Query::new(
+                r"
+CREATE TABLE [plenora_test].[catalog_view_source]
+(
+    [id] int NOT NULL PRIMARY KEY,
+    [payload] nvarchar(40) NULL
+);
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create view source");
+    session
+        .execute_query(
+            Query::new(
+                r"
+EXEC(N'CREATE VIEW [plenora_test].[catalog_view]
+WITH SCHEMABINDING
+AS SELECT [id], [payload]
+FROM [plenora_test].[catalog_view_source]
+WHERE [id] >= 0;');
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create schema-bound view");
+    let before = describe_object(&mut session, "plenora_test", "catalog_view", &cancellation)
+        .await
+        .expect("describe schema-bound view");
+    assert_eq!(before.kind, "VIEW");
+    let view = before.view.as_ref().expect("view metadata");
+    assert!(view.schema_bound);
+    assert!(view.uses_ansi_nulls);
+    assert!(view.uses_quoted_identifier);
+    assert!(view.definition.as_deref().is_some_and(|definition| {
+        definition.contains("catalog_view_source") && definition.contains("[id] >= 0")
+    }));
+
+    session
+        .execute_query(
+            Query::new(
+                r"
+EXEC(N'ALTER VIEW [plenora_test].[catalog_view]
+WITH SCHEMABINDING
+AS SELECT [id], [payload]
+FROM [plenora_test].[catalog_view_source]
+WHERE [id] > 0;');
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("alter view without changing its columns");
+    let after = describe_object(&mut session, "plenora_test", "catalog_view", &cancellation)
+        .await
+        .expect("describe altered view");
+    assert_ne!(
+        before.token.structural_fingerprint,
+        after.token.structural_fingerprint
+    );
+    assert!(after.view.as_ref().is_some_and(|view| {
+        view.definition
+            .as_deref()
+            .is_some_and(|definition| definition.contains("[id] > 0"))
+    }));
+
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("cleanup view catalog fixture");
 }
 
 #[tokio::test]

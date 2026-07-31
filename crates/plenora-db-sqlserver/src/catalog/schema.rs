@@ -138,6 +138,14 @@ pub struct SqlServerPermission {
     pub column: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerViewMetadata {
+    pub definition: Option<String>,
+    pub schema_bound: bool,
+    pub uses_ansi_nulls: bool,
+    pub uses_quoted_identifier: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqlServerObjectDescription {
     pub database_id: i32,
@@ -154,6 +162,7 @@ pub struct SqlServerObjectDescription {
     pub owner: String,
     pub security_predicates: Vec<SqlServerSecurityPredicate>,
     pub permissions: Vec<SqlServerPermission>,
+    pub view: Option<SqlServerViewMetadata>,
     pub memory_optimized: bool,
     pub durability: Option<String>,
     pub columns: Vec<SqlServerColumn>,
@@ -214,6 +223,7 @@ pub async fn describe_object(
         owner: identity.owner,
         security_predicates,
         permissions,
+        view: identity.view,
         memory_optimized: identity.memory_optimized,
         durability: identity.durability,
         columns,
@@ -236,6 +246,7 @@ struct ObjectIdentity {
     graph_kind: Option<SqlServerGraphKind>,
     external: Option<SqlServerExternalTableMetadata>,
     owner: String,
+    view: Option<SqlServerViewMetadata>,
     memory_optimized: bool,
     durability: Option<String>,
 }
@@ -271,7 +282,11 @@ SELECT
     eds.name,
     eff.name,
     et.location,
-    COALESCE(USER_NAME(o.principal_id), USER_NAME(s.principal_id))
+    COALESCE(USER_NAME(o.principal_id), USER_NAME(s.principal_id)),
+    module.definition,
+    module.is_schema_bound,
+    module.uses_ansi_nulls,
+    module.uses_quoted_identifier
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 LEFT JOIN sys.tables AS t ON t.object_id = o.object_id
@@ -287,6 +302,7 @@ LEFT JOIN sys.external_data_sources AS eds
   ON eds.data_source_id = et.data_source_id
 LEFT JOIN sys.external_file_formats AS eff
   ON eff.file_format_id = et.file_format_id
+LEFT JOIN sys.sql_modules AS module ON module.object_id = o.object_id
 WHERE s.name = @P1
   AND o.name = @P2
   AND o.type IN ('U', 'V')
@@ -304,22 +320,25 @@ WHERE s.name = @P1
     let row = rows
         .first()
         .ok_or_else(|| super::mapping_error("oggetto SQL Server non trovato o non visibile"))?;
+    let kind = text(row, 5, "kind")?;
     let temporal_type = required(row, 6, "temporal_type")?;
     let temporal = temporal_metadata(row, temporal_type)?;
     let graph_kind = graph_kind(required(row, 15, "is_node")?, required(row, 16, "is_edge")?)?;
     let external = external_metadata(row)?;
+    let view = view_metadata(row, &kind)?;
     Ok(ObjectIdentity {
         database_id: required(row, 0, "database_id")?,
         object_id: required(row, 1, "object_id")?,
         catalog: text(row, 2, "catalog")?,
         schema: text(row, 3, "schema")?,
         name: text(row, 4, "name")?,
-        kind: text(row, 5, "kind")?,
+        kind,
         temporal_type,
         temporal,
         graph_kind,
         external,
         owner: text(row, 21, "owner")?,
+        view,
         memory_optimized: required(row, 7, "memory_optimized")?,
         durability: optional_text(row, 8, "durability")?,
     })
@@ -391,6 +410,18 @@ fn external_metadata(row: &tiberius::Row) -> Result<Option<SqlServerExternalTabl
         data_source: text(row, 18, "external_data_source")?,
         file_format: optional_text(row, 19, "external_file_format")?,
         location: text(row, 20, "external_location")?,
+    }))
+}
+
+fn view_metadata(row: &tiberius::Row, kind: &str) -> Result<Option<SqlServerViewMetadata>> {
+    if kind != "VIEW" {
+        return Ok(None);
+    }
+    Ok(Some(SqlServerViewMetadata {
+        definition: optional_text(row, 22, "view_definition")?,
+        schema_bound: required(row, 23, "view_schema_bound")?,
+        uses_ansi_nulls: required(row, 24, "view_uses_ansi_nulls")?,
+        uses_quoted_identifier: required(row, 25, "view_uses_quoted_identifier")?,
     }))
 }
 
