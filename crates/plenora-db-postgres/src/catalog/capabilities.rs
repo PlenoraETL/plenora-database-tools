@@ -39,7 +39,9 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         extension_versions: extensions,
         reads: ReadCapabilities {
             streaming: true,
-            server_cursor: true,
+            // Il data path usa RowStream con backpressure, ma non espone un
+            // cursore server nominato o riprendibile.
+            server_cursor: false,
             pagination: true,
             object_id_windows: false,
             projection: true,
@@ -56,14 +58,17 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             delete_by_keys: true,
             bulk: true,
             array_binding: false,
-            returning: true,
+            // WriteOutcome non trasporta ancora righe restituite.
+            returning: false,
             apply_edits: false,
             rollback_on_failure: true,
             use_global_ids: false,
         },
         transactions: TransactionCapabilities {
             single_transaction: true,
-            savepoints: true,
+            // Il Provider esegue una transazione atomica, ma non espone
+            // operazioni SAVEPOINT/ROLLBACK TO al chiamante.
+            savepoints: false,
             transactional_ddl: true,
             staged_swap: true,
             scope: TransactionScope::Transaction,

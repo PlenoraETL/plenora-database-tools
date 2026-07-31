@@ -972,6 +972,9 @@ mod tests {
             .await
             .expect("capabilities");
         assert!(capabilities.spatial.read_wkb);
+        assert!(!capabilities.reads.server_cursor);
+        assert!(!capabilities.writes.returning);
+        assert!(!capabilities.transactions.savepoints);
         let operation = ReadOperation {
             source: ObjectRef {
                 catalog: None,

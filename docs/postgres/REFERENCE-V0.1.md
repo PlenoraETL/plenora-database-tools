@@ -57,7 +57,7 @@ Sul riferimento PostgreSQL 16/PostGIS 3.4 il profilo atteso è:
 | test connessione, identità e versione | supportato | segreti redatti |
 | TLS | supportato | WebPKI, CA privata e mTLS |
 | cataloghi, schemi, oggetti e describe | supportato | token strutturale e cache strict |
-| read Arrow streaming | supportato | cursor, backpressure, budget e cancellazione server-side |
+| read Arrow streaming | supportato | `RowStream`, backpressure, budget e cancellazione server-side |
 | projection/filter/order/pagination | supportato | identificatori quotati e valori bindati |
 | AST relazionale | supportato | visita bounded, CTE/join/window/set/lateral/locking |
 | create/append/update/upsert/replace/delete | supportato | transazione e recovery esplicite |
@@ -72,6 +72,13 @@ Sul riferimento PostgreSQL 16/PostGIS 3.4 il profilo atteso è:
 `probe_capabilities` è l'autorità per una connessione concreta. Questa tabella
 definisce il profilo del riferimento, non autorizza fallback se il probe
 osserva una capacità assente.
+
+Le capability opzionali `reads.server_cursor`, `writes.returning` e
+`transactions.savepoints` sono dichiarate `false`: il provider usa uno stream
+TDS/PostgreSQL bounded e transazioni atomiche, ma non espone ancora
+un'operazione pubblica verificabile per cursor nominati/riprendibili, righe
+restituite da una write o `SAVEPOINT`/`ROLLBACK TO`. La presenza di primitive
+interne o native del server non costituisce una capability della libreria.
 
 ## Superficie API v0.1
 

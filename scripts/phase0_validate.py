@@ -35,6 +35,7 @@ BENCHMARK_MANIFEST = (
     REPO_ROOT / "benchmarks" / "manifests" / "phase0-smoke.json"
 )
 SPATIAL_CATALOG = REPO_ROOT / "catalog" / "spatial-functions.v1.json"
+CAPABILITIES_SCHEMA = CONTRACT_ROOT / "capabilities.schema.json"
 
 
 class ValidationError(RuntimeError):
@@ -206,6 +207,19 @@ def validate_spatial_catalog() -> int:
             raise ValidationError(
                 f"firma catalogo spatial non valida: {function['id']}"
             )
+    capability_schema = load_json(CAPABILITIES_SCHEMA)
+    try:
+        capability_ids = capability_schema["properties"]["spatial"][
+            "properties"
+        ]["functions"]["items"]["enum"]
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "schema capability senza catalogo delle funzioni spatial"
+        ) from exc
+    if set(capability_ids) != set(ids) or len(capability_ids) != len(ids):
+        raise ValidationError(
+            "schema capability e catalogo spatial non sono in lockstep"
+        )
     return len(functions)
 
 

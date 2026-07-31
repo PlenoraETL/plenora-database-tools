@@ -97,12 +97,22 @@
           "uniqueItems": true,
           "items": {
             "enum": [
-              "geometry_type", "srid", "dimensions", "is_empty", "is_valid",
-              "intersects", "contains", "within", "covers", "touches",
-              "crosses", "overlaps", "disjoint", "d_within", "transform",
-              "buffer", "intersection", "difference", "union", "simplify",
-              "make_valid", "centroid", "envelope", "distance", "area",
-              "length", "perimeter", "collect", "extent"
+              "geometry_type", "srid", "dimensions", "x", "y", "z", "m",
+              "n_points", "n_rings", "start_point", "end_point", "point_n",
+              "is_empty", "is_valid", "is_simple", "is_closed", "intersects",
+              "contains", "contains_properly", "within", "covers", "covered_by",
+              "touches", "crosses", "overlaps", "disjoint", "equals", "relate",
+              "d_within", "set_srid", "transform", "force_2d", "force_3d",
+              "force_3dm", "force_4d", "buffer", "offset_curve", "intersection",
+              "difference", "sym_difference", "union", "unary_union", "simplify",
+              "simplify_preserve_topology", "make_valid", "centroid",
+              "point_on_surface", "envelope", "convex_hull",
+              "oriented_envelope", "boundary", "line_merge", "reverse",
+              "subdivide", "snap_to_grid", "distance", "distance_3d",
+              "max_distance", "hausdorff_distance", "frechet_distance",
+              "azimuth", "area", "length", "perimeter", "collect", "extent",
+              "as_geo_json", "as_mvt_geom", "as_mvt", "as_geobuf",
+              "cluster_dbscan", "cluster_k_means"
             ]
           }
         }
