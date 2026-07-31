@@ -46,11 +46,14 @@ self-signed, probe, catalogo, mapping Arrow e streaming bounded di scalari,
 `geometry` e `geography`, oltre a prepared write `append`/`truncate_insert` in
 singola transazione. Il codec `TdsBulk` è opt-in, bounded e ammesso solo per
 tutte le colonne scrivibili nell'ordine del catalogo e per tipi verificati;
-spatial e conversioni non native restano sul percorso prepared. Include fault
+include `time`, `datetime2`, `datetimeoffset` e UUID; `date`, XML, spatial e
+conversioni non native restano sul percorso prepared. Include fault
 deterministici pre-commit, sul trasporto e
 tagli fisici del socket durante write e prima della conferma commit, con
 verifica da una sessione indipendente. Copre inoltre blackhole durante read e
-dopo rollback server.
+dopo rollback server, piu una finestra di perdita totale temporanea che
+introduce latenza ma, se inferiore al timeout, preserva risposta e riuso della
+sessione.
 La stessa campagna attraversa ora il trait comune `Provider`: test connection,
 capability, catalogo, projection/filter/order/limit bindati, round-trip
 prepared write e `QueryOperation` relazionali con CTE, join, group/having,
@@ -63,8 +66,10 @@ prende il lock esclusivo soltanto per ricontrollare schema e dipendenze,
 rinominare original/staging e rimuovere il backup nella stessa transazione.
 Errori di caricamento o pre-commit ripristinano il target originale senza
 oggetti residui; una conferma di commit persa resta `OutcomeUnknown`. I
-risultati spatial non convertiti esplicitamente in WKB, i lateral join, il
-locking e le forme prive di un nome output deterministico restano fail-closed.
+risultati spatial non convertiti esplicitamente in WKB e le forme prive di un
+nome output deterministico restano fail-closed. `CROSS APPLY` e i lock
+`UPDLOCK`/`HOLDLOCK` con attesa o `NOWAIT` sono qualificati live; `OUTER APPLY`
+e le semantiche di lock senza equivalente esatto restano rifiutate.
 L'evidenza è in [LIVE-REFERENCE.md](LIVE-REFERENCE.md). La baseline post-RC1
 copre anche CA privata, hostname e rotazione; restano latenza/packet loss su
 read e rollback, oltre al supporto lossless dei profili spatial avanzati. La
@@ -73,6 +78,10 @@ La campagna cumulativa di coverage è descritta in
 [COVERAGE.md](COVERAGE.md).
 Il gate autonomo con evidenza riproducibile è descritto in
 [ASSURANCE.md](ASSURANCE.md).
+La stessa pagina documenta il gate PolyBase separato, che richiede una fixture
+external reale e fallisce su un server privo della feature.
+Documenta inoltre la matrice live 2019/2025 fissata per digest e il workflow
+Azure SQL opt-in con TLS verificato.
 La baseline di regressione è descritta in [PERFORMANCE.md](PERFORMANCE.md).
 Lo schema evolution additivo è opt-in tramite
 `SqlServerSchemaEvolution::AddNullableColumns`: ammette soltanto nuove colonne

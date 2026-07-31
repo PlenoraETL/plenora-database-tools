@@ -20,7 +20,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 39
+EXPECTED_LIVE_TESTS = 44
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -343,6 +343,10 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--skip",
+                "polybase_external_catalog_is_structural_and_not_implicit",
+                "--skip",
+                "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
             ],
             capture=True,
         )
@@ -382,6 +386,10 @@ def main() -> int:
             "native_spatial_processing_geometry_and_geography",
             "spatial_join_column_resolution_and_multi_source_schema_guard",
             "spatial_cte_derived_uncorrelated_subquery_contract_and_srid_guard",
+            "spatial_recursive_set_cross_apply_and_local_correlated_subquery",
+            "spatial_lock_nowait_timeout_and_release",
+            "curved_spatial_read_bounded_wkb_geometry_and_geography",
+            "circular_string_write_lossless_geometry_and_geography",
             "prepared_write_reference_types",
             "keyed_update_upsert_delete",
             "tds_bulk_differential",
@@ -394,6 +402,7 @@ def main() -> int:
             "transaction_rollback",
             "physical_tds_cut",
             "physical_tds_blackhole",
+            "temporary_total_packet_loss_and_latency",
             "unknown_commit_outcome",
             "atomic_create",
             "staged_replace_publish",
@@ -402,8 +411,8 @@ def main() -> int:
             "spatial_index_create_replace_catalog_access_path_and_rollback",
         ],
         "open_non_blocking": [
-            "sqlserver_2019_2025_azure_matrix",
-            "spatial_fullglobe_unexercised_boundary",
+            "azure_sql_live_qualification",
+            "spatial_fullglobe_lossless_not_supported",
             "external_table_catalog_live_fixture",
         ],
     }

@@ -53,55 +53,25 @@ pub(super) async fn validate_replace_external_state(
     phase: ErrorPhase,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let mut query = Query::new(
-        r"
-DECLARE @object_id int =
-(
-    SELECT o.object_id
-    FROM sys.objects AS o
-    JOIN sys.schemas AS s ON s.schema_id = o.schema_id
-    WHERE s.name = @P1 AND o.name = @P2 AND o.type = 'U'
-);
-SELECT
-    (SELECT COUNT_BIG(*) FROM sys.foreign_keys WHERE referenced_object_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.triggers WHERE parent_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.database_permissions
-      WHERE class = 1 AND major_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.sql_expression_dependencies
-      WHERE referenced_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.extended_properties
-      WHERE class = 1 AND major_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.security_predicates
-      WHERE target_object_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.change_tracking_tables
-      WHERE object_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.columns
-      WHERE object_id = @object_id
-        AND (is_sparse = 1 OR is_column_set = 1 OR encryption_type IS NOT NULL
-             OR is_hidden = 1 OR is_masked = 1)),
-    (SELECT COUNT_BIG(*)
-       FROM sys.tables
-      WHERE object_id = @object_id
-        AND (is_tracked_by_cdc = 1 OR is_replicated = 1
-             OR has_replication_filter = 1 OR is_merge_published = 1
-             OR is_sync_tran_subscribed = 1 OR is_filetable = 1
-             OR is_remote_data_archive_enabled = 1 OR is_external = 1
-             OR is_node = 1 OR is_edge = 1 OR ledger_type <> 0)),
-    (SELECT COUNT_BIG(*)
-       FROM sys.indexes AS i
-       JOIN sys.data_spaces AS ds ON ds.data_space_id = i.data_space_id
-      WHERE i.object_id = @object_id AND ds.type = 'PS'),
-    (SELECT COUNT_BIG(*)
-       FROM sys.partitions
-      WHERE object_id = @object_id
-        AND (data_compression <> 0 OR xml_compression <> 0)),
-    (SELECT COUNT_BIG(*) FROM sys.stats
-      WHERE object_id = @object_id AND user_created = 1),
-    (SELECT COUNT_BIG(*) FROM sys.fulltext_indexes WHERE object_id = @object_id),
-    (SELECT COUNT_BIG(*) FROM sys.database_audit_specification_details
-      WHERE major_id = @object_id);
-",
-    );
+    let feature_row = one_row(
+        session
+            .execute_query(
+                Query::new(
+                    "SELECT CAST(CASE WHEN COL_LENGTH('sys.tables', 'ledger_type') IS NULL \
+                     THEN 0 ELSE 1 END AS bit), \
+                     CAST(CASE WHEN COL_LENGTH('sys.partitions', 'xml_compression') IS NULL \
+                     THEN 0 ELSE 1 END AS bit);",
+                ),
+                phase,
+                cancellation,
+            )
+            .await?,
+        "feature catalogo replace",
+        phase,
+    )?;
+    let has_ledger = required::<bool>(&feature_row, 0, "ledger_type", phase)?;
+    let has_xml_compression = required::<bool>(&feature_row, 1, "xml_compression", phase)?;
+    let mut query = Query::new(replace_external_state_sql(has_ledger, has_xml_compression));
     query.bind(schema.to_owned());
     query.bind(object.to_owned());
     let row = one_row(
@@ -135,6 +105,68 @@ SELECT
         }
     }
     Ok(())
+}
+
+fn replace_external_state_sql(has_ledger: bool, has_xml_compression: bool) -> String {
+    let ledger = if has_ledger {
+        " OR ledger_type <> 0"
+    } else {
+        ""
+    };
+    let xml_compression = if has_xml_compression {
+        " OR xml_compression <> 0"
+    } else {
+        ""
+    };
+    format!(
+        r"
+DECLARE @object_id int =
+(
+    SELECT o.object_id
+    FROM sys.objects AS o
+    JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+    WHERE s.name = @P1 AND o.name = @P2 AND o.type = 'U'
+);
+SELECT
+    (SELECT COUNT_BIG(*) FROM sys.foreign_keys WHERE referenced_object_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.triggers WHERE parent_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.database_permissions
+      WHERE class = 1 AND major_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.sql_expression_dependencies
+      WHERE referenced_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.extended_properties
+      WHERE class = 1 AND major_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.security_predicates
+      WHERE target_object_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.change_tracking_tables
+      WHERE object_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.columns
+      WHERE object_id = @object_id
+        AND (is_sparse = 1 OR is_column_set = 1 OR encryption_type IS NOT NULL
+             OR is_hidden = 1 OR is_masked = 1)),
+    (SELECT COUNT_BIG(*)
+       FROM sys.tables
+      WHERE object_id = @object_id
+        AND (is_tracked_by_cdc = 1 OR is_replicated = 1
+             OR has_replication_filter = 1 OR is_merge_published = 1
+             OR is_sync_tran_subscribed = 1 OR is_filetable = 1
+             OR is_remote_data_archive_enabled = 1 OR is_external = 1
+             OR is_node = 1 OR is_edge = 1{ledger})),
+    (SELECT COUNT_BIG(*)
+       FROM sys.indexes AS i
+       JOIN sys.data_spaces AS ds ON ds.data_space_id = i.data_space_id
+      WHERE i.object_id = @object_id AND ds.type = 'PS'),
+    (SELECT COUNT_BIG(*)
+       FROM sys.partitions
+      WHERE object_id = @object_id
+        AND (data_compression <> 0{xml_compression})),
+    (SELECT COUNT_BIG(*) FROM sys.stats
+      WHERE object_id = @object_id AND user_created = 1),
+    (SELECT COUNT_BIG(*) FROM sys.fulltext_indexes WHERE object_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.database_audit_specification_details
+      WHERE major_id = @object_id);
+"
+    )
 }
 
 pub(super) async fn publish_replacement(
@@ -272,5 +304,15 @@ mod tests {
         let role = "r".repeat(crate::MAX_IDENTIFIER_CHARACTERS);
         let error = derived_object_name("asset", &role, 1).expect_err("oversized suffix");
         assert_eq!(error.category, ErrorCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn replace_catalog_query_mentions_only_columns_present_on_the_server() {
+        let legacy = replace_external_state_sql(false, false);
+        assert!(!legacy.contains("ledger_type"));
+        assert!(!legacy.contains("xml_compression"));
+        let current = replace_external_state_sql(true, true);
+        assert!(current.contains("ledger_type"));
+        assert!(current.contains("xml_compression"));
     }
 }

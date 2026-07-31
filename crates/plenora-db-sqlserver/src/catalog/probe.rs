@@ -17,7 +17,8 @@ SELECT
     d.is_read_committed_snapshot_on,
     d.snapshot_isolation_state,
     TYPE_ID(N'geometry'),
-    TYPE_ID(N'geography')
+    TYPE_ID(N'geography'),
+    CAST(COALESCE(SERVERPROPERTY('IsPolyBaseInstalled'), 0) AS int)
 FROM sys.databases AS d
 WHERE d.name = DB_NAME();
 ";
@@ -36,6 +37,7 @@ pub struct SqlServerProbe {
     pub snapshot_isolation_state: u8,
     pub geometry_type_id: Option<i32>,
     pub geography_type_id: Option<i32>,
+    pub polybase_installed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +84,7 @@ pub async fn probe_server(
         snapshot_isolation_state,
         geometry_type_id: optional(row, 10, "geometry_type_id")?,
         geography_type_id: optional(row, 11, "geography_type_id")?,
+        polybase_installed: required::<i32>(row, 12, "is_polybase_installed")? == 1,
     })
 }
 
@@ -137,7 +140,7 @@ SELECT
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 LEFT JOIN sys.tables AS t ON t.object_id = o.object_id
-WHERE o.type IN ('U', 'V')
+WHERE o.type IN ('U', 'V', 'ET')
   AND o.is_ms_shipped = 0
   AND (@P1 IS NULL OR s.name = @P1)
   AND HAS_PERMS_BY_NAME(
@@ -188,6 +191,7 @@ mod tests {
             snapshot_isolation_state: 0,
             geometry_type_id: Some(240),
             geography_type_id: Some(241),
+            polybase_installed: false,
         };
         let json = serde_json::to_value(probe).expect("serialize probe");
         assert_eq!(json["compatibility_level"], 160);

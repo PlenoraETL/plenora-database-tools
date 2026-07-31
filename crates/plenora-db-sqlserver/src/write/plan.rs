@@ -676,15 +676,17 @@ pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
             | SqlServerColumnKind::I64
             | SqlServerColumnKind::F32
             | SqlServerColumnKind::F64 => true,
-            SqlServerColumnKind::Utf8 => column.native_type == "nvarchar",
+            SqlServerColumnKind::Utf8 => {
+                matches!(column.native_type.as_str(), "nvarchar" | "uniqueidentifier")
+            }
             SqlServerColumnKind::Binary => column.native_type == "varbinary",
             SqlServerColumnKind::Decimal { scale, .. } => {
                 column.native_type == "decimal" && (0..38).contains(&scale)
             }
+            SqlServerColumnKind::Time => column.native_type == "time",
+            SqlServerColumnKind::Timestamp => column.native_type == "datetime2",
+            SqlServerColumnKind::TimestampTz => column.native_type == "datetimeoffset",
             SqlServerColumnKind::Date
-            | SqlServerColumnKind::Time
-            | SqlServerColumnKind::Timestamp
-            | SqlServerColumnKind::TimestampTz
             | SqlServerColumnKind::Geometry
             | SqlServerColumnKind::Geography => false,
         };
@@ -1335,6 +1337,23 @@ mod tests {
         );
         plan.columns[0].kind = SqlServerColumnKind::Date;
         plan.columns[0].native_type = "date".to_owned();
+        assert!(validate_bulk_profile(&plan).is_err());
+        plan.columns[0].kind = SqlServerColumnKind::Time;
+        plan.columns[0].native_type = "time".to_owned();
+        validate_bulk_profile(&plan).expect("native time bulk");
+        plan.columns[0].kind = SqlServerColumnKind::Timestamp;
+        plan.columns[0].native_type = "datetime2".to_owned();
+        validate_bulk_profile(&plan).expect("native datetime2 bulk");
+        plan.columns[0].kind = SqlServerColumnKind::TimestampTz;
+        plan.columns[0].native_type = "datetimeoffset".to_owned();
+        validate_bulk_profile(&plan).expect("native datetimeoffset bulk");
+        plan.columns[0].kind = SqlServerColumnKind::Utf8;
+        plan.columns[0].native_type = "uniqueidentifier".to_owned();
+        validate_bulk_profile(&plan).expect("native UUID bulk");
+        plan.columns[0].native_type = "xml".to_owned();
+        assert!(validate_bulk_profile(&plan).is_err());
+        plan.columns[0].kind = SqlServerColumnKind::Timestamp;
+        plan.columns[0].native_type = "datetime".to_owned();
         assert!(validate_bulk_profile(&plan).is_err());
         plan.columns[0].kind = SqlServerColumnKind::Decimal {
             precision: 19,

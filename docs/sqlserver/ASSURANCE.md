@@ -7,6 +7,28 @@ generale del workspace:
 python scripts\check_sqlserver_reference.py
 ```
 
+La qualifica external table è separata perché richiede un'istanza con PolyBase
+installato e la fixture `plenora_test.external_probe`:
+
+```powershell
+python scripts\check_sqlserver_polybase.py
+```
+
+Questo gate fallisce esplicitamente se `IsPolyBaseInstalled` non vale `1`; il
+riferimento 2022 standard fissato per digest vale `0` e non produce quindi un
+claim external artificiale.
+
+La matrice di versione usa immagini Microsoft fissate per digest:
+
+```powershell
+python scripts\check_sqlserver_matrix.py
+```
+
+Qualifica 42 prove live su SQL Server 2019 (15.0/compat 150) e 2025
+(17.0/compat 170). Azure SQL non viene simulato: il workflow manuale
+`sqlserver-azure-assurance.yml` usa secret di environment e TLS verificato per
+un gate read-only che controlla `EngineEdition=5`.
+
 Il gate usa SQL Server 2022 fissato per digest, verifica identità e stato del
 server, esegue Clippy con warning negati, unit test e l'intera matrice live in
 serie. La baseline post-RC1 aggiunge una CA privata, il controllo positivo e
@@ -29,10 +51,11 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - bootstrap TDS/TLS, pool bounded e recovery;
 - read Arrow bounded, `geometry` e `geography` XY/XYZ/XYM/XYZM;
-- prepared write e TDS bulk differenziale;
+- prepared write e TDS bulk differenziale, incluso il profilo wire temporale
+  `time`/`datetime2`/`datetimeoffset` e `uniqueidentifier`;
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
-- ventitré metodi AST spatial nativi comuni a `geometry` e `geography` su
+- 24 metodi AST spatial nativi comuni a `geometry` e `geography` su
   source fisiche singole o join fisici; nove output geometrici (`StartPoint`, `EndPoint`,
   `PointN`, `Buffer`, overlay booleani, `Union`, `ConvexHull`) escono come WKB
   Z/M-safe con contratto profilato sul risultato, argomenti WKB e numerici
@@ -41,7 +64,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - join spatial fra colonne con risoluzione obbligatoria degli alias, verifica
   di semantica/SRID su entrambi gli operandi e token strutturale ricontrollato
   per ogni tabella coinvolta;
-- CTE non ricorsive, derived table e subquery spatial non correlate con
+- CTE non ricorsive e ricorsive top-level, derived table, set operation,
+  `CROSS APPLY` e subquery correlate su valori scalari con operando spatial
+  locale, con
   descrizione autoritativa del tipo nativo, profilo SRID prima del predicato e
   token strutturale di ogni sorgente fisica sottostante;
 - schema drift fail-closed;
@@ -58,10 +83,16 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
   dataset senza extent rifiutato con rollback e senza oggetti residui;
 - rollback dello staging e dei rename, cleanup, dipendenze fail-closed e
   leggibilita del vecchio target durante il caricamento;
-- taglio e blackhole fisici del trasporto TDS.
+- taglio e blackhole fisici del trasporto TDS;
+- perdita totale temporanea del traffico TDS: latenza indotta, risposta integra
+  e sessione riusabile quando il forwarding riprende entro il timeout.
 - catena TLS privata, hostname match/mismatch e rotazione;
+- capability opzionali pubblicate `false` verificate dal vivo; nessun flag e
+  promosso sulla sola disponibilita di sintassi T-SQL;
 - roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
   dimensioni miste e FullGlobe;
+- lettura bounded di `CircularString`, `CompoundCurve` e `CurvePolygon` su
+  geometry/geography e scrittura lossless di `CircularString`;
 - colonne `geometry` e `geography` con tipi geometrici misti Point+Polygon,
   preservati come WKB e dichiarati `mixed` nel contratto Arrow;
 - catalogo avanzato temporal, graph e partizionato, più view, owner, predicati
@@ -71,11 +102,14 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 ## Gap non coperti dal gate v1
 
-- SQL Server 2019, 2025 e Azure SQL;
-- supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
-- CTE spatial ricorsive o annidate in derived table, subquery spatial
-  correlate, lateral/APPLY e set operation spatial;
-- catalogo external table con data source e file format reali.
+- equivalenza completa Azure SQL oltre il gate read-only opt-in;
+- supporto lossless `FullGlobe`; Z/M/ZM e i tipi curvi pubblicati sono coperti
+  come WKB ISO;
+- CTE dichiarate dentro una derived table (rifiutate nativamente da SQL Server
+  2022), `OUTER APPLY` e riferimenti spatial esterni dentro subquery correlate;
+- esecuzione del gate PolyBase separato con data source e file format reali;
+  il percorso `ET` e il feature probe sono implementati ma il riferimento
+  standard dichiara esplicitamente la feature assente.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una
 prova dedicata non viene aggiunta al gate.

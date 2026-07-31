@@ -89,8 +89,9 @@ La suite live seriale ha verificato:
 33. duplicate key nel secondo request bulk con rollback confermato anche per
     le righe già finalizzate dal primo request.
 34. round-trip bulk dei tipi ammessi (`bit`, interi, `real`/`float`,
-    `decimal`, `nvarchar`, `varbinary`) con confronto SQL bidirezionale a zero
-    differenze.
+    `decimal`, `nvarchar`, `varbinary`, `time`, `datetime2`, `datetimeoffset`
+    e `uniqueidentifier`) con confronto SQL bidirezionale a zero differenze;
+    `date` e `xml` restano rifiutati dopo sonda live negativa 4816.
 35. `QueryOperation` relazionale con CTE, inner join, `COUNT_BIG`,
     group-by/having e parametri TDS ripetibili;
 36. funzione window `ROW_NUMBER`, `OFFSET/FETCH` e `UNION ALL`, con valori e
@@ -160,6 +161,23 @@ La suite live seriale ha verificato:
 55. definizione, schema binding e opzioni `ANSI_NULLS`/`QUOTED_IDENTIFIER` di
     una view sono osservati. Il token cambia dopo `ALTER VIEW` a colonne
     invariate.
+56. scope spatial ricorsivo e annidato su `geometry` e `geography`: CTE
+    ricorsiva top-level, `UNION ALL`, `CROSS APPLY` e subquery correlata su
+    chiave scalare con operando spatial locale. Una CTE dichiarata dentro una
+    derived table viene rifiutata fail-closed perché SQL Server 2022 non ne
+    ammette la sintassi.
+57. locking query su una riga realmente contesa: `UPDLOCK,NOWAIT` produce
+    errore server 1222 classificato `Timeout`, `retry=Never`, effetto `None`;
+    dopo rollback la stessa query spatial legge la riga e `STDimension()`
+    restituisce il valore atteso.
+58. `CircularString`, `CompoundCurve` e `CurvePolygon` nativi sono letti da
+    colonne geometry e geography come WKB, ispezionati dal parser bounded e
+    riconosciuti senza linearizzazione.
+59. `CircularString` WKB viene scritto e riletto byte per byte su geometry e
+    geography, preservando il tipo curvo nativo.
+60. perdita totale temporanea del traffico TDS per 400 ms: la lettura resta
+    sospesa, riprende senza corruzione prima del timeout e la sessione resta
+    riusabile; il blackhole prolungato del punto 27 resta il controllo negativo.
 
 Comando della prova:
 
@@ -167,7 +185,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **39 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **44 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -175,14 +193,17 @@ Esito post-RC1: **39 superati, 0 falliti**. Il valore RC1 resta storicamente
 Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
-- CTE spatial ricorsive o annidate in derived table, subquery spatial
-  correlate, lateral/APPLY, set operation spatial, locking e forme calcolate
-  senza alias deterministico;
+- CTE dichiarate dentro derived table, `OUTER APPLY`, riferimenti spatial
+  esterni dentro subquery correlate, `SkipLocked` e forme calcolate senza
+  alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
-- external table con data source e file format reali;
-- altre build SQL Server e Azure SQL.
+- external table con data source e file format reali sul gate PolyBase
+  separato; il riferimento corrente prova `IsPolyBaseInstalled=0` e non
+  trasforma l'assenza della feature in successo;
+- Azure SQL oltre il probe read-only opt-in; SQL Server 2019 e 2025 sono ora
+  coperti dal gate di matrice separato con 43/43 per versione.
 
 La suite combina fault deterministici interni e un proxy TCP capace di chiudere
 materialmente entrambi i socket oppure mantenerli aperti senza inoltrare byte.

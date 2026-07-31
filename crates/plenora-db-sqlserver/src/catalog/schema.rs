@@ -305,7 +305,7 @@ LEFT JOIN sys.external_file_formats AS eff
 LEFT JOIN sys.sql_modules AS module ON module.object_id = o.object_id
 WHERE s.name = @P1
   AND o.name = @P2
-  AND o.type IN ('U', 'V')
+  AND o.type IN ('U', 'V', 'ET')
   AND HAS_PERMS_BY_NAME(
         QUOTENAME(s.name) + N'.' + QUOTENAME(o.name),
         'OBJECT',

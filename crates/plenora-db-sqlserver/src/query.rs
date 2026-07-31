@@ -40,6 +40,7 @@ ORDER BY column_ordinal;
 pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::GeometryType,
     SpatialFunction::Srid,
+    SpatialFunction::Dimensions,
     SpatialFunction::NPoints,
     SpatialFunction::IsEmpty,
     SpatialFunction::IsValid,
@@ -293,15 +294,14 @@ pub async fn validate_spatial_inputs(
     }
     let mut uses = Vec::new();
     collect_operation_spatial_uses(operation, &mut uses)?;
-    if !operation.set_operations.is_empty()
-        || operation
-            .joins
-            .iter()
-            .any(|join| join.lateral || join.source.is_none() && join.derived_source.is_none())
+    if operation
+        .joins
+        .iter()
+        .any(|join| join.source.is_none() && join.derived_source.is_none())
     {
         return Err(query_error(
             ErrorCategory::Unsupported,
-            "AST spatial SQL Server non supporta ancora lateral o set operation",
+            "AST spatial SQL Server contiene una relazione join non risolta",
         ));
     }
     if !operation.common_table_expressions.is_empty()
@@ -310,6 +310,7 @@ pub async fn validate_spatial_inputs(
             .joins
             .iter()
             .any(|join| join.derived_source.is_some())
+        || !operation.set_operations.is_empty()
         || operation_contains_spatial_subquery(operation)
     {
         return validate_nested_spatial_inputs(
@@ -566,22 +567,6 @@ fn validate_nested_spatial_operation<'a>(
     cancellation: &'a CancellationToken,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
-        if !operation.set_operations.is_empty() || operation.joins.iter().any(|join| join.lateral) {
-            return Err(query_error(
-                ErrorCategory::Unsupported,
-                "scope spatial SQL Server non supporta lateral o set operation",
-            ));
-        }
-        if operation
-            .common_table_expressions
-            .iter()
-            .any(|cte| cte.recursive)
-        {
-            return Err(query_error(
-                ErrorCategory::Unsupported,
-                "CTE ricorsiva spatial SQL Server non qualificata",
-            ));
-        }
         if operation
             .derived_source
             .as_ref()
@@ -594,10 +579,9 @@ fn validate_nested_spatial_operation<'a>(
         {
             return Err(query_error(
                 ErrorCategory::Unsupported,
-                "CTE annidata in derived source SQL Server non qualificata",
+                "SQL Server 2022 non ammette CTE dichiarate dentro derived source",
             ));
         }
-
         let mut uses = Vec::new();
         collect_operation_spatial_uses(operation, &mut uses)?;
         let local_relations = local_relation_names(operation);
@@ -768,6 +752,16 @@ fn validate_nested_spatial_operation<'a>(
             if let Some(on) = &join.on {
                 validate_spatial_subqueries(session, on, parameters, budget, cancellation).await?;
             }
+        }
+        for set in &operation.set_operations {
+            validate_nested_spatial_operation(
+                session,
+                &set.query,
+                parameters,
+                budget,
+                cancellation,
+            )
+            .await?;
         }
         for expression in operation_expressions(operation) {
             validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
@@ -1659,6 +1653,7 @@ const fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
         function,
         SpatialFunction::GeometryType
             | SpatialFunction::Srid
+            | SpatialFunction::Dimensions
             | SpatialFunction::NPoints
             | SpatialFunction::IsEmpty
             | SpatialFunction::IsValid
@@ -2261,6 +2256,18 @@ mod tests {
                     column("e", "shape"),
                     QueryExpression::Parameter {
                         name: "flags".to_owned(),
+                    },
+                ],
+            },
+            QueryExpression::Spatial {
+                function: SpatialFunction::Transform,
+                arguments: vec![
+                    column("e", "shape"),
+                    QueryExpression::Parameter {
+                        name: "source_srid".to_owned(),
+                    },
+                    QueryExpression::Parameter {
+                        name: "target_srid".to_owned(),
                     },
                 ],
             },
