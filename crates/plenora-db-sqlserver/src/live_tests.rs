@@ -1082,6 +1082,7 @@ async fn live_common_provider_executes_opt_in_tds_bulk() {
         .await
         .expect("bulk capabilities");
     assert!(capabilities.writes.bulk);
+    assert!(capabilities.spatial.spatial_index);
 
     let schema = guard_schema();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
@@ -3180,7 +3181,10 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
         .expect("typed lifecycle admin");
     admin
         .execute_query(
-            Query::new("DROP TABLE IF EXISTS [plenora_test].[lifecycle_types_probe];"),
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[lifecycle_types_probe]; \
+                 DROP TABLE IF EXISTS [plenora_test].[lifecycle_empty_spatial_probe];",
+            ),
             ErrorPhase::Write,
             &cancellation,
         )
@@ -3202,6 +3206,7 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     let schema = source.schema();
     let mut create = write_operation("lifecycle_types_probe", WriteMode::Create);
     create.keys = vec!["id".to_owned()];
+    create.create_spatial_index = true;
     let create_budget =
         ResourceBudget::new(ResourceLimits::default()).expect("typed create budget");
     let prepared = prepare_write(
@@ -3244,6 +3249,22 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
         .collect::<plenora_database_core::Result<Vec<_>>>()
         .expect("created native contracts");
     assert_eq!(created_specs, source_specs);
+    let created_spatial_indexes = target_description
+        .indexes
+        .iter()
+        .filter_map(|index| index.spatial.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(created_spatial_indexes.len(), 2);
+    assert!(created_spatial_indexes.iter().any(|index| {
+        index.spatial_type == "GEOMETRY"
+            && index.tessellation_scheme == "GEOMETRY_AUTO_GRID"
+            && index.bounding_box.is_some()
+    }));
+    assert!(created_spatial_indexes.iter().any(|index| {
+        index.spatial_type == "GEOGRAPHY"
+            && index.tessellation_scheme == "GEOGRAPHY_AUTO_GRID"
+            && index.bounding_box.is_none()
+    }));
 
     let replacement_source_budget =
         ResourceBudget::new(ResourceLimits::default()).expect("replacement source budget");
@@ -3260,6 +3281,7 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     let mut replace = write_operation("lifecycle_types_probe", WriteMode::Replace);
     replace.keys = vec!["id".to_owned()];
     replace.transaction_profile = TransactionProfile::StagedSwap;
+    replace.create_spatial_index = true;
     let replace_budget =
         ResourceBudget::new(ResourceLimits::default()).expect("typed replace budget");
     let prepared = prepare_write(
@@ -3292,6 +3314,129 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
         .collect::<plenora_database_core::Result<Vec<_>>>()
         .expect("replaced native contracts");
     assert_eq!(replaced_specs, source_specs);
+    let replaced_spatial_indexes = replaced_description
+        .indexes
+        .iter()
+        .filter_map(|index| index.spatial.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(replaced_spatial_indexes.len(), 2);
+    assert!(replaced_spatial_indexes.iter().any(|index| {
+        index.spatial_type == "GEOMETRY"
+            && index.tessellation_scheme == "GEOMETRY_AUTO_GRID"
+            && index.bounding_box.is_some()
+    }));
+    assert!(replaced_spatial_indexes.iter().any(|index| {
+        index.spatial_type == "GEOGRAPHY"
+            && index.tessellation_scheme == "GEOGRAPHY_AUTO_GRID"
+            && index.bounding_box.is_none()
+    }));
+
+    let geometry_index_name = replaced_description
+        .indexes
+        .iter()
+        .find(|index| {
+            index
+                .spatial
+                .as_ref()
+                .is_some_and(|spatial| spatial.spatial_type == "GEOMETRY")
+        })
+        .and_then(|index| index.name.as_deref())
+        .expect("geometry spatial index name");
+    assert!(geometry_index_name.starts_with("IX_pln_spatial_"));
+    let quoted_geometry_index = format!("[{}]", geometry_index_name.replace(']', "]]"));
+    let sample = admin
+        .execute_query(
+            Query::new(
+                "SELECT TOP (1) [shape].STAsText(), [shape].STSrid \
+                 FROM [plenora_test].[lifecycle_types_probe] \
+                 WHERE [shape] IS NOT NULL;",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("load indexed geometry sample");
+    let sample_wkt = sample[0][0]
+        .try_get::<&str, _>(0)
+        .expect("geometry sample WKT")
+        .expect("geometry sample WKT value")
+        .to_owned();
+    let sample_srid = sample[0][0]
+        .try_get::<i32, _>(1)
+        .expect("geometry sample SRID")
+        .expect("geometry sample SRID value");
+    let mut forced_spatial_query = Query::new(format!(
+        "SELECT COUNT_BIG(*) \
+         FROM [plenora_test].[lifecycle_types_probe] WITH (INDEX({quoted_geometry_index})) \
+         WHERE [shape].STIntersects(geometry::STGeomFromText(@P1, @P2)) = 1;"
+    ));
+    forced_spatial_query.bind(sample_wkt);
+    forced_spatial_query.bind(sample_srid);
+    let indexed_count = admin
+        .execute_query(forced_spatial_query, ErrorPhase::Probe, &cancellation)
+        .await
+        .expect("force geometry spatial access path");
+    assert!(indexed_count[0][0]
+        .try_get::<i64, _>(0)
+        .expect("indexed row count")
+        .is_some_and(|count| count > 0));
+
+    let mut empty_spatial_create =
+        write_operation("lifecycle_empty_spatial_probe", WriteMode::Create);
+    empty_spatial_create.keys = vec!["id".to_owned()];
+    empty_spatial_create.create_spatial_index = true;
+    let empty_budget =
+        ResourceBudget::new(ResourceLimits::default()).expect("empty spatial create budget");
+    let empty_prepared = prepare_write(
+        &pool,
+        &empty_spatial_create,
+        Arc::clone(&schema),
+        &empty_budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare empty spatial create");
+    let empty_error = write_prepared(
+        empty_prepared,
+        Box::new(VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::new(),
+        }),
+        &cancellation,
+    )
+    .await
+    .expect_err("geometry spatial index without bounds must fail closed");
+    assert_eq!(empty_error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(empty_error.remote_effect, RemoteEffect::RolledBack);
+    let empty_state = admin
+        .execute_query(
+            Query::new(
+                "SELECT CASE WHEN OBJECT_ID(\
+                    N'plenora_test.lifecycle_empty_spatial_probe', N'U'\
+                 ) IS NULL THEN 0 ELSE 1 END; \
+                 SELECT COUNT_BIG(*) FROM sys.objects AS o \
+                 JOIN sys.schemas AS s ON s.schema_id = o.schema_id \
+                 WHERE s.name = N'plenora_test' \
+                   AND o.name LIKE N'lifecycle_empty_spatial_probe__pln[_]%';",
+            ),
+            ErrorPhase::Probe,
+            &cancellation,
+        )
+        .await
+        .expect("verify empty spatial create rollback");
+    assert_eq!(
+        empty_state[0][0]
+            .try_get::<i32, _>(0)
+            .expect("empty target state"),
+        Some(0)
+    );
+    assert_eq!(
+        empty_state[1][0]
+            .try_get::<i64, _>(0)
+            .expect("empty staging state"),
+        Some(0)
+    );
+
     let count = admin
         .execute_query(
             Query::new(

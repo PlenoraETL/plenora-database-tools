@@ -394,6 +394,7 @@ def main() -> int:
             "staged_replace_publish",
             "staged_replace_rollback_cleanup_dependencies_and_visibility",
             "create_replace_reference_type_profile",
+            "spatial_index_create_replace_catalog_access_path_and_rollback",
         ],
         "open_non_blocking": [
             "sqlserver_2019_2025_azure_matrix",

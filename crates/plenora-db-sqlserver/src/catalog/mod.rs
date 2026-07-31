@@ -4,7 +4,8 @@ mod schema;
 pub use probe::{list_objects, list_schemas, probe_server, SqlServerObjectSummary, SqlServerProbe};
 pub use schema::{
     describe_object, SqlServerColumn, SqlServerConstraint, SqlServerIndex,
-    SqlServerObjectDescription, SqlServerSchemaToken,
+    SqlServerObjectDescription, SqlServerSchemaToken, SqlServerSpatialBoundingBox,
+    SqlServerSpatialIndex,
 };
 
 use crate::error::driver_error;

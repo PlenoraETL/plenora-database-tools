@@ -41,6 +41,11 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - create atomico e replace con staged swap transazionale;
 - profilo create/replace completo sui 19 tipi scalari, temporali e spatial
   della fixture di riferimento;
+- indici `GEOMETRY_AUTO_GRID` e `GEOGRAPHY_AUTO_GRID` creati durante
+  create/replace, riletti da `sys.spatial_indexes` e
+  `sys.spatial_index_tessellations`, con access path geometry forzato live;
+- bounding box geometry derivato dopo il caricamento nella stessa transazione;
+  dataset senza extent rifiutato con rollback e senza oggetti residui;
 - rollback dello staging e dei rename, cleanup, dipendenze fail-closed e
   leggibilita del vecchio target durante il caricamento;
 - taglio e blackhole fisici del trasporto TDS.

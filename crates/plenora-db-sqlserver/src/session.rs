@@ -1,6 +1,10 @@
 /// Batch invariabile eseguito e completamente drenato prima del primo uso.
-pub const SESSION_BOOTSTRAP_SQL: &str =
-    "SET XACT_ABORT ON; SET IMPLICIT_TRANSACTIONS OFF; SET NOCOUNT ON;";
+pub const SESSION_BOOTSTRAP_SQL: &str = concat!(
+    "SET XACT_ABORT ON; SET IMPLICIT_TRANSACTIONS OFF; SET NOCOUNT ON; ",
+    "SET ANSI_NULLS ON; SET ANSI_PADDING ON; SET ANSI_WARNINGS ON; ",
+    "SET ARITHABORT ON; SET CONCAT_NULL_YIELDS_NULL ON; ",
+    "SET QUOTED_IDENTIFIER ON; SET NUMERIC_ROUNDABORT OFF;"
+);
 
 /// Stato locale conservativo di una sessione TDS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,5 +45,12 @@ mod tests {
         assert!(SESSION_BOOTSTRAP_SQL.contains("XACT_ABORT ON"));
         assert!(SESSION_BOOTSTRAP_SQL.contains("IMPLICIT_TRANSACTIONS OFF"));
         assert!(SESSION_BOOTSTRAP_SQL.contains("NOCOUNT ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("ANSI_NULLS ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("ANSI_PADDING ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("ANSI_WARNINGS ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("ARITHABORT ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("CONCAT_NULL_YIELDS_NULL ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("QUOTED_IDENTIFIER ON"));
+        assert!(SESSION_BOOTSTRAP_SQL.contains("NUMERIC_ROUNDABORT OFF"));
     }
 }

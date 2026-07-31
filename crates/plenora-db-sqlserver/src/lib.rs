@@ -26,7 +26,7 @@ mod write;
 pub use catalog::{
     describe_object, list_objects, list_schemas, probe_server, SqlServerColumn,
     SqlServerConstraint, SqlServerIndex, SqlServerObjectDescription, SqlServerObjectSummary,
-    SqlServerProbe, SqlServerSchemaToken,
+    SqlServerProbe, SqlServerSchemaToken, SqlServerSpatialBoundingBox, SqlServerSpatialIndex,
 };
 pub use config::{CertificatePolicy, SqlServerConfig};
 pub use connection::SqlServerSession;

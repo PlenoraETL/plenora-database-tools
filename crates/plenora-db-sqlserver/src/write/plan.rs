@@ -35,6 +35,19 @@ pub(super) struct ObservedSpatialContract {
     pub(super) dimensions: Option<Dimensions>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SpatialIndexKind {
+    Geometry,
+    Geography,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SpatialIndexPlan {
+    pub(super) quoted_name: String,
+    pub(super) quoted_column: String,
+    pub(super) kind: SpatialIndexKind,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum TargetLifecycle {
     Existing {
@@ -68,6 +81,7 @@ pub(super) struct WritePlan {
     pub(super) schema: String,
     pub(super) object: String,
     pub(super) added_columns: Vec<AddedColumn>,
+    pub(super) spatial_indexes: Vec<SpatialIndexPlan>,
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +258,7 @@ impl WritePlan {
             schema: description.schema.clone(),
             object: description.name.clone(),
             added_columns,
+            spatial_indexes: Vec::new(),
         })
     }
 
@@ -366,6 +381,7 @@ fn compile_new_target(
     let row_statement =
         super::sql::compile_row_statement(operation, &columns, &renderer, &quoted_write_object)?;
     let create_sql = create_table_sql(&renderer, &quoted_write_object, &columns, &operation.keys)?;
+    let spatial_indexes = compile_spatial_indexes(operation, &columns, &renderer)?;
     let lifecycle = if let Some((description, staging_object, backup_object)) = replacement {
         let quoted_original = renderer.quote_object(&ObjectName {
             catalog: None,
@@ -394,7 +410,51 @@ fn compile_new_target(
         schema: schema.to_owned(),
         object: operation.target.object.clone(),
         added_columns: Vec::new(),
+        spatial_indexes,
     })
+}
+
+fn compile_spatial_indexes(
+    operation: &WriteOperation,
+    columns: &[WriteColumnPlan],
+    renderer: &Renderer,
+) -> Result<Vec<SpatialIndexPlan>> {
+    if !operation.create_spatial_index {
+        return Ok(Vec::new());
+    }
+    let indexes = columns
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, column)| {
+            let kind = match column.kind {
+                SqlServerColumnKind::Geometry => SpatialIndexKind::Geometry,
+                SqlServerColumnKind::Geography => SpatialIndexKind::Geography,
+                _ => return None,
+            };
+            Some((ordinal, column, kind))
+        })
+        .map(|(ordinal, column, kind)| {
+            let index_ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                plan_error(
+                    ErrorCategory::ResourceLimit,
+                    "overflow ordinale indice spatial SQL Server",
+                )
+            })?;
+            let name = format!("IX_pln_spatial_{index_ordinal}");
+            Ok(SpatialIndexPlan {
+                quoted_name: renderer.quote_identifier(&sql_identifier(&name)?),
+                quoted_column: renderer.quote_identifier(&sql_identifier(&column.name)?),
+                kind,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if indexes.is_empty() {
+        return Err(plan_error(
+            ErrorCategory::InvalidPlan,
+            "creazione indice spatial richiesta senza colonne geometry/geography",
+        ));
+    }
+    Ok(indexes)
 }
 
 fn validate_parameter_count(columns: &[WriteColumnPlan]) -> Result<()> {
@@ -533,11 +593,15 @@ fn validate_replace_description(
     });
     if unsupported_constraint
         || description.indexes.iter().any(|index| {
-            !index.primary_key
-                || index.kind != "CLUSTERED"
-                || !index.unique
-                || index.disabled
-                || index.filtered
+            let represented_primary_key = index.primary_key
+                && index.kind == "CLUSTERED"
+                && index.unique
+                && !index.disabled
+                && !index.filtered
+                && index.spatial.is_none();
+            let represented_spatial = operation.create_spatial_index
+                && is_canonical_spatial_index(index, &description.columns);
+            !represented_primary_key && !represented_spatial
         })
         || description
             .columns
@@ -550,6 +614,44 @@ fn validate_replace_description(
         ));
     }
     Ok(())
+}
+
+fn is_canonical_spatial_index(
+    index: &crate::SqlServerIndex,
+    columns: &[crate::SqlServerColumn],
+) -> bool {
+    if index.kind != "SPATIAL"
+        || index.unique
+        || index.primary_key
+        || index.unique_constraint
+        || index.disabled
+        || index.filtered
+    {
+        return false;
+    }
+    let Some(spatial) = index.spatial.as_ref() else {
+        return false;
+    };
+    columns.iter().any(|column| {
+        let expected_name = format!("IX_pln_spatial_{}", column.ordinal);
+        let expected_columns = format!("{}:0:0:0", column.name);
+        let type_and_tessellation_match = match spatial.spatial_type.as_str() {
+            "GEOMETRY" => {
+                column.native_type.eq_ignore_ascii_case("geometry")
+                    && spatial.tessellation_scheme == "GEOMETRY_AUTO_GRID"
+                    && spatial.bounding_box.is_some()
+            }
+            "GEOGRAPHY" => {
+                column.native_type.eq_ignore_ascii_case("geography")
+                    && spatial.tessellation_scheme == "GEOGRAPHY_AUTO_GRID"
+                    && spatial.bounding_box.is_none()
+            }
+            _ => false,
+        };
+        type_and_tessellation_match
+            && index.name.as_deref() == Some(expected_name.as_str())
+            && index.columns.as_deref() == Some(expected_columns.as_str())
+    })
 }
 
 pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
@@ -629,10 +731,24 @@ pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
             "transaction_profile incompatibile col lifecycle SQL Server",
         ));
     }
-    if operation.allow_partial || operation.create_spatial_index {
+    if operation.allow_partial {
         return Err(plan_error(
             ErrorCategory::Unsupported,
-            "write SQL Server richiede esecuzione atomica senza creazione indice",
+            "write SQL Server richiede esecuzione atomica",
+        ));
+    }
+    if operation.create_spatial_index
+        && !matches!(operation.mode, WriteMode::Create | WriteMode::Replace)
+    {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "indice spatial SQL Server supportato soltanto in create/replace",
+        ));
+    }
+    if operation.create_spatial_index && operation.keys.is_empty() {
+        return Err(plan_error(
+            ErrorCategory::InvalidPlan,
+            "indice spatial SQL Server richiede una primary key clustered",
         ));
     }
     validate_mutation_shape(operation)?;
@@ -956,7 +1072,8 @@ pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) ->
 mod tests {
     use super::*;
     use crate::{
-        SqlServerConstraint, SqlServerIndex, SqlServerSchemaEvolution, SqlServerSchemaToken,
+        SqlServerColumn, SqlServerConstraint, SqlServerIndex, SqlServerSchemaEvolution,
+        SqlServerSchemaToken, SqlServerSpatialBoundingBox, SqlServerSpatialIndex,
     };
     use plenora_database_core::loss::{LossSeverity, MappingPolicy};
     use plenora_database_core::plan::{ObjectRef, SridPolicy};
@@ -980,6 +1097,52 @@ mod tests {
             create_spatial_index: false,
             allow_partial: false,
         }
+    }
+
+    fn spatial_create_schema() -> SchemaRef {
+        fn spatial_field(name: &str, semantics: &str, native_type: &str) -> Field {
+            Field::new(name, DataType::Binary, true).with_metadata(HashMap::from([
+                (
+                    protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+                    "geoarrow.wkb".to_owned(),
+                ),
+                (protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned()),
+                (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
+                (
+                    protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                    "mixed".to_owned(),
+                ),
+                (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
+                (
+                    protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+                    semantics.to_owned(),
+                ),
+                (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+                (
+                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                    "declared_unresolved".to_owned(),
+                ),
+                (
+                    protocol::SQLSERVER_NATIVE_TYPE.to_owned(),
+                    native_type.to_owned(),
+                ),
+                (
+                    protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+                    native_type.to_owned(),
+                ),
+            ]))
+        }
+        Arc::new(plenora_database_core::arrow::Schema::new_with_metadata(
+            vec![
+                Field::new("id", DataType::Int32, false),
+                spatial_field("shape", "geometry", "geometry"),
+                spatial_field("position", "geography", "geography"),
+            ],
+            HashMap::from([(
+                protocol::CONTRACT_VERSION_KEY.to_owned(),
+                protocol::CONTRACT_VERSION.to_owned(),
+            )]),
+        ))
     }
 
     #[test]
@@ -1013,6 +1176,102 @@ mod tests {
         let mut delete = operation(WriteMode::DeleteByKeys);
         delete.keys = vec!["id".to_owned()];
         validate_operation(&delete).expect("valid delete shape");
+    }
+
+    #[test]
+    fn spatial_indexes_are_planned_only_for_atomic_create_or_replace() {
+        let mut create = operation(WriteMode::Create);
+        create.keys = vec!["id".to_owned()];
+        create.create_spatial_index = true;
+        let plan =
+            WritePlan::compile_create(&create, spatial_create_schema()).expect("spatial create");
+        assert_eq!(plan.spatial_indexes.len(), 2);
+        assert_eq!(plan.spatial_indexes[0].kind, SpatialIndexKind::Geometry);
+        assert_eq!(plan.spatial_indexes[1].kind, SpatialIndexKind::Geography);
+        assert_eq!(plan.spatial_indexes[0].quoted_name, "[IX_pln_spatial_2]");
+        assert_eq!(plan.spatial_indexes[0].quoted_column, "[shape]");
+        assert_eq!(plan.spatial_indexes[1].quoted_name, "[IX_pln_spatial_3]");
+        assert_eq!(plan.spatial_indexes[1].quoted_column, "[position]");
+
+        let mut append = operation(WriteMode::Append);
+        append.create_spatial_index = true;
+        assert_eq!(
+            validate_operation(&append)
+                .expect_err("index on append")
+                .category,
+            ErrorCategory::Unsupported
+        );
+        let mut no_key = operation(WriteMode::Create);
+        no_key.create_spatial_index = true;
+        assert_eq!(
+            validate_operation(&no_key)
+                .expect_err("index without clustered key")
+                .category,
+            ErrorCategory::InvalidPlan
+        );
+        let mut no_spatial = operation(WriteMode::Create);
+        no_spatial.keys = vec!["id".to_owned()];
+        no_spatial.create_spatial_index = true;
+        assert_eq!(
+            WritePlan::compile_create(
+                &no_spatial,
+                Arc::new(plenora_database_core::arrow::Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Int32,
+                    false,
+                )])),
+            )
+            .expect_err("index without spatial columns")
+            .category,
+            ErrorCategory::InvalidPlan
+        );
+    }
+
+    #[test]
+    fn only_canonical_spatial_indexes_are_representable_on_replace() {
+        let columns = vec![SqlServerColumn {
+            ordinal: 2,
+            name: "shape".to_owned(),
+            type_schema: "sys".to_owned(),
+            native_type: "geometry".to_owned(),
+            max_length: -1,
+            precision: 0,
+            scale: 0,
+            nullable: true,
+            identity: false,
+            computed: false,
+            generated_always_type: 0,
+            collation: None,
+            default_definition: None,
+            computed_definition: None,
+            computed_persisted: false,
+        }];
+        let canonical = SqlServerIndex {
+            index_id: 2,
+            name: Some("IX_pln_spatial_2".to_owned()),
+            kind: "SPATIAL".to_owned(),
+            unique: false,
+            primary_key: false,
+            unique_constraint: false,
+            disabled: false,
+            filtered: false,
+            filter_definition: None,
+            columns: Some("shape:0:0:0".to_owned()),
+            spatial: Some(SqlServerSpatialIndex {
+                spatial_type: "GEOMETRY".to_owned(),
+                tessellation_scheme: "GEOMETRY_AUTO_GRID".to_owned(),
+                bounding_box: Some(SqlServerSpatialBoundingBox {
+                    xmin: -1.0,
+                    ymin: -2.0,
+                    xmax: 3.0,
+                    ymax: 4.0,
+                }),
+            }),
+        };
+        assert!(is_canonical_spatial_index(&canonical, &columns));
+        let mut custom = canonical;
+        custom.name = Some("custom_index".to_owned());
+        assert!(!is_canonical_spatial_index(&custom, &columns));
     }
 
     #[test]
@@ -1056,6 +1315,7 @@ mod tests {
                 schema: "dbo".to_owned(),
                 object: "target".to_owned(),
                 added_columns: Vec::new(),
+                spatial_indexes: Vec::new(),
             };
         assert_eq!(
             validate_bulk_profile(&plan)
@@ -1282,6 +1542,7 @@ mod tests {
                 filtered: false,
                 filter_definition: None,
                 columns: Some("tenant_id:1:0:0,asset_id:2:0:0".to_owned()),
+                spatial: None,
             }],
             token: SqlServerSchemaToken {
                 schema_version: 1,

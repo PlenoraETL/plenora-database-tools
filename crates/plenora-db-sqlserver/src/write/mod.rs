@@ -727,6 +727,7 @@ async fn finalize_transaction_target(
     plan: &WritePlan,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    create_spatial_indexes(pooled, plan, cancellation).await?;
     if let TargetLifecycle::Replace {
         lock_sql,
         schema_fingerprint,
@@ -755,6 +756,115 @@ async fn finalize_transaction_target(
         .await?;
     }
     Ok(())
+}
+
+async fn create_spatial_indexes(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    for index in &plan.spatial_indexes {
+        let sql = match index.kind {
+            plan::SpatialIndexKind::Geometry => {
+                let bounds =
+                    geometry_index_bounds(pooled, plan, &index.quoted_column, cancellation).await?;
+                format!(
+                    "CREATE SPATIAL INDEX {} ON {} ({}) \
+                     USING GEOMETRY_AUTO_GRID \
+                     WITH (BOUNDING_BOX = ({:.17}, {:.17}, {:.17}, {:.17}));",
+                    index.quoted_name,
+                    plan.bulk_table,
+                    index.quoted_column,
+                    bounds[0],
+                    bounds[1],
+                    bounds[2],
+                    bounds[3]
+                )
+            }
+            plan::SpatialIndexKind::Geography => format!(
+                "CREATE SPATIAL INDEX {} ON {} ({}) USING GEOGRAPHY_AUTO_GRID;",
+                index.quoted_name, plan.bulk_table, index.quoted_column
+            ),
+        };
+        pooled
+            .session_mut()?
+            .execute_write_query(Query::new(sql), cancellation)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn geometry_index_bounds(
+    pooled: &mut PooledSqlServerSession,
+    plan: &WritePlan,
+    quoted_column: &str,
+    cancellation: &CancellationToken,
+) -> Result<[f64; 4]> {
+    let sql = format!(
+        "DECLARE @plenora_envelope geometry = \
+         (SELECT geometry::EnvelopeAggregate({quoted_column}) \
+            FROM {} WHERE {quoted_column} IS NOT NULL); \
+         SELECT @plenora_envelope.STPointN(1).STX, \
+                @plenora_envelope.STPointN(1).STY, \
+                @plenora_envelope.STPointN(3).STX, \
+                @plenora_envelope.STPointN(3).STY;",
+        plan.bulk_table
+    );
+    let mut results = pooled
+        .session_mut()?
+        .execute_query(Query::new(sql), ErrorPhase::Write, cancellation)
+        .await?;
+    if results.len() != 1 {
+        return Err(write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "extent geometry SQL Server con result set inattesi",
+        ));
+    }
+    let rows = results.pop().ok_or_else(|| {
+        write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "extent geometry SQL Server senza result set",
+        )
+    })?;
+    let row = rows.first().ok_or_else(|| {
+        write_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "extent geometry SQL Server senza riga",
+        )
+    })?;
+    let mut bounds = [0.0_f64; 4];
+    for (index, value) in bounds.iter_mut().enumerate() {
+        *value = row
+            .try_get::<f64, _>(index)
+            .map_err(|_| {
+                write_error(
+                    ErrorCategory::Protocol,
+                    ErrorPhase::Write,
+                    "extent geometry SQL Server con tipo inatteso",
+                )
+            })?
+            .ok_or_else(|| {
+                write_error(
+                    ErrorCategory::InvalidPlan,
+                    ErrorPhase::Write,
+                    "indice geometry SQL Server richiede almeno una geometria non NULL",
+                )
+            })?;
+    }
+    if !bounds.iter().all(|value| value.is_finite())
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+    {
+        return Err(write_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Write,
+            "bounding box geometry SQL Server non finita o degenerata",
+        ));
+    }
+    Ok(bounds)
 }
 
 async fn lock_and_verify_schema(
