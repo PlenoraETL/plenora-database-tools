@@ -72,7 +72,7 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
 - CTE spatial ricorsive o annidate in derived table, subquery spatial
   correlate, lateral/APPLY e set operation spatial;
-- catalogo temporal/graph/external e partizioni.
+- catalogo external table con data source e file format reali.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una
 prova dedicata non viene aggiunta al gate.

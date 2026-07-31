@@ -1115,6 +1115,10 @@ mod tests {
             name: "fixture".to_owned(),
             kind: "USER_TABLE".to_owned(),
             temporal_type: 0,
+            temporal: None,
+            graph_kind: None,
+            external: None,
+            partitioning: None,
             memory_optimized: false,
             durability: None,
             columns: vec![SqlServerColumn {

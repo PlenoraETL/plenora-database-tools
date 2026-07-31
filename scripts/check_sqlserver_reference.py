@@ -20,7 +20,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 36
+EXPECTED_LIVE_TESTS = 37
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -404,7 +404,7 @@ def main() -> int:
         "open_non_blocking": [
             "sqlserver_2019_2025_azure_matrix",
             "spatial_fullglobe_unexercised_boundary",
-            "extended_temporal_graph_partition_catalog",
+            "external_table_catalog_live_fixture",
         ],
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))

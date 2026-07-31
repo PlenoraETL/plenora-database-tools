@@ -79,6 +79,45 @@ pub struct SqlServerSchemaToken {
     pub structural_fingerprint: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerObjectName {
+    pub object_id: i32,
+    pub schema: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerTemporalMetadata {
+    pub kind: String,
+    pub history: Option<SqlServerObjectName>,
+    pub period_start_column: Option<String>,
+    pub period_end_column: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SqlServerGraphKind {
+    Node,
+    Edge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerExternalTableMetadata {
+    pub data_source: String,
+    pub file_format: Option<String>,
+    pub location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlServerPartitioning {
+    pub data_space_id: i32,
+    pub scheme: String,
+    pub function: String,
+    pub partition_column: String,
+    pub boundary_value_on_right: bool,
+    pub partition_count: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SqlServerObjectDescription {
     pub database_id: i32,
@@ -88,6 +127,10 @@ pub struct SqlServerObjectDescription {
     pub name: String,
     pub kind: String,
     pub temporal_type: u8,
+    pub temporal: Option<SqlServerTemporalMetadata>,
+    pub graph_kind: Option<SqlServerGraphKind>,
+    pub external: Option<SqlServerExternalTableMetadata>,
+    pub partitioning: Option<SqlServerPartitioning>,
     pub memory_optimized: bool,
     pub durability: Option<String>,
     pub columns: Vec<SqlServerColumn>,
@@ -109,10 +152,11 @@ pub async fn describe_object(
     cancellation: &CancellationToken,
 ) -> Result<SqlServerObjectDescription> {
     let identity = load_identity(session, schema, object, cancellation).await?;
+    let partitioning = load_partitioning(session, schema, object, cancellation).await?;
     let columns = load_columns(session, schema, object, cancellation).await?;
     let constraints = load_constraints(session, schema, object, cancellation).await?;
     let indexes = load_indexes(session, schema, object, cancellation).await?;
-    let encoded = serde_json::to_vec(&(&identity, &columns, &constraints, &indexes))
+    let encoded = serde_json::to_vec(&(&identity, &partitioning, &columns, &constraints, &indexes))
         .map_err(|_| super::mapping_error("serializzazione token schema SQL Server fallita"))?;
     let fingerprint = hex_digest(&encoded)?;
     let token = SqlServerSchemaToken {
@@ -129,6 +173,10 @@ pub async fn describe_object(
         name: identity.name,
         kind: identity.kind,
         temporal_type: identity.temporal_type,
+        temporal: identity.temporal,
+        graph_kind: identity.graph_kind,
+        external: identity.external,
+        partitioning,
         memory_optimized: identity.memory_optimized,
         durability: identity.durability,
         columns,
@@ -147,6 +195,9 @@ struct ObjectIdentity {
     name: String,
     kind: String,
     temporal_type: u8,
+    temporal: Option<SqlServerTemporalMetadata>,
+    graph_kind: Option<SqlServerGraphKind>,
+    external: Option<SqlServerExternalTableMetadata>,
     memory_optimized: bool,
     durability: Option<String>,
 }
@@ -169,10 +220,34 @@ SELECT
     o.type_desc,
     CAST(COALESCE(t.temporal_type, 0) AS tinyint),
     CAST(COALESCE(t.is_memory_optimized, 0) AS bit),
-    t.durability_desc
+    t.durability_desc,
+    t.temporal_type_desc,
+    t.history_table_id,
+    OBJECT_SCHEMA_NAME(t.history_table_id),
+    OBJECT_NAME(t.history_table_id),
+    period_start.name,
+    period_end.name,
+    CAST(COALESCE(t.is_node, 0) AS bit),
+    CAST(COALESCE(t.is_edge, 0) AS bit),
+    CAST(CASE WHEN et.object_id IS NULL THEN 0 ELSE 1 END AS bit),
+    eds.name,
+    eff.name,
+    et.location
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 LEFT JOIN sys.tables AS t ON t.object_id = o.object_id
+LEFT JOIN sys.periods AS p ON p.object_id = o.object_id
+LEFT JOIN sys.columns AS period_start
+  ON period_start.object_id = p.object_id
+ AND period_start.column_id = p.start_column_id
+LEFT JOIN sys.columns AS period_end
+  ON period_end.object_id = p.object_id
+ AND period_end.column_id = p.end_column_id
+LEFT JOIN sys.external_tables AS et ON et.object_id = o.object_id
+LEFT JOIN sys.external_data_sources AS eds
+  ON eds.data_source_id = et.data_source_id
+LEFT JOIN sys.external_file_formats AS eff
+  ON eff.file_format_id = et.file_format_id
 WHERE s.name = @P1
   AND o.name = @P2
   AND o.type IN ('U', 'V')
@@ -190,6 +265,10 @@ WHERE s.name = @P1
     let row = rows
         .first()
         .ok_or_else(|| super::mapping_error("oggetto SQL Server non trovato o non visibile"))?;
+    let temporal_type = required(row, 6, "temporal_type")?;
+    let temporal = temporal_metadata(row, temporal_type)?;
+    let graph_kind = graph_kind(required(row, 15, "is_node")?, required(row, 16, "is_edge")?)?;
+    let external = external_metadata(row)?;
     Ok(ObjectIdentity {
         database_id: required(row, 0, "database_id")?,
         object_id: required(row, 1, "object_id")?,
@@ -197,10 +276,145 @@ WHERE s.name = @P1
         schema: text(row, 3, "schema")?,
         name: text(row, 4, "name")?,
         kind: text(row, 5, "kind")?,
-        temporal_type: required(row, 6, "temporal_type")?,
+        temporal_type,
+        temporal,
+        graph_kind,
+        external,
         memory_optimized: required(row, 7, "memory_optimized")?,
         durability: optional_text(row, 8, "durability")?,
     })
+}
+
+fn temporal_metadata(
+    row: &tiberius::Row,
+    temporal_type: u8,
+) -> Result<Option<SqlServerTemporalMetadata>> {
+    let kind = optional_text(row, 9, "temporal_type_desc")?;
+    let history_id = super::optional::<i32>(row, 10, "history_table_id")?;
+    let history_schema = optional_text(row, 11, "history_schema")?;
+    let history_name = optional_text(row, 12, "history_table")?;
+    let period_start_column = optional_text(row, 13, "period_start_column")?;
+    let period_end_column = optional_text(row, 14, "period_end_column")?;
+    if temporal_type == 0 {
+        return Ok(None);
+    }
+    let kind = kind.ok_or_else(|| {
+        super::mapping_error("tipo temporal SQL Server privo della descrizione di catalogo")
+    })?;
+    let history = match (history_id, history_schema, history_name) {
+        (None, None, None) => None,
+        (Some(object_id), Some(schema), Some(name)) => Some(SqlServerObjectName {
+            object_id,
+            schema,
+            name,
+        }),
+        _ => {
+            return Err(super::mapping_error(
+                "riferimento history table SQL Server incompleto",
+            ))
+        }
+    };
+    if period_start_column.is_some() != period_end_column.is_some() {
+        return Err(super::mapping_error(
+            "periodo temporal SQL Server con estremi incompleti",
+        ));
+    }
+    if temporal_type == 2 && (history.is_none() || period_start_column.is_none()) {
+        return Err(super::mapping_error(
+            "system-versioned temporal table SQL Server priva di history o periodo",
+        ));
+    }
+    Ok(Some(SqlServerTemporalMetadata {
+        kind,
+        history,
+        period_start_column,
+        period_end_column,
+    }))
+}
+
+fn graph_kind(is_node: bool, is_edge: bool) -> Result<Option<SqlServerGraphKind>> {
+    match (is_node, is_edge) {
+        (false, false) => Ok(None),
+        (true, false) => Ok(Some(SqlServerGraphKind::Node)),
+        (false, true) => Ok(Some(SqlServerGraphKind::Edge)),
+        (true, true) => Err(super::mapping_error(
+            "tabella graph SQL Server dichiarata sia node sia edge",
+        )),
+    }
+}
+
+fn external_metadata(row: &tiberius::Row) -> Result<Option<SqlServerExternalTableMetadata>> {
+    if !required(row, 17, "is_external")? {
+        return Ok(None);
+    }
+    Ok(Some(SqlServerExternalTableMetadata {
+        data_source: text(row, 18, "external_data_source")?,
+        file_format: optional_text(row, 19, "external_file_format")?,
+        location: text(row, 20, "external_location")?,
+    }))
+}
+
+async fn load_partitioning(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<Option<SqlServerPartitioning>> {
+    let rows = execute_bound(
+        session,
+        r"
+SELECT
+    i.data_space_id,
+    ps.name,
+    pf.name,
+    pf.boundary_value_on_right,
+    c.name,
+    CAST((
+        SELECT COUNT_BIG(*)
+        FROM sys.partitions AS p
+        WHERE p.object_id = i.object_id AND p.index_id = i.index_id
+    ) AS int)
+FROM sys.objects AS o
+JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+JOIN sys.indexes AS i ON i.object_id = o.object_id AND i.index_id IN (0, 1)
+JOIN sys.partition_schemes AS ps ON ps.data_space_id = i.data_space_id
+JOIN sys.partition_functions AS pf ON pf.function_id = ps.function_id
+JOIN sys.index_columns AS ic
+  ON ic.object_id = i.object_id
+ AND ic.index_id = i.index_id
+ AND ic.partition_ordinal = 1
+JOIN sys.columns AS c
+  ON c.object_id = ic.object_id
+ AND c.column_id = ic.column_id
+WHERE s.name = @P1 AND o.name = @P2;
+",
+        schema,
+        object,
+        cancellation,
+    )
+    .await?;
+    match rows.as_slice() {
+        [] => Ok(None),
+        [row] => {
+            let partition_count = required(row, 5, "partition_count")?;
+            if partition_count < 1 {
+                return Err(super::mapping_error(
+                    "schema di partizionamento SQL Server privo di partizioni",
+                ));
+            }
+            Ok(Some(SqlServerPartitioning {
+                data_space_id: required(row, 0, "partition_data_space_id")?,
+                scheme: text(row, 1, "partition_scheme")?,
+                function: text(row, 2, "partition_function")?,
+                boundary_value_on_right: required(row, 3, "boundary_value_on_right")?,
+                partition_column: text(row, 4, "partition_column")?,
+                partition_count,
+            }))
+        }
+        _ => Err(super::mapping_error(
+            "oggetto SQL Server associato a piu strategie di partizionamento",
+        )),
+    }
 }
 
 async fn load_columns(

@@ -149,6 +149,11 @@ La suite live seriale ha verificato:
     rifiuto live di un parametro con SRID divergente. La stessa fixture prova
     Point+Polygon nella medesima colonna per entrambe le semantiche e rende
     operativo il claim `mixed_geometry_types`.
+53. catalogo avanzato su temporal system-versioned, graph node/edge e tabella
+    partizionata: history table, colonne del periodo, tipo graph, partition
+    scheme/function/column e numero di partizioni sono osservati. Il token
+    strutturale cambia quando il versioning viene disabilitato senza modificare
+    l'insieme delle colonne.
 
 Comando della prova:
 
@@ -156,7 +161,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **36 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **37 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -170,6 +175,7 @@ Questa prova non dimostra ancora:
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
+- external table con data source e file format reali;
 - altre build SQL Server e Azure SQL.
 
 La suite combina fault deterministici interni e un proxy TCP capace di chiudere

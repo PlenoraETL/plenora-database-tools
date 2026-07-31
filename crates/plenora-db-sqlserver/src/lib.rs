@@ -25,8 +25,10 @@ mod write;
 
 pub use catalog::{
     describe_object, list_objects, list_schemas, probe_server, SqlServerColumn,
-    SqlServerConstraint, SqlServerIndex, SqlServerObjectDescription, SqlServerObjectSummary,
+    SqlServerConstraint, SqlServerExternalTableMetadata, SqlServerGraphKind, SqlServerIndex,
+    SqlServerObjectDescription, SqlServerObjectName, SqlServerObjectSummary, SqlServerPartitioning,
     SqlServerProbe, SqlServerSchemaToken, SqlServerSpatialBoundingBox, SqlServerSpatialIndex,
+    SqlServerTemporalMetadata,
 };
 pub use config::{CertificatePolicy, SqlServerConfig};
 pub use connection::SqlServerSession;

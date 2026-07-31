@@ -63,7 +63,8 @@ Legenda:
 | Predicati spatial in projection | valore `bit` nativo con `NULL` preservato; nei filtri confronto T-SQL `= 1` | offline + live-proven |
 | Output query spatial | `StartPoint`, `EndPoint`, `PointN`, `Buffer`, `Intersection`, `Difference`, `SymDifference`, `Union`, `ConvexHull` convertiti con `AsBinaryZM()`; semantica, SRID, Z/M e `FullGlobe` profilati sul risultato selezionato, schema sorgente ricontrollato; ogni altro UDT nudo resta rifiutato | live-proven geometry/geography; XYZM per gli accessori, XY per il processing |
 | Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
-| Introspection estesa | privilegi effettivi, temporal/graph/external e partizioni | live-required |
+| Introspection temporal/graph/partizioni | history table e colonne periodo, node/edge, schema/funzione/colonna e numero partizioni; tutto incluso nello schema token | live-proven |
+| Introspection external table | data source, file format opzionale e location inclusi nello schema token | implementata; fixture live-required |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
 | Catalogo riferimento | schemi, oggetti, colonne, vincoli, indici e metadati di tassellazione/bounding box spatial | live-proven |
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |

@@ -1,8 +1,8 @@
 use crate::{
     describe_object, list_objects, list_schemas, prepare_write, prepare_write_with_mode,
     probe_server, read_object, write_prepared, CertificatePolicy, SqlServerColumnKind,
-    SqlServerColumnSpec, SqlServerConfig, SqlServerInsertMode, SqlServerPool, SqlServerProvider,
-    SqlServerSchemaEvolution, SqlServerSession, SqlServerWireEncoding,
+    SqlServerColumnSpec, SqlServerConfig, SqlServerGraphKind, SqlServerInsertMode, SqlServerPool,
+    SqlServerProvider, SqlServerSchemaEvolution, SqlServerSession, SqlServerWireEncoding,
 };
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array,
@@ -2129,6 +2129,148 @@ IF COL_LENGTH(N'plenora_test.catalog_probe', N'token_probe') IS NOT NULL
         before.token.structural_fingerprint,
         after.token.structural_fingerprint
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta il catalogo avanzato"]
+#[allow(clippy::too_many_lines)]
+async fn live_advanced_catalog_observes_temporal_graph_and_partitioning() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("open live SQL Server");
+
+    let cleanup = r"
+IF OBJECT_ID(N'plenora_test.catalog_temporal', N'U') IS NOT NULL
+BEGIN
+    IF (SELECT temporal_type FROM sys.tables WHERE object_id = OBJECT_ID(N'plenora_test.catalog_temporal')) = 2
+        ALTER TABLE [plenora_test].[catalog_temporal] SET (SYSTEM_VERSIONING = OFF);
+    DROP TABLE [plenora_test].[catalog_temporal];
+END;
+IF OBJECT_ID(N'plenora_test.catalog_temporal_history', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_temporal_history];
+IF OBJECT_ID(N'plenora_test.catalog_edge', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_edge];
+IF OBJECT_ID(N'plenora_test.catalog_node', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_node];
+IF OBJECT_ID(N'plenora_test.catalog_partitioned', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_partitioned];
+IF EXISTS (SELECT 1 FROM sys.partition_schemes WHERE name = N'plenora_catalog_ps')
+    DROP PARTITION SCHEME [plenora_catalog_ps];
+IF EXISTS (SELECT 1 FROM sys.partition_functions WHERE name = N'plenora_catalog_pf')
+    DROP PARTITION FUNCTION [plenora_catalog_pf];
+";
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("normalize advanced catalog fixture");
+    let create = r"
+CREATE TABLE [plenora_test].[catalog_temporal]
+(
+    [id] int NOT NULL PRIMARY KEY,
+    [payload] nvarchar(40) NULL,
+    [valid_from] datetime2 GENERATED ALWAYS AS ROW START NOT NULL,
+    [valid_to] datetime2 GENERATED ALWAYS AS ROW END NOT NULL,
+    PERIOD FOR SYSTEM_TIME ([valid_from], [valid_to])
+)
+WITH (SYSTEM_VERSIONING = ON
+      (HISTORY_TABLE = [plenora_test].[catalog_temporal_history], DATA_CONSISTENCY_CHECK = ON));
+CREATE TABLE [plenora_test].[catalog_node] ([id] int NOT NULL PRIMARY KEY) AS NODE;
+CREATE TABLE [plenora_test].[catalog_edge] ([weight] int NULL) AS EDGE;
+CREATE PARTITION FUNCTION [plenora_catalog_pf] (int)
+AS RANGE RIGHT FOR VALUES (10, 20);
+CREATE PARTITION SCHEME [plenora_catalog_ps]
+AS PARTITION [plenora_catalog_pf] ALL TO ([PRIMARY]);
+CREATE TABLE [plenora_test].[catalog_partitioned]
+(
+    [id] int NOT NULL,
+    [payload] nvarchar(40) NULL
+) ON [plenora_catalog_ps] ([id]);
+";
+    session
+        .execute_query(Query::new(create), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("create advanced catalog fixture");
+
+    let temporal = describe_object(
+        &mut session,
+        "plenora_test",
+        "catalog_temporal",
+        &cancellation,
+    )
+    .await
+    .expect("describe temporal table");
+    assert_eq!(temporal.temporal_type, 2);
+    let temporal_metadata = temporal.temporal.as_ref().expect("temporal metadata");
+    assert_eq!(temporal_metadata.kind, "SYSTEM_VERSIONED_TEMPORAL_TABLE");
+    let history = temporal_metadata.history.as_ref().expect("history table");
+    assert_eq!(history.schema, "plenora_test");
+    assert_eq!(history.name, "catalog_temporal_history");
+    assert_eq!(
+        temporal_metadata.period_start_column.as_deref(),
+        Some("valid_from")
+    );
+    assert_eq!(
+        temporal_metadata.period_end_column.as_deref(),
+        Some("valid_to")
+    );
+
+    let node = describe_object(&mut session, "plenora_test", "catalog_node", &cancellation)
+        .await
+        .expect("describe graph node");
+    let edge = describe_object(&mut session, "plenora_test", "catalog_edge", &cancellation)
+        .await
+        .expect("describe graph edge");
+    assert_eq!(node.graph_kind, Some(SqlServerGraphKind::Node));
+    assert_eq!(edge.graph_kind, Some(SqlServerGraphKind::Edge));
+
+    let partitioned = describe_object(
+        &mut session,
+        "plenora_test",
+        "catalog_partitioned",
+        &cancellation,
+    )
+    .await
+    .expect("describe partitioned table");
+    let partitioning = partitioned.partitioning.expect("partition metadata");
+    assert_eq!(partitioning.scheme, "plenora_catalog_ps");
+    assert_eq!(partitioning.function, "plenora_catalog_pf");
+    assert_eq!(partitioning.partition_column, "id");
+    assert!(partitioning.boundary_value_on_right);
+    assert_eq!(partitioning.partition_count, 3);
+
+    session
+        .execute_query(
+            Query::new(
+                "ALTER TABLE [plenora_test].[catalog_temporal] SET (SYSTEM_VERSIONING = OFF);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("disable system versioning");
+    let non_versioned = describe_object(
+        &mut session,
+        "plenora_test",
+        "catalog_temporal",
+        &cancellation,
+    )
+    .await
+    .expect("describe disabled temporal table");
+    assert_eq!(non_versioned.temporal_type, 0);
+    assert!(non_versioned.temporal.is_none());
+    assert_ne!(
+        temporal.token.structural_fingerprint,
+        non_versioned.token.structural_fingerprint
+    );
+
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("cleanup advanced catalog fixture");
 }
 
 #[tokio::test]
