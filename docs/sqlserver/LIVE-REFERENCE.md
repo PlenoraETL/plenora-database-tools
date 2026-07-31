@@ -127,6 +127,10 @@ La suite live seriale ha verificato:
     `create` sia in staged `replace`, metadati di tassellazione e bounding box
     riletti dal catalogo, query geometry eseguita forzando l'access path
     pubblicato e create senza extent rifiutata con rollback completo.
+48. quattordici metodi spatial nativi con output scalare eseguiti su
+    `geometry` e `geography`: accessori, validazione, cinque predicati e
+    misure; i predicati in projection restano `bit` nativi, mentre
+    filtri, WKB bindato e preflight SRID/semantica restano nativi.
 
 Comando della prova:
 
@@ -134,7 +138,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **31 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **32 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza

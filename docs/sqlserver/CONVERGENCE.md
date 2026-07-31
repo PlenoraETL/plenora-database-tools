@@ -11,7 +11,7 @@ capability, prova live, documentazione e gate concordano.
 | Schema evolution additiva | nullable, opt-in | nullable, opt-in | **chiusa**: DDL+dati atomici e rollback live |
 | Spatial XY | completo | completo | mantenere roundtrip geometry/geography |
 | Spatial Z/M/ZM | lossless | lossless | **chiusa**: WKB ISO e differenziale live |
-| AST spatial | catalogo tipizzato | `Intersects` nativo tipizzato | **chiusa per il sottoinsieme pubblicato**: WKB bindato, preflight semantica/SRID e prova live |
+| AST spatial | catalogo tipizzato | 14 metodi scalari nativi tipizzati | **chiusa per il sottoinsieme pubblicato**: accessori, validazione, predicati e misure con WKB bindato, preflight semantica/SRID e prova live geometry/geography |
 | Indice spatial | GiST+bbox/KNN | auto-grid `geometry`/`geography` | **chiusa per create/replace**: creazione atomica, catalogo, access path forzato e rollback fail-closed live; nessun claim di equivalenza KNN |
 | Catalogo avanzato | partizioni, viste, RLS/ACL | parziale | temporal/graph/external/partizioni osservati |
 | Matrice versioni | PostgreSQL 14-18 | SQL Server 2022 | campagne 2019/2025/Azure separate |
