@@ -73,4 +73,4 @@ apre connessioni.
 
 Il percorso d'errore usa il protocollo JSON versionato descritto in
 [`../cli/ERROR-PROTOCOL.md`](../cli/ERROR-PROTOCOL.md): i quattro assi
-rimangono campi machine-readable su `stderr`, con exit code non-zero.
+rimangono campi machine-readable su `stdout`, con exit code non-zero.

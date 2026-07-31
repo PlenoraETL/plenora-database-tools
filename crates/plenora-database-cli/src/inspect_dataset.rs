@@ -380,13 +380,14 @@ mod tests {
             "identificatore CRS e SRID numerico divergenti"
         );
         let envelope: Value =
-            serde_json::from_str(&error.to_json()).expect("CRS error envelope JSON");
+            serde_json::from_str(&error.to_json().expect("CRS error envelope serialization"))
+                .expect("CRS error envelope JSON");
         assert_eq!(envelope["status"], "error");
         assert_eq!(envelope["protocol_version"], 1);
-        assert_eq!(envelope["error"]["category"], "Crs");
-        assert_eq!(envelope["error"]["phase"], "Validate");
+        assert_eq!(envelope["error"]["category"], "crs");
+        assert_eq!(envelope["error"]["phase"], "validate");
         assert_eq!(envelope["error"]["remote_effect"], "none");
-        assert_eq!(envelope["error"]["retry"], "never");
+        assert_eq!(envelope["error"]["retry"]["kind"], "never");
     }
 
     #[test]
