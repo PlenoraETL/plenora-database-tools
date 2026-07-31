@@ -64,6 +64,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - catena TLS privata, hostname match/mismatch e rotazione;
 - roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
   dimensioni miste e FullGlobe;
+- lettura bounded di `CircularString`, `CompoundCurve` e `CurvePolygon` su
+  geometry/geography e scrittura lossless di `CircularString`;
 - colonne `geometry` e `geography` con tipi geometrici misti Point+Polygon,
   preservati come WKB e dichiarati `mixed` nel contratto Arrow;
 - catalogo avanzato temporal, graph e partizionato, più view, owner, predicati
@@ -74,7 +76,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 ## Gap non coperti dal gate v1
 
 - SQL Server 2019, 2025 e Azure SQL;
-- supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
+- supporto lossless `FullGlobe`; Z/M/ZM e i tipi curvi pubblicati sono coperti
+  come WKB ISO;
 - CTE dichiarate dentro una derived table (rifiutate nativamente da SQL Server
   2022), `OUTER APPLY` e riferimenti spatial esterni dentro subquery correlate;
 - catalogo external table con data source e file format reali.

@@ -3332,6 +3332,152 @@ CREATE TABLE [plenora_test].[spatial_guard_probe]
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live per i tipi curvi geometry/geography"]
+async fn live_curved_spatial_types_are_read_as_bounded_wkb() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let pool = SqlServerPool::new(config.clone(), 1).expect("curve pool");
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("curve admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[curve_probe]; \
+                 CREATE TABLE [plenora_test].[curve_probe] \
+                 ([id] int NOT NULL, [shape] geometry NOT NULL, [position] geography NOT NULL); \
+                 INSERT INTO [plenora_test].[curve_probe] VALUES \
+                 (1, geometry::STGeomFromText('CIRCULARSTRING (1 0, 0 1, -1 0)', 4326), \
+                     geography::STGeomFromText('CIRCULARSTRING (1 0, 0 1, -1 0)', 4326)), \
+                 (2, geometry::STGeomFromText('COMPOUNDCURVE (CIRCULARSTRING (1 0, 0 1, -1 0), (-1 0, -2 0))', 4326), \
+                     geography::STGeomFromText('COMPOUNDCURVE (CIRCULARSTRING (1 0, 0 1, -1 0), (-1 0, -2 0))', 4326)), \
+                 (3, geometry::STGeomFromText('CURVEPOLYGON (CIRCULARSTRING (1 0, 0 1, -1 0, 0 -1, 1 0))', 4326), \
+                     geography::STGeomFromText('CURVEPOLYGON (CIRCULARSTRING (1 0, 0 1, -1 0, 0 -1, 1 0))', 4326));",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create curved fixture");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("curve read budget");
+    let mut stream = read_object(
+        &pool,
+        "plenora_test",
+        "curve_probe",
+        8,
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("read curved fixture");
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("curve batch")
+        .expect("curve rows");
+    for column in ["shape", "position"] {
+        let values = batch
+            .column_by_name(column)
+            .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+            .expect("curve WKB column");
+        let observed = (0..values.len())
+            .map(|row| {
+                plenora_database_core::ewkb::inspect_ewkb_detailed(values.value(row), 1_000_000, 64)
+                    .expect("bounded curved WKB")
+                    .root
+                    .geometry_type_name()
+                    .expect("known curved WKB type")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            observed,
+            std::collections::BTreeSet::from(["CircularString", "CompoundCurve", "CurvePolygon"])
+        );
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[curve_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup curved fixture");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live per il roundtrip write dei tipi curvi"]
+async fn live_circular_string_write_is_lossless_for_geometry_and_geography() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let pool = SqlServerPool::new(config.clone(), 1).expect("curve write pool");
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("curve write admin");
+    let value = wkb_circular_string_xy(&[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)]);
+    for semantics in ["geometry", "geography"] {
+        admin
+            .execute_query(
+                Query::new(format!(
+                    "DROP TABLE IF EXISTS [plenora_test].[curve_write_probe]; \
+                     CREATE TABLE [plenora_test].[curve_write_probe] ([shape] {semantics} NULL);"
+                )),
+                ErrorPhase::Write,
+                &cancellation,
+            )
+            .await
+            .expect("create curve write target");
+        let schema = spatial_write_schema(semantics, "xy");
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("curve write budget");
+        let prepared = prepare_write(
+            &pool,
+            &write_operation("curve_write_probe", WriteMode::Append),
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare curve write");
+        write_prepared(
+            prepared,
+            Box::new(VecBatchStream {
+                schema: Arc::clone(&schema),
+                batches: VecDeque::from([spatial_write_batch(Arc::clone(&schema), &value)]),
+            }),
+            &cancellation,
+        )
+        .await
+        .expect("write curve");
+        let rows = admin
+            .execute_query(
+                Query::new(
+                    "SELECT [shape].STGeometryType(), [shape].AsBinaryZM() \
+                     FROM [plenora_test].[curve_write_probe];",
+                ),
+                ErrorPhase::Read,
+                &cancellation,
+            )
+            .await
+            .expect("verify curve write");
+        assert_eq!(
+            rows[0][0].try_get::<&str, _>(0).unwrap(),
+            Some("CircularString")
+        );
+        assert_eq!(
+            rows[0][0].try_get::<&[u8], _>(1).unwrap(),
+            Some(value.as_slice())
+        );
+    }
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[curve_write_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup curve write target");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
 #[allow(clippy::too_many_lines)]
 async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
@@ -5741,6 +5887,22 @@ fn ewkb_point(type_code: u32, coordinates: &[f64]) -> Vec<u8> {
     value.extend_from_slice(&type_code.to_le_bytes());
     for coordinate in coordinates {
         value.extend_from_slice(&coordinate.to_le_bytes());
+    }
+    value
+}
+
+fn wkb_circular_string_xy(points: &[(f64, f64)]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(9 + points.len() * 16);
+    value.push(1);
+    value.extend_from_slice(&8_u32.to_le_bytes());
+    value.extend_from_slice(
+        &u32::try_from(points.len())
+            .expect("curve point count")
+            .to_le_bytes(),
+    );
+    for (x, y) in points {
+        value.extend_from_slice(&x.to_le_bytes());
+        value.extend_from_slice(&y.to_le_bytes());
     }
     value
 }

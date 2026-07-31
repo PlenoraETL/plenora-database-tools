@@ -56,8 +56,9 @@ Legenda:
 | Indici spatial | solo create/replace atomici con primary key clustered; `GEOMETRY_AUTO_GRID` con bounding box derivato dai dati e `GEOGRAPHY_AUTO_GRID` | live-proven per creazione, introspezione e access path forzato |
 | Indice `geometry` senza extent | nessun bounding box inventato: errore fail-closed e rollback di tabella/staging | live-proven |
 | SRID | sempre esplicito per input spatial | offline + live-required |
-| Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
+| Reprojection | SQL Server non offre `ST_Transform`; nessuna riproiezione implicita o client-side dentro il provider | reject fail-closed; un futuro motore PROJ appartiene al livello di trasformazione e richiede CRS risolti |
 | `FullGlobe` | rifiutato in strict | reject |
+| Tipi curvi | `CircularString`, `CompoundCurve`, `CurvePolygon` letti come WKB bounded; `CircularString` scritto byte-per-byte | live-proven geometry/geography; altri tipi curvi restano non dichiarati |
 | Spatial rich AST scalare | 24 metodi comuni a `geometry`/`geography`: `GeometryType`, `Srid`, `Dimensions`, `NPoints`, `IsEmpty`, `IsValid`, `IsClosed`, `Intersects`, `Contains`, `Within`, `Disjoint`, `Equals`, `Distance`, `Area`, `Length`, `StartPoint`, `EndPoint`, `PointN`, `Buffer`, `Intersection`, `Difference`, `SymDifference`, `Union`, `ConvexHull`; WKB e numerici bindati, preflight semantica/SRID su source fisiche e join | offline + live-proven su geometry/geography |
 | Scope spatial relazionale | join fisici, CTE top-level anche ricorsive, derived, set operation, subquery correlate su valori scalari con operando spatial locale e `CROSS APPLY`; tipo/SRID e token strutturale ricontrollati su tutte le source | live-proven geometry/geography; CTE dentro derived, `OUTER APPLY` e riferimenti spatial esterni correlati restano reject |
 | Predicati spatial in projection | valore `bit` nativo con `NULL` preservato; nei filtri confronto T-SQL `= 1` | offline + live-proven |

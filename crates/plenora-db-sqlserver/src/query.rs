@@ -2259,6 +2259,18 @@ mod tests {
                     },
                 ],
             },
+            QueryExpression::Spatial {
+                function: SpatialFunction::Transform,
+                arguments: vec![
+                    column("e", "shape"),
+                    QueryExpression::Parameter {
+                        name: "source_srid".to_owned(),
+                    },
+                    QueryExpression::Parameter {
+                        name: "target_srid".to_owned(),
+                    },
+                ],
+            },
         ] {
             assert_eq!(
                 collect_expression_spatial_uses(&expression, &mut Vec::new())

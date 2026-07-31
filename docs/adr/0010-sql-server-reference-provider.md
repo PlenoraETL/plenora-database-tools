@@ -37,6 +37,10 @@ viene trasformato in successo.
 - `geometry` e `geography` restano semantiche distinte;
 - SRID ignoto resta ignoto: non viene sostituito implicitamente con 0 o 4326;
 - nessuna riproiezione implicita e nessuna capability `ST_Transform`;
+- non viene introdotto un fallback PROJ dentro il provider: una trasformazione
+  client-side appartiene al livello centrale di elaborazione, deve ricevere
+  CRS sorgente e destinazione risolti e sarà pubblicabile solo con dipendenza,
+  griglie e failure policy versionate;
 - `FullGlobe` è rifiutato nel profilo strict iniziale.
 
 ## Gate di evidenza

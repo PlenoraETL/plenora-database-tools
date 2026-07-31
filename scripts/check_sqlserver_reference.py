@@ -20,7 +20,7 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 41
+EXPECTED_LIVE_TESTS = 43
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -384,6 +384,8 @@ def main() -> int:
             "spatial_cte_derived_uncorrelated_subquery_contract_and_srid_guard",
             "spatial_recursive_set_cross_apply_and_local_correlated_subquery",
             "spatial_lock_nowait_timeout_and_release",
+            "curved_spatial_read_bounded_wkb_geometry_and_geography",
+            "circular_string_write_lossless_geometry_and_geography",
             "prepared_write_reference_types",
             "keyed_update_upsert_delete",
             "tds_bulk_differential",
