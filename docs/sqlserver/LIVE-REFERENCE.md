@@ -131,10 +131,14 @@ La suite live seriale ha verificato:
     `geometry` e `geography`: accessori, validazione, cinque predicati e
     misure; i predicati in projection restano `bit` nativi, mentre
     filtri, WKB bindato e preflight SRID/semantica restano nativi.
-49. `StartPoint` e `EndPoint` su `geometry` e `geography` XYZM, convertiti con
-    `AsBinaryZM()` e verificati byte per byte; semantica, SRID e dimensioni
-    Arrow derivano dal profilo del risultato effettivo e il token strutturale
-    della sorgente viene ricontrollato prima dello stream.
+49. `StartPoint`, `EndPoint` e `PointN` su `geometry` e `geography` XYZM,
+    convertiti con `AsBinaryZM()` e verificati byte per byte; semantica, SRID e
+    dimensioni Arrow derivano dal profilo del risultato effettivo e il token
+    strutturale della sorgente viene ricontrollato prima dello stream.
+50. `Buffer`, `Intersection`, `Difference`, `SymDifference`, `Union` e
+    `ConvexHull` eseguiti dal vivo su `geometry` e `geography`, con argomenti
+    bindati, WKB risultante ispezionato e contratto Arrow del risultato
+    verificato.
 
 Comando della prova:
 
@@ -142,7 +146,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **33 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **34 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -151,8 +155,8 @@ Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
 - `QueryOperation` spatial attraverso join/CTE/subquery, lateral/APPLY,
-  locking, output spatial diversi da `StartPoint`/`EndPoint` e forme
-  calcolate senza alias deterministico;
+  locking, output geometrici annidati e forme calcolate senza alias
+  deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
