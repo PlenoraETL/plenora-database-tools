@@ -7,6 +7,17 @@ generale del workspace:
 python scripts\check_sqlserver_reference.py
 ```
 
+La qualifica external table è separata perché richiede un'istanza con PolyBase
+installato e la fixture `plenora_test.external_probe`:
+
+```powershell
+python scripts\check_sqlserver_polybase.py
+```
+
+Questo gate fallisce esplicitamente se `IsPolyBaseInstalled` non vale `1`; il
+riferimento 2022 standard fissato per digest vale `0` e non produce quindi un
+claim external artificiale.
+
 Il gate usa SQL Server 2022 fissato per digest, verifica identità e stato del
 server, esegue Clippy con warning negati, unit test e l'intera matrice live in
 serie. La baseline post-RC1 aggiunge una CA privata, il controllo positivo e
@@ -81,7 +92,9 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
   come WKB ISO;
 - CTE dichiarate dentro una derived table (rifiutate nativamente da SQL Server
   2022), `OUTER APPLY` e riferimenti spatial esterni dentro subquery correlate;
-- catalogo external table con data source e file format reali.
+- esecuzione del gate PolyBase separato con data source e file format reali;
+  il percorso `ET` e il feature probe sono implementati ma il riferimento
+  standard dichiara esplicitamente la feature assente.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una
 prova dedicata non viene aggiunta al gate.

@@ -66,7 +66,7 @@ Legenda:
 | APPLY | `CROSS APPLY` tipizzato senza clausola `ON` | offline + live-proven; `OUTER APPLY` reject |
 | Locking query | `Update` -> `UPDLOCK`, `Share` -> `HOLDLOCK`; `Wait` e `NoWait` (`NOWAIT`) su source fisiche nominate | offline + live-proven; `NoKeyUpdate`, `KeyShare`, `SkipLocked` e derived target reject |
 | Introspection temporal/graph/partizioni | history table e colonne periodo, node/edge, schema/funzione/colonna e numero partizioni; tutto incluso nello schema token | live-proven |
-| Introspection external table | data source, file format opzionale e location inclusi nello schema token | implementata; fixture live-required |
+| Introspection external table | oggetti `ET`, data source, file format opzionale e location inclusi nello schema token; `IsPolyBaseInstalled` osservato dal server | implementata; gate separato fail-closed e fixture PolyBase live-required |
 | Introspection sicurezza | owner effettivo, predicati RLS e permessi espliciti object/column; tutto incluso nello schema token | live-proven |
 | Introspection view | definizione anche nullable per view cifrate, schema binding, `ANSI_NULLS` e `QUOTED_IDENTIFIER`; tutto incluso nello schema token | live-proven per view non cifrata schema-bound |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |

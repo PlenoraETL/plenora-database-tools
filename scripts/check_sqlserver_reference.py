@@ -343,6 +343,8 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--skip",
+                "polybase_external_catalog_is_structural_and_not_implicit",
             ],
             capture=True,
         )

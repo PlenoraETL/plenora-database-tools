@@ -76,6 +76,8 @@ La campagna cumulativa di coverage è descritta in
 [COVERAGE.md](COVERAGE.md).
 Il gate autonomo con evidenza riproducibile è descritto in
 [ASSURANCE.md](ASSURANCE.md).
+La stessa pagina documenta il gate PolyBase separato, che richiede una fixture
+external reale e fallisce su un server privo della feature.
 La baseline di regressione è descritta in [PERFORMANCE.md](PERFORMANCE.md).
 Lo schema evolution additivo è opt-in tramite
 `SqlServerSchemaEvolution::AddNullableColumns`: ammette soltanto nuove colonne

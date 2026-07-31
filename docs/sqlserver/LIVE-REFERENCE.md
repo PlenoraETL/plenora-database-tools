@@ -196,7 +196,9 @@ Questa prova non dimostra ancora:
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
-- external table con data source e file format reali;
+- external table con data source e file format reali sul gate PolyBase
+  separato; il riferimento corrente prova `IsPolyBaseInstalled=0` e non
+  trasforma l'assenza della feature in successo;
 - altre build SQL Server e Azure SQL.
 
 La suite combina fault deterministici interni e un proxy TCP capace di chiudere

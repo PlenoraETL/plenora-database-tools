@@ -269,6 +269,7 @@ async fn live_reference_probe_and_catalog() {
     assert_eq!(probe.compatibility_level, 160);
     assert!(probe.geometry_type_id.is_some());
     assert!(probe.geography_type_id.is_some());
+    assert!(!probe.polybase_installed);
 
     let schemas = list_schemas(&mut session, &cancellation)
         .await
@@ -302,6 +303,44 @@ async fn live_reference_probe_and_catalog() {
     assert!(description.indexes.iter().any(|index| index.primary_key));
     assert_eq!(description.token.structural_fingerprint.len(), 64);
     assert!(session.is_reusable());
+}
+
+#[tokio::test]
+#[ignore = "richiede istanza PolyBase e fixture plenora_test.external_probe"]
+async fn polybase_external_catalog_is_structural_and_not_implicit() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("open PolyBase SQL Server");
+    let probe = probe_server(&mut session, &cancellation)
+        .await
+        .expect("probe PolyBase server");
+    assert!(
+        probe.polybase_installed,
+        "il gate PolyBase non accetta un server privo della feature"
+    );
+    let objects = list_objects(&mut session, Some("plenora_test"), &cancellation)
+        .await
+        .expect("list external fixture");
+    assert!(objects.iter().any(|object| {
+        object.name == "external_probe" && object.kind == "EXTERNAL_TABLE"
+    }));
+    let description = describe_object(
+        &mut session,
+        "plenora_test",
+        "external_probe",
+        &cancellation,
+    )
+    .await
+    .expect("describe external fixture");
+    assert_eq!(description.kind, "EXTERNAL_TABLE");
+    let external = description.external.expect("external metadata");
+    assert!(!external.data_source.is_empty());
+    assert!(!external.location.is_empty());
+    assert_eq!(description.token.structural_fingerprint.len(), 64);
 }
 
 #[tokio::test]
