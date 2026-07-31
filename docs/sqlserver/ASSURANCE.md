@@ -33,11 +33,14 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - update/upsert/delete-by-keys con chiavi univoche e conteggi distinti;
 - QueryOperation relazionali ricche e schema dei risultati vuoti;
 - ventitré metodi AST spatial nativi comuni a `geometry` e `geography` su
-  source fisica singola; nove output geometrici (`StartPoint`, `EndPoint`,
+  source fisiche singole o join fisici; nove output geometrici (`StartPoint`, `EndPoint`,
   `PointN`, `Buffer`, overlay booleani, `Union`, `ConvexHull`) escono come WKB
   Z/M-safe con contratto profilato sul risultato, argomenti WKB e numerici
   bindati, predicati projection mantenuti come `bit` nativo e rifiuto live di
   semantica, SRID o valori numerici non validi;
+- join spatial fra colonne con risoluzione obbligatoria degli alias, verifica
+  di semantica/SRID su entrambi gli operandi e token strutturale ricontrollato
+  per ogni tabella coinvolta;
 - schema drift fail-closed;
 - schema evolution additiva opt-in, senza mutazioni in prepare e con rollback
   congiunto di DDL e dati;

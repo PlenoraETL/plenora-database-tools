@@ -139,6 +139,10 @@ La suite live seriale ha verificato:
     `ConvexHull` eseguiti dal vivo su `geometry` e `geography`, con argomenti
     bindati, WKB risultante ispezionato e contratto Arrow del risultato
     verificato.
+51. join spaziale fra due tabelle fisiche su colonne `geometry` e `geography`,
+    con predicato colonna-colonna, output `Intersection`, alias risolti,
+    semantica/SRID verificati su entrambi i lati e token strutturale conservato
+    per ogni sorgente.
 
 Comando della prova:
 
@@ -146,7 +150,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **34 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **35 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza
@@ -154,9 +158,9 @@ Esito post-RC1: **34 superati, 0 falliti**. Il valore RC1 resta storicamente
 Questa prova non dimostra ancora:
 
 - TDS bulk per spatial/UDT e per le modalità create/replace;
-- `QueryOperation` spatial attraverso join/CTE/subquery, lateral/APPLY,
-  locking, output geometrici annidati e forme calcolate senza alias
-  deterministico;
+- `QueryOperation` spatial attraverso CTE/subquery/derived, lateral/APPLY,
+  locking, output geometrici annidati, join con sorgenti non fisiche e forme
+  calcolate senza alias deterministico;
 - latenza finita e packet loss durante read e rollback;
 - supporto lossless a `FullGlobe` (il rifiuto è provato);
 - tipi `sql_variant`, CLR/UDT e famiglie non incluse nel profilo read;
