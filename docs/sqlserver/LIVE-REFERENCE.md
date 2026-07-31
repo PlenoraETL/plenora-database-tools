@@ -154,9 +154,12 @@ La suite live seriale ha verificato:
     scheme/function/column e numero di partizioni sono osservati. Il token
     strutturale cambia quando il versioning viene disabilitato senza modificare
     l'insieme delle colonne.
-54. owner effettivo, predicato RLS schema-bound e permessi object-level
+54. owner effettivo, predicato RLS schema-bound e permessi object/column
     `GRANT`/`DENY` sono osservati dal catalogo. Il token strutturale cambia
     quando la policy viene disabilitata senza modificare colonne o indici.
+55. definizione, schema binding e opzioni `ANSI_NULLS`/`QUOTED_IDENTIFIER` di
+    una view sono osservati. Il token cambia dopo `ALTER VIEW` a colonne
+    invariate.
 
 Comando della prova:
 
@@ -164,7 +167,7 @@ Comando della prova:
 cargo test -p plenora-db-sqlserver live_ -- --ignored --test-threads=1
 ```
 
-Esito post-RC1: **38 superati, 0 falliti**. Il valore RC1 resta storicamente
+Esito post-RC1: **39 superati, 0 falliti**. Il valore RC1 resta storicamente
 **28/28** sulla revisione taggata e non viene riscritto retroattivamente.
 
 ## Limiti dell'evidenza

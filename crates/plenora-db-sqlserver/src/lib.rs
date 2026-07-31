@@ -29,6 +29,7 @@ pub use catalog::{
     SqlServerObjectDescription, SqlServerObjectName, SqlServerObjectSummary, SqlServerPartitioning,
     SqlServerPermission, SqlServerProbe, SqlServerSchemaToken, SqlServerSecurityPredicate,
     SqlServerSpatialBoundingBox, SqlServerSpatialIndex, SqlServerTemporalMetadata,
+    SqlServerViewMetadata,
 };
 pub use config::{CertificatePolicy, SqlServerConfig};
 pub use connection::SqlServerSession;

@@ -1122,6 +1122,7 @@ mod tests {
             owner: "dbo".to_owned(),
             security_predicates: Vec::new(),
             permissions: Vec::new(),
+            view: None,
             memory_optimized: false,
             durability: None,
             columns: vec![SqlServerColumn {

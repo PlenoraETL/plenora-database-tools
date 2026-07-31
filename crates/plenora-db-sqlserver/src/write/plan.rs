@@ -1420,6 +1420,7 @@ mod tests {
             owner: "dbo".to_owned(),
             security_predicates: Vec::new(),
             permissions: Vec::new(),
+            view: None,
             memory_optimized: false,
             durability: None,
             columns: vec![SqlServerColumn {
@@ -1533,6 +1534,7 @@ mod tests {
             owner: "dbo".to_owned(),
             security_predicates: Vec::new(),
             permissions: Vec::new(),
+            view: None,
             memory_optimized: false,
             durability: None,
             columns: vec![column(1, "tenant_id"), column(2, "asset_id")],

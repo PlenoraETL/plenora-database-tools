@@ -65,7 +65,8 @@ Legenda:
 | Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
 | Introspection temporal/graph/partizioni | history table e colonne periodo, node/edge, schema/funzione/colonna e numero partizioni; tutto incluso nello schema token | live-proven |
 | Introspection external table | data source, file format opzionale e location inclusi nello schema token | implementata; fixture live-required |
-| Introspection sicurezza | owner effettivo, predicati RLS e permessi espliciti object/column; tutto incluso nello schema token | live-proven per RLS e permessi object-level |
+| Introspection sicurezza | owner effettivo, predicati RLS e permessi espliciti object/column; tutto incluso nello schema token | live-proven |
+| Introspection view | definizione anche nullable per view cifrate, schema binding, `ANSI_NULLS` e `QUOTED_IDENTIFIER`; tutto incluso nello schema token | live-proven per view non cifrata schema-bound |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
 | Catalogo riferimento | schemi, oggetti, colonne, vincoli, indici e metadati di tassellazione/bounding box spatial | live-proven |
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |
