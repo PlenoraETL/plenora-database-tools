@@ -70,3 +70,7 @@ python scripts\check_pre_database.py `
 Il runner usa Cargo locale oppure il container `rust:1.92`; esegue test Python,
 JSON Schema, rustfmt, Clippy con warning negati, test Rust e smoke CLI. Non
 apre connessioni.
+
+Il percorso d'errore usa il protocollo JSON versionato descritto in
+[`../cli/ERROR-PROTOCOL.md`](../cli/ERROR-PROTOCOL.md): i quattro assi
+rimangono campi machine-readable su `stderr`, con exit code non-zero.
