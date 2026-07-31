@@ -1734,7 +1734,9 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
                  (1, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326), \
                      geography::STGeomFromText( \
                        'POLYGON ((-122.358 47.653, -122.348 47.649, -122.348 47.658, \
-                                  -122.358 47.658, -122.358 47.653))', 4326));",
+                                  -122.358 47.658, -122.358 47.653))', 4326)), \
+                 (2, geometry::STGeomFromText('POINT (2 2)', 4326), \
+                     geography::STGeomFromText('POINT (-122.35 47.65)', 4326));",
             ),
             ErrorPhase::Write,
             &cancellation,
@@ -1743,6 +1745,13 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
         .expect("spatial scope fixture");
     let provider = SqlServerProvider::new(config, 16, 1).expect("spatial scope provider");
     let secret = live_secret();
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("mixed spatial capabilities");
+    assert!(capabilities.spatial.geometry);
+    assert!(capabilities.spatial.geography);
+    assert!(capabilities.spatial.mixed_geometry_types);
     let physical_source = || QuerySource {
         object: ObjectRef {
             catalog: None,
@@ -1866,7 +1875,27 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
                 .column_by_name("spatial_result")
                 .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
                 .expect("scoped spatial WKB");
-            assert!(!values.is_null(0));
+            assert_eq!(values.len(), 2);
+            let mut observed_types = std::collections::BTreeSet::new();
+            for row in 0..values.len() {
+                assert!(!values.is_null(row));
+                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                    values.value(row),
+                    1_000_000,
+                    64,
+                )
+                .expect("mixed scoped spatial inspection");
+                observed_types.insert(
+                    inspection
+                        .root
+                        .geometry_type_name()
+                        .expect("mixed scoped geometry type"),
+                );
+            }
+            assert_eq!(
+                observed_types,
+                std::collections::BTreeSet::from(["Point", "Polygon"])
+            );
             assert!(stream
                 .next_batch()
                 .await

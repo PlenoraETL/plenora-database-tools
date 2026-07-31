@@ -62,6 +62,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - catena TLS privata, hostname match/mismatch e rotazione;
 - roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
   dimensioni miste e FullGlobe;
+- colonne `geometry` e `geography` con tipi geometrici misti Point+Polygon,
+  preservati come WKB e dichiarati `mixed` nel contratto Arrow;
 - gate prestazionale separato su read, prepared, TDS bulk, create e replace.
 
 ## Gap non coperti dal gate v1

@@ -69,6 +69,11 @@ pub struct SpatialCapabilities {
     pub spatial_index: bool,
     pub mixed_geometry_types: bool,
     pub dimensions: Vec<Dimensions>,
+    /// Sottoinsieme garantito per ogni semantica spatial pubblicizzata.
+    ///
+    /// Un provider con capability native asimmetriche deve sotto-dichiarare
+    /// l'intersezione; il contratto v1 non consente di attribuire una funzione
+    /// soltanto a `geometry` o soltanto a `geography`.
     #[serde(default)]
     pub functions: Vec<SpatialFunction>,
 }

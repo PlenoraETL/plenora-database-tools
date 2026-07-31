@@ -146,7 +146,9 @@ La suite live seriale ha verificato:
 52. output e predicati spatial attraverso CTE non ricorsive, derived table e
     subquery non correlate, su `geometry` e `geography`; tipo nativo, SRID e
     token di tutte le tabelle fisiche sottostanti sono verificati, incluso il
-    rifiuto live di un parametro con SRID divergente.
+    rifiuto live di un parametro con SRID divergente. La stessa fixture prova
+    Point+Polygon nella medesima colonna per entrambe le semantiche e rende
+    operativo il claim `mixed_geometry_types`.
 
 Comando della prova:
 
