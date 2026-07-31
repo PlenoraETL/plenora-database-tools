@@ -2274,6 +2274,135 @@ CREATE TABLE [plenora_test].[catalog_partitioned]
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta RLS e permessi"]
+#[allow(clippy::too_many_lines)]
+async fn live_catalog_observes_rls_owner_and_explicit_permissions() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("open live SQL Server");
+    let cleanup = r"
+IF EXISTS (
+    SELECT 1 FROM sys.security_policies
+    WHERE object_id = OBJECT_ID(N'plenora_test.catalog_rls_policy')
+)
+    DROP SECURITY POLICY [plenora_test].[catalog_rls_policy];
+IF OBJECT_ID(N'plenora_test.catalog_rls', N'U') IS NOT NULL
+    DROP TABLE [plenora_test].[catalog_rls];
+IF OBJECT_ID(N'plenora_test.catalog_rls_filter', N'IF') IS NOT NULL
+    DROP FUNCTION [plenora_test].[catalog_rls_filter];
+IF USER_ID(N'plenora_catalog_reader') IS NOT NULL
+    DROP USER [plenora_catalog_reader];
+";
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("normalize RLS catalog fixture");
+    session
+        .execute_query(
+            Query::new(
+                r"
+EXEC(N'CREATE FUNCTION [plenora_test].[catalog_rls_filter](@tenant_id int)
+RETURNS TABLE WITH SCHEMABINDING
+AS RETURN SELECT 1 AS [permitted] WHERE @tenant_id = 7;');
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create RLS predicate function");
+    session
+        .execute_query(
+            Query::new(
+                r"
+CREATE TABLE [plenora_test].[catalog_rls]
+(
+    [id] int NOT NULL PRIMARY KEY,
+    [tenant_id] int NOT NULL,
+    [payload] nvarchar(40) NULL
+);
+CREATE USER [plenora_catalog_reader] WITHOUT LOGIN;
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create RLS target and principal");
+    session
+        .execute_query(
+            Query::new(
+                r"
+CREATE SECURITY POLICY [plenora_test].[catalog_rls_policy]
+ADD FILTER PREDICATE [plenora_test].[catalog_rls_filter]([tenant_id])
+ON [plenora_test].[catalog_rls]
+WITH (STATE = ON, SCHEMABINDING = ON);
+GRANT SELECT ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
+DENY DELETE ON OBJECT::[plenora_test].[catalog_rls] TO [plenora_catalog_reader];
+",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create RLS and permission fixture");
+
+    let enabled = describe_object(&mut session, "plenora_test", "catalog_rls", &cancellation)
+        .await
+        .expect("describe RLS table");
+    assert!(!enabled.owner.is_empty());
+    assert_eq!(enabled.security_predicates.len(), 1);
+    let predicate = &enabled.security_predicates[0];
+    assert_eq!(predicate.policy_schema, "plenora_test");
+    assert_eq!(predicate.policy_name, "catalog_rls_policy");
+    assert!(predicate.policy_enabled);
+    assert!(predicate.policy_schema_bound);
+    assert_eq!(predicate.kind, "FILTER");
+    assert_eq!(predicate.operation, None);
+    assert!(predicate
+        .predicate_definition
+        .contains("catalog_rls_filter"));
+    assert!(enabled.permissions.iter().any(|permission| {
+        permission.grantee == "plenora_catalog_reader"
+            && permission.permission == "SELECT"
+            && permission.state == "GRANT"
+    }));
+    assert!(enabled.permissions.iter().any(|permission| {
+        permission.grantee == "plenora_catalog_reader"
+            && permission.permission == "DELETE"
+            && permission.state == "DENY"
+    }));
+
+    session
+        .execute_query(
+            Query::new(
+                "ALTER SECURITY POLICY [plenora_test].[catalog_rls_policy] WITH (STATE = OFF);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("disable RLS policy");
+    let disabled = describe_object(&mut session, "plenora_test", "catalog_rls", &cancellation)
+        .await
+        .expect("describe disabled RLS table");
+    assert!(!disabled.security_predicates[0].policy_enabled);
+    assert_ne!(
+        enabled.token.structural_fingerprint,
+        disabled.token.structural_fingerprint
+    );
+
+    session
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("cleanup RLS catalog fixture");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito"]
 async fn live_bounded_arrow_stream_maps_scalars_and_spatial() {
     let cancellation = CancellationToken::new();

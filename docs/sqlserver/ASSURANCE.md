@@ -64,6 +64,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
   dimensioni miste e FullGlobe;
 - colonne `geometry` e `geography` con tipi geometrici misti Point+Polygon,
   preservati come WKB e dichiarati `mixed` nel contratto Arrow;
+- catalogo avanzato temporal, graph e partizionato, più owner, predicati RLS
+  e permessi espliciti; le proprietà semantiche entrano nel token strutturale;
 - gate prestazionale separato su read, prepared, TDS bulk, create e replace.
 
 ## Gap non coperti dal gate v1
