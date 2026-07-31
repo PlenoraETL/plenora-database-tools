@@ -3,9 +3,10 @@ mod schema;
 
 pub use probe::{list_objects, list_schemas, probe_server, SqlServerObjectSummary, SqlServerProbe};
 pub use schema::{
-    describe_object, SqlServerColumn, SqlServerConstraint, SqlServerIndex,
-    SqlServerObjectDescription, SqlServerSchemaToken, SqlServerSpatialBoundingBox,
-    SqlServerSpatialIndex,
+    describe_object, SqlServerColumn, SqlServerConstraint, SqlServerExternalTableMetadata,
+    SqlServerGraphKind, SqlServerIndex, SqlServerObjectDescription, SqlServerObjectName,
+    SqlServerPartitioning, SqlServerSchemaToken, SqlServerSpatialBoundingBox,
+    SqlServerSpatialIndex, SqlServerTemporalMetadata,
 };
 
 use crate::error::driver_error;
