@@ -1,5 +1,25 @@
 # Matrice capability SQL Server
 
+## Regola di promozione delle capability opzionali
+
+Il supporto della sintassi T-SQL, da solo, non rende vera una capability del
+provider. Ogni flag resta `false` finche non esistono nella stessa baseline:
+superficie pubblica nel core, semantica di cancellazione/recovery, limiti,
+prova live positiva e negativa e aggiornamento del gate.
+
+| Flag | Motivo del valore `false` | Condizione minima per promuoverlo |
+|---|---|---|
+| `server_cursor` | lo stream bounded corrente non espone identita o lifecycle di un cursore server | handle pubblico, close/cancel deterministici, pool safety e prova live |
+| `resumable` | nessun token di ripresa e nessuna garanzia di snapshot/ordinamento | token versionato, chiave stabile, drift policy e differenziale dopo fault |
+| `object_id_windows` | semantica specifica ArcGIS non applicata implicitamente a SQL Server | contratto portabile ratificato e query bounded verificata |
+| `array_binding` | TDS bulk non equivale a un array bind parametrico | API distinta, limiti wire, rollback e differenziale live |
+| `returning` | `WriteOutcome` espone conteggi, non un flusso di righe `OUTPUT` | contratto output tipizzato e gestione dell'esito incerto |
+| `apply_edits` / `use_global_ids` | semantiche ArcGIS assenti dal provider relazionale | adattatore e contratto espliciti, senza emulazione implicita |
+| `savepoints` | le transazioni sono interne a una singola write e non esiste un transaction handle pubblico | lifecycle pubblico, nomi chiusi, recovery e prove di rollback parziale |
+
+L'accesso cross-database resta separatamente rifiutato prima dell'I/O: non
+viene dedotto dalla capacita nativa di SQL Server di qualificare un catalogo.
+
 Legenda:
 
 - **offline**: proprietà verificabile senza server;
@@ -21,6 +41,7 @@ Legenda:
 | Sessione | XACT_ABORT ON, implicit transactions OFF, NOCOUNT ON e opzioni ANSI/ARITHABORT/QUOTED_IDENTIFIER fissate | offline + live-proven |
 | Pool | bounded; riuso solo in stato `Ready` | offline + live-required |
 | Trait comune `Provider` | connection, capability, inspect, read/query e prepared write | live-proven |
+| Capability opzionali non esposte | `server_cursor`, `resumable`, `object_id_windows`, `array_binding`, `returning`, `apply_edits`, `use_global_ids` e `savepoints` restano `false` | live-proven sul contratto pubblicato; fail-closed |
 | Cancellazione | quarantena connessione | offline + live-required |
 | Commit ambiguo | effetto `Unknown`, recovery obbligatoria | live-proven con taglio TDS fisico |
 | Read streaming | Arrow batch con canale TDS a capacità 1 e batch bounded | live-proven |
@@ -70,7 +91,7 @@ Legenda:
 | Introspection sicurezza | owner effettivo, predicati RLS e permessi espliciti object/column; tutto incluso nello schema token | live-proven |
 | Introspection view | definizione anche nullable per view cifrate, schema binding, `ANSI_NULLS` e `QUOTED_IDENTIFIER`; tutto incluso nello schema token | live-proven per view non cifrata schema-bound |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |
-| Matrice versioni | SQL Server 2019 15.0/compat 150 e SQL Server 2025 17.0/compat 170, immagini fissate per digest | 42/42 live-proven per versione; Azure SQL ha gate read-only opt-in |
+| Matrice versioni | SQL Server 2019 15.0/compat 150 e SQL Server 2025 17.0/compat 170, immagini fissate per digest | 43/43 live-proven per versione; Azure SQL ha gate read-only opt-in |
 | Catalogo riferimento | schemi, oggetti, colonne, vincoli, indici e metadati di tassellazione/bounding box spatial | live-proven |
 | Schema token | stabile senza DDL, varia dopo `ALTER TABLE` | live-proven |
 | TLS self-signed negativo | policy `Verify` rifiuta la fixture | live-proven |
@@ -88,12 +109,15 @@ Legenda:
 | `time(7)` / `datetime2(7)` a 100 ns | rifiuto se non rappresentabile esattamente in Arrow µs | live-proven |
 | `datetimeoffset` | testo RFC3339/ISO 127: offset per riga e 100 ns preservati | live-proven |
 
-## Matrice live prevista
+## Stato della matrice live
 
-Il riferimento minimo è SQL Server 2022. Prima del freeze del provider:
+Il riferimento resta SQL Server 2022. La campagna corrente copre:
 
-- SQL Server 2022;
-- Azure SQL Database;
+- SQL Server 2019, 2022 e 2025 su immagini fissate per digest;
 - `geometry` e `geography` con SRID compatibili e incompatibili;
-- fault di rete tramite latenza e packet loss su lettura e rollback;
-- il taglio socket fisico su scrittura e risposta commit è già live-proven.
+- fault di rete tramite latenza e perdita totale temporanea o protratta;
+- taglio socket fisico su scrittura e risposta commit.
+
+Azure SQL Database resta un gate esterno opt-in e non viene dichiarato
+compatibile finché non esiste un'esecuzione con TLS verificato e credenziali
+dedicate.

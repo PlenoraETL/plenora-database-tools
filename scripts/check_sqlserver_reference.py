@@ -411,7 +411,7 @@ def main() -> int:
             "spatial_index_create_replace_catalog_access_path_and_rollback",
         ],
         "open_non_blocking": [
-            "sqlserver_2019_2025_azure_matrix",
+            "azure_sql_live_qualification",
             "spatial_fullglobe_lossless_not_supported",
             "external_table_catalog_live_fixture",
         ],

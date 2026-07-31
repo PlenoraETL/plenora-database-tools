@@ -21,6 +21,11 @@ capability, prova live, documentazione e gate concordano.
 
 ## Regole
 
+La voce capability opzionali comprende anche `resumable`,
+`object_id_windows`, `array_binding`, `apply_edits` e `use_global_ids`: il gate
+live verifica tutti gli otto flag a `false`. La parita qui significa assenza di
+claim impliciti, non emulazione di feature prive di un contratto pubblico.
+
 - Nessun fallback silenzioso o appiattimento dimensionale.
 - Una capability viene alzata solo nella revisione che aggiunge la prova live.
 - Le differenze native documentate non sono gap se il contratto pubblico

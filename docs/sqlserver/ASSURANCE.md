@@ -87,6 +87,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 - perdita totale temporanea del traffico TDS: latenza indotta, risposta integra
   e sessione riusabile quando il forwarding riprende entro il timeout.
 - catena TLS privata, hostname match/mismatch e rotazione;
+- capability opzionali pubblicate `false` verificate dal vivo; nessun flag e
+  promosso sulla sola disponibilita di sintassi T-SQL;
 - roundtrip WKB ISO di geometry/geography Z, M e ZM; rifiuto pre-stream di
   dimensioni miste e FullGlobe;
 - lettura bounded di `CircularString`, `CompoundCurve` e `CurvePolygon` su

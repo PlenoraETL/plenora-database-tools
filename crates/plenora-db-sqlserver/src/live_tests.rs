@@ -435,6 +435,19 @@ async fn live_common_provider_contract_read_and_write() {
     assert!(report.unsupported_inspection_verified);
 
     let cancellation = CancellationToken::new();
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("provider capabilities");
+    assert!(!capabilities.reads.server_cursor);
+    assert!(!capabilities.reads.resumable);
+    assert!(!capabilities.reads.object_id_windows);
+    assert!(!capabilities.writes.array_binding);
+    assert!(!capabilities.writes.returning);
+    assert!(!capabilities.writes.apply_edits);
+    assert!(!capabilities.writes.use_global_ids);
+    assert!(!capabilities.transactions.savepoints);
+
     let bounded_operation = ReadOperation {
         source: ObjectRef {
             catalog: None,
