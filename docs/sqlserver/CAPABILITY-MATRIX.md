@@ -58,9 +58,9 @@ Legenda:
 | SRID | sempre esplicito per input spatial | offline + live-required |
 | Reprojection | nessuna `ST_Transform` nativa pubblicizzata | reject |
 | `FullGlobe` | rifiutato in strict | reject |
-| Spatial rich AST scalare | `GeometryType`, `Srid`, `NPoints`, `IsEmpty`, `IsValid`, `IsClosed`, `Intersects`, `Contains`, `Within`, `Disjoint`, `Equals`, `Distance`, `Area`, `Length`; WKB bindato, preflight semantica/SRID e source fisica singola | offline + live-proven su geometry/geography |
+| Spatial rich AST scalare | `GeometryType`, `Srid`, `NPoints`, `IsEmpty`, `IsValid`, `IsClosed`, `Intersects`, `Contains`, `Within`, `Disjoint`, `Equals`, `Distance`, `Area`, `Length`, `StartPoint`, `EndPoint`; WKB bindato, preflight semantica/SRID e source fisica singola | offline + live-proven su geometry/geography |
 | Predicati spatial in projection | valore `bit` nativo con `NULL` preservato; nei filtri confronto T-SQL `= 1` | offline + live-proven |
-| Output query spatial | richiede conversione WKB e contratto spatial risolto; UDT nudo rifiutato | fail-closed |
+| Output query spatial | `StartPoint`/`EndPoint` convertiti con `AsBinaryZM()`; semantica, SRID, Z/M e `FullGlobe` profilati sul risultato selezionato, schema sorgente ricontrollato; ogni altro UDT nudo resta rifiutato | live-proven geometry/geography XYZM |
 | Lateral/APPLY e locking | non pubblicizzati finché semantica e schema non sono provati live | reject |
 | Introspection estesa | privilegi effettivi, temporal/graph/external e partizioni | live-required |
 | Probe riferimento | versione 16.0.4255.1, Developer, compat 160 | live-proven |

@@ -1,7 +1,8 @@
 use crate::error::driver_error;
-use crate::parameter::parameter_declarations;
+use crate::parameter::{bind_parameters, parameter_declarations};
 use crate::types::{SqlServerColumnSpec, SqlServerReadPlan};
 use crate::SqlServerSession;
+use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::query::{ColumnRef, QueryExpression, QueryOperation, SpatialFunction};
@@ -47,7 +48,25 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
+    SpatialFunction::StartPoint,
+    SpatialFunction::EndPoint,
 ];
+
+const MAX_SPATIAL_OUTPUTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialOutputContract {
+    pub projection_index: usize,
+    pub semantics: SpatialSemantics,
+    pub srid: Option<u32>,
+    pub dimensions: Dimensions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpatialValidation {
+    pub outputs: Vec<SpatialOutputContract>,
+    pub source_token: Option<crate::SqlServerSchemaToken>,
+}
 
 pub fn render_query(
     operation: &QueryOperation,
@@ -169,10 +188,14 @@ pub async fn validate_spatial_inputs(
     session: &mut SqlServerSession,
     operation: &QueryOperation,
     parameters: &ParameterBag,
+    budget: &ResourceBudget,
     cancellation: &CancellationToken,
-) -> Result<()> {
+) -> Result<SpatialValidation> {
     if !operation_has_spatial(operation) {
-        return Ok(());
+        return Ok(SpatialValidation {
+            outputs: Vec::new(),
+            source_token: None,
+        });
     }
     let mut uses = Vec::new();
     collect_operation_spatial_uses(operation, &mut uses)?;
@@ -311,7 +334,193 @@ pub async fn validate_spatial_inputs(
             }
         }
     }
-    Ok(())
+    let outputs = profile_spatial_outputs(
+        session,
+        operation,
+        parameters,
+        budget,
+        &description,
+        cancellation,
+    )
+    .await?;
+    Ok(SpatialValidation {
+        outputs,
+        source_token: Some(description.token),
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpatialOutputCandidate {
+    projection_index: usize,
+    semantics: SpatialSemantics,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn profile_spatial_outputs(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    description: &crate::catalog::SqlServerObjectDescription,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SpatialOutputContract>> {
+    let mut candidates = Vec::new();
+    for (projection_index, projection) in operation.projection.iter().enumerate() {
+        let QueryExpression::Spatial {
+            function,
+            arguments,
+        } = &projection.expression
+        else {
+            continue;
+        };
+        if !function.returns_geometry() {
+            continue;
+        }
+        if !matches!(
+            function,
+            SpatialFunction::StartPoint | SpatialFunction::EndPoint
+        ) || arguments.len() != 1
+        {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "output spatial SQL Server fuori dal sottoinsieme verificato",
+            ));
+        }
+        let QueryExpression::Column { column } = &arguments[0] else {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "output spatial SQL Server richiede una colonna come ricevitore",
+            ));
+        };
+        let source_column = description
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == column.field)
+            .ok_or_else(|| {
+                query_error(
+                    ErrorCategory::Schema,
+                    "colonna output spatial SQL Server assente dal catalogo",
+                )
+            })?;
+        let semantics = match source_column.native_type.as_str() {
+            "geometry" => SpatialSemantics::Geometry,
+            "geography" => SpatialSemantics::Geography,
+            _ => {
+                return Err(query_error(
+                    ErrorCategory::DataMapping,
+                    "output spatial applicato a colonna SQL Server non spatial",
+                ));
+            }
+        };
+        candidates.push(SpatialOutputCandidate {
+            projection_index,
+            semantics,
+        });
+    }
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    if candidates.len() > MAX_SPATIAL_OUTPUTS {
+        return Err(DatabaseError::resource_limit(
+            "troppi output spatial SQL Server da profilare",
+        ));
+    }
+
+    let mut profile_operation = operation.clone();
+    for (index, projection) in profile_operation.projection.iter_mut().enumerate() {
+        projection.alias = Some(format!("_plenora_spatial_profile_{index}"));
+    }
+    if profile_operation.row_limit.is_none() && profile_operation.row_offset.is_none() {
+        profile_operation.order_by.clear();
+    }
+    let rendered = sql_server_renderer()
+        .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?)
+        .render_query_native_spatial(&profile_operation)?;
+    let bind_names = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    let identifier_renderer = sql_server_renderer();
+    let derived_alias = identifier_renderer.quote_identifier(
+        &plenora_database_sql::Identifier::new("_plenora_spatial_result")?,
+    );
+    let mut contracts = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let field = identifier_renderer.quote_identifier(&plenora_database_sql::Identifier::new(
+            format!("_plenora_spatial_profile_{}", candidate.projection_index),
+        )?);
+        let value = format!("{derived_alias}.{field}");
+        let sql = format!(
+            "SELECT \
+             COUNT_BIG(DISTINCT CASE WHEN {value} IS NULL THEN NULL ELSE {value}.STSrid END), \
+             MIN(CASE WHEN {value} IS NULL THEN NULL ELSE {value}.STSrid END), \
+             COALESCE(SUM(CONVERT(bigint, CASE WHEN {value}.STGeometryType() = N'FullGlobe' \
+             THEN 1 ELSE 0 END)), 0), \
+             COUNT_BIG(DISTINCT CASE WHEN {value} IS NULL THEN NULL ELSE \
+             CONVERT(int, {value}.HasZ) * 2 + CONVERT(int, {value}.HasM) END), \
+             MIN(CASE WHEN {value} IS NULL THEN NULL ELSE \
+             CONVERT(int, {value}.HasZ) * 2 + CONVERT(int, {value}.HasM) END) \
+             FROM ({}) AS {derived_alias};",
+            rendered.sql
+        );
+        let mut query = Query::new(sql);
+        bind_parameters(&mut query, &bind_names, parameters)?;
+        let mut results = session
+            .execute_query(query, ErrorPhase::Prepare, cancellation)
+            .await?;
+        if results.len() != 1 || results.first().is_none_or(|rows| rows.len() != 1) {
+            return Err(query_error(
+                ErrorCategory::Protocol,
+                "profilo output spatial SQL Server con cardinalita inattesa",
+            ));
+        }
+        let row = results
+            .pop()
+            .and_then(|mut rows| rows.pop())
+            .ok_or_else(|| {
+                query_error(
+                    ErrorCategory::Protocol,
+                    "profilo output spatial SQL Server senza riga",
+                )
+            })?;
+        let srid_count: i64 = required(&row, 0, "numero SRID output spatial")?;
+        let srid: Option<i32> = optional(&row, 1, "SRID output spatial")?;
+        let full_globe: i64 = required(&row, 2, "FullGlobe output spatial")?;
+        let dimension_count: i64 = required(&row, 3, "numero profili dimensionali output spatial")?;
+        let dimension_code: Option<i32> = optional(&row, 4, "profilo dimensionale output spatial")?;
+        if srid_count > 1 {
+            return Err(query_error(
+                ErrorCategory::DataMapping,
+                "output spatial SQL Server con SRID misti",
+            ));
+        }
+        if full_globe > 0 {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "output FullGlobe SQL Server non rappresentabile nel profilo WKB",
+            ));
+        }
+        let srid = srid
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    query_error(
+                        ErrorCategory::DataMapping,
+                        "SRID output spatial SQL Server negativo",
+                    )
+                })
+            })
+            .transpose()?;
+        let dimensions =
+            crate::types::spatial_dimensions_from_profile(dimension_count, dimension_code)?;
+        contracts.push(SpatialOutputContract {
+            projection_index: candidate.projection_index,
+            semantics: candidate.semantics,
+            srid,
+            dimensions,
+        });
+    }
+    Ok(contracts)
 }
 
 #[derive(Debug)]
@@ -470,6 +679,8 @@ const fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
             | SpatialFunction::IsClosed
             | SpatialFunction::Area
             | SpatialFunction::Length
+            | SpatialFunction::StartPoint
+            | SpatialFunction::EndPoint
     )
 }
 
