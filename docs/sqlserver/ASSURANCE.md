@@ -65,7 +65,8 @@ fuori dal claim finché non dispone di una prova di interoperabilità separata.
 
 - SQL Server 2019, 2025 e Azure SQL;
 - supporto lossless `FullGlobe`; Z/M/ZM sono coperti come WKB ISO;
-- ulteriori output spatial e AST spatial attraverso join, CTE o subquery;
+- ulteriori output spatial e AST spatial attraverso CTE, derived table,
+  subquery e sorgenti non fisiche; i join fra tabelle fisiche sono coperti;
 - catalogo temporal/graph/external e partizioni.
 
 Questi gap non sono capability implicite: restano non pubblicizzati finché una

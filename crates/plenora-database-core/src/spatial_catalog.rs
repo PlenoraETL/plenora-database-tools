@@ -64,4 +64,25 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), catalog.functions.len());
     }
+
+    #[test]
+    fn spatial_function_wire_names_match_the_versioned_catalog() {
+        let catalog = spatial_function_catalog().expect("catalog fixture");
+        let catalog_ids = catalog
+            .functions
+            .iter()
+            .map(|function| function.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let wire_ids = crate::query::SpatialFunction::ALL
+            .iter()
+            .map(|function| {
+                serde_json::to_value(function)
+                    .expect("serialize spatial function")
+                    .as_str()
+                    .expect("spatial function string")
+                    .to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(wire_ids, catalog_ids);
+    }
 }

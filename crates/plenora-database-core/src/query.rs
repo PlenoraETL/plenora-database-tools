@@ -111,9 +111,13 @@ pub enum SpatialFunction {
     DWithin,
     SetSrid,
     Transform,
+    #[serde(rename = "force_2d")]
     Force2d,
+    #[serde(rename = "force_3d")]
     Force3d,
+    #[serde(rename = "force_3dm")]
     Force3dm,
+    #[serde(rename = "force_4d")]
     Force4d,
     Buffer,
     OffsetCurve,
@@ -136,6 +140,7 @@ pub enum SpatialFunction {
     Subdivide,
     SnapToGrid,
     Distance,
+    #[serde(rename = "distance_3d")]
     Distance3d,
     MaxDistance,
     HausdorffDistance,

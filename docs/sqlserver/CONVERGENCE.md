@@ -7,6 +7,7 @@ capability, prova live, documentazione e gate concordano.
 | Area | PostgreSQL/PostGIS di riferimento | SQL Server | Condizione di uscita |
 |---|---|---|---|
 | Contratto Provider e data path | completo | completo | mantenere suite comune e gate live |
+| Capability opzionali | cursor nominato, returning e savepoint non esposti | cursor nominato, returning e savepoint non esposti | **allineata**: i tre flag restano `false` finché esistono superficie pubblica e prova live |
 | Write atomica e recovery | completo | completo | mantenere fault injection e staged swap |
 | Schema evolution additiva | nullable, opt-in | nullable, opt-in | **chiusa**: DDL+dati atomici e rollback live |
 | Spatial XY | completo | completo | mantenere roundtrip geometry/geography |

@@ -7,7 +7,7 @@
   },
   "reads": {
     "streaming": true,
-    "server_cursor": true,
+    "server_cursor": false,
     "pagination": false,
     "object_id_windows": false,
     "projection": true,
@@ -24,14 +24,14 @@
     "delete_by_keys": true,
     "bulk": true,
     "array_binding": false,
-    "returning": true,
+    "returning": false,
     "apply_edits": false,
     "rollback_on_failure": true,
     "use_global_ids": false
   },
   "transactions": {
     "single_transaction": true,
-    "savepoints": true,
+    "savepoints": false,
     "transactional_ddl": true,
     "staged_swap": true,
     "scope": "transaction"
