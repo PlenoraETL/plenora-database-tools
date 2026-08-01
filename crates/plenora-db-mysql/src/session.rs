@@ -1,5 +1,5 @@
 use crate::config::MysqlConfig;
-use crate::error::{cancellation_error, driver_error, timeout_error};
+use crate::error::{driver_error, interruption_error, timeout_error};
 use futures_util::StreamExt;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Row};
@@ -20,6 +20,7 @@ pub struct MysqlSession {
     connection: Option<Conn>,
     state: MysqlSessionState,
     operation_timeout: std::time::Duration,
+    pool_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl std::fmt::Debug for MysqlSession {
@@ -28,6 +29,7 @@ impl std::fmt::Debug for MysqlSession {
             .debug_struct("MysqlSession")
             .field("state", &self.state)
             .field("connected", &self.connection.is_some())
+            .field("pooled", &self.pool_permit.is_some())
             .field("operation_timeout", &self.operation_timeout)
             .finish()
     }
@@ -44,7 +46,7 @@ impl MysqlSession {
         let connect = Conn::new(opts);
         let connection = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(cancellation_error(ErrorPhase::Connect, RemoteEffect::None));
+                return Err(interruption_error(cancellation, ErrorPhase::Connect, RemoteEffect::None));
             }
             result = tokio::time::timeout(config.connect_timeout(), connect) => {
                 match result {
@@ -60,17 +62,20 @@ impl MysqlSession {
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout: config.operation_timeout(),
+            pool_permit: None,
         })
     }
 
     pub(crate) const fn from_connection(
         connection: Conn,
         operation_timeout: std::time::Duration,
+        pool_permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Self {
         Self {
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout,
+            pool_permit: Some(pool_permit),
         }
     }
 
@@ -96,7 +101,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(cancellation_error(phase, RemoteEffect::None));
+                return Err(interruption_error(cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
@@ -136,7 +141,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(cancellation_error(phase, RemoteEffect::None));
+                return Err(interruption_error(cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
@@ -160,6 +165,7 @@ impl MysqlSession {
         sql: String,
         parameters: Params,
         sender: tokio::sync::mpsc::Sender<Result<Row>>,
+        mut demand: tokio::sync::mpsc::Receiver<()>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         self.require_ready(ErrorPhase::Read)?;
@@ -193,6 +199,13 @@ impl MysqlSession {
                 None => PumpOutcome::Cancelled,
                 Some(Err(error)) => PumpOutcome::Failed(error),
                 Some(Ok(mut stream)) => loop {
+                    let requested = tokio::select! {
+                        _ = cancellation.cancelled() => break PumpOutcome::Cancelled,
+                        requested = demand.recv() => requested,
+                    };
+                    if requested.is_none() {
+                        break PumpOutcome::Abandoned;
+                    }
                     let next = tokio::select! {
                         _ = cancellation.cancelled() => break PumpOutcome::Cancelled,
                         result = tokio::time::timeout(operation_timeout, stream.next()) => result,
@@ -231,7 +244,11 @@ impl MysqlSession {
             PumpOutcome::Drained => Ok(()),
             PumpOutcome::Cancelled => {
                 self.quarantine().await;
-                Err(cancellation_error(ErrorPhase::Read, RemoteEffect::None))
+                Err(interruption_error(
+                    cancellation,
+                    ErrorPhase::Read,
+                    RemoteEffect::None,
+                ))
             }
             PumpOutcome::Abandoned => {
                 self.quarantine().await;

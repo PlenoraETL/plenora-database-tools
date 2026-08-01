@@ -186,7 +186,7 @@ impl MysqlColumnSpec {
             "time" => MysqlColumnKind::Time,
             "datetime" | "timestamp" => MysqlColumnKind::Timestamp,
             "geometry" | "point" | "linestring" | "polygon" | "multipoint" | "multilinestring"
-            | "multipolygon" | "geometrycollection" => {
+            | "multipolygon" | "geometrycollection" | "geomcollection" => {
                 if column.spatial_srid.is_none() {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
@@ -271,7 +271,7 @@ impl MysqlColumnSpec {
                     if self.native_type == "geometry" {
                         "mixed".to_owned()
                     } else {
-                        "homogeneous".to_owned()
+                        "exact".to_owned()
                     },
                 ),
                 (
@@ -290,11 +290,19 @@ impl MysqlColumnSpec {
             if self.native_type != "geometry" {
                 metadata.insert(
                     protocol::GEOMETRY_TYPES.to_owned(),
-                    self.native_type.clone(),
+                    canonical_geometry_type(&self.native_type).to_owned(),
                 );
             }
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
+    }
+}
+
+fn canonical_geometry_type(native_type: &str) -> &str {
+    if native_type == "geomcollection" {
+        "geometrycollection"
+    } else {
+        native_type
     }
 }
 
@@ -510,6 +518,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plenora_database_core::field_contract::validate_schema_contract;
     use plenora_database_core::plan::{ObjectRef, OrderBy};
 
     fn column(name: &str, data_type: &str, declaration: &str) -> MysqlColumn {
@@ -565,6 +574,40 @@ mod tests {
             spec.projection(&mysql_renderer()).expect("projection"),
             "ST_AsBinary(`geom`) AS `geom`"
         );
+    }
+
+    #[test]
+    fn concrete_spatial_type_produces_an_exact_valid_contract() {
+        let mut point = column("geom", "point", "point");
+        point.spatial_srid = Some(4_326);
+        let field = MysqlColumnSpec::from_catalog(&point)
+            .expect("point MySQL")
+            .arrow_field();
+        assert_eq!(
+            field.metadata().get(protocol::GEOMETRY_TYPES_DECLARATION),
+            Some(&"exact".to_owned())
+        );
+        validate_schema_contract(contract_schema(vec![field]).as_ref())
+            .expect("contratto geometrico MySQL canonico");
+    }
+
+    #[test]
+    fn mysql_geomcollection_alias_produces_the_canonical_exact_type() {
+        let mut collection = column("geom", "geomcollection", "geomcollection");
+        collection.spatial_srid = Some(4_326);
+        let field = MysqlColumnSpec::from_catalog(&collection)
+            .expect("geomcollection MySQL")
+            .arrow_field();
+        assert_eq!(
+            field.metadata().get(protocol::GEOMETRY_TYPES_DECLARATION),
+            Some(&"exact".to_owned())
+        );
+        assert_eq!(
+            field.metadata().get(protocol::GEOMETRY_TYPES),
+            Some(&"geometrycollection".to_owned())
+        );
+        validate_schema_contract(contract_schema(vec![field]).as_ref())
+            .expect("contratto geometrycollection canonico");
     }
 
     #[test]

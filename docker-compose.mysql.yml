@@ -1,26 +1,49 @@
 services:
+  mysql-certgen:
+    image: mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+    container_name: dataflow-mysql-certgen
+    user: "0:0"
+    volumes:
+      - mysql_ca_private:/ca
+      - mysql_tls:/tls
+      - ./docker/mysql/tls:/fixture:ro
+    entrypoint: ["/bin/bash", "/fixture/generate.sh"]
+    command: ["/ca", "/tls", "/fixture/server.ext"]
+    restart: "no"
+
   mysql:
     image: mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
     container_name: dataflow-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: "DataFlow_Root_2026!"
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
       MYSQL_DATABASE: dataflow_test
       MYSQL_USER: dataflow
       MYSQL_PASSWORD: "DataFlow_Test_2026!"
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     command:
       - --require-secure-transport=ON
       - --local-infile=OFF
       - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      - --ssl-ca=/etc/mysql/tls/ca.pem
+      - --ssl-cert=/etc/mysql/tls/server.pem
+      - --ssl-key=/etc/mysql/tls/server.key
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+      - mysql_tls:/etc/mysql/tls:ro
+    depends_on:
+      mysql-certgen:
+        condition: service_completed_successfully
+    networks:
+      default:
+        aliases:
+          - mysql-hostname-mismatch
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" --ssl-mode=REQUIRED --silent || exit 1",
+          "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysqladmin ping -h localhost -u dataflow --ssl-mode=REQUIRED --silent || exit 1",
         ]
       interval: 10s
       timeout: 5s
@@ -30,3 +53,5 @@ services:
 
 volumes:
   mysql_data:
+  mysql_ca_private:
+  mysql_tls:

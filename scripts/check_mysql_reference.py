@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -17,7 +18,21 @@ NETWORK = "plenora-database-tools_default"
 RUST_IMAGE = "rust:1.92"
 EXPECTED_DIGEST = "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
 EXPECTED_REFERENCE = f"mysql@{EXPECTED_DIGEST}"
-DEFAULT_PASSWORD = "DataFlow_Test_2026!"
+EXPECTED_OFFLINE_TESTS = 34
+EXPECTED_LIVE_TESTS = {
+    "live_deadline_reports_timeout_and_quarantines_the_session",
+    "live_early_stream_drop_cancels_worker_and_keeps_provider_usable",
+    "live_inflight_cancellation_quarantines_the_session",
+    "live_operation_timeout_quarantines_the_session",
+    "live_pool_acquire_timeout_is_independent_from_connect_timeout",
+    "live_pool_reset_reapplies_deterministic_session_bootstrap",
+    "live_provider_connection_capabilities_and_inspect",
+    "live_read_projection_filter_order_and_default_schema",
+    "live_reference_probe_catalog_and_spatial_metadata",
+    "live_streaming_read_maps_scalar_and_xy_geometry_exactly",
+    "live_variable_rows_are_not_consumed_past_the_current_batch_budget",
+    "live_verified_tls_rejects_a_hostname_mismatch",
+}
 
 
 def run(
@@ -59,15 +74,65 @@ def docker_value(arguments: list[str]) -> str:
     return completed.stdout.strip()
 
 
+def fixture_password() -> str:
+    environment = json.loads(
+        docker_value(["inspect", "--format", "{{json .Config.Env}}", CONTAINER])
+    )
+    prefix = "MYSQL_PASSWORD="
+    for entry in environment:
+        if entry.startswith(prefix):
+            password = entry.removeprefix(prefix)
+            if password:
+                return password
+    raise RuntimeError("password utente fixture MySQL assente")
+
+
+def mysql_value(statement: str) -> str:
+    completed = subprocess.run(
+        [
+            "docker",
+            "exec",
+            CONTAINER,
+            "/bin/sh",
+            "-c",
+            'exec env MYSQL_PWD="$MYSQL_PASSWORD" mysql -Nse "$1" '
+            "-u dataflow --ssl-mode=REQUIRED",
+            "mysql-reference-probe",
+            statement,
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if completed.returncode:
+        sys.stderr.write(completed.stderr)
+        raise RuntimeError("probe SQL MySQL fallita")
+    return completed.stdout.strip()
+
+
+def mysql_tls_volume() -> str:
+    mounts = json.loads(docker_value(["inspect", "--format", "{{json .Mounts}}", CONTAINER]))
+    for mount in mounts:
+        if mount.get("Destination") == "/etc/mysql/tls" and mount.get("Name"):
+            return str(mount["Name"])
+    raise RuntimeError("volume CA MySQL non montato nel container di riferimento")
+
+
 def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
     if os.environ.get("PLENORA_MYSQL_GATE_HOST_CARGO") == "1":
         environment = os.environ.copy()
         environment.setdefault("PLENORA_MYSQL_HOST", "127.0.0.1")
         environment.setdefault("PLENORA_MYSQL_DATABASE", "dataflow_test")
         environment.setdefault("PLENORA_MYSQL_USER", "dataflow")
-        environment.setdefault("PLENORA_MYSQL_PASSWORD", DEFAULT_PASSWORD)
+        environment.setdefault("PLENORA_MYSQL_PASSWORD", fixture_password())
+        if "PLENORA_MYSQL_CA" not in environment:
+            raise RuntimeError("PLENORA_MYSQL_CA obbligatoria con cargo host")
         return ["cargo", *arguments], environment
 
+    environment = os.environ.copy()
+    environment["PLENORA_MYSQL_PASSWORD"] = fixture_password()
     command = [
         "docker",
         "run",
@@ -80,6 +145,8 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "plenora-cargo-registry:/usr/local/cargo/registry",
         "-v",
         "plenora-cargo-git:/usr/local/cargo/git",
+        "-v",
+        f"{mysql_tls_volume()}:/mysql-tls:ro",
         "-w",
         "/workspace",
         "-e",
@@ -89,12 +156,14 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "-e",
         "PLENORA_MYSQL_USER=dataflow",
         "-e",
-        f"PLENORA_MYSQL_PASSWORD={DEFAULT_PASSWORD}",
+        "PLENORA_MYSQL_PASSWORD",
+        "-e",
+        "PLENORA_MYSQL_CA=/mysql-tls/ca.pem",
         RUST_IMAGE,
         "/usr/local/cargo/bin/cargo",
         *arguments,
     ]
-    return command, None
+    return command, environment
 
 
 def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
@@ -102,33 +171,48 @@ def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
     return run(command, environment=environment, capture=capture)
 
 
-def validate_reference() -> dict[str, str]:
-    compose = (ROOT / "docker-compose.mysql.yml").read_text(encoding="utf-8")
-    if compose.count(EXPECTED_REFERENCE) != 1:
-        raise RuntimeError("digest MySQL 8.4 non fissato in modo univoco")
-    configured = docker_value(["inspect", "--format", "{{.Config.Image}}", CONTAINER])
-    image_id = docker_value(["inspect", "--format", "{{.Image}}", CONTAINER])
-    if configured != EXPECTED_REFERENCE and image_id != EXPECTED_DIGEST:
-        raise RuntimeError("container MySQL diverso dal digest di riferimento")
-    version = docker_value(
+def validate_fixture() -> None:
+    run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
+    run(
         [
-            "exec",
-            CONTAINER,
-            "mysql",
-            "-Nse",
-            "SELECT VERSION()",
-            "-u",
-            "root",
-            f"-pDataFlow_Root_2026!",
-            "--ssl-mode=REQUIRED",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{ROOT / 'docker' / 'mysql' / 'tls'}:/fixture:ro",
+            EXPECTED_REFERENCE,
+            "/bin/bash",
+            "/fixture/test_generate.sh",
         ]
     )
+
+
+def ensure_reference_running() -> None:
+    compose = str(ROOT / "docker-compose.mysql.yml")
+    run(["docker", "compose", "-f", compose, "config", "--quiet"])
+    run(
+        ["docker", "compose", "-f", compose, "up", "-d", "--wait", "mysql"],
+        timeout=5 * 60,
+    )
+
+
+def validate_reference() -> dict[str, str]:
+    compose = (ROOT / "docker-compose.mysql.yml").read_text(encoding="utf-8")
+    if compose.count(EXPECTED_REFERENCE) != 2:
+        raise RuntimeError("digest MySQL 8.4 non fissato sui due servizi")
+    configured = docker_value(["inspect", "--format", "{{.Config.Image}}", CONTAINER])
+    image_id = docker_value(["inspect", "--format", "{{.Image}}", CONTAINER])
+    if configured != EXPECTED_REFERENCE:
+        raise RuntimeError("container MySQL diverso dal digest di riferimento")
+    version = mysql_value("SELECT VERSION()")
     if not version.startswith("8.4."):
         raise RuntimeError(f"versione MySQL inattesa: {version}")
     return {"configured_reference": configured, "image_id": image_id, "version": version}
 
 
 def main() -> int:
+    validate_fixture()
+    ensure_reference_running()
     identity = validate_reference()
     run_cargo(["fmt", "--all", "--", "--check"])
     run_cargo(
@@ -143,7 +227,16 @@ def main() -> int:
             "warnings",
         ]
     )
-    run_cargo(["test", "-p", "plenora-db-mysql", "--locked"])
+    offline_output = run_cargo(
+        ["test", "-p", "plenora-db-mysql", "--locked"],
+        capture=True,
+    )
+    executed_offline_tests = re.findall(r"^test [^ ]+ \.\.\. ok$", offline_output, re.MULTILINE)
+    if len(executed_offline_tests) != EXPECTED_OFFLINE_TESTS:
+        raise RuntimeError(
+            "numero test offline MySQL inatteso: "
+            f"{len(executed_offline_tests)}, attesi {EXPECTED_OFFLINE_TESTS}"
+        )
     live_output = run_cargo(
         [
             "test",
@@ -157,8 +250,13 @@ def main() -> int:
         ],
         capture=True,
     )
-    if "test result: ok. 4 passed; 0 failed" not in live_output:
-        raise RuntimeError("conteggio test live MySQL inatteso")
+    executed_live_tests = set(
+        re.findall(r"^test live_tests::([^ ]+) \.\.\. ok$", live_output, re.MULTILINE)
+    )
+    if executed_live_tests != EXPECTED_LIVE_TESTS:
+        raise RuntimeError(
+            f"set test live MySQL inatteso: {sorted(executed_live_tests)}"
+        )
     print(
         json.dumps(
             {
@@ -166,7 +264,8 @@ def main() -> int:
                 "status": "passed",
                 "provider": "mysql",
                 "reference": "MySQL 8.4 LTS",
-                "live_tests": 4,
+                "offline_tests": EXPECTED_OFFLINE_TESTS,
+                "live_tests": len(EXPECTED_LIVE_TESTS),
                 "image": identity,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
             },

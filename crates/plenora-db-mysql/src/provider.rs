@@ -109,7 +109,7 @@ impl MysqlProvider {
         cancellation: &CancellationToken,
     ) -> Result<Inspection> {
         let mut session = pool.checkout(cancellation).await?;
-        match operation {
+        let result = match operation {
             Operation::DatabaseListCatalogs => Ok(Inspection {
                 operation: "database.list_catalogs".to_owned(),
                 document: json!({"catalogs": [self.config.database()]}),
@@ -152,7 +152,9 @@ impl MysqlProvider {
                 })
             }
             _ => Err(unsupported("operazione inspect non supportata da MySQL")),
-        }
+        };
+        drop(session);
+        result
     }
 }
 
@@ -170,6 +172,7 @@ impl Provider for MysqlProvider {
             let pool = self.pool_for(secret)?;
             let mut session = pool.checkout(cancellation).await?;
             let probe = probe_server(&mut session, cancellation).await?;
+            drop(session);
             Ok(ConnectionInfo {
                 provider: ProviderKind::Mysql,
                 server_version: probe.product_version,
@@ -187,6 +190,7 @@ impl Provider for MysqlProvider {
             let pool = self.pool_for(secret)?;
             let mut session = pool.checkout(cancellation).await?;
             let probe = probe_server(&mut session, cancellation).await?;
+            drop(session);
             Ok(ProviderCapabilities {
                 schema_version: 1,
                 provider: ProviderKind::Mysql,
@@ -223,16 +227,7 @@ impl Provider for MysqlProvider {
                     staged_swap: false,
                     scope: TransactionScope::None,
                 },
-                spatial: SpatialCapabilities {
-                    read_wkb: true,
-                    write_wkb: false,
-                    geometry: true,
-                    geography: false,
-                    spatial_index: false,
-                    mixed_geometry_types: false,
-                    dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-                    functions: Vec::new(),
-                },
+                spatial: mysql_spatial_capabilities(),
                 limits: ProviderLimits {
                     max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
                     max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
@@ -323,6 +318,19 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
     provider_error(ErrorCategory::Unsupported, ErrorPhase::Prepare, message)
 }
 
+fn mysql_spatial_capabilities() -> SpatialCapabilities {
+    SpatialCapabilities {
+        read_wkb: true,
+        write_wkb: false,
+        geometry: true,
+        geography: false,
+        spatial_index: false,
+        mixed_geometry_types: true,
+        dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
+        functions: Vec::new(),
+    }
+}
+
 fn provider_error(
     category: ErrorCategory,
     phase: ErrorPhase,
@@ -362,5 +370,12 @@ mod tests {
         assert_eq!(provider.kind(), ProviderKind::Mysql);
         let rendered = format!("{provider:?}");
         assert!(!rendered.contains("unique-secret"));
+    }
+
+    #[test]
+    fn published_spatial_capabilities_match_generic_geometry_contract() {
+        let capabilities = mysql_spatial_capabilities();
+        assert!(capabilities.geometry);
+        assert!(capabilities.mixed_geometry_types);
     }
 }

@@ -1,6 +1,8 @@
+use crate::error::{interruption_error, timeout_error};
 use crate::{
     bind_parameters, describe_object, MysqlColumnBuffer, MysqlColumnKind, MysqlPool, MysqlReadPlan,
 };
+use mysql_async::{Row, Value};
 use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::plan::ReadOperation;
@@ -14,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 const ROW_CHANNEL_CAPACITY: usize = 1;
+const CONSERVATIVE_CELL_BYTES: u64 = 64;
 pub const DEFAULT_BATCH_ROWS: usize = 8_192;
 pub const MAX_BATCH_ROWS: usize = 65_536;
 
@@ -33,7 +36,7 @@ pub async fn read_operation(
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
-    budget.ensure_active()?;
+    ensure_active_read_budget(budget)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
@@ -63,12 +66,19 @@ pub async fn read_operation(
     }
 
     let (sender, receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
+    let (demand_sender, demand_receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
     let worker_cancellation = internal.clone();
     let sql = plan.sql.clone();
-    tokio::spawn(async move {
+    let worker_task = tokio::spawn(async move {
         let error_sender = sender.clone();
         if let Err(error) = session
-            .pump_exec_rows(sql, parameters, sender, &worker_cancellation)
+            .pump_exec_rows(
+                sql,
+                parameters,
+                sender,
+                demand_receiver,
+                &worker_cancellation,
+            )
             .await
         {
             let _ = error_sender.send(Err(error)).await;
@@ -77,29 +87,49 @@ pub async fn read_operation(
     let deadline_task = budget_cancellation.take_task()?;
     Ok(Box::new(MysqlBatchStream {
         receiver,
+        demand_sender,
         columns: plan.columns,
         schema: plan.schema,
         batch_rows,
         budget: budget.clone(),
         cancellation: internal,
         deadline_task,
+        worker_task: Some(worker_task),
         _operation_lease: operation_lease,
         _columns_lease: columns_lease,
-        finished: false,
+        state: MysqlStreamState::Active,
     }))
 }
 
 pub struct MysqlBatchStream {
-    receiver: mpsc::Receiver<Result<mysql_async::Row>>,
+    receiver: mpsc::Receiver<Result<Row>>,
+    demand_sender: mpsc::Sender<()>,
     columns: Vec<crate::MysqlColumnSpec>,
     schema: SchemaRef,
     batch_rows: usize,
     budget: ResourceBudget,
     cancellation: CancellationToken,
     deadline_task: tokio::task::JoinHandle<()>,
+    worker_task: Option<tokio::task::JoinHandle<()>>,
     _operation_lease: ResourceLease,
     _columns_lease: ResourceLease,
-    finished: bool,
+    state: MysqlStreamState,
+}
+
+enum MysqlStreamState {
+    Active,
+    Drained,
+    Failed(DatabaseError),
+}
+
+impl MysqlStreamState {
+    fn terminal_result(&self) -> Option<Result<Option<RecordBatch>>> {
+        match self {
+            Self::Active => None,
+            Self::Drained => Some(Ok(None)),
+            Self::Failed(error) => Some(Err(error.clone())),
+        }
+    }
 }
 
 impl BatchStream for MysqlBatchStream {
@@ -117,9 +147,9 @@ impl BatchStream for MysqlBatchStream {
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if cancellation.is_cancelled() {
-                self.cancellation.cancel();
-                self.finished = true;
-                return Err(cancelled_read_error());
+                let error = interruption_error(cancellation, ErrorPhase::Read, RemoteEffect::None);
+                self.fail(error.clone());
+                return Err(error);
             }
             let completed = {
                 let next = self.next_batch_inner();
@@ -129,62 +159,96 @@ impl BatchStream for MysqlBatchStream {
                     _ = cancellation.cancelled() => None,
                 }
             };
-            if let Some(result) = completed {
-                result
-            } else {
-                self.cancellation.cancel();
-                self.finished = true;
-                Err(cancelled_read_error())
-            }
+            completed.unwrap_or_else(|| {
+                let error = interruption_error(cancellation, ErrorPhase::Read, RemoteEffect::None);
+                self.fail(error.clone());
+                Err(error)
+            })
         })
     }
 }
 
 impl MysqlBatchStream {
     async fn next_batch_inner(&mut self) -> Result<Option<RecordBatch>> {
-        if self.finished {
-            return Ok(None);
+        if let Some(result) = self.state.terminal_result() {
+            return result;
         }
-        self.budget.ensure_active()?;
+        let result = self.next_active_batch().await;
+        match &result {
+            Ok(Some(_)) => {}
+            Ok(None) => self.state = MysqlStreamState::Drained,
+            Err(error) => self.fail(error.clone()),
+        }
+        result
+    }
+
+    async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
         if self.cancellation.is_cancelled() {
-            self.finished = true;
-            return Err(cancelled_read_error());
+            return Err(interruption_error(
+                &self.cancellation,
+                ErrorPhase::Read,
+                RemoteEffect::None,
+            ));
         }
+        ensure_active_read_budget(&self.budget)?;
         let reservation = BatchReservation::new(&self.budget, self.batch_rows, &self.columns)?;
-        let capacity = reservation.row_limit.min(1_024);
+        let capacity = bounded_buffer_capacity(
+            reservation.row_limit,
+            reservation.byte_limit,
+            self.columns.len(),
+        )?;
         let mut buffers = self
             .columns
             .iter()
             .map(|column| MysqlColumnBuffer::new(column, capacity))
             .collect::<Vec<_>>();
         let mut row_count = 0_usize;
+        let mut estimated_bytes = 0_u64;
+        let maximum_valid_row_bytes =
+            maximum_valid_row_bytes(self.columns.len(), self.budget.limits().cell_bytes)?;
         while row_count < reservation.row_limit {
+            let residual = reservation.byte_limit.saturating_sub(estimated_bytes);
+            if row_count > 0 && residual < maximum_valid_row_bytes {
+                break;
+            }
+            let _ = self.demand_sender.send(()).await;
             let received = tokio::select! {
                 _ = self.cancellation.cancelled() => {
-                    self.finished = true;
-                    return Err(cancelled_read_error());
+                    return Err(interruption_error(
+                        &self.cancellation,
+                        ErrorPhase::Read,
+                        RemoteEffect::None,
+                    ));
                 }
                 row = self.receiver.recv() => row,
             };
             match received {
                 Some(Ok(row)) => {
-                    for (index, buffer) in buffers.iter_mut().enumerate() {
-                        if let Err(error) =
-                            buffer.append(&row, index, self.budget.limits().cell_bytes)
-                        {
-                            self.cancellation.cancel();
-                            self.finished = true;
-                            return Err(error);
+                    let row_bytes = conservative_row_bytes(&row, self.columns.len())?;
+                    let next_estimate =
+                        estimated_bytes.checked_add(row_bytes).ok_or_else(|| {
+                            DatabaseError::resource_limit("stima batch MySQL in overflow")
+                        })?;
+                    if next_estimate > reservation.byte_limit {
+                        if row_count == 0 {
+                            return Err(DatabaseError::resource_limit(
+                                "riga MySQL oltre il budget memoria del batch",
+                            ));
                         }
+                        return Err(DatabaseError::resource_limit(
+                            "riga MySQL cresciuta oltre il residuo memoria del batch",
+                        ));
+                    }
+                    for (index, buffer) in buffers.iter_mut().enumerate() {
+                        buffer.append(&row, index, self.budget.limits().cell_bytes)?;
                     }
                     row_count = row_count.saturating_add(1);
+                    estimated_bytes = next_estimate;
                 }
                 Some(Err(error)) => {
-                    self.finished = true;
                     return Err(error);
                 }
                 None => {
-                    self.finished = true;
                     break;
                 }
             }
@@ -215,21 +279,105 @@ impl MysqlBatchStream {
         )?;
         let rows = u64::try_from(batch.num_rows())
             .map_err(|_| DatabaseError::resource_limit("righe MySQL non rappresentabili"))?;
-        if let Err(error) = reservation.commit(rows, actual_bytes, components) {
-            self.cancellation.cancel();
-            self.finished = true;
-            return Err(error);
-        }
+        reservation.commit(rows, actual_bytes, components)?;
         Ok(Some(batch))
     }
+
+    fn fail(&mut self, error: DatabaseError) {
+        self.cancellation.cancel();
+        self.state = MysqlStreamState::Failed(error);
+    }
+}
+
+fn bounded_buffer_capacity(
+    row_limit: usize,
+    byte_limit: u64,
+    column_count: usize,
+) -> Result<usize> {
+    if column_count == 0 {
+        return Ok(row_limit.min(1_024));
+    }
+    let columns = u64::try_from(column_count)
+        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+    let minimum_row_bytes = CONSERVATIVE_CELL_BYTES
+        .checked_mul(columns)
+        .ok_or_else(|| DatabaseError::resource_limit("stima riga MySQL in overflow"))?;
+    let rows_by_bytes = byte_limit / minimum_row_bytes;
+    if rows_by_bytes == 0 {
+        return Err(DatabaseError::resource_limit(
+            "budget memoria insufficiente per una riga MySQL",
+        ));
+    }
+    let rows_by_bytes = usize::try_from(rows_by_bytes).unwrap_or(usize::MAX);
+    Ok(row_limit.min(rows_by_bytes).min(1_024))
+}
+
+fn maximum_valid_row_bytes(column_count: usize, cell_limit: u64) -> Result<u64> {
+    let columns = u64::try_from(column_count)
+        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+    let bytes_value = cell_limit
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(CONSERVATIVE_CELL_BYTES))
+        .ok_or_else(|| DatabaseError::resource_limit("bound riga MySQL in overflow"))?;
+    let maximum_cell = bytes_value.max(128);
+    maximum_cell
+        .checked_mul(columns)
+        .ok_or_else(|| DatabaseError::resource_limit("bound riga MySQL in overflow"))
+}
+
+fn conservative_row_bytes(row: &Row, column_count: usize) -> Result<u64> {
+    let mut total = 0_u64;
+    for index in 0..column_count {
+        let value = row.as_ref(index).ok_or_else(|| {
+            read_error(
+                ErrorCategory::DataMapping,
+                ErrorPhase::Read,
+                "riga MySQL con meno colonne del piano",
+            )
+        })?;
+        let payload_bytes = match value {
+            Value::Bytes(bytes) => u64::try_from(bytes.len())
+                .map_err(|_| DatabaseError::resource_limit("payload MySQL non rappresentabile"))?
+                .checked_mul(2)
+                .ok_or_else(|| DatabaseError::resource_limit("stima payload MySQL in overflow"))?,
+            Value::Time(..) => 64,
+            Value::Date(..)
+            | Value::Int(_)
+            | Value::UInt(_)
+            | Value::Float(_)
+            | Value::Double(_) => 32,
+            Value::NULL => 0,
+        };
+        total = total
+            .checked_add(CONSERVATIVE_CELL_BYTES)
+            .and_then(|value| value.checked_add(payload_bytes))
+            .ok_or_else(|| DatabaseError::resource_limit("stima riga MySQL in overflow"))?;
+    }
+    Ok(total)
 }
 
 impl Drop for MysqlBatchStream {
     fn drop(&mut self) {
         self.deadline_task.abort();
-        if !self.finished {
+        if matches!(self.state, MysqlStreamState::Active) {
             self.cancellation.cancel();
         }
+        let Some(mut worker_task) = self.worker_task.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            worker_task.abort();
+            return;
+        };
+        runtime.spawn(async move {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut worker_task)
+                .await
+                .is_err()
+            {
+                worker_task.abort();
+                let _ = worker_task.await;
+            }
+        });
     }
 }
 
@@ -379,6 +527,16 @@ fn validate_batch_rows(batch_rows: usize) -> Result<()> {
     Ok(())
 }
 
+fn ensure_active_read_budget(budget: &ResourceBudget) -> Result<()> {
+    budget.ensure_active().map_err(|error| {
+        if budget.remaining_duration().is_none() {
+            timeout_error(ErrorPhase::Read, RemoteEffect::None)
+        } else {
+            error
+        }
+    })
+}
+
 struct BudgetCancellation {
     token: CancellationToken,
     deadline_task: Option<tokio::task::JoinHandle<()>>,
@@ -420,14 +578,6 @@ impl Drop for BudgetCancellation {
             task.abort();
         }
     }
-}
-
-fn cancelled_read_error() -> DatabaseError {
-    read_error(
-        ErrorCategory::Cancelled,
-        ErrorPhase::Read,
-        "lettura MySQL cancellata",
-    )
 }
 
 fn read_error(
@@ -479,6 +629,61 @@ mod tests {
                 .expect_err("exhausted")
                 .category,
             ErrorCategory::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn terminal_stream_error_is_sticky_instead_of_becoming_eof() {
+        let error = read_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Read,
+            "errore terminale",
+        );
+        let state = MysqlStreamState::Failed(error.clone());
+        for _ in 0..2 {
+            assert_eq!(
+                state
+                    .terminal_result()
+                    .expect("stato terminale")
+                    .expect_err("errore sticky"),
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn builder_capacity_is_bounded_by_the_byte_budget_before_allocation() {
+        assert_eq!(
+            bounded_buffer_capacity(8_192, 128, 1).expect("due righe conservative"),
+            2
+        );
+        assert_eq!(
+            bounded_buffer_capacity(1, 63, 1)
+                .expect_err("budget inferiore a una riga")
+                .category,
+            ErrorCategory::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn valid_row_bound_reserves_cell_payload_and_buffer_growth() {
+        assert_eq!(maximum_valid_row_bytes(2, 4_096).expect("bound"), 16_512);
+        assert!(maximum_valid_row_bytes(usize::MAX, u64::MAX).is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_resource_deadline_maps_to_timeout() {
+        let budget = ResourceBudget::new(ResourceLimits {
+            duration_ms: 1,
+            ..ResourceLimits::default()
+        })
+        .expect("budget breve");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        assert_eq!(
+            ensure_active_read_budget(&budget)
+                .expect_err("deadline scaduta")
+                .category,
+            ErrorCategory::Timeout
         );
     }
 }

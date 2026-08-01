@@ -146,8 +146,9 @@ impl MysqlConfig {
         self.acquire_timeout
     }
 
-    /// Valida la configurazione prima di qualsiasi I/O.
-    /// Valida limiti, endpoint e configurazione TLS.
+    /// Valida limiti, endpoint e configurazione TLS prima dell'I/O di rete.
+    /// Se è configurata una CA privata, esegue anche un controllo locale bounded
+    /// di esistenza, tipo e dimensione del file.
     ///
     /// # Errors
     ///
@@ -232,7 +233,7 @@ impl MysqlConfig {
             .tcp_nodelay(true)
             .stmt_cache_size(Some(128))
             .ssl_opts(Some(ssl))
-            .init(vec![crate::SESSION_BOOTSTRAP_SQL]);
+            .setup(vec![crate::SESSION_BOOTSTRAP_SQL]);
         if let Some(max_connections) = max_connections {
             let constraints = PoolConstraints::new(0, max_connections).ok_or_else(|| {
                 invalid_configuration("configurazione MySQL: vincoli pool non validi")
@@ -318,5 +319,14 @@ mod tests {
         let ssl = opts.ssl_opts().expect("TLS must remain required");
         assert!(ssl.accept_invalid_certs());
         assert!(ssl.skip_domain_validation());
+    }
+
+    #[test]
+    fn pooled_driver_opts_reapply_bootstrap_after_connection_reset() {
+        let opts = config("secret")
+            .driver_opts_with_pool(Some(2))
+            .expect("driver opts pooled");
+        assert!(opts.pool_opts().reset_connection());
+        assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
     }
 }

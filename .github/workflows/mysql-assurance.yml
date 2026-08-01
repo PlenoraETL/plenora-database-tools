@@ -16,7 +16,9 @@ on:
       - "crates/plenora-db-mysql/**"
       - "docker-compose.mysql.yml"
       - "docker/mysql/init/**"
+      - "docker/mysql/tls/**"
       - "scripts/check_mysql_reference.py"
+      - "scripts/test_check_mysql_reference.py"
   workflow_dispatch:
 
 permissions:
@@ -52,6 +54,12 @@ jobs:
           mkdir -p assurance-results
           docker compose -f docker-compose.mysql.yml config --quiet
           docker compose -f docker-compose.mysql.yml up -d --wait
+          docker cp dataflow-mysql:/etc/mysql/tls/ca.pem \
+            assurance-results/mysql-ca.pem
+          printf 'PLENORA_MYSQL_CA=%s\n' \
+            "$PWD/assurance-results/mysql-ca.pem" >> "$GITHUB_ENV"
+          printf '127.0.0.1 mysql-hostname-mismatch\n' \
+            | sudo tee -a /etc/hosts > /dev/null
 
       - name: Install the pinned Rust toolchain
         run: |
