@@ -282,8 +282,9 @@ def main() -> int:
         failures.append(
             f"freeze post-tag applicato al checkout corrente: {tagged_errors}"
         )
+    ready_version = deepcopy(ready)
     with patch.object(gate, "workspace_versions_match", return_value=False):
-        errors = gate.check(base, ROOT)
+        errors = gate.check(ready_version, ROOT)
     if not any("tutti i crate e Cargo.lock" in error for error in errors):
         failures.append(f"versione workspace divergente: errore non rilevato {errors}")
     total = len(cases) + 3

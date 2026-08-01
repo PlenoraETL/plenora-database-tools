@@ -7,11 +7,12 @@ members = [
     "crates/plenora-database-testkit",
     "crates/plenora-db-postgres",
     "crates/plenora-db-sqlserver",
+    "crates/plenora-db-mysql",
     "crates/plenora-database-cli",
 ]
 
 [workspace.package]
-version = "0.1.0-rc.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.92"
 publish = false
@@ -31,6 +32,7 @@ tokio = { version = "=1.49.0", features = ["io-util", "macros", "net", "rt", "rt
 tokio-util = { version = "=0.7.18", features = ["compat"] }
 tokio-postgres = { version = "=0.7.15", features = ["with-chrono-0_4", "with-serde_json-1"] }
 tiberius = { version = "=0.12.3", default-features = false, features = ["chrono", "rustls", "tds73"] }
+mysql_async = { version = "=0.37.0", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12", "chrono"] }
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
 webpki-roots = "=1.0.9"
@@ -41,6 +43,7 @@ plenora-database-engine = { path = "crates/plenora-database-engine" }
 plenora-database-testkit = { path = "crates/plenora-database-testkit" }
 plenora-db-postgres = { path = "crates/plenora-db-postgres" }
 plenora-db-sqlserver = { path = "crates/plenora-db-sqlserver" }
+plenora-db-mysql = { path = "crates/plenora-db-mysql" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

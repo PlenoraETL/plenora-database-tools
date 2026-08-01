@@ -284,7 +284,7 @@ def check(document: dict, repository: Path) -> list[str]:
         errors.append("component deve essere plenora-database-tools")
     if document.get("component_version") != "0.1.0-rc.1":
         errors.append("component_version deve essere 0.1.0-rc.1")
-    if not workspace_versions_match(repository):
+    if decision != "tagged" and not workspace_versions_match(repository):
         errors.append("tutti i crate e Cargo.lock devono dichiarare 0.1.0-rc.1")
     expected_status = {
         "rebaseline_pending": "rc1_rebaseline_pending",

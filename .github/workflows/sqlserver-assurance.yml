@@ -28,6 +28,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 concurrency:
   group: sqlserver-assurance-${{ github.ref }}
   cancel-in-progress: false
@@ -52,6 +55,8 @@ jobs:
     steps:
       - name: Check out the candidate revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
 
       - name: Validate and start the pinned reference
         run: |
@@ -86,7 +91,7 @@ jobs:
       - name: Record reproducibility identities
         run: |
           {
-            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'commit=%s\n' "$CANDIDATE_SHA"
             printf 'runner_os=%s\n' "$RUNNER_OS"
             printf 'runner_arch=%s\n' "$RUNNER_ARCH"
             rustc --version --verbose
@@ -99,7 +104,7 @@ jobs:
           } | tee assurance-results/sqlserver-environment.txt
 
       - name: Verify the candidate remained unchanged
-        run: git diff --exit-code -- .
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
 
       - name: Capture diagnostics
         if: failure()
@@ -112,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: sqlserver-assurance-${{ github.sha }}
+          name: sqlserver-assurance-${{ env.CANDIDATE_SHA }}
           path: assurance-results/
           if-no-files-found: error
           retention-days: 90

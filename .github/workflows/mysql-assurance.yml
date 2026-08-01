@@ -1,0 +1,113 @@
+name: MySQL assurance
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/mysql-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-sql/**"
+      - "crates/plenora-database-testkit/**"
+      - "crates/plenora-db-mysql/**"
+      - "docker-compose.mysql.yml"
+      - "docker/mysql/init/**"
+      - "docker/mysql/tls/**"
+      - "scripts/check_mysql_reference.py"
+      - "scripts/test_check_mysql_reference.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+concurrency:
+  group: mysql-assurance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mysql:
+    name: MySQL 8.4 reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.92.0
+      PLENORA_MYSQL_GATE_HOST_CARGO: "1"
+      PLENORA_MYSQL_HOST: 127.0.0.1
+      PLENORA_MYSQL_DATABASE: dataflow_test
+      PLENORA_MYSQL_USER: dataflow
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Validate and start the pinned reference
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.mysql.yml config --quiet
+          docker compose -f docker-compose.mysql.yml up -d --wait
+          docker cp dataflow-mysql:/etc/mysql/tls/ca.pem \
+            assurance-results/mysql-ca.pem
+          printf 'PLENORA_MYSQL_CA=%s\n' \
+            "$PWD/assurance-results/mysql-ca.pem" >> "$GITHUB_ENV"
+          printf '127.0.0.1 mysql-hostname-mismatch\n' \
+            | sudo tee -a /etc/hosts > /dev/null
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+            --profile minimal \
+            --component clippy,rustfmt
+
+      - name: Run the MySQL reference gate
+        run: |
+          python3 scripts/check_mysql_reference.py 2>&1 \
+            | tee assurance-results/mysql-reference.log
+
+      - name: Record reproducibility identities
+        run: |
+          {
+            printf 'commit=%s\n' "$CANDIDATE_SHA"
+            rustc --version --verbose
+            cargo --version --verbose
+            docker --version
+            docker compose version
+            docker image inspect \
+              mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb \
+              --format '{{.Id}} {{json .RepoDigests}}'
+          } | tee assurance-results/mysql-environment.txt
+
+      - name: Verify the candidate remained unchanged
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
+
+      - name: Capture diagnostics
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/mysql-containers.txt
+          docker compose -f docker-compose.mysql.yml logs --no-color \
+            > assurance-results/mysql-compose.log 2>&1 || true
+
+      - name: Preserve assurance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mysql-assurance-${{ env.CANDIDATE_SHA }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Stop MySQL and remove ephemeral volumes
+        if: always()
+        run: docker compose -f docker-compose.mysql.yml down --volumes || true

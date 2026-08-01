@@ -27,4 +27,8 @@ pub const SQLSERVER_NATIVE_TYPE: &str = "plenora.sqlserver.native_type";
 pub const SQLSERVER_NATIVE_DECLARATION: &str = "plenora.sqlserver.native_declaration";
 pub const SQLSERVER_COLLATION: &str = "plenora.sqlserver.collation";
 
+pub const MYSQL_NATIVE_TYPE: &str = "plenora.mysql.native_type";
+pub const MYSQL_NATIVE_DECLARATION: &str = "plenora.mysql.native_declaration";
+pub const MYSQL_COLLATION: &str = "plenora.mysql.collation";
+
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";
