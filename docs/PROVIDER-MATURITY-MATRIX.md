@@ -1,0 +1,68 @@
+# Matrice di maturità dei provider di riferimento
+
+Questa matrice descrive il codice corrente e i gate riproducibili. Non sostituisce
+il manifesto di release e non estende implicitamente le capability pubblicate da
+`probe_capabilities`.
+
+Legenda:
+
+- **live**: comportamento esercitato contro il database di riferimento;
+- **offline**: coperto da test senza database;
+- **fail-closed**: capability non pubblicata e chiamata rifiutata;
+- **aperto**: necessario per la parità indicata.
+
+## Riferimenti
+
+| Provider | Riferimento | Gate |
+| --- | --- | --- |
+| PostgreSQL/PostGIS | PostgreSQL 16 / PostGIS 3.4 | `python scripts/check_postgres_reference.py` |
+| SQL Server | SQL Server 2022, compatibility level 160, immagine fissata per digest | `python scripts/check_sqlserver_reference.py` |
+| MySQL | MySQL 8.4 LTS; esecuzione locale verificata su 8.4.11 e immagine fissata per digest | `python scripts/check_mysql_reference.py` |
+
+MariaDB non è dedotto come compatibile con MySQL e non appartiene al riferimento
+MySQL.
+
+## Capability e assurance
+
+| Area | PostgreSQL/PostGIS | SQL Server | MySQL 8.4 LTS |
+| --- | --- | --- | --- |
+| Connessione e identità server | live | live | live |
+| TLS sul data path | live | live, inclusa CA privata/hostname/rotazione | live; CA privata, hostname positivo/negativo e `require-secure-transport=ON` |
+| Pool bounded | live | live | live |
+| Bootstrap dopo reset | live | live | live; stessa `CONNECTION_ID()` dopo reset, `setup` riapplicato |
+| Timeout acquire/connect | live | live | offline/live; lease acquire e apertura connessione hanno budget distinti |
+| Timeout operazione/deadline e quarantena | live | live | live; envelope `Timeout` distinto da cancellazione richiesta |
+| Cancellazione in-flight e quarantena | live | live | live |
+| Redazione credenziali | offline/live | offline/live | offline |
+| Catalogo e describe | live | live | live |
+| Lettura Arrow bounded/streaming | live | live | live; allocazione pre-bounded e drop anticipato con cleanup bounded |
+| Projection/filter/order/limit bind-safe | live | live | live |
+| Query relazionale pubblica | live | live | **fail-closed** |
+| Scrittura | live | live | **fail-closed** |
+| Tipi scalari di riferimento | live, profilo esteso | live, profilo esteso | live: integer, decimal, bool, UTF-8, binary, date, datetime, JSON |
+| Spatial generico | live | live | live: `GEOMETRY -> mixed` |
+| Spatial tipizzato | live | live | live: `POINT` e `GEOMETRYCOLLECTION -> exact` |
+| Dimensioni spatial | XY/XYZ/XYM/XYZM secondo gate | geometry/geography secondo gate | XY; Z/M/ZM non pubblicate |
+| Contratto schema canonico | offline/live | offline/live | offline/live tramite `validate_schema_contract` |
+| Gate fmt + Clippy `-D warnings` | sì | sì | sì |
+| Gate live corrente | suite reference | 44 test live attesi | 12 test live attesi per nome |
+
+## Esito di parità
+
+MySQL ha raggiunto la stessa disciplina di assurance per le capability che
+pubblica oggi: connessione TLS, introspezione, lettura streaming bounded,
+filtri bind-safe, tipi dichiarati, spatial XY, reset, timeout, cancellazione e
+quarantena.
+
+La **parità funzionale completa non è ancora raggiunta**:
+
+1. `Provider::query` MySQL restituisce `Unsupported`;
+2. `prepare_write` e `write` MySQL restituiscono `Unsupported`;
+3. Z, M e ZM non sono supportate e devono continuare a fallire chiuso;
+4. la matrice MySQL 8.0 non è ancora una prova live equivalente al riferimento
+   8.4 LTS.
+
+Questi punti non possono essere nascosti tramite feature flag né descritti come
+supportati. La decisione di release deve scegliere esplicitamente se `1.0.0`
+richiede equivalenza funzionale completa o una superficie MySQL read-only
+stabile e verificata.

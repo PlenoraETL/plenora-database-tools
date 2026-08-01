@@ -6,7 +6,7 @@ tabellari e geospaziali.
 Target v1:
 
 - PostgreSQL/PostGIS;
-- MySQL/MariaDB;
+- MySQL 8.4 LTS; MariaDB richiede una qualifica indipendente;
 - SQL Server geometry/geography;
 - Oracle/Oracle Spatial;
 - Db2/Db2 Spatial;
@@ -26,8 +26,11 @@ PostGIS tipizzate, operatori GiST/KNN, geometrie XY/XYZ/XYM/XYZM, pool bounded,
 cancellazione server-side, COPY text/binario, introspezione strutturale e
 schema evolution additiva. Passa gate live, fault matrix e benchmark
 differenziali. Il relativo safety case rende esplicite prove, assunzioni e
-rischi residui; non costituisce certificazione aeronautica. Gli altri provider
-richiedono target concordati.
+rischi residui; non costituisce certificazione aeronautica. SQL Server 2022 ha
+un gate reference separato. MySQL 8.4 LTS ha una superficie read-only stabile,
+con TLS verificato tramite CA privata e hostname, catalogo, streaming bounded,
+drop anticipato, spatial XY, reset, timeout, cancellazione e quarantena provati
+live; query relazionale e scrittura restano fail-closed.
 
 Documenti principali:
 
@@ -42,6 +45,8 @@ Documenti principali:
 - [compatibilità PostgreSQL/PostGIS](docs/postgres/COMPATIBILITY.md);
 - [campagna prestazionale PostgreSQL/PostGIS](docs/postgres/PERFORMANCE.md);
 - [contratto canonico Arrow condiviso](docs/adr/0011-canonical-field-contract.md);
+- [provider MySQL](docs/mysql/README.md);
+- [matrice di maturità dei provider](docs/PROVIDER-MATURITY-MATRIX.md);
 - [decisioni che richiedono i target](docs/phase-0/open-decisions.md);
 - [contratti v1](contracts/v1/README.md);
 - [benchmark Fase 0](benchmarks/README.md).
