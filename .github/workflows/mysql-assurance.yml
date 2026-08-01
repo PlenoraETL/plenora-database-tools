@@ -39,7 +39,6 @@ jobs:
       PLENORA_MYSQL_HOST: 127.0.0.1
       PLENORA_MYSQL_DATABASE: dataflow_test
       PLENORA_MYSQL_USER: dataflow
-      PLENORA_MYSQL_PASSWORD: DataFlow_Test_2026!
 
     defaults:
       run:

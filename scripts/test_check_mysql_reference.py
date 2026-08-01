@@ -113,6 +113,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
     def test_cargo_container_password_is_not_embedded_in_docker_arguments(self) -> None:
         with (
+            patch.dict(
+                gate.os.environ,
+                {"PLENORA_MYSQL_GATE_HOST_CARGO": "0"},
+                clear=False,
+            ),
             patch.object(gate, "mysql_tls_volume", return_value="mysql_tls"),
             patch.object(gate, "fixture_password", return_value="fixture-secret"),
         ):
@@ -120,6 +125,25 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
         self.assertNotIn("fixture-secret", repr(command))
         self.assertIn("PLENORA_MYSQL_PASSWORD", command)
+        self.assertIsNotNone(environment)
+        self.assertEqual(environment["PLENORA_MYSQL_PASSWORD"], "fixture-secret")
+
+    def test_host_cargo_password_is_only_passed_in_the_process_environment(self) -> None:
+        with (
+            patch.dict(
+                gate.os.environ,
+                {
+                    "PLENORA_MYSQL_GATE_HOST_CARGO": "1",
+                    "PLENORA_MYSQL_CA": "/tmp/mysql-ca.pem",
+                },
+                clear=True,
+            ),
+            patch.object(gate, "fixture_password", return_value="fixture-secret"),
+        ):
+            command, environment = gate.cargo(["test"])
+
+        self.assertEqual(command, ["cargo", "test"])
+        self.assertNotIn("fixture-secret", repr(command))
         self.assertIsNotNone(environment)
         self.assertEqual(environment["PLENORA_MYSQL_PASSWORD"], "fixture-secret")
 
@@ -148,6 +172,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertIn("docker cp dataflow-mysql:/etc/mysql/tls/ca.pem", workflow)
         self.assertIn("PLENORA_MYSQL_CA=", workflow)
         self.assertIn('>> "$GITHUB_ENV"', workflow)
+        self.assertNotIn("PLENORA_MYSQL_PASSWORD:", workflow)
 
     def test_host_cargo_workflow_resolves_the_tls_mismatch_alias(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
