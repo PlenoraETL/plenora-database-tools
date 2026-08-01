@@ -12,6 +12,8 @@ on:
       - "scripts/test_check_release_manifest.py"
       - "scripts/check_rc1_readiness.py"
       - "scripts/test_check_rc1_readiness.py"
+      - "scripts/check_final_readiness.py"
+      - "scripts/test_check_final_readiness.py"
       - "scripts/test_candidate_sha_workflows.py"
   workflow_dispatch:
 
@@ -23,7 +25,7 @@ env:
 
 jobs:
   release-manifest:
-    name: Release manifest / C1-C4 / RC1 readiness
+    name: Release manifest / C1-C4 / RC1 + final readiness
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
@@ -47,7 +49,8 @@ jobs:
             --repo . \
             --json-out "$RUNNER_TEMP/release-manifest-result.json" \
             release/development.json \
-            release/rc1-readiness.json
+            release/rc1-readiness.json \
+            release/final-readiness.json
 
       - name: Prove the gate rejects invalid manifests
         run: python3 scripts/test_check_release_manifest.py
@@ -62,6 +65,16 @@ jobs:
       - name: Prove the RC1 gate rejects unsafe mutations
         run: python3 scripts/test_check_rc1_readiness.py
 
+      - name: Validate the final 1.0.0 metadata candidate
+        run: |
+          python3 scripts/check_final_readiness.py \
+            --repo . \
+            --json-out "$RUNNER_TEMP/final-readiness-result.json" \
+            release/final-readiness.json
+
+      - name: Prove the final gate rejects premature claims
+        run: python3 scripts/test_check_final_readiness.py
+
       - name: Verify the candidate remained unchanged
         run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
 
@@ -73,5 +86,6 @@ jobs:
           path: |
             ${{ runner.temp }}/release-manifest-result.json
             ${{ runner.temp }}/rc1-readiness-result.json
+            ${{ runner.temp }}/final-readiness-result.json
           if-no-files-found: error
           retention-days: 30

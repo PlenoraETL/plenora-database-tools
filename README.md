@@ -59,14 +59,17 @@ Da PowerShell o da un altro terminale:
 python scripts\check_pre_database.py
 ```
 
-Lo stato di rilascio corrente è dichiarato nel manifesto autoritativo
-[`release/rc1-readiness.json`](release/rc1-readiness.json).
-[`release/development.json`](release/development.json) è mantenuto come record
-superseded. Il relativo gate generale è eseguibile anche da solo:
+Lo stato candidato corrente è dichiarato in
+[`release/final-readiness.json`](release/final-readiness.json). I manifesti
+[`release/rc1-readiness.json`](release/rc1-readiness.json) e
+[`release/development.json`](release/development.json) restano record storici
+immutabili. I gate sono eseguibili anche separatamente:
 
 ```powershell
-python scripts\check_release_manifest.py --repo . release\development.json release\rc1-readiness.json
+python scripts/check_release_manifest.py --repo . release/development.json release/rc1-readiness.json release/final-readiness.json
 python scripts\test_check_release_manifest.py
+python scripts\check_final_readiness.py --repo . release\final-readiness.json
+python scripts\test_check_final_readiness.py
 ```
 
 La RC1 taggata con claim `verified_internally` è descritta in

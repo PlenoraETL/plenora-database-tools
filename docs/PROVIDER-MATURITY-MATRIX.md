@@ -66,3 +66,12 @@ Questi punti non possono essere nascosti tramite feature flag né descritti come
 supportati. La decisione di release deve scegliere esplicitamente se `1.0.0`
 richiede equivalenza funzionale completa o una superficie MySQL read-only
 stabile e verificata.
+
+## Decisione della metadata candidate 1.0.0
+
+La candidate adotta la seconda opzione: MySQL 8.4 LTS è una superficie stabile
+e verificata **read-only**, non una dichiarazione di equivalenza funzionale con
+PostgreSQL o SQL Server. `Provider::query`, `prepare_write` e `write` restano
+`Unsupported`; MySQL 8.0, MariaDB e le dimensioni Z/M/ZM restano fuori
+perimetro e non sono dedotte come compatibili. Ogni aggiunta richiede una nuova
+campagna live e un aggiornamento esplicito del manifesto.
