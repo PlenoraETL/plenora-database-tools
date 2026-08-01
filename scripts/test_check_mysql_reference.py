@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = ROOT / "docker-compose.mysql.yml"
 SERVER_EXT = ROOT / "docker" / "mysql" / "tls" / "server.ext"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
+GENERATOR_TEST = ROOT / "docker" / "mysql" / "tls" / "test_generate.sh"
 GATE = ROOT / "scripts" / "check_mysql_reference.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "mysql-assurance.yml"
 SPEC = importlib.util.spec_from_file_location("mysql_gate", GATE)
@@ -103,6 +104,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertNotIn("-keyout /tls/ca.key", compose)
         self.assertNotIn("-CAkey /tls/ca.key", compose)
         self.assertIn('rm -f "$TLS_DIR/ca.key"', generator)
+
+    def test_partial_regeneration_invokes_non_executable_generator_via_bash(self) -> None:
+        generator_test = GENERATOR_TEST.read_text(encoding="utf-8")
+
+        self.assertEqual(generator_test.count("bash /fixture/generate.sh"), 2)
 
     def test_root_credential_is_random_and_unused_by_the_healthcheck(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
