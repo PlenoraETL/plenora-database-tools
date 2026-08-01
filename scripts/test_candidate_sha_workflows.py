@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+import tomllib
 from pathlib import Path
 
 
@@ -51,6 +52,17 @@ class CandidateShaWorkflowTests(unittest.TestCase):
         self.assertIn("--package plenora-db-mysql", workflow)
         self.assertIn("PLENORA_MYSQL_PASSWORD=\"$mysql_password\" cargo llvm-cov", workflow)
         self.assertIn("docker compose -f docker-compose.mysql.yml down --volumes", workflow)
+
+    def test_fuzz_lock_uses_the_workspace_core_version(self) -> None:
+        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        fuzz_lock = tomllib.loads((ROOT / "fuzz" / "Cargo.lock").read_text(encoding="utf-8"))
+        core = next(
+            package
+            for package in fuzz_lock["package"]
+            if package["name"] == "plenora-database-core"
+        )
+
+        self.assertEqual(core["version"], workspace["workspace"]["package"]["version"])
 
 
 if __name__ == "__main__":
