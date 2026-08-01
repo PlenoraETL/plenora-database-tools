@@ -16,12 +16,17 @@ on:
 permissions:
   contents: read
 
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   matrix:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.92.0 --profile minimal
       - name: Qualify pinned SQL Server 2019 and 2025
@@ -29,11 +34,13 @@ jobs:
           mkdir -p assurance-results
           python3 scripts/check_sqlserver_matrix.py 2>&1 |
             tee assurance-results/sqlserver-version-matrix.log
+      - name: Verify the candidate remained unchanged
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
       - name: Preserve matrix evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: sqlserver-version-matrix-${{ github.sha }}
+          name: sqlserver-version-matrix-${{ env.CANDIDATE_SHA }}
           path: assurance-results/
           if-no-files-found: error
           retention-days: 90

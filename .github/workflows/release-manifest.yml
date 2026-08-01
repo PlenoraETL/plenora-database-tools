@@ -6,16 +6,20 @@ on:
       - main
   pull_request:
     paths:
-      - ".github/workflows/release-manifest.yml"
+      - ".github/workflows/**"
       - "release/**"
       - "scripts/check_release_manifest.py"
       - "scripts/test_check_release_manifest.py"
       - "scripts/check_rc1_readiness.py"
       - "scripts/test_check_rc1_readiness.py"
+      - "scripts/test_candidate_sha_workflows.py"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   release-manifest:
@@ -31,7 +35,11 @@ jobs:
       - name: Check out the candidate revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 0
+
+      - name: Prove all assurance workflows bind to the candidate SHA
+        run: python3 scripts/test_candidate_sha_workflows.py
 
       - name: Validate the release manifest
         run: |
@@ -55,13 +63,13 @@ jobs:
         run: python3 scripts/test_check_rc1_readiness.py
 
       - name: Verify the candidate remained unchanged
-        run: git diff --exit-code -- .
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
 
       - name: Preserve the machine-readable result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: release-manifest-${{ github.sha }}
+          name: release-manifest-${{ env.CANDIDATE_SHA }}
           path: |
             ${{ runner.temp }}/release-manifest-result.json
             ${{ runner.temp }}/rc1-readiness-result.json
