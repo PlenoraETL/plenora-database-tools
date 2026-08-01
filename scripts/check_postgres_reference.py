@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,7 @@ def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
         "docker", "run", "--rm",
         "-v", f"{ROOT}:/workspace",
         "-v", f"{ROOT.parent / 'plenora-cargo-cache'}:/usr/local/cargo/registry",
+        "-v", "plenora-conformance-current-target:/workspace/target",
         "-w", "/workspace",
     ]
     if dsn is not None:
@@ -49,6 +51,52 @@ def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
             "-e", f"PLENORA_TEST_POSTGRES_DSN={dsn}",
         ]
     return [*command, IMAGE, "cargo", *arguments]
+
+
+def check_ipc_materialization(dsn: str) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix=".postgres-ipc-gate-", dir=ROOT) as directory:
+        output = Path(directory) / "schema-cache.arrow"
+        container_output = "/workspace/" + output.relative_to(ROOT).as_posix()
+        materialized = json.loads(run(
+            cargo([
+                "run", "--quiet", "-p", "plenora-database-cli", "--",
+                "postgres-read-ipc", "PLENORA_TEST_POSTGRES_DSN",
+                "plenora_fixture", "schema_cache_probe", container_output,
+                "--max-rows", "100", "--max-output-bytes", "10485760",
+                "--timeout-ms", "120000", "--order-by", "id",
+            ], dsn),
+            capture=True,
+        ))
+        inspected = json.loads(run(
+            cargo([
+                "run", "--quiet", "-p", "plenora-database-cli", "--",
+                "inspect-dataset", container_output,
+            ]),
+            capture=True,
+        ))
+        geometry = next(field for field in inspected["fields"] if field["name"] == "geom")
+        if materialized["status"] != "materialized" or materialized["rows"] != 1:
+            raise RuntimeError("materializzazione IPC PostgreSQL incompleta")
+        if materialized["row_order"] != "deterministic":
+            raise RuntimeError("ordine IPC PostgreSQL non deterministico")
+        if materialized["durability"] not in {"confirmed", "unconfirmed"}:
+            raise RuntimeError("durability IPC PostgreSQL non dichiarata")
+        if inspected["rows"] != 1 or inspected["contract_version"] != "1":
+            raise RuntimeError("rilettura IPC PostgreSQL incoerente")
+        if geometry["metadata"].get("plenora.geometry.encoding") != "ewkb":
+            raise RuntimeError("encoding geometria IPC PostgreSQL non preservato")
+        if geometry["metadata"].get("plenora.geometry.srid") != "4326":
+            raise RuntimeError("SRID geometria IPC PostgreSQL non preservato")
+        if list(Path(directory).glob(".*.partial-*")):
+            raise RuntimeError("staging IPC PostgreSQL residuo")
+        return {
+            "rows": materialized["rows"],
+            "batches": materialized["batches"],
+            "row_order": materialized["row_order"],
+            "durability": materialized["durability"],
+            "geometry_encoding": geometry["metadata"]["plenora.geometry.encoding"],
+            "geometry_srid": geometry["metadata"]["plenora.geometry.srid"],
+        }
 
 
 def main() -> int:
@@ -68,6 +116,7 @@ def main() -> int:
             "-p", "plenora-database-sql",
         ]))
         run(cargo(["test", "-p", "plenora-db-postgres", "--", "--nocapture"], dsn))
+        ipc_materialization = check_ipc_materialization(dsn)
         output = run(
             cargo([
                 "test", "-p", "plenora-db-postgres",
@@ -136,8 +185,10 @@ def main() -> int:
             "fault_before_commit_rollback",
             "fault_after_commit_unknown",
             "copy_text_binary_prepared_differential",
+            "postgres_read_ipc_materialization_and_readback",
         ],
         "benchmark": benchmark,
+        "ipc_materialization": ipc_materialization,
         "freeze_scope": "postgres-postgis-data-path-v3",
         "advanced_scope": "postgres-postgis-advanced-profile-v1",
         "release_reference": "postgres-provider-v0.1",
