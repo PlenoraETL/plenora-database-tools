@@ -36,7 +36,7 @@ class MysqlMatrixTests(unittest.TestCase):
     def setUp(self) -> None:
         self.entry = MATRIX[0]
         self.probe = {
-            "version": f"{self.entry.version_prefix}46",
+            "version": self.entry.exact_version,
             "require_secure_transport": "ON",
             "local_infile": "OFF",
             "tls_version": "TLSv1.3",
@@ -48,6 +48,9 @@ class MysqlMatrixTests(unittest.TestCase):
         self.assertEqual(len(MATRIX), 2)
         self.assertEqual(
             [entry.version_prefix for entry in MATRIX], ["8.0.", "8.4."]
+        )
+        self.assertEqual(
+            [entry.exact_version for entry in MATRIX], ["8.0.46", "8.4.11"]
         )
         for entry in MATRIX:
             self.assertTrue(entry.image.startswith("mysql@sha256:"), entry.image)
@@ -87,6 +90,7 @@ class MysqlMatrixTests(unittest.TestCase):
             ("local_infile", "ON"),
             ("tls_version", ""),
             ("version", "5.7.44"),
+            ("version", "8.0.99"),
         ):
             broken = dict(self.probe)
             broken[key] = value

@@ -46,8 +46,13 @@ PASSING_TEST = re.compile(r"^test live_tests::([^ ]+) \.\.\. ok$", re.MULTILINE)
 @dataclass(frozen=True)
 class MatrixEntry:
     label: str
-    version_prefix: str
+    exact_version: str
     digest: str
+
+    @property
+    def version_prefix(self) -> str:
+        major_minor, _, _patch = self.exact_version.rpartition(".")
+        return f"{major_minor}."
 
     @property
     def image(self) -> str:
@@ -80,12 +85,12 @@ class MatrixEntry:
 MATRIX = (
     MatrixEntry(
         "MySQL 8.0",
-        "8.0.",
+        "8.0.46",
         "7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
     ),
     MatrixEntry(
         "MySQL 8.4 LTS",
-        "8.4.",
+        "8.4.11",
         "b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
     ),
 )
@@ -173,7 +178,7 @@ def verify_candidate_offline() -> None:
 
 def verify_hardening(entry: MatrixEntry, probe: dict[str, str]) -> None:
     version = probe.get("version", "")
-    if not version.startswith(entry.version_prefix):
+    if version != entry.exact_version:
         raise RuntimeError(f"versione inattesa per {entry.label}: {version}")
     if probe.get("require_secure_transport") != "ON":
         raise RuntimeError(f"{entry.label} non impone il trasporto sicuro")
@@ -187,7 +192,7 @@ def verify_hardening(entry: MatrixEntry, probe: dict[str, str]) -> None:
 def entry_report(entry: MatrixEntry, probe: dict[str, str]) -> dict[str, Any]:
     return {
         "label": entry.label,
-        "version_prefix": entry.version_prefix,
+        "expected_version": entry.exact_version,
         "image": entry.image,
         "product_version": probe["version"],
         "live_tests": {
