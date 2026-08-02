@@ -16,6 +16,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -261,7 +262,34 @@ def environment_identity(manifest: dict[str, Any]) -> dict[str, Any]:
         completed.returncode
         or len(identity) != 2
         or identity[0] != EXPECTED_REFERENCE
-        or identity[1] != EXPECTED_DIGEST
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", identity[1]) is None
+    ):
+        raise RuntimeError("immagine MySQL prestazionale non conforme al digest")
+    loaded = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            identity[1],
+            "--format",
+            "{{json .RepoDigests}}",
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    try:
+        repo_digests = json.loads(loaded.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "immagine MySQL prestazionale non conforme al digest"
+        ) from error
+    if (
+        loaded.returncode
+        or not isinstance(repo_digests, list)
+        or EXPECTED_REFERENCE not in repo_digests
     ):
         raise RuntimeError("immagine MySQL prestazionale non conforme al digest")
     return {

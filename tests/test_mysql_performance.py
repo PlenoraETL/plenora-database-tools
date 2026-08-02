@@ -245,19 +245,67 @@ class MysqlPerformanceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "peak RSS"):
             enforce_budget(summary, invalid, self.budget)
 
-    def test_environment_identity_requires_both_pinned_image_fields(self) -> None:
-        cases = (
-            f"mysql@sha256:other|{EXPECTED_DIGEST}\n",
-            f"{EXPECTED_REFERENCE}|sha256:other\n",
+    def test_environment_identity_accepts_a_distinct_runtime_id_with_pinned_repo_digest(
+        self,
+    ) -> None:
+        runtime_id = "sha256:" + "a" * 64
+        observations = (
+            SimpleNamespace(
+                returncode=0,
+                stdout=f"{EXPECTED_REFERENCE}|{runtime_id}\n",
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([EXPECTED_REFERENCE]) + "\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="8.4.11\n", stderr=""),
         )
-        for observed in cases:
-            completed = SimpleNamespace(returncode=0, stdout=observed, stderr="")
-            with patch(
+        with (
+            patch(
                 "scripts.check_mysql_performance.subprocess.run",
-                return_value=completed,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "digest"):
-                    environment_identity(self.manifest)
+                side_effect=observations,
+            ),
+            patch("scripts.check_mysql_performance.platform.system", return_value="Linux"),
+            patch("scripts.check_mysql_performance.platform.machine", return_value="x86_64"),
+            patch("scripts.check_mysql_performance.os.cpu_count", return_value=8),
+        ):
+            identity = environment_identity(self.manifest)
+        self.assertEqual(identity["mysql_runtime_image"], runtime_id)
+
+    def test_environment_identity_requires_requested_and_loaded_repo_digest(self) -> None:
+        requested_mismatch = SimpleNamespace(
+            returncode=0,
+            stdout=f"mysql@sha256:other|{EXPECTED_DIGEST}\n",
+            stderr="",
+        )
+        with patch(
+            "scripts.check_mysql_performance.subprocess.run",
+            return_value=requested_mismatch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "digest"):
+                environment_identity(self.manifest)
+
+        runtime_id = "sha256:" + "b" * 64
+        observations = (
+            SimpleNamespace(
+                returncode=0,
+                stdout=f"{EXPECTED_REFERENCE}|{runtime_id}\n",
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(["mysql@sha256:other"]) + "\n",
+                stderr="",
+            ),
+        )
+        with patch(
+            "scripts.check_mysql_performance.subprocess.run",
+            side_effect=observations,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "digest"):
+                environment_identity(self.manifest)
 
     def test_performance_example_requires_private_ca_and_password(self) -> None:
         source = pathlib.Path(
