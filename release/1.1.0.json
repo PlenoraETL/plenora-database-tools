@@ -1,0 +1,177 @@
+{
+  "manifest_version": 1,
+  "component": "plenora-database-tools",
+  "component_version": "1.1.0",
+  "status": "metadata_candidate_pending_same_sha_ci",
+  "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+  "verification_claim": "verified_internally",
+  "independent_review": false,
+  "claims": {
+    "component_rc": true,
+    "system_rc": false,
+    "avionic_certification": false
+  },
+  "supersedes": {
+    "tag": "v1.0.0",
+    "revision": "89c82c4c700550decc394bb1e43b22c8a32e44e1",
+    "immutable": true
+  },
+  "candidate": {
+    "evidence_base_revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+    "evidence_base_result": "passed",
+    "metadata_delta_requires_new_same_sha_ci": true,
+    "production_delta": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "fuzz/Cargo.lock"
+    ],
+    "assurance_delta": [
+      ".github/workflows/release-manifest.yml",
+      "README.md",
+      "docs/FINAL-1.1.0-READINESS.md",
+      "docs/PROVIDER-MATURITY-MATRIX.md",
+      "release/1.1.0.json",
+      "scripts/check_final_readiness.py",
+      "scripts/check_mysql_matrix.py",
+      "scripts/test_check_final_readiness.py",
+      "tests/test_mysql_matrix.py"
+    ]
+  },
+  "evidence": [
+    {
+      "id": "release_manifest",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30744606166,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30744606166"
+    },
+    {
+      "id": "mysql_assurance",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30744606163,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30744606163"
+    },
+    {
+      "id": "mysql_version_matrix",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30746069178,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30746069178"
+    },
+    {
+      "id": "workspace_coverage",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30746112820,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30746112820"
+    },
+    {
+      "id": "ewkb_fuzz",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30746113685,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30746113685"
+    },
+    {
+      "id": "sqlserver_assurance",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30744606173,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30744606173"
+    },
+    {
+      "id": "postgres_assurance",
+      "status": "passed",
+      "revision": "ee4fa7470d48f152aa40d86fb911e780bc75a908",
+      "run_id": 30744606189,
+      "url": "https://github.com/PlenoraETL/plenora-database-tools/actions/runs/30744606189"
+    }
+  ],
+  "release_criteria": {
+    "repository": "plenora-contracts",
+    "revision": "ec55bf1379b8b26ca9b9e29e10b954e39c2258ed",
+    "tag": null,
+    "document": "conformance/releases/v1.0.0.json",
+    "normative_status": "frozen_campaign_baseline"
+  },
+  "current_icd_baseline": {
+    "repository": "plenora-contracts",
+    "revision": "ec55bf1379b8b26ca9b9e29e10b954e39c2258ed",
+    "tag": null,
+    "document": "conformance/releases/v1.0.0.json",
+    "normative_status": "frozen_campaign_baseline"
+  },
+  "mysql_scope": {
+    "references": [
+      "8.0.46",
+      "8.4.11"
+    ],
+    "tls": "required_private_ca_and_hostname_verified",
+    "relational_query": "qualified",
+    "write_modes": [
+      "Append",
+      "SingleTransaction"
+    ],
+    "transaction_semantics": "single_stream_transaction_rollback_or_quarantine",
+    "spatial": "geometry_wkb_xy_srid",
+    "dimensions": [
+      "XY"
+    ],
+    "higher_dimensions": "Z_M_ZM_fail_closed",
+    "local_infile": "disabled",
+    "max_placeholders": 65535,
+    "mariadb_compatible": false,
+    "geography_published": false,
+    "spatial_index_published": false
+  },
+  "declared_scope_reductions": [
+    {
+      "area": "mysql_spatial_dimensions",
+      "status": "fail_closed",
+      "runtime_policy": "XY_only; reject Z, M and ZM before network I/O"
+    },
+    {
+      "area": "mysql_mariadb",
+      "status": "not_qualified",
+      "runtime_policy": "do not infer compatibility from MySQL evidence"
+    },
+    {
+      "area": "mysql_geography",
+      "status": "not_published",
+      "runtime_policy": "capability remains false"
+    },
+    {
+      "area": "mysql_spatial_index",
+      "status": "not_published",
+      "runtime_policy": "capability remains false"
+    },
+    {
+      "area": "sqlserver_azure",
+      "status": "not_qualified",
+      "runtime_policy": "opt-in only; no Azure SQL qualification claim"
+    }
+  ],
+  "external_dependencies": [
+    {
+      "id": "PLN-DB-CROSS-LIBRARY",
+      "owner": "plenora-contracts/conformance",
+      "status": "pending",
+      "description": "Le catene PostgreSQL/MySQL con Data Tools e IO Tools devono passare sui nuovi artefatti prima del tag."
+    },
+    {
+      "id": "PLN-DB-SYSTEM",
+      "owner": "plenora-contracts/conformance",
+      "status": "pending",
+      "description": "La comparativa Plenora resta separata e non autorizza claim system_rc."
+    }
+  ],
+  "release_action": {
+    "allowed": false,
+    "reason": "CI same-SHA del commit metadata e catene cross-library ancora obbligatorie.",
+    "intended_tag": "v1.1.0",
+    "tag_created": false,
+    "tag_target": null,
+    "tag_object": null
+  }
+}

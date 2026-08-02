@@ -1118,7 +1118,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plenora-database-cli"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow-ipc",
  "plenora-database-core",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-testkit"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-postgres"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "futures-util",

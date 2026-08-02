@@ -6,7 +6,7 @@ tabellari e geospaziali.
 Target v1:
 
 - PostgreSQL/PostGIS;
-- MySQL 8.4 LTS; MariaDB richiede una qualifica indipendente;
+- MySQL 8.0 e 8.4 LTS; MariaDB richiede una qualifica indipendente;
 - SQL Server geometry/geography;
 - Oracle/Oracle Spatial;
 - Db2/Db2 Spatial;
@@ -27,10 +27,11 @@ cancellazione server-side, COPY text/binario, introspezione strutturale e
 schema evolution additiva. Passa gate live, fault matrix e benchmark
 differenziali. Il relativo safety case rende esplicite prove, assunzioni e
 rischi residui; non costituisce certificazione aeronautica. SQL Server 2022 ha
-un gate reference separato. MySQL 8.4 LTS ha una superficie read-only stabile,
-con TLS verificato tramite CA privata e hostname, catalogo, streaming bounded,
-drop anticipato, spatial XY, reset, timeout, cancellazione e quarantena provati
-live; query relazionale e scrittura restano fail-closed.
+un gate reference separato. MySQL 8.0.46 e 8.4.11 hanno una superficie stabile
+per query relazionale, lettura bounded e scrittura Append/SingleTransaction,
+con TLS verificato tramite CA privata e hostname, catalogo, spatial XY/SRID,
+reset, timeout, cancellazione, rollback e quarantena provati live. MariaDB e le
+dimensioni Z/M/ZM restano fail-closed.
 
 Documenti principali:
 
@@ -60,14 +61,16 @@ python scripts\check_pre_database.py
 ```
 
 Lo stato candidato corrente è dichiarato in
-[`release/final-readiness.json`](release/final-readiness.json). I manifesti
+[`release/1.1.0.json`](release/1.1.0.json). I manifesti
+[`release/final-readiness.json`](release/final-readiness.json),
 [`release/rc1-readiness.json`](release/rc1-readiness.json) e
 [`release/development.json`](release/development.json) restano record storici
 immutabili. I gate sono eseguibili anche separatamente:
 
 ```powershell
-python scripts/check_release_manifest.py --repo . release/development.json release/rc1-readiness.json release/final-readiness.json
+python scripts/check_release_manifest.py --repo . release/development.json release/rc1-readiness.json release/final-readiness.json release/1.1.0.json
 python scripts\test_check_release_manifest.py
+python scripts\check_final_readiness.py --repo . release\1.1.0.json
 python scripts\check_final_readiness.py --repo . release\final-readiness.json
 python scripts\test_check_final_readiness.py
 ```
