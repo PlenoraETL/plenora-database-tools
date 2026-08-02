@@ -14,7 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "dataflow-mysql"
-NETWORK = "plenora-database-tools_default"
 RUST_IMAGE = "rust:1.92"
 EXPECTED_DIGEST = "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
 EXPECTED_REFERENCE = f"mysql@{EXPECTED_DIGEST}"
@@ -133,6 +132,7 @@ EXPECTED_LIVE_TESTS = {
     "live_physical_joins_bind_on_clauses_and_publish_outer_nullability",
     "live_pool_acquire_timeout_is_independent_from_connect_timeout",
     "live_pool_reset_reapplies_deterministic_session_bootstrap",
+    "live_provider_read_rejects_a_hostname_mismatch",
     "live_provider_connection_capabilities_and_inspect",
     "live_query_operation_cancellation_and_timeout_quarantine_the_session",
     "live_query_operation_executes_once_holds_lease_and_stays_demand_bounded",
@@ -231,6 +231,28 @@ def mysql_tls_volume() -> str:
     raise RuntimeError("volume CA MySQL non montato nel container di riferimento")
 
 
+def mysql_network() -> str:
+    labels = json.loads(
+        docker_value(["inspect", "--format", "{{json .Config.Labels}}", CONTAINER])
+    )
+    project = (
+        labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
+    )
+    if not isinstance(project, str) or not project:
+        raise RuntimeError("progetto Compose del riferimento MySQL assente")
+    expected = f"{project}_default"
+    networks = json.loads(
+        docker_value(
+            ["inspect", "--format", "{{json .NetworkSettings.Networks}}", CONTAINER]
+        )
+    )
+    network = networks.get(expected) if isinstance(networks, dict) else None
+    aliases = network.get("Aliases") if isinstance(network, dict) else None
+    if not isinstance(aliases, list) or CONTAINER not in aliases:
+        raise RuntimeError("rete Compose del riferimento MySQL assente o senza alias")
+    return expected
+
+
 def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
     if os.environ.get("PLENORA_MYSQL_GATE_HOST_CARGO") == "1":
         environment = os.environ.copy()
@@ -249,7 +271,7 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "run",
         "--rm",
         "--network",
-        NETWORK,
+        mysql_network(),
         "-v",
         f"{ROOT}:/workspace",
         "-v",

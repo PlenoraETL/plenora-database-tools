@@ -3,7 +3,7 @@ use crate::{
     MysqlProvider, MysqlSession,
 };
 use mysql_async::prelude::Queryable;
-use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind};
+use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::{CancellationToken, ErrorCategory, ResourceBudget, ResourceLimits};
 
@@ -193,16 +193,49 @@ async fn live_verified_tls_rejects_a_hostname_mismatch() {
 }
 
 #[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito con CA privata"]
+async fn live_provider_read_rejects_a_hostname_mismatch() {
+    let cancellation = CancellationToken::new();
+    let ca_path = std::env::var("PLENORA_MYSQL_CA").expect("CA privata richiesta dal gate live");
+    let config = live_config_for_host("mysql-hostname-mismatch".to_owned())
+        .with_private_ca_certificate(ca_path);
+    let provider = MysqlProvider::new(config, 1).expect("provider MySQL live");
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: "catalog_probe".to_owned(),
+            layer_id: None,
+        },
+        projection: Vec::new(),
+        order_by: Vec::new(),
+        row_limit: Some(1),
+        filter: None,
+    };
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget MySQL live");
+    let Err(error) = provider
+        .read(
+            &live_secret(),
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("hostname TLS errato accettato dal path read");
+    };
+    assert_eq!(error.category, ErrorCategory::Protocol);
+    assert_eq!(error.message, "verifica identita TLS MySQL rifiutata");
+}
+
+#[tokio::test]
 #[ignore = "richiede MySQL 8.4 live esplicito per reset pool"]
 async fn live_pool_reset_reapplies_deterministic_session_bootstrap() {
     use mysql_async::prelude::Queryable;
 
     let config = live_config();
-    let pool = mysql_async::Pool::new(
-        config
-            .driver_opts_with_pool(Some(1))
-            .expect("pool opts MySQL live"),
-    );
+    let pool = mysql_async::Pool::new(config.pooled_driver_opts(1).expect("pool opts MySQL live"));
     let mut connection = pool.get_conn().await.expect("checkout");
     let first_connection_id: Option<u64> = connection
         .query_first("SELECT CONNECTION_ID()")
@@ -484,7 +517,7 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
     let config = live_config();
     let setup = mysql_async::Pool::new(
         config
-            .driver_opts_with_pool(Some(1))
+            .pooled_driver_opts(1)
             .expect("pool setup righe variabili"),
     );
     let mut connection = setup.get_conn().await.expect("checkout setup");
@@ -2172,7 +2205,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     };
     let audit_pool = mysql_async::Pool::new(
         live_config()
-            .driver_opts_with_pool(Some(1))
+            .pooled_driver_opts(1)
             .expect("pool performance_schema"),
     );
     let mut audit = audit_pool.get_conn().await.expect("checkout audit");
@@ -2422,7 +2455,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         };
     let audit_pool = mysql_async::Pool::new(
         live_config()
-            .driver_opts_with_pool(Some(1))
+            .pooled_driver_opts(1)
             .expect("pool audit lifecycle"),
     );
     let mut audit = audit_pool

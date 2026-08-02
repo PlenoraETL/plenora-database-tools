@@ -48,7 +48,7 @@ impl MysqlPool {
             });
         }
         Ok(Self {
-            pool: Pool::new(config.driver_opts_with_pool(Some(max_connections))?),
+            pool: Pool::new(config.pooled_driver_opts(max_connections)?),
             checkout_timeout: config.acquire_timeout(),
             connect_timeout: config.connect_timeout(),
             operation_timeout: config.operation_timeout(),
