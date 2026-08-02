@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
+GIT_ATTRIBUTES = ROOT / ".gitattributes"
 COMPOSE = ROOT / "docker-compose.mysql.yml"
 SERVER_EXT = ROOT / "docker" / "mysql" / "tls" / "server.ext"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
@@ -27,6 +28,33 @@ SPEC.loader.exec_module(gate)
 
 
 class MysqlReferenceFixtureTests(unittest.TestCase):
+    def test_repository_enforces_lf_for_portable_source_and_fixture_files(self) -> None:
+        attributes = GIT_ATTRIBUTES.read_text(encoding="utf-8").splitlines()
+
+        for suffix in (
+            "*.conf",
+            "*.ext",
+            "*.json",
+            "*.jsonl",
+            "*.md",
+            "*.py",
+            "*.rs",
+            "*.sh",
+            "*.sql",
+            "*.toml",
+            "*.txt",
+            "*.yaml",
+            "*.yml",
+        ):
+            self.assertIn(f"{suffix} text eol=lf", attributes)
+
+    def test_gate_pins_provider_read_hostname_verification_by_name(self) -> None:
+        self.assertIn(
+            "live_provider_read_rejects_a_hostname_mismatch",
+            gate.EXPECTED_LIVE_TESTS,
+        )
+        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 23)
+
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         self.assertIn(
             "live_scalar_single_source_query_uses_prepare_metadata_as_schema",
@@ -40,7 +68,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_query_operation_cancellation_and_timeout_quarantine_the_session",
             gate.EXPECTED_LIVE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 22)
+        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 23)
 
     def test_gate_pins_the_append_write_live_tests_by_name(self) -> None:
         self.assertEqual(
@@ -278,6 +306,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                 clear=False,
             ),
             patch.object(gate, "mysql_tls_volume", return_value="mysql_tls"),
+            patch.object(gate, "mysql_network", return_value="mysql-qualified_default"),
             patch.object(gate, "fixture_password", return_value="fixture-secret"),
         ):
             command, environment = gate.cargo(["test"])
@@ -286,6 +315,30 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertIn("PLENORA_MYSQL_PASSWORD", command)
         self.assertIsNotNone(environment)
         self.assertEqual(environment["PLENORA_MYSQL_PASSWORD"], "fixture-secret")
+
+    def test_cargo_uses_the_observed_compose_network_of_the_running_fixture(self) -> None:
+        labels = '{"com.docker.compose.project":"mysql-qualified"}'
+        networks = (
+            '{"mysql-qualified_default":'
+            '{"Aliases":["dataflow-mysql","mysql","mysql-hostname-mismatch"]}}'
+        )
+        with patch.object(gate, "docker_value", side_effect=[labels, networks]):
+            self.assertEqual(gate.mysql_network(), "mysql-qualified_default")
+
+    def test_network_discovery_rejects_a_container_without_compose_labels(self) -> None:
+        with patch.object(gate, "docker_value", return_value="null"):
+            with self.assertRaisesRegex(
+                RuntimeError, "progetto Compose del riferimento MySQL assente"
+            ):
+                gate.mysql_network()
+
+    def test_network_discovery_rejects_missing_network_metadata(self) -> None:
+        labels = '{"com.docker.compose.project":"mysql-qualified"}'
+        with patch.object(gate, "docker_value", side_effect=[labels, "null"]):
+            with self.assertRaisesRegex(
+                RuntimeError, "rete Compose del riferimento MySQL assente"
+            ):
+                gate.mysql_network()
 
     def test_host_cargo_password_is_only_passed_in_the_process_environment(self) -> None:
         with (

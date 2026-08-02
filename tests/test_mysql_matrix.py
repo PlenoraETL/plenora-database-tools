@@ -99,7 +99,7 @@ class MysqlMatrixTests(unittest.TestCase):
         self,
     ) -> None:
         self.assertEqual(EXPECTED_LIVE_TESTS, REFERENCE_LIVE_TESTS)
-        self.assertEqual(len(EXPECTED_LIVE_TESTS), 22)
+        self.assertEqual(len(EXPECTED_LIVE_TESTS), 23)
 
     def test_the_matrix_never_skips_a_live_test(self) -> None:
         source = CHECKER_SOURCE.read_text(encoding="utf-8")

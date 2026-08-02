@@ -63,9 +63,9 @@ class MatrixEntry:
 
     @property
     def aliases(self) -> tuple[str, ...]:
-        # Il certificato della fixture e emesso per dataflow-mysql e per
-        # l'alias di mismatch: gli alias di rete tengono valida sia la prova
-        # TLS positiva sia quella negativa senza toccare la fixture.
+        # Il certificato della fixture e emesso solo per dataflow-mysql.
+        # L'alias risolvibile ma assente dai SAN rende deterministica la prova
+        # TLS negativa senza introdurre un falso errore DNS.
         return ("dataflow-mysql", "mysql-hostname-mismatch")
 
     @property

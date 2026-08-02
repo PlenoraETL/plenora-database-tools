@@ -208,10 +208,22 @@ impl MysqlConfig {
     }
 
     pub(crate) fn driver_opts(&self) -> Result<Opts> {
-        self.driver_opts_with_pool(None)
+        Ok(self.driver_opts_builder()?.into())
     }
 
-    pub(crate) fn driver_opts_with_pool(&self, max_connections: Option<usize>) -> Result<Opts> {
+    pub(crate) fn pooled_driver_opts(&self, max_connections: usize) -> Result<Opts> {
+        let constraints = PoolConstraints::new(0, max_connections).ok_or_else(|| {
+            invalid_configuration("configurazione MySQL: vincoli pool non validi")
+        })?;
+        let builder = self.driver_opts_builder()?.pool_opts(Some(
+            PoolOpts::default()
+                .with_constraints(constraints)
+                .with_reset_connection(true),
+        ));
+        Ok(builder.into())
+    }
+
+    fn driver_opts_builder(&self) -> Result<OptsBuilder> {
         self.validate()?;
         let mut ssl = SslOpts::default();
         if let Some(path) = &self.private_ca_certificate {
@@ -222,7 +234,7 @@ impl MysqlConfig {
                 .with_danger_accept_invalid_certs(true)
                 .with_danger_skip_domain_validation(true);
         }
-        let mut builder = OptsBuilder::default()
+        let builder = OptsBuilder::default()
             .ip_or_hostname(self.host.clone())
             .tcp_port(self.port)
             .db_name(Some(self.database.clone()))
@@ -234,17 +246,7 @@ impl MysqlConfig {
             .stmt_cache_size(Some(128))
             .ssl_opts(Some(ssl))
             .setup(vec![crate::SESSION_BOOTSTRAP_SQL]);
-        if let Some(max_connections) = max_connections {
-            let constraints = PoolConstraints::new(0, max_connections).ok_or_else(|| {
-                invalid_configuration("configurazione MySQL: vincoli pool non validi")
-            })?;
-            builder = builder.pool_opts(Some(
-                PoolOpts::default()
-                    .with_constraints(constraints)
-                    .with_reset_connection(true),
-            ));
-        }
-        Ok(builder.into())
+        Ok(builder)
     }
 }
 
@@ -324,7 +326,7 @@ mod tests {
     #[test]
     fn pooled_driver_opts_reapply_bootstrap_after_connection_reset() {
         let opts = config("secret")
-            .driver_opts_with_pool(Some(2))
+            .pooled_driver_opts(2)
             .expect("driver opts pooled");
         assert!(opts.pool_opts().reset_connection());
         assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
