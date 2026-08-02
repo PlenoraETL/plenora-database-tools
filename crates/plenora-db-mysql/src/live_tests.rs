@@ -2,6 +2,7 @@ use crate::{
     describe_object, list_objects, list_schemas, probe_server, MysqlCertificatePolicy, MysqlConfig,
     MysqlProvider, MysqlSession,
 };
+use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::{CancellationToken, ErrorCategory, ResourceBudget, ResourceLimits};
@@ -37,6 +38,60 @@ fn live_config_for_host(host: String) -> MysqlConfig {
     } else {
         config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate)
     }
+}
+
+async fn observe_inflight_query(audit: &mut mysql_async::Conn, marker: &str) -> u64 {
+    let pattern = format!("%{marker}%");
+    for _ in 0..100 {
+        let observed: Option<(u64, u64, u64)> = audit
+            .exec_first(
+                "SELECT COUNT(DISTINCT prepared.STATEMENT_ID), \
+                        CAST(COALESCE(MAX(prepared.OWNER_THREAD_ID), 0) AS UNSIGNED), \
+                        COUNT(current.EVENT_ID) \
+                 FROM performance_schema.prepared_statements_instances AS prepared \
+                 LEFT JOIN performance_schema.events_statements_current AS current \
+                   ON current.THREAD_ID = prepared.OWNER_THREAD_ID \
+                  AND current.EVENT_NAME IN ('statement/com/Execute', 'statement/sql/select') \
+                 WHERE prepared.SQL_TEXT LIKE ?",
+                (&pattern,),
+            )
+            .await
+            .expect("osservazione prepared statement in-flight");
+        if let Some((1, owner_thread_id, 1)) = observed {
+            if owner_thread_id > 0 {
+                let threads: Option<u64> = audit
+                    .exec_first(
+                        "SELECT COUNT(*) FROM performance_schema.threads WHERE THREAD_ID = ?",
+                        (owner_thread_id,),
+                    )
+                    .await
+                    .expect("thread MySQL in-flight");
+                assert_eq!(threads, Some(1));
+                return owner_thread_id;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("COM_STMT_EXECUTE non osservata in-flight per {marker}");
+}
+
+async fn observe_prepared_thread(audit: &mut mysql_async::Conn, marker: &str) -> u64 {
+    let pattern = format!("%{marker}%");
+    let observed: Option<(u64, u64)> = audit
+        .exec_first(
+            "SELECT COUNT(DISTINCT STATEMENT_ID), \
+                    CAST(COALESCE(MAX(OWNER_THREAD_ID), 0) AS UNSIGNED) \
+             FROM performance_schema.prepared_statements_instances \
+             WHERE SQL_TEXT LIKE ?",
+            (&pattern,),
+        )
+        .await
+        .expect("osservazione prepared statement early drop");
+    let Some((1, owner_thread_id)) = observed else {
+        panic!("prepared statement non univoco per {marker}: {observed:?}");
+    };
+    assert!(owner_thread_id > 0);
+    owner_thread_id
 }
 
 #[tokio::test]
@@ -736,4 +791,1817 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
         .await
         .expect("fine stream MySQL")
         .is_none());
+}
+
+/// Ogni famiglia di tipo wire accettata dal path query in una sola
+/// `COM_STMT_PREPARE` e in una sola esecuzione.
+///
+/// `MySQL` non ha un equivalente di `describe_first_result_set`: lo schema
+/// pubblicato viene dai soli metadati di colonna del prepared statement.
+/// La prova copre quindi, per ogni colonna proiettata, il nome o l'alias, il
+/// `DataType` Arrow, la nullability dichiarata dal prepare e il
+/// `MYSQL_NATIVE_TYPE`, e verifica che `MYSQL_NATIVE_DECLARATION` resti
+/// assente: la descrizione del prepare non conserva lunghezza, FSP, collation
+/// ne il tipo dell'espressione, quindi una dichiarazione ricostruita sarebbe
+/// un metadato non fedele. I valori sono poi confrontati uno per uno, cosi il
+/// mapping dei tipi e quello dei valori restano provati insieme.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per QueryOperation"]
+#[allow(clippy::too_many_lines)]
+async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
+    use plenora_database_core::arrow::array::{
+        Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+        Int16Array, Int32Array, Int64Array, Int8Array, StringArray, TimestampMicrosecondArray,
+        UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    };
+    use plenora_database_core::arrow::schema::{DataType, TimeUnit};
+    use plenora_database_core::arrow::RecordBatch;
+    use plenora_database_core::field_contract::validate_schema_contract;
+    use plenora_database_core::plan::{ComparisonOperator, SortDirection};
+    use plenora_database_core::protocol;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+    };
+    use std::collections::BTreeMap;
+
+    fn cell<'batch, T: 'static>(batch: &'batch RecordBatch, name: &str) -> &'batch T {
+        batch
+            .column_by_name(name)
+            .and_then(|array| array.as_any().downcast_ref::<T>())
+            .unwrap_or_else(|| panic!("colonna {name} assente o con array Arrow diverso"))
+    }
+
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider MySQL live");
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: 4,
+        memory_bytes: 4 * 1024 * 1024,
+        output_bytes: 4 * 1024 * 1024,
+        cell_bytes: 64 * 1024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget query MySQL");
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: field.to_owned(),
+        },
+    };
+    let microsecond = DataType::Timestamp(TimeUnit::Microsecond, None);
+    // Colonna della fixture, alias richiesto, `DataType` Arrow atteso,
+    // `MYSQL_NATIVE_TYPE` atteso e nullability attesa dal prepare. Ogni riga
+    // copre una famiglia distinta fra quelle accettate dal path query; la
+    // geometria resta fuori perche il renderer non la incapsula in
+    // `ST_AsBinary` e il contratto GeoArrow non sarebbe dimostrato.
+    let expected: Vec<(&str, &str, DataType, &str, bool)> = vec![
+        ("id", "", DataType::Int64, "bigint", false),
+        ("name", "label", DataType::Utf8, "varchar", false),
+        ("amount", "", DataType::Decimal128(18, 4), "decimal", true),
+        ("active", "", DataType::Boolean, "tinyint", false),
+        ("event_date", "", DataType::Date32, "date", true),
+        ("event_ts", "", microsecond.clone(), "datetime", true),
+        ("payload", "", DataType::Utf8, "json", true),
+        ("payload_bin", "", DataType::Binary, "varbinary", true),
+        ("tiny_signed", "", DataType::Int8, "tinyint", false),
+        ("tiny_unsigned", "", DataType::UInt8, "tinyint", false),
+        ("small_signed", "", DataType::Int16, "smallint", false),
+        ("small_unsigned", "", DataType::UInt16, "smallint", false),
+        ("year_value", "", DataType::Int16, "year", false),
+        ("medium_signed", "", DataType::Int32, "mediumint", false),
+        ("medium_unsigned", "", DataType::UInt32, "mediumint", false),
+        ("int_signed", "", DataType::Int32, "int", false),
+        ("int_unsigned", "", DataType::UInt32, "int", false),
+        ("big_unsigned", "", DataType::UInt64, "bigint", false),
+        ("float_value", "", DataType::Float32, "float", false),
+        ("double_value", "", DataType::Float64, "double", false),
+        (
+            "decimal_scale_zero",
+            "",
+            DataType::Decimal128(12, 0),
+            "decimal",
+            false,
+        ),
+        (
+            "decimal_unsigned",
+            "",
+            DataType::Decimal128(9, 2),
+            "decimal",
+            false,
+        ),
+        ("time_value", "", DataType::Utf8, "time", false),
+        ("stamp_value", "", microsecond, "timestamp", false),
+        ("bit_value", "", DataType::Binary, "bit", false),
+        ("enum_value", "", DataType::Utf8, "enum", false),
+        ("set_value", "", DataType::Utf8, "set", false),
+        ("char_value", "", DataType::Utf8, "char", false),
+        ("binary_value", "", DataType::Binary, "binary", false),
+        // MySQL 8.4 descrive TINYTEXT, TEXT, MEDIUMTEXT e LONGTEXT, come i
+        // quattro BLOB corrispondenti, con un unico tipo wire
+        // `MYSQL_TYPE_BLOB`: la classe di lunghezza resta nella dichiarazione
+        // e non viaggia nei metadati del result set. Il provider pubblica
+        // quindi `text` o `blob` per tutte e quattro le taglie, perche il tipo
+        // dichiarato non e ricostruibile dal solo prepare. Le colonne restano
+        // tutte proiettate: e il valore di ogni famiglia a essere provato.
+        ("tiny_text", "", DataType::Utf8, "text", false),
+        ("tiny_blob", "", DataType::Binary, "blob", false),
+        ("text_value", "", DataType::Utf8, "text", false),
+        ("blob_value", "", DataType::Binary, "blob", false),
+        ("medium_text", "", DataType::Utf8, "text", false),
+        ("medium_blob", "", DataType::Binary, "blob", false),
+        ("long_text", "", DataType::Utf8, "text", false),
+        ("long_blob", "", DataType::Binary, "blob", false),
+        ("absent_note", "", DataType::Utf8, "varchar", true),
+    ];
+    let operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("dataflow_test".to_owned()),
+                object: "catalog_probe".to_owned(),
+                layer_id: None,
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: expected
+            .iter()
+            .map(|(source, alias, ..)| QueryProjection {
+                expression: column(source),
+                alias: (!alias.is_empty()).then(|| (*alias).to_owned()),
+            })
+            .collect(),
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column("id")),
+            operator: ComparisonOperator::Gte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "floor".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("id"),
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(1),
+        row_offset: None,
+        locking: None,
+    };
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "floor".to_owned(),
+        ParameterValue::I64(1),
+    )]));
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &operation,
+            &parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream QueryOperation MySQL");
+
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert_eq!(schema.fields().len(), expected.len());
+    for (index, (source, alias, data_type, native_type, nullable)) in expected.iter().enumerate() {
+        let published = if alias.is_empty() { source } else { alias };
+        let field = schema.field(index);
+        assert_eq!(field.name(), published, "nome della colonna {index}");
+        assert_eq!(field.data_type(), data_type, "tipo Arrow di {published}");
+        assert_eq!(
+            field.is_nullable(),
+            *nullable,
+            "nullability dal prepare di {published}"
+        );
+        assert_eq!(
+            field.metadata().get(protocol::MYSQL_NATIVE_TYPE),
+            Some(&(*native_type).to_owned()),
+            "MYSQL_NATIVE_TYPE di {published}"
+        );
+        assert!(
+            !field
+                .metadata()
+                .contains_key(protocol::MYSQL_NATIVE_DECLARATION),
+            "dichiarazione non provabile pubblicata per {published}"
+        );
+    }
+
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch QueryOperation")
+        .expect("riga QueryOperation");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), expected.len());
+
+    assert_eq!(cell::<Int64Array>(&batch, "id").value(0), 1);
+    assert_eq!(cell::<StringArray>(&batch, "label").value(0), "reference");
+    assert_eq!(
+        cell::<Decimal128Array>(&batch, "amount").value(0),
+        12_345_000
+    );
+    assert!(cell::<BooleanArray>(&batch, "active").value(0));
+    // 2026-01-02 e il giorno 20455 dall'epoch Arrow.
+    assert_eq!(cell::<Date32Array>(&batch, "event_date").value(0), 20_455);
+    assert_eq!(
+        cell::<TimestampMicrosecondArray>(&batch, "event_ts").value(0),
+        1_767_323_045_123_456
+    );
+    assert_eq!(
+        cell::<StringArray>(&batch, "payload").value(0),
+        r#"{"qualified": true}"#
+    );
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "payload_bin").value(0),
+        &[0x00, 0x11, 0x22, 0x33, 0xAA, 0xBB, 0xCC, 0xDD]
+    );
+
+    assert_eq!(cell::<Int8Array>(&batch, "tiny_signed").value(0), -8);
+    assert_eq!(cell::<UInt8Array>(&batch, "tiny_unsigned").value(0), 200);
+    assert_eq!(cell::<Int16Array>(&batch, "small_signed").value(0), -300);
+    assert_eq!(
+        cell::<UInt16Array>(&batch, "small_unsigned").value(0),
+        40_000
+    );
+    assert_eq!(cell::<Int16Array>(&batch, "year_value").value(0), 2_026);
+    assert_eq!(
+        cell::<Int32Array>(&batch, "medium_signed").value(0),
+        -70_000
+    );
+    assert_eq!(
+        cell::<UInt32Array>(&batch, "medium_unsigned").value(0),
+        16_000_000
+    );
+    assert_eq!(cell::<Int32Array>(&batch, "int_signed").value(0), -123_456);
+    assert_eq!(
+        cell::<UInt32Array>(&batch, "int_unsigned").value(0),
+        4_000_000_000
+    );
+    assert_eq!(
+        cell::<UInt64Array>(&batch, "big_unsigned").value(0),
+        18_446_744_073_709_551_615
+    );
+    // 1.5 e 2.25 sono esatti in binario: il confronto sui bit non ammette
+    // tolleranze e coglie ogni riscrittura del valore.
+    assert_eq!(
+        cell::<Float32Array>(&batch, "float_value")
+            .value(0)
+            .to_bits(),
+        1.5_f32.to_bits()
+    );
+    assert_eq!(
+        cell::<Float64Array>(&batch, "double_value")
+            .value(0)
+            .to_bits(),
+        2.25_f64.to_bits()
+    );
+    assert_eq!(
+        cell::<Decimal128Array>(&batch, "decimal_scale_zero").value(0),
+        -42
+    );
+    assert_eq!(
+        cell::<Decimal128Array>(&batch, "decimal_unsigned").value(0),
+        725
+    );
+    // MySQL TIME copre anche durate negative oltre le 24 ore: il contratto e
+    // il testo canonico, non un Time64 Arrow.
+    assert_eq!(
+        cell::<StringArray>(&batch, "time_value").value(0),
+        "01:02:03.456789"
+    );
+    assert_eq!(
+        cell::<TimestampMicrosecondArray>(&batch, "stamp_value").value(0),
+        1_767_323_045_123_456
+    );
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "bit_value").value(0),
+        &[0x01, 0x02]
+    );
+    assert_eq!(cell::<StringArray>(&batch, "enum_value").value(0), "beta");
+    assert_eq!(
+        cell::<StringArray>(&batch, "set_value").value(0),
+        "read,write"
+    );
+    assert_eq!(cell::<StringArray>(&batch, "char_value").value(0), "char");
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "binary_value").value(0),
+        &[0x01, 0x02, 0x03, 0x04]
+    );
+    assert_eq!(cell::<StringArray>(&batch, "tiny_text").value(0), "tiny");
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "tiny_blob").value(0),
+        &[0x0A, 0x0B]
+    );
+    assert_eq!(cell::<StringArray>(&batch, "text_value").value(0), "text");
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "blob_value").value(0),
+        &[0x0C, 0x0D]
+    );
+    assert_eq!(
+        cell::<StringArray>(&batch, "medium_text").value(0),
+        "medium"
+    );
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "medium_blob").value(0),
+        &[0x0E, 0x0F]
+    );
+    assert_eq!(cell::<StringArray>(&batch, "long_text").value(0), "long");
+    assert_eq!(
+        cell::<BinaryArray>(&batch, "long_blob").value(0),
+        &[0x10, 0x11]
+    );
+
+    // La nullability arriva dal prepare, non dai valori osservati: `amount` e
+    // dichiarata nullable e porta un valore, `absent_note` e dichiarata
+    // nullable ed e davvero nulla.
+    assert!(!cell::<Decimal128Array>(&batch, "amount").is_null(0));
+    assert!(cell::<StringArray>(&batch, "absent_note").is_null(0));
+
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream QueryOperation")
+        .is_none());
+}
+
+/// Aggregazione raggruppata, bind di HAVING e DISTINCT su `MySQL` 8.4 con TLS.
+///
+/// Il `sql_mode` deterministico del provider non include `ONLY_FULL_GROUP_BY`:
+/// il server accetterebbe in silenzio un gruppo non determinato. La prova che
+/// conta e quindi che lo schema e le righe restituite siano esattamente quelli
+/// dichiarati dai metadati di `COM_STMT_PREPARE`, con il parametro di HAVING
+/// passato come bind e mai come letterale.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per aggregazione e DISTINCT"]
+#[allow(clippy::too_many_lines)]
+async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
+    use plenora_database_core::arrow::array::{
+        BinaryArray, BooleanArray, Decimal128Array, Int64Array,
+    };
+    use plenora_database_core::arrow::schema::DataType;
+    use plenora_database_core::field_contract::validate_schema_contract;
+    use plenora_database_core::plan::{ComparisonOperator, SortDirection};
+    use plenora_database_core::protocol;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+        ScalarFunction,
+    };
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("connessione MySQL live");
+    let probe = probe_server(&mut session, &cancellation)
+        .await
+        .expect("probe MySQL live");
+    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
+    drop(session);
+
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: field.to_owned(),
+        },
+    };
+    let aggregate = |function: ScalarFunction, field: &str| QueryExpression::Scalar {
+        function,
+        arguments: vec![column(field)],
+    };
+    let probe_source = |object: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        },
+        alias: None,
+    };
+    let scalar_query = |source: QuerySource, projection: Vec<QueryProjection>| QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(source),
+        derived_source: None,
+        projection,
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider MySQL live");
+    let mut grouped = scalar_query(
+        probe_source("catalog_probe"),
+        vec![
+            QueryProjection {
+                expression: column("active"),
+                alias: None,
+            },
+            QueryProjection {
+                expression: aggregate(ScalarFunction::Count, "id"),
+                alias: Some("events".to_owned()),
+            },
+            QueryProjection {
+                expression: aggregate(ScalarFunction::Minimum, "id"),
+                alias: Some("first_id".to_owned()),
+            },
+            QueryProjection {
+                expression: aggregate(ScalarFunction::Maximum, "id"),
+                alias: Some("last_id".to_owned()),
+            },
+            QueryProjection {
+                expression: aggregate(ScalarFunction::Average, "amount"),
+                alias: Some("mean_amount".to_owned()),
+            },
+        ],
+    );
+    grouped.group_by = vec![column("active")];
+    grouped.having = Some(QueryExpression::Compare {
+        left: Box::new(aggregate(ScalarFunction::Count, "id")),
+        operator: ComparisonOperator::Gte,
+        right: Box::new(QueryExpression::Parameter {
+            name: "floor".to_owned(),
+        }),
+    });
+    grouped.order_by = vec![QueryOrdering {
+        expression: column("active"),
+        direction: SortDirection::Asc,
+    }];
+    let grouped_budget = ResourceBudget::new(ResourceLimits {
+        rows: 4,
+        memory_bytes: 4 * 1024 * 1024,
+        output_bytes: 4 * 1024 * 1024,
+        cell_bytes: 64 * 1024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget aggregazione MySQL");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &grouped,
+            &ParameterBag::new(BTreeMap::from([(
+                "floor".to_owned(),
+                ParameterValue::I64(1),
+            )])),
+            &grouped_budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream aggregazione MySQL");
+
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert_eq!(schema.fields().len(), 5);
+    let expected_columns = [
+        ("active", DataType::Boolean, false, "tinyint"),
+        ("events", DataType::Int64, false, "bigint"),
+        ("first_id", DataType::Int64, true, "bigint"),
+        ("last_id", DataType::Int64, true, "bigint"),
+        ("mean_amount", DataType::Decimal128(22, 8), true, "decimal"),
+    ];
+    for (index, (name, data_type, nullable, native_type)) in expected_columns.iter().enumerate() {
+        let field = schema.field(index);
+        assert_eq!(field.name(), name);
+        assert_eq!(field.data_type(), data_type, "{name}");
+        assert_eq!(field.is_nullable(), *nullable, "{name}");
+        assert_eq!(
+            field.metadata().get(protocol::MYSQL_NATIVE_TYPE),
+            Some(&(*native_type).to_owned()),
+            "{name}"
+        );
+        assert!(
+            !field
+                .metadata()
+                .contains_key(protocol::MYSQL_NATIVE_DECLARATION),
+            "{name}"
+        );
+    }
+
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch aggregazione")
+        .expect("gruppo aggregato");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("active")
+        .value(0));
+    for (index, expected) in [(1_usize, 1_i64), (2, 1), (3, 1)] {
+        assert_eq!(
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("aggregato intero")
+                .value(0),
+            expected
+        );
+    }
+    assert_eq!(
+        batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect("mean_amount")
+            .value(0),
+        123_450_000_000_i128
+    );
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream aggregazione")
+        .is_none());
+
+    // 2048 righe con lo stesso payload collassano in un solo valore distinto.
+    let mut distinct = scalar_query(
+        probe_source("stream_probe"),
+        vec![QueryProjection {
+            expression: column("payload"),
+            alias: None,
+        }],
+    );
+    distinct.distinct = true;
+    let distinct_budget = ResourceBudget::new(ResourceLimits {
+        rows: 4,
+        memory_bytes: 4 * 1024 * 1024,
+        output_bytes: 4 * 1024 * 1024,
+        cell_bytes: 64 * 1024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget DISTINCT MySQL");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &distinct,
+            &ParameterBag::new(BTreeMap::new()),
+            &distinct_budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream DISTINCT MySQL");
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.field(0).name(), "payload");
+    assert_eq!(schema.field(0).data_type(), &DataType::Binary);
+    assert!(!schema.field(0).is_nullable());
+    assert_eq!(
+        schema.field(0).metadata().get(protocol::MYSQL_NATIVE_TYPE),
+        Some(&"varbinary".to_owned())
+    );
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch DISTINCT")
+        .expect("riga DISTINCT");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .expect("payload")
+            .value(0),
+        [0x5A_u8; 1024].as_slice()
+    );
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream DISTINCT")
+        .is_none());
+
+    // SUM su BIGINT produce DECIMAL(41,0): il contratto Decimal128 non lo
+    // rappresenta e il path query lo dichiara non supportato invece di
+    // troncare silenziosamente.
+    let wide_sum = scalar_query(
+        probe_source("catalog_probe"),
+        vec![QueryProjection {
+            expression: aggregate(ScalarFunction::Sum, "id"),
+            alias: Some("total".to_owned()),
+        }],
+    );
+    let sum_budget = ResourceBudget::new(ResourceLimits::default()).expect("budget SUM MySQL");
+    let outcome = provider
+        .query(
+            &live_secret(),
+            &wide_sum,
+            &ParameterBag::new(BTreeMap::new()),
+            &sum_budget,
+            &cancellation,
+        )
+        .await;
+    let Err(error) = outcome else {
+        panic!("SUM oltre Decimal128 accettato");
+    };
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+}
+
+/// Join fisici INNER, LEFT, RIGHT e CROSS su `MySQL` 8.4 con TLS verificato.
+///
+/// La prova che conta e la nullabilita del lato esterno:
+/// `stream_probe`.`payload` e dichiarata `VARBINARY(1024) NOT NULL`, ma dal
+/// lato non preservato di un LEFT JOIN i metadati di `COM_STMT_PREPARE` la
+/// pubblicano nullable e la riga restituisce NULL. Un contratto Arrow
+/// costruito dalla dichiarazione del catalogo invece che dai metadati dello
+/// statement mentirebbe esattamente qui, e il consumatore scoprirebbe la
+/// differenza solo leggendo il batch.
+///
+/// Ogni colonna proiettata porta un alias: il result set di un join espone
+/// altrimenti due colonne `id` omonime, che il path query rifiuta come nomi
+/// di output duplicati.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per i join fisici"]
+#[allow(clippy::too_many_lines)]
+async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
+    use plenora_database_core::arrow::array::{Array, BinaryArray, Int64Array, StringArray};
+    use plenora_database_core::arrow::schema::DataType;
+    use plenora_database_core::field_contract::validate_schema_contract;
+    use plenora_database_core::plan::{ComparisonOperator, SortDirection};
+    use plenora_database_core::protocol;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::query::{
+        ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryOperation, QueryOrdering,
+        QueryProjection, QuerySource,
+    };
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("connessione MySQL live");
+    let probe = probe_server(&mut session, &cancellation)
+        .await
+        .expect("probe MySQL live");
+    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
+    drop(session);
+
+    let relation = |object: &str, alias: &str| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        },
+        alias: Some(alias.to_owned()),
+    };
+    let qualified = |relation: &str, field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some(relation.to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let named = |expression: QueryExpression, alias: &str| QueryProjection {
+        expression,
+        alias: Some(alias.to_owned()),
+    };
+    let joined = |join: QueryJoin,
+                  projection: Vec<QueryProjection>,
+                  order: QueryExpression,
+                  direction: SortDirection,
+                  limit: u64| QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(relation("catalog_probe", "c")),
+        derived_source: None,
+        projection,
+        joins: vec![join],
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: order,
+            direction,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(limit),
+        row_offset: None,
+        locking: None,
+    };
+    let join_on = |kind: JoinKind, on: Option<QueryExpression>| QueryJoin {
+        kind,
+        source: Some(relation("stream_probe", "s")),
+        derived_source: None,
+        lateral: false,
+        on,
+    };
+    let budget = || {
+        ResourceBudget::new(ResourceLimits {
+            rows: 4,
+            memory_bytes: 4 * 1024 * 1024,
+            output_bytes: 4 * 1024 * 1024,
+            cell_bytes: 64 * 1024,
+            ..ResourceLimits::default()
+        })
+        .expect("budget join MySQL")
+    };
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider MySQL live");
+
+    // INNER JOIN con un bind nella clausola ON: il parametro e posizionale e
+    // precede quelli delle clausole successive.
+    let inner = joined(
+        join_on(
+            JoinKind::Inner,
+            Some(QueryExpression::And {
+                arguments: vec![
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("c", "id")),
+                        operator: ComparisonOperator::Eq,
+                        right: Box::new(qualified("s", "id")),
+                    },
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("s", "id")),
+                        operator: ComparisonOperator::Lte,
+                        right: Box::new(QueryExpression::Parameter {
+                            name: "ceiling".to_owned(),
+                        }),
+                    },
+                ],
+            }),
+        ),
+        vec![
+            named(qualified("c", "id"), "probe_id"),
+            named(qualified("c", "name"), "probe_name"),
+            named(qualified("s", "id"), "stream_id"),
+        ],
+        qualified("s", "id"),
+        SortDirection::Asc,
+        1,
+    );
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &inner,
+            &ParameterBag::new(BTreeMap::from([(
+                "ceiling".to_owned(),
+                ParameterValue::I64(1),
+            )])),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("stream INNER JOIN MySQL");
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    let expected_inner = [
+        ("probe_id", DataType::Int64, "bigint"),
+        ("probe_name", DataType::Utf8, "varchar"),
+        ("stream_id", DataType::Int64, "bigint"),
+    ];
+    assert_eq!(schema.fields().len(), expected_inner.len());
+    for (index, (name, data_type, native_type)) in expected_inner.iter().enumerate() {
+        let field = schema.field(index);
+        assert_eq!(field.name(), name);
+        assert_eq!(field.data_type(), data_type, "{name}");
+        // Nessuna relazione e preservata da un INNER JOIN: le colonne
+        // dichiarate NOT NULL restano non nullable.
+        assert!(!field.is_nullable(), "{name}");
+        assert_eq!(
+            field.metadata().get(protocol::MYSQL_NATIVE_TYPE),
+            Some(&(*native_type).to_owned()),
+            "{name}"
+        );
+        assert!(
+            !field
+                .metadata()
+                .contains_key(protocol::MYSQL_NATIVE_DECLARATION),
+            "{name}"
+        );
+    }
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch INNER JOIN")
+        .expect("riga INNER JOIN");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("probe_id")
+            .value(0),
+        1
+    );
+    assert_eq!(
+        batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("probe_name")
+            .value(0),
+        "reference"
+    );
+    assert_eq!(
+        batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("stream_id")
+            .value(0),
+        1
+    );
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream INNER JOIN")
+        .is_none());
+
+    // LEFT JOIN senza corrispondenza: `stream_probe` arriva a 2048, il bind
+    // porta la soglia oltre e nessuna riga puo accoppiarsi.
+    let left = joined(
+        join_on(
+            JoinKind::Left,
+            Some(QueryExpression::And {
+                arguments: vec![
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("c", "id")),
+                        operator: ComparisonOperator::Eq,
+                        right: Box::new(qualified("s", "id")),
+                    },
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("s", "id")),
+                        operator: ComparisonOperator::Gte,
+                        right: Box::new(QueryExpression::Parameter {
+                            name: "floor".to_owned(),
+                        }),
+                    },
+                ],
+            }),
+        ),
+        vec![
+            named(qualified("c", "id"), "probe_id"),
+            named(qualified("s", "id"), "stream_id"),
+            named(qualified("s", "payload"), "stream_payload"),
+        ],
+        qualified("c", "id"),
+        SortDirection::Asc,
+        1,
+    );
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &left,
+            &ParameterBag::new(BTreeMap::from([(
+                "floor".to_owned(),
+                ParameterValue::I64(4096),
+            )])),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("stream LEFT JOIN MySQL");
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert_eq!(schema.fields().len(), 3);
+    assert_eq!(schema.field(0).name(), "probe_id");
+    assert!(!schema.field(0).is_nullable());
+    assert_eq!(schema.field(1).name(), "stream_id");
+    assert!(schema.field(1).is_nullable());
+    // `payload` e dichiarata NOT NULL nel catalogo: il lato esterno del join
+    // la rende nullable nei metadati dello statement.
+    assert_eq!(schema.field(2).name(), "stream_payload");
+    assert_eq!(schema.field(2).data_type(), &DataType::Binary);
+    assert!(schema.field(2).is_nullable());
+    assert_eq!(
+        schema.field(2).metadata().get(protocol::MYSQL_NATIVE_TYPE),
+        Some(&"varbinary".to_owned())
+    );
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch LEFT JOIN")
+        .expect("riga LEFT JOIN");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("probe_id")
+            .value(0),
+        1
+    );
+    assert!(batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("stream_id")
+        .is_null(0));
+    assert!(batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .expect("stream_payload")
+        .is_null(0));
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream LEFT JOIN")
+        .is_none());
+
+    // RIGHT JOIN: la relazione preservata e quella dichiarata nel join, e la
+    // nullabilita si sposta sulle colonne della sorgente di base.
+    let right = joined(
+        join_on(
+            JoinKind::Right,
+            Some(QueryExpression::Compare {
+                left: Box::new(qualified("c", "id")),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(qualified("s", "id")),
+            }),
+        ),
+        vec![
+            named(qualified("c", "id"), "probe_id"),
+            named(qualified("c", "name"), "probe_name"),
+            named(qualified("s", "id"), "stream_id"),
+        ],
+        qualified("s", "id"),
+        SortDirection::Desc,
+        1,
+    );
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &right,
+            &ParameterBag::new(BTreeMap::new()),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("stream RIGHT JOIN MySQL");
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert!(schema.field(0).is_nullable());
+    assert!(schema.field(1).is_nullable());
+    assert!(!schema.field(2).is_nullable());
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch RIGHT JOIN")
+        .expect("riga RIGHT JOIN");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("probe_id")
+        .is_null(0));
+    assert!(batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("probe_name")
+        .is_null(0));
+    assert_eq!(
+        batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("stream_id")
+            .value(0),
+        2048
+    );
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream RIGHT JOIN")
+        .is_none());
+
+    // CROSS JOIN senza clausola ON: il prodotto e ordinato e limitato, cosi
+    // le righe restano deterministiche.
+    let cross = joined(
+        join_on(JoinKind::Cross, None),
+        vec![
+            named(qualified("c", "id"), "probe_id"),
+            named(qualified("s", "id"), "stream_id"),
+        ],
+        qualified("s", "id"),
+        SortDirection::Asc,
+        2,
+    );
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &cross,
+            &ParameterBag::new(BTreeMap::new()),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("stream CROSS JOIN MySQL");
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    assert_eq!(schema.fields().len(), 2);
+    assert!(!schema.field(0).is_nullable());
+    assert!(!schema.field(1).is_nullable());
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch CROSS JOIN")
+        .expect("righe CROSS JOIN");
+    assert_eq!(batch.num_rows(), 2);
+    let probe_ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("probe_id");
+    let stream_ids = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("stream_id");
+    assert_eq!((probe_ids.value(0), stream_ids.value(0)), (1, 1));
+    assert_eq!((probe_ids.value(1), stream_ids.value(1)), (1, 2));
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream CROSS JOIN")
+        .is_none());
+}
+
+/// Window function scalari su `MySQL` 8.4 con TLS verificato.
+///
+/// La finestra e valutata dal server dopo WHERE e prima di LIMIT: la prova che
+/// conta e che lo schema Arrow arrivi dai metadati di `COM_STMT_PREPARE` e che
+/// i valori siano esattamente quelli della semantica dichiarata dal piano.
+///
+/// Il piano usa solo le forme che restano determinate senza dimostrare che la
+/// chiave d'ordine sia univoca: `RANK` e `DENSE_RANK`, stabili fra righe pari,
+/// un aggregato con frame RANGE, che taglia la partizione confrontando i
+/// valori della chiave e non le posizioni, e un `COUNT` sulla sola partizione.
+/// `ROW_NUMBER`, `LAG`, `LEAD` e il frame ROWS non compaiono: il provider li
+/// chiude prima della rete.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per le window scalari"]
+#[allow(clippy::too_many_lines)]
+async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates() {
+    use plenora_database_core::arrow::array::{Array, Int64Array, UInt64Array};
+    use plenora_database_core::arrow::schema::DataType;
+    use plenora_database_core::field_contract::validate_schema_contract;
+    use plenora_database_core::plan::{ComparisonOperator, SortDirection};
+    use plenora_database_core::protocol;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+        ScalarFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    };
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mut session = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("connessione MySQL live");
+    let probe = probe_server(&mut session, &cancellation)
+        .await
+        .expect("probe MySQL live");
+    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
+    drop(session);
+
+    let identifier = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("s".to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let peer_key = || QueryExpression::Compare {
+        left: Box::new(identifier("id")),
+        operator: ComparisonOperator::Eq,
+        right: Box::new(QueryExpression::Parameter {
+            name: "peer_boundary".to_owned(),
+        }),
+    };
+    let ascending = |expression: QueryExpression| QueryOrdering {
+        expression,
+        direction: SortDirection::Asc,
+    };
+    let over = |function: ScalarFunction,
+                arguments: Vec<QueryExpression>,
+                partition_by: Vec<QueryExpression>,
+                order_by: Vec<QueryOrdering>,
+                frame: Option<WindowFrame>,
+                alias: &str| QueryProjection {
+        expression: QueryExpression::Window {
+            function,
+            arguments,
+            partition_by,
+            order_by,
+            frame,
+        },
+        alias: Some(alias.to_owned()),
+    };
+
+    let operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("dataflow_test".to_owned()),
+                object: "stream_probe".to_owned(),
+                layer_id: None,
+            },
+            alias: Some("s".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![
+            QueryProjection {
+                expression: identifier("id"),
+                alias: Some("id".to_owned()),
+            },
+            over(
+                ScalarFunction::Rank,
+                Vec::new(),
+                Vec::new(),
+                vec![ascending(peer_key())],
+                None,
+                "ranked",
+            ),
+            over(
+                ScalarFunction::DenseRank,
+                Vec::new(),
+                Vec::new(),
+                vec![ascending(peer_key())],
+                None,
+                "dense_ranked",
+            ),
+            // RANGE confronta i valori della chiave d'ordine: il frame arriva
+            // fino a tutte le righe pari alla corrente compresa, quindi il
+            // massimo non dipende dall'ordine fisico scelto dal motore.
+            over(
+                ScalarFunction::Maximum,
+                vec![identifier("id")],
+                Vec::new(),
+                vec![ascending(peer_key())],
+                Some(WindowFrame {
+                    units: WindowFrameUnits::Range,
+                    start: WindowFrameBound::UnboundedPreceding,
+                    end: Some(WindowFrameBound::CurrentRow),
+                }),
+                "running_max",
+            ),
+            over(
+                ScalarFunction::Count,
+                vec![QueryExpression::Wildcard { relation: None }],
+                vec![peer_key()],
+                Vec::new(),
+                None,
+                "peers",
+            ),
+        ],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(identifier("id")),
+            operator: ComparisonOperator::Lte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "ceiling".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![ascending(identifier("id"))],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(3),
+        row_offset: None,
+        locking: None,
+    };
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider MySQL live");
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: 4,
+        memory_bytes: 4 * 1024 * 1024,
+        output_bytes: 4 * 1024 * 1024,
+        cell_bytes: 64 * 1024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget window MySQL");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &operation,
+            &ParameterBag::new(BTreeMap::from([
+                ("ceiling".to_owned(), ParameterValue::I64(3)),
+                ("peer_boundary".to_owned(), ParameterValue::I64(3)),
+            ])),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream window MySQL");
+
+    let schema = stream.schema();
+    validate_schema_contract(schema.as_ref()).expect("contratto Arrow canonico");
+    // Il rango e un conteggio di posizione: MySQL lo dichiara UNSIGNED e il
+    // contratto Arrow lo pubblica come UInt64, non come Int64.
+    let expected = [
+        ("id", DataType::Int64, false),
+        ("ranked", DataType::UInt64, false),
+        ("dense_ranked", DataType::UInt64, false),
+        ("running_max", DataType::Int64, true),
+        ("peers", DataType::Int64, false),
+    ];
+    assert_eq!(schema.fields().len(), expected.len());
+    for (index, (name, data_type, nullable)) in expected.iter().enumerate() {
+        let field = schema.field(index);
+        assert_eq!(field.name(), name);
+        assert_eq!(field.data_type(), data_type, "{name}");
+        assert_eq!(field.is_nullable(), *nullable, "{name}");
+        assert_eq!(
+            field.metadata().get(protocol::MYSQL_NATIVE_TYPE),
+            Some(&"bigint".to_owned()),
+            "{name}"
+        );
+        assert!(
+            !field
+                .metadata()
+                .contains_key(protocol::MYSQL_NATIVE_DECLARATION),
+            "{name}"
+        );
+    }
+
+    let batch = stream
+        .next_batch()
+        .await
+        .expect("batch window")
+        .expect("righe window");
+    assert_eq!(batch.num_rows(), 3);
+    let signed = |index: usize, label: &str| {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap_or_else(|| panic!("{label} non e Int64"))
+            .clone()
+    };
+    let values = |array: &Int64Array| (0..3).map(|row| array.value(row)).collect::<Vec<_>>();
+
+    assert_eq!(values(&signed(0, "id")), vec![1, 2, 3]);
+    let ranks = |index: usize, label: &str| {
+        let array = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap_or_else(|| panic!("{label} non e UInt64"));
+        (0..3).map(|row| array.value(row)).collect::<Vec<_>>()
+    };
+    // Le prime due righe appartengono allo stesso gruppo di peer. RANK salta
+    // quindi la posizione 2, mentre DENSE_RANK non lascia buchi.
+    assert_eq!(ranks(1, "ranked"), vec![1, 1, 3]);
+    assert_eq!(ranks(2, "dense_ranked"), vec![1, 1, 2]);
+    // Il frame RANGE include simultaneamente entrambi i peer: per id 1 il
+    // massimo e gia 2, cosa che un frame ROWS non garantirebbe.
+    assert_eq!(values(&signed(3, "running_max")), vec![2, 2, 3]);
+    assert_eq!(values(&signed(4, "peers")), vec![2, 2, 1]);
+    assert!(stream
+        .next_batch()
+        .await
+        .expect("fine stream window")
+        .is_none());
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per execution count QueryOperation"]
+#[allow(clippy::too_many_lines)]
+async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded() {
+    use plenora_database_core::plan::SortDirection;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::ResourceKind;
+    use std::collections::BTreeMap;
+
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("s".to_owned()),
+            field: field.to_owned(),
+        },
+    };
+    let operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("dataflow_test".to_owned()),
+                object: "stream_probe".to_owned(),
+                layer_id: None,
+            },
+            alias: Some("s".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column("id"),
+            alias: Some("single_execution_observed_id".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("id"),
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let audit_pool = mysql_async::Pool::new(
+        live_config()
+            .driver_opts_with_pool(Some(1))
+            .expect("pool performance_schema"),
+    );
+    let mut audit = audit_pool.get_conn().await.expect("checkout audit");
+    let baseline: Option<(String, u64)> = audit
+        .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
+        .await
+        .expect("baseline globale COM_STMT_EXECUTE");
+    let (_, baseline) = baseline.expect("contatore globale COM_STMT_EXECUTE");
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: 2_048,
+        memory_bytes: 96 * 1_024,
+        output_bytes: 4 * 1_024 * 1_024,
+        cell_bytes: 2 * 1_024,
+        concurrent_operations: 1,
+        ..ResourceLimits::default()
+    })
+    .expect("budget QueryOperation single execution");
+    let provider = MysqlProvider::new(live_config(), 1).expect("provider QueryOperation live");
+    let cancellation = CancellationToken::new();
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream QueryOperation single execution");
+    assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 0);
+
+    let Err(error) = provider
+        .query(
+            &live_secret(),
+            &operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("seconda QueryOperation accettata mentre la lease e attiva");
+    };
+    assert_eq!(error.category, ErrorCategory::ResourceLimit);
+
+    let current: Option<(String, u64)> = audit
+        .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
+        .await
+        .expect("COM_STMT_EXECUTE prima del consumo");
+    assert_eq!(
+        current.and_then(|(_, value)| value.checked_sub(baseline)),
+        Some(1)
+    );
+
+    let mut rows = 0_usize;
+    let mut batches = 0_usize;
+    while rows < 2_048 {
+        let batch = stream
+            .next_batch()
+            .await
+            .expect("batch QueryOperation")
+            .expect("batch presente fino al limite righe");
+        assert!(batch.num_rows() > 0);
+        assert!(batch.num_rows() < 2_048);
+        rows = rows.saturating_add(batch.num_rows());
+        batches = batches.saturating_add(1);
+        assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 0);
+        let current: Option<(String, u64)> = audit
+            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
+            .await
+            .expect("COM_STMT_EXECUTE dopo un batch");
+        assert_eq!(
+            current.and_then(|(_, value)| value.checked_sub(baseline)),
+            Some(1)
+        );
+    }
+    assert_eq!(rows, 2_048);
+    assert!(batches > 1, "la query deve attraversare piu batch bounded");
+    drop(stream);
+    assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 1);
+
+    let mut early_operation = operation.clone();
+    early_operation.projection = vec![QueryProjection {
+        expression: column("id"),
+        alias: Some("early_drop_inflight_marker".to_owned()),
+    }];
+    let early_budget = ResourceBudget::new(ResourceLimits {
+        rows: 1,
+        memory_bytes: 4 * 1_024 * 1_024,
+        output_bytes: 4 * 1_024 * 1_024,
+        cell_bytes: 2 * 1_024,
+        concurrent_operations: 1,
+        ..ResourceLimits::default()
+    })
+    .expect("budget drop anticipato QueryOperation");
+    crate::session::reset_test_row_pulls();
+    let mut early = provider
+        .query(
+            &live_secret(),
+            &early_operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &early_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("stream QueryOperation da abbandonare");
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), early.next_batch())
+        .await
+        .expect("primo batch bounded QueryOperation")
+        .expect("primo batch prima del drop")
+        .expect("batch prima del drop");
+    assert_eq!(first.num_rows(), 1);
+    assert_eq!(crate::session::test_row_pulls(), 1);
+    let owner_thread_id = observe_prepared_thread(&mut audit, "early_drop_inflight_marker").await;
+    assert_eq!(
+        early_budget.remaining(ResourceKind::ConcurrentOperations),
+        0
+    );
+    drop(early);
+    assert_eq!(
+        early_budget.remaining(ResourceKind::ConcurrentOperations),
+        1
+    );
+    provider
+        .test_connection(&live_secret(), &CancellationToken::new())
+        .await
+        .expect("provider riusabile dopo drop anticipato QueryOperation");
+    let mut replacement_operation = operation.clone();
+    replacement_operation.projection[0].alias = Some("early_drop_replacement_marker".to_owned());
+    let replacement_budget = ResourceBudget::new(ResourceLimits {
+        rows: 1,
+        concurrent_operations: 1,
+        ..ResourceLimits::default()
+    })
+    .expect("budget replacement early drop");
+    let replacement = provider
+        .query(
+            &live_secret(),
+            &replacement_operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &replacement_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("replacement QueryOperation dopo early drop");
+    let replacement_thread =
+        observe_prepared_thread(&mut audit, "early_drop_replacement_marker").await;
+    assert_ne!(replacement_thread, owner_thread_id);
+    drop(replacement);
+    drop(audit);
+    audit_pool.disconnect().await.expect("disconnect audit");
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per lifecycle QueryOperation"]
+#[allow(clippy::too_many_lines)]
+async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() {
+    use plenora_database_core::plan::SortDirection;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::ResourceKind;
+    use plenora_database_core::{ErrorPhase, RemoteEffect, RetryDisposition};
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    let operation = |marker: &str| {
+        let column = |field: &str| QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("slow".to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("dataflow_test".to_owned()),
+                    object: "slow_query_probe".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("slow".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![
+                QueryProjection {
+                    expression: column("id"),
+                    alias: Some("slow_id".to_owned()),
+                },
+                QueryProjection {
+                    expression: column("delay_value"),
+                    alias: Some(marker.to_owned()),
+                },
+            ],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: vec![QueryOrdering {
+                expression: column("id"),
+                direction: SortDirection::Asc,
+            }],
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        }
+    };
+    let replacement_operation = |marker: &str| {
+        let mut replacement = operation(marker);
+        replacement
+            .source
+            .as_mut()
+            .expect("sorgente replacement")
+            .object
+            .object = "stream_probe".to_owned();
+        replacement.projection = vec![QueryProjection {
+            expression: QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("slow".to_owned()),
+                    field: "id".to_owned(),
+                },
+            },
+            alias: Some(marker.to_owned()),
+        }];
+        replacement
+    };
+    let limits = || ResourceLimits {
+        rows: 2_048,
+        memory_bytes: 4 * 1_024 * 1_024,
+        output_bytes: 4 * 1_024 * 1_024,
+        cell_bytes: 2 * 1_024,
+        concurrent_operations: 1,
+        ..ResourceLimits::default()
+    };
+    let assert_envelope =
+        |error: &plenora_database_core::DatabaseError, category: ErrorCategory, message: &str| {
+            assert_eq!(error.category, category);
+            assert_eq!(error.phase, ErrorPhase::Read);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.retry, RetryDisposition::Never);
+            assert_eq!(error.provider, Some(ProviderKind::Mysql));
+            assert_eq!(error.message, message);
+        };
+    let audit_pool = mysql_async::Pool::new(
+        live_config()
+            .driver_opts_with_pool(Some(1))
+            .expect("pool audit lifecycle"),
+    );
+    let mut audit = audit_pool
+        .get_conn()
+        .await
+        .expect("checkout audit lifecycle");
+    let audit_connection_id: Option<u64> = audit
+        .query_first("SELECT CONNECTION_ID()")
+        .await
+        .expect("connection id audit lifecycle");
+    let run_id = audit_connection_id.expect("connection id audit presente");
+
+    let cancellation = CancellationToken::new();
+    let cancellation_marker = format!("cancel_inflight_{run_id}");
+    let cancellation_operation = operation(&cancellation_marker);
+    let provider = MysqlProvider::new(
+        live_config().with_timeouts(
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        ),
+        1,
+    )
+    .expect("provider cancellation QueryOperation");
+    let budget = ResourceBudget::new(limits()).expect("budget cancellation QueryOperation");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &cancellation_operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream cancellation QueryOperation");
+    let (cancellation_thread, error) = {
+        let next_batch = stream.next_batch();
+        tokio::pin!(next_batch);
+        let cancellation_thread = tokio::select! {
+            owner = observe_inflight_query(&mut audit, &cancellation_marker) => owner,
+            result = &mut next_batch => panic!(
+                "cancellation QueryOperation terminata prima della barriera: {result:?}"
+            ),
+        };
+        cancellation.cancel();
+        let error = next_batch
+            .await
+            .expect_err("QueryOperation cancellata in-flight");
+        (cancellation_thread, error)
+    };
+    assert_envelope(
+        &error,
+        ErrorCategory::Cancelled,
+        "operazione MySQL cancellata; connessione quarantinata",
+    );
+    drop(stream);
+    assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 1);
+    provider
+        .test_connection(&live_secret(), &CancellationToken::new())
+        .await
+        .expect("provider riusabile dopo quarantena per cancellation");
+    let cancellation_replacement_marker = format!("cancel_replacement_{run_id}");
+    let cancellation_replacement = replacement_operation(&cancellation_replacement_marker);
+    let replacement_budget =
+        ResourceBudget::new(limits()).expect("budget replacement cancellation");
+    let replacement = provider
+        .query(
+            &live_secret(),
+            &cancellation_replacement,
+            &ParameterBag::new(BTreeMap::new()),
+            &replacement_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("replacement dopo cancellation");
+    let replacement_thread =
+        observe_prepared_thread(&mut audit, &cancellation_replacement_marker).await;
+    assert_ne!(replacement_thread, cancellation_thread);
+    drop(replacement);
+
+    let timeout_provider = MysqlProvider::new(
+        live_config().with_timeouts(
+            Duration::from_secs(10),
+            Duration::from_millis(500),
+            Duration::from_secs(10),
+        ),
+        1,
+    )
+    .expect("provider timeout QueryOperation");
+    let timeout_marker = format!("operation_timeout_inflight_{run_id}");
+    let timeout_operation = operation(&timeout_marker);
+    let timeout_budget = ResourceBudget::new(limits()).expect("budget timeout QueryOperation");
+    let timeout_cancellation = CancellationToken::new();
+    let mut stream = timeout_provider
+        .query(
+            &live_secret(),
+            &timeout_operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &timeout_budget,
+            &timeout_cancellation,
+        )
+        .await
+        .expect("stream timeout QueryOperation");
+    let (timeout_thread, error) = {
+        let next_batch = stream.next_batch();
+        tokio::pin!(next_batch);
+        let timeout_thread = tokio::select! {
+            owner = observe_inflight_query(&mut audit, &timeout_marker) => owner,
+            result = &mut next_batch => panic!(
+                "timeout QueryOperation terminato prima della barriera: {result:?}"
+            ),
+        };
+        let error = next_batch.await.expect_err("QueryOperation in timeout");
+        (timeout_thread, error)
+    };
+    assert_envelope(
+        &error,
+        ErrorCategory::Timeout,
+        "timeout operazione MySQL; connessione quarantinata",
+    );
+    drop(stream);
+    assert_eq!(
+        timeout_budget.remaining(ResourceKind::ConcurrentOperations),
+        1
+    );
+    timeout_provider
+        .test_connection(&live_secret(), &CancellationToken::new())
+        .await
+        .expect("provider riusabile dopo quarantena per timeout");
+    let timeout_replacement_marker = format!("timeout_replacement_{run_id}");
+    let timeout_replacement = replacement_operation(&timeout_replacement_marker);
+    let replacement_budget = ResourceBudget::new(limits()).expect("budget replacement timeout");
+    let replacement = timeout_provider
+        .query(
+            &live_secret(),
+            &timeout_replacement,
+            &ParameterBag::new(BTreeMap::new()),
+            &replacement_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("replacement dopo timeout");
+    let replacement_thread = observe_prepared_thread(&mut audit, &timeout_replacement_marker).await;
+    assert_ne!(replacement_thread, timeout_thread);
+    drop(replacement);
+
+    let deadline_provider = MysqlProvider::new(
+        live_config().with_timeouts(
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        ),
+        1,
+    )
+    .expect("provider deadline QueryOperation");
+    let deadline_marker = format!("resource_deadline_inflight_{run_id}");
+    let deadline_operation = operation(&deadline_marker);
+    let mut deadline_limits = limits();
+    deadline_limits.duration_ms = 500;
+    let deadline_budget =
+        ResourceBudget::new(deadline_limits).expect("budget deadline QueryOperation");
+    let deadline_cancellation = CancellationToken::new();
+    let mut stream = deadline_provider
+        .query(
+            &live_secret(),
+            &deadline_operation,
+            &ParameterBag::new(BTreeMap::new()),
+            &deadline_budget,
+            &deadline_cancellation,
+        )
+        .await
+        .expect("stream deadline QueryOperation");
+    let (deadline_thread, error) = {
+        let next_batch = stream.next_batch();
+        tokio::pin!(next_batch);
+        let deadline_thread = tokio::select! {
+            owner = observe_inflight_query(&mut audit, &deadline_marker) => owner,
+            result = &mut next_batch => panic!(
+                "deadline QueryOperation terminata prima della barriera: {result:?}"
+            ),
+        };
+        let error = next_batch
+            .await
+            .expect_err("QueryOperation oltre deadline budget");
+        (deadline_thread, error)
+    };
+    assert_envelope(
+        &error,
+        ErrorCategory::Timeout,
+        "timeout operazione MySQL; connessione quarantinata",
+    );
+    drop(stream);
+    assert_eq!(
+        deadline_budget.remaining(ResourceKind::ConcurrentOperations),
+        1
+    );
+    deadline_provider
+        .test_connection(&live_secret(), &CancellationToken::new())
+        .await
+        .expect("provider riusabile dopo quarantena per deadline");
+    let deadline_replacement_marker = format!("deadline_replacement_{run_id}");
+    let deadline_replacement = replacement_operation(&deadline_replacement_marker);
+    let replacement_budget = ResourceBudget::new(limits()).expect("budget replacement deadline");
+    let replacement = deadline_provider
+        .query(
+            &live_secret(),
+            &deadline_replacement,
+            &ParameterBag::new(BTreeMap::new()),
+            &replacement_budget,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("replacement dopo deadline");
+    let replacement_thread =
+        observe_prepared_thread(&mut audit, &deadline_replacement_marker).await;
+    assert_ne!(replacement_thread, deadline_thread);
+    drop(replacement);
+    drop(audit);
+    audit_pool
+        .disconnect()
+        .await
+        .expect("disconnect audit lifecycle");
 }

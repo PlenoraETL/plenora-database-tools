@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this fixture LF-only: it is executed inside Linux containers.
 set -euo pipefail
 
 CA_DIR=${1:?directory CA privata obbligatoria}

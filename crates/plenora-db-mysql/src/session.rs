@@ -1,14 +1,27 @@
 use crate::config::MysqlConfig;
 use crate::error::{driver_error, interruption_error, timeout_error};
 use futures_util::StreamExt;
-use mysql_async::prelude::Queryable;
-use mysql_async::{Conn, Params, Row};
+use mysql_async::prelude::{Queryable, StatementLike};
+use mysql_async::{Conn, Params, Row, Statement};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
 
 pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'";
+
+#[cfg(test)]
+static TEST_ROW_PULLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub fn reset_test_row_pulls() {
+    TEST_ROW_PULLS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn test_row_pulls() -> u64 {
+    TEST_ROW_PULLS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MysqlSessionState {
@@ -160,14 +173,59 @@ impl MysqlSession {
         }
     }
 
-    pub(crate) async fn pump_exec_rows(
+    /// Prepara lo statement e restituisce i metadati di colonna del server.
+    ///
+    /// `MySQL` non descrive un result set senza preparare: i metadati di
+    /// `COM_STMT_PREPARE` sono l'unica fonte autoritativa dello schema di
+    /// output di una `QueryOperation`.
+    pub(crate) async fn prepare_statement(
         &mut self,
-        sql: String,
+        sql: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Statement> {
+        self.require_ready(ErrorPhase::Prepare)?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(ErrorPhase::Prepare))?;
+        let prepare = connection.prep(sql);
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(cancellation, ErrorPhase::Prepare, RemoteEffect::None));
+            }
+            result = tokio::time::timeout(self.operation_timeout, prepare) => result,
+        };
+        match outcome {
+            Ok(Ok(statement)) => Ok(statement),
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                Err(driver_error(
+                    &error,
+                    ErrorPhase::Prepare,
+                    RemoteEffect::None,
+                ))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(ErrorPhase::Prepare, RemoteEffect::None))
+            }
+        }
+    }
+
+    pub(crate) async fn pump_exec_rows<S>(
+        &mut self,
+        statement: S,
         parameters: Params,
         sender: tokio::sync::mpsc::Sender<Result<Row>>,
         mut demand: tokio::sync::mpsc::Receiver<()>,
         cancellation: &CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        S: StatementLike + 'static,
+    {
         self.require_ready(ErrorPhase::Read)?;
         let operation_timeout = self.operation_timeout;
         let outcome = {
@@ -175,7 +233,7 @@ impl MysqlSession {
                 .connection
                 .as_mut()
                 .ok_or_else(|| state_error(ErrorPhase::Read))?;
-            let open = connection.exec_stream::<Row, _, _>(sql, parameters);
+            let open = connection.exec_stream::<Row, _, _>(statement, parameters);
             let stream = tokio::select! {
                 _ = cancellation.cancelled() => {
                     None
@@ -206,6 +264,8 @@ impl MysqlSession {
                     if requested.is_none() {
                         break PumpOutcome::Abandoned;
                     }
+                    #[cfg(test)]
+                    TEST_ROW_PULLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let next = tokio::select! {
                         _ = cancellation.cancelled() => break PumpOutcome::Cancelled,
                         result = tokio::time::timeout(operation_timeout, stream.next()) => result,

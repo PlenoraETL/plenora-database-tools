@@ -282,13 +282,25 @@ impl Provider for MysqlProvider {
 
     fn query<'a>(
         &'a self,
-        _secret: &'a SecretString,
-        _operation: &'a QueryOperation,
-        _parameters: &'a ParameterBag,
-        _budget: &'a ResourceBudget,
-        _cancellation: &'a CancellationToken,
+        secret: &'a SecretString,
+        operation: &'a QueryOperation,
+        parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
-        Box::pin(async { Err(unsupported("query MySQL non ancora qualificata")) })
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            crate::query_operation(
+                &pool,
+                self.config.database(),
+                operation,
+                parameters,
+                crate::DEFAULT_BATCH_ROWS,
+                budget,
+                cancellation,
+            )
+            .await
+        })
     }
 
     fn prepare_write<'a>(
@@ -354,8 +366,323 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plenora_database_core::plan::{ComparisonOperator, ObjectRef};
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::query::{
+        ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryLock, QueryLockStrength,
+        QueryLockWait, QueryProjection, QuerySource, ScalarFunction,
+    };
+    use plenora_database_core::resource::ResourceLimits;
 
     const fn assert_provider<T: Provider>() {}
+
+    fn parameterized_query() -> QueryOperation {
+        QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("warehouse".to_owned()),
+                    object: "events".to_owned(),
+                    layer_id: None,
+                },
+                alias: None,
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "event_id".to_owned(),
+                    },
+                },
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: Some(QueryExpression::Compare {
+                left: Box::new(QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "event_id".to_owned(),
+                    },
+                }),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(QueryExpression::Parameter {
+                    name: "wanted".to_owned(),
+                }),
+            }),
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn query_renders_and_binds_before_reaching_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let parameters = ParameterBag::new(BTreeMap::from([
+            ("wanted".to_owned(), ParameterValue::I64(7)),
+            ("unused".to_owned(), ParameterValue::I64(9)),
+        ]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        let outcome = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &parameterized_query(),
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("ParameterBag con parametro non usato accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    #[tokio::test]
+    async fn query_honours_cancellation_before_reaching_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "wanted".to_owned(),
+            ParameterValue::I64(7),
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let outcome = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &parameterized_query(),
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("token gia cancellato accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn query_keeps_unqualified_ast_fail_closed_before_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let mut operation = parameterized_query();
+        operation.locking = Some(QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: Vec::new(),
+            wait: QueryLockWait::NoWait,
+        });
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "wanted".to_owned(),
+            ParameterValue::I64(7),
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        let outcome = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &operation,
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("locking esplicito non qualificato accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    /// Il bind di HAVING deve essere estratto e richiesto come ogni altro:
+    /// la mancanza del valore va vista prima di aprire la connessione.
+    #[tokio::test]
+    async fn query_demands_the_having_bind_before_reaching_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let mut operation = parameterized_query();
+        let events = QueryExpression::Scalar {
+            function: ScalarFunction::Count,
+            arguments: vec![QueryExpression::Column {
+                column: ColumnRef {
+                    relation: None,
+                    field: "event_id".to_owned(),
+                },
+            }],
+        };
+        operation.projection = vec![
+            QueryProjection {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "actor_id".to_owned(),
+                    },
+                },
+                alias: None,
+            },
+            QueryProjection {
+                expression: events.clone(),
+                alias: Some("events".to_owned()),
+            },
+        ];
+        operation.group_by = vec![QueryExpression::Column {
+            column: ColumnRef {
+                relation: None,
+                field: "actor_id".to_owned(),
+            },
+        }];
+        operation.having = Some(QueryExpression::Compare {
+            left: Box::new(events),
+            operator: ComparisonOperator::Gte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "floor".to_owned(),
+            }),
+        });
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "wanted".to_owned(),
+            ParameterValue::I64(7),
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        let outcome = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &operation,
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("bind HAVING mancante accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    /// Il bind della clausola ON e posizionale come ogni altro e precede
+    /// quello di WHERE: la sua assenza deve essere vista prima di aprire la
+    /// connessione, non al `COM_STMT_EXECUTE`.
+    #[tokio::test]
+    async fn query_demands_the_join_on_bind_before_reaching_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let qualified = |relation: &str, field: &str| QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some(relation.to_owned()),
+                field: field.to_owned(),
+            },
+        };
+        let mut operation = parameterized_query();
+        operation.source = Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("warehouse".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            alias: Some("e".to_owned()),
+        });
+        operation.projection = vec![QueryProjection {
+            expression: qualified("a", "name"),
+            alias: Some("actor".to_owned()),
+        }];
+        operation.joins = vec![QueryJoin {
+            kind: JoinKind::Inner,
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("warehouse".to_owned()),
+                    object: "actors".to_owned(),
+                    layer_id: None,
+                },
+                alias: Some("a".to_owned()),
+            }),
+            derived_source: None,
+            lateral: false,
+            on: Some(QueryExpression::And {
+                arguments: vec![
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("e", "actor_id")),
+                        operator: ComparisonOperator::Eq,
+                        right: Box::new(qualified("a", "actor_id")),
+                    },
+                    QueryExpression::Compare {
+                        left: Box::new(qualified("a", "tier")),
+                        operator: ComparisonOperator::Gte,
+                        right: Box::new(QueryExpression::Parameter {
+                            name: "tier".to_owned(),
+                        }),
+                    },
+                ],
+            }),
+        }];
+        operation.filter = Some(QueryExpression::Compare {
+            left: Box::new(qualified("e", "event_id")),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "wanted".to_owned(),
+            }),
+        });
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "wanted".to_owned(),
+            ParameterValue::I64(7),
+        )]));
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        let outcome = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &operation,
+                &parameters,
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("bind della clausola ON mancante accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
 
     #[test]
     fn provider_surface_is_typed_and_fail_closed() {

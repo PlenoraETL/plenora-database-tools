@@ -1,3 +1,4 @@
+# Keep this OpenSSL fixture LF-only for Linux container execution.
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
