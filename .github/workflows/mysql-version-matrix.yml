@@ -1,0 +1,100 @@
+name: MySQL version matrix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mysql-version-matrix.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-sql/**"
+      - "crates/plenora-db-mysql/**"
+      - "docker/mysql/init/**"
+      - "docker/mysql/tls/**"
+      - "scripts/check_mysql_matrix.py"
+      - "scripts/check_mysql_reference.py"
+      - "tests/test_mysql_matrix.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+concurrency:
+  group: mysql-version-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    name: MySQL 8.0 and 8.4 qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+
+      - name: Qualify the pinned MySQL 8.0 and 8.4 references
+        run: |
+          mkdir -p assurance-results
+          python3 -m unittest tests.test_mysql_matrix
+          python3 scripts/check_mysql_matrix.py 2>&1 \
+            | tee assurance-results/mysql-version-matrix.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/mysql-version-matrix.log \
+            assurance-results/mysql-version-matrix.json
+
+      - name: Record reproducibility identities
+        run: |
+          {
+            printf 'commit=%s\n' "$CANDIDATE_SHA"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            rustc --version --verbose
+            docker --version
+            docker image inspect \
+              mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b \
+              --format '{{.Id}} {{json .RepoDigests}}'
+            docker image inspect \
+              mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb \
+              --format '{{.Id}} {{json .RepoDigests}}'
+          } | tee assurance-results/mysql-matrix-environment.txt
+
+      - name: Verify the candidate remained unchanged
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA" && git diff --exit-code -- .
+
+      - name: Capture diagnostics
+        if: failure()
+        run: docker ps -a > assurance-results/mysql-matrix-containers.txt || true
+
+      - name: Preserve matrix evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mysql-version-matrix-${{ env.CANDIDATE_SHA }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove matrix containers, volumes and network
+        if: always()
+        run: |
+          docker rm --force --volumes \
+            plenora-matrix-mysql-80 plenora-matrix-mysql-84 || true
+          docker volume rm --force \
+            plenora-matrix-mysql-80-tls plenora-matrix-mysql-80-ca \
+            plenora-matrix-mysql-84-tls plenora-matrix-mysql-84-ca || true
+          docker network rm plenora-mysql-matrix || true

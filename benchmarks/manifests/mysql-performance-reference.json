@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "campaign": "mysql-8.4-reference-append-narrow",
+  "rows": 2000,
+  "batch_rows": 256,
+  "warmup": 1,
+  "repeat": 3
+}

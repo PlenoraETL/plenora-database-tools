@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "profile": "mysql-8.4-reference-append-narrow",
+  "limits": {
+    "read_p95_micros_max": 5000000,
+    "read_median_rows_per_second_min": 200,
+    "append_p95_micros_max": 15000000,
+    "append_median_rows_per_second_min": 100,
+    "peak_rss_bytes_max": 536870912
+  },
+  "regression": {
+    "p95_latency_multiplier_max": 1.75,
+    "median_throughput_ratio_min": 0.55
+  }
+}

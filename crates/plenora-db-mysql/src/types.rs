@@ -147,7 +147,38 @@ impl MysqlReadPlan {
             schema_token: description.token.0.clone(),
         })
     }
+
+    /// Costruisce il piano di una `QueryOperation` dai metadati del prepared
+    /// statement, che sono l'unica descrizione autoritativa dell'output.
+    ///
+    /// # Errors
+    ///
+    /// Fallisce chiuso quando il result set non espone colonne.
+    pub(crate) fn from_query_columns(
+        sql: String,
+        bind_names: Vec<String>,
+        columns: Vec<MysqlColumnSpec>,
+    ) -> Result<Self> {
+        if columns.is_empty() {
+            return Err(prepare_error(
+                ErrorCategory::Schema,
+                "QueryOperation MySQL priva di colonne risultanti",
+            ));
+        }
+        let schema = contract_schema(columns.iter().map(MysqlColumnSpec::arrow_field).collect());
+        Ok(Self {
+            columns,
+            schema,
+            sql,
+            bind_names,
+            schema_token: QUERY_RESULT_SCHEMA_TOKEN.to_owned(),
+        })
+    }
 }
+
+/// Il token strutturale di una query non e un token di catalogo: l'unica
+/// verifica successiva possibile e il ricontrollo dei metadati di riga.
+const QUERY_RESULT_SCHEMA_TOKEN: &str = "mysql-query-result-metadata-v1";
 
 impl MysqlColumnSpec {
     /// Traduce una colonna del catalogo nel sottoinsieme Arrow supportato.
@@ -245,16 +276,16 @@ impl MysqlColumnSpec {
             MysqlColumnKind::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
             MysqlColumnKind::Decimal { precision, scale } => DataType::Decimal128(precision, scale),
         };
-        let mut metadata = HashMap::from([
-            (
-                protocol::MYSQL_NATIVE_TYPE.to_owned(),
-                self.native_type.clone(),
-            ),
-            (
+        let mut metadata = HashMap::from([(
+            protocol::MYSQL_NATIVE_TYPE.to_owned(),
+            self.native_type.clone(),
+        )]);
+        if !self.native_declaration.is_empty() {
+            metadata.insert(
                 protocol::MYSQL_NATIVE_DECLARATION.to_owned(),
                 self.native_declaration.clone(),
-            ),
-        ]);
+            );
+        }
         if let Some(collation) = &self.collation {
             metadata.insert(protocol::MYSQL_COLLATION.to_owned(), collation.clone());
         }
@@ -484,7 +515,7 @@ fn contract_schema(fields: Vec<Field>) -> SchemaRef {
     ))
 }
 
-fn mysql_identifier(value: &str) -> Result<Identifier> {
+pub fn mysql_identifier(value: &str) -> Result<Identifier> {
     if value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
@@ -494,7 +525,7 @@ fn mysql_identifier(value: &str) -> Result<Identifier> {
     Identifier::new(value.to_owned())
 }
 
-const fn mysql_renderer() -> Renderer {
+pub const fn mysql_renderer() -> Renderer {
     Renderer::new(
         Dialect::Mysql,
         DialectCapabilities {

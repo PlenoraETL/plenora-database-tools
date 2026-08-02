@@ -54,6 +54,9 @@ impl EwkbGeometryMetadata {
 pub struct EwkbInspection {
     pub stats: EwkbStats,
     pub root: EwkbGeometryMetadata,
+    pub has_any_z: bool,
+    pub has_any_m: bool,
+    pub has_any_embedded_srid: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +82,9 @@ struct Scanner<'a> {
     max_components: u64,
     max_depth: u64,
     observed_depth: u64,
+    has_any_z: bool,
+    has_any_m: bool,
+    has_any_embedded_srid: bool,
 }
 
 impl Scanner<'_> {
@@ -180,6 +186,9 @@ impl Scanner<'_> {
         self.observed_depth = self.observed_depth.max(depth);
         self.add_components(1)?;
         let header = self.header()?;
+        self.has_any_z |= header.has_z;
+        self.has_any_m |= header.has_m;
+        self.has_any_embedded_srid |= header.srid.is_some();
         let children = match header.base_type {
             1 => {
                 self.coordinates(1, header.dimensions)?;
@@ -240,6 +249,9 @@ pub fn inspect_ewkb_detailed(
         max_components,
         max_depth,
         observed_depth: 0,
+        has_any_z: false,
+        has_any_m: false,
+        has_any_embedded_srid: false,
     };
     let mut depth = 1;
     let mut frames = Vec::<Frame>::new();
@@ -279,6 +291,9 @@ pub fn inspect_ewkb_detailed(
                         max_depth: scanner.observed_depth,
                     },
                     root: root.ok_or_else(|| mapping_error("geometria EWKB assente"))?,
+                    has_any_z: scanner.has_any_z,
+                    has_any_m: scanner.has_any_m,
+                    has_any_embedded_srid: scanner.has_any_embedded_srid,
                 });
             };
             if frame.remaining == 0 {

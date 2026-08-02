@@ -18,17 +18,128 @@ NETWORK = "plenora-database-tools_default"
 RUST_IMAGE = "rust:1.92"
 EXPECTED_DIGEST = "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
 EXPECTED_REFERENCE = f"mysql@{EXPECTED_DIGEST}"
-EXPECTED_OFFLINE_TESTS = 34
+EXPECTED_OFFLINE_TESTS = {
+    "arrow::tests::decimal_parser_is_exact_and_checked",
+    "arrow::tests::zero_dates_fail_closed_without_panicking",
+    "catalog::tests::schema_token_is_stable_and_sensitive",
+    "config::tests::debug_redacts_credentials",
+    "config::tests::driver_opts_require_tls_even_for_explicit_trust_opt_out",
+    "config::tests::invalid_configuration_fails_before_io",
+    "config::tests::pooled_driver_opts_reapply_bootstrap_after_connection_reset",
+    "config::tests::tls_verification_is_the_default",
+    "error::tests::deadline_and_requested_cancellation_have_distinct_envelopes",
+    "error::tests::in_flight_timeout_still_reports_quarantine",
+    "error::tests::incidental_certificate_text_in_io_stays_io",
+    "error::tests::pre_session_timeout_and_cancellation_do_not_claim_quarantine",
+    "error::tests::read_cancellation_is_non_retryable_and_effect_free",
+    "error::tests::server_code_mappings_win_over_tls_identity_text",
+    "error::tests::tls_hostname_rejection_is_distinct_from_generic_io",
+    "error::tests::write_timeout_never_claims_rollback",
+    "parameter::tests::binding_is_positional_and_rejects_extra_parameters",
+    "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
+    "pool::tests::checkout_preserves_the_independent_acquire_budget",
+    "pool::tests::zero_capacity_is_rejected_without_network",
+    "provider::tests::prepare_write_honours_cancellation_before_the_network",
+    "provider::tests::prepare_write_rejects_unqualified_operations_before_the_network",
+    "provider::tests::provider_surface_is_typed_and_fail_closed",
+    "provider::tests::published_spatial_capabilities_match_generic_geometry_contract",
+    "provider::tests::query_demands_the_having_bind_before_reaching_the_network",
+    "provider::tests::query_demands_the_join_on_bind_before_reaching_the_network",
+    "provider::tests::query_honours_cancellation_before_reaching_the_network",
+    "provider::tests::query_keeps_unqualified_ast_fail_closed_before_the_network",
+    "provider::tests::query_renders_and_binds_before_reaching_the_network",
+    "provider::tests::write_rejects_a_budget_that_did_not_prepare_it",
+    "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
+    "query::tests::aggregate_windows_render_without_an_order_but_a_frame_requires_one",
+    "query::tests::boolean_width_matches_the_catalog_read_path",
+    "query::tests::count_star_is_the_only_wildcard_accepted_inside_an_aggregate",
+    "query::tests::cross_database_and_oversized_identifiers_are_rejected_before_rendering",
+    "query::tests::decimal_precision_is_reconstructed_and_bounded",
+    "query::tests::distinct_on_is_reported_as_absent_from_mysql",
+    "query::tests::distinct_ordering_must_belong_to_the_projection",
+    "query::tests::distinct_projection_renders_and_orders_inside_the_projection",
+    "query::tests::distinct_stays_deterministic_across_joins",
+    "query::tests::geometry_and_empty_result_sets_fail_closed",
+    "query::tests::group_determinism_reads_the_relation_qualifier_as_part_of_the_key",
+    "query::tests::grouped_aggregates_render_with_binds_ordered_by_clause",
+    "query::tests::grouped_shapes_without_a_deterministic_group_fail_closed",
+    "query::tests::join_on_cannot_reference_a_relation_introduced_later",
+    "query::tests::join_shapes_outside_the_qualified_subset_fail_closed",
+    "query::tests::lateral_is_reported_as_not_yet_qualified_instead_of_absent",
+    "query::tests::peer_stable_ranking_renders_while_total_order_windows_stay_closed",
+    "query::tests::physical_joins_render_with_relation_qualified_columns_and_ordered_binds",
+    "query::tests::renderer_is_the_shared_mysql_dialect",
+    "query::tests::right_join_renders_while_full_join_is_reported_as_absent_from_mysql",
+    "query::tests::scalar_single_source_renders_with_backticks_and_positional_binds",
+    "query::tests::scalar_windows_render_over_the_final_relation_set_with_projection_binds_first",
+    "query::tests::statement_metadata_maps_to_the_arrow_contract",
+    "query::tests::the_on_clause_boundary_is_covered_by_the_core_and_by_the_provider",
+    "query::tests::the_window_function_boundary_is_covered_by_the_core_and_by_the_provider",
+    "query::tests::unqualified_ast_subsets_stay_unsupported",
+    "query::tests::window_frames_are_limited_to_the_units_mysql_can_represent",
+    "query::tests::window_only_functions_and_argument_counts_fail_before_the_network",
+    "query::tests::window_operands_stay_row_only_scalar_and_relation_valid",
+    "query::tests::windows_combined_with_grouping_or_distinct_stay_closed",
+    "query::tests::windows_outside_the_projection_stay_closed",
+    "read::tests::builder_capacity_is_bounded_by_the_byte_budget_before_allocation",
+    "read::tests::expired_resource_deadline_maps_to_timeout",
+    "read::tests::invalid_batch_size_is_rejected_before_io",
+    "read::tests::reservation_fails_before_allocation_when_rows_are_exhausted",
+    "read::tests::terminal_stream_error_is_sticky_instead_of_becoming_eof",
+    "read::tests::valid_row_bound_reserves_cell_payload_and_buffer_growth",
+    "session::tests::bootstrap_is_explicit_and_deterministic",
+    "types::tests::concrete_spatial_type_produces_an_exact_valid_contract",
+    "types::tests::limit_without_order_is_rejected_fail_closed",
+    "types::tests::mapping_preserves_signedness_and_rejects_wide_decimal",
+    "types::tests::mysql_geomcollection_alias_produces_the_canonical_exact_type",
+    "types::tests::spatial_projection_is_wkb_xy_with_declared_srid",
+    "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
+    "write::tests::batch_schema_drift_is_rejected_before_binding",
+    "write::tests::chunk_binding_is_positional_and_never_interpolates_values",
+    "write::tests::chunk_bounds_are_checked_against_the_batch",
+    "write::tests::chunk_size_is_deterministic_and_fits_the_placeholder_ceiling",
+    "write::tests::commit_interruption_produces_an_unknown_outcome_without_automatic_retry",
+    "write::tests::committed_outcome_row_counts_are_contract_valid",
+    "write::tests::compile_accepts_supported_arrow_types_in_schema_order",
+    "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
+    "write::tests::compile_rejects_a_foreign_contract_version",
+    "write::tests::compile_rejects_cross_database_and_layer_targets",
+    "write::tests::compile_rejects_dimensions_the_mysql_server_cannot_represent",
+    "write::tests::compile_rejects_empty_or_unqualified_arrow_schemas",
+    "write::tests::compile_rejects_unqualified_operation_shapes_before_the_network",
+    "write::tests::insert_renders_qualified_quoted_columns_in_schema_order",
+    "write::tests::insert_requires_at_least_one_row",
+    "write::tests::insert_row_count_overflow_is_checked",
+    "write::tests::insert_stops_at_the_placeholder_ceiling_before_the_network",
+    "write::tests::null_cells_in_non_nullable_columns_fail_before_the_network",
+    "write::tests::pre_commit_errors_claim_rollback_only_when_it_is_confirmed",
+    "write::tests::server_preflight_keeps_unqualified_write_targets_closed",
+    "write::tests::server_preflight_rejects_targets_that_strict_cannot_write",
+    "write::tests::server_preflight_reports_no_losses_only_for_a_compatible_table",
+    "write::tests::server_preflight_requires_microsecond_temporal_precision",
+    "write::tests::spatial_batch_enforces_exact_type_and_cumulative_component_budget",
+    "write::tests::spatial_batch_rejects_ewkb_srid_and_z_before_binding",
+}
 EXPECTED_LIVE_TESTS = {
+    "live_append_batch_failure_rolls_back_without_partial_rows",
+    "live_append_commits_a_single_transaction_and_reads_back_exactly",
+    "live_append_spatial_xy_preserves_srid_and_coordinates",
+    "live_append_timeout_quarantines_and_replaces_the_pooled_session",
     "live_deadline_reports_timeout_and_quarantines_the_session",
     "live_early_stream_drop_cancels_worker_and_keeps_provider_usable",
+    "live_grouped_aggregate_having_bind_and_distinct_over_verified_tls",
     "live_inflight_cancellation_quarantines_the_session",
     "live_operation_timeout_quarantines_the_session",
+    "live_physical_joins_bind_on_clauses_and_publish_outer_nullability",
     "live_pool_acquire_timeout_is_independent_from_connect_timeout",
     "live_pool_reset_reapplies_deterministic_session_bootstrap",
     "live_provider_connection_capabilities_and_inspect",
+    "live_query_operation_cancellation_and_timeout_quarantine_the_session",
+    "live_query_operation_executes_once_holds_lease_and_stays_demand_bounded",
     "live_read_projection_filter_order_and_default_schema",
     "live_reference_probe_catalog_and_spatial_metadata",
+    "live_scalar_single_source_query_uses_prepare_metadata_as_schema",
+    "live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates",
     "live_streaming_read_maps_scalar_and_xy_geometry_exactly",
     "live_variable_rows_are_not_consumed_past_the_current_batch_budget",
     "live_verified_tls_rejects_a_hostname_mismatch",
@@ -129,7 +240,7 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         environment.setdefault("PLENORA_MYSQL_PASSWORD", fixture_password())
         if "PLENORA_MYSQL_CA" not in environment:
             raise RuntimeError("PLENORA_MYSQL_CA obbligatoria con cargo host")
-        return ["cargo", *arguments], environment
+        return [os.environ.get("CARGO", "cargo"), *arguments], environment
 
     environment = os.environ.copy()
     environment["PLENORA_MYSQL_PASSWORD"] = fixture_password()
@@ -231,11 +342,17 @@ def main() -> int:
         ["test", "-p", "plenora-db-mysql", "--locked"],
         capture=True,
     )
-    executed_offline_tests = re.findall(r"^test [^ ]+ \.\.\. ok$", offline_output, re.MULTILINE)
-    if len(executed_offline_tests) != EXPECTED_OFFLINE_TESTS:
+    executed_offline_tests = set(
+        re.findall(r"^test ([^ ]+) \.\.\. ok$", offline_output, re.MULTILINE)
+    )
+    if executed_offline_tests != EXPECTED_OFFLINE_TESTS:
+        missing = sorted(EXPECTED_OFFLINE_TESTS - executed_offline_tests)
+        unexpected = sorted(executed_offline_tests - EXPECTED_OFFLINE_TESTS)
         raise RuntimeError(
-            "numero test offline MySQL inatteso: "
-            f"{len(executed_offline_tests)}, attesi {EXPECTED_OFFLINE_TESTS}"
+            "inventario test offline MySQL inatteso: "
+            f"eseguiti {len(executed_offline_tests)}, "
+            f"attesi {len(EXPECTED_OFFLINE_TESTS)}, "
+            f"mancanti={missing}, inattesi={unexpected}"
         )
     live_output = run_cargo(
         [
@@ -247,6 +364,7 @@ def main() -> int:
             "--",
             "--ignored",
             "--nocapture",
+            "--test-threads=1",
         ],
         capture=True,
     )
@@ -264,7 +382,7 @@ def main() -> int:
                 "status": "passed",
                 "provider": "mysql",
                 "reference": "MySQL 8.4 LTS",
-                "offline_tests": EXPECTED_OFFLINE_TESTS,
+                "offline_tests": len(EXPECTED_OFFLINE_TESTS),
                 "live_tests": len(EXPECTED_LIVE_TESTS),
                 "image": identity,
                 "verified_at": datetime.now(timezone.utc).isoformat(),

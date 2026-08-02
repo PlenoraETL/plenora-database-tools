@@ -1,0 +1,2 @@
+docker/mysql/tls/*.sh text eol=lf
+docker/mysql/tls/*.ext text eol=lf

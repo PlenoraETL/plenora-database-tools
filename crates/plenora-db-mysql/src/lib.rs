@@ -13,9 +13,11 @@ mod error;
 mod parameter;
 mod pool;
 mod provider;
+mod query;
 mod read;
 mod session;
 mod types;
+mod write;
 
 #[cfg(test)]
 mod live_tests;
@@ -29,7 +31,10 @@ pub use config::{MysqlCertificatePolicy, MysqlConfig};
 pub use parameter::bind_parameters;
 pub use pool::MysqlPool;
 pub use provider::MysqlProvider;
-pub use read::{read_operation, MysqlBatchStream, DEFAULT_BATCH_ROWS, MAX_BATCH_ROWS};
+pub use query::{query_result_columns, render_query};
+pub use read::{
+    query_operation, read_operation, MysqlBatchStream, DEFAULT_BATCH_ROWS, MAX_BATCH_ROWS,
+};
 pub use session::{MysqlSession, MysqlSessionState, SESSION_BOOTSTRAP_SQL};
 pub use types::{MysqlColumnKind, MysqlColumnSpec, MysqlReadPlan};
 

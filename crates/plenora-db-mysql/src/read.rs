@@ -2,11 +2,13 @@ use crate::error::{interruption_error, timeout_error};
 use crate::{
     bind_parameters, describe_object, MysqlColumnBuffer, MysqlColumnKind, MysqlPool, MysqlReadPlan,
 };
-use mysql_async::{Row, Value};
+use mysql_async::prelude::StatementLike;
+use mysql_async::{Params, Row, Value};
 use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture};
+use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -65,15 +67,122 @@ pub async fn read_operation(
         ));
     }
 
+    let sql = plan.sql.clone();
+    start_row_stream(
+        session,
+        sql,
+        parameters,
+        plan,
+        batch_rows,
+        budget,
+        internal,
+        &mut budget_cancellation,
+        operation_lease,
+        columns_lease,
+    )
+}
+
+/// Esegue una `QueryOperation` scalare a sorgente singola.
+///
+/// Rendering, validazione dell'AST e binding dei parametri avvengono prima di
+/// qualsiasi contatto con il server. Lo schema di output arriva dai metadati
+/// di `COM_STMT_PREPARE`, l'unica descrizione autoritativa disponibile su
+/// `MySQL`, e lo statement viene poi eseguito una sola volta sullo stream
+/// bounded a domanda gia usato dal path di lettura.
+///
+/// # Errors
+///
+/// Fallisce chiuso per AST non qualificato, identificatori oltre il limite
+/// `MySQL`, parametri mancanti o eccedenti, budget esaurito, cancellazione,
+/// deadline o errore del protocollo.
+#[allow(clippy::significant_drop_tightening)]
+pub async fn query_operation(
+    pool: &Arc<MysqlPool>,
+    database: &str,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn BatchStream>> {
+    validate_batch_rows(batch_rows)?;
+    if cancellation.is_cancelled() {
+        return Err(interruption_error(
+            cancellation,
+            ErrorPhase::Prepare,
+            RemoteEffect::None,
+        ));
+    }
+    let rendered = crate::query::render_query(operation, database)?;
+    let bind_names = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    if bind_names.len() > crate::MAX_BIND_PARAMETERS {
+        return Err(DatabaseError::resource_limit(
+            "query MySQL oltre il limite di placeholder del prepared statement",
+        ));
+    }
+    let bound = bind_parameters(&bind_names, parameters)?;
+    ensure_active_read_budget(budget)?;
+    let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let internal = budget_cancellation.token().clone();
+    let mut session = pool.checkout(&internal).await?;
+    let statement = session.prepare_statement(&rendered.sql, &internal).await?;
+    if usize::from(statement.num_params()) != bind_names.len() {
+        return Err(read_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Prepare,
+            "placeholder MySQL diversi dai bind renderizzati",
+        ));
+    }
+    let metadata = statement.columns();
+    let columns = crate::query::query_result_columns(&metadata)?;
+    let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns)?;
+    let column_count = u64::try_from(plan.columns.len())
+        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+    let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+    start_row_stream(
+        session,
+        statement,
+        bound,
+        plan,
+        batch_rows,
+        budget,
+        internal,
+        &mut budget_cancellation,
+        operation_lease,
+        columns_lease,
+    )
+}
+
+/// Avvia il worker bounded a domanda condiviso da lettura e query.
+#[allow(clippy::too_many_arguments)]
+fn start_row_stream<S>(
+    mut session: crate::MysqlSession,
+    statement: S,
+    parameters: Params,
+    plan: MysqlReadPlan,
+    batch_rows: usize,
+    budget: &ResourceBudget,
+    internal: CancellationToken,
+    budget_cancellation: &mut BudgetCancellation,
+    operation_lease: ResourceLease,
+    columns_lease: ResourceLease,
+) -> Result<Box<dyn BatchStream>>
+where
+    S: StatementLike + 'static,
+{
     let (sender, receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
     let (demand_sender, demand_receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
     let worker_cancellation = internal.clone();
-    let sql = plan.sql.clone();
     let worker_task = tokio::spawn(async move {
         let error_sender = sender.clone();
         if let Err(error) = session
             .pump_exec_rows(
-                sql,
+                statement,
                 parameters,
                 sender,
                 demand_receiver,
@@ -537,13 +646,17 @@ fn ensure_active_read_budget(budget: &ResourceBudget) -> Result<()> {
     })
 }
 
-struct BudgetCancellation {
+/// Token figlio con la deadline del budget e il task che la fa scattare.
+///
+/// Il `Drop` annulla il task: nessun percorso lascia un timer vivo dopo la
+/// fine dell'operazione che lo ha creato.
+pub struct BudgetCancellation {
     token: CancellationToken,
     deadline_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl BudgetCancellation {
-    fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
+    pub fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
         let token = parent.child_token_with_deadline(Some(budget.deadline()));
         let deadline_token = token.clone();
         let deadline = tokio::time::Instant::from_std(budget.deadline());
@@ -557,7 +670,7 @@ impl BudgetCancellation {
         }
     }
 
-    const fn token(&self) -> &CancellationToken {
+    pub const fn token(&self) -> &CancellationToken {
         &self.token
     }
 

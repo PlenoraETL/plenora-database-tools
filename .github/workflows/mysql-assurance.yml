@@ -19,6 +19,10 @@ on:
       - "docker/mysql/tls/**"
       - "scripts/check_mysql_reference.py"
       - "scripts/test_check_mysql_reference.py"
+      - "scripts/check_mysql_performance.py"
+      - "tests/test_mysql_performance.py"
+      - "benchmarks/manifests/mysql-performance-reference.json"
+      - "benchmarks/baseline/mysql-performance-budget.json"
   workflow_dispatch:
 
 permissions:
@@ -35,7 +39,7 @@ jobs:
   mysql:
     name: MySQL 8.4 reference
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: 1.92.0
       PLENORA_MYSQL_GATE_HOST_CARGO: "1"
@@ -75,11 +79,26 @@ jobs:
         run: |
           python3 scripts/check_mysql_reference.py 2>&1 \
             | tee assurance-results/mysql-reference.log
+          python3 -c \
+            'import json,pathlib,sys; lines=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(); report=next(json.loads(line) for line in reversed(lines) if line.startswith("{")); pathlib.Path(sys.argv[2]).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)+"\n", encoding="utf-8")' \
+            assurance-results/mysql-reference.log \
+            assurance-results/mysql-reference.json
+
+      # Nessuna baseline misurata e dichiarata per MySQL: il gate applica solo
+      # il budget assoluto e riporta il confronto come not_requested.
+      - name: Run the MySQL performance budget gate
+        run: |
+          python3 -m unittest tests.test_mysql_performance
+          python3 scripts/check_mysql_performance.py \
+            --output assurance-results/mysql-performance.json 2>&1 \
+            | tee assurance-results/mysql-performance.log
 
       - name: Record reproducibility identities
         run: |
           {
             printf 'commit=%s\n' "$CANDIDATE_SHA"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
             rustc --version --verbose
             cargo --version --verbose
             docker --version
