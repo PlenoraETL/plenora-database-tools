@@ -17,6 +17,13 @@ fn live_secret() -> SecretString {
     SecretString::new(environment("PLENORA_MYSQL_PASSWORD", DEFAULT_PASSWORD))
 }
 
+/// Il prefisso di versione che il riferimento in prova deve pubblicare. La
+/// matrice lo fissa esplicitamente per ciascuna immagine; senza variabile
+/// l'atteso resta il riferimento 8.4 LTS.
+fn expected_version_prefix() -> String {
+    environment("PLENORA_MYSQL_EXPECTED_VERSION", "8.4.")
+}
+
 fn live_config() -> MysqlConfig {
     live_config_for_host(environment("PLENORA_MYSQL_HOST", "127.0.0.1"))
 }
@@ -106,7 +113,12 @@ async fn live_reference_probe_catalog_and_spatial_metadata() {
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe MySQL live");
-    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(
+        probe
+            .product_version
+            .starts_with(&expected_version_prefix()),
+        "{probe:?}"
+    );
     assert_eq!(probe.database, "dataflow_test");
     assert_eq!(probe.time_zone, "+00:00");
     assert!(probe.sql_mode.contains("STRICT_TRANS_TABLES"));
@@ -352,7 +364,9 @@ async fn live_provider_connection_capabilities_and_inspect() {
         .await
         .expect("test connessione MySQL live");
     assert_eq!(connection.provider, ProviderKind::Mysql);
-    assert!(connection.server_version.starts_with("8.4."));
+    assert!(connection
+        .server_version
+        .starts_with(&expected_version_prefix()));
 
     let capabilities = provider
         .probe_capabilities(&secret, &cancellation)
@@ -364,6 +378,18 @@ async fn live_provider_connection_capabilities_and_inspect() {
     assert!(capabilities.reads.filter);
     assert!(capabilities.reads.ordering);
     assert!(!capabilities.writes.create);
+    assert!(capabilities.writes.append);
+    assert!(capabilities.writes.rollback_on_failure);
+    assert!(!capabilities.writes.update);
+    assert!(!capabilities.writes.upsert);
+    assert!(!capabilities.writes.replace);
+    assert!(capabilities.transactions.single_transaction);
+    assert!(!capabilities.transactions.transactional_ddl);
+    assert!(!capabilities.transactions.staged_swap);
+    assert_eq!(
+        capabilities.transactions.scope,
+        plenora_database_core::capabilities::TransactionScope::Transaction
+    );
     assert!(capabilities.spatial.read_wkb);
     assert!(capabilities.spatial.geometry);
     assert!(capabilities.spatial.mixed_geometry_types);
@@ -1164,7 +1190,12 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe MySQL live");
-    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(
+        probe
+            .product_version
+            .starts_with(&expected_version_prefix()),
+        "{probe:?}"
+    );
     assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
     drop(session);
 
@@ -1451,7 +1482,12 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe MySQL live");
-    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(
+        probe
+            .product_version
+            .starts_with(&expected_version_prefix()),
+        "{probe:?}"
+    );
     assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
     drop(session);
 
@@ -1875,7 +1911,12 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe MySQL live");
-    assert!(probe.product_version.starts_with("8.4."), "{probe:?}");
+    assert!(
+        probe
+            .product_version
+            .starts_with(&expected_version_prefix()),
+        "{probe:?}"
+    );
     assert!(!probe.tls_cipher.is_empty(), "sessione MySQL non cifrata");
     drop(session);
 
@@ -2604,4 +2645,772 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .disconnect()
         .await
         .expect("disconnect audit lifecycle");
+}
+
+// --- Append qualificato: sessione, transazione singola e recovery ---------
+
+/// Lo schema Arrow del tracer append: un tipo per ciascuna famiglia che il
+/// piano di scrittura qualifica, con nullability esplicita.
+fn append_input_schema() -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema, TimeUnit};
+    use plenora_database_core::protocol;
+    use std::collections::HashMap;
+
+    std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
+            Field::new("amount", DataType::Decimal128(12, 2), true),
+            Field::new("active", DataType::Boolean, false),
+            Field::new("day", DataType::Date32, true),
+            Field::new(
+                "moment",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("payload", DataType::Binary, true),
+        ],
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+}
+
+const APPEND_TARGET_DDL: &str = "(\
+     id BIGINT NOT NULL PRIMARY KEY, \
+     label VARCHAR(64) NULL, \
+     amount DECIMAL(12, 2) NULL, \
+     active TINYINT(1) NOT NULL, \
+     day DATE NULL, \
+     moment DATETIME(6) NULL, \
+     payload VARBINARY(32) NULL) ENGINE=InnoDB";
+
+async fn append_setup_connection(config: &MysqlConfig) -> mysql_async::Conn {
+    mysql_async::Conn::new(config.driver_opts().expect("opzioni driver MySQL live"))
+        .await
+        .expect("connessione di servizio MySQL live")
+}
+
+async fn reset_append_target(connection: &mut mysql_async::Conn, table: &str) {
+    connection
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("drop del target append");
+    connection
+        .query_drop(format!("CREATE TABLE `{table}` {APPEND_TARGET_DDL}"))
+        .await
+        .expect("create del target append");
+}
+
+fn append_spatial_schema(
+    target: &crate::MysqlObjectDescription,
+) -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::Schema;
+    use plenora_database_core::protocol;
+    use std::collections::HashMap;
+
+    let fields = target
+        .columns
+        .iter()
+        .map(|column| {
+            crate::MysqlColumnSpec::from_catalog(column)
+                .expect("colonna target spatial qualificata")
+                .arrow_field()
+        })
+        .collect::<Vec<_>>();
+    std::sync::Arc::new(Schema::new_with_metadata(
+        fields,
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+}
+
+fn append_point_xy_wkb(x: f64, y: f64) -> Vec<u8> {
+    let mut point = vec![1_u8];
+    point.extend_from_slice(&1_u32.to_le_bytes());
+    point.extend_from_slice(&x.to_le_bytes());
+    point.extend_from_slice(&y.to_le_bytes());
+    point
+}
+
+type SpatialObservation = (i64, Option<u32>, Option<f64>, Option<f64>);
+
+/// Le righe del tracer: quelle di indice pari sono interamente nulle nelle
+/// colonne nullable, cosi il bind di NULL viene provato anche sul server.
+fn append_batch(
+    schema: &plenora_database_core::arrow::SchemaRef,
+    ids: &[i64],
+) -> plenora_database_core::arrow::RecordBatch {
+    use chrono::NaiveDate;
+    use plenora_database_core::arrow::array::{
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Int64Array, StringArray,
+        TimestampMicrosecondArray,
+    };
+    use plenora_database_core::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
+    let day = NaiveDate::from_ymd_opt(2026, 1, 2).expect("giorno del tracer");
+    let days = i32::try_from(day.signed_duration_since(epoch).num_days()).expect("date32");
+    let micros = day
+        .and_hms_micro_opt(3, 4, 5, 123_456)
+        .expect("istante del tracer")
+        .and_utc()
+        .timestamp_micros();
+    let populated = ids.iter().map(|id| id % 2 == 1).collect::<Vec<_>>();
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(ids.to_vec())),
+        Arc::new(StringArray::from(
+            populated
+                .iter()
+                .map(|full| full.then_some("etichetta"))
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(
+            Decimal128Array::from(
+                populated
+                    .iter()
+                    .map(|full| full.then_some(-105_i128))
+                    .collect::<Vec<_>>(),
+            )
+            .with_precision_and_scale(12, 2)
+            .expect("decimal del tracer"),
+        ),
+        Arc::new(BooleanArray::from(populated.clone())),
+        Arc::new(Date32Array::from(
+            populated
+                .iter()
+                .map(|full| full.then_some(days))
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(TimestampMicrosecondArray::from(
+            populated
+                .iter()
+                .map(|full| full.then_some(micros))
+                .collect::<Vec<_>>(),
+        )),
+        Arc::new(BinaryArray::from_opt_vec(
+            populated
+                .iter()
+                .map(|full| full.then_some(&[1_u8, 2, 3][..]))
+                .collect::<Vec<_>>(),
+        )),
+    ];
+    RecordBatch::try_new(Arc::clone(schema), columns).expect("batch append del tracer")
+}
+
+struct VecBatchStream {
+    schema: plenora_database_core::arrow::SchemaRef,
+    batches: std::collections::VecDeque<plenora_database_core::arrow::RecordBatch>,
+}
+
+impl plenora_database_core::provider::BatchStream for VecBatchStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+
+    fn next_batch(
+        &mut self,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        '_,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        Box::pin(async move { Ok(self.batches.pop_front()) })
+    }
+}
+
+fn append_operation(table: &str) -> plenora_database_core::plan::WriteOperation {
+    plenora_database_core::plan::WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: table.to_owned(),
+            layer_id: None,
+        },
+        mode: plenora_database_core::plan::WriteMode::Append,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: plenora_database_core::plan::TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    }
+}
+
+fn write_budget() -> ResourceBudget {
+    ResourceBudget::new(ResourceLimits {
+        rows: 1_024,
+        memory_bytes: 8 * 1024 * 1024,
+        output_bytes: 8 * 1024 * 1024,
+        cell_bytes: 1024 * 1024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget write MySQL live")
+}
+
+/// Il tracer verticale completo: prepare con preflight sullo schema del
+/// server, INSERT dentro una sola transazione, COMMIT e rilettura esatta dal
+/// path di lettura qualificato.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per append transazionale"]
+#[allow(clippy::too_many_lines)]
+async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
+    use plenora_database_core::arrow::array::{
+        Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Int64Array, StringArray,
+        TimestampMicrosecondArray,
+    };
+    use plenora_database_core::outcome::WriteStatus;
+    use plenora_database_core::plan::{OrderBy, ReadOperation, SortDirection};
+
+    let table = "write_append_probe";
+    let config = live_config();
+    let mut setup = append_setup_connection(&config).await;
+    reset_append_target(&mut setup, table).await;
+
+    let provider = MysqlProvider::new(config, 2).expect("provider append MySQL live");
+    let cancellation = CancellationToken::new();
+    let budget = write_budget();
+    let schema = append_input_schema();
+    let operation = append_operation(table);
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare append MySQL live");
+    assert_eq!(
+        prepared.loss_report.policy,
+        plenora_database_core::loss::MappingPolicy::Strict
+    );
+    assert!(prepared.loss_report.losses.is_empty());
+    assert!(prepared.loss_report.permits_execution());
+
+    let input = VecBatchStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![
+            append_batch(&schema, &[1, 2]),
+            append_batch(&schema, &[3]),
+        ]),
+    };
+    let outcome = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(input),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("write append MySQL live");
+    outcome.validate().expect("outcome append valido");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.provider, ProviderKind::Mysql);
+    assert_eq!(outcome.rows.received, 3);
+    assert_eq!(outcome.rows.confirmed, 3);
+    assert_eq!(outcome.rows.inserted, Some(3));
+    assert_eq!(outcome.rows.failed, 0);
+    assert_eq!(outcome.rows.skipped, 0);
+    assert!(outcome.recovery.is_none());
+    assert!(!outcome.execution_id.is_empty());
+
+    let read = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: table.to_owned(),
+            layer_id: None,
+        },
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        filter: None,
+    };
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &read,
+            &ParameterBag::default(),
+            &write_budget(),
+            &cancellation,
+        )
+        .await
+        .expect("rilettura append MySQL live");
+    let mut read_batches = Vec::new();
+    while let Some(batch) = stream.next_batch().await.expect("batch di rilettura") {
+        read_batches.push(batch);
+    }
+    assert_eq!(
+        read_batches
+            .iter()
+            .map(plenora_database_core::arrow::RecordBatch::num_rows)
+            .sum::<usize>(),
+        3
+    );
+    let mut ids = Vec::new();
+    let mut labels = Vec::new();
+    let mut amounts = Vec::new();
+    let mut active = Vec::new();
+    let mut days = Vec::new();
+    let mut moments = Vec::new();
+    let mut payloads = Vec::new();
+    for batch in &read_batches {
+        let id = batch
+            .column_by_name("id")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .expect("id riletto");
+        let label = batch
+            .column_by_name("label")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .expect("label riletta");
+        let amount = batch
+            .column_by_name("amount")
+            .and_then(|array| array.as_any().downcast_ref::<Decimal128Array>())
+            .expect("amount riletto");
+        let flag = batch
+            .column_by_name("active")
+            .and_then(|array| array.as_any().downcast_ref::<BooleanArray>())
+            .expect("active riletto");
+        let day = batch
+            .column_by_name("day")
+            .and_then(|array| array.as_any().downcast_ref::<Date32Array>())
+            .expect("day riletto");
+        let moment = batch
+            .column_by_name("moment")
+            .and_then(|array| array.as_any().downcast_ref::<TimestampMicrosecondArray>())
+            .expect("moment riletto");
+        let payload = batch
+            .column_by_name("payload")
+            .and_then(|array| array.as_any().downcast_ref::<BinaryArray>())
+            .expect("payload riletto");
+        for row in 0..batch.num_rows() {
+            ids.push(id.value(row));
+            labels.push((!label.is_null(row)).then(|| label.value(row).to_owned()));
+            amounts.push((!amount.is_null(row)).then(|| amount.value(row)));
+            active.push(flag.value(row));
+            days.push((!day.is_null(row)).then(|| day.value(row)));
+            moments.push((!moment.is_null(row)).then(|| moment.value(row)));
+            payloads.push((!payload.is_null(row)).then(|| payload.value(row).to_vec()));
+        }
+    }
+    let expected = append_batch(&schema, &[1, 2, 3]);
+    let expected_amounts = expected
+        .column_by_name("amount")
+        .and_then(|array| array.as_any().downcast_ref::<Decimal128Array>())
+        .expect("amount scritto");
+    let expected_days = expected
+        .column_by_name("day")
+        .and_then(|array| array.as_any().downcast_ref::<Date32Array>())
+        .expect("day scritto");
+    let expected_moments = expected
+        .column_by_name("moment")
+        .and_then(|array| array.as_any().downcast_ref::<TimestampMicrosecondArray>())
+        .expect("moment scritto");
+    assert_eq!(ids, vec![1, 2, 3]);
+    assert_eq!(
+        labels,
+        vec![
+            Some("etichetta".to_owned()),
+            None,
+            Some("etichetta".to_owned())
+        ]
+    );
+    assert_eq!(active, vec![true, false, true]);
+    assert_eq!(
+        payloads,
+        vec![Some(vec![1, 2, 3]), None, Some(vec![1, 2, 3])]
+    );
+    assert_eq!(
+        amounts,
+        (0..3)
+            .map(|row| (!expected_amounts.is_null(row)).then(|| expected_amounts.value(row)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        days,
+        (0..3)
+            .map(|row| (!expected_days.is_null(row)).then(|| expected_days.value(row)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        moments,
+        (0..3)
+            .map(|row| (!expected_moments.is_null(row)).then(|| expected_moments.value(row)))
+            .collect::<Vec<_>>()
+    );
+    drop(stream);
+
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("cleanup del target append");
+    drop(setup);
+}
+
+/// Il path spatial scrive esclusivamente WKB XY bind-safe; lo SRID viene
+/// applicato dalla funzione `MySQL` qualificata e verificato sul valore salvato.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per append spatial XY"]
+async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
+    use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int64Array};
+    use plenora_database_core::arrow::RecordBatch;
+    use plenora_database_core::outcome::WriteStatus;
+    use plenora_database_core::plan::SridPolicy;
+    use std::sync::Arc;
+
+    let table = "write_spatial_probe";
+    let config = live_config();
+    let cancellation = CancellationToken::new();
+    let mut setup = append_setup_connection(&config).await;
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("drop del target spatial");
+    setup
+        .query_drop(format!(
+            "CREATE TABLE `{table}` (\
+             id BIGINT NOT NULL PRIMARY KEY, \
+             geom POINT NULL SRID 4326) ENGINE=InnoDB"
+        ))
+        .await
+        .expect("create del target spatial");
+
+    let mut catalog = MysqlSession::open(&config, &cancellation)
+        .await
+        .expect("sessione catalogo spatial");
+    let target = describe_object(&mut catalog, "dataflow_test", table, &cancellation)
+        .await
+        .expect("descrizione target spatial");
+    drop(catalog);
+    let schema = append_spatial_schema(&target);
+    let point = append_point_xy_wkb(12.5, -7.25);
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
+            Arc::new(BinaryArray::from_opt_vec(vec![
+                Some(point.as_slice()),
+                None,
+            ])) as ArrayRef,
+        ],
+    )
+    .expect("batch spatial XY");
+    let mut operation = append_operation(table);
+    operation.srid_policy = Some(SridPolicy::RequireMatch);
+    let provider = MysqlProvider::new(config, 2).expect("provider spatial MySQL live");
+    let budget = write_budget();
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare append spatial MySQL live");
+    assert!(prepared.loss_report.losses.is_empty());
+    let outcome = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(VecBatchStream {
+                schema: Arc::clone(&schema),
+                batches: std::collections::VecDeque::from(vec![batch]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("write append spatial MySQL live");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(outcome.rows.confirmed, 2);
+
+    let rows: Vec<SpatialObservation> = setup
+        .query(format!(
+            "SELECT id, ST_SRID(geom), ST_X(geom), ST_Y(geom) \
+             FROM `{table}` ORDER BY id"
+        ))
+        .await
+        .expect("rilettura server-side spatial");
+    assert_eq!(
+        rows,
+        vec![
+            (1, Some(4_326), Some(12.5), Some(-7.25)),
+            (2, None, None, None),
+        ]
+    );
+
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("cleanup del target spatial");
+    drop(setup);
+}
+
+/// Il fallimento di un batch annulla l'intera transazione: nessuna riga del
+/// batch precedente resta visibile e l'errore dichiara `RolledBack`.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per rollback transazionale"]
+async fn live_append_batch_failure_rolls_back_without_partial_rows() {
+    let table = "write_rollback_probe";
+    let config = live_config();
+    let mut setup = append_setup_connection(&config).await;
+    reset_append_target(&mut setup, table).await;
+    setup
+        .query_drop(format!(
+            "INSERT INTO `{table}` (id, label, amount, active, day, moment, payload) \
+             VALUES (2, NULL, NULL, 1, NULL, NULL, NULL)"
+        ))
+        .await
+        .expect("riga preesistente in conflitto");
+
+    let provider = MysqlProvider::new(config, 2).expect("provider rollback MySQL live");
+    let cancellation = CancellationToken::new();
+    let budget = write_budget();
+    let schema = append_input_schema();
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &append_operation(table),
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare rollback MySQL live");
+    let input = VecBatchStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![
+            append_batch(&schema, &[10, 11]),
+            append_batch(&schema, &[2]),
+        ]),
+    };
+    let error = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(input),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("chiave duplicata nel secondo batch");
+    assert_eq!(error.category, ErrorCategory::Conflict);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::RolledBack
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+    assert!(error.execution_id.is_some());
+
+    let remaining: Vec<i64> = setup
+        .query(format!("SELECT id FROM `{table}` ORDER BY id"))
+        .await
+        .expect("rilettura dopo rollback");
+    assert_eq!(remaining, vec![2], "il rollback ha lasciato righe parziali");
+
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("cleanup del target rollback");
+    drop(setup);
+}
+
+/// Un timeout in-flight rende ambiguo l'effetto remoto, quarantina la
+/// connessione e la fa sostituire nel pool: la scrittura successiva riparte
+/// su una sessione nuova e committa.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per quarantena write"]
+#[allow(clippy::too_many_lines)]
+async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
+    use plenora_database_core::outcome::WriteStatus;
+    use std::collections::BTreeSet;
+
+    async fn pooled_identifiers(audit: &mut mysql_async::Conn) -> BTreeSet<u64> {
+        audit
+            .query::<u64, _>(
+                "SELECT ID FROM information_schema.processlist WHERE USER = 'dataflow'",
+            )
+            .await
+            .expect("processlist MySQL live")
+            .into_iter()
+            .collect()
+    }
+
+    let table = "write_quarantine_probe";
+    let config = live_config();
+    let mut setup = append_setup_connection(&config).await;
+    reset_append_target(&mut setup, table).await;
+    let mut audit = append_setup_connection(&config).await;
+    let mut holder = append_setup_connection(&config).await;
+
+    let provider = MysqlProvider::new(
+        config.with_timeouts(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(1_500),
+            std::time::Duration::from_secs(5),
+        ),
+        1,
+    )
+    .expect("provider quarantena MySQL live");
+    let schema = append_input_schema();
+    let cancellation = CancellationToken::new();
+
+    let baseline = pooled_identifiers(&mut audit).await;
+    let budget = write_budget();
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &append_operation(table),
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare quarantena MySQL live");
+    let committed = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(VecBatchStream {
+                schema: std::sync::Arc::clone(&schema),
+                batches: std::collections::VecDeque::from(vec![append_batch(&schema, &[1])]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prima write MySQL live");
+    assert_eq!(committed.status, WriteStatus::Committed);
+    let pooled = pooled_identifiers(&mut audit).await;
+    let first_session = pooled.difference(&baseline).copied().collect::<Vec<_>>();
+    assert_eq!(first_session.len(), 1, "sessione del pool non identificata");
+    let first_session = first_session[0];
+
+    holder
+        .query_drop("BEGIN")
+        .await
+        .expect("apertura transazione bloccante");
+    holder
+        .query_drop(format!(
+            "INSERT INTO `{table}` (id, label, amount, active, day, moment, payload) \
+             VALUES (5, NULL, NULL, 1, NULL, NULL, NULL)"
+        ))
+        .await
+        .expect("lock esclusivo sulla chiave 5");
+
+    let blocked_budget = write_budget();
+    let blocked_prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &append_operation(table),
+            std::sync::Arc::clone(&schema),
+            &blocked_budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare bloccato MySQL live");
+    let blocked = provider
+        .write(
+            &live_secret(),
+            blocked_prepared,
+            Box::new(VecBatchStream {
+                schema: std::sync::Arc::clone(&schema),
+                batches: std::collections::VecDeque::from(vec![append_batch(&schema, &[5])]),
+            }),
+            &blocked_budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("INSERT bloccato oltre il timeout di operazione");
+    assert_eq!(blocked.category, ErrorCategory::Timeout);
+    assert_eq!(
+        blocked.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        blocked.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+
+    let mut replaced = false;
+    for _ in 0..100 {
+        if !pooled_identifiers(&mut audit)
+            .await
+            .contains(&first_session)
+        {
+            replaced = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(replaced, "la sessione quarantinata non e stata chiusa");
+
+    holder
+        .query_drop("ROLLBACK")
+        .await
+        .expect("rilascio del lock");
+
+    let recovery_budget = write_budget();
+    let recovery_prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &append_operation(table),
+            std::sync::Arc::clone(&schema),
+            &recovery_budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare dopo quarantena MySQL live");
+    let recovered = provider
+        .write(
+            &live_secret(),
+            recovery_prepared,
+            Box::new(VecBatchStream {
+                schema: std::sync::Arc::clone(&schema),
+                batches: std::collections::VecDeque::from(vec![append_batch(&schema, &[5])]),
+            }),
+            &recovery_budget,
+            &cancellation,
+        )
+        .await
+        .expect("write dopo la sostituzione della sessione");
+    assert_eq!(recovered.status, WriteStatus::Committed);
+    assert_eq!(recovered.rows.confirmed, 1);
+
+    let final_sessions = pooled_identifiers(&mut audit).await;
+    let replacement = final_sessions
+        .difference(&baseline)
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(replacement.len(), 1, "pool con piu di una sessione viva");
+    assert_ne!(
+        replacement[0], first_session,
+        "la sessione quarantinata e stata riusata"
+    );
+
+    let remaining: Vec<i64> = setup
+        .query(format!("SELECT id FROM `{table}` ORDER BY id"))
+        .await
+        .expect("rilettura dopo quarantena");
+    assert_eq!(remaining, vec![1, 5]);
+
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("cleanup del target quarantena");
+    drop(holder);
+    drop(audit);
+    drop(setup);
 }

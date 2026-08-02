@@ -609,6 +609,7 @@ impl Provider for PostgresProvider {
             let loss_report = preflight::write(self, secret, operation, &input_schema).await?;
             Ok(PreparedWrite {
                 operation: operation.clone(),
+                input_schema,
                 loss_report,
                 budget: budget.clone(),
                 operation_lease,

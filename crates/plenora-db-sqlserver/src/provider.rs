@@ -428,6 +428,7 @@ impl Provider for SqlServerProvider {
             let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
             Ok(PreparedWrite {
                 operation: operation.clone(),
+                input_schema,
                 loss_report,
                 budget: budget.clone(),
                 operation_lease,

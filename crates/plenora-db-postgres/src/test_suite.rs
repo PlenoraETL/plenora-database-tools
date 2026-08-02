@@ -284,6 +284,7 @@ mod tests {
                 create_spatial_index: false,
                 allow_partial: false,
             },
+            input_schema: Arc::clone(&schema),
             loss_report: plenora_database_core::loss::LossReport {
                 schema_version: 1,
                 policy: MappingPolicy::Strict,

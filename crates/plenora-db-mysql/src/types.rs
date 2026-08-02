@@ -515,7 +515,7 @@ fn contract_schema(fields: Vec<Field>) -> SchemaRef {
     ))
 }
 
-fn mysql_identifier(value: &str) -> Result<Identifier> {
+pub fn mysql_identifier(value: &str) -> Result<Identifier> {
     if value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,

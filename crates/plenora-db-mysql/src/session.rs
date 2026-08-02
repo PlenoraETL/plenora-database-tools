@@ -29,6 +29,23 @@ pub enum MysqlSessionState {
     Quarantined,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MysqlTransactionCommand {
+    Start,
+    Commit,
+    Rollback,
+}
+
+impl MysqlTransactionCommand {
+    const fn sql(self) -> &'static str {
+        match self {
+            Self::Start => "START TRANSACTION",
+            Self::Commit => "COMMIT",
+            Self::Rollback => "ROLLBACK",
+        }
+    }
+}
+
 pub struct MysqlSession {
     connection: Option<Conn>,
     state: MysqlSessionState,
@@ -171,6 +188,88 @@ impl MysqlSession {
                 Err(timeout_error(phase, RemoteEffect::None))
             }
         }
+    }
+
+    /// Esegue una DML preparata e restituisce le righe dichiarate dall'OK
+    /// packet del server.
+    ///
+    /// A differenza di `exec_rows` il risultato non e un result set: il numero
+    /// di righe interessate e l'unica conferma che il server produce per un
+    /// INSERT, e va letto dalla stessa connessione che lo ha eseguito.
+    pub(crate) async fn exec_write(
+        &mut self,
+        sql: &str,
+        parameters: Params,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        self.require_ready(phase)?;
+        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let execution = connection.exec_drop(sql, parameters);
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(cancellation, phase, RemoteEffect::None));
+            }
+            result = tokio::time::timeout(self.operation_timeout, execution) => result,
+        };
+        match outcome {
+            Ok(Ok(())) => self
+                .connection
+                .as_ref()
+                .map(Conn::affected_rows)
+                .ok_or_else(|| state_error(phase)),
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                Err(driver_error(&error, phase, RemoteEffect::None))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(phase, RemoteEffect::None))
+            }
+        }
+    }
+
+    pub(crate) async fn exec_transaction(
+        &mut self,
+        command: MysqlTransactionCommand,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_ready(phase)?;
+        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let execution = connection.query_drop(command.sql());
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(cancellation, phase, RemoteEffect::Unknown));
+            }
+            result = tokio::time::timeout(self.operation_timeout, execution) => result,
+        };
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                Err(driver_error(&error, phase, RemoteEffect::None))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(phase, RemoteEffect::Unknown))
+            }
+        }
+    }
+
+    /// Chiude la sessione e la rende inutilizzabile.
+    ///
+    /// Il path di scrittura la invoca anche dopo esiti che il driver non
+    /// considera fatali: una connessione con una transazione di stato ignoto
+    /// non puo tornare nel pool.
+    pub(crate) async fn discard(&mut self) {
+        self.quarantine().await;
     }
 
     /// Prepara lo statement e restituisce i metadati di colonna del server.

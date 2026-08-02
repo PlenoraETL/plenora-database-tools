@@ -12,6 +12,7 @@ use plenora_database_core::provider::{
 };
 use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::ResourceBudget;
+use plenora_database_core::resource::ResourceKind;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
@@ -19,7 +20,10 @@ use plenora_database_core::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+static WRITE_EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct CachedPool {
     secret_fingerprint: [u8; 32],
@@ -208,7 +212,7 @@ impl Provider for MysqlProvider {
                 },
                 writes: WriteCapabilities {
                     create: false,
-                    append: false,
+                    append: true,
                     update: false,
                     upsert: false,
                     replace: false,
@@ -217,15 +221,15 @@ impl Provider for MysqlProvider {
                     array_binding: false,
                     returning: false,
                     apply_edits: false,
-                    rollback_on_failure: false,
+                    rollback_on_failure: true,
                     use_global_ids: false,
                 },
                 transactions: TransactionCapabilities {
-                    single_transaction: false,
+                    single_transaction: true,
                     savepoints: false,
                     transactional_ddl: false,
                     staged_swap: false,
-                    scope: TransactionScope::None,
+                    scope: TransactionScope::Transaction,
                 },
                 spatial: mysql_spatial_capabilities(),
                 limits: ProviderLimits {
@@ -305,25 +309,274 @@ impl Provider for MysqlProvider {
 
     fn prepare_write<'a>(
         &'a self,
-        _secret: &'a SecretString,
-        _operation: &'a WriteOperation,
-        _input_schema: SchemaRef,
-        _budget: &'a ResourceBudget,
-        _cancellation: &'a CancellationToken,
+        secret: &'a SecretString,
+        operation: &'a WriteOperation,
+        input_schema: SchemaRef,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
-        Box::pin(async { Err(unsupported("write MySQL non ancora qualificata")) })
+        Box::pin(async move {
+            budget.ensure_active()?;
+            let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget);
+            let token = effective_cancellation.token();
+            let plan = crate::write::MysqlWritePlan::compile(
+                &input_schema,
+                operation,
+                self.config.database(),
+            )?;
+            let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+            let column_count = u64::try_from(input_schema.fields().len()).map_err(|_| {
+                provider_error(
+                    ErrorCategory::ResourceLimit,
+                    ErrorPhase::Prepare,
+                    "numero colonne MySQL non rappresentabile",
+                )
+            })?;
+            let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+            let pool = self.pool_for(secret)?;
+            let mut session = pool.checkout(token).await?;
+            let target_schema = operation
+                .target
+                .schema
+                .as_deref()
+                .unwrap_or_else(|| self.config.database());
+            let target =
+                describe_object(&mut session, target_schema, &operation.target.object, token)
+                    .await?;
+            let loss_report = plan.preflight(&target)?;
+            drop(session);
+            Ok(PreparedWrite {
+                operation: operation.clone(),
+                input_schema,
+                loss_report,
+                budget: budget.clone(),
+                operation_lease,
+                columns_lease,
+            })
+        })
     }
 
     fn write<'a>(
         &'a self,
-        _secret: &'a SecretString,
-        _prepared: PreparedWrite,
-        _input: Box<dyn BatchStream>,
-        _budget: &'a ResourceBudget,
-        _cancellation: &'a CancellationToken,
+        secret: &'a SecretString,
+        prepared: PreparedWrite,
+        input: Box<dyn BatchStream>,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(async { Err(unsupported("write MySQL non ancora qualificata")) })
+        Box::pin(execute_mysql_write(
+            self,
+            secret,
+            prepared,
+            input,
+            budget,
+            cancellation,
+        ))
     }
+}
+
+async fn execute_mysql_write(
+    provider: &MysqlProvider,
+    secret: &SecretString,
+    prepared: PreparedWrite,
+    mut input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<WriteOutcome> {
+    if !prepared.budget.is_same_budget(budget) {
+        return Err(provider_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Write,
+            "budget MySQL sostituito fra prepare e write",
+        ));
+    }
+    budget.ensure_active()?;
+    let PreparedWrite {
+        operation,
+        input_schema: prepared_schema,
+        loss_report: prepared_loss,
+        budget: _prepared_budget,
+        operation_lease: _operation_lease,
+        columns_lease: _columns_lease,
+    } = prepared;
+    let schema = input.schema();
+    if schema.as_ref() != prepared_schema.as_ref() {
+        return Err(provider_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Write,
+            "schema stream MySQL diverso dallo schema preparato",
+        ));
+    }
+    let plan =
+        crate::write::MysqlWritePlan::compile(&schema, &operation, provider.config.database())?;
+    let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget);
+    let token = effective_cancellation.token();
+    let pool = provider.pool_for(secret)?;
+    let mut session = pool.checkout(token).await?;
+    let target_schema = operation
+        .target
+        .schema
+        .as_deref()
+        .unwrap_or_else(|| provider.config.database());
+    let target =
+        describe_object(&mut session, target_schema, &operation.target.object, token).await?;
+    if plan.preflight(&target)? != prepared_loss {
+        return Err(provider_error(
+            ErrorCategory::Schema,
+            ErrorPhase::Prepare,
+            "preflight MySQL cambiato fra prepare e write",
+        ));
+    }
+    let execution_id = format!(
+        "mysql-{}-{}",
+        std::process::id(),
+        WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    session
+        .exec_transaction(
+            crate::session::MysqlTransactionCommand::Start,
+            ErrorPhase::Write,
+            token,
+        )
+        .await?;
+    let progress = match write_input_batches(
+        &mut session,
+        input.as_mut(),
+        &schema,
+        &plan,
+        budget,
+        token,
+    )
+    .await
+    {
+        Ok(progress) => progress,
+        Err(error) => {
+            return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+        }
+    };
+    let result = match session
+        .exec_transaction(
+            crate::session::MysqlTransactionCommand::Commit,
+            ErrorPhase::Commit,
+            token,
+        )
+        .await
+    {
+        Ok(()) => {
+            crate::write::committed_outcome(execution_id, progress.received, progress.inserted)
+        }
+        Err(error) => {
+            session.discard().await;
+            crate::write::commit_failure(error, execution_id, progress.received)
+        }
+    };
+    drop(session);
+    result
+}
+
+#[derive(Default)]
+struct WriteProgress {
+    received: u64,
+    inserted: u64,
+}
+
+async fn write_input_batches(
+    session: &mut crate::MysqlSession,
+    input: &mut dyn BatchStream,
+    schema: &SchemaRef,
+    plan: &crate::write::MysqlWritePlan,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<WriteProgress> {
+    let mut progress = WriteProgress::default();
+    loop {
+        let batch = match input.next_batch_with_cancellation(cancellation).await {
+            Ok(Some(batch)) => batch,
+            Ok(None) => break,
+            Err(mut error) => {
+                error.phase = ErrorPhase::Write;
+                error.provider = Some(ProviderKind::Mysql);
+                return Err(error);
+            }
+        };
+        crate::write::validate_batch_schema(&batch, schema)?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
+            provider_error(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Write,
+                "righe batch MySQL non rappresentabili",
+            )
+        })?;
+        plan.validate_spatial_batch(&batch, budget)?;
+        let row_lease = budget.try_lease(ResourceKind::Rows, batch_rows)?;
+        progress.received = progress.received.checked_add(batch_rows).ok_or_else(|| {
+            provider_error(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Write,
+                "overflow conteggio righe MySQL",
+            )
+        })?;
+        let affected = write_batch_chunks(session, &batch, plan, cancellation).await?;
+        progress.inserted = progress.inserted.checked_add(affected).ok_or_else(|| {
+            provider_error(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Write,
+                "overflow righe inserite MySQL",
+            )
+        })?;
+        row_lease.commit(batch_rows)?;
+    }
+    Ok(progress)
+}
+
+async fn write_batch_chunks(
+    session: &mut crate::MysqlSession,
+    batch: &plenora_database_core::arrow::RecordBatch,
+    plan: &crate::write::MysqlWritePlan,
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    let mut inserted = 0_u64;
+    let mut start = 0_usize;
+    while start < batch.num_rows() {
+        let rows = plan.rows_per_statement().min(batch.num_rows() - start);
+        let parameters = plan.bind_chunk(batch, start, rows)?;
+        let sql = plan.render_insert(rows)?;
+        let affected = session
+            .exec_write(&sql, parameters, ErrorPhase::Write, cancellation)
+            .await?;
+        inserted = inserted.checked_add(affected).ok_or_else(|| {
+            provider_error(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Write,
+                "overflow righe inserite MySQL",
+            )
+        })?;
+        start += rows;
+    }
+    Ok(inserted)
+}
+
+async fn rollback_after_failure(
+    session: &mut crate::MysqlSession,
+    error: DatabaseError,
+    execution_id: &str,
+) -> DatabaseError {
+    let cleanup_cancellation = CancellationToken::new();
+    let confirmed = session
+        .exec_transaction(
+            crate::session::MysqlTransactionCommand::Rollback,
+            ErrorPhase::Rollback,
+            &cleanup_cancellation,
+        )
+        .await
+        .is_ok();
+    if !confirmed {
+        session.discard().await;
+    }
+    crate::write::rolled_back_error(error, confirmed, execution_id)
 }
 
 fn unsupported(message: impl Into<String>) -> DatabaseError {
@@ -333,7 +586,7 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
 fn mysql_spatial_capabilities() -> SpatialCapabilities {
     SpatialCapabilities {
         read_wkb: true,
-        write_wkb: false,
+        write_wkb: true,
         geometry: true,
         geography: false,
         spatial_index: false,
@@ -684,6 +937,204 @@ mod tests {
         assert_eq!(error.phase, ErrorPhase::Prepare);
     }
 
+    fn append_write_operation() -> WriteOperation {
+        WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("warehouse".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            mode: plenora_database_core::plan::WriteMode::Append,
+            mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+            transaction_profile: plenora_database_core::plan::TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        }
+    }
+
+    fn append_input_schema() -> SchemaRef {
+        Arc::new(plenora_database_core::arrow::Schema::new_with_metadata(
+            vec![plenora_database_core::arrow::Field::new(
+                "id",
+                plenora_database_core::arrow::DataType::Int64,
+                false,
+            )],
+            BTreeMap::from([(
+                plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+                plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+            )])
+            .into_iter()
+            .collect(),
+        ))
+    }
+
+    struct EmptyBatchStream(SchemaRef);
+
+    impl BatchStream for EmptyBatchStream {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.0)
+        }
+
+        fn next_batch(
+            &mut self,
+        ) -> plenora_database_core::provider::ProviderFuture<
+            '_,
+            Option<plenora_database_core::arrow::RecordBatch>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    fn prepared_write_for_test(budget: &ResourceBudget, input_schema: SchemaRef) -> PreparedWrite {
+        PreparedWrite {
+            operation: append_write_operation(),
+            input_schema,
+            loss_report: plenora_database_core::loss::LossReport {
+                schema_version: 1,
+                policy: plenora_database_core::loss::MappingPolicy::Strict,
+                losses: Vec::new(),
+            },
+            budget: budget.clone(),
+            operation_lease: budget
+                .try_lease(
+                    plenora_database_core::resource::ResourceKind::ConcurrentOperations,
+                    1,
+                )
+                .expect("lease operazione"),
+            columns_lease: budget
+                .try_lease(plenora_database_core::resource::ResourceKind::Columns, 1)
+                .expect("lease colonne"),
+        }
+    }
+
+    /// Il piano di scrittura e compilato prima di aprire la connessione: una
+    /// forma non qualificata non deve arrivare al server.
+    #[tokio::test]
+    async fn prepare_write_rejects_unqualified_operations_before_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let mut operation = append_write_operation();
+        operation.mode = plenora_database_core::plan::WriteMode::Upsert;
+        let outcome = provider
+            .prepare_write(
+                &SecretString::new("unique-secret"),
+                &operation,
+                append_input_schema(),
+                &budget,
+                &CancellationToken::new(),
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("upsert MySQL non qualificato accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    /// Un token gia cancellato chiude prima del checkout: non esiste una
+    /// connessione da quarantinare.
+    #[tokio::test]
+    async fn prepare_write_honours_cancellation_before_the_network() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let outcome = provider
+            .prepare_write(
+                &SecretString::new("unique-secret"),
+                &append_write_operation(),
+                append_input_schema(),
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("token gia cancellato accettato");
+        };
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+    }
+
+    /// Le lease di prepare non sono trasferibili: un budget diverso da quello
+    /// che ha prodotto il piano non puo eseguire la scrittura.
+    #[tokio::test]
+    async fn write_rejects_a_budget_that_did_not_prepare_it() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let prepared_budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let prepared = prepared_write_for_test(&prepared_budget, append_input_schema());
+        let foreign = ResourceBudget::new(ResourceLimits::default()).expect("budget estraneo");
+        let error = provider
+            .write(
+                &SecretString::new("unique-secret"),
+                prepared,
+                Box::new(EmptyBatchStream(append_input_schema())),
+                &foreign,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("budget estraneo");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    }
+
+    #[tokio::test]
+    async fn write_rejects_a_stream_schema_different_from_prepare() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let prepared = prepared_write_for_test(&budget, append_input_schema());
+        let renamed = Arc::new(plenora_database_core::arrow::Schema::new_with_metadata(
+            vec![plenora_database_core::arrow::Field::new(
+                "renamed",
+                plenora_database_core::arrow::DataType::Int64,
+                false,
+            )],
+            BTreeMap::from([(
+                plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+                plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+            )])
+            .into_iter()
+            .collect(),
+        ));
+        let error = provider
+            .write(
+                &SecretString::new("unique-secret"),
+                prepared,
+                Box::new(EmptyBatchStream(renamed)),
+                &budget,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("schema stream diverso");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Write);
+    }
+
     #[test]
     fn provider_surface_is_typed_and_fail_closed() {
         assert_provider::<MysqlProvider>();
@@ -702,7 +1153,14 @@ mod tests {
     #[test]
     fn published_spatial_capabilities_match_generic_geometry_contract() {
         let capabilities = mysql_spatial_capabilities();
+        assert!(capabilities.read_wkb);
+        assert!(capabilities.write_wkb);
         assert!(capabilities.geometry);
         assert!(capabilities.mixed_geometry_types);
+        assert_eq!(
+            capabilities.dimensions,
+            vec![plenora_database_core::geometry::Dimensions::Xy]
+        );
+        assert!(!capabilities.spatial_index);
     }
 }

@@ -138,6 +138,7 @@ pub struct Inspection {
 
 pub struct PreparedWrite {
     pub operation: WriteOperation,
+    pub input_schema: SchemaRef,
     pub loss_report: LossReport,
     pub budget: ResourceBudget,
     pub operation_lease: ResourceLease,

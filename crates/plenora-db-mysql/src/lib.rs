@@ -17,6 +17,7 @@ mod query;
 mod read;
 mod session;
 mod types;
+mod write;
 
 #[cfg(test)]
 mod live_tests;

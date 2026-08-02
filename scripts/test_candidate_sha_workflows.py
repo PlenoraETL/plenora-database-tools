@@ -17,6 +17,7 @@ CANDIDATE_EXPRESSION = (
 BOUND_WORKFLOWS = (
     "ewkb-fuzz.yml",
     "mysql-assurance.yml",
+    "mysql-version-matrix.yml",
     "postgres-postgis-assurance.yml",
     "postgres-postgis-matrix.yml",
     "release-manifest.yml",

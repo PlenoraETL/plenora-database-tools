@@ -18,6 +18,7 @@ GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
 GENERATOR_TEST = ROOT / "docker" / "mysql" / "tls" / "test_generate.sh"
 GATE = ROOT / "scripts" / "check_mysql_reference.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "mysql-assurance.yml"
+MATRIX_WORKFLOW = ROOT / ".github" / "workflows" / "mysql-version-matrix.yml"
 SPEC = importlib.util.spec_from_file_location("mysql_gate", GATE)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("gate MySQL non importabile")
@@ -39,7 +40,43 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_query_operation_cancellation_and_timeout_quarantine_the_session",
             gate.EXPECTED_LIVE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 18)
+        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 22)
+
+    def test_gate_pins_the_append_write_live_tests_by_name(self) -> None:
+        self.assertEqual(
+            {name for name in gate.EXPECTED_LIVE_TESTS if "append" in name},
+            {
+                "live_append_batch_failure_rolls_back_without_partial_rows",
+                "live_append_commits_a_single_transaction_and_reads_back_exactly",
+                "live_append_spatial_xy_preserves_srid_and_coordinates",
+                "live_append_timeout_quarantines_and_replaces_the_pooled_session",
+            },
+        )
+
+    def test_gate_pins_the_offline_write_plan_inventory(self) -> None:
+        write_tests = {
+            name
+            for name in gate.EXPECTED_OFFLINE_TESTS
+            if name.startswith("write::tests::")
+        }
+        self.assertEqual(len(write_tests), 26)
+        self.assertIn(
+            "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
+            write_tests,
+        )
+        self.assertIn(
+            "write::tests::spatial_batch_rejects_ewkb_srid_and_z_before_binding",
+            write_tests,
+        )
+        self.assertIn(
+            "provider::tests::prepare_write_rejects_unqualified_operations_before_the_network",
+            gate.EXPECTED_OFFLINE_TESTS,
+        )
+        self.assertIn(
+            "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
+            gate.EXPECTED_OFFLINE_TESTS,
+        )
+        self.assertEqual(len(gate.EXPECTED_OFFLINE_TESTS), 100)
 
     def test_gate_pins_the_aggregate_and_distinct_live_test_by_name(self) -> None:
         self.assertIn(
@@ -87,7 +124,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
 
     def test_gate_rejects_offline_test_count_drift(self) -> None:
-        offline_output = "\n".join(f"test offline::{index} ... ok" for index in range(69))
+        offline_output = "\n".join(f"test offline::{index} ... ok" for index in range(99))
         cargo_calls: list[list[str]] = []
 
         def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
@@ -102,7 +139,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "69.*70"):
+            with self.assertRaisesRegex(RuntimeError, "99.*100"):
                 gate.main()
 
         self.assertFalse(
@@ -115,7 +152,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             [
                 *(
                     f"test harmless::replacement_{index} ... ok"
-                    for index in range(69)
+                    for index in range(99)
                 ),
                 "test irrelevant::same_count_replacement ... ok",
             ]
@@ -313,6 +350,44 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertIn("PLENORA_MYSQL_CA=", workflow)
         self.assertIn('>> "$GITHUB_ENV"', workflow)
         self.assertNotIn("PLENORA_MYSQL_PASSWORD:", workflow)
+
+    def test_mysql_workflow_watches_the_performance_gate_inputs(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for path in (
+            '      - "crates/plenora-db-mysql/**"',
+            '      - "scripts/check_mysql_performance.py"',
+            '      - "tests/test_mysql_performance.py"',
+            '      - "benchmarks/manifests/mysql-performance-reference.json"',
+            '      - "benchmarks/baseline/mysql-performance-budget.json"',
+        ):
+            self.assertIn(path, workflow)
+
+    def test_mysql_workflow_runs_the_performance_gate_into_the_artifact(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        unit = "python3 -m unittest tests.test_mysql_performance"
+        gate = "python3 scripts/check_mysql_performance.py"
+        self.assertIn(unit, workflow)
+        self.assertIn(gate, workflow)
+        self.assertIn("--output assurance-results/mysql-performance.json", workflow)
+        self.assertIn("tee assurance-results/mysql-performance.log", workflow)
+        self.assertLess(
+            workflow.index(unit),
+            workflow.index(gate),
+            "i test del gate devono precedere la campagna",
+        )
+
+    def test_mysql_workflow_does_not_claim_a_measured_baseline(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("--baseline", workflow)
+
+    def test_matrix_workflow_pins_both_qualified_reference_digests(self) -> None:
+        workflow = MATRIX_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/check_mysql_matrix.py", workflow)
+        self.assertIn("python3 -m unittest tests.test_mysql_matrix", workflow)
+        self.assertIn('      - "scripts/check_mysql_matrix.py"', workflow)
+        self.assertIn('      - "docker/mysql/init/**"', workflow)
+        self.assertIn('      - "docker/mysql/tls/**"', workflow)
+        self.assertIn("mysql-version-matrix.json", workflow)
 
     def test_host_cargo_workflow_resolves_the_tls_mismatch_alias(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

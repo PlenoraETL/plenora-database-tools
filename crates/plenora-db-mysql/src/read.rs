@@ -646,13 +646,17 @@ fn ensure_active_read_budget(budget: &ResourceBudget) -> Result<()> {
     })
 }
 
-struct BudgetCancellation {
+/// Token figlio con la deadline del budget e il task che la fa scattare.
+///
+/// Il `Drop` annulla il task: nessun percorso lascia un timer vivo dopo la
+/// fine dell'operazione che lo ha creato.
+pub struct BudgetCancellation {
     token: CancellationToken,
     deadline_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl BudgetCancellation {
-    fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
+    pub fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
         let token = parent.child_token_with_deadline(Some(budget.deadline()));
         let deadline_token = token.clone();
         let deadline = tokio::time::Instant::from_std(budget.deadline());
@@ -666,7 +670,7 @@ impl BudgetCancellation {
         }
     }
 
-    const fn token(&self) -> &CancellationToken {
+    pub const fn token(&self) -> &CancellationToken {
         &self.token
     }
 
