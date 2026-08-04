@@ -83,7 +83,7 @@ pub fn driver_error(
                     RetryDisposition::Never,
                     "errore TLS o protocollo MySQL redatto".to_owned(),
                 ),
-                Error::Server(_) => unreachable!("server error always has a code"),
+                Error::Server(server) => generic_server_failure(server.code),
             },
         }
     };
@@ -106,7 +106,16 @@ pub fn driver_error(
         provider: Some(ProviderKind::Mysql),
         execution_id: None,
         message,
+        diagnostics: None,
     }
+}
+
+fn generic_server_failure(code: u16) -> (ErrorCategory, RetryDisposition, String) {
+    (
+        ErrorCategory::Execution,
+        RetryDisposition::Never,
+        format!("errore server MySQL redatto (codice {code})"),
+    )
 }
 
 fn is_tls_identity_rejection(error: &Error) -> bool {
@@ -128,9 +137,31 @@ fn is_tls_identity_rejection(error: &Error) -> bool {
     false
 }
 
-const fn server_code(error: &Error) -> Option<u16> {
+pub const fn server_code(error: &Error) -> Option<u16> {
     match error {
         Error::Server(server) => Some(server.code),
+        _ => None,
+    }
+}
+
+/// Causa di contratto per un rifiuto che appartiene a una singola riga.
+///
+/// La classificazione legge **solo il codice** del server. Il testo del
+/// messaggio è vendor, localizzato e trasporta valori di riga: interpretarlo
+/// significherebbe pubblicare come certo ciò che è una congettura, e il
+/// contratto `plenora-row-diagnostics-v1` lo vieta.
+///
+/// Un codice che non appartiene a questa tabella non produce una causa: la
+/// scrittura fallisce come qualunque altro errore, senza diagnostica per riga.
+#[must_use]
+pub const fn row_rejection_cause(code: u16) -> Option<&'static str> {
+    match code {
+        // 1048 NULL in colonna non nullable, 1062 chiave duplicata,
+        // 1452 vincolo di integrità referenziale, 3819 CHECK violato,
+        // 4025 CHECK violato sulla colonna (MySQL 8.0.16+).
+        1_048 | 1_062 | 1_452 | 3_819 | 4_025 => {
+            Some(plenora_database_core::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION)
+        }
         _ => None,
     }
 }
@@ -168,6 +199,7 @@ pub fn timeout_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
         } else {
             "timeout operazione MySQL; connessione quarantinata".to_owned()
         },
+        diagnostics: None,
     }
 }
 
@@ -196,6 +228,7 @@ pub fn cancellation_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseEr
         } else {
             "operazione MySQL cancellata; connessione quarantinata".to_owned()
         },
+        diagnostics: None,
     }
 }
 

@@ -11,8 +11,8 @@ use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture}
 use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ReadDiagnosticsPolicy,
+    ReadDiagnosticsTracker, RemoteEffect, Result, RetryDisposition,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -207,6 +207,7 @@ where
         _operation_lease: operation_lease,
         _columns_lease: columns_lease,
         state: MysqlStreamState::Active,
+        read_diagnostics: ReadDiagnosticsTracker::new(ReadDiagnosticsPolicy::default())?,
     }))
 }
 
@@ -223,6 +224,9 @@ pub struct MysqlBatchStream {
     _operation_lease: ResourceLease,
     _columns_lease: ResourceLease,
     state: MysqlStreamState,
+    /// Cursore delle righe già consegnate, base dell'indice sorgente
+    /// pubblicato dalla diagnostica row-scoped di lettura.
+    read_diagnostics: ReadDiagnosticsTracker,
 }
 
 enum MysqlStreamState {
@@ -291,6 +295,55 @@ impl MysqlBatchStream {
         result
     }
 
+    /// Accoda una riga ai buffer del batch in costruzione.
+    ///
+    /// Ogni difetto di conversione osservato qui è ancora attribuibile: la
+    /// riga non ha raggiunto il consumatore, quindi porta con sé l'indice
+    /// sorgente assoluto e la colonna del piano. Restituisce la stima di byte
+    /// aggiornata.
+    fn append_row(
+        &self,
+        row: &Row,
+        buffers: &mut [MysqlColumnBuffer],
+        row_count: usize,
+        estimated_bytes: u64,
+        byte_limit: u64,
+    ) -> Result<u64> {
+        let row_bytes = conservative_row_bytes(row, self.columns.len()).map_err(|error| {
+            attribute_conversion_defect(
+                &self.read_diagnostics,
+                &self.columns,
+                error,
+                Some(row_count),
+                None,
+            )
+        })?;
+        let next_estimate = estimated_bytes
+            .checked_add(row_bytes)
+            .ok_or_else(|| DatabaseError::resource_limit("stima batch MySQL in overflow"))?;
+        if next_estimate > byte_limit {
+            return Err(DatabaseError::resource_limit(if row_count == 0 {
+                "riga MySQL oltre il budget memoria del batch"
+            } else {
+                "riga MySQL cresciuta oltre il residuo memoria del batch"
+            }));
+        }
+        for (index, buffer) in buffers.iter_mut().enumerate() {
+            buffer
+                .append(row, index, self.budget.limits().cell_bytes)
+                .map_err(|error| {
+                    attribute_conversion_defect(
+                        &self.read_diagnostics,
+                        &self.columns,
+                        error,
+                        Some(row_count),
+                        Some(index),
+                    )
+                })?;
+        }
+        Ok(next_estimate)
+    }
+
     async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
         if self.cancellation.is_cancelled() {
             return Err(interruption_error(
@@ -333,26 +386,14 @@ impl MysqlBatchStream {
             };
             match received {
                 Some(Ok(row)) => {
-                    let row_bytes = conservative_row_bytes(&row, self.columns.len())?;
-                    let next_estimate =
-                        estimated_bytes.checked_add(row_bytes).ok_or_else(|| {
-                            DatabaseError::resource_limit("stima batch MySQL in overflow")
-                        })?;
-                    if next_estimate > reservation.byte_limit {
-                        if row_count == 0 {
-                            return Err(DatabaseError::resource_limit(
-                                "riga MySQL oltre il budget memoria del batch",
-                            ));
-                        }
-                        return Err(DatabaseError::resource_limit(
-                            "riga MySQL cresciuta oltre il residuo memoria del batch",
-                        ));
-                    }
-                    for (index, buffer) in buffers.iter_mut().enumerate() {
-                        buffer.append(&row, index, self.budget.limits().cell_bytes)?;
-                    }
+                    estimated_bytes = self.append_row(
+                        &row,
+                        &mut buffers,
+                        row_count,
+                        estimated_bytes,
+                        reservation.byte_limit,
+                    )?;
                     row_count = row_count.saturating_add(1);
-                    estimated_bytes = next_estimate;
                 }
                 Some(Err(error)) => {
                     return Err(error);
@@ -385,10 +426,14 @@ impl MysqlBatchStream {
             reservation.component_limit,
             self.budget.limits().cell_bytes,
             self.budget.limits().nesting_depth,
+            &self.read_diagnostics,
         )?;
         let rows = u64::try_from(batch.num_rows())
             .map_err(|_| DatabaseError::resource_limit("righe MySQL non rappresentabili"))?;
         reservation.commit(rows, actual_bytes, components)?;
+        // Il cursore avanza solo su un batch che sta per essere consegnato:
+        // un batch fallito non ha righe pubblicate da contare.
+        self.read_diagnostics.publish_batch(rows)?;
         Ok(Some(batch))
     }
 
@@ -560,12 +605,33 @@ impl BatchReservation {
     }
 }
 
+/// Attribuisce un difetto di conversione alla riga sorgente e alla colonna del
+/// piano che il percorso ha potuto osservare.
+///
+/// L'indice del batch e l'indice di colonna sono posizioni provate dal
+/// percorso, non deduzioni: quando una delle due manca, il documento dichiara
+/// il limite invece di completarlo. Il nome della colonna arriva dal piano
+/// compilato, mai dal messaggio del server.
+fn attribute_conversion_defect(
+    diagnostics: &ReadDiagnosticsTracker,
+    columns: &[crate::MysqlColumnSpec],
+    error: DatabaseError,
+    row: Option<usize>,
+    column: Option<usize>,
+) -> DatabaseError {
+    let column = column
+        .and_then(|index| columns.get(index))
+        .map(|column| column.name.as_str());
+    diagnostics.reject_conversion_defect(error, row.and_then(|row| u64::try_from(row).ok()), column)
+}
+
 fn validate_spatial_batch(
     batch: &RecordBatch,
     columns: &[crate::MysqlColumnSpec],
     component_limit: u64,
     cell_limit: u64,
     nesting_depth: u64,
+    diagnostics: &ReadDiagnosticsTracker,
 ) -> Result<u64> {
     let mut components = 0_u64;
     for (index, column) in columns.iter().enumerate() {
@@ -603,16 +669,28 @@ fn validate_spatial_batch(
                     "componenti geometriche MySQL esaurite",
                 ));
             }
-            let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
-                value,
-                remaining,
-                nesting_depth,
-            )?;
+            let inspection =
+                plenora_database_core::ewkb::inspect_ewkb_detailed(value, remaining, nesting_depth)
+                    .map_err(|error| {
+                        attribute_conversion_defect(
+                            diagnostics,
+                            columns,
+                            error,
+                            Some(row),
+                            Some(index),
+                        )
+                    })?;
             if inspection.root.srid.is_some() || inspection.root.dimensions_label() != "xy" {
-                return Err(read_error(
-                    ErrorCategory::DataMapping,
-                    ErrorPhase::Read,
-                    "ST_AsBinary MySQL ha prodotto WKB non XY o con SRID embedded",
+                return Err(attribute_conversion_defect(
+                    diagnostics,
+                    columns,
+                    read_error(
+                        ErrorCategory::DataMapping,
+                        ErrorPhase::Read,
+                        "ST_AsBinary MySQL ha prodotto WKB non XY o con SRID embedded",
+                    ),
+                    Some(row),
+                    Some(index),
                 ));
             }
             components = components
@@ -706,6 +784,7 @@ fn read_error(
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 
@@ -782,6 +861,113 @@ mod tests {
     fn valid_row_bound_reserves_cell_payload_and_buffer_growth() {
         assert_eq!(maximum_valid_row_bytes(2, 4_096).expect("bound"), 16_512);
         assert!(maximum_valid_row_bytes(usize::MAX, u64::MAX).is_err());
+    }
+
+    fn spatial_column(name: &str) -> crate::MysqlColumnSpec {
+        crate::MysqlColumnSpec {
+            name: name.to_owned(),
+            native_type: "geometry".to_owned(),
+            native_declaration: "geometry".to_owned(),
+            nullable: true,
+            collation: None,
+            kind: MysqlColumnKind::Geometry,
+            spatial_srid: None,
+        }
+    }
+
+    /// Un difetto di conversione osservato mentre il batch è in costruzione
+    /// pubblica l'indice sorgente assoluto e la colonna del piano.
+    #[test]
+    fn a_read_conversion_defect_publishes_the_absolute_source_index() {
+        let mut tracker =
+            ReadDiagnosticsTracker::new(ReadDiagnosticsPolicy::default()).expect("tracker");
+        tracker
+            .publish_batch(8_192)
+            .expect("primo batch pubblicato");
+        let columns = [spatial_column("shape"), spatial_column("footprint")];
+
+        let error = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_error(
+                ErrorCategory::DataMapping,
+                ErrorPhase::Read,
+                "valore MySQL non rappresentabile",
+            ),
+            Some(17),
+            Some(1),
+        );
+        assert_eq!(error.phase, ErrorPhase::Read);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        let report = error.row_diagnostics().expect("diagnostica MySQL");
+        report.validate().expect("documento valido");
+        assert_eq!(
+            serde_json::to_value(report).expect("documento serializzabile"),
+            serde_json::json!({
+                "contract": "plenora-row-diagnostics-v1",
+                "scope": "read",
+                "index_basis": "source_row_zero_based",
+                "completeness": "partial",
+                "knowledge_limits": [
+                    "read.batches_already_published",
+                    "read.scan_stopped_at_first_defect"
+                ],
+                "observed_total": 1,
+                "counts": {"conversion.value_not_representable": 1},
+                "examples_limit": 10,
+                "examples_truncated": false,
+                "examples": [{
+                    "source_index": 8_209,
+                    "cause": "conversion.value_not_representable",
+                    "column": "footprint"
+                }]
+            })
+        );
+    }
+
+    /// Una colonna fuori dal piano non produce un nome inventato e un errore
+    /// che non è un difetto di conversione non riceve una riga sorgente.
+    #[test]
+    fn unattributable_read_failures_never_invent_provenance() {
+        let tracker =
+            ReadDiagnosticsTracker::new(ReadDiagnosticsPolicy::default()).expect("tracker");
+        let columns = [spatial_column("shape")];
+
+        let error = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_error(ErrorCategory::DataMapping, ErrorPhase::Read, "difetto"),
+            Some(3),
+            Some(9),
+        );
+        let report = error.row_diagnostics().expect("diagnostica MySQL");
+        assert_eq!(report.examples[0].source_index, 3);
+        assert!(report.examples[0].column.is_none());
+
+        let unknown_row = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_error(ErrorCategory::DataMapping, ErrorPhase::Read, "difetto"),
+            None,
+            Some(0),
+        );
+        let report = unknown_row.row_diagnostics().expect("diagnostica MySQL");
+        assert_eq!(
+            report.completeness,
+            plenora_database_core::row_diagnostics::Completeness::Unknown,
+        );
+        assert!(report.examples.is_empty(), "nessun indice inventato");
+
+        let budget = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            DatabaseError::resource_limit("budget MySQL esaurito"),
+            Some(3),
+            Some(0),
+        );
+        assert_eq!(budget.category, ErrorCategory::ResourceLimit);
+        assert!(budget.row_diagnostics().is_none());
     }
 
     #[tokio::test]

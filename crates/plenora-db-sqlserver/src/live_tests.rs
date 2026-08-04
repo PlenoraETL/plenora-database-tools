@@ -6262,3 +6262,215 @@ impl BatchStream for BarrierBatchStream {
         })
     }
 }
+
+/// Stream con cardinalità dichiarata: attiva il percorso row-scoped.
+struct DiagnosticBatchStream {
+    inner: VecBatchStream,
+    declared_rows: u64,
+    policy: plenora_database_core::RowDiagnosticsPolicy,
+}
+
+impl BatchStream for DiagnosticBatchStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+        self.inner.next_batch()
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.declared_rows)
+    }
+
+    fn row_diagnostics_policy(&self) -> plenora_database_core::RowDiagnosticsPolicy {
+        self.policy.clone()
+    }
+}
+
+fn row_diagnostics_input_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("parcel_id", DataType::Int64, false),
+        Field::new("area_m2", DataType::Int64, false),
+    ]))
+}
+
+/// Batch `[start, end)` dell'input di campagna: la sola riga 4999 viola
+/// `area_m2 >= 0`.
+fn row_diagnostics_batch(schema: &SchemaRef, start: u64, end: u64) -> RecordBatch {
+    let ids = (start..end)
+        .map(|index| i64::try_from(index).expect("parcel_id rappresentabile"))
+        .collect::<Vec<_>>();
+    let areas = (start..end)
+        .map(|index| if index == 4_999 { -1 } else { 10 })
+        .collect::<Vec<_>>();
+    RecordBatch::try_new(
+        Arc::clone(schema),
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(Int64Array::from(areas)),
+        ],
+    )
+    .expect("batch row diagnostics SQL Server")
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per l'oracolo row diagnostics"]
+#[allow(clippy::too_many_lines)]
+async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
+    const INPUT_TOTAL: u64 = 5_200;
+    const REJECTED_INDEX: u64 = 4_999;
+    const TABLE: &str = "write_row_diagnostics_probe";
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("row diagnostics admin");
+    admin
+        .execute_query(
+            Query::new(format!(
+                "DROP TABLE IF EXISTS [plenora_test].[{TABLE}]; \
+                 CREATE TABLE [plenora_test].[{TABLE}] \
+                 ([parcel_id] bigint NOT NULL PRIMARY KEY, \
+                  [area_m2] bigint NOT NULL \
+                  CONSTRAINT chk_row_diagnostics_area_nonnegative CHECK ([area_m2] >= 0));"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("create fixture row diagnostics SQL Server");
+
+    let schema = row_diagnostics_input_schema();
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: INPUT_TOTAL,
+        memory_bytes: 8 * 1_024 * 1_024,
+        output_bytes: 8 * 1_024 * 1_024,
+        cell_bytes: 1_024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget row diagnostics SQL Server live");
+    let pool = SqlServerPool::new(config.clone(), 2).expect("row diagnostics pool");
+    let prepared = prepare_write(
+        &pool,
+        &write_operation(TABLE, WriteMode::Append),
+        Arc::clone(&schema),
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect("prepare row diagnostics SQL Server live");
+    let input = DiagnosticBatchStream {
+        inner: VecBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from(vec![
+                row_diagnostics_batch(&schema, 0, 4_096),
+                row_diagnostics_batch(&schema, 4_096, INPUT_TOTAL),
+            ]),
+        },
+        declared_rows: INPUT_TOTAL,
+        policy: plenora_database_core::RowDiagnosticsPolicy {
+            key_field: Some("parcel_id".to_owned()),
+            constraint_column: Some("area_m2".to_owned()),
+            examples_limit: 10,
+        },
+    };
+    let error = write_prepared(prepared, Box::new(input), &cancellation)
+        .await
+        .expect_err("constraint row-scoped SQL Server live");
+
+    // Assi rc17 del caso `write-constraint-confirmed-rollback`.
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    assert!(!error.is_retryable());
+    assert_eq!(
+        error.provider,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver)
+    );
+    assert!(error.execution_id.is_some());
+    assert_eq!(error.message, "riga sorgente rifiutata dal database");
+
+    // Nessun indice, chiave o payload nel messaggio umano.
+    for forbidden in [
+        REJECTED_INDEX.to_string().as_str(),
+        "parcel_id",
+        "area_m2",
+        "4998",
+        "-1",
+    ] {
+        assert!(
+            !error.message.contains(forbidden),
+            "il messaggio non trasporta {forbidden}: {}",
+            error.message
+        );
+    }
+
+    // Oracolo JSON campo per campo.
+    let diagnostics = error
+        .row_diagnostics()
+        .expect("diagnostica SQL Server live");
+    diagnostics.validate().expect("documento rc17 valido");
+    assert_eq!(
+        serde_json::to_value(diagnostics).expect("documento serializzabile"),
+        serde_json::json!({
+            "contract": "plenora-row-diagnostics-v1",
+            "scope": "write",
+            "index_basis": "source_row_zero_based",
+            "completeness": "complete",
+            "observed_total": 1,
+            "total": 1,
+            "input_total": 5200,
+            "counts": {"database.constraint_violation": 1},
+            "examples_limit": 10,
+            "examples_truncated": false,
+            "examples": [{
+                "source_index": 4999,
+                "cause": "database.constraint_violation",
+                "column": "area_m2",
+                "key": {"field": "parcel_id", "state": "redacted"},
+                "write_state": "certainly_rejected"
+            }],
+            "diagnostic_state_counts": {
+                "certainly_rejected": 1,
+                "certainly_not_attempted": 0,
+                "certainly_rolled_back": 0,
+                "effect_unknown": 0
+            },
+            "write_outcome": {
+                "certainly_rejected": {"state": "known", "value": 1},
+                "certainly_not_attempted": {"state": "known", "value": 200},
+                "certainly_rolled_back": {"state": "known", "value": 4999},
+                "effect_unknown": {"state": "known", "value": 0}
+            }
+        })
+    );
+
+    // Persistenza: il rollback confermato non lascia righe committate.
+    let rows = admin
+        .execute_query(
+            Query::new(format!(
+                "SELECT COUNT_BIG(*) FROM [plenora_test].[{TABLE}];"
+            )),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("count row diagnostics SQL Server live");
+    assert_eq!(
+        rows[0][0].try_get::<i64, _>(0).expect("conteggio"),
+        Some(0),
+        "un rollback confermato non lascia righe"
+    );
+
+    admin
+        .execute_query(
+            Query::new(format!("DROP TABLE [plenora_test].[{TABLE}];")),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup row diagnostics SQL Server live");
+}

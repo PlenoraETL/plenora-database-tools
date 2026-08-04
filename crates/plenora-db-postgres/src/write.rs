@@ -46,6 +46,7 @@ mod plan;
 mod prepared_codec;
 mod recovery;
 mod resources;
+mod row_diagnostics;
 mod sql;
 mod value_codec;
 
@@ -142,6 +143,18 @@ pub async fn execute(
     }
     let schema = input.schema();
     let column_plans = compile_schema_plan(&schema, &prepared.operation)?;
+    let diagnostic_input = input
+        .declared_input_rows()
+        .map(|input_total| {
+            row_diagnostics::validate_input(
+                &prepared.input_schema,
+                &schema,
+                &prepared.operation,
+                input_total,
+                input.row_diagnostics_policy(),
+            )
+        })
+        .transpose()?;
     let execution_id = format!(
         "pg-{}-{}",
         std::process::id(),
@@ -217,6 +230,30 @@ pub async fn execute(
         execution_id: &execution_id,
     };
     let operation = &prepared.operation;
+    if let Some(diagnostic_input) = diagnostic_input {
+        let result = row_diagnostics::execute(
+            transaction,
+            input.as_mut(),
+            &schema,
+            operation,
+            &column_plans,
+            budget,
+            cancellation,
+            &runtime,
+            &cancel_token,
+            &execution_id,
+            diagnostic_input,
+        )
+        .await;
+        if result
+            .as_ref()
+            .is_ok_and(|outcome| outcome.status == WriteStatus::Committed)
+        {
+            client.mark_reusable();
+        }
+        drop(client);
+        return result;
+    }
     if let Some(result) = select_with_cancellation(
         evolve_target_schema(
             &transaction,

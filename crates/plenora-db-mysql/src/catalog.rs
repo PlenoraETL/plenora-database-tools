@@ -111,6 +111,7 @@ pub async fn probe_server(
             provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
             execution_id: None,
             message: "connessione MySQL priva di cifratura TLS negoziata".to_owned(),
+            diagnostics: None,
         });
     }
     Ok(MysqlProbe {
@@ -332,6 +333,7 @@ fn mapping_error(message: impl Into<String>) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 
@@ -344,6 +346,7 @@ fn not_found(message: impl Into<String>) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

@@ -94,6 +94,7 @@ fn parameter_error(category: ErrorCategory, message: impl Into<String>) -> Datab
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

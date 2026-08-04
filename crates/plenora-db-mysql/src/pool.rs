@@ -45,6 +45,7 @@ impl MysqlPool {
                 provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
                 execution_id: None,
                 message: "pool MySQL con capacita zero".to_owned(),
+                diagnostics: None,
             });
         }
         Ok(Self {
@@ -115,6 +116,7 @@ fn semaphore_closed_error() -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: "semaphore pool MySQL chiuso".to_owned(),
+        diagnostics: None,
     }
 }
 

@@ -20,6 +20,113 @@ pub(super) struct BatchInspection {
     pub(super) geometry_components: u64,
 }
 
+#[derive(Debug)]
+pub(super) struct RowInspection {
+    pub(super) bytes: u64,
+    pub(super) geometry_components: u64,
+}
+
+pub(super) fn inspect_row(
+    batch: &RecordBatch,
+    row: usize,
+    plan: &WritePlan,
+    cell_limit: u64,
+    component_limit: u64,
+    nesting_depth: u64,
+) -> Result<RowInspection> {
+    if batch.schema().as_ref() != plan.input_schema.as_ref() || row >= batch.num_rows() {
+        return Err(mapping_error(
+            "riga Arrow incompatibile col piano preparato SQL Server",
+        ));
+    }
+    let mut bytes = 0_u64;
+    let mut geometry_components = 0_u64;
+    for &column_index in &plan.key_input_indices {
+        let column = plan
+            .columns
+            .get(column_index)
+            .ok_or_else(|| mapping_error("indice chiave SQL Server fuori dal piano compilato"))?;
+        if batch.column(column.input_index).is_null(row) {
+            return Err(mapping_error(
+                "NULL Arrow non ammesso in una chiave write SQL Server",
+            ));
+        }
+    }
+    for column in &plan.columns {
+        let array = batch.column(column.input_index);
+        if !column.nullable && array.is_null(row) {
+            return Err(mapping_error(
+                "NULL Arrow destinato a colonna SQL Server NOT NULL",
+            ));
+        }
+        let value_bytes = match column.kind {
+            crate::SqlServerColumnKind::Utf8 | crate::SqlServerColumnKind::TimestampTz => {
+                let strings = downcast::<StringArray>(array.as_ref())?;
+                (!strings.is_null(row)).then(|| strings.value(row).len())
+            }
+            crate::SqlServerColumnKind::Binary => {
+                let binary = downcast::<BinaryArray>(array.as_ref())?;
+                (!binary.is_null(row)).then(|| binary.value(row).len())
+            }
+            crate::SqlServerColumnKind::Geometry | crate::SqlServerColumnKind::Geography => {
+                let binary = downcast::<BinaryArray>(array.as_ref())?;
+                if binary.is_null(row) {
+                    None
+                } else {
+                    let value = binary.value(row);
+                    enforce_cell(value.len(), cell_limit)?;
+                    let inspection = inspect_ewkb_detailed(value, component_limit, nesting_depth)?;
+                    if inspection.root.srid.is_some() {
+                        return Err(mapping_error(
+                            "write SQL Server richiede WKB senza SRID embedded",
+                        ));
+                    }
+                    let expected_dimensions = plan
+                        .input_schema
+                        .field(column.input_index)
+                        .metadata()
+                        .get(protocol::GEOMETRY_DIMENSIONS)
+                        .map(String::as_str)
+                        .ok_or_else(|| {
+                            mapping_error("dimensioni spatial assenti dal piano Arrow")
+                        })?;
+                    if inspection.root.dimensions_label() != expected_dimensions {
+                        return Err(mapping_error("dimensioni WKB diverse dal contratto Arrow"));
+                    }
+                    geometry_components = geometry_components
+                        .checked_add(inspection.stats.components)
+                        .ok_or_else(|| {
+                            DatabaseError::resource_limit("componenti geometriche overflow")
+                        })?;
+                    Some(value.len())
+                }
+            }
+            crate::SqlServerColumnKind::Bool | crate::SqlServerColumnKind::U8 => Some(1),
+            crate::SqlServerColumnKind::I16 => Some(2),
+            crate::SqlServerColumnKind::I32
+            | crate::SqlServerColumnKind::F32
+            | crate::SqlServerColumnKind::Date => Some(4),
+            crate::SqlServerColumnKind::I64
+            | crate::SqlServerColumnKind::F64
+            | crate::SqlServerColumnKind::Time
+            | crate::SqlServerColumnKind::Timestamp => Some(8),
+            crate::SqlServerColumnKind::Decimal { .. } => Some(16),
+        };
+        if let Some(value_bytes) = value_bytes {
+            enforce_cell(value_bytes, cell_limit)?;
+            bytes = bytes
+                .checked_add(u64::try_from(value_bytes).map_err(|_| {
+                    DatabaseError::resource_limit("dimensione cella non rappresentabile")
+                })?)
+                .ok_or_else(|| DatabaseError::resource_limit("dimensione riga Arrow overflow"))?;
+        }
+    }
+    Ok(RowInspection {
+        bytes,
+        geometry_components,
+    })
+}
+
 pub(super) fn inspect_batch(
     batch: &RecordBatch,
     plan: &WritePlan,
@@ -478,6 +585,7 @@ fn mapping_error(message: impl Into<String>) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 
@@ -546,5 +654,65 @@ mod tests {
         let error =
             inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");
         assert_eq!(error.category, ErrorCategory::DataMapping);
+    }
+
+    #[test]
+    fn fixed_width_rows_consume_output_and_memory_bytes() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64])),
+                Arc::new(Int32Array::from(vec![2_i32])),
+            ],
+        )
+        .expect("fixed-width batch");
+        let plan = WritePlan {
+            input_schema: schema,
+            columns: vec![
+                WriteColumnPlan {
+                    input_index: 0,
+                    name: "id".to_owned(),
+                    kind: crate::SqlServerColumnKind::I64,
+                    native_type: "bigint".to_owned(),
+                    native_declaration: "bigint".to_owned(),
+                    nullable: false,
+                    collation: None,
+                    spatial_srid: None,
+                },
+                WriteColumnPlan {
+                    input_index: 1,
+                    name: "value".to_owned(),
+                    kind: crate::SqlServerColumnKind::I32,
+                    native_type: "int".to_owned(),
+                    native_declaration: "int".to_owned(),
+                    nullable: false,
+                    collation: None,
+                    spatial_srid: None,
+                },
+            ],
+            mode: WriteMode::Append,
+            row_sql: String::new(),
+            key_input_indices: Vec::new(),
+            bulk_table: String::new(),
+            bulk_columns_aligned: false,
+            lifecycle: TargetLifecycle::Existing {
+                lock_sql: String::new(),
+                truncate_sql: None,
+                add_columns_sql: Vec::new(),
+                schema_fingerprint: String::new(),
+            },
+            schema: "dbo".to_owned(),
+            object: "target".to_owned(),
+            added_columns: Vec::new(),
+            spatial_indexes: Vec::new(),
+        };
+
+        let inspection =
+            inspect_row(&batch, 0, &plan, 1024, 1024, 16).expect("fixed-width inspection");
+        assert_eq!(inspection.bytes, 12);
     }
 }

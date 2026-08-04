@@ -15,12 +15,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
 CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 44
+EXPECTED_LIVE_TESTS = 45
+# Test live che il gate non può dichiarare e poi non eseguire. Il conteggio da
+# solo non basta: una matrice piena può comunque avere sostituito un test con
+# un altro. Il nome va verificato.
+REQUIRED_LIVE_TESTS = frozenset(
+    {
+        "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+    }
+)
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -75,6 +82,39 @@ def docker_value(arguments: list[str]) -> str:
     return completed.stdout.strip()
 
 
+def sqlserver_network() -> str:
+    """Rete Compose osservata sul container di riferimento.
+
+    Il nome dipende dal progetto Compose, cioè dalla directory del checkout: un
+    valore cablato rende il gate ineseguibile in un worktree. La scoperta è
+    fail-closed — senza label di progetto, senza la rete attesa o senza l'alias
+    del container il gate fallisce, invece di ripiegare su una rete inventata
+    che produrrebbe un errore di connessione travestito da difetto del provider.
+    """
+
+    labels = json.loads(
+        docker_value(["inspect", "--format", "{{json .Config.Labels}}", CONTAINER])
+    )
+    project = (
+        labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
+    )
+    if not isinstance(project, str) or not project:
+        raise RuntimeError("progetto Compose del riferimento SQL Server assente")
+    expected = f"{project}_default"
+    networks = json.loads(
+        docker_value(
+            ["inspect", "--format", "{{json .NetworkSettings.Networks}}", CONTAINER]
+        )
+    )
+    network = networks.get(expected) if isinstance(networks, dict) else None
+    aliases = network.get("Aliases") if isinstance(network, dict) else None
+    if not isinstance(aliases, list) or CONTAINER not in aliases:
+        raise RuntimeError(
+            "rete Compose del riferimento SQL Server assente o senza alias"
+        )
+    return expected
+
+
 def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
     if os.environ.get("PLENORA_SQLSERVER_GATE_HOST_CARGO") == "1":
         environment = os.environ.copy()
@@ -91,7 +131,7 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "run",
         "--rm",
         "--network",
-        NETWORK,
+        sqlserver_network(),
         "-v",
         f"{ROOT}:/workspace",
         "-v",
@@ -294,6 +334,14 @@ def validate_live_result(output: str) -> None:
         raise RuntimeError(
             f"matrice live SQL Server diversa da {EXPECTED_LIVE_TESTS}/"
             f"{EXPECTED_LIVE_TESTS}"
+        )
+    executed = set(
+        re.findall(r"^test live_tests::([^ ]+) \.\.\. ok$", output, re.MULTILINE)
+    )
+    missing = sorted(REQUIRED_LIVE_TESTS - executed)
+    if missing:
+        raise RuntimeError(
+            f"test live SQL Server dichiarati ma non eseguiti: {missing}"
         )
 
 

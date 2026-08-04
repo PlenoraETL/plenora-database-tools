@@ -1047,6 +1047,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         provider: Some(ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

@@ -1,11 +1,13 @@
 //! Supporto di conformità indipendente dai database reali.
 
 mod conformance;
+pub mod row_diagnostics;
 
 pub use conformance::{
     operation_id, validate_capabilities, validate_connection, validate_inspection,
     verify_provider_contract, ProviderConformanceReport,
 };
+pub use row_diagnostics::{block_on, RowWriteScript, ScriptedRowWriter};
 
 use plenora_database_core::{DatabaseError, Result};
 use serde::{Deserialize, Serialize};

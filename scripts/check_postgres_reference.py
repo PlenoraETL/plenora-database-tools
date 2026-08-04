@@ -15,10 +15,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
+CONTAINER = "dataflow-postgres"
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
+)
+# Test live che il gate non può dichiarare senza averli visti passare. Saltano
+# con un early-return quando la DSN non è impostata, quindi un `test result: ok`
+# non prova che siano stati eseguiti: solo il nome lo prova.
+REQUIRED_LIVE_TESTS = frozenset(
+    {
+        "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+        "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
+        "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
+    }
 )
 
 
@@ -37,6 +47,50 @@ def run(command: list[str], *, capture: bool = False) -> str:
     return completed.stdout if capture else ""
 
 
+def postgres_network() -> str:
+    """Rete Compose osservata sul container di riferimento.
+
+    Il nome dipende dal progetto Compose, cioè dalla directory del checkout: un
+    valore cablato rende il gate ineseguibile in un worktree, dove i cargo con
+    DSN finiscono su una rete che non contiene il container e falliscono con
+    errori `Protocol`/`Connect` indistinguibili da un difetto del provider. La
+    scoperta è fail-closed — senza label di progetto, senza la rete attesa o
+    senza l'alias del container il gate fallisce invece di indovinare.
+    """
+
+    labels = json.loads(
+        run(
+            ["docker", "inspect", "--format", "{{json .Config.Labels}}", CONTAINER],
+            capture=True,
+        )
+    )
+    project = (
+        labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
+    )
+    if not isinstance(project, str) or not project:
+        raise RuntimeError("progetto Compose del riferimento PostgreSQL assente")
+    expected = f"{project}_default"
+    networks = json.loads(
+        run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+                CONTAINER,
+            ],
+            capture=True,
+        )
+    )
+    network = networks.get(expected) if isinstance(networks, dict) else None
+    aliases = network.get("Aliases") if isinstance(network, dict) else None
+    if not isinstance(aliases, list) or CONTAINER not in aliases:
+        raise RuntimeError(
+            "rete Compose del riferimento PostgreSQL assente o senza alias"
+        )
+    return expected
+
+
 def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
     command = [
         "docker", "run", "--rm",
@@ -47,7 +101,7 @@ def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
     ]
     if dsn is not None:
         command += [
-            "--network", NETWORK,
+            "--network", postgres_network(),
             "-e", f"PLENORA_TEST_POSTGRES_DSN={dsn}",
         ]
     return [*command, IMAGE, "cargo", *arguments]
@@ -99,12 +153,34 @@ def check_ipc_materialization(dsn: str) -> dict[str, object]:
         }
 
 
+def validate_live_row_diagnostics(output: str) -> None:
+    """Verifica che i test live row diagnostics siano nella matrice eseguita.
+
+    Questi test escono con un early-return quando la DSN non è impostata, e in
+    quel caso riportano comunque `ok`: il solo esito non prova che le
+    asserzioni siano state eseguite. Il gate copre la seconda metà della prova
+    imponendo la DSN a ogni invocazione (`cargo(..., dsn)`); questo controllo
+    copre la prima, cioè che i tre test siano ancora compilati e inclusi nella
+    corsa. Un test rinominato, cancellato o filtrato via smette di essere una
+    prova e qui fallisce invece di sparire in silenzio.
+    """
+
+    executed = set(
+        re.findall(r"^test test_suite::tests::([^ ]+) \.\.\. ok$", output, re.MULTILINE)
+    )
+    missing = sorted(REQUIRED_LIVE_TESTS - executed)
+    if missing:
+        raise RuntimeError(
+            f"test live PostgreSQL dichiarati ma non eseguiti: {missing}"
+        )
+
+
 def main() -> int:
     dsn = os.environ.get("PLENORA_TEST_POSTGRES_DSN", DEFAULT_DSN)
     try:
         state = run(
             ["docker", "inspect", "--format",
-             "{{.State.Status}}|{{.State.Health.Status}}", "dataflow-postgres"],
+             "{{.State.Status}}|{{.State.Health.Status}}", CONTAINER],
             capture=True,
         ).strip()
         if state != "running|healthy":
@@ -115,7 +191,11 @@ def main() -> int:
             "-p", "plenora-database-core",
             "-p", "plenora-database-sql",
         ]))
-        run(cargo(["test", "-p", "plenora-db-postgres", "--", "--nocapture"], dsn))
+        provider_output = run(
+            cargo(["test", "-p", "plenora-db-postgres", "--", "--nocapture"], dsn),
+            capture=True,
+        )
+        validate_live_row_diagnostics(provider_output)
         ipc_materialization = check_ipc_materialization(dsn)
         output = run(
             cargo([

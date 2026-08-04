@@ -454,6 +454,7 @@ fn contract_error(category: ErrorCategory, message: impl Into<String>) -> Databa
         provider: None,
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

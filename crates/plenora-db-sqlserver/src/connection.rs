@@ -15,6 +15,11 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 type TdsClient = Client<Compat<TcpStream>>;
 
+pub enum RowQueryResult {
+    Applied(Vec<Vec<tiberius::Row>>),
+    ServerRejected { code: u32, error: DatabaseError },
+}
+
 /// Sessione TDS non clonabile con stato transazionale esplicito.
 pub struct SqlServerSession {
     client: Option<TdsClient>,
@@ -323,6 +328,51 @@ impl SqlServerSession {
         }
     }
 
+    pub(super) async fn execute_row_query(
+        &mut self,
+        query: tiberius::Query<'static>,
+        cancellation: &CancellationToken,
+    ) -> Result<RowQueryResult> {
+        self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
+        let Some(client) = self.client.as_mut() else {
+            return Err(state_error(ErrorPhase::Write));
+        };
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => QueryOutcome::Cancelled,
+            result = tokio::time::timeout(
+                self.operation_timeout,
+                query_and_drain(client, query),
+            ) => match result {
+                Ok(Ok(rows)) => QueryOutcome::Completed(rows),
+                Ok(Err(error)) => QueryOutcome::Driver(error),
+                Err(_) => QueryOutcome::Timeout,
+            },
+        };
+        match outcome {
+            QueryOutcome::Completed(rows) => Ok(RowQueryResult::Applied(rows)),
+            QueryOutcome::Cancelled => {
+                self.quarantine();
+                Err(cancellation_error(ErrorPhase::Write, RemoteEffect::Unknown))
+            }
+            QueryOutcome::Timeout => {
+                self.quarantine();
+                Err(timeout_error(ErrorPhase::Write, RemoteEffect::Unknown))
+            }
+            QueryOutcome::Driver(error) => {
+                let Some(code) = error.code() else {
+                    let public = driver_error(&error, ErrorPhase::Write, RemoteEffect::Unknown);
+                    self.quarantine();
+                    return Err(public);
+                };
+                let _ = self.transaction.apply(TransactionEvent::StatementFailed);
+                Ok(RowQueryResult::ServerRejected {
+                    code,
+                    error: driver_error(&error, ErrorPhase::Write, RemoteEffect::None),
+                })
+            }
+        }
+    }
+
     pub(crate) async fn execute_write_query(
         &mut self,
         query: tiberius::Query<'static>,
@@ -614,6 +664,7 @@ fn read_protocol_error(message: &'static str) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: message.to_owned(),
+        diagnostics: None,
     }
 }
 
@@ -626,5 +677,6 @@ fn state_error(phase: ErrorPhase) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: "stato sessione SQL Server incompatibile con l'operazione".to_owned(),
+        diagnostics: None,
     }
 }

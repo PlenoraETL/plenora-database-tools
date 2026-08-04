@@ -2059,6 +2059,7 @@ fn query_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

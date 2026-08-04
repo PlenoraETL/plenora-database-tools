@@ -1,5 +1,7 @@
 use crate::config::MysqlConfig;
-use crate::error::{driver_error, interruption_error, timeout_error};
+use crate::error::{
+    driver_error, interruption_error, row_rejection_cause, server_code, timeout_error,
+};
 use futures_util::StreamExt;
 use mysql_async::prelude::{Queryable, StatementLike};
 use mysql_async::{Conn, Params, Row, Statement};
@@ -232,6 +234,60 @@ impl MysqlSession {
         }
     }
 
+    /// Esegue lo statement di **una sola riga** del percorso diagnostico.
+    ///
+    /// Restituisce `Ok(None)` quando la riga è stata applicata e
+    /// `Ok(Some(causa))` quando il server l'ha rifiutata per un vincolo: è
+    /// l'unico esito che autorizza ad attribuire il rifiuto a un indice
+    /// sorgente, perché lo statement conteneva quella riga e nessun'altra.
+    ///
+    /// Un rifiuto di vincolo non sporca la sessione — la transazione resta
+    /// aperta e annullabile — quindi la connessione non viene quarantinata.
+    /// Ogni altro errore mantiene il comportamento di `exec_write`.
+    pub(crate) async fn exec_row_write(
+        &mut self,
+        sql: &str,
+        parameters: Params,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<&'static str>> {
+        let phase = ErrorPhase::Write;
+        self.require_ready(phase)?;
+        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let execution = connection.exec_drop(sql, parameters);
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(cancellation, phase, RemoteEffect::None));
+            }
+            result = tokio::time::timeout(self.operation_timeout, execution) => result,
+        };
+        match outcome {
+            Ok(Ok(())) => {
+                let affected = connection.affected_rows();
+                match validate_row_write_affected_rows(affected) {
+                    Ok(()) => Ok(None),
+                    Err(error) => {
+                        self.quarantine().await;
+                        Err(error)
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                if let Some(cause) = server_code(&error).and_then(row_rejection_cause) {
+                    return Ok(Some(cause));
+                }
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                Err(driver_error(&error, phase, RemoteEffect::None))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(phase, RemoteEffect::None))
+            }
+        }
+    }
+
     pub(crate) async fn exec_transaction(
         &mut self,
         command: MysqlTransactionCommand,
@@ -435,6 +491,27 @@ enum PumpOutcome {
     Failed(DatabaseError),
 }
 
+fn row_count_mismatch_error() -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Protocol,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::Quarantine,
+        provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+        execution_id: None,
+        message: "conteggio righe MySQL incoerente per statement row-scoped".to_owned(),
+        diagnostics: None,
+    }
+}
+
+fn validate_row_write_affected_rows(affected_rows: u64) -> Result<()> {
+    if affected_rows == 1 {
+        Ok(())
+    } else {
+        Err(row_count_mismatch_error())
+    }
+}
+
 fn state_error(phase: ErrorPhase) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::InvalidPlan,
@@ -444,6 +521,7 @@ fn state_error(phase: ErrorPhase) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: "sessione MySQL non riusabile".to_owned(),
+        diagnostics: None,
     }
 }
 
@@ -456,5 +534,18 @@ mod tests {
         assert!(SESSION_BOOTSTRAP_SQL.contains("autocommit = 1"));
         assert!(SESSION_BOOTSTRAP_SQL.contains("time_zone = '+00:00'"));
         assert!(SESSION_BOOTSTRAP_SQL.contains("STRICT_TRANS_TABLES"));
+    }
+
+    #[test]
+    fn exactly_one_affected_row_is_required_for_row_scoped_success() {
+        validate_row_write_affected_rows(1).expect("una riga confermata");
+        for affected in [0, 2] {
+            let error = validate_row_write_affected_rows(affected)
+                .expect_err("conteggio diverso da uno ambiguo");
+            assert_eq!(error.phase, ErrorPhase::Write);
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+            assert_eq!(error.retry, RetryDisposition::Quarantine);
+            assert!(error.diagnostics.is_none());
+        }
     }
 }

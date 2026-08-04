@@ -316,6 +316,7 @@ fn mapping_error(message: &str) -> DatabaseError {
         provider: None,
         execution_id: None,
         message: message.to_owned(),
+        diagnostics: None,
     }
 }
 
