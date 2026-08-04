@@ -44,6 +44,21 @@ pub trait BatchStream: Send {
     fn schema(&self) -> SchemaRef;
     fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>>;
 
+    /// Numero di righe sorgente che lo stream si impegna a produrre.
+    ///
+    /// Solo la sorgente conosce la dimensione dell'input: senza questa
+    /// dichiarazione la scrittura non può partizionare l'input fra righe
+    /// rifiutate, annullate e mai tentate, e non pubblica diagnostica
+    /// row-scoped invece di stimarla.
+    fn declared_input_rows(&self) -> Option<u64> {
+        None
+    }
+
+    /// Politica di pubblicazione degli esempi row-scoped della sorgente.
+    fn row_diagnostics_policy(&self) -> crate::row_diagnostics::RowDiagnosticsPolicy {
+        crate::row_diagnostics::RowDiagnosticsPolicy::default()
+    }
+
     fn next_batch_with_cancellation<'a>(
         &'a mut self,
         cancellation: &'a CancellationToken,
@@ -58,6 +73,7 @@ pub trait BatchStream: Send {
                     provider: None,
                     execution_id: None,
                     message: "lettura cancellata".to_owned(),
+                    diagnostics: None,
                 });
             }
             self.next_batch().await

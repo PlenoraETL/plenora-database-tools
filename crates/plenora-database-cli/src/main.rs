@@ -551,6 +551,7 @@ fn local_artifact_error(
         provider: None,
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     })
 }
 
@@ -727,6 +728,7 @@ mod tests {
             provider: None,
             execution_id: None,
             message: "identificatore CRS e SRID numerico divergenti".to_owned(),
+            diagnostics: None,
         })
         .to_json()
         .expect("serializable error");
@@ -759,6 +761,7 @@ mod tests {
             provider: None,
             execution_id: None,
             message: "servizio temporaneamente non disponibile".to_owned(),
+            diagnostics: None,
         })
         .to_json()
         .expect("serializable error");

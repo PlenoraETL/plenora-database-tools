@@ -454,6 +454,16 @@ impl Provider for SqlServerProvider {
             ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
             self.validate_source(&prepared.operation.target)?;
             let input_schema = input.schema();
+            if let Some(input_total) = input.declared_input_rows() {
+                crate::write::validate_diagnostic_request(
+                    &prepared.input_schema,
+                    &input_schema,
+                    &prepared.operation,
+                    self.insert_mode,
+                    input_total,
+                    input.row_diagnostics_policy(),
+                )?;
+            }
             let pool = self.pool_for(secret)?;
             let driver_prepared = prepare_write_with_external_contract_leases(
                 &pool,
@@ -505,6 +515,7 @@ fn provider_error(
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: message.to_owned(),
+        diagnostics: None,
     }
 }
 

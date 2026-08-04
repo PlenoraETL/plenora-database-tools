@@ -69,7 +69,7 @@ mod tests {
     use super::*;
     use crate::parameter_codec::typed_filter_parameter_types;
     use crate::types::ColumnKind;
-    use arrow_array::RecordBatch;
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch};
     use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::outcome::WriteStatus;
@@ -83,7 +83,9 @@ mod tests {
         QueryOrdering, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
         ScalarFunction, SpatialFunction, SpatialOperator,
     };
-    use std::collections::BTreeMap;
+    use plenora_database_core::row_diagnostics::Completeness;
+    use plenora_database_core::RetryDisposition;
+    use std::collections::{BTreeMap, VecDeque};
     use std::ops::Deref;
     use std::sync::OnceLock;
     use tokio_postgres::types::Type;
@@ -219,6 +221,12 @@ mod tests {
         schema: SchemaRef,
     }
 
+    struct DiagnosticBatchStream {
+        schema: SchemaRef,
+        batches: VecDeque<RecordBatch>,
+        input_total: u64,
+    }
+
     impl BatchStream for NoBatchStream {
         fn schema(&self) -> SchemaRef {
             Arc::clone(&self.schema)
@@ -227,6 +235,47 @@ mod tests {
         fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
             Box::pin(std::future::ready(Ok(None)))
         }
+    }
+
+    impl BatchStream for DiagnosticBatchStream {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+
+        fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+            Box::pin(std::future::ready(Ok(self.batches.pop_front())))
+        }
+
+        fn declared_input_rows(&self) -> Option<u64> {
+            Some(self.input_total)
+        }
+
+        fn row_diagnostics_policy(
+            &self,
+        ) -> plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+            plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+                key_field: Some("parcel_id".to_owned()),
+                constraint_column: Some("area_m2".to_owned()),
+                examples_limit: 10,
+            }
+        }
+    }
+
+    fn diagnostic_batch(schema: &SchemaRef, start: u64, end: u64) -> RecordBatch {
+        let parcel_ids = (start..end)
+            .map(|index| i64::try_from(index).expect("fixture index"))
+            .collect::<Vec<_>>();
+        let areas = (start..end)
+            .map(|index| if index == 4_999 { -1_i64 } else { 1_i64 })
+            .collect::<Vec<_>>();
+        RecordBatch::try_new(
+            Arc::clone(schema),
+            vec![
+                Arc::new(Int64Array::from(parcel_ids)) as ArrayRef,
+                Arc::new(Int64Array::from(areas)) as ArrayRef,
+            ],
+        )
+        .expect("fixture batch")
     }
 
     impl Deref for NeverCancelled {
@@ -2313,6 +2362,308 @@ mod tests {
             .write_with_prepared_budget(secret, prepared, stream, cancellation)
             .await
             .expect("execute write")
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
+        const INPUT_TOTAL: u64 = 5_200;
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let provider = PostgresProvider::new(7).with_insert_mode(PostgresInsertMode::CopyBinary);
+        let secret = SecretString::new(dsn);
+        let cancellation = NeverCancelled;
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS plenora_fixture;
+                 DROP TABLE IF EXISTS plenora_fixture.write_row_diagnostics_probe;
+                 CREATE TABLE plenora_fixture.write_row_diagnostics_probe (
+                     parcel_id BIGINT NOT NULL PRIMARY KEY,
+                     area_m2 BIGINT NOT NULL CHECK (area_m2 >= 0)
+                 )",
+            )
+            .await
+            .expect("setup row diagnostics PostgreSQL live");
+
+        let schema = contract_schema(vec![
+            Field::new("parcel_id", DataType::Int64, false),
+            Field::new("area_m2", DataType::Int64, false),
+        ]);
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "write_row_diagnostics_probe".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let prepared = provider
+            .prepare_write_with_test_budget(&secret, &operation, Arc::clone(&schema), &cancellation)
+            .await
+            .expect("prepare row diagnostics PostgreSQL live");
+        let stream = DiagnosticBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from(vec![
+                diagnostic_batch(&schema, 0, 4_096),
+                diagnostic_batch(&schema, 4_096, INPUT_TOTAL),
+            ]),
+            input_total: INPUT_TOTAL,
+        };
+        let error = provider
+            .write_with_prepared_budget(&secret, prepared, Box::new(stream), &cancellation)
+            .await
+            .expect_err("CHECK row-scoped PostgreSQL live");
+
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Write);
+        assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        assert_eq!(error.provider, Some(ProviderKind::Postgres));
+        assert!(error.execution_id.is_some());
+        assert_eq!(error.message, "riga sorgente rifiutata dal database");
+        let envelope = serde_json::to_value(&error).expect("envelope PostgreSQL serializzabile");
+        assert_eq!(
+            envelope.get("diagnostics"),
+            Some(&serde_json::json!({
+                "contract": "plenora-row-diagnostics-v1",
+                "scope": "write",
+                "index_basis": "source_row_zero_based",
+                "completeness": "complete",
+                "observed_total": 1,
+                "total": 1,
+                "input_total": 5200,
+                "counts": {"database.constraint_violation": 1},
+                "examples_limit": 10,
+                "examples_truncated": false,
+                "examples": [{
+                    "source_index": 4999,
+                    "cause": "database.constraint_violation",
+                    "column": "area_m2",
+                    "key": {"field": "parcel_id", "state": "redacted"},
+                    "write_state": "certainly_rejected"
+                }],
+                "diagnostic_state_counts": {
+                    "certainly_rejected": 1,
+                    "certainly_not_attempted": 0,
+                    "certainly_rolled_back": 0,
+                    "effect_unknown": 0
+                },
+                "write_outcome": {
+                    "certainly_rejected": {"state": "known", "value": 1},
+                    "certainly_not_attempted": {"state": "known", "value": 200},
+                    "certainly_rolled_back": {"state": "known", "value": 4999},
+                    "effect_unknown": {"state": "known", "value": 0}
+                }
+            }))
+        );
+        let remaining: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.write_row_diagnostics_probe",
+                &[],
+            )
+            .await
+            .expect("count row diagnostics PostgreSQL live")
+            .get(0);
+        assert_eq!(remaining, 0);
+        client
+            .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_probe")
+            .await
+            .expect("cleanup row diagnostics PostgreSQL live");
+    }
+
+    #[tokio::test]
+    async fn live_provider_row_diagnostics_lost_rollback_ack_is_quarantined() {
+        const INPUT_TOTAL: u64 = 5_200;
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let provider = PostgresProvider::new(7)
+            .with_insert_mode(PostgresInsertMode::CopyBinary)
+            .with_fault_injection(PostgresFaultPoint::RollbackAcknowledgementLost);
+        let secret = SecretString::new(dsn);
+        let cancellation = NeverCancelled;
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS plenora_fixture;
+                 DROP TABLE IF EXISTS plenora_fixture.write_row_diagnostics_lost_ack_probe;
+                 CREATE TABLE plenora_fixture.write_row_diagnostics_lost_ack_probe (
+                     parcel_id BIGINT NOT NULL PRIMARY KEY,
+                     area_m2 BIGINT NOT NULL CHECK (area_m2 >= 0)
+                 )",
+            )
+            .await
+            .expect("setup lost rollback acknowledgement probe");
+        let schema = contract_schema(vec![
+            Field::new("parcel_id", DataType::Int64, false),
+            Field::new("area_m2", DataType::Int64, false),
+        ]);
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "write_row_diagnostics_lost_ack_probe".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let prepared = provider
+            .prepare_write_with_test_budget(&secret, &operation, Arc::clone(&schema), &cancellation)
+            .await
+            .expect("prepare lost rollback acknowledgement probe");
+        let stream = DiagnosticBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from(vec![
+                diagnostic_batch(&schema, 0, 4_096),
+                diagnostic_batch(&schema, 4_096, INPUT_TOTAL),
+            ]),
+            input_total: INPUT_TOTAL,
+        };
+        let error = provider
+            .write_with_prepared_budget(&secret, prepared, Box::new(stream), &cancellation)
+            .await
+            .expect_err("lost rollback acknowledgement must fail");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Rollback);
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::Quarantine);
+        let diagnostics = error.row_diagnostics().expect("lost rollback diagnostics");
+        diagnostics
+            .validate()
+            .expect("valid lost rollback diagnostics");
+        assert_eq!(diagnostics.input_total, Some(INPUT_TOTAL));
+        assert_eq!(
+            serde_json::to_value(diagnostics.write_outcome).expect("write outcome"),
+            serde_json::json!({
+                "certainly_rejected": {"state": "known", "value": 1},
+                "certainly_not_attempted": {"state": "known", "value": 200},
+                "certainly_rolled_back": {"state": "unknown"},
+                "effect_unknown": {"state": "unknown"}
+            })
+        );
+        let remaining: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.write_row_diagnostics_lost_ack_probe",
+                &[],
+            )
+            .await
+            .expect("count lost rollback acknowledgement probe")
+            .get(0);
+        assert_eq!(remaining, 0);
+        client
+            .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_lost_ack_probe")
+            .await
+            .expect("cleanup lost rollback acknowledgement probe");
+    }
+
+    #[tokio::test]
+    async fn live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown() {
+        const INPUT_TOTAL: u64 = 3;
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+        let provider = PostgresProvider::new(7)
+            .with_insert_mode(PostgresInsertMode::CopyBinary)
+            .with_fault_injection(PostgresFaultPoint::AfterCommitAcknowledgement);
+        let secret = SecretString::new(dsn);
+        let cancellation = NeverCancelled;
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS plenora_fixture;
+                 DROP TABLE IF EXISTS plenora_fixture.write_row_diagnostics_commit_unknown_probe;
+                 CREATE TABLE plenora_fixture.write_row_diagnostics_commit_unknown_probe (
+                     parcel_id BIGINT NOT NULL PRIMARY KEY,
+                     area_m2 BIGINT NOT NULL CHECK (area_m2 >= 0)
+                 )",
+            )
+            .await
+            .expect("setup commit ambiguity probe");
+        let schema = contract_schema(vec![
+            Field::new("parcel_id", DataType::Int64, false),
+            Field::new("area_m2", DataType::Int64, false),
+        ]);
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "write_row_diagnostics_commit_unknown_probe".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let prepared = provider
+            .prepare_write_with_test_budget(&secret, &operation, Arc::clone(&schema), &cancellation)
+            .await
+            .expect("prepare commit ambiguity probe");
+        let stream = DiagnosticBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from(vec![diagnostic_batch(&schema, 0, INPUT_TOTAL)]),
+            input_total: INPUT_TOTAL,
+        };
+        let error = provider
+            .write_with_prepared_budget(&secret, prepared, Box::new(stream), &cancellation)
+            .await
+            .expect_err("commit acknowledgement fault must be ambiguous");
+        assert_eq!(error.category, ErrorCategory::Protocol);
+        assert_eq!(error.phase, ErrorPhase::Commit);
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::Quarantine);
+        let diagnostics = error
+            .row_diagnostics()
+            .expect("commit ambiguity diagnostics");
+        diagnostics
+            .validate()
+            .expect("valid commit ambiguity diagnostics");
+        assert_eq!(diagnostics.completeness, Completeness::Unknown);
+        assert_eq!(diagnostics.observed_total, 0);
+        assert_eq!(diagnostics.input_total, Some(INPUT_TOTAL));
+        assert_eq!(
+            serde_json::to_value(diagnostics.write_outcome).expect("write outcome"),
+            serde_json::json!({
+                "certainly_rejected": {"state": "known", "value": 0},
+                "certainly_not_attempted": {"state": "known", "value": 0},
+                "certainly_rolled_back": {"state": "known", "value": 0},
+                "effect_unknown": {"state": "known", "value": 3}
+            })
+        );
+        let remaining: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.write_row_diagnostics_commit_unknown_probe",
+                &[],
+            )
+            .await
+            .expect("count commit ambiguity probe")
+            .get(0);
+        assert_eq!(remaining, 3);
+        client
+            .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_commit_unknown_probe")
+            .await
+            .expect("cleanup commit ambiguity probe");
     }
 
     #[tokio::test]

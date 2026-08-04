@@ -389,6 +389,7 @@ const fn mapping_error_owned(message: String) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message,
+        diagnostics: None,
     }
 }
 

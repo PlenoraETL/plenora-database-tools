@@ -11,7 +11,9 @@ use futures_util::{Stream, StreamExt};
 use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::provider::{BatchStream, ProviderFuture};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
-use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_core::{
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ReadDiagnosticsTracker, Result,
+};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -71,6 +73,9 @@ pub struct PostgresBatchStream {
     track_byte_estimate: bool,
     batches_since_byte_estimate: u8,
     finished: bool,
+    /// Cursore delle righe già consegnate, base dell'indice sorgente
+    /// pubblicato dalla diagnostica row-scoped di lettura.
+    read_diagnostics: ReadDiagnosticsTracker,
 }
 
 pub type PostgresRows =
@@ -155,6 +160,7 @@ impl PostgresBatchStream {
             track_byte_estimate: true,
             batches_since_byte_estimate: 0,
             finished: false,
+            read_diagnostics: ReadDiagnosticsTracker::default(),
         }
     }
     async fn cancelled<T>(&mut self, cancellation: &CancellationToken) -> Result<T> {
@@ -297,7 +303,13 @@ impl BatchStream for PostgresBatchStream {
                                 Ok(_) => {}
                                 Err(error) => {
                                     self.client.invalidate();
-                                    return Err(error);
+                                    return Err(attribute_conversion_defect(
+                                        &self.read_diagnostics,
+                                        &self.columns,
+                                        error,
+                                        Some(row_count),
+                                        Some(index),
+                                    ));
                                 }
                             }
                         }
@@ -344,6 +356,7 @@ impl BatchStream for PostgresBatchStream {
                 self.max_wkb_cell_bytes.min(self.budget.limits().cell_bytes),
                 reservation.component_limit,
                 self.budget.limits().nesting_depth,
+                &self.read_diagnostics,
             ) {
                 Ok(components) => components,
                 Err(error) => {
@@ -356,6 +369,9 @@ impl BatchStream for PostgresBatchStream {
                 DatabaseError::resource_limit("numero righe batch non rappresentabile")
             })?;
             reservation.commit(actual_rows, actual_bytes, geometry_components)?;
+            // Il cursore avanza solo su un batch che sta per essere
+            // consegnato: un batch fallito non ha righe pubblicate da contare.
+            self.read_diagnostics.publish_batch(actual_rows)?;
             self.observe_batch_size(actual_bytes, estimated_bytes);
             self.metrics.read_batch(
                 u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
@@ -482,6 +498,26 @@ fn deadline_read_error() -> DatabaseError {
     )
 }
 
+/// Attribuisce un difetto di conversione alla riga sorgente e alla colonna del
+/// piano che il percorso ha potuto osservare.
+///
+/// L'indice del batch e l'indice di colonna sono posizioni provate dal
+/// percorso, non deduzioni: quando una delle due manca, il documento dichiara
+/// il limite invece di completarlo. Il nome della colonna arriva dal piano
+/// compilato, mai dal messaggio del server.
+fn attribute_conversion_defect(
+    diagnostics: &ReadDiagnosticsTracker,
+    columns: &[ColumnSpec],
+    error: DatabaseError,
+    row: Option<usize>,
+    column: Option<usize>,
+) -> DatabaseError {
+    let column = column
+        .and_then(|index| columns.get(index))
+        .map(|column| column.name.as_str());
+    diagnostics.reject_conversion_defect(error, row.and_then(|row| u64::try_from(row).ok()), column)
+}
+
 fn enforce_batch_limits(
     batch: &RecordBatch,
     columns: &[ColumnSpec],
@@ -489,6 +525,7 @@ fn enforce_batch_limits(
     max_wkb_cell_bytes: u64,
     max_geometry_components: u64,
     max_geometry_depth: u64,
+    diagnostics: &ReadDiagnosticsTracker,
 ) -> Result<u64> {
     let bytes = batch_memory_bytes(batch);
     if bytes > max_batch_bytes {
@@ -530,7 +567,16 @@ fn enforce_batch_limits(
                             "budget componenti geometriche esaurito",
                         ));
                     }
-                    let stats = inspect_ewkb(value, remaining, max_geometry_depth)?;
+                    let stats =
+                        inspect_ewkb(value, remaining, max_geometry_depth).map_err(|error| {
+                            attribute_conversion_defect(
+                                diagnostics,
+                                columns,
+                                error,
+                                Some(row),
+                                Some(index),
+                            )
+                        })?;
                     geometry_components = geometry_components
                         .checked_add(stats.components)
                         .ok_or_else(|| {
@@ -547,4 +593,127 @@ pub fn batch_memory_bytes(batch: &RecordBatch) -> u64 {
     batch.columns().iter().fold(0_u64, |total, array| {
         total.saturating_add(u64::try_from(array.get_array_memory_size()).unwrap_or(u64::MAX))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plenora_database_core::{RemoteEffect, RetryDisposition};
+
+    fn column(name: &str) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_owned(),
+            native_type: "geometry".to_owned(),
+            nullable: true,
+            numeric_precision: None,
+            numeric_scale: None,
+            spatial_srid: None,
+            spatial_dimensions: None,
+            spatial_type: None,
+            spatial_crs_id: None,
+            default_expression: None,
+            identity_kind: None,
+            generated_kind: None,
+            native_declaration: None,
+            type_kind: None,
+            composite_fields: Vec::new(),
+            enum_labels: Vec::new(),
+            domain_base_type: None,
+            domain_constraints: Vec::new(),
+            collation: None,
+            kind: ColumnKind::Geometry,
+        }
+    }
+
+    /// Un difetto di conversione osservato prima della consegna del batch
+    /// pubblica l'indice sorgente assoluto del result set.
+    #[test]
+    fn a_read_conversion_defect_publishes_the_absolute_source_index() {
+        let mut tracker = ReadDiagnosticsTracker::default();
+        tracker.publish_batch(4_096).expect("batch pubblicato");
+        let columns = [column("parcel_id"), column("shape")];
+
+        let error = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_mapping_error("valore PostgreSQL non rappresentabile"),
+            Some(903),
+            Some(1),
+        );
+        assert_eq!(error.phase, ErrorPhase::Read);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        let report = error.row_diagnostics().expect("diagnostica PostgreSQL");
+        report.validate().expect("documento valido");
+        assert_eq!(
+            serde_json::to_value(report).expect("documento serializzabile"),
+            serde_json::json!({
+                "contract": "plenora-row-diagnostics-v1",
+                "scope": "read",
+                "index_basis": "source_row_zero_based",
+                "completeness": "partial",
+                "knowledge_limits": [
+                    "read.batches_already_published",
+                    "read.scan_stopped_at_first_defect"
+                ],
+                "observed_total": 1,
+                "counts": {"conversion.value_not_representable": 1},
+                "examples_limit": 10,
+                "examples_truncated": false,
+                "examples": [{
+                    "source_index": 4_999,
+                    "cause": "conversion.value_not_representable",
+                    "column": "shape"
+                }]
+            })
+        );
+    }
+
+    /// Provenienza e completezza non vengono inventate: né su una riga
+    /// sconosciuta né su un errore che non è un difetto di conversione.
+    #[test]
+    fn unattributable_read_failures_never_invent_provenance() {
+        let tracker = ReadDiagnosticsTracker::default();
+        let columns = [column("shape")];
+
+        let unknown_row = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_mapping_error("difetto"),
+            None,
+            Some(0),
+        );
+        let report = unknown_row
+            .row_diagnostics()
+            .expect("diagnostica PostgreSQL");
+        report.validate().expect("documento valido");
+        assert_eq!(
+            report.completeness,
+            plenora_database_core::row_diagnostics::Completeness::Unknown
+        );
+        assert!(report.examples.is_empty());
+
+        let missing_column = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            read_mapping_error("difetto"),
+            Some(2),
+            Some(9),
+        );
+        let report = missing_column
+            .row_diagnostics()
+            .expect("diagnostica PostgreSQL");
+        assert_eq!(report.examples[0].source_index, 2);
+        assert!(report.examples[0].column.is_none());
+
+        let budget = attribute_conversion_defect(
+            &tracker,
+            &columns,
+            DatabaseError::resource_limit("budget PostgreSQL esaurito"),
+            Some(2),
+            Some(0),
+        );
+        assert_eq!(budget.category, ErrorCategory::ResourceLimit);
+        assert!(budget.row_diagnostics().is_none());
+    }
 }

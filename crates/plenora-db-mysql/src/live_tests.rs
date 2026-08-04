@@ -101,6 +101,24 @@ async fn observe_prepared_thread(audit: &mut mysql_async::Conn, marker: &str) ->
     owner_thread_id
 }
 
+async fn await_single_statement_execution(audit: &mut mysql_async::Conn, baseline: u64) {
+    for _ in 0..100 {
+        let current: Option<(String, u64)> = audit
+            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
+            .await
+            .expect("COM_STMT_EXECUTE durante avvio worker");
+        let delta = current.and_then(|(_, value)| value.checked_sub(baseline));
+        match delta {
+            Some(1) => return,
+            Some(value) if value > 1 => {
+                panic!("QueryOperation eseguita piu di una volta")
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+    panic!("QueryOperation non eseguita entro il limite di osservazione");
+}
+
 #[tokio::test]
 #[ignore = "richiede MySQL 8.4 live esplicito"]
 async fn live_reference_probe_catalog_and_spatial_metadata() {
@@ -2251,14 +2269,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     };
     assert_eq!(error.category, ErrorCategory::ResourceLimit);
 
-    let current: Option<(String, u64)> = audit
-        .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-        .await
-        .expect("COM_STMT_EXECUTE prima del consumo");
-    assert_eq!(
-        current.and_then(|(_, value)| value.checked_sub(baseline)),
-        Some(1)
-    );
+    await_single_statement_execution(&mut audit, baseline).await;
 
     let mut rows = 0_usize;
     let mut batches = 0_usize;
@@ -2710,6 +2721,48 @@ fn append_input_schema() -> plenora_database_core::arrow::SchemaRef {
     ))
 }
 
+fn row_diagnostics_input_schema() -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    use plenora_database_core::protocol;
+    use std::collections::HashMap;
+
+    std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("parcel_id", DataType::Int64, false),
+            Field::new("area_m2", DataType::Int64, false),
+        ],
+        HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+}
+
+fn row_diagnostics_batch(
+    schema: &plenora_database_core::arrow::SchemaRef,
+    start: u64,
+    end: u64,
+) -> plenora_database_core::arrow::RecordBatch {
+    use plenora_database_core::arrow::array::{ArrayRef, Int64Array};
+    use plenora_database_core::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    let parcel_ids = (start..end)
+        .map(|index| i64::try_from(index).expect("indice fixture rappresentabile"))
+        .collect::<Vec<_>>();
+    let areas = (start..end)
+        .map(|index| if index == 4_999 { -987_654_321 } else { 1 })
+        .collect::<Vec<_>>();
+    RecordBatch::try_new(
+        Arc::clone(schema),
+        vec![
+            Arc::new(Int64Array::from(parcel_ids)) as ArrayRef,
+            Arc::new(Int64Array::from(areas)) as ArrayRef,
+        ],
+    )
+    .expect("batch fixture row diagnostics")
+}
+
 const APPEND_TARGET_DDL: &str = "(\
      id BIGINT NOT NULL PRIMARY KEY, \
      label VARCHAR(64) NULL, \
@@ -2852,6 +2905,37 @@ impl plenora_database_core::provider::BatchStream for VecBatchStream {
         Option<plenora_database_core::arrow::RecordBatch>,
     > {
         Box::pin(async move { Ok(self.batches.pop_front()) })
+    }
+}
+
+struct DiagnosticBatchStream {
+    inner: VecBatchStream,
+    declared_rows: u64,
+    policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+}
+
+impl plenora_database_core::provider::BatchStream for DiagnosticBatchStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn next_batch(
+        &mut self,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        '_,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        self.inner.next_batch()
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.declared_rows)
+    }
+
+    fn row_diagnostics_policy(
+        &self,
+    ) -> plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+        self.policy.clone()
     }
 }
 
@@ -3257,6 +3341,140 @@ async fn live_append_batch_failure_rolls_back_without_partial_rows() {
         .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
         .await
         .expect("cleanup del target rollback");
+    drop(setup);
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live per l'oracolo row diagnostics"]
+#[allow(clippy::too_many_lines)]
+async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
+    const INPUT_TOTAL: u64 = 5_200;
+    const REJECTED_INDEX: u64 = 4_999;
+    const TABLE: &str = "write_row_diagnostics_probe";
+
+    let config = live_config();
+    let mut setup = append_setup_connection(&config).await;
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{TABLE}`"))
+        .await
+        .expect("drop fixture row diagnostics");
+    setup
+        .query_drop(format!(
+            "CREATE TABLE `{TABLE}` (\
+             parcel_id BIGINT NOT NULL PRIMARY KEY, \
+             area_m2 BIGINT NOT NULL, \
+             CONSTRAINT chk_row_diagnostics_area_nonnegative \
+             CHECK (area_m2 >= 0)) ENGINE=InnoDB"
+        ))
+        .await
+        .expect("create fixture row diagnostics");
+
+    let schema = row_diagnostics_input_schema();
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: INPUT_TOTAL,
+        memory_bytes: 8 * 1_024 * 1_024,
+        output_bytes: 8 * 1_024 * 1_024,
+        cell_bytes: 1_024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget row diagnostics MySQL live");
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(config, 2).expect("provider row diagnostics MySQL live");
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &append_operation(TABLE),
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare row diagnostics MySQL live");
+    let input = DiagnosticBatchStream {
+        inner: VecBatchStream {
+            schema: std::sync::Arc::clone(&schema),
+            batches: std::collections::VecDeque::from(vec![
+                row_diagnostics_batch(&schema, 0, 4_096),
+                row_diagnostics_batch(&schema, 4_096, INPUT_TOTAL),
+            ]),
+        },
+        declared_rows: INPUT_TOTAL,
+        policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+            key_field: Some("parcel_id".to_owned()),
+            constraint_column: Some("area_m2".to_owned()),
+            examples_limit: 10,
+        },
+    };
+    let error = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(input),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("constraint row-scoped MySQL live");
+
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::RolledBack
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+    assert_eq!(error.provider, Some(ProviderKind::Mysql));
+    assert!(error.execution_id.is_some());
+    assert_eq!(error.message, "riga sorgente rifiutata dal database");
+    for forbidden in ["4999", "-987654321", "parcel_id", "area_m2"] {
+        assert!(!error.message.contains(forbidden));
+    }
+
+    let envelope = serde_json::to_value(&error).expect("envelope row diagnostics serializzabile");
+    assert_eq!(
+        envelope.get("diagnostics"),
+        Some(&serde_json::json!({
+            "contract": "plenora-row-diagnostics-v1",
+            "scope": "write",
+            "index_basis": "source_row_zero_based",
+            "completeness": "complete",
+            "observed_total": 1,
+            "total": 1,
+            "input_total": 5200,
+            "counts": {"database.constraint_violation": 1},
+            "examples_limit": 10,
+            "examples_truncated": false,
+            "examples": [{
+                "source_index": REJECTED_INDEX,
+                "cause": "database.constraint_violation",
+                "column": "area_m2",
+                "key": {"field": "parcel_id", "state": "redacted"},
+                "write_state": "certainly_rejected"
+            }],
+            "diagnostic_state_counts": {
+                "certainly_rejected": 1,
+                "certainly_not_attempted": 0,
+                "certainly_rolled_back": 0,
+                "effect_unknown": 0
+            },
+            "write_outcome": {
+                "certainly_rejected": {"state": "known", "value": 1},
+                "certainly_not_attempted": {"state": "known", "value": 200},
+                "certainly_rolled_back": {"state": "known", "value": 4999},
+                "effect_unknown": {"state": "known", "value": 0}
+            }
+        }))
+    );
+
+    let remaining: Option<u64> = setup
+        .query_first(format!("SELECT COUNT(*) FROM `{TABLE}`"))
+        .await
+        .expect("conteggio dopo rollback row diagnostics");
+    assert_eq!(remaining, Some(0));
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{TABLE}`"))
+        .await
+        .expect("cleanup fixture row diagnostics");
     drop(setup);
 }
 

@@ -15,6 +15,7 @@ mod pool;
 mod provider;
 mod query;
 mod read;
+mod row_diagnostics;
 mod session;
 mod types;
 mod write;

@@ -221,6 +221,7 @@ fn parameter_error(message: &'static str) -> DatabaseError {
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: message.to_owned(),
+        diagnostics: None,
     }
 }
 

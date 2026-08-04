@@ -53,7 +53,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_provider_read_rejects_a_hostname_mismatch",
             gate.EXPECTED_LIVE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 23)
+        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 24)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         self.assertIn(
@@ -68,9 +68,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_query_operation_cancellation_and_timeout_quarantine_the_session",
             gate.EXPECTED_LIVE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 23)
+        self.assertEqual(len(gate.EXPECTED_LIVE_TESTS), 24)
 
     def test_gate_pins_the_append_write_live_tests_by_name(self) -> None:
+        self.assertIn(
+            "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+            gate.EXPECTED_LIVE_TESTS,
+        )
         self.assertEqual(
             {name for name in gate.EXPECTED_LIVE_TESTS if "append" in name},
             {
@@ -87,7 +91,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for name in gate.EXPECTED_OFFLINE_TESTS
             if name.startswith("write::tests::")
         }
-        self.assertEqual(len(write_tests), 26)
+        self.assertEqual(len(write_tests), 27)
         self.assertIn(
             "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
             write_tests,
@@ -104,7 +108,21 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
             gate.EXPECTED_OFFLINE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_OFFLINE_TESTS), 100)
+        self.assertEqual(len(gate.EXPECTED_OFFLINE_TESTS), 108)
+
+    def test_gate_pins_the_read_row_diagnostics_inventory(self) -> None:
+        """I due test offline del delta row diagnostics sono nell'inventario.
+
+        Senza pin nominale il gate fallisce chiuso su un delta legittimo, e la
+        correzione più comoda sarebbe alzare un conteggio: da lì un test
+        sostituito passerebbe inosservato.
+        """
+
+        for name in (
+            "read::tests::a_read_conversion_defect_publishes_the_absolute_source_index",
+            "read::tests::unattributable_read_failures_never_invent_provenance",
+        ):
+            self.assertIn(name, gate.EXPECTED_OFFLINE_TESTS)
 
     def test_gate_pins_the_aggregate_and_distinct_live_test_by_name(self) -> None:
         self.assertIn(
@@ -152,7 +170,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
 
     def test_gate_rejects_offline_test_count_drift(self) -> None:
-        offline_output = "\n".join(f"test offline::{index} ... ok" for index in range(99))
+        offline_output = "\n".join(f"test offline::{index} ... ok" for index in range(105))
         cargo_calls: list[list[str]] = []
 
         def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
@@ -167,7 +185,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "99.*100"):
+            with self.assertRaisesRegex(RuntimeError, "105.*108"):
                 gate.main()
 
         self.assertFalse(
@@ -180,7 +198,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             [
                 *(
                     f"test harmless::replacement_{index} ... ok"
-                    for index in range(99)
+                    for index in range(105)
                 ),
                 "test irrelevant::same_count_replacement ... ok",
             ]

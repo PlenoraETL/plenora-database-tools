@@ -107,6 +107,7 @@ pub struct PostgresProvider {
 pub enum PostgresFaultPoint {
     BeforeCommit,
     AfterCommitAcknowledgement,
+    RollbackAcknowledgementLost,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

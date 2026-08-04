@@ -529,7 +529,9 @@ pub fn rolled_back_error(
         error.remote_effect = RemoteEffect::RolledBack;
     } else {
         error.remote_effect = RemoteEffect::Unknown;
-        error.retry = RetryDisposition::RequiresRecovery;
+        if error.retry != RetryDisposition::Quarantine {
+            error.retry = RetryDisposition::RequiresRecovery;
+        }
     }
     error
 }
@@ -574,8 +576,10 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             Value::Date(
                 u16::try_from(date.year())
                     .map_err(|_| mapping_error("anno fuori intervallo MySQL"))?,
-                u8::try_from(date.month()).expect("mese chrono rappresentabile"),
-                u8::try_from(date.day()).expect("giorno chrono rappresentabile"),
+                u8::try_from(date.month())
+                    .map_err(|_| mapping_error("mese data fuori intervallo MySQL"))?,
+                u8::try_from(date.day())
+                    .map_err(|_| mapping_error("giorno data fuori intervallo MySQL"))?,
                 0,
                 0,
                 0,
@@ -594,11 +598,16 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             Value::Date(
                 u16::try_from(instant.year())
                     .map_err(|_| mapping_error("anno timestamp fuori intervallo MySQL"))?,
-                u8::try_from(instant.month()).expect("mese chrono rappresentabile"),
-                u8::try_from(instant.day()).expect("giorno chrono rappresentabile"),
-                u8::try_from(instant.hour()).expect("ora chrono rappresentabile"),
-                u8::try_from(instant.minute()).expect("minuto chrono rappresentabile"),
-                u8::try_from(instant.second()).expect("secondo chrono rappresentabile"),
+                u8::try_from(instant.month())
+                    .map_err(|_| mapping_error("mese timestamp fuori intervallo MySQL"))?,
+                u8::try_from(instant.day())
+                    .map_err(|_| mapping_error("giorno timestamp fuori intervallo MySQL"))?,
+                u8::try_from(instant.hour())
+                    .map_err(|_| mapping_error("ora timestamp fuori intervallo MySQL"))?,
+                u8::try_from(instant.minute())
+                    .map_err(|_| mapping_error("minuto timestamp fuori intervallo MySQL"))?,
+                u8::try_from(instant.second())
+                    .map_err(|_| mapping_error("secondo timestamp fuori intervallo MySQL"))?,
                 instant.nanosecond() / 1_000,
             )
         }
@@ -777,6 +786,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 
@@ -1430,6 +1440,29 @@ mod tests {
         let ambiguous = rolled_back_error(failure, false, "mysql-test-3");
         assert_eq!(ambiguous.remote_effect, RemoteEffect::Unknown);
         assert_eq!(ambiguous.retry, RetryDisposition::RequiresRecovery);
+    }
+
+    #[test]
+    fn an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable() {
+        let quarantined = DatabaseError {
+            category: ErrorCategory::Protocol,
+            phase: ErrorPhase::Write,
+            remote_effect: RemoteEffect::Unknown,
+            retry: RetryDisposition::Quarantine,
+            provider: Some(ProviderKind::Mysql),
+            execution_id: None,
+            message: "conteggio righe MySQL incoerente".to_owned(),
+            diagnostics: None,
+        };
+
+        let shaped = rolled_back_error(quarantined, false, "mysql-test-quarantine");
+        assert_eq!(shaped.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(shaped.retry, RetryDisposition::Quarantine);
+        assert!(!shaped.is_retryable());
+        assert_eq!(
+            shaped.execution_id.as_deref(),
+            Some("mysql-test-quarantine")
+        );
     }
 
     /// Il conteggio pubblicato deve superare la validazione del contratto e

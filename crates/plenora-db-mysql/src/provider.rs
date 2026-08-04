@@ -427,18 +427,33 @@ async fn execute_mysql_write(
             "preflight MySQL cambiato fra prepare e write",
         ));
     }
-    let execution_id = format!(
-        "mysql-{}-{}",
-        std::process::id(),
-        WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
-    session
-        .exec_transaction(
-            crate::session::MysqlTransactionCommand::Start,
-            ErrorPhase::Write,
+    // Quando la sorgente dichiara quante righe produrrà, la scrittura può
+    // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo
+    // allora il percorso diagnostico riga per riga ha un input_total da
+    // pubblicare, e il costo di uno statement per riga è giustificato.
+    // La policy va rifiutata prima di aprire la transazione: un errore di
+    // configurazione non può lasciare affidamento implicito al pool reset.
+    let diagnostic_input = input
+        .declared_input_rows()
+        .map(|rows| validate_diagnostic_input(&schema, rows, input.row_diagnostics_policy()))
+        .transpose()?;
+    let execution_id = start_write_transaction(&mut session, token).await?;
+    if let Some((declared_rows, policy)) = diagnostic_input {
+        let result = diagnostic_mysql_write(
+            &mut session,
+            input.as_mut(),
+            &schema,
+            &plan,
+            budget,
             token,
+            policy,
+            declared_rows,
+            &execution_id,
         )
-        .await?;
+        .await;
+        drop(session);
+        return result;
+    }
     let progress = match write_input_batches(
         &mut session,
         input.as_mut(),
@@ -472,6 +487,125 @@ async fn execute_mysql_write(
     };
     drop(session);
     result
+}
+
+fn validate_diagnostic_input(
+    schema: &SchemaRef,
+    declared_rows: u64,
+    policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+) -> Result<(
+    u64,
+    plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+)> {
+    plenora_database_core::row_diagnostics::WriteDiagnosticsTracker::new(
+        declared_rows,
+        policy.clone(),
+    )?;
+    for field in [
+        policy.key_field.as_deref(),
+        policy.constraint_column.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if schema.field_with_name(field).is_err() {
+            return Err(provider_error(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Prepare,
+                "policy row-scoped riferita a un campo assente dallo schema preparato",
+            ));
+        }
+    }
+    Ok((declared_rows, policy))
+}
+
+async fn start_write_transaction(
+    session: &mut crate::MysqlSession,
+    cancellation: &CancellationToken,
+) -> Result<String> {
+    let execution_id = format!(
+        "mysql-{}-{}",
+        std::process::id(),
+        WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    session
+        .exec_transaction(
+            crate::session::MysqlTransactionCommand::Start,
+            ErrorPhase::Write,
+            cancellation,
+        )
+        .await?;
+    Ok(execution_id)
+}
+
+/// Scrittura diagnostica: uno statement per riga sorgente.
+///
+/// Il rifiuto chiude la transazione e viaggia come errore che trasporta il
+/// documento `plenora-row-diagnostics-v1`; un input applicato per intero
+/// procede al commit come il percorso normale.
+#[allow(clippy::too_many_arguments)]
+async fn diagnostic_mysql_write(
+    session: &mut crate::MysqlSession,
+    input: &mut dyn BatchStream,
+    schema: &SchemaRef,
+    plan: &crate::write::MysqlWritePlan,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+    declared_rows: u64,
+    execution_id: &str,
+) -> Result<WriteOutcome> {
+    // Il codice MySQL prova la classe; la colonna arriva esclusivamente dal
+    // contratto dichiarato della sorgente, già verificato contro lo schema
+    // preparato prima dell'apertura della transazione.
+    let constraint_column = policy.constraint_column.clone();
+    let mut tracker = plenora_database_core::row_diagnostics::WriteDiagnosticsTracker::new(
+        declared_rows,
+        policy,
+    )?;
+    let applied;
+    let diagnosed = {
+        let mut writer = crate::row_diagnostics::MysqlRowWriter::new(
+            session,
+            plan,
+            input,
+            schema,
+            budget,
+            cancellation,
+            constraint_column,
+        );
+        let diagnosed = plenora_database_core::row_diagnostics::diagnose_row_scoped_write(
+            &mut writer,
+            &mut tracker,
+        )
+        .await;
+        applied = writer.applied();
+        diagnosed
+    };
+    match diagnosed {
+        // Il seam ha già annullato la transazione: l'evidenza raccolta è
+        // dentro il documento e non va rifatta qui.
+        Ok(Some(outcome)) => {
+            Err(outcome.into_error(Some(ProviderKind::Mysql), Some(execution_id.to_owned()))?)
+        }
+        Ok(None) => match session
+            .exec_transaction(
+                crate::session::MysqlTransactionCommand::Commit,
+                ErrorPhase::Commit,
+                cancellation,
+            )
+            .await
+        {
+            Ok(()) => {
+                crate::write::committed_outcome(execution_id.to_owned(), declared_rows, applied)
+            }
+            Err(error) => {
+                session.discard().await;
+                crate::write::commit_failure(error, execution_id.to_owned(), declared_rows)
+            }
+        },
+        Err(error) => Err(rollback_after_failure(session, error, execution_id).await),
+    }
 }
 
 #[derive(Default)]
@@ -609,6 +743,7 @@ fn provider_error(
         provider: Some(ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 
@@ -987,6 +1122,33 @@ mod tests {
         > {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[test]
+    fn invalid_row_diagnostics_policy_is_rejected_before_transaction_setup() {
+        let schema = append_input_schema();
+        let policy = plenora_database_core::row_diagnostics::RowDiagnosticsPolicy::default();
+        assert!(validate_diagnostic_input(&schema, 0, policy.clone()).is_err());
+
+        let mut zero_examples = policy;
+        zero_examples.examples_limit = 0;
+        assert!(validate_diagnostic_input(&schema, 1, zero_examples).is_err());
+
+        let missing_field = plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+            key_field: Some("missing_key".to_owned()),
+            constraint_column: Some("missing_constraint_column".to_owned()),
+            examples_limit: 10,
+        };
+        assert!(validate_diagnostic_input(&schema, 1, missing_field).is_err());
+
+        let declared = plenora_database_core::row_diagnostics::RowDiagnosticsPolicy {
+            key_field: Some("id".to_owned()),
+            constraint_column: Some("id".to_owned()),
+            examples_limit: 10,
+        };
+        let (_, validated) = validate_diagnostic_input(&schema, 1, declared)
+            .expect("campi dichiarati presenti nello schema preparato");
+        assert_eq!(validated.constraint_column.as_deref(), Some("id"));
     }
 
     fn prepared_write_for_test(budget: &ResourceBudget, input_schema: SchemaRef) -> PreparedWrite {

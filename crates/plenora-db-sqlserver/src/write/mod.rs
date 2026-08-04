@@ -2,6 +2,7 @@ mod codec;
 mod lifecycle;
 mod plan;
 mod resources;
+mod row_diagnostics;
 mod sql;
 
 use crate::{describe_object, PooledSqlServerSession, SqlServerPool, SqlServerSession};
@@ -126,6 +127,25 @@ impl PreparedSqlServerWrite {
     pub const fn loss_report(&self) -> &LossReport {
         &self.loss_report
     }
+}
+
+pub fn validate_diagnostic_request(
+    prepared_schema: &SchemaRef,
+    stream_schema: &SchemaRef,
+    operation: &WriteOperation,
+    insert_mode: SqlServerInsertMode,
+    input_total: u64,
+    policy: plenora_database_core::RowDiagnosticsPolicy,
+) -> Result<()> {
+    row_diagnostics::validate_input(
+        prepared_schema,
+        stream_schema,
+        operation,
+        insert_mode,
+        input_total,
+        policy,
+    )
+    .map(drop)
 }
 
 /// Prepara un write contro un target esistente e congela schema, mapping e SQL.
@@ -411,13 +431,27 @@ async fn write_prepared_inner(
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
 ) -> Result<WriteOutcome> {
-    if input.schema().as_ref() != prepared.plan.input_schema.as_ref() {
+    let stream_schema = input.schema();
+    if stream_schema.as_ref() != prepared.plan.input_schema.as_ref() {
         return Err(write_error(
             ErrorCategory::Schema,
             ErrorPhase::Prepare,
             "schema input diverso da prepare_write SQL Server",
         ));
     }
+    let diagnostic_input = input
+        .declared_input_rows()
+        .map(|input_total| {
+            row_diagnostics::validate_input(
+                &prepared.plan.input_schema,
+                &stream_schema,
+                &prepared.operation,
+                prepared.insert_mode,
+                input_total,
+                input.row_diagnostics_policy(),
+            )
+        })
+        .transpose()?;
     let control = BudgetCancellation::new(cancellation, &prepared.budget);
     let execution_id = format!(
         "sqlserver-{}-{}",
@@ -433,64 +467,91 @@ async fn write_prepared_inner(
         return Err(rollback_after_error(&mut pooled, error).await);
     }
 
-    let mut received = 0_u64;
-    let mut mutations = MutationCounts::default();
-    loop {
-        let batch = match input.next_batch_with_cancellation(control.token()).await {
-            Ok(Some(batch)) => batch,
-            Ok(None) => break,
-            Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-        };
-        let reservation = match WriteBatchResources::reserve(
-            &batch,
+    let (received, mutations) = if let Some(diagnostic_input) = diagnostic_input {
+        let constraint_column = diagnostic_input.policy.constraint_column.clone();
+        let mut tracker = diagnostic_input.tracker;
+        let mut writer = row_diagnostics::SqlServerRowWriter::new(
+            &mut pooled,
+            input.as_mut(),
             &prepared.plan,
             &prepared.budget,
-            prepared.insert_mode,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-        };
-        received = if let Some(value) = received.checked_add(reservation.rows) {
-            value
-        } else {
-            let error = DatabaseError::resource_limit("conteggio righe write overflow");
-            return Err(rollback_after_error(&mut pooled, error).await);
-        };
-        let batch_result = match prepared.insert_mode {
-            SqlServerInsertMode::Prepared => {
-                execute_prepared_batch(
-                    &mut pooled,
-                    &prepared.plan,
-                    &batch,
-                    control.token(),
-                    fault,
-                    &execution_id,
-                )
-                .await
+            control.token(),
+            constraint_column,
+            fault,
+            &execution_id,
+        );
+        let diagnosed =
+            plenora_database_core::diagnose_row_scoped_write(&mut writer, &mut tracker).await;
+        let mutations = writer.mutations();
+        drop(writer);
+        match diagnosed {
+            Ok(Some(outcome)) => {
+                return Err(outcome.into_error(Some(ProviderKind::Sqlserver), Some(execution_id))?);
             }
-            SqlServerInsertMode::TdsBulk => {
-                execute_bulk_batch(
-                    &mut pooled,
-                    &prepared.plan,
-                    &batch,
-                    control.token(),
-                    fault,
-                    &execution_id,
-                )
-                .await
-            }
-        };
-        let batch_mutations = match batch_result {
-            Ok(mutations) => mutations,
             Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
-        };
-        if let Err(error) = reservation.commit() {
-            return Err(rollback_after_error(&mut pooled, error).await);
+            Ok(None) => (diagnostic_input.input_total, mutations),
         }
-        if let Err(error) = mutations.checked_add(batch_mutations) {
-            return Err(rollback_after_error(&mut pooled, error).await);
+    } else {
+        let mut received = 0_u64;
+        let mut mutations = MutationCounts::default();
+        loop {
+            let batch = match input.next_batch_with_cancellation(control.token()).await {
+                Ok(Some(batch)) => batch,
+                Ok(None) => break,
+                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
+            };
+            let reservation = match WriteBatchResources::reserve(
+                &batch,
+                &prepared.plan,
+                &prepared.budget,
+                prepared.insert_mode,
+            ) {
+                Ok(reservation) => reservation,
+                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
+            };
+            received = if let Some(value) = received.checked_add(reservation.rows) {
+                value
+            } else {
+                let error = DatabaseError::resource_limit("conteggio righe write overflow");
+                return Err(rollback_after_error(&mut pooled, error).await);
+            };
+            let batch_result = match prepared.insert_mode {
+                SqlServerInsertMode::Prepared => {
+                    execute_prepared_batch(
+                        &mut pooled,
+                        &prepared.plan,
+                        &batch,
+                        control.token(),
+                        fault,
+                        &execution_id,
+                    )
+                    .await
+                }
+                SqlServerInsertMode::TdsBulk => {
+                    execute_bulk_batch(
+                        &mut pooled,
+                        &prepared.plan,
+                        &batch,
+                        control.token(),
+                        fault,
+                        &execution_id,
+                    )
+                    .await
+                }
+            };
+            let batch_mutations = match batch_result {
+                Ok(mutations) => mutations,
+                Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
+            };
+            if let Err(error) = reservation.commit() {
+                return Err(rollback_after_error(&mut pooled, error).await);
+            }
+            if let Err(error) = mutations.checked_add(batch_mutations) {
+                return Err(rollback_after_error(&mut pooled, error).await);
+            }
         }
-    }
+        (received, mutations)
+    };
     if let Err(error) =
         finalize_transaction_target(&mut pooled, &prepared.plan, control.token()).await
     {
@@ -952,13 +1013,29 @@ async fn rollback_after_error_inner(
             );
             return original;
         }
-        original.remote_effect = RemoteEffect::RolledBack;
+        original = confirmed_rollback_axes(original);
         if pooled.allow_reuse_after_drain().is_err() {
             pooled.quarantine();
         }
     } else {
         pooled.quarantine();
     }
+    original
+}
+
+/// Assi dell'errore dopo un annullamento confermato sul percorso a batch.
+///
+/// L'annullamento confermato è un fatto sull'**effetto remoto**, non sulla
+/// ritentabilità: un deadlock che il server ha annullato resta `Safe`, un
+/// timeout che lascia la sessione recuperabile resta `RequiresRecovery`, e una
+/// sessione già in quarantena vi resta. Convertire tutto a `Never`
+/// trasformerebbe errori transitori recuperabili in fallimenti definitivi.
+///
+/// Il percorso row-scoped ha invece semantica propria: là il rifiuto è del
+/// dato, ritentare la stessa riga riprodurrebbe lo stesso vincolo violato, e
+/// `RowRejectionOutcome::axes` dichiara `Never`.
+const fn confirmed_rollback_axes(mut original: DatabaseError) -> DatabaseError {
+    original.remote_effect = RemoteEffect::RolledBack;
     original
 }
 
@@ -993,6 +1070,7 @@ fn transport_loss_error(execution_id: &str) -> DatabaseError {
         execution_id: Some(execution_id.to_owned()),
         message: "trasporto TDS perso durante write SQL Server: stato remoto da verificare"
             .to_owned(),
+        diagnostics: None,
     }
 }
 
@@ -1259,5 +1337,48 @@ fn write_error(
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
+    }
+}
+
+#[cfg(test)]
+mod confirmed_rollback_retry_tests {
+    use super::*;
+
+    /// Sul percorso a batch un annullamento confermato cambia l'effetto
+    /// remoto, non la disposizione di retry.
+    ///
+    /// Un deadlock 1205 classificato `Safe` che il server ha annullato resta
+    /// ritentabile: forzarlo a `Never` trasformerebbe un errore transitorio
+    /// recuperabile in un fallimento definitivo. La conversione a `Never`
+    /// appartiene al solo percorso row-scoped, dove il rifiuto è del dato e
+    /// ritentare la stessa riga produrrebbe lo stesso rifiuto.
+    #[test]
+    fn a_confirmed_batch_rollback_preserves_every_retry_disposition() {
+        for disposition in [
+            RetryDisposition::Never,
+            RetryDisposition::Quarantine,
+            RetryDisposition::Safe,
+            RetryDisposition::RequiresIdempotencyKey,
+            RetryDisposition::RequiresRecovery,
+            RetryDisposition::After(1),
+        ] {
+            let original = DatabaseError {
+                category: ErrorCategory::Execution,
+                phase: ErrorPhase::Write,
+                remote_effect: RemoteEffect::Unknown,
+                retry: disposition,
+                provider: Some(ProviderKind::Sqlserver),
+                execution_id: Some("sqlserver-batch-rollback".to_owned()),
+                message: "errore pre-commit SQL Server".to_owned(),
+                diagnostics: None,
+            };
+            let rolled_back = confirmed_rollback_axes(original);
+            assert_eq!(
+                rolled_back.retry, disposition,
+                "la disposizione {disposition:?} non appartiene all'annullamento"
+            );
+            assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+        }
     }
 }

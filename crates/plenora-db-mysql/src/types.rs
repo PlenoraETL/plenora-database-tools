@@ -543,6 +543,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
         execution_id: None,
         message: message.into(),
+        diagnostics: None,
     }
 }
 

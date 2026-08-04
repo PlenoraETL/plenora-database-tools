@@ -1,4 +1,4 @@
-use super::codec::inspect_batch;
+use super::codec::{inspect_batch, inspect_row};
 use super::plan::WritePlan;
 use super::SqlServerInsertMode;
 use plenora_database_core::arrow::RecordBatch;
@@ -13,6 +13,74 @@ pub(super) struct WriteBatchResources {
     bytes: u64,
     geometry_components: u64,
     geometry_lease: Option<ResourceLease>,
+}
+
+pub(super) struct WriteRowResources {
+    rows_lease: ResourceLease,
+    output_lease: Option<ResourceLease>,
+    memory_lease: Option<ResourceLease>,
+    geometry_lease: Option<ResourceLease>,
+    bytes: u64,
+    geometry_components: u64,
+}
+
+impl WriteRowResources {
+    pub(super) fn reserve(
+        batch: &RecordBatch,
+        row: usize,
+        plan: &WritePlan,
+        budget: &ResourceBudget,
+    ) -> Result<Self> {
+        budget.ensure_active()?;
+        let inspection = inspect_row(
+            batch,
+            row,
+            plan,
+            budget.limits().cell_bytes,
+            budget.remaining(ResourceKind::GeometryComponents),
+            budget.limits().nesting_depth,
+        )?;
+        if inspection.bytes > budget.remaining(ResourceKind::MemoryBytes)
+            || inspection.bytes > budget.remaining(ResourceKind::OutputBytes)
+        {
+            return Err(DatabaseError::resource_limit(
+                "riga Arrow oltre il budget write SQL Server",
+            ));
+        }
+        Ok(Self {
+            rows_lease: budget.try_lease(ResourceKind::Rows, 1)?,
+            output_lease: (inspection.bytes > 0)
+                .then(|| budget.try_lease(ResourceKind::OutputBytes, inspection.bytes))
+                .transpose()?,
+            memory_lease: (inspection.bytes > 0)
+                .then(|| budget.try_lease(ResourceKind::MemoryBytes, inspection.bytes))
+                .transpose()?,
+            geometry_lease: (inspection.geometry_components > 0)
+                .then(|| {
+                    budget.try_lease(
+                        ResourceKind::GeometryComponents,
+                        inspection.geometry_components,
+                    )
+                })
+                .transpose()?,
+            bytes: inspection.bytes,
+            geometry_components: inspection.geometry_components,
+        })
+    }
+
+    pub(super) fn commit(self) -> Result<()> {
+        self.rows_lease.commit(1)?;
+        if let Some(output) = self.output_lease {
+            output.commit(self.bytes)?;
+        }
+        if let Some(memory) = self.memory_lease {
+            memory.release()?;
+        }
+        if let Some(geometry) = self.geometry_lease {
+            geometry.commit(self.geometry_components)?;
+        }
+        Ok(())
+    }
 }
 
 impl WriteBatchResources {
