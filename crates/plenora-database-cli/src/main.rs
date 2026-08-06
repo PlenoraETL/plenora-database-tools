@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use plenora_database_core::plan::{
     ObjectRef, Operation, OrderBy, ProviderKind, ReadOperation, SortDirection,
 };
@@ -7,10 +8,14 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
 };
 use plenora_database_engine::parse_and_validate;
-use plenora_db_postgres::PostgresProvider;
+use plenora_db_mysql::{MysqlConfig, MysqlProvider};
+use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
+use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
+use rustls::{pki_types::CertificateDer, RootCertStore};
 use serde_json::json;
 use std::env;
 use std::fs::{self, File, OpenOptions};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +54,7 @@ static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
 const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
+const TLS_MATERIAL_MAX_BYTES: u64 = 1024 * 1024;
 
 struct IpcOptions {
     limits: ResourceLimits,
@@ -94,6 +100,7 @@ async fn run() -> CliResult<()> {
     match command.as_str() {
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
+        "database-probe" => database_probe(&mut args).await,
         "postgres-probe" => postgres_probe(&mut args).await,
         "postgres-describe" => postgres_describe(&mut args).await,
         "postgres-read-summary" => postgres_read_summary(&mut args).await,
@@ -120,10 +127,43 @@ fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     }))
 }
 
-async fn postgres_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let env_name = one_argument(args, "manca il nome della variabile DSN")?;
+async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    if !matches!(
+        kind,
+        ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Sqlserver
+    ) {
+        return Err(CliError(DatabaseError::unsupported(
+            kind,
+            ErrorPhase::Prepare,
+            "provider dichiarato dal contratto ma adapter non disponibile",
+        )));
+    }
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let provider_arguments = parse_provider_arguments(kind, args)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
     let secret = secret_from_env(&env_name)?;
-    let provider = PostgresProvider::default();
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let cancellation = CancellationToken::new();
+    let connection = provider.test_connection(&secret, &cancellation).await?;
+    let capabilities = provider.probe_capabilities(&secret, &cancellation).await?;
+    print_json(&json!({
+        "schema_version": 1,
+        "connection": connection,
+        "capabilities": capabilities
+    }))
+}
+
+async fn postgres_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile DSN".to_owned())?;
+    let tls = parse_tls_path_environments(args)?;
+    let provider = postgres_provider_for_probe_with_tls(&tls)?;
+    let secret = secret_from_env(&env_name)?;
     let cancellation = CancellationToken::new();
     let connection = provider.test_connection(&secret, &cancellation).await?;
     let capabilities = provider.probe_capabilities(&secret, &cancellation).await?;
@@ -573,6 +613,348 @@ fn secret_from_env(name: &str) -> CliResult<SecretString> {
         .map_err(|_| "variabile DSN assente".to_owned())?)
 }
 
+fn parse_provider_kind(value: &str) -> CliResult<ProviderKind> {
+    match value {
+        "postgres" => Ok(ProviderKind::Postgres),
+        "mysql" => Ok(ProviderKind::Mysql),
+        "mariadb" => Ok(ProviderKind::Mariadb),
+        "sqlserver" => Ok(ProviderKind::Sqlserver),
+        "oracle" => Ok(ProviderKind::Oracle),
+        "db2" => Ok(ProviderKind::Db2),
+        "sqlite" => Ok(ProviderKind::Sqlite),
+        "duckdb" => Ok(ProviderKind::Duckdb),
+        "arcgis" => Ok(ProviderKind::Arcgis),
+        _ => Err("provider sconosciuto".into()),
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TlsPathEnvironments {
+    ca: Option<String>,
+    client_certificate: Option<String>,
+    client_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProviderArguments {
+    Postgres {
+        tls: TlsPathEnvironments,
+    },
+    Mysql {
+        host: String,
+        database: String,
+        username: String,
+        port: Option<u16>,
+        tls: TlsPathEnvironments,
+    },
+    Sqlserver {
+        host: String,
+        database: String,
+        username: String,
+        port: Option<u16>,
+        tls: TlsPathEnvironments,
+    },
+}
+
+enum PreparedProviderArguments {
+    Postgres(PostgresProvider),
+    Mysql(MysqlConfig),
+    Sqlserver(SqlServerConfig),
+}
+
+fn parse_tls_path_environments(
+    args: &mut impl Iterator<Item = String>,
+) -> CliResult<TlsPathEnvironments> {
+    let mut tls = TlsPathEnvironments::default();
+    while let Some(flag) = args.next() {
+        let target = match flag.as_str() {
+            "--tls-ca-path-env" => &mut tls.ca,
+            "--tls-client-cert-path-env" => &mut tls.client_certificate,
+            "--tls-client-key-path-env" => &mut tls.client_key,
+            _ if flag.starts_with("--") => return Err("opzione TLS provider sconosciuta".into()),
+            _ => return Err("troppi argomenti".into()),
+        };
+        let value = args
+            .next()
+            .ok_or_else(|| format!("manca il nome variabile ambiente per {flag}"))?;
+        if value.is_empty() || value.contains('=') {
+            return Err("nome variabile ambiente TLS non valido".into());
+        }
+        if target.replace(value).is_some() {
+            return Err("opzione TLS provider duplicata".into());
+        }
+    }
+    match (&tls.client_certificate, &tls.client_key, &tls.ca) {
+        (None, None, _) | (Some(_), Some(_), Some(_)) => Ok(tls),
+        (Some(_), Some(_), None) => Err("identità client TLS richiede una CA privata".into()),
+        _ => Err("certificato e chiave client TLS devono essere forniti insieme".into()),
+    }
+}
+
+fn parse_provider_arguments(
+    kind: ProviderKind,
+    args: &mut impl Iterator<Item = String>,
+) -> CliResult<ProviderArguments> {
+    match kind {
+        ProviderKind::Postgres => {
+            let tls = parse_tls_path_environments(args)?;
+            Ok(ProviderArguments::Postgres { tls })
+        }
+        ProviderKind::Mysql | ProviderKind::Sqlserver => {
+            let host = args
+                .next()
+                .ok_or_else(|| "manca host provider".to_owned())?;
+            let database = args
+                .next()
+                .ok_or_else(|| "manca database provider".to_owned())?;
+            let username = args
+                .next()
+                .ok_or_else(|| "manca username provider".to_owned())?;
+            let mut remaining = args.collect::<Vec<_>>().into_iter().peekable();
+            let port = remaining
+                .next_if(|value| !value.starts_with("--"))
+                .map(|value| {
+                    value
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|port| *port > 0)
+                        .ok_or_else(|| "porta provider non valida".to_owned())
+                })
+                .transpose()?;
+            let tls = parse_tls_path_environments(&mut remaining)?;
+            if tls.client_certificate.is_some() || tls.client_key.is_some() {
+                return Err("identità client TLS supportata solo per PostgreSQL".into());
+            }
+            match kind {
+                ProviderKind::Mysql => Ok(ProviderArguments::Mysql {
+                    host,
+                    database,
+                    username,
+                    port,
+                    tls,
+                }),
+                ProviderKind::Sqlserver => Ok(ProviderArguments::Sqlserver {
+                    host,
+                    database,
+                    username,
+                    port,
+                    tls,
+                }),
+                _ => unreachable!("ramo limitato a MySQL e SQL Server"),
+            }
+        }
+        unsupported_kind => Err(CliError(DatabaseError::unsupported(
+            unsupported_kind,
+            ErrorPhase::Prepare,
+            "provider dichiarato dal contratto ma adapter non disponibile",
+        ))),
+    }
+}
+
+#[cfg(test)]
+fn build_provider(
+    kind: ProviderKind,
+    secret: &SecretString,
+    args: &mut impl Iterator<Item = String>,
+) -> CliResult<Box<dyn Provider>> {
+    let provider_arguments = parse_provider_arguments(kind, args)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
+    build_provider_from_prepared_arguments(provider_arguments, secret)
+}
+
+fn prepare_provider_arguments(
+    arguments: ProviderArguments,
+) -> CliResult<PreparedProviderArguments> {
+    match arguments {
+        ProviderArguments::Postgres { tls } => Ok(PreparedProviderArguments::Postgres(
+            postgres_provider_for_probe_with_tls(&tls)?,
+        )),
+        ProviderArguments::Mysql {
+            host,
+            database,
+            username,
+            port,
+            tls,
+        } => {
+            let mut config = MysqlConfig::new(host, database, username, SecretString::new(""));
+            if let Some(port) = port {
+                config = config.with_port(port);
+            }
+            if let Some(pem) = prepare_private_ca_material(tls.ca.as_deref())? {
+                config = config.with_private_ca_certificate_pem(pem);
+            }
+            config.validate_without_password()?;
+            Ok(PreparedProviderArguments::Mysql(config))
+        }
+        ProviderArguments::Sqlserver {
+            host,
+            database,
+            username,
+            port,
+            tls,
+        } => {
+            let mut config = SqlServerConfig::new(host, database, username, SecretString::new(""));
+            if let Some(port) = port {
+                config = config.with_port(port);
+            }
+            if let Some(pem) = prepare_private_ca_material(tls.ca.as_deref())? {
+                validate_sqlserver_private_ca_material(&pem)?;
+                config = config.with_private_ca_certificate_pem(&pem)?;
+            }
+            config.validate_without_password()?;
+            Ok(PreparedProviderArguments::Sqlserver(config))
+        }
+    }
+}
+
+fn build_provider_from_prepared_arguments(
+    arguments: PreparedProviderArguments,
+    secret: &SecretString,
+) -> CliResult<Box<dyn Provider>> {
+    match arguments {
+        PreparedProviderArguments::Postgres(provider) => Ok(Box::new(provider)),
+        PreparedProviderArguments::Mysql(config) => Ok(Box::new(MysqlProvider::new(
+            config.with_password(secret.clone()),
+            8,
+        )?)),
+        PreparedProviderArguments::Sqlserver(config) => Ok(Box::new(SqlServerProvider::new(
+            config.with_password(secret.clone()),
+            1_024,
+            8,
+        )?)),
+    }
+}
+
+fn tls_path_from_environment(env_name: Option<&str>) -> CliResult<Option<PathBuf>> {
+    env_name
+        .map(|name| {
+            env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .ok_or_else(|| CliError::from("variabile path TLS assente"))
+        })
+        .transpose()
+}
+
+fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
+    let file = File::open(path).map_err(|_| CliError::from("materiale TLS non leggibile"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| CliError::from("materiale TLS non leggibile"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > TLS_MATERIAL_MAX_BYTES {
+        return Err("materiale TLS vuoto o oltre 1 MiB".into());
+    }
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| CliError::from("materiale TLS oltre i limiti della piattaforma"))?;
+    let mut material = Vec::with_capacity(capacity);
+    file.take(TLS_MATERIAL_MAX_BYTES + 1)
+        .read_to_end(&mut material)
+        .map_err(|_| CliError::from("materiale TLS non leggibile"))?;
+    if material.is_empty() || material.len() as u64 > TLS_MATERIAL_MAX_BYTES {
+        return Err("materiale TLS vuoto o oltre 1 MiB".into());
+    }
+    Ok(material)
+}
+
+fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
+    let Some(path) = tls_path_from_environment(env_name)? else {
+        return Ok(None);
+    };
+    let material = read_bounded_tls_material(&path)?;
+    Ok(Some(validate_and_normalize_private_ca_material(
+        &path, &material,
+    )?))
+}
+
+fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> CliResult<Vec<u8>> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    if !matches!(extension.as_deref(), Some("pem" | "crt" | "der")) {
+        return Err("estensione CA TLS non supportata".into());
+    }
+    let first_non_whitespace = material
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(material.len());
+    let trimmed = &material[first_non_whitespace..];
+    let certificates: Vec<CertificateDer<'static>> = if trimmed.starts_with(b"-----BEGIN") {
+        rustls_pemfile::certs(&mut Cursor::new(trimmed))
+            .collect::<Result<_, _>>()
+            .map_err(|_| CliError::from("materiale CA TLS non valido"))?
+    } else {
+        vec![CertificateDer::from(material.to_vec())]
+    };
+    if certificates.is_empty() {
+        return Err("materiale CA TLS non valido".into());
+    }
+    let mut roots = RootCertStore::empty();
+    for certificate in &certificates {
+        roots
+            .add(certificate.clone())
+            .map_err(|_| CliError::from("materiale CA TLS non valido"))?;
+    }
+    let mut normalized = Vec::new();
+    for certificate in certificates {
+        normalized.extend_from_slice(b"-----BEGIN CERTIFICATE-----\n");
+        let encoded = BASE64_STANDARD.encode(certificate.as_ref());
+        for line in encoded.as_bytes().chunks(64) {
+            normalized.extend_from_slice(line);
+            normalized.push(b'\n');
+        }
+        normalized.extend_from_slice(b"-----END CERTIFICATE-----\n");
+    }
+    if normalized.len() as u64 > TLS_MATERIAL_MAX_BYTES {
+        return Err("materiale TLS vuoto o oltre 1 MiB".into());
+    }
+    Ok(normalized)
+}
+
+fn validate_sqlserver_private_ca_material(pem: &[u8]) -> CliResult<()> {
+    let certificates = rustls_pemfile::certs(&mut Cursor::new(pem))
+        .take(2)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CliError::from("materiale CA TLS non valido"))?;
+    if certificates.len() != 1 {
+        return Err(
+            "configurazione SQL Server: CA privata deve contenere esattamente un certificato"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn postgres_provider_for_probe_with_tls(tls: &TlsPathEnvironments) -> CliResult<PostgresProvider> {
+    let Some(ca) = prepare_private_ca_material(tls.ca.as_deref())? else {
+        return Ok(postgres_provider_for_probe());
+    };
+    let tls_config = match (
+        tls_path_from_environment(tls.client_certificate.as_deref())?,
+        tls_path_from_environment(tls.client_key.as_deref())?,
+    ) {
+        (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
+        (Some(certificate_path), Some(key_path)) => {
+            let certificate = read_bounded_tls_material(&certificate_path)?;
+            let key = read_bounded_tls_material(&key_path)?;
+            PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
+        }
+        _ => unreachable!("il parser richiede certificato e chiave TLS insieme"),
+    };
+    Ok(PostgresProvider::default()
+        .with_tls_mode(PostgresTlsMode::Require)
+        .with_tls_config(tls_config))
+}
+
+fn postgres_provider_for_probe() -> PostgresProvider {
+    PostgresProvider::default().with_tls_mode(PostgresTlsMode::Require)
+}
+
+#[cfg(test)]
+fn legacy_postgres_probe_provider() -> PostgresProvider {
+    postgres_provider_for_probe()
+}
+
 fn one_argument(args: &mut impl Iterator<Item = String>, missing: &str) -> CliResult<String> {
     let value = args.next().ok_or_else(|| missing.to_owned())?;
     ensure_end(args)?;
@@ -600,7 +982,18 @@ fn usage() -> String {
         "uso:",
         "  plenora-database inspect-dataset <file.arrow>",
         "  plenora-database validate-plan <file>",
-        "  plenora-database postgres-probe <dsn-env>",
+        "  plenora-database database-probe <provider> <secret-env> [<host> <database> <username> \
+         [port]] [--tls-ca-path-env <ca-path-env>] [--tls-client-cert-path-env \
+         <cert-path-env> --tls-client-key-path-env <key-path-env>]",
+        "    provider: postgres | mysql | sqlserver",
+        "    postgres: secret-env contiene il DSN; non richiede host/database/username/port; \
+         identità client TLS opzionale",
+        "    mysql/sqlserver: secret-env contiene solo la password; configurazione strutturata \
+         obbligatoria; supportano la CA privata",
+        "    i valori delle variabili TLS sono path locali; certificato e chiave client sono \
+         PostgreSQL-only e richiedono una CA privata",
+        "  plenora-database postgres-probe <dsn-env> [--tls-ca-path-env <ca-path-env>] \
+         [--tls-client-cert-path-env <cert-path-env> --tls-client-key-path-env <key-path-env>]",
         "  plenora-database postgres-describe <dsn-env> <schema> <object>",
         "  plenora-database postgres-read-summary <dsn-env> <schema> <object>",
         "  plenora-database postgres-read-ipc <dsn-env> <schema> <object> <output.arrow> \
@@ -906,6 +1299,197 @@ mod tests {
         ] {
             let mut arguments = arguments.into_iter().map(str::to_owned);
             assert!(parse_ipc_options(&mut arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn postgres_probe_parser_accepts_private_ca_and_complete_client_identity_env_names() {
+        let mut args = [
+            "--tls-ca-path-env",
+            "PG_CA_PATH_ENV",
+            "--tls-client-cert-path-env",
+            "PG_CERT_PATH_ENV",
+            "--tls-client-key-path-env",
+            "PG_KEY_PATH_ENV",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+        assert_eq!(
+            parse_provider_arguments(ProviderKind::Postgres, &mut args)
+                .expect("PostgreSQL private CA/mTLS env names"),
+            ProviderArguments::Postgres {
+                tls: TlsPathEnvironments {
+                    ca: Some("PG_CA_PATH_ENV".to_owned()),
+                    client_certificate: Some("PG_CERT_PATH_ENV".to_owned()),
+                    client_key: Some("PG_KEY_PATH_ENV".to_owned()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn public_provider_parser_covers_the_complete_contract_catalog() {
+        for (name, expected) in [
+            ("postgres", ProviderKind::Postgres),
+            ("mysql", ProviderKind::Mysql),
+            ("mariadb", ProviderKind::Mariadb),
+            ("sqlserver", ProviderKind::Sqlserver),
+            ("oracle", ProviderKind::Oracle),
+            ("db2", ProviderKind::Db2),
+            ("sqlite", ProviderKind::Sqlite),
+            ("duckdb", ProviderKind::Duckdb),
+            ("arcgis", ProviderKind::Arcgis),
+        ] {
+            assert_eq!(parse_provider_kind(name).expect("known provider"), expected);
+        }
+        assert!(parse_provider_kind("unknown").is_err());
+    }
+
+    #[test]
+    fn provider_factories_resolve_private_ca_paths_from_environment() {
+        let secret = SecretString::new("test-only-secret");
+        for (kind, positional) in [
+            (ProviderKind::Postgres, Vec::<&str>::new()),
+            (
+                ProviderKind::Mysql,
+                vec!["db.example.test", "warehouse", "loader"],
+            ),
+            (
+                ProviderKind::Sqlserver,
+                vec!["db.example.test", "warehouse", "loader"],
+            ),
+        ] {
+            let mut values = positional
+                .into_iter()
+                .chain([
+                    "--tls-ca-path-env",
+                    "PLENORA_TEST_DELIBERATELY_MISSING_TLS_CA_PATH_7219",
+                ])
+                .map(str::to_owned);
+            let error = build_provider(kind, &secret, &mut values)
+                .err()
+                .expect("missing TLS CA path environment must fail closed");
+            assert_eq!(error.0.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.0.message, "variabile path TLS assente");
+        }
+    }
+
+    #[test]
+    fn implemented_provider_factories_are_offline_and_typed() {
+        let secret = SecretString::new("test-only-secret");
+        let mut postgres_args = std::iter::empty();
+        assert_eq!(
+            build_provider(ProviderKind::Postgres, &secret, &mut postgres_args)
+                .expect("PostgreSQL provider")
+                .kind(),
+            ProviderKind::Postgres
+        );
+
+        for kind in [ProviderKind::Mysql, ProviderKind::Sqlserver] {
+            let mut args = ["db.example.test", "warehouse", "loader"]
+                .into_iter()
+                .map(str::to_owned);
+            assert_eq!(
+                build_provider(kind, &secret, &mut args)
+                    .expect("structured provider")
+                    .kind(),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_postgres_probe_requires_the_same_verified_tls_policy() {
+        let provider = legacy_postgres_probe_provider();
+        assert!(
+            format!("{provider:?}").contains("tls_mode: Require"),
+            "legacy PostgreSQL probe must not silently downgrade to plaintext: {provider:?}"
+        );
+    }
+
+    #[test]
+    fn provider_neutral_postgres_probe_requires_verified_tls() {
+        let provider = postgres_provider_for_probe();
+        assert!(
+            format!("{provider:?}").contains("tls_mode: Require"),
+            "PostgreSQL probe must not silently downgrade to plaintext: {provider:?}"
+        );
+    }
+
+    #[test]
+    fn provider_port_parser_rejects_invalid_boundaries() {
+        for port in ["0", "-1", "65536", "not-a-port"] {
+            let mut args = ["db.example.test", "warehouse", "loader", port]
+                .into_iter()
+                .map(str::to_owned);
+            assert!(
+                parse_provider_arguments(ProviderKind::Mysql, &mut args).is_err(),
+                "invalid provider port accepted: {port}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_argument_parser_preserves_default_and_explicit_ports() {
+        let mut default_args = ["db.example.test", "warehouse", "loader"]
+            .into_iter()
+            .map(str::to_owned);
+        assert_eq!(
+            parse_provider_arguments(ProviderKind::Mysql, &mut default_args)
+                .expect("default MySQL port"),
+            ProviderArguments::Mysql {
+                host: "db.example.test".to_owned(),
+                database: "warehouse".to_owned(),
+                username: "loader".to_owned(),
+                port: None,
+                tls: TlsPathEnvironments::default(),
+            }
+        );
+
+        let mut explicit_args = ["db.example.test", "warehouse", "loader", "65535"]
+            .into_iter()
+            .map(str::to_owned);
+        assert_eq!(
+            parse_provider_arguments(ProviderKind::Sqlserver, &mut explicit_args)
+                .expect("explicit SQL Server port"),
+            ProviderArguments::Sqlserver {
+                host: "db.example.test".to_owned(),
+                database: "warehouse".to_owned(),
+                username: "loader".to_owned(),
+                port: Some(65_535),
+                tls: TlsPathEnvironments::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn provider_argument_parser_rejects_partial_and_trailing_configuration() {
+        for values in [
+            vec!["host"],
+            vec!["host", "database"],
+            vec!["host", "database", "username", "3306", "trailing"],
+        ] {
+            let mut args = values.into_iter().map(str::to_owned);
+            assert!(parse_provider_arguments(ProviderKind::Mysql, &mut args).is_err());
+        }
+    }
+
+    #[test]
+    fn structured_provider_factories_accept_an_explicit_nonzero_port() {
+        let secret = SecretString::new("test-only-secret");
+        for (kind, port) in [
+            (ProviderKind::Mysql, "3307"),
+            (ProviderKind::Sqlserver, "1434"),
+        ] {
+            let mut args = ["db.example.test", "warehouse", "loader", port]
+                .into_iter()
+                .map(str::to_owned);
+            assert_eq!(
+                build_provider(kind, &secret, &mut args)
+                    .expect("provider with explicit port")
+                    .kind(),
+                kind
+            );
         }
     }
 }

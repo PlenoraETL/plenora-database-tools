@@ -108,7 +108,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
             gate.EXPECTED_OFFLINE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_OFFLINE_TESTS), 108)
+        self.assertEqual(len(gate.EXPECTED_OFFLINE_TESTS), 110)
 
     def test_gate_pins_the_read_row_diagnostics_inventory(self) -> None:
         """I due test offline del delta row diagnostics sono nell'inventario.
@@ -140,8 +140,15 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for name in sorted(gate.EXPECTED_LIVE_TESTS)
         )
 
+        cli_output = (
+            "test live_database_probe_mysql_private_ca ... ok\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out"
+        )
+
         def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
             cargo_calls.append(arguments)
+            if "live_database_probe_mysql_private_ca" in arguments:
+                return cli_output
             if arguments[:3] == ["test", "-p", "plenora-db-mysql"]:
                 return live_output if "live_" in arguments else offline_output
             return ""
@@ -156,6 +163,14 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
         live_call = next(arguments for arguments in cargo_calls if "live_" in arguments)
         self.assertIn("--test-threads=1", live_call)
+        cli_call = next(
+            arguments
+            for arguments in cargo_calls
+            if "live_database_probe_mysql_private_ca" in arguments
+        )
+        self.assertEqual(cli_call[:5], ["test", "-p", "plenora-database-cli", "--test", "live_probe"])
+        self.assertIn("--exact", cli_call)
+        self.assertIn("--ignored", cli_call)
 
     def test_gate_pins_the_physical_join_live_test_by_name(self) -> None:
         self.assertIn(
@@ -185,7 +200,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "105.*108"):
+            with self.assertRaisesRegex(RuntimeError, "105.*110"):
                 gate.main()
 
         self.assertFalse(
@@ -412,6 +427,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
     def test_mysql_workflow_watches_all_tls_assurance_inputs(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('      - "crates/plenora-database-cli/**"', workflow)
         self.assertIn('      - "docker/mysql/tls/**"', workflow)
         self.assertIn('      - "scripts/test_check_mysql_reference.py"', workflow)
 
