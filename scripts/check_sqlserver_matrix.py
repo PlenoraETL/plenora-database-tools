@@ -17,7 +17,16 @@ ROOT = Path(__file__).resolve().parents[1]
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
 RUST_IMAGE = "rust:1.92"
-EXPECTED_TESTS = 43
+# Numero di test live attesi per ogni riferimento della matrice. Il gate
+# pretende l'uguaglianza esatta: un test in piu' non e' un miglioramento
+# silenzioso, e' una superficie non registrata.
+#
+# Portato da 43 a 44 il 2026-08-06. Il registro era fermo al 2026-07-31
+# (f77d143), mentre 13df8af del 2026-08-04 ha aggiunto
+# `live_provider_row_diagnostics_matches_confirmed_rollback_oracle` senza
+# aggiornarlo: da allora la matrice falliva con "matrice live inattesa" dopo
+# che tutti e 44 i test erano passati.
+EXPECTED_TESTS = 44
 
 
 @dataclass(frozen=True)
