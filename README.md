@@ -89,6 +89,47 @@ Il comando valida sorgenti, JSON Schema, esempi, golden cases, manifest,
 documentazione, rustfmt, Clippy, test Python/Rust e CLI. Non apre connessioni
 database.
 
+## Probe provider-neutral
+
+Il confine CLI comune espone il test di connessione e le capability runtime dei
+tre adapter implementati:
+
+```text
+plenora-database database-probe postgres <dsn-env> \
+  [--tls-ca-path-env <ca-path-env> \
+   [--tls-client-cert-path-env <cert-path-env> \
+    --tls-client-key-path-env <key-path-env>]]
+plenora-database database-probe mysql <password-env> <host> <database> <username> [port] \
+  [--tls-ca-path-env <ca-path-env>]
+plenora-database database-probe sqlserver <password-env> <host> <database> <username> [port] \
+  [--tls-ca-path-env <ca-path-env>]
+```
+
+Gli argomenti `*-env` sono esclusivamente nomi di variabili ambiente. La
+variabile secret contiene il DSN PostgreSQL o la password MySQL/SQL Server; le
+variabili TLS contengono path locali ai file CA, certificato client e chiave
+client. Valori secret, path e materiale PEM non vengono accettati direttamente
+negli argomenti del processo.
+
+Senza opzioni CA, PostgreSQL richiede TLS verificato tramite WebPKI. Con
+`--tls-ca-path-env` usa esclusivamente la CA privata indicata; certificato e
+chiave client sono PostgreSQL-only, devono essere forniti insieme e richiedono
+la CA privata. Ogni file PEM letto dalla CLI è bounded a 1 MiB. MySQL e SQL
+Server supportano la CA privata mantenendo verifica di catena e hostname; non
+espongono un opt-out dalla verifica attraverso questo comando. Host, database,
+username e porta restano argomenti strutturati e la porta usa il default del
+provider quando omessa.
+
+`mariadb`, `oracle`, `db2`, `sqlite`, `duckdb` e `arcgis` appartengono al catalogo
+del contratto ma non hanno ancora un adapter Rust: `database-probe` li rifiuta
+prima di leggere secret o aprire la rete con un errore canonico `unsupported`.
+La validazione sintattica di un piano non implica che il relativo provider sia
+eseguibile.
+
+Il precedente `postgres-probe <dsn-env>` resta disponibile come alias
+compatibile e accetta le stesse opzioni CA privata/mTLS del route
+provider-neutral.
+
 Il gate live del riferimento PostgreSQL/PostGIS è:
 
 ```powershell

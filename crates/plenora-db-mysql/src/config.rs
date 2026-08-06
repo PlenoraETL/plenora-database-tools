@@ -16,6 +16,12 @@ pub enum MysqlCertificatePolicy {
 }
 
 #[derive(Clone)]
+enum PrivateCaCertificate {
+    Path(PathBuf),
+    Pem(Vec<u8>),
+}
+
+#[derive(Clone)]
 pub struct MysqlConfig {
     host: String,
     port: u16,
@@ -23,7 +29,7 @@ pub struct MysqlConfig {
     username: String,
     password: SecretString,
     certificate_policy: MysqlCertificatePolicy,
-    private_ca_certificate: Option<PathBuf>,
+    private_ca_certificate: Option<PrivateCaCertificate>,
     connect_timeout: Duration,
     operation_timeout: Duration,
     acquire_timeout: Duration,
@@ -39,7 +45,16 @@ impl std::fmt::Debug for MysqlConfig {
             .field("username", &"[REDACTED]")
             .field("password", &"[REDACTED]")
             .field("certificate_policy", &self.certificate_policy)
-            .field("private_ca_certificate", &self.private_ca_certificate)
+            .field(
+                "private_ca_certificate",
+                &self
+                    .private_ca_certificate
+                    .as_ref()
+                    .map(|source| match source {
+                        PrivateCaCertificate::Path(path) => path.as_os_str(),
+                        PrivateCaCertificate::Pem(_) => std::ffi::OsStr::new("[IN-MEMORY]"),
+                    }),
+            )
             .field("connect_timeout", &self.connect_timeout)
             .field("operation_timeout", &self.operation_timeout)
             .field("acquire_timeout", &self.acquire_timeout)
@@ -83,7 +98,14 @@ impl MysqlConfig {
 
     #[must_use]
     pub fn with_private_ca_certificate(mut self, path: impl Into<PathBuf>) -> Self {
-        self.private_ca_certificate = Some(path.into());
+        self.private_ca_certificate = Some(PrivateCaCertificate::Path(path.into()));
+        self
+    }
+
+    /// Usa una CA privata PEM gia acquisita e validata dal chiamante.
+    #[must_use]
+    pub fn with_private_ca_certificate_pem(mut self, pem: Vec<u8>) -> Self {
+        self.private_ca_certificate = Some(PrivateCaCertificate::Pem(pem));
         self
     }
 
@@ -128,7 +150,10 @@ impl MysqlConfig {
 
     #[must_use]
     pub fn private_ca_certificate(&self) -> Option<&Path> {
-        self.private_ca_certificate.as_deref()
+        match self.private_ca_certificate.as_ref() {
+            Some(PrivateCaCertificate::Path(path)) => Some(path),
+            Some(PrivateCaCertificate::Pem(_)) | None => None,
+        }
     }
 
     #[must_use]
@@ -155,11 +180,25 @@ impl MysqlConfig {
     /// Restituisce un errore fail-closed se la configurazione non e sicura o
     /// non e rappresentabile dal driver.
     pub fn validate(&self) -> Result<()> {
+        self.validate_without_password()?;
+        if self.password.expose().is_empty() || self.password.expose().contains('\0') {
+            return Err(invalid_configuration(
+                "configurazione MySQL: password vuoto o contenente NUL",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Valida endpoint, limiti e trust material senza leggere o richiedere la password.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce un errore fail-closed per campi non secret o trust material non validi.
+    pub fn validate_without_password(&self) -> Result<()> {
         for (name, value) in [
             ("host", self.host.as_str()),
             ("database", self.database.as_str()),
             ("username", self.username.as_str()),
-            ("password", self.password.expose()),
         ] {
             if value.is_empty() || value.contains('\0') {
                 return Err(invalid_configuration(format!(
@@ -176,32 +215,43 @@ impl MysqlConfig {
         {
             return Err(invalid_configuration("configurazione MySQL: timeout nullo"));
         }
-        if let Some(path) = &self.private_ca_certificate {
+        if let Some(source) = &self.private_ca_certificate {
             if self.certificate_policy == MysqlCertificatePolicy::TrustServerCertificate {
                 return Err(invalid_configuration(
                     "configurazione MySQL: CA privata incompatibile con TrustServerCertificate",
                 ));
             }
-            let extension = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(str::to_ascii_lowercase);
-            if !matches!(extension.as_deref(), Some("pem" | "crt" | "der")) {
-                return Err(invalid_configuration(
-                    "configurazione MySQL: estensione CA privata non supportata",
-                ));
-            }
-            let metadata = std::fs::File::open(path)
-                .and_then(|file| file.metadata())
-                .map_err(|_| {
-                    invalid_configuration(
-                        "configurazione MySQL: file CA privata assente o non leggibile",
-                    )
-                })?;
-            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1_048_576 {
-                return Err(invalid_configuration(
-                    "configurazione MySQL: file CA privata vuoto o oltre 1 MiB",
-                ));
+            match source {
+                PrivateCaCertificate::Path(path) => {
+                    let extension = path
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .map(str::to_ascii_lowercase);
+                    if !matches!(extension.as_deref(), Some("pem" | "crt" | "der")) {
+                        return Err(invalid_configuration(
+                            "configurazione MySQL: estensione CA privata non supportata",
+                        ));
+                    }
+                    let metadata = std::fs::File::open(path)
+                        .and_then(|file| file.metadata())
+                        .map_err(|_| {
+                            invalid_configuration(
+                                "configurazione MySQL: file CA privata assente o non leggibile",
+                            )
+                        })?;
+                    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1_048_576 {
+                        return Err(invalid_configuration(
+                            "configurazione MySQL: file CA privata vuoto o oltre 1 MiB",
+                        ));
+                    }
+                }
+                PrivateCaCertificate::Pem(pem) => {
+                    if pem.is_empty() || pem.len() > 1_048_576 {
+                        return Err(invalid_configuration(
+                            "configurazione MySQL: CA privata in memoria vuota o oltre 1 MiB",
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -226,8 +276,12 @@ impl MysqlConfig {
     fn driver_opts_builder(&self) -> Result<OptsBuilder> {
         self.validate()?;
         let mut ssl = SslOpts::default();
-        if let Some(path) = &self.private_ca_certificate {
-            ssl = ssl.with_root_certs(vec![path.clone().into()]);
+        if let Some(source) = &self.private_ca_certificate {
+            let root = match source {
+                PrivateCaCertificate::Path(path) => path.clone().into(),
+                PrivateCaCertificate::Pem(pem) => pem.clone().into(),
+            };
+            ssl = ssl.with_root_certs(vec![root]);
         }
         if self.certificate_policy == MysqlCertificatePolicy::TrustServerCertificate {
             ssl = ssl
@@ -331,5 +385,27 @@ mod tests {
             .expect("driver opts pooled");
         assert!(opts.pool_opts().reset_connection());
         assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
+    }
+
+    #[tokio::test]
+    async fn in_memory_private_ca_reaches_the_driver_without_a_path() {
+        let pem = b"test-only-public-ca-material".to_vec();
+        let configured = config("secret").with_private_ca_certificate_pem(pem.clone());
+        assert_eq!(configured.private_ca_certificate(), None);
+        let opts = configured.driver_opts().expect("driver opts");
+        let roots = opts.ssl_opts().expect("TLS required").root_certs();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].read().await.expect("buffered CA").as_ref(), pem);
+    }
+
+    #[test]
+    fn non_secret_validation_does_not_require_a_password() {
+        config("")
+            .validate_without_password()
+            .expect("password is deliberately unresolved");
+        let error = MysqlConfig::new("bad\0host", "warehouse", "loader", SecretString::new(""))
+            .validate_without_password()
+            .expect_err("NUL host");
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
     }
 }

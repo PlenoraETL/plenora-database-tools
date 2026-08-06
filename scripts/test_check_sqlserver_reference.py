@@ -9,12 +9,14 @@ matrice live e il nome dei test che non possono mancare.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import check_sqlserver_reference as gate
 
 
 LIVE_ROW_DIAGNOSTICS = "live_provider_row_diagnostics_matches_confirmed_rollback_oracle"
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "sqlserver-assurance.yml"
 
 
 def live_output(names: list[str], passed: int) -> str:
@@ -27,6 +29,10 @@ def live_output(names: list[str], passed: int) -> str:
 
 
 class RequiredLiveTests(unittest.TestCase):
+    def test_workflow_watches_the_public_cli_surface(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('      - "crates/plenora-database-cli/**"', workflow)
+
     def test_row_diagnostics_oracle_is_pinned(self) -> None:
         self.assertIn(LIVE_ROW_DIAGNOSTICS, gate.REQUIRED_LIVE_TESTS)
 
@@ -57,6 +63,23 @@ class RequiredLiveTests(unittest.TestCase):
             gate.validate_live_result(
                 "test result: ok. 0 passed; 0 failed; 45 ignored; 0 measured; 0 filtered out"
             )
+
+
+    def test_gate_runs_the_public_cli_probe_against_the_private_ca_fixture(self) -> None:
+        output = (
+            "test live_database_probe_sqlserver_private_ca ... ok\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out"
+        )
+        with patch.object(gate, "run_cargo", return_value=output) as run_cargo:
+            gate.run_live_cli_probe()
+        arguments = run_cargo.call_args.args[0]
+        self.assertEqual(
+            arguments[:5],
+            ["test", "-p", "plenora-database-cli", "--test", "live_probe"],
+        )
+        self.assertIn("live_database_probe_sqlserver_private_ca", arguments)
+        self.assertIn("--exact", arguments)
+        self.assertIn("--ignored", arguments)
 
 
 class ComposeNetworkDiscovery(unittest.TestCase):

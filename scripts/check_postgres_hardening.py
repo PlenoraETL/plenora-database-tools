@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
+
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
@@ -41,6 +42,52 @@ def run(command: list[str], *, capture: bool = False) -> str:
     return completed.stdout if capture else ""
 
 
+def docker_value(arguments: list[str]) -> str:
+    completed = subprocess.run(
+        ["docker", *arguments],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if completed.returncode:
+        sys.stderr.write(completed.stderr)
+        raise RuntimeError("interrogazione Docker PostgreSQL fallita")
+    return completed.stdout.strip()
+
+
+def postgres_network() -> str:
+    observed_project: str | None = None
+    observed_network: str | None = None
+    for container in ("dataflow-postgres", "dataflow-postgres-tls"):
+        labels = json.loads(
+            docker_value(["inspect", "--format", "{{json .Config.Labels}}", container])
+        )
+        project = (
+            labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
+        )
+        if not isinstance(project, str) or not project:
+            raise RuntimeError("progetto Compose PostgreSQL assente")
+        if observed_project is not None and project != observed_project:
+            raise RuntimeError("fixture PostgreSQL appartengono a progetti Compose diversi")
+        observed_project = project
+        expected = f"{project}_default"
+        networks = json.loads(
+            docker_value(
+                ["inspect", "--format", "{{json .NetworkSettings.Networks}}", container]
+            )
+        )
+        network = networks.get(expected) if isinstance(networks, dict) else None
+        aliases = network.get("Aliases") if isinstance(network, dict) else None
+        if not isinstance(aliases, list) or container not in aliases:
+            raise RuntimeError("rete Compose PostgreSQL assente o senza alias")
+        observed_network = expected
+    if observed_network is None:
+        raise RuntimeError("rete Compose PostgreSQL non osservata")
+    return observed_network
+
+
 def cargo(
     arguments: list[str],
     dsn: str | None = None,
@@ -57,10 +104,10 @@ def cargo(
         "-w",
         "/workspace",
     ]
+    if dsn is not None or tls_dsn is not None:
+        command += ["--network", postgres_network()]
     if dsn is not None:
         command += [
-            "--network",
-            NETWORK,
             "-e",
             f"PLENORA_TEST_POSTGRES_DSN={dsn}",
         ]
@@ -78,6 +125,41 @@ def cargo(
             "PLENORA_TEST_POSTGRES_TLS_CLIENT_KEY=/tls/client.key",
         ]
     return [*command, IMAGE, "cargo", *arguments]
+
+
+def run_live_cli_probes(tls_dsn: str) -> None:
+    output = run(
+        cargo(
+            [
+                "test",
+                "-p",
+                "plenora-database-cli",
+                "--test",
+                "live_probe",
+                "private_ca_mtls",
+                "--locked",
+                "--",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ],
+            tls_dsn=tls_dsn,
+        ),
+        capture=True,
+    )
+    expected = {
+        "live_database_probe_postgres_private_ca_mtls",
+        "live_legacy_postgres_probe_private_ca_mtls",
+    }
+    executed = set(
+        re.findall(r"^test ([^ ]+) \.\.\. ok$", output, re.MULTILINE)
+    )
+    if executed != expected:
+        raise RuntimeError(f"probe CLI PostgreSQL inattesi: {sorted(executed)}")
+    if not re.search(
+        r"test result: ok\. 2 passed; 0 failed; 0 ignored;", output
+    ):
+        raise RuntimeError("risultato probe CLI PostgreSQL inatteso")
 
 
 def main() -> int:
@@ -138,11 +220,13 @@ def main() -> int:
         "write_error_execution_id",
         "tls_mode_cannot_be_weakened_by_dsn",
         "private_ca_and_mtls_live",
+        "public_cli_private_ca_and_mtls_live",
         "tls_hostname_and_chain_verification",
         "server_side_cancellation_over_mtls",
         "pool_recovery_over_mtls",
     ]
     try:
+        run([sys.executable, str(ROOT / "scripts" / "test_check_postgres_hardening.py")])
         run(
             [
                 "docker",
@@ -217,6 +301,7 @@ def main() -> int:
                 tls_dsn,
             )
         )
+        run_live_cli_probes(tls_dsn)
     except RuntimeError as error:
         print(f"postgres hardening gate: {error}", file=sys.stderr)
         return 1

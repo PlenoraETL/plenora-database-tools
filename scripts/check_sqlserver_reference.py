@@ -345,6 +345,32 @@ def validate_live_result(output: str) -> None:
         )
 
 
+def run_live_cli_probe() -> None:
+    test_name = "live_database_probe_sqlserver_private_ca"
+    output = run_cargo(
+        [
+            "test",
+            "-p",
+            "plenora-database-cli",
+            "--test",
+            "live_probe",
+            test_name,
+            "--locked",
+            "--",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ],
+        capture=True,
+    )
+    if not re.search(rf"^test {re.escape(test_name)} \.\.\. ok$", output, re.MULTILINE):
+        raise RuntimeError("probe CLI live SQL Server non eseguito")
+    if not re.search(
+        r"test result: ok\. 1 passed; 0 failed; 0 ignored;", output
+    ):
+        raise RuntimeError("risultato probe CLI live SQL Server inatteso")
+
+
 def main() -> int:
     try:
         state = docker_value(
@@ -399,6 +425,7 @@ def main() -> int:
             capture=True,
         )
         validate_live_result(live_output)
+        run_live_cli_probe()
         tls_rotation = rotate_server_certificate()
     except RuntimeError as error:
         print(f"sqlserver reference gate: {error}", file=sys.stderr)

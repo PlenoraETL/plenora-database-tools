@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn network_options_override_dsn_and_partition_the_pool() {
-        let secret = SecretString::new("host=localhost user=fixture");
+        let secret = SecretString::new("host=localhost user=fixture sslmode=disable");
         let options = PostgresNetworkOptions {
             connect_timeout_ms: 1_500,
             tcp_user_timeout_ms: 9_000,

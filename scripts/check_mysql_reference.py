@@ -23,7 +23,9 @@ EXPECTED_OFFLINE_TESTS = {
     "catalog::tests::schema_token_is_stable_and_sensitive",
     "config::tests::debug_redacts_credentials",
     "config::tests::driver_opts_require_tls_even_for_explicit_trust_opt_out",
+    "config::tests::in_memory_private_ca_reaches_the_driver_without_a_path",
     "config::tests::invalid_configuration_fails_before_io",
+    "config::tests::non_secret_validation_does_not_require_a_password",
     "config::tests::pooled_driver_opts_reapply_bootstrap_after_connection_reset",
     "config::tests::tls_verification_is_the_default",
     "error::tests::deadline_and_requested_cancellation_have_distinct_envelopes",
@@ -352,6 +354,32 @@ def validate_reference() -> dict[str, str]:
     return {"configured_reference": configured, "image_id": image_id, "version": version}
 
 
+def run_live_cli_probe() -> None:
+    test_name = "live_database_probe_mysql_private_ca"
+    output = run_cargo(
+        [
+            "test",
+            "-p",
+            "plenora-database-cli",
+            "--test",
+            "live_probe",
+            test_name,
+            "--locked",
+            "--",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ],
+        capture=True,
+    )
+    if not re.search(rf"^test {re.escape(test_name)} \.\.\. ok$", output, re.MULTILINE):
+        raise RuntimeError("probe CLI live MySQL non eseguito")
+    if not re.search(
+        r"test result: ok\. 1 passed; 0 failed; 0 ignored;", output
+    ):
+        raise RuntimeError("risultato probe CLI live MySQL inatteso")
+
+
 def main() -> int:
     validate_fixture()
     ensure_reference_running()
@@ -406,6 +434,7 @@ def main() -> int:
         raise RuntimeError(
             f"set test live MySQL inatteso: {sorted(executed_live_tests)}"
         )
+    run_live_cli_probe()
     print(
         json.dumps(
             {
