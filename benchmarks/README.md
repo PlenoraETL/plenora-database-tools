@@ -1,5 +1,21 @@
 # Benchmark Fase 0
 
+## Indice
+
+Questa cartella contiene due famiglie di misure, con regole diverse.
+
+1. **Campagne su provider reali** (il resto di questo documento): richiedono
+   PostgreSQL, MySQL o SQL Server, sono guidate da manifest in `manifests/`,
+   producono report in `results/` e hanno budget e baseline congelate in
+   `baseline/`. Queste sono gate: se superano il budget, falliscono.
+2. **Microbenchmark Rust offline**: girano senza database, misurano le
+   superfici CPU-bound del workspace (rendering SQL, compilazione dei read
+   plan, ispezione EWKB, contratto Arrow, pipeline dei piani). Documento e
+   numeri misurati in [`offline-rust-microbench.md`](offline-rust-microbench.md),
+   raw in `raw/offline-rust-microbench.jsonl`. **Non sono un gate**: i budget
+   prestazionali di quelle superfici non sono stati fissati e il workflow
+   `.github/workflows/rust-microbench.yml` si limita a misurare e pubblicare.
+
 ## Harness
 
 ```powershell

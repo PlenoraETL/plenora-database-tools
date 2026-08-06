@@ -18,10 +18,12 @@ BOUND_WORKFLOWS = (
     "ewkb-fuzz.yml",
     "mysql-assurance.yml",
     "mysql-version-matrix.yml",
+    "offline-sanitizer.yml",
     "postgres-postgis-assurance.yml",
     "postgres-postgis-matrix.yml",
     "release-manifest.yml",
     "rust-coverage.yml",
+    "rust-microbench.yml",
     "sqlserver-assurance.yml",
     "sqlserver-azure-assurance.yml",
     "sqlserver-version-matrix.yml",
@@ -53,6 +55,37 @@ class CandidateShaWorkflowTests(unittest.TestCase):
         self.assertIn("--package plenora-db-mysql", workflow)
         self.assertIn("PLENORA_MYSQL_PASSWORD=\"$mysql_password\" cargo llvm-cov", workflow)
         self.assertIn("docker compose -f docker-compose.mysql.yml down --volumes", workflow)
+
+    def test_microbench_measures_without_enforcing_an_unset_budget(self) -> None:
+        """I budget prestazionali offline non sono ancora stati fissati.
+
+        Finche' non li fissa il proprietario del repository, il workflow deve
+        limitarsi a misurare e pubblicare: una soglia inventata sarebbe un
+        gate inerte, che passa sempre e non protegge nulla.
+        """
+        workflow = (WORKFLOWS / "rust-microbench.yml").read_text(encoding="utf-8")
+        # I commenti nominano `--fail-under` per spiegarne l'assenza: qui
+        # conta solo cio' che il runner esegue davvero.
+        executable = "\n".join(
+            line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+        )
+
+        self.assertNotIn("--fail-under", executable)
+        self.assertNotIn("check_", executable)
+        self.assertIn("upload-artifact", workflow)
+        self.assertIn(
+            "I budget prestazionali di queste superfici NON sono stati fissati",
+            workflow,
+        )
+
+    def test_sanitizer_stays_on_the_offline_perimeter(self) -> None:
+        workflow = (WORKFLOWS / "offline-sanitizer.yml").read_text(encoding="utf-8")
+
+        self.assertIn("-Zsanitizer=${{ matrix.sanitizer }}", workflow)
+        # `--target` esplicito evita di instrumentare build script e proc-macro.
+        self.assertIn('--target "$SANITIZER_TARGET"', workflow)
+        self.assertNotIn("docker compose", workflow)
+        self.assertNotIn("--ignored", workflow)
 
     def test_fuzz_lock_uses_the_workspace_core_version(self) -> None:
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))

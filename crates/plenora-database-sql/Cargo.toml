@@ -10,5 +10,9 @@ publish.workspace = true
 plenora-database-core.workspace = true
 serde.workspace = true
 
+# Serve solo al benchmark offline `bench_sql_render`, che emette JSONL.
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
