@@ -10,14 +10,92 @@ cargo-fuzz = true
 # Keep nightly/libFuzzer outside the stable workspace and its MSRV contract.
 [workspace]
 
+# Le versioni delle dipendenze comuni sono pinnate esattamente come in
+# [workspace.dependencies] del progetto principale.
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 plenora-database-core = { path = "../crates/plenora-database-core" }
+plenora-database-sql = { path = "../crates/plenora-database-sql" }
+plenora-database-engine = { path = "../crates/plenora-database-engine" }
+plenora-db-postgres = { path = "../crates/plenora-db-postgres" }
+plenora-db-sqlserver = { path = "../crates/plenora-db-sqlserver" }
+plenora-db-mysql = { path = "../crates/plenora-db-mysql" }
+arrow-schema = "=59.1.0"
 chrono = { version = "=0.4.42", default-features = false, features = ["std"] }
+serde_json = "=1.0.151"
 
 [[bin]]
 name = "ewkb_parser"
 path = "fuzz_targets/ewkb_parser.rs"
+test = false
+doc = false
+bench = false
+
+# Contratto di piano: deserializzazione JSON e validazione offline.
+
+[[bin]]
+name = "plan_contract"
+path = "fuzz_targets/plan_contract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "field_contract"
+path = "fuzz_targets/field_contract.rs"
+test = false
+doc = false
+bench = false
+
+# Costruttore SQL portabile: AST relazionale e SELECT/filtro su ogni dialect.
+
+[[bin]]
+name = "query_ast_render"
+path = "fuzz_targets/query_ast_render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sql_select_render"
+path = "fuzz_targets/sql_select_render.rs"
+test = false
+doc = false
+bench = false
+
+# Superfici provider raggiungibili senza connessione.
+
+[[bin]]
+name = "mysql_read_plan"
+path = "fuzz_targets/mysql_read_plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mysql_query_render"
+path = "fuzz_targets/mysql_query_render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqlserver_read_plan"
+path = "fuzz_targets/sqlserver_read_plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sqlserver_recovery"
+path = "fuzz_targets/sqlserver_recovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "postgres_tls_pem"
+path = "fuzz_targets/postgres_tls_pem.rs"
 test = false
 doc = false
 bench = false
