@@ -62,3 +62,17 @@ nursery = "deny"
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
+# Il default di Rust attiva i controlli di overflow in debug e li disattiva in
+# release: un'aritmetica che va oltre il tipo, in produzione, avvolge in
+# silenzio. Per un componente a semantica fail-closed e' il verso sbagliato —
+# un conteggio di righe o un offset avvolto e' plausibile, falso, e prosegue
+# nella pipeline senza che alcun gate lo veda.
+#
+# Con questa riga l'overflow diventa un panico dichiarato anche in release, e
+# quindi un fallimento visibile invece di un dato corrotto. Il gate anti-panic
+# resta coerente: vieta le primitive di panico *scritte*, non i controlli del
+# compilatore su un'invariante violata.
+#
+# Costo misurato sui microbenchmark offline, riportato in
+# benchmarks/offline-rust-microbench.md.
+overflow-checks = true
