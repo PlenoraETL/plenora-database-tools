@@ -1,0 +1,79 @@
+name: CI
+
+# Formattazione e lint su ogni PR.
+#
+# Prima di questo workflow il repository non eseguiva `cargo clippy` né
+# `cargo fmt` in nessun punto della CI. I lint erano comunque dichiarati in
+# `[workspace.lints.clippy]` con `all`, `pedantic` e `nursery` a `deny`, ma
+# quei gruppi li valuta clippy: `cargo build` e `cargo test` non li vedono. La
+# policy c'era e non veniva applicata da nulla.
+#
+# Gli altri due componenti della famiglia (IO Tools, Data Tools) hanno
+# entrambi questi gate dal proprio `ci.yml`. Questo file colma la differenza.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Formattazione e lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
+    steps:
+      - name: Check out the candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+
+      # `rust-toolchain.toml` fissa 1.92.0 e include già clippy e rustfmt fra i
+      # componenti, quindi non serve installare nulla a mano.
+      - name: Record the execution environment
+        run: |
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: Formattazione
+        run: cargo fmt --all -- --check
+
+      # Bloccante su tutti i target: `all`, `pedantic` e `nursery` sono a
+      # `deny` da `[workspace.lints.clippy]`, e il codebase passa con zero
+      # warning. Da qui in poi il debito lint non può più accumularsi.
+      - name: Clippy (gate)
+        run: cargo clippy --workspace --all-targets --locked
+
+      # Gate anti-panic, nella stessa forma di Data Tools: il perimetro è
+      # `--lib --bins`, cioè il codice che viene distribuito, non i target di
+      # test dove le primitive di panic restano legittime.
+      #
+      # `--all-features` non serve qui: le feature di questo workspace
+      # selezionano i provider, e ognuna è già coperta dal proprio workflow di
+      # assurance.
+      - name: Gate anti-panic
+        run: >
+          cargo clippy --workspace --lib --bins --locked --
+          -D unsafe-code
+          -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+          -D clippy::unreachable -D clippy::todo -D clippy::unimplemented
