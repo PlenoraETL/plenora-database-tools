@@ -108,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "clippy",
                     "--workspace",
                     "--all-targets",
+                    "--locked",
                     "--",
                     "-D",
                     "warnings",
@@ -116,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         (
             "rust-tests",
-            cargo_command(["test", "--workspace", "--all-targets"]),
+            cargo_command(["test", "--workspace", "--all-targets", "--locked"]),
         ),
         (
             "cli-contract",
@@ -124,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 [
                     "run",
                     "-q",
+                    "--locked",
                     "-p",
                     "plenora-database-cli",
                     "--",
