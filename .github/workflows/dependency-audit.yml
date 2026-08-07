@@ -39,11 +39,13 @@ jobs:
       #   Le tre segnalazioni riguardano la validazione dei certificati del
       #   server; la CA di SQL Server è fissata dalla configurazione del
       #   provider e non è controllata da chi invia il piano.
-      # RUSTSEC-2026-0178:
-      #   tokio-postgres 0.7.15 va in panic su un DataRow con meno campi delle
-      #   colonne dichiarate. Richiede un server PostgreSQL ostile: la
-      #   risoluzione è l'aggiornamento a >=0.7.18, fuori dal perimetro di
-      #   questo gate.
+      #
+      # RUSTSEC-2026-0178 NON è più in elenco: risolto alla fonte il
+      # 2026-08-06 aggiornando tokio-postgres da 0.7.15 a 0.7.18. Era un
+      # panic raggiungibile nel decoder wire del driver di riferimento, e
+      # silenziarlo avrebbe contraddetto la postura fail-closed e il gate
+      # anti-panic del componente.
+      #
       # RUSTSEC-2025-0134:
       #   rustls-pemfile è non manutenuto; entra sia direttamente sia via
       #   tiberius. Nessuna vulnerabilità nota.
@@ -51,7 +53,6 @@ jobs:
         --ignore RUSTSEC-2026-0098
         --ignore RUSTSEC-2026-0099
         --ignore RUSTSEC-2026-0104
-        --ignore RUSTSEC-2026-0178
         --ignore RUSTSEC-2025-0134
 
     defaults:

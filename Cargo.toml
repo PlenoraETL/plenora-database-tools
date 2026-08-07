@@ -31,7 +31,10 @@ chrono = { version = "=0.4.42", default-features = false, features = ["std"] }
 futures-util = "=0.3.31"
 tokio = { version = "=1.49.0", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "=0.7.18", features = ["compat"] }
-tokio-postgres = { version = "=0.7.15", features = ["with-chrono-0_4", "with-serde_json-1"] }
+# RUSTSEC-2026-0178: la 0.7.15 va in panic su un `DataRow` con meno campi
+# delle colonne dichiarate, quindi una risposta malformata del server
+# abbatte il processo (DoS, severity 6.9). Risolto in 0.7.18.
+tokio-postgres = { version = "=0.7.18", features = ["with-chrono-0_4", "with-serde_json-1"] }
 tiberius = { version = "=0.12.3", default-features = false, features = ["chrono", "rustls", "tds73"] }
 mysql_async = { version = "=0.37.0", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12", "chrono"] }
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
