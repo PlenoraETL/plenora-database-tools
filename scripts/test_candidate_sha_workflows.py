@@ -15,9 +15,11 @@ CANDIDATE_EXPRESSION = (
     "&& github.event.pull_request.head.sha || github.sha }}"
 )
 BOUND_WORKFLOWS = (
+    "dependency-audit.yml",
     "ewkb-fuzz.yml",
     "mysql-assurance.yml",
     "mysql-version-matrix.yml",
+    "offline-fuzz.yml",
     "postgres-postgis-assurance.yml",
     "postgres-postgis-matrix.yml",
     "release-manifest.yml",
