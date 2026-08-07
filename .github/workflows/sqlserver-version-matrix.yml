@@ -23,6 +23,19 @@ jobs:
   matrix:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+
+    # Senza `pipefail` questo gate non poteva fallire. Lo step di qualifica
+    # manda l'output in pipe a `tee`, e la shell di default di GitHub Actions
+    # e' `bash -e`, che NON imposta pipefail: l'exit code della pipeline era
+    # quello di `tee`, sempre 0. Il fallimento di check_sqlserver_matrix.py
+    # veniva scritto nel log e scartato, e il workflow riportava success.
+    # E' il motivo per cui il disallineamento del registro dei test live e'
+    # sopravvissuto dal 2026-08-04 senza che nessuno lo vedesse.
+    # Gli altri otto workflow del repo hanno gia' questo blocco: qui mancava.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
