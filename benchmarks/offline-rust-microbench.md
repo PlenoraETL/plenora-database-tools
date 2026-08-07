@@ -176,6 +176,47 @@ contro due. Su 128 colonne si resta sotto i 76 us, quindi la compilazione del
 piano non e' un candidato a ottimizzazione finche' la cache di schema
 continua a evitarla nella maggior parte delle preparazioni.
 
+## Costo di `overflow-checks` in release
+
+Prima misura usata per una decisione invece che per un archivio.
+
+Il default di Rust disattiva i controlli di overflow in release: un'aritmetica
+oltre il tipo avvolge in silenzio. Per un componente a semantica fail-closed
+e' il verso sbagliato, ma il costo andava misurato e non stimato. Stesso
+hardware, stessa procedura, unica variabile `overflow-checks` nel profilo.
+
+| scenario | prima (ns/op) | dopo (ns/op) | delta |
+|---|---:|---:|---:|
+| `render_select_narrow_mysql` | 627,0 | 656,5 | +4,7% |
+| `render_query_join_group_postgres` | 2.625,7 | 2.708,3 | +3,1% |
+| `render_select_wide_postgres` | 5.346,5 | 5.484,7 | +2,6% |
+| `render_filter_tree_depth8_postgres` | 62.809,9 | 63.430,4 | +1,0% |
+| `render_select_wide_mysql` | 4.953,2 | 4.998,0 | +0,9% |
+| `validate_schema_spatial_64f` | 18.779,9 | 18.888,3 | +0,6% |
+| `validate_schema_narrow_9f` | 2.836,9 | 2.849,3 | +0,4% |
+| `validate_schema_wide_128f` | 41.673,3 | 41.840,0 | +0,4% |
+| `parse_field_contract_wide_128f` | 41.225,3 | 41.255,4 | +0,1% |
+| `multipolygon_64x2x128` | 676,2 | 667,2 | -1,3% |
+| `linestring_4096` | 12,9 | 12,7 | -1,6% |
+| `polygon_4rings_256` | 18,4 | 18,1 | -1,9% |
+| `point_srid` | 13,0 | 12,6 | -2,9% |
+| `linestring_64` | 13,2 | 12,8 | -3,4% |
+| `collection_depth32` | 278,0 | 266,2 | -4,2% |
+
+**Mediana +0,4%**, peggiore +4,7%, migliore -4,2%. Sei scenari su quindici
+risultano piu' veloci: l'effetto reale e' dentro il rumore di misura per la
+maggior parte del carico, e il caso peggiore vale 29 nanosecondi su
+un'operazione di rendering SQL.
+
+Il gradiente ha comunque una logica leggibile: il costo si concentra sul
+rendering SQL, che fa aritmetica su indici e posizioni di placeholder, mentre
+la scansione EWKB non ne risente — coerente con il fatto che quello scanner e'
+O(header) e salta le coordinate invece di leggerle.
+
+Verifica di accompagnamento: `cargo test --workspace --release --locked` con i
+controlli attivi passa 375 test su 375. Nessun overflow latente nel percorso
+esercitato dalla suite.
+
 ## Cosa resta aperto
 
 1. **I budget.** Nessuna soglia e' stata fissata. Servono almeno: quale
