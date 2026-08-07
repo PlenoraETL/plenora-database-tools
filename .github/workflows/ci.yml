@@ -77,3 +77,11 @@ jobs:
           -D unsafe-code
           -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
           -D clippy::unreachable -D clippy::todo -D clippy::unimplemented
+
+      # I workflow provider eseguono i propri test mirati, ma nessuno esegue la
+      # suite intera su ogni PR: `plenora-database-engine`, il testkit e la CLI
+      # potevano regredire senza che un gate obbligatorio lo vedesse. Costo
+      # misurato: 375 test in una quindicina di secondi, dei quali 73 `ignored`
+      # perché richiedono un database vivo e restano ai workflow di assurance.
+      - name: Test
+        run: cargo test --workspace --all-targets --locked
