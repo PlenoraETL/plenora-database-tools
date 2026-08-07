@@ -19,6 +19,14 @@ jobs:
       PLENORA_SQLSERVER_DATABASE: ${{ secrets.PLENORA_AZURE_SQL_DATABASE }}
       PLENORA_SQLSERVER_USER: ${{ secrets.PLENORA_AZURE_SQL_USER }}
       PLENORA_SQLSERVER_PASSWORD: ${{ secrets.PLENORA_AZURE_SQL_PASSWORD }}
+
+    # Allineamento alla convenzione degli altri workflow. Qui nessuno step usa
+    # una pipe, quindi non c'era un gate neutralizzato: e' una lacuna latente,
+    # chiusa perche' la prima pipe aggiunta in futuro non la riapra in silenzio.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
