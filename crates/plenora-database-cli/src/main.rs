@@ -290,18 +290,15 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         )
         .await?;
     let mut report = write_stream_to_ipc(Path::new(&output), stream.as_mut()).await?;
-    report
+    // Un solo `as_object_mut`: le due `expect` che seguivano ripetevano un
+    // controllo gia' fatto qui sopra, e ripeterlo con un panico invece che con
+    // un errore era l'unico punto del binario che poteva abbattere il processo.
+    let oggetto = report
         .as_object_mut()
-        .ok_or_else(|| CliError::from("report Arrow IPC non valido"))?
-        .insert("provider".to_owned(), json!(ProviderKind::Postgres));
-    report
-        .as_object_mut()
-        .expect("report IPC costruito come oggetto")
-        .insert("row_order".to_owned(), json!(row_order));
-    report
-        .as_object_mut()
-        .expect("report IPC costruito come oggetto")
-        .insert("limits".to_owned(), limits_report);
+        .ok_or_else(|| CliError::from("report Arrow IPC non valido"))?;
+    oggetto.insert("provider".to_owned(), json!(ProviderKind::Postgres));
+    oggetto.insert("row_order".to_owned(), json!(row_order));
+    oggetto.insert("limits".to_owned(), limits_report);
     print_json(&report)
 }
 
@@ -740,7 +737,16 @@ fn parse_provider_arguments(
                     port,
                     tls,
                 }),
-                _ => unreachable!("ramo limitato a MySQL e SQL Server"),
+                // Il ramo esterno restringe gia' a MySQL e SQL Server, quindi
+                // qui non si arriva. Se un domani si aggiungesse una variante
+                // al ramo esterno senza aggiungerla qui, e' meglio l'errore
+                // che il processo abbattuto: e' lo stesso che darebbe il ramo
+                // `unsupported_kind` piu' sotto.
+                _ => Err(CliError(DatabaseError::unsupported(
+                    kind,
+                    ErrorPhase::Prepare,
+                    "provider dichiarato dal contratto ma adapter non disponibile",
+                ))),
             }
         }
         unsupported_kind => Err(CliError(DatabaseError::unsupported(
@@ -939,7 +945,13 @@ fn postgres_provider_for_probe_with_tls(tls: &TlsPathEnvironments) -> CliResult<
             let key = read_bounded_tls_material(&key_path)?;
             PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
         }
-        _ => unreachable!("il parser richiede certificato e chiave TLS insieme"),
+        // Il parser accetta certificato e chiave solo insieme, quindi qui non
+        // si arriva. La coppia di `Option` pero' non lo dice al compilatore, e
+        // un errore e' preferibile al processo abbattuto se quell'invariante
+        // dovesse cambiare.
+        _ => {
+            return Err("l'identità client TLS richiede certificato e chiave insieme".into());
+        }
     };
     Ok(PostgresProvider::default()
         .with_tls_mode(PostgresTlsMode::Require)
