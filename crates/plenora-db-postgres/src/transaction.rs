@@ -640,6 +640,29 @@ impl<'a> tokio_postgres::types::FromSql<'a> for EnumLabel {
     }
 }
 
+/// Wrapper `FromSql` per tipi Postgres il cui wire format è UTF-8 testuale
+/// ma che non hanno un mapping `FromSql<String>` nativo in `tokio_postgres`.
+/// Copre: `tsvector`, `tsquery`, `xml`.
+///
+/// **Non** copre `cidr`, `inet`, `macaddr`, `money`: questi hanno wire
+/// format binario Postgres-specifico (byte header + payload); per ora il
+/// consumer deve fare cast esplicito lato SQL (`column::text`) o usare
+/// il data plane Arrow.
+struct PostgresTextRepr(String);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for PostgresTextRepr {
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(std::str::from_utf8(raw)?.to_owned()))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(*ty, Type::TS_VECTOR | Type::TSQUERY | Type::XML)
+    }
+}
+
 #[allow(clippy::too_many_lines)] // catalogo Postgres type → ParameterValue intenzionalmente lineare
 fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
     use tokio_postgres::types::Kind;
@@ -696,6 +719,18 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
             Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => row
                 .try_get::<_, Option<String>>(index)
                 .map(|v| optional_to_param(v, &type_name, ParameterValue::String))
+                .map_err(crate::error::row_decode_error)?,
+            // Tipi estesi con wire format testuale: tsvector/tsquery per
+            // full-text search, xml. Decodificati come ParameterValue::String
+            // con rappresentazione canonica Postgres.
+            //
+            // cidr/inet/macaddr/money hanno wire binario: se il consumer
+            // vuole leggerli deve usare cast esplicito `column::text`.
+            Type::TS_VECTOR | Type::TSQUERY | Type::XML => row
+                .try_get::<_, Option<PostgresTextRepr>>(index)
+                .map(|v| {
+                    optional_to_param(v.map(|t| t.0), &type_name, ParameterValue::String)
+                })
                 .map_err(crate::error::row_decode_error)?,
             Type::BYTEA => row
                 .try_get::<_, Option<Vec<u8>>>(index)
@@ -1343,6 +1378,115 @@ mod live {
 
         assert_eq!(rows.len(), 3);
         drop_table("b1_srid").await;
+    }
+
+    // === P2a+P2b: Tipi Postgres extra (tsvector/tsquery/xml/net/money) ===
+
+    #[tokio::test]
+    async fn live_read_tsvector_as_string() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT to_tsvector('english', 'a fast brown fox')"),
+            &cancel,
+        )
+        .await
+        .expect("tsvector read");
+        match &row[0] {
+            ParameterValue::String(s) => {
+                // Rappresentazione canonica: lexemi con posizioni
+                assert!(s.contains("brown"));
+                assert!(s.contains("fox"));
+            }
+            other => panic!("expected String, got {other:?}"),
+        }
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_read_tsquery_as_string() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT 'plenora & database'::tsquery"),
+            &cancel,
+        )
+        .await
+        .expect("tsquery read");
+        assert!(matches!(&row[0], ParameterValue::String(s) if s.contains("plenora")));
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_read_xml_as_string() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT '<root><item>x</item></root>'::xml"),
+            &cancel,
+        )
+        .await
+        .expect("xml read");
+        assert!(matches!(&row[0], ParameterValue::String(s) if s.contains("<root>")));
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_read_network_types_via_text_cast() {
+        // Pattern documentato per cidr/inet/macaddr/money: cast lato SQL
+        // a text perché il wire binario Postgres per questi tipi non è
+        // UTF-8 e non è direttamente decodificabile via wrapper generico.
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new(
+                "SELECT '192.168.0.0/24'::cidr::text AS c, \
+                        '10.0.0.5'::inet::text AS i, \
+                        '08:00:2b:01:02:03'::macaddr::text AS m, \
+                        '08:00:2b:01:02:03:04:05'::macaddr8::text AS m8, \
+                        1234.56::money::text AS money_txt",
+            ),
+            &cancel,
+        )
+        .await
+        .expect("net types via ::text");
+        assert!(matches!(&row["c"], ParameterValue::String(s) if s.contains("192.168.0.0")));
+        assert!(matches!(&row["i"], ParameterValue::String(s) if s.contains("10.0.0.5")));
+        assert!(matches!(&row["m"], ParameterValue::String(s) if s.contains("08:00:2b")));
+        assert!(matches!(&row["m8"], ParameterValue::String(s) if s.contains("08:00")));
+        // money è locale-dependent (es. "$1,234.56" o "€1.234,56"): verifico
+        // solo che sia non-vuoto e contenga cifre.
+        assert!(matches!(&row["money_txt"], ParameterValue::String(s)
+                if !s.is_empty() && s.chars().any(|c| c.is_ascii_digit())));
+        tx.rollback(&cancel).await.expect("rollback");
     }
 
     // === P1a: Enum + Domain type safety ===
