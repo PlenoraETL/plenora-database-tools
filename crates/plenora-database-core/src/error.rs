@@ -16,6 +16,11 @@ pub enum ErrorCategory {
     Unsupported,
     NotFound,
     Conflict,
+    /// Update ottimistico rifiutato: la versione attesa non corrisponde più
+    /// allo stato corrente. Distinta da `NotFound` (chiave inesistente) e da
+    /// `Conflict` (violazione integrità): il consumer deve poter reagire con
+    /// una politica di retry/refresh dedicata.
+    ConcurrentModification,
     Authentication,
     Authorization,
     Timeout,

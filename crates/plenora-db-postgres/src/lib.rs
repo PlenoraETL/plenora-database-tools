@@ -18,8 +18,12 @@ mod query_execution;
 mod query_plan;
 mod read_stream;
 mod schema_cache;
+mod spatial;
+mod transaction;
 mod types;
 mod write;
+
+pub use spatial::{build_spatial_select, spatial_reference};
 
 pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode};
 pub use metrics::PostgresMetricsSnapshot;
@@ -660,6 +664,42 @@ impl Provider for PostgresProvider {
             .await;
             if result.is_ok() {
                 self.invalidate_cached_schema(secret, &target);
+            }
+            result
+        })
+    }
+
+    fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a plenora_database_core::transaction::TransactionOptions,
+        _budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
+        Box::pin(async move {
+            let client = self.connect_session(secret).await?;
+            let transaction =
+                transaction::PostgresTransaction::begin(client, options, cancellation).await?;
+            Ok(Box::new(transaction) as Box<dyn plenora_database_core::transaction::TransactionScope>)
+        })
+    }
+
+    fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            error::check_cancelled(cancellation, ErrorPhase::Prepare)?;
+            let mut client = self.connect_session(secret).await?;
+            let result = client
+                .client_mut()?
+                .batch_execute(sql)
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error));
+            if result.is_err() {
+                client.invalidate();
             }
             result
         })

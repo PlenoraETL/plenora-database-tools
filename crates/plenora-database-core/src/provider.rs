@@ -5,6 +5,7 @@ use crate::outcome::WriteOutcome;
 use crate::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
 use crate::query::QueryOperation;
 use crate::resource::{ResourceBudget, ResourceLease};
+use crate::transaction::{TransactionOptions, TransactionScope};
 use crate::CancellationToken;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -226,4 +227,59 @@ pub trait Provider: Send + Sync {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome>;
+
+    /// Apre una transazione applicativa multi-statement.
+    ///
+    /// Il default restituisce `Unsupported`: solo i provider che hanno
+    /// dichiarato la capability `application_oltp` (Fase A del piano PFM)
+    /// devono sovrascrivere questa implementazione.
+    fn begin_transaction<'a>(
+        &'a self,
+        _secret: &'a SecretString,
+        _options: &'a TransactionOptions,
+        _budget: &'a ResourceBudget,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
+        Box::pin(async move {
+            Err(crate::DatabaseError::unsupported(
+                self.kind(),
+                crate::ErrorPhase::Prepare,
+                "transaction scope non supportato dal provider",
+            ))
+        })
+    }
+
+    /// Esegue una o più statement DDL **fuori transazione** (autocommit).
+    ///
+    /// Escape hatch per statement che il DB non consente in transazione:
+    /// tipico `CREATE INDEX CONCURRENTLY` (`PostgreSQL`), `VACUUM`, alcuni
+    /// `ALTER SYSTEM`. Il consumer target è un migration tool esterno
+    /// (refinery, sqlx-migrate) che orchestra l'evoluzione schema.
+    ///
+    /// # Rischi
+    ///
+    /// Nessuna semantica transazionale: se lo statement fallisce a metà,
+    /// il chiamante deve verificare lo stato del DB fuori banda. La libreria
+    /// **non** produce `OutcomeUnknown` qui — un errore è un errore.
+    ///
+    /// # Governance
+    ///
+    /// `NativeQueryPolicy` **non si applica** a questo metodo (per
+    /// definizione DDL). Il chiamante ha piena responsabilità: deve essere
+    /// invocato solo da codice migration autorizzato, non dal path
+    /// applicativo di dominio.
+    fn execute_ddl<'a>(
+        &'a self,
+        _secret: &'a SecretString,
+        _sql: &'a str,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            Err(crate::DatabaseError::unsupported(
+                self.kind(),
+                crate::ErrorPhase::Prepare,
+                "execute_ddl non supportato dal provider",
+            ))
+        })
+    }
 }
