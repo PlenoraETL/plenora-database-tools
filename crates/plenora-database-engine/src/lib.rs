@@ -1,7 +1,11 @@
-//! Fasi offline `parse -> validate -> fingerprint -> prepare`.
+//! Fasi offline `parse -> validate -> fingerprint -> prepare` + helper di
+//! orchestrazione runtime (retry, ...).
 //!
 //! L'esecuzione remota sarà aggiunta dagli adapter provider senza introdurre
 //! `match` sui provider nell'executor.
+
+pub mod retry;
+pub use retry::{retry_with_policy, RetryPolicy};
 
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::plan::{
