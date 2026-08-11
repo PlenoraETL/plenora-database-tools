@@ -142,6 +142,10 @@ fn phase_of(sql: &str) -> ErrorPhase {
 }
 
 impl TransactionScope for PostgresTransaction {
+    fn provider_kind(&self) -> plenora_database_core::plan::ProviderKind {
+        plenora_database_core::plan::ProviderKind::Postgres
+    }
+
     fn execute<'a>(
         &'a mut self,
         statement: &'a Statement,
@@ -1293,6 +1297,239 @@ mod live {
 
         assert_eq!(rows.len(), 3);
         drop_table("b1_srid").await;
+    }
+
+    // === F1e: Spatial predicate nell'AST portable ===
+
+    #[tokio::test]
+    async fn live_portable_spatial_intersects_end_to_end() {
+        use plenora_database_core::facade::execute_portable_returning;
+        use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+        use plenora_database_core::portable::{
+            select as p_select, spatial as p_spatial, Direction,
+        };
+        use plenora_database_core::{SpatialPredicate, SpatialReference};
+
+        // Setup 3 punti in SRID 4326 (Milano, Roma, Parigi).
+        setup_spatial_scratch("f1e_portable").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+
+        // Estrai un polygon di riferimento dal DB come EWKB (bbox Italia).
+        let bbox_ewkb =
+            fetch_ewkb("ST_SetSRID(ST_MakeEnvelope(6.0, 40.0, 14.0, 46.0), 4326)").await;
+
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // SELECT id FROM f1e_portable WHERE ST_Intersects(geom, <bbox>)
+        let stmt = p_select("f1e_portable", vec!["id"])
+            .where_(p_spatial(
+                "geom",
+                SpatialPredicate::Intersects,
+                SpatialReference {
+                    ewkb: bbox_ewkb,
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .order_by("id", Direction::Asc)
+            .into_statement();
+
+        let rows = execute_portable_returning(tx.as_mut(), &stmt, &cancel)
+            .await
+            .expect("spatial query");
+
+        // Milano (id=1) e Roma (id=2) dentro; Parigi (id=3) fuori.
+        let ids: Vec<i32> = rows
+            .iter()
+            .filter_map(|r| match r.get_index(0) {
+                Some(ParameterValue::I32(v)) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+
+        tx.rollback(&cancel).await.expect("rollback");
+        drop_table("f1e_portable").await;
+    }
+
+    #[tokio::test]
+    async fn live_portable_spatial_dwithin_end_to_end() {
+        use plenora_database_core::facade::execute_portable_returning;
+        use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+        use plenora_database_core::portable::{select as p_select, spatial as p_spatial};
+        use plenora_database_core::{SpatialPredicate, SpatialReference};
+
+        setup_spatial_scratch("f1e_dwithin").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+
+        // Punto vicino a Milano.
+        let near_milan = fetch_ewkb("ST_SetSRID(ST_MakePoint(9.191, 45.46), 4326)").await;
+
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let stmt = p_select("f1e_dwithin", vec!["id"])
+            .where_(p_spatial(
+                "geom",
+                SpatialPredicate::DWithin {
+                    distance_meters: 0.01,
+                },
+                SpatialReference {
+                    ewkb: near_milan,
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+
+        let rows = execute_portable_returning(tx.as_mut(), &stmt, &cancel)
+            .await
+            .expect("spatial dwithin");
+
+        // Solo Milano è entro ~0.01° dal punto di riferimento.
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].get_index(0), Some(ParameterValue::I32(1))));
+
+        tx.rollback(&cancel).await.expect("rollback");
+        drop_table("f1e_dwithin").await;
+    }
+
+    // === F1d: RETURNING canonico via facade portable ===
+
+    #[tokio::test]
+    async fn live_execute_portable_returning_produces_generated_id() {
+        use plenora_database_core::facade::execute_portable_returning_one;
+        use plenora_database_core::portable::{Expression, InsertStatement, PortableStatement, TableRef};
+
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // Setup temp table con SERIAL id
+        tx.execute(
+            &Statement::new(
+                "CREATE TEMP TABLE f1d_returning (id SERIAL PRIMARY KEY, v INT) ON COMMIT DROP",
+            ),
+            &cancel,
+        )
+        .await
+        .expect("temp");
+
+        // INSERT ... RETURNING id via portable AST
+        let insert = PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("f1d_returning"),
+            columns: vec!["v".into()],
+            values: vec![vec![Expression::literal(ParameterValue::I32(99))]],
+            returning: vec!["id".into(), "v".into()],
+        });
+        let row = execute_portable_returning_one(tx.as_mut(), &insert, &cancel)
+            .await
+            .expect("returning");
+
+        // Verifica colonne + valori
+        assert_eq!(row.len(), 2);
+        let id = match &row["id"] {
+            ParameterValue::I32(v) => *v,
+            other => panic!("expected i32 id, got {other:?}"),
+        };
+        assert!(id >= 1);
+        assert!(matches!(&row["v"], ParameterValue::I32(99)));
+
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_execute_portable_without_returning_via_facade_rejects_returning() {
+        use plenora_database_core::facade::execute_portable;
+        use plenora_database_core::portable::{
+            Expression, InsertStatement, PortableStatement, TableRef,
+        };
+
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // INSERT con RETURNING passato a execute_portable → InvalidPlan.
+        let insert_with_returning = PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("t"),
+            columns: vec!["x".into()],
+            values: vec![vec![Expression::literal(ParameterValue::I32(1))]],
+            returning: vec!["id".into()],
+        });
+        let err = execute_portable(tx.as_mut(), &insert_with_returning, &cancel)
+            .await
+            .expect_err("returning richiede execute_portable_returning");
+        assert_eq!(
+            err.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
+
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_execute_portable_returning_via_update() {
+        use plenora_database_core::facade::execute_portable_returning;
+        use plenora_database_core::portable::{
+            eq as p_eq, Expression, PortableStatement, TableRef, UpdateStatement,
+        };
+
+        scratch_table("f1d_upd_ret").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // Seed
+        tx.execute(
+            &Statement::new("INSERT INTO f1d_upd_ret VALUES (1, 'orig'), (2, 'orig')"),
+            &cancel,
+        )
+        .await
+        .expect("seed");
+
+        // UPDATE ... RETURNING id, v — deve tornare 2 righe con i nuovi valori
+        let update = PortableStatement::Update(UpdateStatement {
+            table: TableRef::new("f1d_upd_ret"),
+            assignments: vec![(
+                "v".into(),
+                Expression::literal(ParameterValue::String("new".into())),
+            )],
+            filter: Some(p_eq("v", ParameterValue::String("orig".into()))),
+            returning: vec!["id".into(), "v".into()],
+        });
+        let rows = execute_portable_returning(tx.as_mut(), &update, &cancel)
+            .await
+            .expect("returning");
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(matches!(&row["v"], ParameterValue::String(s) if s == "new"));
+        }
+
+        tx.rollback(&cancel).await.expect("rollback");
+        drop_table("f1d_upd_ret").await;
     }
 
     // === F1c: PortableStatement AST end-to-end ===

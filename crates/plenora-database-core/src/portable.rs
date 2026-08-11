@@ -18,6 +18,7 @@
 
 use crate::plan::ProviderKind;
 use crate::provider::ParameterValue;
+use crate::spatial_predicate::{SpatialPredicate, SpatialReference};
 use crate::transaction::Statement;
 use crate::{DatabaseError, Result};
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,28 @@ pub enum Predicate {
     And { predicates: Vec<Self> },
     Or { predicates: Vec<Self> },
     Not { predicate: Box<Self> },
+    /// Predicato spaziale su una colonna geometry. La geometria di
+    /// riferimento viene bindata come `bytea` (EWKB) e rehydratata
+    /// server-side (`ST_GeomFromEWKB($n)::geometry` su `PostGIS`).
+    Spatial {
+        column: String,
+        predicate: SpatialPredicate,
+        reference: SpatialReference,
+    },
+}
+
+/// Costruttore fluente per un predicato spaziale.
+#[must_use]
+pub fn spatial(
+    column: impl Into<String>,
+    predicate: SpatialPredicate,
+    reference: SpatialReference,
+) -> Predicate {
+    Predicate::Spatial {
+        column: column.into(),
+        predicate,
+        reference,
+    }
 }
 
 /// Projection: tutte le colonne o lista esplicita.
@@ -474,6 +497,39 @@ fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<Strin
         Predicate::Not { predicate } => {
             let inner = compile_predicate(predicate, ctx)?;
             Ok(format!("NOT ({inner})"))
+        }
+        Predicate::Spatial {
+            column,
+            predicate,
+            reference,
+        } => compile_spatial(column, predicate, reference, ctx),
+    }
+}
+
+fn compile_spatial(
+    column: &str,
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    let col = quote_identifier(column)?;
+    let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    let geom_expr = format!("ST_GeomFromEWKB({geom_placeholder})::geometry");
+    match predicate {
+        SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col}, {geom_expr})")),
+        SpatialPredicate::Contains => Ok(format!("ST_Contains({col}, {geom_expr})")),
+        SpatialPredicate::Within => Ok(format!("ST_Within({col}, {geom_expr})")),
+        SpatialPredicate::BoundingBox => Ok(format!("{col} && {geom_expr}")),
+        SpatialPredicate::DWithin { distance_meters } => {
+            if !distance_meters.is_finite() || *distance_meters < 0.0 {
+                return Err(DatabaseError::invalid_plan(
+                    "DWithin richiede distanza finita non-negativa",
+                ));
+            }
+            let dist_placeholder = ctx.bind(ParameterValue::F64(*distance_meters));
+            Ok(format!(
+                "ST_DWithin({col}, {geom_expr}, {dist_placeholder})"
+            ))
         }
     }
 }
@@ -899,6 +955,122 @@ mod tests {
             })
             .into_statement();
         assert!(compile_portable(ProviderKind::Postgres, &stmt).is_err());
+    }
+
+    #[test]
+    fn spatial_predicate_intersects_binds_ewkb() {
+        use crate::geometry::{Dimensions, SpatialSemantics};
+        let stmt = select("buildings", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::Intersects,
+                SpatialReference {
+                    ewkb: vec![0x01, 0x02, 0x03],
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+        assert!(
+            compiled
+                .sql
+                .contains(r#"ST_Intersects("geom", ST_GeomFromEWKB($1)::geometry)"#),
+            "sql inatteso: {}",
+            compiled.sql
+        );
+        assert_eq!(compiled.params.len(), 1);
+        assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &[0x01, 0x02, 0x03]));
+    }
+
+    #[test]
+    fn spatial_predicate_dwithin_binds_distance() {
+        use crate::geometry::{Dimensions, SpatialSemantics};
+        let stmt = select("poi", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::DWithin {
+                    distance_meters: 250.0,
+                },
+                SpatialReference {
+                    ewkb: vec![0xff],
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+        assert!(compiled
+            .sql
+            .contains(r#"ST_DWithin("geom", ST_GeomFromEWKB($1)::geometry, $2)"#));
+        assert_eq!(compiled.params.len(), 2);
+        assert!(matches!(&compiled.params[1], ParameterValue::F64(v) if *v == 250.0));
+    }
+
+    #[test]
+    fn spatial_dwithin_negative_distance_is_rejected() {
+        use crate::geometry::{Dimensions, SpatialSemantics};
+        let stmt = select("t", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::DWithin {
+                    distance_meters: -1.0,
+                },
+                SpatialReference {
+                    ewkb: vec![0x00],
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        assert!(compile_portable(ProviderKind::Postgres, &stmt).is_err());
+    }
+
+    #[test]
+    fn spatial_bounding_box_uses_index_operator() {
+        use crate::geometry::{Dimensions, SpatialSemantics};
+        let stmt = select("t", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::BoundingBox,
+                SpatialReference {
+                    ewkb: vec![0x01],
+                    srid: 4326,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+        assert!(compiled.sql.contains(r#""geom" && ST_GeomFromEWKB"#));
+    }
+
+    #[test]
+    fn spatial_composes_with_scalar_predicates() {
+        use crate::geometry::{Dimensions, SpatialSemantics};
+        // Filtro composto: bbox AND status = 'active'
+        let stmt = select("buildings", vec!["id", "name"])
+            .where_(and(vec![
+                spatial(
+                    "geom",
+                    SpatialPredicate::Intersects,
+                    SpatialReference {
+                        ewkb: vec![0x0a, 0x0b],
+                        srid: 4326,
+                        dimensions: Dimensions::Xy,
+                        semantics: SpatialSemantics::Geometry,
+                    },
+                ),
+                eq("status", ParameterValue::String("active".into())),
+            ]))
+            .into_statement();
+        let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+        assert!(compiled.sql.contains("ST_Intersects"));
+        assert!(compiled.sql.contains(r#""status" = $2"#));
+        assert_eq!(compiled.params.len(), 2);
     }
 
     #[test]

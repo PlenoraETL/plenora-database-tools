@@ -4,6 +4,7 @@
 //! righe via `TransactionScope::query` (canonicamente `Vec<ParameterValue>`)
 //! e le convertono nel tipo scalare richiesto. Restano provider-neutral.
 
+use crate::portable::{compile_portable, PortableStatement};
 use crate::provider::ParameterValue;
 use crate::row::Row;
 use crate::transaction::{Statement, TransactionScope};
@@ -154,6 +155,98 @@ macro_rules! scalar_getter {
         }
     };
 }
+
+// ============================================================================
+//  Facade portable: compila l'AST + esegue in un colpo solo.
+// ============================================================================
+
+const fn statement_has_returning(stmt: &PortableStatement) -> bool {
+    match stmt {
+        PortableStatement::Select(_) => true, // SELECT ritorna sempre righe
+        PortableStatement::Insert(s) => !s.returning.is_empty(),
+        PortableStatement::Update(s) => !s.returning.is_empty(),
+        PortableStatement::Delete(s) => !s.returning.is_empty(),
+        PortableStatement::Upsert(s) => !s.returning.is_empty(),
+    }
+}
+
+/// Compila ed esegue un `PortableStatement` come DML (INSERT/UPDATE/DELETE/
+/// UPSERT senza RETURNING). Ritorna il numero di righe modificate.
+///
+/// Per statement con RETURNING o SELECT usa `execute_portable_returning`.
+///
+/// # Errors
+///
+/// - `InvalidPlan` se l'AST ha vincoli violati o se contiene RETURNING
+///   (usa `execute_portable_returning`)
+/// - errori tecnici propagati dal driver
+pub async fn execute_portable(
+    tx: &mut dyn TransactionScope,
+    statement: &PortableStatement,
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    if matches!(statement, PortableStatement::Select(_)) {
+        return Err(DatabaseError::invalid_plan(
+            "execute_portable non accetta SELECT: usa execute_portable_returning",
+        ));
+    }
+    if statement_has_returning(statement) {
+        return Err(DatabaseError::invalid_plan(
+            "execute_portable non accetta statement con RETURNING: usa execute_portable_returning",
+        ));
+    }
+    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    tx.execute(&compiled, cancellation).await
+}
+
+/// Compila ed esegue un `PortableStatement` che restituisce righe:
+/// SELECT o INSERT/UPDATE/DELETE/UPSERT con RETURNING.
+///
+/// # Errors
+///
+/// - `InvalidPlan` se lo statement non ha RETURNING (o non è SELECT)
+/// - errori tecnici propagati dal driver
+///
+/// # Note su portabilità
+///
+/// Il compiler `PostgreSQL` produce `RETURNING`. Su `SQL Server` verrà
+/// compilato in `OUTPUT` (F2). Su `MySQL` la strategia è ancora aperta:
+/// `MySQL 8.0.31+` supporta `INSERT ... RETURNING` per singola riga,
+/// per gli altri casi servirà `LAST_INSERT_ID()` + follow-up SELECT
+/// (documentato in Fase 2 come limitazione motivata).
+pub async fn execute_portable_returning(
+    tx: &mut dyn TransactionScope,
+    statement: &PortableStatement,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Row>> {
+    if !statement_has_returning(statement) {
+        return Err(DatabaseError::invalid_plan(
+            "execute_portable_returning richiede RETURNING (o SELECT)",
+        ));
+    }
+    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    tx.query(&compiled, cancellation).await
+}
+
+/// Come `execute_portable_returning` ma esige esattamente una riga.
+///
+/// # Errors
+///
+/// - `NotFound` se 0 righe
+/// - `Conflict` se >1 righe
+/// - `InvalidPlan` se lo statement non ha RETURNING
+pub async fn execute_portable_returning_one(
+    tx: &mut dyn TransactionScope,
+    statement: &PortableStatement,
+    cancellation: &CancellationToken,
+) -> Result<Row> {
+    let rows = execute_portable_returning(tx, statement, cancellation).await?;
+    expect_single_row(rows)
+}
+
+// ============================================================================
+//  Facade scalar (tipizzata per valore scalare 1x1)
+// ============================================================================
 
 scalar_getter!(execute_scalar_bool, bool, "bool", ParameterValue::Bool(v) => v);
 scalar_getter!(execute_scalar_i32, i32, "i32", ParameterValue::I32(v) => v);

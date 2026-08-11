@@ -173,6 +173,10 @@ pub fn concurrent_modification_error(message: impl Into<String>) -> crate::Datab
 /// quarantena: la transazione non chiusa esplicitamente non può essere
 /// riutilizzata come sana.
 pub trait TransactionScope: Send {
+    /// Ritorna il provider al quale la transazione è collegata.
+    /// Usato dalle facade portable per selezionare il compilatore SQL.
+    fn provider_kind(&self) -> crate::plan::ProviderKind;
+
     fn execute<'a>(
         &'a mut self,
         statement: &'a Statement,

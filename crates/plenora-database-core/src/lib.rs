@@ -35,15 +35,22 @@ pub use conformance::{
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
 pub use row::Row;
+pub use facade::{
+    execute_portable, execute_portable_returning, execute_portable_returning_one,
+    execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal,
+    execute_scalar_f64, execute_scalar_i32, execute_scalar_i64, execute_scalar_json,
+    execute_scalar_string, execute_scalar_timestamp, execute_scalar_timestamptz,
+    execute_scalar_uuid, query_one, query_optional,
+};
 pub use metrics_recorder::{
     noop_recorder, CollectRecorder, MetricEvent, MetricName, MetricTags, MetricValue,
     MetricsRecorder, NoopRecorder, OperationKind, SharedRecorder,
 };
 pub use native_query_policy::{enforce_policy, NativeQueryPolicy};
 pub use portable::{
-    and, compile_portable, eq, or, select, select_all, DeleteStatement, Direction, Expression,
-    InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection, SelectStatement,
-    TableRef, UpdateStatement, UpsertStatement,
+    and, compile_portable, eq, or, select, select_all, spatial, DeleteStatement, Direction,
+    Expression, InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection,
+    SelectStatement, TableRef, UpdateStatement, UpsertStatement,
 };
 pub use spatial_predicate::{SpatialFilter, SpatialPredicate, SpatialReference};
 pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
