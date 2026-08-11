@@ -90,6 +90,7 @@ fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Result<
             query.bind(encoded);
         }
         ParameterValue::Wkb { bytes, .. } => query.bind(bytes.clone()),
+        ParameterValue::Enum { label, .. } => query.bind(label.clone()),
         ParameterValue::Null { .. } => {
             return Err(unsupported(
                 "NULL bindato SQL Server richiede un tipo target risolto",
@@ -141,6 +142,7 @@ fn parameter_type(value: &ParameterValue) -> Result<&'static str> {
         } else {
             "varbinary(max)"
         }),
+        ParameterValue::Enum { label, .. } => Ok(string_parameter_type(label)),
         ParameterValue::Null { .. } => Err(unsupported(
             "NULL bindato SQL Server richiede un tipo target risolto",
         )),

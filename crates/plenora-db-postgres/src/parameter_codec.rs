@@ -213,7 +213,7 @@ fn parameter_value_type(value: &ParameterValue) -> Option<Type> {
         ParameterValue::I32(_) => Some(Type::INT4),
         ParameterValue::I64(_) => Some(Type::INT8),
         ParameterValue::F64(_) => Some(Type::FLOAT8),
-        ParameterValue::String(_) => Some(Type::TEXT),
+        ParameterValue::String(_) | ParameterValue::Enum { .. } => Some(Type::TEXT),
         ParameterValue::Bytes(_) | ParameterValue::Wkb { .. } => Some(Type::BYTEA),
         ParameterValue::Date(_) => Some(Type::DATE),
         ParameterValue::Timestamp(_) => Some(Type::TIMESTAMP),
@@ -423,6 +423,7 @@ pub fn bind_parameters(
                 ParameterValue::Wkb { bytes, .. } => Box::new(bytes.clone()),
                 ParameterValue::Decimal(value) => Box::new(DecimalParameter::parse(value)?),
                 ParameterValue::Uuid(value) => Box::new(UuidParameter::parse(value)?),
+                ParameterValue::Enum { label, .. } => Box::new(label.clone()),
                 ParameterValue::Null { type_name } => Box::new(TypedNull(type_name.clone())),
             };
             Ok(boxed)

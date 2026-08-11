@@ -519,6 +519,12 @@ fn encode_param(param: &ParameterValue) -> Result<SqlParam> {
         ParameterValue::Wkb { .. } => Err(unsupported_param(
             "geometrie non supportate nel path OLTP: usare il piano dati",
         )),
+        ParameterValue::Enum { label, .. } => {
+            // Il wire format Postgres per enum è la label testuale. Se la
+            // colonna target è enum, Postgres applica implicit cast dal
+            // text. In altri contesti il consumer deve usare `$1::mood`.
+            Ok(SqlParam::String(label.clone()))
+        }
         ParameterValue::Null { type_name } => Ok(SqlParam::Null(map_null_type(type_name))),
     }
 }
@@ -617,11 +623,51 @@ fn decode_rows(rows: &[tokio_postgres::Row]) -> Result<Vec<Row>> {
     Ok(out)
 }
 
+/// Wrapper `FromSql` che accetta un valore di qualsiasi enum e ne estrae
+/// il label testuale (che è il wire format nativo Postgres per gli enum).
+struct EnumLabel(String);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for EnumLabel {
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(std::str::from_utf8(raw)?.to_owned()))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(ty.kind(), tokio_postgres::types::Kind::Enum(_))
+    }
+}
+
+#[allow(clippy::too_many_lines)] // catalogo Postgres type → ParameterValue intenzionalmente lineare
 fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
+    use tokio_postgres::types::Kind;
+
     let mut values = Vec::with_capacity(row.len());
     for (index, column) in row.columns().iter().enumerate() {
         let pg_type = column.type_();
         let type_name = pg_type.name().to_owned();
+
+        // Enum: intercettato via kind() perché il type_name è custom e non
+        // matcha nella tabella Type::* sotto. Domain: tokio_postgres di
+        // solito espone direttamente il base type sulla colonna, quindi
+        // cade nel match Type::* sotto senza handling speciale. Composite:
+        // out-of-scope, produce Unsupported.
+        if let Kind::Enum(_) = pg_type.kind() {
+            let raw: Option<EnumLabel> = row
+                .try_get(index)
+                .map_err(crate::error::row_decode_error)?;
+            values.push(match raw {
+                Some(EnumLabel(label)) => ParameterValue::Enum { type_name, label },
+                None => ParameterValue::Null { type_name },
+            });
+            continue;
+        }
+        if let Kind::Composite(_) = pg_type.kind() {
+            return Err(unsupported_column_type(pg_type));
+        }
+
         let value = match *pg_type {
             Type::BOOL => row
                 .try_get::<_, Option<bool>>(index)
@@ -1297,6 +1343,226 @@ mod live {
 
         assert_eq!(rows.len(), 3);
         drop_table("b1_srid").await;
+    }
+
+    // === P1a: Enum + Domain type safety ===
+
+    async fn setup_enum_domain_scratch(name: &str) {
+        use tokio_postgres::NoTls;
+        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {name};
+                 DROP TYPE IF EXISTS {name}_mood;
+                 DROP DOMAIN IF EXISTS {name}_email;
+                 CREATE TYPE {name}_mood AS ENUM ('happy', 'sad', 'neutral');
+                 CREATE DOMAIN {name}_email AS TEXT CHECK (VALUE LIKE '%@%');
+                 CREATE TABLE {name} (
+                     id INT PRIMARY KEY,
+                     mood {name}_mood NOT NULL,
+                     email {name}_email
+                 );
+                 INSERT INTO {name} VALUES (1, 'happy', 'a@b.it'), (2, 'sad', NULL);",
+            ))
+            .await
+            .expect("setup enum+domain");
+    }
+
+    async fn teardown_enum_domain_scratch(name: &str) {
+        use tokio_postgres::NoTls;
+        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {name};
+                 DROP TYPE IF EXISTS {name}_mood;
+                 DROP DOMAIN IF EXISTS {name}_email;",
+            ))
+            .await
+            .expect("teardown");
+    }
+
+    #[tokio::test]
+    async fn live_enum_column_decoded_as_parameter_value_enum() {
+        setup_enum_domain_scratch("p1a_enum").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT mood FROM p1a_enum WHERE id = 1"),
+            &cancel,
+        )
+        .await
+        .expect("query_one");
+
+        match &row["mood"] {
+            ParameterValue::Enum { type_name, label } => {
+                assert_eq!(type_name, "p1a_enum_mood");
+                assert_eq!(label, "happy");
+            }
+            other => panic!("expected Enum, got {other:?}"),
+        }
+
+        tx.rollback(&cancel).await.expect("rollback");
+        teardown_enum_domain_scratch("p1a_enum").await;
+    }
+
+    #[tokio::test]
+    async fn live_enum_write_via_parameter_value_enum() {
+        setup_enum_domain_scratch("p1a_enum_w").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // INSERT usando ParameterValue::Enum: la label viene bindata come
+        // testo, Postgres fa cast implicito nella colonna mood enum.
+        let n = tx
+            .execute(
+                &Statement::new("INSERT INTO p1a_enum_w VALUES ($1, $2, NULL)").with_params(vec![
+                    ParameterValue::I32(99),
+                    ParameterValue::Enum {
+                        type_name: "p1a_enum_w_mood".into(),
+                        label: "neutral".into(),
+                    },
+                ]),
+                &cancel,
+            )
+            .await
+            .expect("insert enum via ParameterValue::Enum");
+        assert_eq!(n, 1);
+
+        // Rileggo e verifico
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT mood FROM p1a_enum_w WHERE id = 99"),
+            &cancel,
+        )
+        .await
+        .expect("query_one");
+        match &row["mood"] {
+            ParameterValue::Enum { label, .. } => assert_eq!(label, "neutral"),
+            other => panic!("expected Enum, got {other:?}"),
+        }
+
+        tx.rollback(&cancel).await.expect("rollback");
+        teardown_enum_domain_scratch("p1a_enum_w").await;
+    }
+
+    #[tokio::test]
+    async fn live_enum_facade_scalar() {
+        use plenora_database_core::facade::execute_scalar_enum;
+
+        setup_enum_domain_scratch("p1a_enum_s").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let (type_name, label) = execute_scalar_enum(
+            tx.as_mut(),
+            &Statement::new("SELECT mood FROM p1a_enum_s WHERE id = 2"),
+            &cancel,
+        )
+        .await
+        .expect("scalar enum");
+        assert_eq!(type_name, "p1a_enum_s_mood");
+        assert_eq!(label, "sad");
+
+        tx.rollback(&cancel).await.expect("rollback");
+        teardown_enum_domain_scratch("p1a_enum_s").await;
+    }
+
+    #[tokio::test]
+    async fn live_enum_null_becomes_typed_null() {
+        // Verifica che un enum NULL sia decodificato come typed null,
+        // non come Enum { label: "" }.
+        setup_enum_domain_scratch("p1a_enum_null").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT NULL::p1a_enum_null_mood AS mood"),
+            &cancel,
+        )
+        .await
+        .expect("query_one null enum");
+        match &row["mood"] {
+            ParameterValue::Null { type_name } => {
+                assert_eq!(type_name, "p1a_enum_null_mood");
+            }
+            other => panic!("expected typed null, got {other:?}"),
+        }
+
+        tx.rollback(&cancel).await.expect("rollback");
+        teardown_enum_domain_scratch("p1a_enum_null").await;
+    }
+
+    #[tokio::test]
+    async fn live_domain_over_text_decodes_as_base_type_string() {
+        // Domain è "type alias con constraint" su un base type.
+        // tokio_postgres risolve la colonna al base type per la maggior
+        // parte dei domain, quindi il valore è decodificato come il base.
+        // Vantaggio: nessun handling speciale, i domain funzionano.
+        // Compromesso: si perde il type_name del domain (email vs text).
+        setup_enum_domain_scratch("p1a_dom").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        let row = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT email FROM p1a_dom WHERE id = 1"),
+            &cancel,
+        )
+        .await
+        .expect("domain over TEXT decodes as String");
+        assert!(matches!(&row["email"], ParameterValue::String(s) if s == "a@b.it"));
+
+        // NULL su domain colonna → typed null. Il type_name che appare è
+        // quello del base type (comportamento di tokio_postgres).
+        let row_null = query_one(
+            tx.as_mut(),
+            &Statement::new("SELECT email FROM p1a_dom WHERE id = 2"),
+            &cancel,
+        )
+        .await
+        .expect("domain NULL");
+        assert!(matches!(&row_null["email"], ParameterValue::Null { .. }));
+
+        tx.rollback(&cancel).await.expect("rollback");
+        teardown_enum_domain_scratch("p1a_dom").await;
     }
 
     // === F1e: Spatial predicate nell'AST portable ===

@@ -94,6 +94,7 @@ fn scalar_type_mismatch(expected: &str, got: &ParameterValue) -> DatabaseError {
         ParameterValue::Uuid(_) => "uuid",
         ParameterValue::Json(_) => "json",
         ParameterValue::Wkb { .. } => "wkb",
+        ParameterValue::Enum { .. } => "enum",
         ParameterValue::Null { .. } => "null",
     };
     malformed(&format!(
@@ -259,6 +260,25 @@ scalar_getter!(execute_scalar_json, serde_json::Value, "json", ParameterValue::J
 scalar_getter!(execute_scalar_date, String, "date", ParameterValue::Date(v) => v);
 scalar_getter!(execute_scalar_timestamp, String, "timestamp", ParameterValue::Timestamp(v) => v);
 scalar_getter!(execute_scalar_timestamptz, String, "timestamptz", ParameterValue::TimestampTz(v) => v);
+
+/// Legge una cella `ENUM` — ritorna `(type_name, label)`.
+///
+/// # Errors
+///
+/// - `NotFound` / `Conflict` sui vincoli di shape della facade
+/// - `DataMapping` se la cella non è un enum (es. text puro)
+pub async fn execute_scalar_enum(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    cancellation: &CancellationToken,
+) -> Result<(String, String)> {
+    let row = query_one(tx, statement, cancellation).await?;
+    let value = expect_single_column(row)?;
+    match value {
+        ParameterValue::Enum { type_name, label } => Ok((type_name, label)),
+        other => Err(scalar_type_mismatch("enum", &other)),
+    }
+}
 
 /// Legge un valore `Decimal` canonico (rappresentazione stringa).
 ///

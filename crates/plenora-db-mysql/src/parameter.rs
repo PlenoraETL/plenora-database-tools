@@ -82,6 +82,15 @@ fn parameter_value(value: &ParameterValue) -> Result<Value> {
             ErrorCategory::Unsupported,
             "parametro WKB MySQL richiede SRID e preflight spatial qualificato",
         )),
+        ParameterValue::Enum { label, .. } => {
+            if label.contains('\0') {
+                return Err(parameter_error(
+                    ErrorCategory::DataMapping,
+                    "label ENUM MySQL contiene NUL",
+                ));
+            }
+            Ok(Value::Bytes(label.as_bytes().to_vec()))
+        }
     }
 }
 

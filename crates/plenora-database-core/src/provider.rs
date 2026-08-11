@@ -103,6 +103,13 @@ pub enum ParameterValue {
         dimensions: crate::geometry::Dimensions,
         semantics: crate::geometry::SpatialSemantics,
     },
+    /// Valore di un tipo `ENUM` provider-specific. `type_name` preserva la
+    /// semantica (es. `"mood_enum"`) così il consumer può discriminare
+    /// senza affidarsi al solo `label`.
+    Enum {
+        type_name: String,
+        label: String,
+    },
     Null {
         type_name: String,
     },

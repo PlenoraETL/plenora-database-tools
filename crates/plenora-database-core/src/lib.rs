@@ -38,9 +38,9 @@ pub use row::Row;
 pub use facade::{
     execute_portable, execute_portable_returning, execute_portable_returning_one,
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal,
-    execute_scalar_f64, execute_scalar_i32, execute_scalar_i64, execute_scalar_json,
-    execute_scalar_string, execute_scalar_timestamp, execute_scalar_timestamptz,
-    execute_scalar_uuid, query_one, query_optional,
+    execute_scalar_enum, execute_scalar_f64, execute_scalar_i32, execute_scalar_i64,
+    execute_scalar_json, execute_scalar_string, execute_scalar_timestamp,
+    execute_scalar_timestamptz, execute_scalar_uuid, query_one, query_optional,
 };
 pub use metrics_recorder::{
     noop_recorder, CollectRecorder, MetricEvent, MetricName, MetricTags, MetricValue,

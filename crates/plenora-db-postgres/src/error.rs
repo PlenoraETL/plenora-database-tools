@@ -329,6 +329,12 @@ fn mapping_for_sqlstate(code: &str) -> Option<Mapping> {
             remote_effect: RemoteEffect::None,
             message: "definizione tabella PostgreSQL non valida",
         },
+        "428C9" => Mapping {
+            category: ErrorCategory::Conflict,
+            retry: RetryDisposition::Never,
+            remote_effect: RemoteEffect::RolledBack,
+            message: "colonna generata (GENERATED ALWAYS) non scrivibile: escludila dalla lista colonne dell'INSERT/UPDATE",
+        },
 
         // Class 53 — insufficient resources
         "53100" => Mapping {
@@ -468,6 +474,14 @@ mod tests {
     fn duplicate_table_is_conflict() {
         let m = map("42P07", ErrorPhase::Write);
         assert_eq!(m.category, ErrorCategory::Conflict);
+    }
+
+    #[test]
+    fn generated_column_write_is_conflict_rolled_back() {
+        let m = map("428C9", ErrorPhase::Write);
+        assert_eq!(m.category, ErrorCategory::Conflict);
+        assert_eq!(m.remote_effect, RemoteEffect::RolledBack);
+        assert!(matches!(m.retry, RetryDisposition::Never));
     }
 
     #[test]
@@ -883,6 +897,46 @@ mod live {
         client_b.batch_execute("ROLLBACK;").await.ok();
         client_a
             .batch_execute("DROP TABLE a2_deadlock;")
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn live_generated_column_write_428c9_is_conflict() {
+        let client = connect().await;
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS a2_generated;
+                 CREATE TABLE a2_generated (
+                     id INT PRIMARY KEY,
+                     price NUMERIC,
+                     tax_rate NUMERIC,
+                     total NUMERIC GENERATED ALWAYS AS (price * (1 + tax_rate)) STORED
+                 );",
+            )
+            .await
+            .expect("setup");
+
+        // INSERT che tocca la colonna generata → 428C9
+        let raw = err_from(
+            &client,
+            "INSERT INTO a2_generated (id, price, tax_rate, total) \
+             VALUES (1, 10.0, 0.22, 100.0);",
+        )
+        .await;
+        assert_eq!(state(&raw), Some("428C9"));
+
+        let mapped = classify_error(ErrorPhase::Write, &raw);
+        assert_eq!(mapped.category, ErrorCategory::Conflict);
+        assert_eq!(mapped.remote_effect, RemoteEffect::RolledBack);
+        assert!(
+            mapped.message.contains("generat"),
+            "msg poco chiaro: {}",
+            mapped.message
+        );
+
+        client
+            .batch_execute("DROP TABLE a2_generated;")
             .await
             .expect("cleanup");
     }
