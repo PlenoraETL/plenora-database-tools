@@ -4,6 +4,11 @@ use plenora_database_core::conformance::{
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
 use plenora_database_core::facade::execute_scalar_string;
+use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+use plenora_database_core::portable::{
+    compile_portable, select as p_select, spatial as p_spatial,
+};
+use plenora_database_core::{SpatialPredicate, SpatialReference};
 use plenora_database_core::plan::{
     ObjectRef, Operation, OrderBy, ProviderKind, ReadOperation, SortDirection,
 };
@@ -113,11 +118,18 @@ async fn run() -> CliResult<()> {
         "postgres-read-summary" => postgres_read_summary(&mut args).await,
         "postgres-read-ipc" => postgres_read_ipc(&mut args).await,
         "profile-check" => profile_check(&mut args).await,
+        "profile-list" => profile_list(&mut args),
         "doctor" => doctor(&mut args).await,
         "execute-ddl" => execute_ddl_cmd(&mut args).await,
         "execute-sql" => execute_sql_cmd(&mut args).await,
         "transaction-test" => transaction_test(&mut args).await,
         "session-context-test" => session_context_test(&mut args).await,
+        "test-cancellation" => test_cancellation(&mut args).await,
+        "test-streaming" => test_streaming(&mut args).await,
+        "test-spatial" => test_spatial(&mut args).await,
+        "benchmark-oltp" => benchmark_oltp(&mut args).await,
+        "benchmark-read" => benchmark_read(&mut args).await,
+        "benchmark-spatial" => benchmark_spatial(&mut args).await,
         _ => Err(usage().into()),
     }
 }
@@ -1035,6 +1047,20 @@ fn usage() -> String {
         "    smoke test end-to-end: begin + savepoint + release + commit",
         "  plenora-database session-context-test <dsn-env>",
         "    verifica isolamento session context tra tx sulla stessa connessione (pool reuse)",
+        "  plenora-database profile-list",
+        "    elenca i profili conformance disponibili con le capability richieste",
+        "  plenora-database test-cancellation <dsn-env>",
+        "    verifica statement_timeout → Cancelled entro il timeout dichiarato",
+        "  plenora-database test-streaming <dsn-env> [row_count=500] [batch_size=100]",
+        "    verifica cursor server-side: N righe in batch_size batch",
+        "  plenora-database test-spatial <dsn-env>",
+        "    verifica portable spatial AST end-to-end contro PostGIS",
+        "  plenora-database benchmark-oltp <dsn-env> [iterations=100]",
+        "    latency p50/p95/p99 di begin+select+commit",
+        "  plenora-database benchmark-read <dsn-env> <sql> [iterations=100]",
+        "    latency p50/p95/p99 di una query arbitraria (usa DSN sicuro)",
+        "  plenora-database benchmark-spatial <dsn-env> [iterations=50]",
+        "    latency p50/p95/p99 di ST_Intersects su 1000 punti con indice GIST",
     ]
     .join("\n")
 }
@@ -1297,6 +1323,385 @@ async fn session_context_test(args: &mut impl Iterator<Item = String>) -> CliRes
         "context_inside_tx1": inside,
         "context_after_commit": after,
         "leak_free": leak_free,
+    }))
+}
+
+// ============================================================================
+//  Fase 4: CLI arricchita — profile catalog, test avanzati, benchmark.
+// ============================================================================
+
+fn profile_list(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    ensure_end(args)?;
+    print_json(&json!({
+        "profiles": [
+            {
+                "name": APPLICATION_OLTP_V1.name,
+                "required_count": APPLICATION_OLTP_V1.required.len(),
+                "required": APPLICATION_OLTP_V1.required,
+            },
+            {
+                "name": PFM_CORE_V1.name,
+                "required_count": PFM_CORE_V1.required.len(),
+                "required": PFM_CORE_V1.required,
+            },
+            {
+                "name": PFM_GIS_V1.name,
+                "required_count": PFM_GIS_V1.required.len(),
+                "required": PFM_GIS_V1.required,
+            },
+        ]
+    }))
+}
+
+async fn test_cancellation(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    // Verifica statement_timeout: SET LOCAL statement_timeout=50ms + pg_sleep(2)
+    // → deve tornare errore Cancelled entro il timeout, non timeout della CLI.
+    let opts = TransactionOptions {
+        statement_timeout_ms: Some(50),
+        ..TransactionOptions::default()
+    };
+    let mut tx = provider
+        .begin_transaction(&secret, &opts, &budget, &cancel)
+        .await?;
+    let start = std::time::Instant::now();
+    let outcome = tx.execute(&Statement::new("SELECT pg_sleep(2)"), &cancel).await;
+    let elapsed_ms = start.elapsed().as_millis();
+    let _ = tx.rollback(&cancel).await;
+
+    let (status, category, message) = match outcome {
+        Ok(_) => (
+            "unexpected_ok",
+            String::new(),
+            "pg_sleep(2) ha completato senza cancel".to_owned(),
+        ),
+        Err(e) => (
+            if e.category == ErrorCategory::Cancelled {
+                "ok"
+            } else {
+                "wrong_category"
+            },
+            format!("{:?}", e.category),
+            e.message,
+        ),
+    };
+    print_json(&json!({
+        "status": status,
+        "elapsed_ms": elapsed_ms,
+        "error_category": category,
+        "message": message,
+    }))
+}
+
+async fn test_streaming(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let row_count: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "row_count non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(500);
+    let batch_size: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "batch_size non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(100);
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    let stmt =
+        Statement::new(format!("SELECT gs::BIGINT FROM generate_series(1, {row_count}) gs"));
+
+    let start = std::time::Instant::now();
+    let mut stream = tx.query_stream(&stmt, batch_size, &cancel).await?;
+    let mut total = 0_u32;
+    let mut batches = 0_u32;
+    while let Some(batch) = stream.next_batch(&cancel).await? {
+        total = total.saturating_add(u32::try_from(batch.len()).unwrap_or(u32::MAX));
+        batches = batches.saturating_add(1);
+    }
+    let elapsed_ms = start.elapsed().as_millis();
+    drop(stream);
+    tx.rollback(&cancel).await?;
+
+    print_json(&json!({
+        "status": if total == row_count { "ok" } else { "row_count_mismatch" },
+        "expected_rows": row_count,
+        "actual_rows": total,
+        "batches": batches,
+        "batch_size": batch_size,
+        "elapsed_ms": elapsed_ms,
+    }))
+}
+
+async fn test_spatial(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    // Test end-to-end del portable spatial AST contro PostGIS.
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    tx.execute(
+        &Statement::new(
+            "CREATE TEMP TABLE cli_spatial_probe (id INT, geom geometry(Point, 4326)) ON COMMIT DROP",
+        ),
+        &cancel,
+    )
+    .await?;
+    tx.execute(
+        &Statement::new(
+            "INSERT INTO cli_spatial_probe VALUES \
+             (1, ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326)), \
+             (2, ST_SetSRID(ST_MakePoint(12.49, 41.90), 4326)), \
+             (3, ST_SetSRID(ST_MakePoint(2.35, 48.86), 4326))",
+        ),
+        &cancel,
+    )
+    .await?;
+
+    // Recupera bbox via query
+    let bbox_row = tx
+        .query(
+            &Statement::new(
+                "SELECT ST_AsEWKB(ST_SetSRID(ST_MakeEnvelope(6.0, 40.0, 14.0, 46.0), 4326))",
+            ),
+            &cancel,
+        )
+        .await?;
+    let ewkb = match bbox_row.first().and_then(|r| r.get_index(0)) {
+        Some(plenora_database_core::provider::ParameterValue::Bytes(b)) => b.clone(),
+        _ => return Err("bbox EWKB non decodificato".into()),
+    };
+
+    // Query portable spatial: WHERE ST_Intersects(geom, bbox)
+    let ast = p_select("cli_spatial_probe", vec!["id"])
+        .where_(p_spatial(
+            "geom",
+            SpatialPredicate::Intersects,
+            SpatialReference {
+                ewkb,
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Postgres, &ast)?;
+    let start = std::time::Instant::now();
+    let rows = tx.query(&compiled, &cancel).await?;
+    let elapsed_ms = start.elapsed().as_millis();
+    let _ = tx.rollback(&cancel).await;
+
+    let ids: Vec<i32> = rows
+        .iter()
+        .filter_map(|r| match r.get_index(0) {
+            Some(plenora_database_core::provider::ParameterValue::I32(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    print_json(&json!({
+        "status": if ids == vec![1, 2] || ids == vec![2, 1] { "ok" } else { "unexpected_ids" },
+        "expected_ids_any_order": [1, 2],
+        "actual_ids": ids,
+        "elapsed_ms": elapsed_ms,
+    }))
+}
+
+/// Calcola rate/sec da iterazioni e durata in millisecondi. Le cast a f64
+/// hanno precisione sufficiente per il rate a scopo di reporting (non è
+/// una misura di alta precisione).
+#[allow(clippy::cast_precision_loss)]
+fn rate_per_sec(iterations: u32, total_ms: u128) -> f64 {
+    if total_ms == 0 {
+        return 0.0;
+    }
+    f64::from(iterations) * 1000.0 / (total_ms as f64)
+}
+
+fn percentile(sorted: &[u128], p: f64) -> u128 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let n = sorted.len();
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let idx = ((n as f64 - 1.0) * p).round() as usize;
+    sorted[idx.min(n - 1)]
+}
+
+async fn benchmark_oltp(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let iterations: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "iterations non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(100);
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    let mut samples: Vec<u128> = Vec::with_capacity(iterations as usize);
+    let overall_start = std::time::Instant::now();
+    for _ in 0..iterations {
+        let start = std::time::Instant::now();
+        let mut tx = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+            .await?;
+        tx.execute(&Statement::new("SELECT 1"), &cancel).await?;
+        tx.commit(&cancel).await?;
+        samples.push(start.elapsed().as_micros());
+    }
+    let overall_ms = overall_start.elapsed().as_millis();
+    samples.sort_unstable();
+
+    print_json(&json!({
+        "iterations": iterations,
+        "total_ms": overall_ms,
+        "tx_per_sec": rate_per_sec(iterations, overall_ms),
+        "latency_us": {
+            "min": samples.first().copied().unwrap_or(0),
+            "p50": percentile(&samples, 0.50),
+            "p95": percentile(&samples, 0.95),
+            "p99": percentile(&samples, 0.99),
+            "max": samples.last().copied().unwrap_or(0),
+        }
+    }))
+}
+
+async fn benchmark_read(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let sql = args.next().ok_or("manca il SQL da benchmarkare")?;
+    let iterations: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "iterations non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(100);
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    let mut samples: Vec<u128> = Vec::with_capacity(iterations as usize);
+    let mut total_rows = 0_u64;
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    let overall_start = std::time::Instant::now();
+    for _ in 0..iterations {
+        let start = std::time::Instant::now();
+        let rows = tx.query(&Statement::new(sql.clone()), &cancel).await?;
+        samples.push(start.elapsed().as_micros());
+        total_rows = total_rows.saturating_add(rows.len() as u64);
+    }
+    let overall_ms = overall_start.elapsed().as_millis();
+    let _ = tx.rollback(&cancel).await;
+    samples.sort_unstable();
+
+    print_json(&json!({
+        "iterations": iterations,
+        "total_ms": overall_ms,
+        "total_rows": total_rows,
+        "queries_per_sec": rate_per_sec(iterations, overall_ms),
+        "latency_us": {
+            "min": samples.first().copied().unwrap_or(0),
+            "p50": percentile(&samples, 0.50),
+            "p95": percentile(&samples, 0.95),
+            "p99": percentile(&samples, 0.99),
+            "max": samples.last().copied().unwrap_or(0),
+        }
+    }))
+}
+
+async fn benchmark_spatial(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let iterations: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "iterations non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(50);
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    // Setup temp table con 1000 punti casuali in un bbox europeo.
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    tx.execute(
+        &Statement::new(
+            "CREATE TEMP TABLE bench_spatial (id INT, geom geometry(Point, 4326)) ON COMMIT DROP",
+        ),
+        &cancel,
+    )
+    .await?;
+    tx.execute(
+        &Statement::new(
+            "INSERT INTO bench_spatial \
+             SELECT gs, ST_SetSRID(ST_MakePoint(random()*20, 40+random()*20), 4326) \
+             FROM generate_series(1, 1000) gs",
+        ),
+        &cancel,
+    )
+    .await?;
+    tx.execute(
+        &Statement::new("CREATE INDEX ON bench_spatial USING GIST(geom)"),
+        &cancel,
+    )
+    .await?;
+
+    let mut samples: Vec<u128> = Vec::with_capacity(iterations as usize);
+    for _ in 0..iterations {
+        let start = std::time::Instant::now();
+        let _ = tx
+            .query(
+                &Statement::new(
+                    "SELECT COUNT(*)::BIGINT FROM bench_spatial \
+                     WHERE ST_Intersects(geom, ST_SetSRID(ST_MakeEnvelope(5, 45, 15, 55), 4326))",
+                ),
+                &cancel,
+            )
+            .await?;
+        samples.push(start.elapsed().as_micros());
+    }
+    let _ = tx.rollback(&cancel).await;
+    samples.sort_unstable();
+
+    print_json(&json!({
+        "iterations": iterations,
+        "operation": "ST_Intersects over 1000 points with GIST index",
+        "latency_us": {
+            "min": samples.first().copied().unwrap_or(0),
+            "p50": percentile(&samples, 0.50),
+            "p95": percentile(&samples, 0.95),
+            "p99": percentile(&samples, 0.99),
+            "max": samples.last().copied().unwrap_or(0),
+        }
     }))
 }
 
