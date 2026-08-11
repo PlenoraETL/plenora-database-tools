@@ -9,6 +9,7 @@
 use crate::native_query_policy::NativeQueryPolicy;
 use crate::outcome::{CertainPhase, Recovery};
 use crate::provider::{ParameterValue, ProviderFuture};
+use crate::row::Row;
 use crate::session_context::SessionContext;
 use crate::CancellationToken;
 use serde::{Deserialize, Serialize};
@@ -130,7 +131,7 @@ pub trait RowStream: Send {
     fn next_batch<'a>(
         &'a mut self,
         cancellation: &'a CancellationToken,
-    ) -> ProviderFuture<'a, Option<Vec<Vec<ParameterValue>>>>;
+    ) -> ProviderFuture<'a, Option<Vec<Row>>>;
 }
 
 /// Richiesta di update ottimistico condizionato.
@@ -178,14 +179,13 @@ pub trait TransactionScope: Send {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64>;
 
-    /// Esegue una query e restituisce le righe come vettore di
-    /// `ParameterValue`. Usa i decoder canonici: tipi non supportati
-    /// producono `Unsupported`.
+    /// Esegue una query e restituisce le righe con schema colonne.
+    /// Usa i decoder canonici: tipi non supportati producono `Unsupported`.
     fn query<'a>(
         &'a mut self,
         statement: &'a Statement,
         cancellation: &'a CancellationToken,
-    ) -> ProviderFuture<'a, Vec<Vec<ParameterValue>>>;
+    ) -> ProviderFuture<'a, Vec<Row>>;
 
     /// Apre una lettura server-side: le righe vengono materializzate in
     /// batch di `batch_size` righe alla volta senza mai caricare l'intero

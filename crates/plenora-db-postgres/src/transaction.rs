@@ -10,6 +10,8 @@ use crate::pool::PooledClient;
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
+use plenora_database_core::row::Row;
+use std::sync::Arc;
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::transaction::{
     concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name, AccessMode,
@@ -222,7 +224,7 @@ impl TransactionScope for PostgresTransaction {
         &'a mut self,
         statement: &'a Statement,
         cancellation: &'a CancellationToken,
-    ) -> ProviderFuture<'a, Vec<Vec<ParameterValue>>> {
+    ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             check_cancelled(cancellation, ErrorPhase::Read)?;
@@ -234,11 +236,7 @@ impl TransactionScope for PostgresTransaction {
                 .query(statement.sql.as_str(), &param_refs)
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
-            let mut out = Vec::with_capacity(rows.len());
-            for row in &rows {
-                out.push(decode_row(row)?);
-            }
-            Ok(out)
+            decode_rows(&rows)
         })
     }
 
@@ -558,7 +556,7 @@ impl RowStream for PostgresRowStream<'_> {
     fn next_batch<'b>(
         &'b mut self,
         cancellation: &'b CancellationToken,
-    ) -> ProviderFuture<'b, Option<Vec<Vec<ParameterValue>>>> {
+    ) -> ProviderFuture<'b, Option<Vec<Row>>> {
         Box::pin(async move {
             if self.exhausted {
                 return Ok(None);
@@ -574,10 +572,7 @@ impl RowStream for PostgresRowStream<'_> {
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
             let n = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-            let mut out = Vec::with_capacity(rows.len());
-            for row in &rows {
-                out.push(decode_row(row)?);
-            }
+            let out = decode_rows(&rows)?;
             if n < self.batch_size {
                 self.exhausted = true;
             }
@@ -597,6 +592,25 @@ fn unsupported_column_type(pg_type: &Type) -> DatabaseError {
         false,
         &format!("tipo di colonna PostgreSQL non supportato nel path OLTP: {pg_type}"),
     )
+}
+
+/// Decodifica un batch di righe condividendo l'array dei nomi colonna.
+fn decode_rows(rows: &[tokio_postgres::Row]) -> Result<Vec<Row>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let columns: Arc<[String]> = rows[0]
+        .columns()
+        .iter()
+        .map(|c| c.name().to_owned())
+        .collect::<Vec<_>>()
+        .into();
+    let mut out = Vec::with_capacity(rows.len());
+    for pg_row in rows {
+        let values = decode_row(pg_row)?;
+        out.push(Row::new(Arc::clone(&columns), values));
+    }
+    Ok(out)
 }
 
 fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
@@ -1186,7 +1200,7 @@ mod live {
 
         // Solo Milano (1) è entro ~0.01° dal punto di riferimento.
         assert_eq!(rows.len(), 1);
-        assert!(matches!(rows[0][0], ParameterValue::I32(1)));
+        assert!(matches!(&rows[0][0], ParameterValue::I32(1)));
         drop_table("b1_dwithin").await;
     }
 
@@ -1248,7 +1262,7 @@ mod live {
         tx.rollback(&cancel).await.expect("rollback");
 
         assert_eq!(rows.len(), 1);
-        assert!(matches!(rows[0][0], ParameterValue::I32(1)));
+        assert!(matches!(&rows[0][0], ParameterValue::I32(1)));
         drop_table("b1_within").await;
     }
 
@@ -1279,6 +1293,280 @@ mod live {
 
         assert_eq!(rows.len(), 3);
         drop_table("b1_srid").await;
+    }
+
+    // === F1c: PortableStatement AST end-to-end ===
+
+    use plenora_database_core::portable::{
+        and as p_and, compile_portable, eq as p_eq, select as p_select, Direction,
+        Expression, InsertStatement, PortableStatement, TableRef, UpdateStatement,
+    };
+    use plenora_database_core::plan::ProviderKind;
+
+    #[tokio::test]
+    async fn live_portable_insert_update_select_roundtrip() {
+        scratch_table("f1c_portable").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // INSERT (2 rows) via portable AST.
+        let insert = PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("f1c_portable"),
+            columns: vec!["id".into(), "v".into()],
+            values: vec![
+                vec![
+                    Expression::literal(ParameterValue::I32(1)),
+                    Expression::literal(ParameterValue::String("alpha".into())),
+                ],
+                vec![
+                    Expression::literal(ParameterValue::I32(2)),
+                    Expression::literal(ParameterValue::String("beta".into())),
+                ],
+            ],
+            returning: Vec::new(),
+        });
+        let stmt = compile_portable(ProviderKind::Postgres, &insert).expect("compile insert");
+        let inserted = tx.execute(&stmt, &cancel).await.expect("insert");
+        assert_eq!(inserted, 2);
+
+        // UPDATE con WHERE composto.
+        let update = PortableStatement::Update(UpdateStatement {
+            table: TableRef::new("f1c_portable"),
+            assignments: vec![(
+                "v".into(),
+                Expression::literal(ParameterValue::String("alpha-updated".into())),
+            )],
+            filter: Some(p_and(vec![
+                p_eq("id", ParameterValue::I32(1)),
+                p_eq("v", ParameterValue::String("alpha".into())),
+            ])),
+            returning: Vec::new(),
+        });
+        let stmt = compile_portable(ProviderKind::Postgres, &update).expect("compile update");
+        let updated = tx.execute(&stmt, &cancel).await.expect("update");
+        assert_eq!(updated, 1);
+
+        // SELECT con projection + where + order + limit.
+        let select = p_select("f1c_portable", vec!["id", "v"])
+            .where_(p_eq("id", ParameterValue::I32(1)))
+            .order_by("id", Direction::Asc)
+            .limit(10)
+            .into_statement();
+        let stmt = compile_portable(ProviderKind::Postgres, &select).expect("compile select");
+        let rows = tx.query(&stmt, &cancel).await.expect("select");
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0]["id"], ParameterValue::I32(1)));
+        assert!(matches!(
+            &rows[0]["v"],
+            ParameterValue::String(s) if s == "alpha-updated"
+        ));
+
+        tx.rollback(&cancel).await.expect("rollback");
+        drop_table("f1c_portable").await;
+    }
+
+    #[tokio::test]
+    async fn live_portable_upsert_do_update_set() {
+        scratch_table("f1c_upsert").await;
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+
+        let mut tx = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .expect("begin");
+
+        // INSERT iniziale.
+        let insert = PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("f1c_upsert"),
+            columns: vec!["id".into(), "v".into()],
+            values: vec![vec![
+                Expression::literal(ParameterValue::I32(1)),
+                Expression::literal(ParameterValue::String("first".into())),
+            ]],
+            returning: Vec::new(),
+        });
+        let stmt = compile_portable(ProviderKind::Postgres, &insert).expect("compile");
+        tx.execute(&stmt, &cancel).await.expect("insert");
+
+        // UPSERT sulla stessa chiave con DO UPDATE.
+        let upsert = PortableStatement::Upsert(
+            plenora_database_core::portable::UpsertStatement {
+                table: TableRef::new("f1c_upsert"),
+                columns: vec!["id".into(), "v".into()],
+                values: vec![vec![
+                    Expression::literal(ParameterValue::I32(1)),
+                    Expression::literal(ParameterValue::String("upserted".into())),
+                ]],
+                conflict_target: vec!["id".into()],
+                update_on_conflict: vec![(
+                    "v".into(),
+                    Expression::literal(ParameterValue::String("upserted".into())),
+                )],
+                returning: Vec::new(),
+            },
+        );
+        let stmt = compile_portable(ProviderKind::Postgres, &upsert).expect("compile upsert");
+        let affected = tx.execute(&stmt, &cancel).await.expect("upsert");
+        assert_eq!(affected, 1);
+
+        // Verifica lo stato via portable SELECT.
+        let sel = p_select("f1c_upsert", vec!["v"])
+            .where_(p_eq("id", ParameterValue::I32(1)))
+            .into_statement();
+        let stmt = compile_portable(ProviderKind::Postgres, &sel).expect("compile select");
+        let rows = tx.query(&stmt, &cancel).await.expect("select");
+        assert!(matches!(
+            &rows[0]["v"],
+            ParameterValue::String(s) if s == "upserted"
+        ));
+
+        tx.rollback(&cancel).await.expect("rollback");
+        drop_table("f1c_upsert").await;
+    }
+
+    // === F1b: Facade scalar completa ===
+
+    use plenora_database_core::facade::{
+        execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal, execute_scalar_json,
+        execute_scalar_timestamp, execute_scalar_timestamptz, execute_scalar_uuid,
+    };
+
+    async fn scalar_tx<'a>(
+        provider: &'a PostgresProvider,
+        cancel: &'a CancellationToken,
+        budget: &'a plenora_database_core::resource::ResourceBudget,
+    ) -> Box<dyn plenora_database_core::transaction::TransactionScope + 'a> {
+        provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), budget, cancel)
+            .await
+            .expect("begin")
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_bytes() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+        let v = execute_scalar_bytes(
+            tx.as_mut(),
+            &Statement::new("SELECT '\\xdeadbeef'::BYTEA"),
+            &cancel,
+        )
+        .await
+        .expect("bytes");
+        assert_eq!(v, vec![0xde, 0xad, 0xbe, 0xef]);
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_uuid() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+        let v = execute_scalar_uuid(
+            tx.as_mut(),
+            &Statement::new("SELECT '12345678-1234-1234-1234-123456789012'::UUID"),
+            &cancel,
+        )
+        .await
+        .expect("uuid");
+        assert_eq!(v, "12345678-1234-1234-1234-123456789012");
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_json() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+        let v = execute_scalar_json(
+            tx.as_mut(),
+            &Statement::new(r#"SELECT '{"k":1}'::JSONB"#),
+            &cancel,
+        )
+        .await
+        .expect("json");
+        assert_eq!(v, serde_json::json!({"k": 1}));
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_date() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+        let v = execute_scalar_date(
+            tx.as_mut(),
+            &Statement::new("SELECT '2026-08-11'::DATE"),
+            &cancel,
+        )
+        .await
+        .expect("date");
+        assert_eq!(v, "2026-08-11");
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_timestamp_and_timestamptz() {
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+
+        let ts = execute_scalar_timestamp(
+            tx.as_mut(),
+            &Statement::new("SELECT '2026-08-11 10:20:30'::TIMESTAMP"),
+            &cancel,
+        )
+        .await
+        .expect("timestamp");
+        assert!(ts.starts_with("2026-08-11T10:20:30"));
+
+        let tstz = execute_scalar_timestamptz(
+            tx.as_mut(),
+            &Statement::new("SELECT '2026-08-11T10:20:30+00:00'::TIMESTAMPTZ"),
+            &cancel,
+        )
+        .await
+        .expect("timestamptz");
+        assert!(tstz.starts_with("2026-08-11T10:20:30"));
+
+        tx.rollback(&cancel).await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn live_facade_scalar_decimal_is_unsupported() {
+        // Documentato: decimal via facade OLTP è Unsupported finché non
+        // introduciamo rust_decimal dep (Fase 3). Test verifica che il
+        // driver segnali gracefully invece di panic.
+        let provider = provider().await;
+        let cancel = CancellationToken::new();
+        let budget = budget();
+        let mut tx = scalar_tx(&provider, &cancel, &budget).await;
+        let err = execute_scalar_decimal(
+            tx.as_mut(),
+            &Statement::new("SELECT 3.14::NUMERIC(10,2)"),
+            &cancel,
+        )
+        .await
+        .expect_err("decimal deve essere Unsupported oggi");
+        assert_eq!(
+            err.category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
+        tx.rollback(&cancel).await.expect("rollback");
     }
 
     // === B3: Native-query governance ===
@@ -1525,8 +1813,8 @@ mod live {
         let mut all = Vec::new();
         while let Some(batch) = stream.next_batch(&cancel).await.expect("next") {
             for row in batch {
-                match row[0] {
-                    ParameterValue::I64(v) => all.push(v),
+                match row.get_index(0) {
+                    Some(ParameterValue::I64(v)) => all.push(*v),
                     _ => panic!("expected i64"),
                 }
             }
@@ -1826,8 +2114,8 @@ mod live {
         .await
         .expect("query_one");
         assert_eq!(row.len(), 2);
-        assert!(matches!(row[0], ParameterValue::I32(1)));
-        assert!(matches!(row[1], ParameterValue::String(ref s) if s == "payload"));
+        assert!(matches!(&row[0], ParameterValue::I32(1)));
+        assert!(matches!(&row[1], ParameterValue::String(s) if s == "payload"));
 
         tx.commit(&cancel).await.expect("commit");
         drop_table("a5_query_one").await;
@@ -1931,17 +2219,17 @@ mod live {
         .await
         .expect("decode row");
 
-        assert!(matches!(row[0], ParameterValue::Bool(true)));
-        assert!(matches!(row[1], ParameterValue::I32(42)));
-        assert!(matches!(row[2], ParameterValue::I64(-1234567890)));
-        assert!(matches!(row[3], ParameterValue::F64(_)));
-        assert!(matches!(row[4], ParameterValue::String(ref s) if s == "text"));
-        assert!(matches!(row[5], ParameterValue::Bytes(ref b) if b == &[0xde, 0xad, 0xbe, 0xef]));
-        assert!(matches!(row[6], ParameterValue::Date(_)));
-        assert!(matches!(row[7], ParameterValue::Timestamp(_)));
-        assert!(matches!(row[8], ParameterValue::TimestampTz(_)));
-        assert!(matches!(row[9], ParameterValue::Uuid(_)));
-        assert!(matches!(row[10], ParameterValue::Json(_)));
+        assert!(matches!(&row[0], ParameterValue::Bool(true)));
+        assert!(matches!(&row[1], ParameterValue::I32(42)));
+        assert!(matches!(&row[2], ParameterValue::I64(-1234567890)));
+        assert!(matches!(&row[3], ParameterValue::F64(_)));
+        assert!(matches!(&row[4], ParameterValue::String(s) if s == "text"));
+        assert!(matches!(&row[5], ParameterValue::Bytes(b) if b == &[0xde, 0xad, 0xbe, 0xef]));
+        assert!(matches!(&row[6], ParameterValue::Date(_)));
+        assert!(matches!(&row[7], ParameterValue::Timestamp(_)));
+        assert!(matches!(&row[8], ParameterValue::TimestampTz(_)));
+        assert!(matches!(&row[9], ParameterValue::Uuid(_)));
+        assert!(matches!(&row[10], ParameterValue::Json(_)));
 
         tx.commit(&cancel).await.expect("commit");
     }

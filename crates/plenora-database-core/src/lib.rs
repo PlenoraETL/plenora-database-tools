@@ -16,10 +16,12 @@ pub mod metrics_recorder;
 pub mod native_query_policy;
 pub mod outcome;
 pub mod plan;
+pub mod portable;
 pub mod protocol;
 pub mod provider;
 pub mod query;
 pub mod resource;
+pub mod row;
 pub mod row_diagnostics;
 pub mod session_context;
 pub mod spatial_catalog;
@@ -32,11 +34,17 @@ pub use conformance::{
     CapabilityEvidence, ConformanceProfile, EvidenceKind, ProfileReport, ProfileStatus,
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
+pub use row::Row;
 pub use metrics_recorder::{
     noop_recorder, CollectRecorder, MetricEvent, MetricName, MetricTags, MetricValue,
     MetricsRecorder, NoopRecorder, OperationKind, SharedRecorder,
 };
 pub use native_query_policy::{enforce_policy, NativeQueryPolicy};
+pub use portable::{
+    and, compile_portable, eq, or, select, select_all, DeleteStatement, Direction, Expression,
+    InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection, SelectStatement,
+    TableRef, UpdateStatement, UpsertStatement,
+};
 pub use spatial_predicate::{SpatialFilter, SpatialPredicate, SpatialReference};
 pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};

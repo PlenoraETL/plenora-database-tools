@@ -387,10 +387,14 @@ async fn probe_bound_parameters(
         .map_err(|e| format!("bound query: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
     if rows.len() != 1 || rows[0].len() != 1 {
-        return Err(format!("shape inatteso: {}x{}", rows.len(), rows.first().map_or(0, Vec::len)));
+        return Err(format!(
+            "shape inatteso: {}x{}",
+            rows.len(),
+            rows.first().map_or(0, crate::row::Row::len)
+        ));
     }
-    match &rows[0][0] {
-        ParameterValue::I32(5) => Ok(()),
+    match rows[0].get_index(0) {
+        Some(ParameterValue::I32(5)) => Ok(()),
         other => Err(format!("valore inatteso: {other:?}")),
     }
 }
@@ -1677,10 +1681,10 @@ async fn probe_spatial_null_handled(
     .await;
     let _ = tx.rollback(cancel).await;
     match outcome {
-        Ok(row) if matches!(row.first(), Some(ParameterValue::Null { .. })) => Ok(()),
+        Ok(row) if matches!(row.get_index(0), Some(ParameterValue::Null { .. })) => Ok(()),
         Err(e) if e.category == crate::ErrorCategory::Unsupported => Ok(()),
         Err(e) => Err(format!("null geom errore inatteso: {:?}", e.category)),
-        Ok(row) => Err(format!("null geom non typed-null: {:?}", row.first())),
+        Ok(row) => Err(format!("null geom non typed-null: {:?}", row.get_index(0))),
     }
 }
 
