@@ -271,8 +271,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    static FORMAT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn strip_format_extracts_value_and_returns_remaining_args() {
+        let _guard = FORMAT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let out = strip_output_format(vec![
             "dsn-env".into(),
             "--format".into(),
@@ -282,7 +287,6 @@ mod tests {
         .expect("parse");
         assert_eq!(out, vec!["dsn-env", "extra"]);
         assert_eq!(OutputFormat::active(), OutputFormat::Markdown);
-        // Reset per non contaminare i test successivi.
         OutputFormat::Json.set_active();
     }
 
