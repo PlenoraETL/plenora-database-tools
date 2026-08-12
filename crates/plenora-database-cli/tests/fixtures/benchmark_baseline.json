@@ -1,0 +1,28 @@
+{
+  "note": "Soglia MAX per p95 latency (µs). Un valore superiore + tolleranza segnala regressione. p99 non è gated (troppo rumoroso con 50 iter). Il binario usato è DEBUG (cargo test), quindi ~3-5x più lento di release. Rigenerare quando cambia hardware/Postgres.",
+  "measured_on": "2026-08-12 con Postgres 16.4 + PostGIS 3.4.3, container dataflow-postgres locale, cargo test (DEBUG build)",
+  "tolerance_pct": 50,
+  "benchmarks": {
+    "benchmark-oltp": {
+      "iterations": 50,
+      "p95_us_max": 5000,
+      "note": "begin+SELECT 1+commit, no bulk"
+    },
+    "benchmark-read": {
+      "iterations": 50,
+      "sql": "SELECT srid FROM public.spatial_ref_sys LIMIT 1",
+      "p95_us_max": 2500
+    },
+    "benchmark-write": {
+      "iterations": 50,
+      "batch_size": 5,
+      "p95_us_max": 3000,
+      "note": "INSERT batch di 5 righe su TEMP TABLE"
+    },
+    "benchmark-spatial": {
+      "iterations": 50,
+      "p95_us_max": 4000,
+      "note": "ST_Intersects su 1000 punti con GIST index"
+    }
+  }
+}
