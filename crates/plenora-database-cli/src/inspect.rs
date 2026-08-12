@@ -4,6 +4,7 @@
 
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliResult};
+use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::provider::{ParameterValue, Provider};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
@@ -113,6 +114,57 @@ pub(crate) async fn inspect_schemas(args: &mut impl Iterator<Item = String>) -> 
         })
         .collect();
     print_json(&json!({ "count": schemas.len(), "schemas": schemas }))
+}
+
+/// `inspect-catalogs DSN_ENV`: espone `Provider::inspect::DatabaseListCatalogs`.
+/// Alternativa raw a `inspect-database` (che include anche version/timezone/size).
+pub(crate) async fn inspect_catalogs(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let cancel = CancellationToken::new();
+
+    let inspection = provider
+        .inspect(&secret, &Operation::DatabaseListCatalogs, &cancel)
+        .await?;
+    print_json(&json!({
+        "operation": inspection.operation,
+        "document": inspection.document,
+    }))
+}
+
+/// `inspect-objects DSN_ENV SCHEMA`: espone
+/// `Provider::inspect::DatabaseListObjects`. Simile a `inspect-tables` ma
+/// grezzo (senza rowcount stimato / size, senza filtro kind).
+pub(crate) async fn inspect_objects(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let schema = args.next().ok_or("manca lo schema")?;
+    ensure_end(args)?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let cancel = CancellationToken::new();
+
+    let inspection = provider
+        .inspect(
+            &secret,
+            &Operation::DatabaseListObjects {
+                source: Some(ObjectRef {
+                    catalog: None,
+                    schema: Some(schema),
+                    object: String::new(),
+                    layer_id: None,
+                }),
+            },
+            &cancel,
+        )
+        .await?;
+    print_json(&json!({
+        "operation": inspection.operation,
+        "document": inspection.document,
+    }))
 }
 
 pub(crate) async fn inspect_tables(args: &mut impl Iterator<Item = String>) -> CliResult<()> {

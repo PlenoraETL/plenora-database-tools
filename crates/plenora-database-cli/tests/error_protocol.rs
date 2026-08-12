@@ -380,13 +380,17 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
     let message = envelope["error"]["message"]
         .as_str()
         .expect("usage message");
-    assert!(message
-        .contains("database-probe <provider> <secret-env> [<host> <database> <username> [port]]"));
-    assert!(message.contains("provider: postgres | mysql | sqlserver"));
-    assert!(message.contains("--tls-ca-path-env <ca-path-env>"));
-    assert!(message.contains("--tls-client-cert-path-env <cert-path-env>"));
-    assert!(message.contains("--tls-client-key-path-env <key-path-env>"));
-    assert!(message.contains("i valori delle variabili TLS sono path locali"));
+    // Post-F5.14: la usage() è ristrutturata per gruppi. Verifica che i
+    // token essenziali per il contratto database-probe siano documentati.
+    assert!(message.contains("database-probe"));
+    assert!(message.contains("postgres | mysql | sqlserver"));
+    assert!(message.contains("--tls-ca-path-env"));
+    assert!(message.contains("--tls-client-cert-path-env"));
+    assert!(message.contains("--tls-client-key-path-env"));
+    // Sezione flag globali con --format, --allow-write-tests, --session-context.
+    assert!(message.contains("--format"));
+    assert!(message.contains("--allow-write-tests"));
+    assert!(message.contains("--session-context"));
 }
 
 #[test]

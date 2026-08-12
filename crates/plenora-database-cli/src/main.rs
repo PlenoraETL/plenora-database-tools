@@ -64,6 +64,10 @@ const TLS_MATERIAL_MAX_BYTES: u64 = 1024 * 1024;
 struct IpcOptions {
     limits: ResourceLimits,
     order_by: Vec<OrderBy>,
+    projection: Vec<String>,
+    filter: Option<plenora_database_core::plan::FilterExpression>,
+    row_limit: Option<u64>,
+    parameters: plenora_database_core::provider::ParameterBag,
 }
 
 impl CliError {
@@ -102,7 +106,11 @@ async fn run() -> CliResult<()> {
     let raw = env::args().skip(1).collect::<Vec<_>>();
     let after_format = format::strip_output_format(raw)?;
     let after_safety = safety::strip_safety_flags(after_format)?;
-    let mut args = after_safety.into_iter();
+    #[cfg(feature = "postgres")]
+    let after_session = session_ctx::strip_session_context(after_safety)?;
+    #[cfg(not(feature = "postgres"))]
+    let after_session = after_safety;
+    let mut args = after_session.into_iter();
     let command = args.next().ok_or_else(|| CliError::from(usage()))?;
     format::set_active_command(&command);
     match command.as_str() {
@@ -147,6 +155,28 @@ async fn run() -> CliResult<()> {
         "inspect-schemas" => inspect::inspect_schemas(&mut args).await,
         #[cfg(feature = "postgres")]
         "inspect-tables" => inspect::inspect_tables(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "inspect-catalogs" => inspect::inspect_catalogs(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "inspect-objects" => inspect::inspect_objects(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "postgres-query" => query_cmd::postgres_query(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "portable-compile" => query_cmd::portable_compile(&mut args),
+        #[cfg(feature = "postgres")]
+        "portable-execute" => query_cmd::portable_execute(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "bulk-write" => write_cmd::bulk_write(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "postgres-write-ipc" => write_cmd::postgres_write_ipc(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "execute-scalar" => ops_cmd::execute_scalar(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "conditional-update" => ops_cmd::conditional_update(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "pool-status" => ops_cmd::pool_status(&mut args).await,
+        #[cfg(feature = "postgres")]
+        "explain" => ops_cmd::explain(&mut args).await,
         #[cfg(feature = "postgres")]
         "benchmark-oltp" => benchmark_oltp(&mut args).await,
         #[cfg(feature = "postgres")]
@@ -319,10 +349,10 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
     let provider = PostgresProvider::default();
     let operation = ReadOperation {
         source: object_ref(schema, object),
-        projection: Vec::new(),
+        projection: options.projection.clone(),
         order_by: options.order_by.clone(),
-        row_limit: None,
-        filter: None,
+        row_limit: options.row_limit,
+        filter: options.filter.clone(),
     };
     let row_order = if options.order_by.is_empty() {
         "unspecified"
@@ -338,7 +368,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         .read(
             &secret,
             &operation,
-            &ParameterBag::default(),
+            &options.parameters,
             &ResourceBudget::new(options.limits)?,
             &CancellationToken::new(),
         )
@@ -364,6 +394,13 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
         ..ResourceLimits::default()
     };
     let mut order_by = Vec::new();
+    let mut projection: Vec<String> = Vec::new();
+    let mut filter: Option<plenora_database_core::plan::FilterExpression> = None;
+    let mut row_limit: Option<u64> = None;
+    let mut params_map: std::collections::BTreeMap<
+        String,
+        plenora_database_core::provider::ParameterValue,
+    > = std::collections::BTreeMap::new();
     while let Some(option) = args.next() {
         let value = args
             .next()
@@ -383,11 +420,48 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
                     direction: SortDirection::Asc,
                 });
             }
+            "--project" => {
+                if value.is_empty() {
+                    return Err("--project richiede una lista non vuota".into());
+                }
+                projection = value.split(',').map(|s| s.trim().to_owned()).collect();
+                if projection.iter().any(String::is_empty) {
+                    return Err("--project ha token vuoto".into());
+                }
+            }
+            "--filter" => {
+                // Il valore è un percorso a un JSON che deserializza in
+                // FilterExpression.
+                let content = fs::read(&value)
+                    .map_err(|_| format!("--filter file non leggibile: {value}"))?;
+                let parsed: plenora_database_core::plan::FilterExpression =
+                    serde_json::from_slice(&content)
+                        .map_err(|e| format!("--filter JSON non parsabile: {e}"))?;
+                filter = Some(parsed);
+            }
+            "--limit" => {
+                row_limit = Some(parse_positive_u64(&option, &value)?);
+            }
+            "--parameter" => {
+                // Sintassi: --parameter NAME=VALUE:TYPE. Aggiunge un parametro
+                // referenziabile dal filtro come `field=NAME`.
+                let (name, val) = typed_params::parse_named_value_type(&value)?;
+                if params_map.insert(name.clone(), val).is_some() {
+                    return Err(format!("--parameter duplicato: {name}").into());
+                }
+            }
             _ => return Err(format!("opzione postgres-read-ipc sconosciuta: {option}").into()),
         }
     }
     limits.validate()?;
-    Ok(IpcOptions { limits, order_by })
+    Ok(IpcOptions {
+        limits,
+        order_by,
+        projection,
+        filter,
+        row_limit,
+        parameters: plenora_database_core::provider::ParameterBag::new(params_map),
+    })
 }
 
 fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
@@ -1065,69 +1139,92 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 
 fn usage() -> String {
     [
-        "uso:",
-        "  plenora-database inspect-dataset <file.arrow>",
-        "  plenora-database validate-plan <file>",
-        "  plenora-database database-probe <provider> <secret-env> [<host> <database> <username> \
-         [port]] [--tls-ca-path-env <ca-path-env>] [--tls-client-cert-path-env \
-         <cert-path-env> --tls-client-key-path-env <key-path-env>]",
-        "    provider: postgres | mysql | sqlserver",
-        "    postgres: secret-env contiene il DSN; non richiede host/database/username/port; \
-         identità client TLS opzionale",
-        "    mysql/sqlserver: secret-env contiene solo la password; configurazione strutturata \
-         obbligatoria; supportano la CA privata",
-        "    i valori delle variabili TLS sono path locali; certificato e chiave client sono \
-         PostgreSQL-only e richiedono una CA privata",
-        "  plenora-database postgres-probe <dsn-env> [--tls-ca-path-env <ca-path-env>] \
-         [--tls-client-cert-path-env <cert-path-env> --tls-client-key-path-env <key-path-env>]",
-        "  plenora-database postgres-describe <dsn-env> <schema> <object>",
-        "  plenora-database postgres-read-summary <dsn-env> <schema> <object>",
-        "  plenora-database postgres-read-ipc <dsn-env> <schema> <object> <output.arrow> \
-         [--max-rows N] [--max-output-bytes N] [--timeout-ms N] [--order-by FIELD]",
-        "  plenora-database profile-check <dsn-env> <profile>",
-        "    profile: APPLICATION_OLTP_V1 | PFM_CORE_V1 | PFM_GIS_V1",
-        "  plenora-database doctor <dsn-env>",
-        "    aggregato: connessione + capabilities + i 3 profili",
-        "  plenora-database execute-ddl <dsn-env> <sql>",
-        "    esegue DDL fuori transazione (CREATE INDEX CONCURRENTLY, VACUUM, ...)",
-        "  plenora-database execute-sql <dsn-env> <sql>",
-        "    esegue lo statement in una tx; SELECT/WITH/... → rows JSON, altri → affected_rows",
-        "  plenora-database transaction-test <dsn-env>",
-        "    smoke test end-to-end: begin + savepoint + release + commit",
-        "  plenora-database session-context-test <dsn-env>",
-        "    verifica isolamento session context tra tx sulla stessa connessione (pool reuse)",
-        "  plenora-database profile-list",
-        "    elenca i profili conformance disponibili con le capability richieste",
-        "  plenora-database test-cancellation <dsn-env>",
-        "    verifica statement_timeout → Cancelled entro il timeout dichiarato",
-        "  plenora-database test-streaming <dsn-env> [row_count=500] [batch_size=100]",
-        "    verifica cursor server-side: N righe in batch_size batch",
-        "  plenora-database test-spatial <dsn-env>",
-        "    verifica portable spatial AST end-to-end contro PostGIS",
-        "  plenora-database benchmark-oltp <dsn-env> [iterations=100]",
-        "    latency p50/p95/p99 di begin+select+commit",
-        "  plenora-database benchmark-read <dsn-env> <sql> [iterations=100]",
-        "    latency p50/p95/p99 di una query arbitraria (usa DSN sicuro)",
-        "  plenora-database benchmark-spatial <dsn-env> [iterations=50]",
-        "    latency p50/p95/p99 di ST_Intersects su 1000 punti con indice GIST",
-        "  plenora-database benchmark-write <dsn-env> [iterations=200] [batch_size=10]",
-        "    throughput INSERT (richiede --allow-write-tests): rows/sec + latency",
-        "  plenora-database test-concurrency <dsn-env>",
-        "    verifica optimistic concurrency: 2 tx competono, il loser deve avere \
-         category=ConcurrentModification (richiede --allow-write-tests)",
-        "  plenora-database inspect-database <dsn-env>",
-        "    metadata top-level: version, encoding, timezone, size, extensions",
-        "  plenora-database inspect-schemas <dsn-env>",
-        "    elenco schemi utente con owner e commento",
-        "  plenora-database inspect-tables <dsn-env> <schema>",
-        "    elenco relazioni dello schema con rowcount stimato e size",
-        "  plenora-database diagnose <dsn-env>",
-        "    superset di doctor: connect ms, capabilities, config server, findings + suggerimenti",
+        "uso: plenora-database [flag-globali] COMANDO [args...]",
         "",
-        "flag globali (accettati in qualsiasi posizione):",
-        "  --format json|markdown|junit   formato di output (default: json)",
-        "  --allow-write-tests            acconsente ai comandi che creano oggetti sul DB",
-        "  --ephemeral-schema NAME        crea/droppa schema NAME attorno ai test destructive",
+        "== bootstrap / diagnostica ==",
+        "  probe / doctor / diagnose",
+        "  database-probe <provider> <secret-env> [args tls]",
+        "    provider: postgres | mysql | sqlserver (mysql/sqlserver richiedono --features full)",
+        "  postgres-probe <dsn-env> [--tls-ca-path-env NAME] [--tls-client-cert-path-env NAME \
+         --tls-client-key-path-env NAME]",
+        "    verifica connessione + capabilities per Postgres",
+        "  doctor <dsn-env>",
+        "    aggregato: connessione + capabilities + i 3 profili conformance",
+        "  diagnose <dsn-env>",
+        "    superset di doctor: connect_ms, config server, findings + suggerimenti",
+        "  pool-status <dsn-env>",
+        "    stato acquisizione connessione dal pool (acquire_ms + connection identity)",
+        "",
+        "== conformance ==",
+        "  profile-list",
+        "  profile-check <dsn-env> <APPLICATION_OLTP_V1|PFM_CORE_V1|PFM_GIS_V1>",
+        "",
+        "== inspection (metadata) ==",
+        "  inspect-database <dsn-env>          — version/encoding/timezone/size/extensions",
+        "  inspect-catalogs <dsn-env>          — via Provider::inspect (raw)",
+        "  inspect-schemas <dsn-env>           — schemi utente (filtrati)",
+        "  inspect-objects <dsn-env> <schema>  — via Provider::inspect (raw)",
+        "  inspect-tables <dsn-env> <schema>   — tabelle/view/mv con rowcount + size",
+        "  postgres-describe <dsn-env> <schema> <object>",
+        "    metadata dettagliati oggetto (columns/constraints/indexes/policies/privileges)",
+        "",
+        "== read (Arrow bulk) ==",
+        "  postgres-read-summary <dsn-env> <schema> <object>",
+        "    schema Arrow + rowcount, senza materializzare",
+        "  postgres-read-ipc <dsn-env> <schema> <object> <output.arrow> [opzioni]",
+        "    opzioni: --project COL1,COL2 --filter FILTER.json --limit N --order-by FIELD",
+        "             --parameter NAME=VALUE:TYPE --max-rows N --max-output-bytes N --timeout-ms N",
+        "  postgres-query <dsn-env> <QUERY.json>",
+        "    esegue QueryOperation AST via Provider::query, summary schema+rows",
+        "",
+        "== write (Arrow bulk + DML) ==",
+        "  bulk-write <dsn-env> <WRITE_OP.json> <INPUT.arrow> [--dry-run]",
+        "    esegue WriteOperation plan-based (create/append/replace/upsert/…) su input Arrow IPC",
+        "  postgres-write-ipc <dsn-env> <schema> <object> <INPUT.arrow> [--mode X] [--keys K1,K2] \
+         [--update-columns C1,C2] [--dry-run]",
+        "    wrapper high-level di bulk-write; --mode: create|append|replace|truncate-insert|update|upsert|delete-by-keys (default append)",
+        "  execute-ddl <dsn-env> <sql>",
+        "    DDL fuori tx (CREATE INDEX CONCURRENTLY, VACUUM, ecc.)",
+        "  execute-sql <dsn-env> <sql> [--param VALUE:TYPE ...]",
+        "    esegue in una tx; SELECT/WITH/VALUES/TABLE/SHOW → rows JSON, altrimenti affected_rows",
+        "    --param NAME=VALUE:TYPE (con NAME opzionale) per bind position ($1, $2, ...)",
+        "    tipi: bool|int|bigint|float|string|uuid|json|date|timestamp|timestamptz|bytes-hex|null:<sub>",
+        "  execute-scalar <dsn-env> <sql> --type=TYPE [--param VALUE:TYPE ...]",
+        "    one-shot lettura di 1 riga × 1 colonna (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)",
+        "  conditional-update <dsn-env> <UPDATE_SQL> <PROBE_SQL> <EXPECTED_AFFECTED> [--param VALUE:TYPE ...]",
+        "    verifica optimistic concurrency: se affected != expected, PROBE distingue NotFound da ConcurrentModification",
+        "  explain <dsn-env> <sql> [--analyze] [--verbose] [--format=text|json|yaml|xml] [--param ...]",
+        "    wrapper EXPLAIN [ANALYZE] su PostgreSQL",
+        "",
+        "== portable AST ==",
+        "  portable-compile <postgres|mysql|sqlserver> <PORTABLE.json>",
+        "    stampa SQL + numero parametri compilati (per debug pipeline PFM)",
+        "  portable-execute <dsn-env> <PORTABLE.json>",
+        "    compila per Postgres, esegue in una tx, ritorna rows o affected_rows",
+        "",
+        "== transazioni / concorrenza (test) ==",
+        "  transaction-test <dsn-env>              — smoke: begin + savepoint + release + commit",
+        "  session-context-test <dsn-env>          — isolamento context su pool reuse",
+        "  test-cancellation <dsn-env>             — statement_timeout → Cancelled",
+        "  test-streaming <dsn-env> [rows] [batch] — cursor server-side",
+        "  test-spatial <dsn-env>                  — portable spatial AST end-to-end (PostGIS)",
+        "  test-concurrency <dsn-env>              — 2 tx competono (richiede --allow-write-tests)",
+        "",
+        "== benchmark ==",
+        "  benchmark-oltp <dsn-env> [iterations=100]",
+        "  benchmark-read <dsn-env> <sql> [iterations=100]",
+        "  benchmark-write <dsn-env> [iterations=200] [batch_size=10]  (--allow-write-tests)",
+        "  benchmark-spatial <dsn-env> [iterations=50]",
+        "",
+        "== dataset / plan (offline) ==",
+        "  inspect-dataset <file.arrow>",
+        "  validate-plan <file.json>",
+        "",
+        "== flag globali (accettati in qualsiasi posizione) ==",
+        "  --format json|markdown|junit         formato di output (default: json)",
+        "  --allow-write-tests                  gate esplicito per test che creano oggetti sul DB",
+        "  --ephemeral-schema NAME              crea/droppa schema NAME attorno ai test destructive",
+        "  --session-context KEY=VALUE:TYPE     imposta setting session (namespaced), multipli ok",
     ]
     .join("\n")
 }
@@ -1146,10 +1243,20 @@ mod format;
 mod inspect;
 mod inspect_dataset;
 #[cfg(feature = "postgres")]
+mod ops_cmd;
+#[cfg(feature = "postgres")]
 mod pfm;
+#[cfg(feature = "postgres")]
+mod query_cmd;
 mod safety;
 #[cfg(feature = "postgres")]
+mod session_ctx;
+#[cfg(feature = "postgres")]
 mod testing;
+#[cfg(feature = "postgres")]
+mod typed_params;
+#[cfg(feature = "postgres")]
+mod write_cmd;
 
 #[cfg(feature = "postgres")]
 use benchmark::{benchmark_oltp, benchmark_read, benchmark_spatial};

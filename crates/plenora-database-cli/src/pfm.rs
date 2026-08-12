@@ -118,17 +118,25 @@ pub(crate) async fn execute_ddl_cmd(args: &mut impl Iterator<Item = String>) -> 
 }
 
 pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
-    let sql = args.next().ok_or("manca lo statement SQL")?;
-    ensure_end(args)?;
+    // Estrae --param VALUE:TYPE (bind positional in ordine).
+    let collected: Vec<String> = args.by_ref().collect();
+    let (rest, params) = crate::typed_params::strip_bind_params(collected)?;
+    let mut rest_iter = rest.into_iter();
+    let dsn_env = rest_iter.next().ok_or("manca variabile ambiente DSN")?;
+    let sql = rest_iter.next().ok_or("manca lo statement SQL")?;
+    ensure_end(&mut rest_iter)?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm();
     let cancel = CancellationToken::new();
     let budget = pfm_budget()?;
 
+    let opts = TransactionOptions {
+        context: crate::session_ctx::active(),
+        ..TransactionOptions::default()
+    };
     let mut tx = provider
-        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .begin_transaction(&secret, &opts, &budget, &cancel)
         .await?;
 
     // Euristica: se lo statement inizia con SELECT/WITH/VALUES/TABLE → query,
@@ -139,7 +147,7 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
         .take_while(char::is_ascii_alphabetic)
         .collect::<String>()
         .to_ascii_uppercase();
-    let stmt = Statement::new(sql.clone());
+    let stmt = Statement::new(sql.clone()).with_params(params.into_inner());
     let payload = match head.as_str() {
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "SHOW" => {
             let rows = tx.query(&stmt, &cancel).await?;
