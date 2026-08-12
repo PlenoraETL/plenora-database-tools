@@ -602,7 +602,7 @@ mod tests {
 }
 
 /// Test di integrazione live: forzano ciascun SQLSTATE reale contro un
-/// PostgreSQL raggiungibile all'hostname `dataflow-postgres`, poi verificano
+/// `PostgreSQL` raggiungibile all'hostname `dataflow-postgres`, poi verificano
 /// che `classify_error` produca la mappatura attesa. Chiudono il milestone A2.
 #[cfg(test)]
 mod live {
@@ -883,8 +883,7 @@ mod live {
 
         let (res_a, res_b) = tokio::join!(a_fut, b_fut);
         let deadlock_err = match (res_a, res_b) {
-            (Err(e), _) if state(&e) == Some("40P01") => e,
-            (_, Err(e)) if state(&e) == Some("40P01") => e,
+            (Err(e), _) | (_, Err(e)) if state(&e) == Some("40P01") => e,
             other => panic!("nessun deadlock 40P01 osservato: {other:?}"),
         };
 

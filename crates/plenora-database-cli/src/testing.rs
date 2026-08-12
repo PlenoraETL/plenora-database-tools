@@ -9,8 +9,8 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::portable::{
     compile_portable, select as p_select, spatial as p_spatial,
 };
-use plenora_database_core::provider::Provider;
-use plenora_database_core::transaction::{Statement, TransactionOptions};
+use plenora_database_core::provider::{ParameterValue, Provider};
+use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory, SpatialPredicate, SpatialReference};
 use serde_json::json;
 
@@ -128,6 +128,169 @@ pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> C
         "batches": batches,
         "batch_size": batch_size,
         "elapsed_ms": elapsed_ms,
+    }))
+}
+
+#[allow(clippy::too_many_lines)] // scenario end-to-end tenuto lineare per leggibilità
+pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    ensure_end(args)?;
+    crate::safety::require_write_tests("test-concurrency")?;
+    let ephemeral = crate::safety::ensure_ephemeral_schema(&dsn_env).await?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    // Scenario reale di concorrenza ottimistica:
+    // 1. Tx A crea la tabella, inserisce (1, v=1), commit → riga persistente.
+    // 2. Tx B legge, applica update con expected_version=1 → success.
+    // 3. Tx C tenta lo stesso update con expected_version=1 (stantia) →
+    //    execute_conditional_update deve tornare ConcurrentModification.
+    let mut tx_setup = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    if let Some(schema) = ephemeral.as_deref() {
+        tx_setup
+            .execute(
+                &Statement::new(format!(
+                    "SET LOCAL search_path = \"{schema}\", public"
+                )),
+                &cancel,
+            )
+            .await?;
+    }
+    tx_setup
+        .execute(
+            &Statement::new(
+                "CREATE TABLE IF NOT EXISTS _plenora_test_concurrency ( \
+                 id INT PRIMARY KEY, v INT NOT NULL)",
+            ),
+            &cancel,
+        )
+        .await?;
+    tx_setup
+        .execute(
+            &Statement::new(
+                "INSERT INTO _plenora_test_concurrency VALUES (1, 1) \
+                 ON CONFLICT (id) DO UPDATE SET v = 1",
+            ),
+            &cancel,
+        )
+        .await?;
+    tx_setup.commit(&cancel).await?;
+
+    // Winner: bump 1 → 2 con expected_version=1.
+    let update_stmt = Statement::new(
+        "UPDATE _plenora_test_concurrency SET v = v + 1 WHERE id = $1 AND v = $2",
+    )
+    .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(1)]);
+    let probe_stmt = Statement::new("SELECT 1 FROM _plenora_test_concurrency WHERE id = $1")
+        .with_params(vec![ParameterValue::I32(1)]);
+
+    let mut tx_winner = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    if let Some(schema) = ephemeral.as_deref() {
+        tx_winner
+            .execute(
+                &Statement::new(format!(
+                    "SET LOCAL search_path = \"{schema}\", public"
+                )),
+                &cancel,
+            )
+            .await?;
+    }
+    let winner_outcome = tx_winner
+        .execute_conditional_update(
+            ConditionalUpdate {
+                update: &update_stmt,
+                key_probe: Some(&probe_stmt),
+                expected_affected_rows: 1,
+            },
+            &cancel,
+        )
+        .await;
+    if winner_outcome.is_ok() {
+        tx_winner.commit(&cancel).await?;
+    } else {
+        let _ = tx_winner.rollback(&cancel).await;
+    }
+    let winner_ok = winner_outcome.is_ok();
+
+    // Loser: replica lo stesso update con expected_version=1 (ora stantia).
+    let mut tx_loser = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    if let Some(schema) = ephemeral.as_deref() {
+        tx_loser
+            .execute(
+                &Statement::new(format!(
+                    "SET LOCAL search_path = \"{schema}\", public"
+                )),
+                &cancel,
+            )
+            .await?;
+    }
+    let loser_outcome = tx_loser
+        .execute_conditional_update(
+            ConditionalUpdate {
+                update: &update_stmt,
+                key_probe: Some(&probe_stmt),
+                expected_affected_rows: 1,
+            },
+            &cancel,
+        )
+        .await;
+    let _ = tx_loser.rollback(&cancel).await;
+
+    // Cleanup best-effort.
+    let mut tx_cleanup = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    if let Some(schema) = ephemeral.as_deref() {
+        let _ = tx_cleanup
+            .execute(
+                &Statement::new(format!(
+                    "SET LOCAL search_path = \"{schema}\", public"
+                )),
+                &cancel,
+            )
+            .await;
+    }
+    let _ = tx_cleanup
+        .execute(
+            &Statement::new("DROP TABLE IF EXISTS _plenora_test_concurrency"),
+            &cancel,
+        )
+        .await;
+    let _ = tx_cleanup.commit(&cancel).await;
+    if let Some(schema) = ephemeral.as_deref() {
+        crate::safety::drop_ephemeral_schema(&dsn_env, schema).await;
+    }
+
+    let (status, category, message) = match &loser_outcome {
+        Ok(()) => (
+            "unexpected_ok",
+            String::new(),
+            "il loser ha applicato update no-op senza errore".to_owned(),
+        ),
+        Err(e) => (
+            if e.category == ErrorCategory::ConcurrentModification {
+                "ok"
+            } else {
+                "wrong_category"
+            },
+            format!("{:?}", e.category),
+            e.message.clone(),
+        ),
+    };
+    print_json(&json!({
+        "status": status,
+        "winner_committed": winner_ok,
+        "loser_error_category": category,
+        "loser_message": message,
     }))
 }
 

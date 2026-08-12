@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)] // parametri letterali f64 usati come chiave di assertion
+
 use super::compiler::compile_portable;
 use super::*;
 use crate::plan::ProviderKind;

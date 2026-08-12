@@ -113,6 +113,93 @@ pub(crate) async fn benchmark_read(args: &mut impl Iterator<Item = String>) -> C
     }))
 }
 
+pub(crate) async fn benchmark_write(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    crate::safety::require_write_tests("benchmark-write")?;
+    let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
+    let iterations: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "iterations non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(200);
+    let batch_size: u32 = args
+        .next()
+        .map(|s| s.parse().map_err(|_| "batch_size non valido".to_owned()))
+        .transpose()?
+        .unwrap_or(10);
+    ensure_end(args)?;
+    let ephemeral = crate::safety::ensure_ephemeral_schema(&dsn_env).await?;
+
+    let secret = secret_from_env(&dsn_env)?;
+    let provider = postgres_provider_for_pfm();
+    let budget = pfm_budget()?;
+    let cancel = CancellationToken::new();
+
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await?;
+    if let Some(schema) = ephemeral.as_deref() {
+        tx.execute(
+            &Statement::new(format!(
+                "SET LOCAL search_path = \"{schema}\", public"
+            )),
+            &cancel,
+        )
+        .await?;
+    }
+    tx.execute(
+        &Statement::new(
+            "CREATE TEMP TABLE bench_write ( \
+             id BIGSERIAL PRIMARY KEY, \
+             v TEXT NOT NULL, \
+             ts TIMESTAMPTZ NOT NULL DEFAULT now() \
+             ) ON COMMIT DROP",
+        ),
+        &cancel,
+    )
+    .await?;
+
+    let mut samples: Vec<u128> = Vec::with_capacity(iterations as usize);
+    let overall_start = std::time::Instant::now();
+    let mut total_rows: u64 = 0;
+    for i in 0..iterations {
+        let start = std::time::Instant::now();
+        let stmt = Statement::new(format!(
+            "INSERT INTO bench_write (v) \
+             SELECT 'row-{i}-' || gs::TEXT FROM generate_series(1, {batch_size}) gs"
+        ));
+        let affected = tx.execute(&stmt, &cancel).await?;
+        samples.push(start.elapsed().as_micros());
+        total_rows = total_rows.saturating_add(affected);
+    }
+    let overall_ms = overall_start.elapsed().as_millis();
+    let _ = tx.rollback(&cancel).await;
+    if let Some(schema) = ephemeral.as_deref() {
+        crate::safety::drop_ephemeral_schema(&dsn_env, schema).await;
+    }
+    samples.sort_unstable();
+
+    let rows_per_sec = if overall_ms == 0 {
+        0.0
+    } else {
+        (total_rows as f64) * 1000.0 / (overall_ms as f64)
+    };
+    print_json(&json!({
+        "iterations": iterations,
+        "batch_size": batch_size,
+        "total_rows": total_rows,
+        "total_ms": overall_ms,
+        "batches_per_sec": rate_per_sec(iterations, overall_ms),
+        "rows_per_sec": rows_per_sec,
+        "latency_us": {
+            "min": samples.first().copied().unwrap_or(0),
+            "p50": percentile(&samples, 0.50),
+            "p95": percentile(&samples, 0.95),
+            "p99": percentile(&samples, 0.99),
+            "max": samples.last().copied().unwrap_or(0),
+        }
+    }))
+}
+
 pub(crate) async fn benchmark_spatial(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     let iterations: u32 = args

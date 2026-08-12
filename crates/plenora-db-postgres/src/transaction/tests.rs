@@ -1,7 +1,8 @@
-//! Unit + live test del transaction scope PostgreSQL.
+//! Unit + live test del transaction scope `PostgreSQL`.
 //!
-//! I test live richiedono un PostgreSQL raggiungibile all'hostname
+//! I test live richiedono un `PostgreSQL` raggiungibile all'hostname
 //! `dataflow-postgres` (compose network `database-tools_default`).
+#![allow(clippy::float_cmp)] // matches!() con parametri f64 letterali
 
 // Import "wide" — replica ciò che era `use super::*;` quando i test erano
 // inline in `transaction.rs`. I sub-mod live/facade li usano tutti.
@@ -81,7 +82,7 @@ fn phase_of_detects_write_head() {
 }
 
 /// Test integrazione live per A1: multi-statement, savepoint, cancellation,
-/// statement_timeout. Chiudono il milestone A1 verso Postgres reale.
+/// `statement_timeout`. Chiudono il milestone A1 verso Postgres reale.
 #[cfg(test)]
 mod live {
 use super::*;
@@ -100,7 +101,7 @@ fn budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("budget")
 }
 
-async fn provider() -> PostgresProvider {
+fn provider() -> PostgresProvider {
     PostgresProvider::new(1_024)
 }
 
@@ -151,7 +152,7 @@ async fn drop_table(name: &str) {
 #[tokio::test]
 async fn live_commit_multi_statement_persists_all() {
     scratch_table("a1_commit").await;
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 
@@ -194,7 +195,7 @@ async fn live_commit_multi_statement_persists_all() {
 #[tokio::test]
 async fn live_rollback_discards_all_statements() {
     scratch_table("a1_rollback").await;
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 
@@ -222,7 +223,7 @@ async fn live_rollback_discards_all_statements() {
 #[tokio::test]
 async fn live_savepoint_rollback_preserves_prior_statements() {
     scratch_table("a1_sp").await;
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 
@@ -272,7 +273,7 @@ async fn live_savepoint_rollback_preserves_prior_statements() {
 
 #[tokio::test]
 async fn live_savepoint_name_with_injection_is_rejected() {
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 
@@ -292,7 +293,7 @@ async fn live_savepoint_name_with_injection_is_rejected() {
 
 #[tokio::test]
 async fn live_statement_timeout_triggers_cancelled_57014() {
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
     let opts = TransactionOptions {
@@ -316,7 +317,7 @@ async fn live_statement_timeout_triggers_cancelled_57014() {
 
 #[tokio::test]
 async fn live_serializable_read_only_deferrable_isolation() {
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
     let opts = TransactionOptions {
@@ -342,7 +343,7 @@ async fn live_serializable_read_only_deferrable_isolation() {
 
 #[tokio::test]
 async fn live_cancellation_before_execute_is_rejected() {
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 
@@ -427,7 +428,7 @@ async fn live_spatial_intersects_polygon_returns_points_inside() {
         "ST_SetSRID(ST_MakeEnvelope(6.0, 40.0, 14.0, 46.0), 4326)",
     )
     .await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let filter = SpatialFilter {
@@ -467,7 +468,7 @@ async fn live_spatial_dwithin_uses_distance_parameter() {
         "ST_SetSRID(ST_MakePoint(9.191, 45.46), 4326)",
     )
     .await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     // Filter DWithin di 500 metri (usando ST_DWithin geografico via cast).
@@ -503,7 +504,7 @@ async fn live_spatial_bounding_box_uses_index_operator() {
         "ST_SetSRID(ST_MakeEnvelope(1.0, 48.0, 5.0, 50.0), 4326)",
     )
     .await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let filter = SpatialFilter {
@@ -535,7 +536,7 @@ async fn live_spatial_within_selects_features_contained_in_reference() {
         "ST_SetSRID(ST_MakeEnvelope(9.0, 45.0, 9.5, 46.0), 4326)",
     )
     .await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let filter = SpatialFilter {
@@ -563,7 +564,7 @@ async fn live_spatial_srid_preserved_roundtrip() {
     // Il punto ricaricato via ST_AsEWKB deve avere lo stesso SRID.
     setup_spatial_scratch("b1_srid").await;
     let polygon = fetch_ewkb("ST_SetSRID(ST_MakeEnvelope(0, 0, 100, 100), 4326)").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let filter = SpatialFilter {
@@ -591,7 +592,7 @@ async fn live_spatial_srid_preserved_roundtrip() {
 
 #[tokio::test]
 async fn live_read_tsvector_as_string() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -619,7 +620,7 @@ async fn live_read_tsvector_as_string() {
 
 #[tokio::test]
 async fn live_read_tsquery_as_string() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -640,7 +641,7 @@ async fn live_read_tsquery_as_string() {
 
 #[tokio::test]
 async fn live_read_xml_as_string() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -664,7 +665,7 @@ async fn live_read_network_types_via_text_cast() {
     // Pattern documentato per cidr/inet/macaddr/money: cast lato SQL
     // a text perché il wire binario Postgres per questi tipi non è
     // UTF-8 e non è direttamente decodificabile via wrapper generico.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -745,7 +746,7 @@ async fn teardown_enum_domain_scratch(name: &str) {
 #[tokio::test]
 async fn live_enum_column_decoded_as_parameter_value_enum() {
     setup_enum_domain_scratch("p1a_enum").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -776,7 +777,7 @@ async fn live_enum_column_decoded_as_parameter_value_enum() {
 #[tokio::test]
 async fn live_enum_write_via_parameter_value_enum() {
     setup_enum_domain_scratch("p1a_enum_w").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -823,7 +824,7 @@ async fn live_enum_facade_scalar() {
     use plenora_database_core::facade::execute_scalar_enum;
 
     setup_enum_domain_scratch("p1a_enum_s").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -850,7 +851,7 @@ async fn live_enum_null_becomes_typed_null() {
     // Verifica che un enum NULL sia decodificato come typed null,
     // non come Enum { label: "" }.
     setup_enum_domain_scratch("p1a_enum_null").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -884,7 +885,7 @@ async fn live_domain_over_text_decodes_as_base_type_string() {
     // Vantaggio: nessun handling speciale, i domain funzionano.
     // Compromesso: si perde il type_name del domain (email vs text).
     setup_enum_domain_scratch("p1a_dom").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -929,7 +930,7 @@ async fn live_portable_spatial_intersects_end_to_end() {
 
     // Setup 3 punti in SRID 4326 (Milano, Roma, Parigi).
     setup_spatial_scratch("f1e_portable").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
 
@@ -983,7 +984,7 @@ async fn live_portable_spatial_dwithin_end_to_end() {
     use plenora_database_core::{SpatialPredicate, SpatialReference};
 
     setup_spatial_scratch("f1e_dwithin").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
 
@@ -1029,7 +1030,7 @@ async fn live_execute_portable_returning_produces_generated_id() {
     use plenora_database_core::facade::execute_portable_returning_one;
     use plenora_database_core::portable::{Expression, InsertStatement, PortableStatement, TableRef};
 
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -1077,7 +1078,7 @@ async fn live_execute_portable_without_returning_via_facade_rejects_returning() 
         Expression, InsertStatement, PortableStatement, TableRef,
     };
 
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -1111,7 +1112,7 @@ async fn live_execute_portable_returning_via_update() {
     };
 
     scratch_table("f1d_upd_ret").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = provider
@@ -1160,7 +1161,7 @@ use plenora_database_core::plan::ProviderKind;
 #[tokio::test]
 async fn live_portable_insert_update_select_roundtrip() {
     scratch_table("f1c_portable").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
 
@@ -1228,7 +1229,7 @@ async fn live_portable_insert_update_select_roundtrip() {
 #[tokio::test]
 async fn live_portable_upsert_do_update_set() {
     scratch_table("f1c_upsert").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
 
@@ -1306,7 +1307,7 @@ async fn scalar_tx<'a>(
 
 #[tokio::test]
 async fn live_facade_scalar_bytes() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1323,7 +1324,7 @@ async fn live_facade_scalar_bytes() {
 
 #[tokio::test]
 async fn live_facade_scalar_uuid() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1340,7 +1341,7 @@ async fn live_facade_scalar_uuid() {
 
 #[tokio::test]
 async fn live_facade_scalar_json() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1357,7 +1358,7 @@ async fn live_facade_scalar_json() {
 
 #[tokio::test]
 async fn live_facade_scalar_date() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1374,7 +1375,7 @@ async fn live_facade_scalar_date() {
 
 #[tokio::test]
 async fn live_facade_scalar_timestamp_and_timestamptz() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1405,7 +1406,7 @@ async fn live_facade_scalar_decimal_is_unsupported() {
     // Documentato: decimal via facade OLTP è Unsupported finché non
     // introduciamo rust_decimal dep (Fase 3). Test verifica che il
     // driver segnali gracefully invece di panic.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
@@ -1437,7 +1438,7 @@ fn strict_options() -> TransactionOptions {
 #[tokio::test]
 async fn live_native_deny_permits_crud() {
     scratch_table("b3_ok").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &strict_options(), &budget(), &cancel)
@@ -1471,7 +1472,7 @@ async fn live_native_deny_permits_crud() {
 
 #[tokio::test]
 async fn live_native_deny_blocks_ddl() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &strict_options(), &budget(), &cancel)
@@ -1501,7 +1502,7 @@ async fn live_native_deny_blocks_ddl() {
 
 #[tokio::test]
 async fn live_native_deny_blocks_session_commands() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &strict_options(), &budget(), &cancel)
@@ -1525,7 +1526,7 @@ async fn live_native_deny_blocks_session_commands() {
 
 #[tokio::test]
 async fn live_native_deny_blocks_multi_statement() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &strict_options(), &budget(), &cancel)
@@ -1551,7 +1552,7 @@ async fn live_native_deny_blocks_multi_statement() {
 async fn live_native_allow_permits_ddl_with_escape_hatch() {
     // Modalità Allow (default) consente DDL — resta l'escape autorizzato
     // per migrazioni/diagnostica, come previsto dalla roadmap PFM.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1570,7 +1571,7 @@ async fn live_native_allow_permits_ddl_with_escape_hatch() {
 async fn live_transaction_control_is_blocked_even_in_allow() {
     // BEGIN/COMMIT/ROLLBACK/SAVEPOINT sono gestiti dalla libreria;
     // devono essere rifiutati anche in Allow.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1595,7 +1596,7 @@ async fn live_transaction_control_is_blocked_even_in_allow() {
 
 #[tokio::test]
 async fn live_query_stream_paginates_result_in_batches() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1621,7 +1622,7 @@ async fn live_query_stream_paginates_result_in_batches() {
 
 #[tokio::test]
 async fn live_query_stream_exhausts_at_end() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1650,7 +1651,7 @@ async fn live_query_stream_exhausts_at_end() {
 
 #[tokio::test]
 async fn live_query_stream_respects_bound_parameters() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1680,7 +1681,7 @@ async fn live_query_stream_respects_bound_parameters() {
 
 #[tokio::test]
 async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1710,7 +1711,7 @@ async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
 
 #[tokio::test]
 async fn live_query_stream_zero_batch_size_is_invalid_plan() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1718,9 +1719,8 @@ async fn live_query_stream_zero_batch_size_is_invalid_plan() {
         .expect("begin");
 
     let stmt = Statement::new("SELECT 1");
-    let err = match tx.query_stream(&stmt, 0, &cancel).await {
-        Err(e) => e,
-        Ok(_) => panic!("batch_size=0 deve fallire"),
+    let Err(err) = tx.query_stream(&stmt, 0, &cancel).await else {
+        panic!("batch_size=0 deve fallire");
     };
     assert_eq!(
         err.category,
@@ -1735,7 +1735,7 @@ async fn live_query_stream_cursor_released_on_commit() {
     // Dopo il commit, il cursor deve essere scomparso dalla sessione.
     // Riusando la stessa sessione (attraverso il pool), un `FETCH` sul
     // nome dovrebbe fallire con 34000 (invalid_cursor_name).
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1774,7 +1774,7 @@ async fn live_execute_ddl_creates_index_concurrently() {
     // CREATE INDEX CONCURRENTLY è vietato dentro transazione: la libreria
     // deve permetterne l'esecuzione via `Provider::execute_ddl`.
     scratch_table("opz3_ddl").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     Provider::execute_ddl(
@@ -1797,7 +1797,7 @@ async fn live_execute_ddl_creates_index_concurrently() {
 #[tokio::test]
 async fn live_execute_ddl_rejects_invalid_sql() {
     use plenora_database_core::provider::Provider;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let err = Provider::execute_ddl(&provider, &secret(), "NOT SQL AT ALL", &cancel)
@@ -1821,7 +1821,7 @@ async fn live_probe_pfm_core_v1_passes_on_postgres() {
     use plenora_database_core::conformance::{
         check_profile, probe_pfm_core_v1, ProfileStatus, PFM_CORE_V1,
     };
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let evidence = probe_pfm_core_v1(&provider, &secret(), &cancel).await;
@@ -1840,7 +1840,7 @@ async fn live_probe_pfm_gis_v1_passes_on_postgres() {
     use plenora_database_core::conformance::{
         check_profile, probe_pfm_gis_v1, ProfileStatus, PFM_GIS_V1,
     };
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let evidence = probe_pfm_gis_v1(&provider, &secret(), &cancel).await;
@@ -1856,7 +1856,7 @@ async fn live_probe_pfm_gis_v1_passes_on_postgres() {
 
 #[tokio::test]
 async fn live_probe_application_oltp_v1_passes_on_postgres() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let evidence = probe_application_oltp_v1(&provider, &secret(), &cancel).await;
@@ -1864,7 +1864,7 @@ async fn live_probe_application_oltp_v1_passes_on_postgres() {
     // Ogni capability richiesta deve avere un'evidence Verified.
     for cap in APPLICATION_OLTP_V1.required {
         let found = evidence.iter().find(|e| e.capability == *cap).unwrap_or_else(|| {
-            panic!("evidence assente per {:?}", cap)
+            panic!("evidence assente per {cap:?}")
         });
         assert_eq!(
             found.kind,
@@ -1896,7 +1896,7 @@ use plenora_database_core::facade::{
 
 #[tokio::test]
 async fn live_facade_execute_scalar_i64_returns_single_cell() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1915,7 +1915,7 @@ async fn live_facade_execute_scalar_i64_returns_single_cell() {
 
 #[tokio::test]
 async fn live_facade_execute_scalar_string_and_bool() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1943,7 +1943,7 @@ async fn live_facade_execute_scalar_string_and_bool() {
 #[tokio::test]
 async fn live_facade_query_one_returns_full_row() {
     scratch_table("a5_query_one").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1977,7 +1977,7 @@ async fn live_facade_query_one_returns_full_row() {
 
 #[tokio::test]
 async fn live_facade_query_one_zero_rows_is_not_found() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -1996,7 +1996,7 @@ async fn live_facade_query_one_zero_rows_is_not_found() {
 
 #[tokio::test]
 async fn live_facade_query_one_multiple_rows_is_conflict() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -2015,7 +2015,7 @@ async fn live_facade_query_one_multiple_rows_is_conflict() {
 
 #[tokio::test]
 async fn live_facade_query_optional_none_and_some() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -2045,7 +2045,7 @@ async fn live_facade_query_optional_none_and_some() {
 
 #[tokio::test]
 async fn live_facade_query_decodes_all_supported_scalar_types() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -2075,7 +2075,7 @@ async fn live_facade_query_decodes_all_supported_scalar_types() {
 
     assert!(matches!(&row[0], ParameterValue::Bool(true)));
     assert!(matches!(&row[1], ParameterValue::I32(42)));
-    assert!(matches!(&row[2], ParameterValue::I64(-1234567890)));
+    assert!(matches!(&row[2], ParameterValue::I64(-1_234_567_890)));
     assert!(matches!(&row[3], ParameterValue::F64(_)));
     assert!(matches!(&row[4], ParameterValue::String(s) if s == "text"));
     assert!(matches!(&row[5], ParameterValue::Bytes(b) if b == &[0xde, 0xad, 0xbe, 0xef]));
@@ -2090,7 +2090,7 @@ async fn live_facade_query_decodes_all_supported_scalar_types() {
 
 #[tokio::test]
 async fn live_facade_query_null_becomes_typed_null() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -2113,7 +2113,7 @@ async fn live_facade_query_null_becomes_typed_null() {
 
 #[tokio::test]
 async fn live_facade_scalar_type_mismatch_is_data_mapping() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -2153,7 +2153,7 @@ async fn read_session_setting(name: &str) -> String {
 
 #[tokio::test]
 async fn live_session_context_is_readable_inside_transaction() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut ctx = SessionContext::new();
@@ -2205,7 +2205,7 @@ async fn live_session_context_resets_after_commit_on_pooled_reuse() {
     // context sulla STESSA connessione (idealmente ripescata dal pool).
     // Il context della prima non deve leakare nella seconda: `SET LOCAL`
     // + `is_local=true` sono resettati automaticamente dal COMMIT.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut ctx = SessionContext::new();
@@ -2262,7 +2262,7 @@ async fn live_session_context_is_isolated_from_external_session() {
     // Un tx applica il context, un client SEPARATO (nuova connessione)
     // interroga il proprio setting: deve essere vuoto perché GUC transaction-local
     // vive solo nella sessione che l'ha impostato.
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut ctx = SessionContext::new();
@@ -2293,7 +2293,7 @@ async fn live_session_context_is_isolated_from_external_session() {
 
 #[tokio::test]
 async fn live_session_context_typed_values_serialize_correctly() {
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut ctx = SessionContext::new();
@@ -2375,7 +2375,7 @@ fn conditional_update<'a>(
 #[tokio::test]
 async fn live_optimistic_update_matches_expected_version_applied() {
     versioned_scratch("a3_ok").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx = provider
@@ -2411,7 +2411,7 @@ async fn live_optimistic_update_matches_expected_version_applied() {
 #[tokio::test]
 async fn live_optimistic_update_wrong_version_is_concurrent_modification() {
     versioned_scratch("a3_conflict").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx = provider
@@ -2451,7 +2451,7 @@ async fn live_optimistic_update_wrong_version_is_concurrent_modification() {
 #[tokio::test]
 async fn live_optimistic_update_missing_key_with_probe_is_not_found() {
     versioned_scratch("a3_missing").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx = provider
@@ -2480,7 +2480,7 @@ async fn live_optimistic_update_missing_key_with_probe_is_not_found() {
 #[tokio::test]
 async fn live_optimistic_update_without_probe_defaults_to_conflict() {
     versioned_scratch("a3_default").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx = provider
@@ -2512,7 +2512,7 @@ async fn live_optimistic_update_without_probe_defaults_to_conflict() {
 #[tokio::test]
 async fn live_optimistic_update_multi_row_matches_expected_count() {
     versioned_scratch("a3_multi").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx = provider
@@ -2551,7 +2551,7 @@ async fn live_optimistic_update_two_writers_only_one_succeeds() {
     // e l'altro deve ricevere ConcurrentModification (o serialization
     // failure retryable, tracciato dal test).
     versioned_scratch("a3_race").await;
-    let provider = provider().await;
+    let provider = provider();
     let cancel = CancellationToken::new();
 
     let mut tx_a = provider
@@ -2614,7 +2614,7 @@ async fn live_execute_after_constraint_violation_still_reports_25p02() {
     // "in_failed_sql_transaction" — verifichiamo che il mapping A2 sia
     // ancora corretto quando invocato via il transaction scope.
     scratch_table("a1_fail").await;
-    let provider = provider().await;
+    let provider = provider();
     let budget = budget();
     let cancel = CancellationToken::new();
 

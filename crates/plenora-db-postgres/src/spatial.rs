@@ -141,6 +141,7 @@ pub const fn spatial_reference(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // matches!() con parametri f64 letterali
 mod tests {
     use super::*;
     use plenora_database_core::geometry::{Dimensions, SpatialSemantics};

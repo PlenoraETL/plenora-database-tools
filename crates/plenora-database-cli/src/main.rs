@@ -96,9 +96,12 @@ impl From<&str> for CliError {
 // std::env::Args non è Send: materializzare prima degli await mantiene il
 // future del main compatibile con il runtime multi-thread.
 async fn run() -> CliResult<()> {
-    let collected = env::args().skip(1).collect::<Vec<_>>();
-    let mut args = collected.into_iter();
+    let raw = env::args().skip(1).collect::<Vec<_>>();
+    let after_format = format::strip_output_format(raw)?;
+    let after_safety = safety::strip_safety_flags(after_format)?;
+    let mut args = after_safety.into_iter();
     let command = args.next().ok_or_else(|| CliError::from(usage()))?;
+    format::set_active_command(&command);
     match command.as_str() {
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
@@ -110,6 +113,7 @@ async fn run() -> CliResult<()> {
         "profile-check" => profile_check(&mut args).await,
         "profile-list" => profile_list(&mut args),
         "doctor" => doctor(&mut args).await,
+        "diagnose" => diagnose::diagnose(&mut args).await,
         "execute-ddl" => execute_ddl_cmd(&mut args).await,
         "execute-sql" => execute_sql_cmd(&mut args).await,
         "transaction-test" => transaction_test(&mut args).await,
@@ -117,8 +121,13 @@ async fn run() -> CliResult<()> {
         "test-cancellation" => test_cancellation(&mut args).await,
         "test-streaming" => test_streaming(&mut args).await,
         "test-spatial" => test_spatial(&mut args).await,
+        "test-concurrency" => test_concurrency(&mut args).await,
+        "inspect-database" => inspect::inspect_database(&mut args).await,
+        "inspect-schemas" => inspect::inspect_schemas(&mut args).await,
+        "inspect-tables" => inspect::inspect_tables(&mut args).await,
         "benchmark-oltp" => benchmark_oltp(&mut args).await,
         "benchmark-read" => benchmark_read(&mut args).await,
+        "benchmark-write" => benchmark::benchmark_write(&mut args).await,
         "benchmark-spatial" => benchmark_spatial(&mut args).await,
         _ => Err(usage().into()),
     }
@@ -997,11 +1006,7 @@ pub(crate) fn ensure_end(args: &mut impl Iterator<Item = String>) -> CliResult<(
 }
 
 pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
-    println!(
-        "{}",
-        serde_json::to_string(&value).map_err(|_| "output non serializzabile".to_owned())?
-    );
-    Ok(())
+    format::print_active(value)
 }
 
 fn usage() -> String {
@@ -1051,6 +1056,24 @@ fn usage() -> String {
         "    latency p50/p95/p99 di una query arbitraria (usa DSN sicuro)",
         "  plenora-database benchmark-spatial <dsn-env> [iterations=50]",
         "    latency p50/p95/p99 di ST_Intersects su 1000 punti con indice GIST",
+        "  plenora-database benchmark-write <dsn-env> [iterations=200] [batch_size=10]",
+        "    throughput INSERT (richiede --allow-write-tests): rows/sec + latency",
+        "  plenora-database test-concurrency <dsn-env>",
+        "    verifica optimistic concurrency: 2 tx competono, il loser deve avere \
+         category=ConcurrentModification (richiede --allow-write-tests)",
+        "  plenora-database inspect-database <dsn-env>",
+        "    metadata top-level: version, encoding, timezone, size, extensions",
+        "  plenora-database inspect-schemas <dsn-env>",
+        "    elenco schemi utente con owner e commento",
+        "  plenora-database inspect-tables <dsn-env> <schema>",
+        "    elenco relazioni dello schema con rowcount stimato e size",
+        "  plenora-database diagnose <dsn-env>",
+        "    superset di doctor: connect ms, capabilities, config server, findings + suggerimenti",
+        "",
+        "flag globali (accettati in qualsiasi posizione):",
+        "  --format json|markdown|junit   formato di output (default: json)",
+        "  --allow-write-tests            acconsente ai comandi che creano oggetti sul DB",
+        "  --ephemeral-schema NAME        crea/droppa schema NAME attorno ai test destructive",
     ]
     .join("\n")
 }
@@ -1061,8 +1084,12 @@ fn usage() -> String {
 // ============================================================================
 
 mod benchmark;
+mod diagnose;
+mod format;
+mod inspect;
 mod inspect_dataset;
 mod pfm;
+mod safety;
 mod testing;
 
 use benchmark::{benchmark_oltp, benchmark_read, benchmark_spatial};
@@ -1070,7 +1097,9 @@ use pfm::{
     doctor, execute_ddl_cmd, execute_sql_cmd, profile_check, session_context_test,
     transaction_test,
 };
-use testing::{profile_list, test_cancellation, test_spatial, test_streaming};
+use testing::{
+    profile_list, test_cancellation, test_concurrency, test_spatial, test_streaming,
+};
 
 #[cfg(test)]
 mod tests {
