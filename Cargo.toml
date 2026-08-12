@@ -11,11 +11,31 @@ members = [
     "crates/plenora-database-cli",
 ]
 
+# I default-members escludono i provider driver non-Postgres.
+# `cargo build`, `cargo test`, `cargo clippy` senza `-p` operano solo su
+# core + Postgres + CLI. MySQL e SQL Server restano compilabili on-demand
+# con `-p plenora-db-mysql` o via `--features full` sul CLI, ma non
+# entrano nel path di default. Effetto lato `cargo audit`: le CVE
+# transitive di tiberius/mysql_async non compaiono sul Cargo.lock del
+# default build (Fase 2 le sbloccherà una volta bonificate upstream).
+default-members = [
+    "crates/plenora-database-core",
+    "crates/plenora-database-sql",
+    "crates/plenora-database-engine",
+    "crates/plenora-database-testkit",
+    "crates/plenora-db-postgres",
+    "crates/plenora-database-cli",
+]
+
 [workspace.package]
 version = "1.1.0"
 edition = "2021"
 rust-version = "1.92"
 publish = false
+# License interna: i crate del workspace non sono pubblicati su crates.io
+# (publish = false), ma la dichiarazione serve a cargo-deny + tooling
+# supply-chain per validare la license clause.
+license = "Apache-2.0"
 
 [workspace.dependencies]
 arrow-array = "=59.1.0"

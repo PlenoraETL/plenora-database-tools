@@ -4,6 +4,22 @@
 //! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
 
 #![cfg(test)]
+#![allow(
+    clippy::approx_constant,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::unreadable_literal,
+    clippy::single_match_else,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::uninlined_format_args,
+    clippy::match_same_arms,
+    clippy::manual_let_else,
+    clippy::redundant_closure_for_method_calls,
+)]
 
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
@@ -28,7 +44,7 @@ fn budget() -> ResourceBudget {
 //  H4.1 — Pool concorrenza: N tx parallele su pool size limitato
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
     let provider = Arc::new(PostgresProvider::new(1_024).with_pool_size(8, 5_000));
@@ -74,7 +90,7 @@ async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
 //  H4.2 — Streaming stress: 100k righe in batch da 500, cancel a metà
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
     let provider = PostgresProvider::new(1_024);
@@ -108,7 +124,7 @@ async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
     );
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
     let provider = PostgresProvider::new(1_024);
@@ -162,7 +178,7 @@ async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
 //  mettere la connessione in quarantena (non riusata dal pool come sana)
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
     // Pool size 1 → se la connessione non viene invalidata, la stessa
@@ -212,7 +228,7 @@ async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
     );
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_transaction_drop_does_not_leave_pool_permanently_broken() {
     // Dopo il drop, il pool deve poter servire N tx consecutive senza errori.

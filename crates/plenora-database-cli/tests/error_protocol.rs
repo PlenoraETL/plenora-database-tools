@@ -119,6 +119,7 @@ fn postgres_routes_share_private_ca_environment_contract() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn tls_path_resolution_precedes_secret_resolution_for_every_probe_route() {
     let routes: &[&[&str]] = &[
@@ -168,6 +169,7 @@ fn tls_path_resolution_precedes_secret_resolution_for_every_probe_route() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn bounded_ca_validation_precedes_secret_resolution_for_every_probe_route() {
     let fixture = std::env::temp_dir().join(format!(
@@ -223,6 +225,7 @@ fn assert_ca_error_before_secret(path: &Path, expected_message: &str) {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn invalid_non_secret_provider_fields_precede_secret_resolution() {
     let cases: &[(&[&str], &str)] = &[
@@ -300,6 +303,7 @@ fn invalid_non_secret_provider_fields_precede_secret_resolution() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn valid_der_and_crt_der_ca_preparation_precedes_secret_resolution() {
     const TEST_CA_DER: &[u8] = include_bytes!("fixtures/cli-test-ca.der");
@@ -338,6 +342,7 @@ fn valid_der_and_crt_der_ca_preparation_precedes_secret_resolution() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn sqlserver_rejects_multi_certificate_ca_before_secret_resolution() {
     const TEST_CA_DER: &[u8] = include_bytes!("fixtures/cli-test-ca.der");
@@ -397,6 +402,7 @@ fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn malformed_provider_arguments_fail_before_secret_resolution() {
     let malformed_configurations: &[(&[&str], &str)] = &[
@@ -436,6 +442,7 @@ fn malformed_provider_arguments_fail_before_secret_resolution() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn malformed_tls_arguments_fail_before_secret_resolution() {
     let cases: &[(&[&str], &str)] = &[
@@ -522,6 +529,7 @@ fn malformed_tls_arguments_fail_before_secret_resolution() {
     }
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 #[test]
 fn implemented_providers_reach_their_public_probe_configuration_without_network_io() {
     let cases: &[(&str, &[&str], &str)] = &[

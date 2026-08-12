@@ -217,6 +217,17 @@ pub trait Provider: Send + Sync {
         })
     }
 
+    /// Prepara un bulk write plan-based su input Arrow.
+    ///
+    /// Coppia con [`Self::write`] per il pattern:
+    /// `prepare_write` → validazione schema + preflight + lease risorse,
+    /// `write` → esecuzione streaming del `BatchStream` (COPY/INSERT bulk).
+    ///
+    /// Caso d'uso: import massivo, ETL, materializzazione MV — quando il
+    /// dato è già in `RecordBatch` Arrow e serve throughput. Per DML riga
+    /// per riga (INSERT/UPDATE/DELETE con RETURNING, UPSERT) usa il path
+    /// OLTP: [`TransactionScope`](crate::transaction::TransactionScope) +
+    /// [`portable`](crate::portable) + [`facade`](crate::facade).
     fn prepare_write<'a>(
         &'a self,
         secret: &'a SecretString,
@@ -226,6 +237,8 @@ pub trait Provider: Send + Sync {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite>;
 
+    /// Esegue il bulk write preparato via [`Self::prepare_write`].
+    /// Consuma il `BatchStream` di input in streaming.
     fn write<'a>(
         &'a self,
         secret: &'a SecretString,

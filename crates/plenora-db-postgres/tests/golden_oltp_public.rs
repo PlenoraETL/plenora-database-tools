@@ -16,6 +16,22 @@
 //! ```
 
 #![cfg(test)]
+#![allow(
+    clippy::approx_constant,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::unreadable_literal,
+    clippy::single_match_else,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::uninlined_format_args,
+    clippy::match_same_arms,
+    clippy::manual_let_else,
+    clippy::redundant_closure_for_method_calls,
+)]
 
 use plenora_database_core::facade::{
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_f64,
@@ -56,7 +72,7 @@ fn budget() -> ResourceBudget {
 //  Golden 1 — happy path: begin + exec + query + commit
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_begin_exec_query_commit_roundtrip() {
     let p = provider();
@@ -90,7 +106,7 @@ async fn golden_begin_exec_query_commit_roundtrip() {
 //  Golden 2 — savepoint annidati: create + rollback_to + release + commit
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_savepoints_nested_rollback_release_commit() {
     let p = provider();
@@ -153,7 +169,7 @@ async fn golden_savepoints_nested_rollback_release_commit() {
 //  ConcurrentModification
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_optimistic_conflict_cross_transactions() {
     let p = provider();
@@ -246,7 +262,7 @@ async fn golden_optimistic_conflict_cross_transactions() {
 //  connessione del pool non deve vederlo
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_session_context_is_isolated_across_pool_reuse() {
     // Pool size 1 forza il riuso della stessa connessione tra tx1 e tx2 —
@@ -306,7 +322,7 @@ async fn golden_session_context_is_isolated_across_pool_reuse() {
 //  Golden 5 — facade scalar_*: tutti i tipi supportati roundtrippano
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_scalar_facade_covers_every_supported_type() {
     let p = provider();
@@ -410,7 +426,7 @@ async fn golden_scalar_facade_covers_every_supported_type() {
 //  Golden 6 — execute_portable + execute_portable_returning + returning_one
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_portable_facade_full_dml_flow() {
     let p = provider();
@@ -507,7 +523,7 @@ async fn golden_portable_facade_full_dml_flow() {
 //  Golden 7 — query_one / query_optional shape validation
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn golden_query_one_and_optional_shape_errors() {
     let p = provider();

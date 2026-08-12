@@ -3,6 +3,22 @@
 //! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
 
 #![cfg(test)]
+#![allow(
+    clippy::approx_constant,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::unreadable_literal,
+    clippy::single_match_else,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::uninlined_format_args,
+    clippy::match_same_arms,
+    clippy::manual_let_else,
+    clippy::redundant_closure_for_method_calls,
+)]
 
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
@@ -26,7 +42,7 @@ fn budget() -> ResourceBudget {
 //  con Unsupported. Cast a text lo rende consumabile.
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
     let p = PostgresProvider::new(1_024);
@@ -61,7 +77,7 @@ async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
 //  H5.2 — JSONB grosso (~1 MiB): roundtrip senza truncation
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_large_jsonb_roundtrips_bytewise_intact() {
     let p = PostgresProvider::new(1_024);
@@ -105,7 +121,7 @@ async fn h5_large_jsonb_roundtrips_bytewise_intact() {
 //  H5.3 — BYTEA grosso (~4 MiB): roundtrip senza truncation
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_large_bytea_roundtrips_bytewise_intact() {
     let p = PostgresProvider::new(1_024);
@@ -147,7 +163,7 @@ async fn h5_large_bytea_roundtrips_bytewise_intact() {
 //  binario per TIMETZ)
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_timetz_via_text_cast_is_readable() {
     let p = PostgresProvider::new(1_024);
@@ -182,7 +198,7 @@ async fn h5_timetz_via_text_cast_is_readable() {
 //  colonna target
 // ============================================================================
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_typed_null_binds_correctly_for_each_hint() {
     let p = PostgresProvider::new(1_024);

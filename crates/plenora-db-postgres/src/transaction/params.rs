@@ -145,20 +145,20 @@ mod tests {
     use super::*;
     use plenora_database_core::ErrorCategory;
 
-    fn encode(v: ParameterValue) -> Result<SqlParam> {
-        encode_param(&v)
+    fn encode(v: &ParameterValue) -> Result<SqlParam> {
+        encode_param(v)
     }
 
     #[test]
     fn scalar_variants_are_encoded_end_to_end() {
-        assert!(matches!(encode(ParameterValue::Bool(true)).unwrap(), SqlParam::Bool(true)));
-        assert!(matches!(encode(ParameterValue::I32(42)).unwrap(), SqlParam::I32(42)));
-        assert!(matches!(encode(ParameterValue::I64(-42)).unwrap(), SqlParam::I64(-42)));
-        assert!(matches!(encode(ParameterValue::F64(3.5)).unwrap(), SqlParam::F64(_)));
-        assert!(matches!(encode(ParameterValue::String("s".into())).unwrap(), SqlParam::String(_)));
-        assert!(matches!(encode(ParameterValue::Bytes(vec![1, 2])).unwrap(), SqlParam::Bytes(_)));
+        assert!(matches!(encode(&ParameterValue::Bool(true)).unwrap(), SqlParam::Bool(true)));
+        assert!(matches!(encode(&ParameterValue::I32(42)).unwrap(), SqlParam::I32(42)));
+        assert!(matches!(encode(&ParameterValue::I64(-42)).unwrap(), SqlParam::I64(-42)));
+        assert!(matches!(encode(&ParameterValue::F64(3.5)).unwrap(), SqlParam::F64(_)));
+        assert!(matches!(encode(&ParameterValue::String("s".into())).unwrap(), SqlParam::String(_)));
+        assert!(matches!(encode(&ParameterValue::Bytes(vec![1, 2])).unwrap(), SqlParam::Bytes(_)));
         assert!(matches!(
-            encode(ParameterValue::Json(serde_json::json!({"k": "v"}))).unwrap(),
+            encode(&ParameterValue::Json(serde_json::json!({"k": "v"}))).unwrap(),
             SqlParam::Json(_)
         ));
     }
@@ -166,28 +166,28 @@ mod tests {
     #[test]
     fn temporal_scalars_require_iso8601_or_rfc3339() {
         assert!(matches!(
-            encode(ParameterValue::Date("2026-08-12".into())).unwrap(),
+            encode(&ParameterValue::Date("2026-08-12".into())).unwrap(),
             SqlParam::Date(_)
         ));
         assert!(matches!(
-            encode(ParameterValue::Timestamp("2026-08-12T10:00:00".into())).unwrap(),
+            encode(&ParameterValue::Timestamp("2026-08-12T10:00:00".into())).unwrap(),
             SqlParam::Timestamp(_)
         ));
         assert!(matches!(
-            encode(ParameterValue::TimestampTz("2026-08-12T10:00:00Z".into())).unwrap(),
+            encode(&ParameterValue::TimestampTz("2026-08-12T10:00:00Z".into())).unwrap(),
             SqlParam::TimestampTz(_)
         ));
 
         assert_eq!(
-            encode(ParameterValue::Date("12/08/2026".into())).unwrap_err().category,
+            encode(&ParameterValue::Date("12/08/2026".into())).unwrap_err().category,
             ErrorCategory::Unsupported
         );
         assert_eq!(
-            encode(ParameterValue::Timestamp("nope".into())).unwrap_err().category,
+            encode(&ParameterValue::Timestamp("nope".into())).unwrap_err().category,
             ErrorCategory::Unsupported
         );
         assert_eq!(
-            encode(ParameterValue::TimestampTz("2026-08-12 10:00:00".into())).unwrap_err().category,
+            encode(&ParameterValue::TimestampTz("2026-08-12 10:00:00".into())).unwrap_err().category,
             ErrorCategory::Unsupported
         );
     }
@@ -195,18 +195,18 @@ mod tests {
     #[test]
     fn uuid_validates_length_36() {
         let ok = "11111111-2222-3333-4444-555555555555";
-        assert!(matches!(encode(ParameterValue::Uuid(ok.into())).unwrap(), SqlParam::Uuid(_)));
+        assert!(matches!(encode(&ParameterValue::Uuid(ok.into())).unwrap(), SqlParam::Uuid(_)));
 
         let short = "not-a-uuid";
         assert_eq!(
-            encode(ParameterValue::Uuid(short.into())).unwrap_err().category,
+            encode(&ParameterValue::Uuid(short.into())).unwrap_err().category,
             ErrorCategory::Unsupported
         );
     }
 
     #[test]
     fn enum_is_encoded_as_text_label() {
-        let encoded = encode(ParameterValue::Enum {
+        let encoded = encode(&ParameterValue::Enum {
             type_name: "mood".into(),
             label: "sad".into(),
         })
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn wkb_and_decimal_are_rejected_from_oltp_path() {
         use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
-        let wkb_err = encode(ParameterValue::Wkb {
+        let wkb_err = encode(&ParameterValue::Wkb {
             bytes: vec![1, 2, 3],
             srid: Some(4326),
             dimensions: Dimensions::Xy,
@@ -229,7 +229,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(wkb_err.category, ErrorCategory::Unsupported);
 
-        let dec_err = encode(ParameterValue::Decimal("1.23".into())).unwrap_err();
+        let dec_err = encode(&ParameterValue::Decimal("1.23".into())).unwrap_err();
         assert_eq!(dec_err.category, ErrorCategory::Unsupported);
     }
 
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn null_variant_is_encoded_with_the_declared_type() {
-        let encoded = encode(ParameterValue::Null {
+        let encoded = encode(&ParameterValue::Null {
             type_name: "uuid".into(),
         })
         .unwrap();

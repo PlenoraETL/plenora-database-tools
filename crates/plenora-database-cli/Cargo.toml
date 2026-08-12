@@ -5,19 +5,31 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "plenora-database"
 path = "src/main.rs"
+
+[features]
+# Il default include solo Postgres: qualificato in produzione, senza CVE
+# transitive. MySQL e SQL Server restano opt-in in attesa di Fase 2
+# (provider parity) e del fix upstream delle vulnerabilità in
+# tiberius (rustls-webpki 0.101.7) e mysql_async (lru 0.18.1).
+default = ["postgres"]
+postgres = ["dep:plenora-db-postgres"]
+mysql = ["dep:plenora-db-mysql"]
+sqlserver = ["dep:plenora-db-sqlserver"]
+full = ["postgres", "mysql", "sqlserver"]
 
 [dependencies]
 arrow-ipc.workspace = true
 base64.workspace = true
 plenora-database-core.workspace = true
 plenora-database-engine.workspace = true
-plenora-db-mysql.workspace = true
-plenora-db-postgres.workspace = true
-plenora-db-sqlserver.workspace = true
+plenora-db-mysql = { workspace = true, optional = true }
+plenora-db-postgres = { workspace = true, optional = true }
+plenora-db-sqlserver = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-pemfile.workspace = true
 serde_json.workspace = true

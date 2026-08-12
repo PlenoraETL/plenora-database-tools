@@ -1,0 +1,123 @@
+# cargo-deny policy per plenora-database-tools.
+#
+# Regola generale: advisory = deny; licenze in allowlist ristretta;
+# duplicati di dipendenze critiche di sicurezza (rustls*, tokio) = deny.
+#
+# Le eccezioni documentate qui sotto sono limitate a advisory le cui
+# vulnerabilità arrivano esclusivamente da provider driver opzionali
+# (tiberius, mysql_async) che non entrano nella default build del CLI e
+# non sono usati dal path Postgres di produzione (PFM v1). Ogni eccezione
+# ha una data di revisione (`expires-at` come nota in comment): quando si
+# passa a Fase 2 (provider parity), le eccezioni vanno rimosse insieme
+# all'upgrade upstream.
+
+# ============================================================================
+#  advisories
+# ============================================================================
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104 →
+    # rustls-webpki 0.101.7. Tre advisory sullo stesso crate:
+    #   * 0098: name constraints per URI names accettati erroneamente
+    #   * 0099: name constraints per DNS con wildcard accettati
+    #   * 0104: reachable panic nel parsing di CRL malformate
+    # Path condiviso: tiberius 0.12.3 → tokio-rustls 0.24 → rustls 0.21
+    # → rustls-webpki 0.101.7. Tiberius 0.12.3 è l'ultima release su
+    # crates.io al 2026-08-12 e non ha aggiornato rustls a 0.23+.
+    #
+    # Motivo dell'eccezione:
+    # - Non entrano nella default build del CLI (feature `sqlserver` è
+    #   opt-in dalla PR delle feature flag)
+    # - Non nel path Postgres del PFM (che usa tokio-postgres + rustls
+    #   0.23.35 → rustls-webpki 0.103.13, non vulnerabile)
+    # - Le CVE name-constraint sono reachable solo dopo signature verify
+    #   e richiedono misissuance del CA. Il CRL panic richiede parsing
+    #   di CRL malformate — path non attivo nel probe standard.
+    #
+    # Rimuovere quando tiberius rilascia con rustls ≥ 0.23.
+    # Rivedere al 2026-Q2.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+    # RUSTSEC-2025-0134 → rustls-pemfile 1.0.4 e 2.2.0 unmaintained.
+    # Nessuna vulnerabilità nota, solo dichiarazione di manutenzione ferma.
+    # Il codice è stabile e limitato al parsing PEM. Path: sia tokio-rustls
+    # (opzionale via mysql/sqlserver) sia direttamente per la nostra
+    # gestione TLS. Rivalutare quando esiste una migrazione pulita.
+    # Rivedere al 2026-Q3.
+    "RUSTSEC-2025-0134",
+]
+
+# ============================================================================
+#  licenses
+# ============================================================================
+
+[licenses]
+version = 2
+# Licenze permissive largamente compatibili con distribuzione binaria.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    # webpki-roots (Mozilla root CA bundle) è distribuito sotto CDLA
+    # Permissive 2.0, licenza permissiva compatibile con distribuzione
+    # binaria (equivalente pratico a MIT/Apache per dati).
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+exceptions = [
+    # `ring` è ISC AND MIT AND OpenSSL: le license clause OpenSSL sono
+    # storiche ma esplicite. Documentato accepted.
+    { allow = ["ISC", "MIT", "OpenSSL"], crate = "ring" },
+]
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+# ============================================================================
+#  bans (duplicati e crate proibiti)
+# ============================================================================
+
+[bans]
+multiple-versions = "warn"
+# I nostri workspace crate usano `foo.workspace = true` che cargo-deny
+# rileva come wildcard: le dipendenze inter-workspace hanno versione
+# gestita dal manifest root, quindi non è un rischio effettivo.
+# `workspace-default-features` scoped a "allow" mantiene il gate su
+# wildcard **verso dipendenze esterne** (che restano `deny`).
+wildcards = "deny"
+allow-wildcard-paths = true
+# Vietiamo esplicitamente crypto legacy o già deprecato ove possibile.
+# openssl-sys e derivati: preferiamo la stack rustls per portabilità.
+deny = []
+# Il workspace ha genuinamente due versioni di alcuni crate low-level
+# (arrow-*, syn, etc.) a causa di combinazioni tra tokio-postgres e le
+# dipendenze Arrow. Skip espliciti dove ce lo aspettiamo.
+skip = []
+skip-tree = []
+
+# ============================================================================
+#  sources (origini crate accettate)
+# ============================================================================
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

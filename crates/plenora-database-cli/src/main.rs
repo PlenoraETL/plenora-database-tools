@@ -10,8 +10,11 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
 };
 use plenora_database_engine::parse_and_validate;
+#[cfg(feature = "mysql")]
 use plenora_db_mysql::{MysqlConfig, MysqlProvider};
+#[cfg(feature = "postgres")]
 use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
+#[cfg(feature = "sqlserver")]
 use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
 use rustls::{pki_types::CertificateDer, RootCertStore};
 use serde_json::json;
@@ -106,28 +109,51 @@ async fn run() -> CliResult<()> {
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
         "database-probe" => database_probe(&mut args).await,
+        #[cfg(feature = "postgres")]
         "postgres-probe" => postgres_probe(&mut args).await,
+        #[cfg(feature = "postgres")]
         "postgres-describe" => postgres_describe(&mut args).await,
+        #[cfg(feature = "postgres")]
         "postgres-read-summary" => postgres_read_summary(&mut args).await,
+        #[cfg(feature = "postgres")]
         "postgres-read-ipc" => postgres_read_ipc(&mut args).await,
+        #[cfg(feature = "postgres")]
         "profile-check" => profile_check(&mut args).await,
+        #[cfg(feature = "postgres")]
         "profile-list" => profile_list(&mut args),
+        #[cfg(feature = "postgres")]
         "doctor" => doctor(&mut args).await,
+        #[cfg(feature = "postgres")]
         "diagnose" => diagnose::diagnose(&mut args).await,
+        #[cfg(feature = "postgres")]
         "execute-ddl" => execute_ddl_cmd(&mut args).await,
+        #[cfg(feature = "postgres")]
         "execute-sql" => execute_sql_cmd(&mut args).await,
+        #[cfg(feature = "postgres")]
         "transaction-test" => transaction_test(&mut args).await,
+        #[cfg(feature = "postgres")]
         "session-context-test" => session_context_test(&mut args).await,
+        #[cfg(feature = "postgres")]
         "test-cancellation" => test_cancellation(&mut args).await,
+        #[cfg(feature = "postgres")]
         "test-streaming" => test_streaming(&mut args).await,
+        #[cfg(feature = "postgres")]
         "test-spatial" => test_spatial(&mut args).await,
+        #[cfg(feature = "postgres")]
         "test-concurrency" => test_concurrency(&mut args).await,
+        #[cfg(feature = "postgres")]
         "inspect-database" => inspect::inspect_database(&mut args).await,
+        #[cfg(feature = "postgres")]
         "inspect-schemas" => inspect::inspect_schemas(&mut args).await,
+        #[cfg(feature = "postgres")]
         "inspect-tables" => inspect::inspect_tables(&mut args).await,
+        #[cfg(feature = "postgres")]
         "benchmark-oltp" => benchmark_oltp(&mut args).await,
+        #[cfg(feature = "postgres")]
         "benchmark-read" => benchmark_read(&mut args).await,
+        #[cfg(feature = "postgres")]
         "benchmark-write" => benchmark::benchmark_write(&mut args).await,
+        #[cfg(feature = "postgres")]
         "benchmark-spatial" => benchmark_spatial(&mut args).await,
         _ => Err(usage().into()),
     }
@@ -181,6 +207,7 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
     }))
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let env_name = args
         .next()
@@ -198,6 +225,7 @@ async fn postgres_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
     }))
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres_describe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let env_name = args
         .next()
@@ -221,6 +249,7 @@ async fn postgres_describe(args: &mut impl Iterator<Item = String>) -> CliResult
     )
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let env_name = args
         .next()
@@ -275,6 +304,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
     }))
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let env_name = args
         .next()
@@ -658,9 +688,11 @@ struct TlsPathEnvironments {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProviderArguments {
+    #[cfg(feature = "postgres")]
     Postgres {
         tls: TlsPathEnvironments,
     },
+    #[cfg(feature = "mysql")]
     Mysql {
         host: String,
         database: String,
@@ -668,6 +700,7 @@ enum ProviderArguments {
         port: Option<u16>,
         tls: TlsPathEnvironments,
     },
+    #[cfg(feature = "sqlserver")]
     Sqlserver {
         host: String,
         database: String,
@@ -678,8 +711,11 @@ enum ProviderArguments {
 }
 
 enum PreparedProviderArguments {
+    #[cfg(feature = "postgres")]
     Postgres(PostgresProvider),
+    #[cfg(feature = "mysql")]
     Mysql(MysqlConfig),
+    #[cfg(feature = "sqlserver")]
     Sqlserver(SqlServerConfig),
 }
 
@@ -717,10 +753,12 @@ fn parse_provider_arguments(
     args: &mut impl Iterator<Item = String>,
 ) -> CliResult<ProviderArguments> {
     match kind {
+        #[cfg(feature = "postgres")]
         ProviderKind::Postgres => {
             let tls = parse_tls_path_environments(args)?;
             Ok(ProviderArguments::Postgres { tls })
         }
+        #[cfg(any(feature = "mysql", feature = "sqlserver"))]
         ProviderKind::Mysql | ProviderKind::Sqlserver => {
             let host = args
                 .next()
@@ -747,6 +785,7 @@ fn parse_provider_arguments(
                 return Err("identità client TLS supportata solo per PostgreSQL".into());
             }
             match kind {
+                #[cfg(feature = "mysql")]
                 ProviderKind::Mysql => Ok(ProviderArguments::Mysql {
                     host,
                     database,
@@ -754,6 +793,7 @@ fn parse_provider_arguments(
                     port,
                     tls,
                 }),
+                #[cfg(feature = "sqlserver")]
                 ProviderKind::Sqlserver => Ok(ProviderArguments::Sqlserver {
                     host,
                     database,
@@ -761,22 +801,22 @@ fn parse_provider_arguments(
                     port,
                     tls,
                 }),
-                // Il ramo esterno restringe gia' a MySQL e SQL Server, quindi
-                // qui non si arriva. Se un domani si aggiungesse una variante
-                // al ramo esterno senza aggiungerla qui, e' meglio l'errore
-                // che il processo abbattuto: e' lo stesso che darebbe il ramo
-                // `unsupported_kind` piu' sotto.
+                // Copre i rami disabilitati a feature-time e qualsiasi altra
+                // variante futura non prevista: errore controllato invece di
+                // panic.
                 _ => Err(CliError(DatabaseError::unsupported(
                     kind,
                     ErrorPhase::Prepare,
-                    "provider dichiarato dal contratto ma adapter non disponibile",
+                    "provider dichiarato dal contratto ma adapter non disponibile \
+                     (ricompilare con --features full per MySQL/SQL Server)",
                 ))),
             }
         }
         unsupported_kind => Err(CliError(DatabaseError::unsupported(
             unsupported_kind,
             ErrorPhase::Prepare,
-            "provider dichiarato dal contratto ma adapter non disponibile",
+            "provider dichiarato dal contratto ma adapter non disponibile \
+             (ricompilare con --features full per MySQL/SQL Server)",
         ))),
     }
 }
@@ -796,9 +836,11 @@ fn prepare_provider_arguments(
     arguments: ProviderArguments,
 ) -> CliResult<PreparedProviderArguments> {
     match arguments {
+        #[cfg(feature = "postgres")]
         ProviderArguments::Postgres { tls } => Ok(PreparedProviderArguments::Postgres(
             postgres_provider_for_probe_with_tls(&tls)?,
         )),
+        #[cfg(feature = "mysql")]
         ProviderArguments::Mysql {
             host,
             database,
@@ -816,6 +858,7 @@ fn prepare_provider_arguments(
             config.validate_without_password()?;
             Ok(PreparedProviderArguments::Mysql(config))
         }
+        #[cfg(feature = "sqlserver")]
         ProviderArguments::Sqlserver {
             host,
             database,
@@ -837,16 +880,24 @@ fn prepare_provider_arguments(
     }
 }
 
+// Il tipo di ritorno è Result perché il ramo MySQL/SQL Server può fallire
+// nella costruzione del provider; con solo Postgres attivo il match è
+// infallibile ma la firma resta la stessa per uniformità.
+#[allow(clippy::unnecessary_wraps)]
 fn build_provider_from_prepared_arguments(
     arguments: PreparedProviderArguments,
+    #[cfg_attr(not(any(feature = "mysql", feature = "sqlserver")), allow(unused_variables))]
     secret: &SecretString,
 ) -> CliResult<Box<dyn Provider>> {
     match arguments {
+        #[cfg(feature = "postgres")]
         PreparedProviderArguments::Postgres(provider) => Ok(Box::new(provider)),
+        #[cfg(feature = "mysql")]
         PreparedProviderArguments::Mysql(config) => Ok(Box::new(MysqlProvider::new(
             config.with_password(secret.clone()),
             8,
         )?)),
+        #[cfg(feature = "sqlserver")]
         PreparedProviderArguments::Sqlserver(config) => Ok(Box::new(SqlServerProvider::new(
             config.with_password(secret.clone()),
             1_024,
@@ -941,6 +992,7 @@ fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> C
     Ok(normalized)
 }
 
+#[cfg(feature = "sqlserver")]
 fn validate_sqlserver_private_ca_material(pem: &[u8]) -> CliResult<()> {
     let certificates = rustls_pemfile::certs(&mut Cursor::new(pem))
         .take(2)
@@ -955,6 +1007,7 @@ fn validate_sqlserver_private_ca_material(pem: &[u8]) -> CliResult<()> {
     Ok(())
 }
 
+#[cfg(feature = "postgres")]
 fn postgres_provider_for_probe_with_tls(tls: &TlsPathEnvironments) -> CliResult<PostgresProvider> {
     let Some(ca) = prepare_private_ca_material(tls.ca.as_deref())? else {
         return Ok(postgres_provider_for_probe());
@@ -982,6 +1035,7 @@ fn postgres_provider_for_probe_with_tls(tls: &TlsPathEnvironments) -> CliResult<
         .with_tls_config(tls_config))
 }
 
+#[cfg(feature = "postgres")]
 fn postgres_provider_for_probe() -> PostgresProvider {
     PostgresProvider::default().with_tls_mode(PostgresTlsMode::Require)
 }
@@ -1083,20 +1137,28 @@ fn usage() -> String {
 //  variabile ambiente (mai in CLI argument per non finire in shell history).
 // ============================================================================
 
+#[cfg(feature = "postgres")]
 mod benchmark;
+#[cfg(feature = "postgres")]
 mod diagnose;
 mod format;
+#[cfg(feature = "postgres")]
 mod inspect;
 mod inspect_dataset;
+#[cfg(feature = "postgres")]
 mod pfm;
 mod safety;
+#[cfg(feature = "postgres")]
 mod testing;
 
+#[cfg(feature = "postgres")]
 use benchmark::{benchmark_oltp, benchmark_read, benchmark_spatial};
+#[cfg(feature = "postgres")]
 use pfm::{
     doctor, execute_ddl_cmd, execute_sql_cmd, profile_check, session_context_test,
     transaction_test,
 };
+#[cfg(feature = "postgres")]
 use testing::{
     profile_list, test_cancellation, test_concurrency, test_spatial, test_streaming,
 };
@@ -1446,17 +1508,23 @@ mod tests {
     #[test]
     fn provider_factories_resolve_private_ca_paths_from_environment() {
         let secret = SecretString::new("test-only-secret");
-        for (kind, positional) in [
-            (ProviderKind::Postgres, Vec::<&str>::new()),
-            (
+        #[allow(clippy::vec_init_then_push)] // le push sono cfg-gated
+        let matrix: Vec<(ProviderKind, Vec<&str>)> = {
+            #[allow(unused_mut)]
+            let mut m: Vec<(ProviderKind, Vec<&str>)> = vec![(ProviderKind::Postgres, Vec::new())];
+            #[cfg(feature = "mysql")]
+            m.push((
                 ProviderKind::Mysql,
                 vec!["db.example.test", "warehouse", "loader"],
-            ),
-            (
+            ));
+            #[cfg(feature = "sqlserver")]
+            m.push((
                 ProviderKind::Sqlserver,
                 vec!["db.example.test", "warehouse", "loader"],
-            ),
-        ] {
+            ));
+            m
+        };
+        for (kind, positional) in matrix {
             let mut values = positional
                 .into_iter()
                 .chain([
@@ -1483,7 +1551,17 @@ mod tests {
             ProviderKind::Postgres
         );
 
-        for kind in [ProviderKind::Mysql, ProviderKind::Sqlserver] {
+        #[allow(clippy::vec_init_then_push)] // le push sono cfg-gated
+        let structured: Vec<ProviderKind> = {
+            #[allow(unused_mut)]
+            let mut v: Vec<ProviderKind> = Vec::new();
+            #[cfg(feature = "mysql")]
+            v.push(ProviderKind::Mysql);
+            #[cfg(feature = "sqlserver")]
+            v.push(ProviderKind::Sqlserver);
+            v
+        };
+        for kind in structured {
             let mut args = ["db.example.test", "warehouse", "loader"]
                 .into_iter()
                 .map(str::to_owned);
@@ -1514,6 +1592,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn provider_port_parser_rejects_invalid_boundaries() {
         for port in ["0", "-1", "65536", "not-a-port"] {
@@ -1527,6 +1606,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "mysql", feature = "sqlserver"))]
     #[test]
     fn provider_argument_parser_preserves_default_and_explicit_ports() {
         let mut default_args = ["db.example.test", "warehouse", "loader"]
@@ -1560,6 +1640,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn provider_argument_parser_rejects_partial_and_trailing_configuration() {
         for values in [
@@ -1572,6 +1653,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "mysql", feature = "sqlserver"))]
     #[test]
     fn structured_provider_factories_accept_an_explicit_nonzero_port() {
         let secret = SecretString::new("test-only-secret");

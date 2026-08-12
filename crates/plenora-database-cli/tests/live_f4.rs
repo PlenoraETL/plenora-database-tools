@@ -59,7 +59,7 @@ fn run_expect_error(args: &[&str]) -> Value {
     })
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_inspect_database_returns_expected_metadata_shape() {
     let out = run(&["inspect-database", "PG_DSN"]);
@@ -80,13 +80,13 @@ fn f4_inspect_database_returns_expected_metadata_shape() {
     );
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_inspect_schemas_lists_user_schemas() {
     let out = run(&["inspect-schemas", "PG_DSN"]);
     let count = out["count"].as_u64().expect("count u64");
     let schemas = out["schemas"].as_array().expect("schemas array");
-    assert_eq!(count as usize, schemas.len(), "count/schemas mismatch");
+    assert_eq!(count, schemas.len() as u64, "count/schemas mismatch");
     // 'public' deve esserci sempre; pg_catalog non deve.
     assert!(
         schemas.iter().any(|s| s["name"] == "public"),
@@ -101,7 +101,7 @@ fn f4_inspect_schemas_lists_user_schemas() {
     }
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_inspect_tables_lists_relations_with_size_and_row_estimate() {
     let out = run(&["inspect-tables", "PG_DSN", "public"]);
@@ -116,7 +116,7 @@ fn f4_inspect_tables_lists_relations_with_size_and_row_estimate() {
     }
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_diagnose_reports_healthy_when_probes_pass() {
     let out = run(&["diagnose", "PG_DSN"]);
@@ -146,7 +146,7 @@ fn f4_diagnose_reports_healthy_when_probes_pass() {
     assert!(out["profiles"]["PFM_GIS_V1"]["status"].is_string());
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_benchmark_write_requires_explicit_gate() {
     // Senza --allow-write-tests → invalid_plan
@@ -159,7 +159,7 @@ fn f4_benchmark_write_requires_explicit_gate() {
         .contains("--allow-write-tests"));
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_benchmark_write_reports_throughput_and_percentiles() {
     let out = run(&[
@@ -182,7 +182,7 @@ fn f4_benchmark_write_reports_throughput_and_percentiles() {
     assert!(p50 <= p95 && p95 <= p99, "percentili non monotoni: p50={p50} p95={p95} p99={p99}");
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_test_concurrency_reports_winner_and_loser_correctly() {
     let out = run(&[
@@ -195,7 +195,7 @@ fn f4_test_concurrency_reports_winner_and_loser_correctly() {
     assert_eq!(out["loser_error_category"], "ConcurrentModification");
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_profile_check_returns_pass_for_application_oltp_v1() {
     let out = run(&["profile-check", "PG_DSN", "APPLICATION_OLTP_V1"]);
@@ -205,7 +205,7 @@ fn f4_profile_check_returns_pass_for_application_oltp_v1() {
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_format_junit_wraps_ok_status_as_system_out() {
     // JUnit non è JSON: parse manuale minimale.
@@ -226,7 +226,7 @@ fn f4_format_junit_wraps_ok_status_as_system_out() {
     assert!(stdout.contains("<system-out>"));
 }
 
-#[ignore]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_format_markdown_renders_title_and_bullets() {
     let output = Command::new(BIN)
