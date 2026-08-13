@@ -16,7 +16,14 @@ def literal_value(value: Any) -> dict:
 
     Il formato è `{"type": "<tag>", "value": <payload>}` in snake_case.
     Le nested collections (dict/list) sono serializzate come JSON.
+
+    Priorità 1: `TypedValue` (`plenora_database.uuid/date/timestamp/...`)
+    bypassa l'auto-inference.
     """
+    # TypedValue helper (duck-typing sugli attributi).
+    kind = getattr(value, "_plenora_typed_kind", None)
+    if kind is not None:
+        return {"type": kind, "value": value._plenora_typed_value}
     # Ordine: bool prima di int (bool eredita da int in Python).
     if value is None:
         return {"type": "null", "value": {"type_name": "unknown"}}

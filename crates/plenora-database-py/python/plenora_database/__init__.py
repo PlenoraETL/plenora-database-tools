@@ -21,6 +21,15 @@ Le API di spatial / transaction / async arrivano in F3-5..F3-8.
 from ._native import version
 from ._session import Session
 from ._transaction import Transaction
+from .types import (
+    TypedValue,
+    date,
+    decimal,
+    null,
+    timestamp,
+    timestamptz,
+    uuid,
+)
 from .errors import (
     PlenoraAuthenticationError,
     PlenoraAuthorizationError,
@@ -68,6 +77,14 @@ __all__ = [
     "Update",
     "Delete",
     "Upsert",
+    # Typed params helpers
+    "TypedValue",
+    "uuid",
+    "date",
+    "timestamp",
+    "timestamptz",
+    "decimal",
+    "null",
     # Errors
     "PlenoraError",
     "PlenoraInvalidPlanError",

@@ -63,6 +63,13 @@ pub fn params_from_python(
 ///
 /// Ritorna `PyTypeError` se il tipo non è supportato.
 pub fn python_to_param(value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
+    // Priorità 1: TypedValue (helper `plenora_database.uuid/date/...`)
+    // bypassano l'auto-inference.
+    if let Ok(kind) = value.getattr("_plenora_typed_kind") {
+        let kind_str: String = kind.extract()?;
+        let payload = value.getattr("_plenora_typed_value")?;
+        return typed_to_param(&kind_str, &payload);
+    }
     // Ordine importante: `bool` è sottoclasse di `int` in Python; senza
     // controllo esplicito, `True`/`False` verrebbero estratti come 1/0.
     if value.is_none() {
@@ -98,6 +105,35 @@ pub fn python_to_param(value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
         "tipo Python non supportato come parametro: {}",
         type_name_of(value)
     )))
+}
+
+/// Costruisce un `ParameterValue` dal tag esplicito di un `TypedValue`
+/// Python. I tag validi sono i variant snake_case di `ParameterValue`
+/// (`uuid`, `date`, `timestamp`, `timestamp_tz`, `decimal`, `null`).
+fn typed_to_param(kind: &str, value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
+    match kind {
+        "uuid" => Ok(ParameterValue::Uuid(value.extract::<String>()?)),
+        "date" => Ok(ParameterValue::Date(value.extract::<String>()?)),
+        "timestamp" => Ok(ParameterValue::Timestamp(value.extract::<String>()?)),
+        "timestamp_tz" => Ok(ParameterValue::TimestampTz(value.extract::<String>()?)),
+        "decimal" => Ok(ParameterValue::Decimal(value.extract::<String>()?)),
+        "null" => {
+            let type_name: String = value
+                .downcast::<PyDict>()
+                .ok()
+                .and_then(|d| d.get_item("type_name").ok().flatten())
+                .and_then(|v| v.extract::<String>().ok())
+                .ok_or_else(|| {
+                    PyTypeError::new_err(
+                        "typed null richiede dict {'type_name': '<pg_type>'}",
+                    )
+                })?;
+            Ok(ParameterValue::Null { type_name })
+        }
+        other => Err(PyTypeError::new_err(format!(
+            "TypedValue kind sconosciuto: {other:?} (attesi: uuid, date, timestamp, timestamp_tz, decimal, null)"
+        ))),
+    }
 }
 
 fn type_name_of(value: &Bound<'_, PyAny>) -> String {
