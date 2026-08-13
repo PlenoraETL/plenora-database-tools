@@ -28,21 +28,36 @@ def _session():
 
 
 # ------------------------------ UUID ------------------------------
-#
-# Driver limitation nota: il path OLTP invia i parametri UUID via text-of-str
-# binding di tokio-postgres, che però usa binary format e Postgres si aspetta
-# 16 byte per il tipo UUID. Il workaround portable è cast esplicito
-# `($1::text)::uuid` per forzare il bind come text.
+# v0.3 (P0.7): il driver ora supporta bind UUID sia come text (per cast
+# via `$1::uuid`) sia come binary (per colonne UUID native).
 
 
-def test_uuid_typed_roundtrip_via_text_cast(session) -> None:
+def test_uuid_typed_roundtrip_direct_cast(session) -> None:
     val = "550e8400-e29b-41d4-a716-446655440000"
-    # Workaround driver: cast text intermedio.
-    result = session.execute_scalar(
-        "SELECT (($1::text))::uuid::text",
-        [p.uuid(val)],
-    )
+    # Cast diretto: il bind funziona sia come text (dispatch text) sia
+    # come uuid (dispatch binary).
+    result = session.execute_scalar("SELECT ($1::uuid)::text", [p.uuid(val)])
     assert result == val
+
+
+def test_uuid_in_where_via_builder(session) -> None:
+    session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
+    session.execute("CREATE TABLE _pyf6b_uid (uid UUID PRIMARY KEY, name TEXT)")
+    try:
+        uid = "11111111-2222-3333-4444-555555555555"
+        session.execute(
+            "INSERT INTO _pyf6b_uid (uid, name) VALUES ($1, $2)",
+            [p.uuid(uid), "target"],
+        )
+        row = (
+            session.select("_pyf6b_uid")
+            .columns("name")
+            .where_eq("uid", p.uuid(uid))
+            .one()
+        )
+        assert row == {"name": "target"}
+    finally:
+        session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
 
 
 # ------------------------------ Date/Timestamp ------------------------------
@@ -74,11 +89,8 @@ def test_timestamptz_typed_roundtrip(session) -> None:
 
 
 # ------------------------------ Decimal ------------------------------
-#
-# Nota: il path OLTP del driver Postgres non supporta ancora binding di
-# `ParameterValue::Decimal` (Unsupported). Il valore rimane esposto via
-# helper `p.decimal(...)` — verrà attivato quando il driver acquisisce
-# il codec Decimal (roadmap del core Rust, non del SDK Python).
+# v0.3 (P0.7): il driver ora supporta bind Decimal sia come text (per
+# cast `$1::text::numeric`) sia come binary (per colonne NUMERIC native).
 
 
 def test_decimal_helper_produces_typed_value(session) -> None:
@@ -87,9 +99,53 @@ def test_decimal_helper_produces_typed_value(session) -> None:
     assert v._plenora_typed_value == "1234.56"
 
 
-def test_decimal_binding_currently_unsupported_at_driver_level(session) -> None:
+def test_decimal_typed_roundtrip_preserves_precision(session) -> None:
+    val = "1234567.89"
+    result = session.execute_scalar(
+        "SELECT ($1::numeric(20,2))::text",
+        [p.decimal(val)],
+    )
+    assert result == val
+
+
+def test_decimal_typed_accepts_precision_4(session) -> None:
+    result = session.execute_scalar(
+        "SELECT ($1::numeric(10,4))::text",
+        [p.decimal("3.1416")],
+    )
+    assert result == "3.1416"
+
+
+def test_decimal_in_numeric_column_roundtrip(session) -> None:
+    # v0.3 (P0.7): il BIND di Decimal su colonna NUMERIC funziona.
+    # La LETTURA di una colonna NUMERIC via decoder OLTP invece ritorna
+    # Unsupported (finding aperto per P0.8 driver): il consumer deve
+    # castare a text nella SELECT.
+    session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
+    session.execute(
+        "CREATE TABLE _pyf6b_dec (id INT PRIMARY KEY, bal NUMERIC(12,2))"
+    )
+    try:
+        session.execute(
+            "INSERT INTO _pyf6b_dec (id, bal) VALUES ($1, $2)",
+            [1, p.decimal("999.99")],
+        )
+        # Read con cast text (workaround per NUMERIC read).
+        bal_txt = session.execute_scalar(
+            "SELECT bal::text FROM _pyf6b_dec WHERE id = $1",
+            [1],
+        )
+        assert bal_txt == "999.99"
+    finally:
+        session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
+
+
+def test_decimal_invalid_format_raises_unsupported(session) -> None:
     with pytest.raises(p.PlenoraUnsupportedError, match="decimal"):
-        session.execute_scalar("SELECT ($1::numeric)::text", [p.decimal("1.0")])
+        session.execute_scalar(
+            "SELECT ($1::numeric)::text",
+            [p.decimal("non-numerico")],
+        )
 
 
 # ------------------------------ Null tipizzato ------------------------------
@@ -127,30 +183,39 @@ def test_untyped_int_still_works(session) -> None:
     assert session.execute_scalar("SELECT $1::int", [42]) == 42
 
 
-def test_date_and_timestamp_returning_via_builder(session) -> None:
-    # Insert Date + Timestamp typed → RETURNING via builder.
-    # (UUID e Decimal saltati per limitazioni driver documentate sopra.)
+def test_full_typed_insert_via_builder(session) -> None:
+    # Insert UUID + Date + Timestamp + Decimal typed → funziona
+    # nativamente (v0.3 P0.7). Read: NUMERIC richiede cast text (P0.8).
     session.execute("DROP TABLE IF EXISTS _pyf6b_types")
     session.execute(
         "CREATE TABLE _pyf6b_types ("
-        " id INT PRIMARY KEY,"
+        " id UUID PRIMARY KEY,"
         " created DATE,"
-        " ts TIMESTAMP)"
+        " ts TIMESTAMP,"
+        " amount NUMERIC(12,2))"
     )
     try:
+        uid = "cccccccc-dddd-eeee-ffff-000000000000"
+        # Insert senza returning di amount (NUMERIC unsupported nel read).
         row = (
             session.insert("_pyf6b_types")
             .values(
-                id=1,
+                id=p.uuid(uid),
                 created=p.date("2026-01-15"),
                 ts=p.timestamp("2026-01-15T09:00:00"),
+                amount=p.decimal("999.99"),
             )
             .returning("id", "created", "ts")
             .one()
         )
-        assert row["id"] == 1
+        assert row["id"] == uid
         assert row["created"] == "2026-01-15"
-        # Timestamp roundtrip: Postgres normalizza in "2026-01-15 09:00:00".
         assert "2026-01-15" in row["ts"] and "09:00:00" in row["ts"]
+        # amount verificato via cast text separato.
+        bal_txt = session.execute_scalar(
+            "SELECT amount::text FROM _pyf6b_types WHERE id = $1",
+            [p.uuid(uid)],
+        )
+        assert bal_txt == "999.99"
     finally:
         session.execute("DROP TABLE IF EXISTS _pyf6b_types")

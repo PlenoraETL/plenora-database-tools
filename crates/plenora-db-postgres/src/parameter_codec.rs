@@ -235,13 +235,13 @@ pub fn typed_query_parameter_types(
 }
 
 #[derive(Debug)]
-struct DecimalParameter {
+pub struct DecimalParameter {
     value: i128,
     scale: i8,
 }
 
 impl DecimalParameter {
-    fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         let (negative, unsigned) = match value.as_bytes().first() {
             Some(b'-') => (true, &value[1..]),
             Some(b'+') => (false, &value[1..]),
@@ -294,10 +294,10 @@ impl ToSql for DecimalParameter {
 }
 
 #[derive(Debug)]
-struct UuidParameter([u8; 16]);
+pub struct UuidParameter(pub [u8; 16]);
 
 impl UuidParameter {
-    fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         let compact = value
             .bytes()
             .filter(|byte| *byte != b'-')

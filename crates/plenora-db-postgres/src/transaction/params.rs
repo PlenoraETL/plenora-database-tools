@@ -1,7 +1,13 @@
 //! Codec parametri OLTP: mapping `ParameterValue` → `SqlParam` che implementa
 //! `ToSql` per `tokio_postgres`. Sottoinsieme sufficiente per i tipi scalari
 //! canonici; geometrie/composite passano dal codec del piano dati (`parameter_codec`).
+//!
+//! v0.3 (P0.7): UUID e Decimal dispatchano in `to_sql` sul target type:
+//! per target `UUID`/`NUMERIC` inviano il payload binario (16 byte /
+//! Postgres NUMERIC wire format), altrimenti fallback al text encoding
+//! del testo originale (utile per `SELECT $1::text::uuid` pattern).
 
+use crate::parameter_codec::{DecimalParameter, UuidParameter};
 use super::sql::unsupported_param;
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -21,7 +27,12 @@ pub(super) enum SqlParam {
     Date(NaiveDate),
     Timestamp(NaiveDateTime),
     TimestampTz(DateTime<Utc>),
-    Uuid(uuid_via_string::Uuid),
+    /// UUID: mantiene sia il testo originale (36 char con dash) sia i 16
+    /// byte binari. In `to_sql` dispatcha in base al target type.
+    Uuid { text: String, binary: [u8; 16] },
+    /// Decimal: text originale + rappresentazione binaria (i128 + scale).
+    /// In `to_sql` dispatcha in base al target type.
+    Decimal { text: String, binary: DecimalParameter },
     Json(serde_json::Value),
 }
 
@@ -48,7 +59,24 @@ impl ToSql for SqlParam {
             Self::Date(v) => v.to_sql(ty, out),
             Self::Timestamp(v) => v.to_sql(ty, out),
             Self::TimestampTz(v) => v.to_sql(ty, out),
-            Self::Uuid(v) => v.as_str().to_sql(ty, out),
+            Self::Uuid { text, binary } => {
+                // Se il target è UUID → invio i 16 byte binari (formato
+                // wire Postgres). Altrimenti → text (utile per pattern
+                // `($1::text)::uuid` e per colonne TEXT che contengono
+                // stringhe UUID).
+                if *ty == Type::UUID {
+                    UuidParameter(*binary).to_sql(ty, out)
+                } else {
+                    text.as_str().to_sql(ty, out)
+                }
+            }
+            Self::Decimal { text, binary } => {
+                if *ty == Type::NUMERIC {
+                    binary.to_sql(ty, out)
+                } else {
+                    text.as_str().to_sql(ty, out)
+                }
+            }
             Self::Json(v) => v.to_sql(ty, out),
         }
     }
@@ -58,20 +86,6 @@ impl ToSql for SqlParam {
     }
 
     to_sql_checked!();
-}
-
-mod uuid_via_string {
-    // Wrapper leggero: PostgreSQL accetta il testo UUID tramite cast implicito
-    // quando il parametro è `text`. Evitiamo la dipendenza da `uuid` per il
-    // solo path OLTP: il valore è validato lato applicazione.
-    #[derive(Debug, Clone)]
-    pub struct Uuid(pub String);
-
-    impl Uuid {
-        pub fn as_str(&self) -> &str {
-            &self.0
-        }
-    }
 }
 
 pub(super) fn encode_params(params: &[ParameterValue]) -> Result<Vec<SqlParam>> {
@@ -102,12 +116,24 @@ fn encode_param(param: &ParameterValue) -> Result<SqlParam> {
             if v.len() != 36 {
                 return Err(unsupported_param("uuid non conforme a lunghezza 36"));
             }
-            Ok(SqlParam::Uuid(uuid_via_string::Uuid(v.clone())))
+            // Parsea a 16 byte per invio binario a Postgres UUID.
+            let binary = UuidParameter::parse(v).map_err(|_| {
+                unsupported_param("uuid non conforme (hex-digits + dash attesi)")
+            })?;
+            Ok(SqlParam::Uuid {
+                text: v.clone(),
+                binary: binary.0,
+            })
         }
         ParameterValue::Json(v) => Ok(SqlParam::Json(v.clone())),
-        ParameterValue::Decimal(_) => Err(unsupported_param(
-            "decimal non ancora supportato nel path OLTP",
-        )),
+        ParameterValue::Decimal(v) => {
+            let binary = DecimalParameter::parse(v)
+                .map_err(|_| unsupported_param("decimal non valido (formato numerico atteso)"))?;
+            Ok(SqlParam::Decimal {
+                text: v.clone(),
+                binary,
+            })
+        }
         ParameterValue::Wkb { .. } => Err(unsupported_param(
             "geometrie non supportate nel path OLTP: usare il piano dati",
         )),
@@ -195,7 +221,10 @@ mod tests {
     #[test]
     fn uuid_validates_length_36() {
         let ok = "11111111-2222-3333-4444-555555555555";
-        assert!(matches!(encode(&ParameterValue::Uuid(ok.into())).unwrap(), SqlParam::Uuid(_)));
+        assert!(matches!(
+            encode(&ParameterValue::Uuid(ok.into())).unwrap(),
+            SqlParam::Uuid { .. }
+        ));
 
         let short = "not-a-uuid";
         assert_eq!(
@@ -218,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn wkb_and_decimal_are_rejected_from_oltp_path() {
+    fn wkb_is_rejected_from_oltp_path() {
         use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
         let wkb_err = encode(&ParameterValue::Wkb {
             bytes: vec![1, 2, 3],
@@ -228,9 +257,50 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(wkb_err.category, ErrorCategory::Unsupported);
+    }
 
-        let dec_err = encode(&ParameterValue::Decimal("1.23".into())).unwrap_err();
-        assert_eq!(dec_err.category, ErrorCategory::Unsupported);
+    #[test]
+    fn decimal_is_encoded_with_dual_representation() {
+        // v0.3 (P0.7): Decimal ora è supportato nel path OLTP.
+        let encoded = encode(&ParameterValue::Decimal("1234.56".into())).unwrap();
+        match encoded {
+            SqlParam::Decimal { text, .. } => assert_eq!(text, "1234.56"),
+            _ => panic!("Decimal deve essere encoded come SqlParam::Decimal"),
+        }
+    }
+
+    #[test]
+    fn decimal_invalid_format_is_rejected() {
+        let err = encode(&ParameterValue::Decimal("non-numerico".into())).unwrap_err();
+        assert_eq!(err.category, ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn uuid_is_encoded_with_dual_representation() {
+        // v0.3 (P0.7): UUID ora invia binary sui target Type::UUID.
+        let encoded = encode(&ParameterValue::Uuid(
+            "550e8400-e29b-41d4-a716-446655440000".into(),
+        ))
+        .unwrap();
+        match encoded {
+            SqlParam::Uuid { text, binary } => {
+                assert_eq!(text, "550e8400-e29b-41d4-a716-446655440000");
+                assert_eq!(binary.len(), 16);
+                // Primo byte del UUID di test: 0x55.
+                assert_eq!(binary[0], 0x55);
+                assert_eq!(binary[15], 0x00);
+            }
+            _ => panic!("Uuid deve essere encoded come SqlParam::Uuid"),
+        }
+    }
+
+    #[test]
+    fn uuid_invalid_hex_is_rejected() {
+        let err = encode(&ParameterValue::Uuid(
+            "ZZZe8400-e29b-41d4-a716-446655440000".into(),
+        ))
+        .unwrap_err();
+        assert_eq!(err.category, ErrorCategory::Unsupported);
     }
 
     #[test]
