@@ -1,0 +1,21 @@
+[package]
+name = "plenora-database-py"
+description = "Bindings Python (PyO3) di plenora-database-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+# Il nome della lib è il nome del modulo nativo importato in Python:
+# `plenora_database._native` (vedi pyproject.toml module-name).
+name = "plenora_database_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+plenora-database-core.workspace = true
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+
+[lints]
+workspace = true

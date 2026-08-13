@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "plenora-database"
+version = "0.1.0"
+description = "Python SDK per plenora-database-tools (Postgres/PostGIS, MySQL, SQL Server)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Plenora ETL" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+]
+
+[project.urls]
+Repository = "https://github.com/PlenoraETL/plenora-database-tools"
+
+[tool.maturin]
+# Python-side wrappers vivono in python/plenora_database/; il modulo nativo
+# è compilato come plenora_database._native. Questa separazione permette di
+# esporre API Python idiomatiche sopra al layer PyO3.
+python-source = "python"
+module-name = "plenora_database._native"
+features = ["pyo3/extension-module"]
+# Con abi3-py310 basta un wheel per Python >= 3.10 per la stessa piattaforma.

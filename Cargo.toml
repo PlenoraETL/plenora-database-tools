@@ -9,15 +9,17 @@ members = [
     "crates/plenora-db-sqlserver",
     "crates/plenora-db-mysql",
     "crates/plenora-database-cli",
+    "crates/plenora-database-py",
 ]
 
-# I default-members escludono i provider driver non-Postgres.
-# `cargo build`, `cargo test`, `cargo clippy` senza `-p` operano solo su
-# core + Postgres + CLI. MySQL e SQL Server restano compilabili on-demand
-# con `-p plenora-db-mysql` o via `--features full` sul CLI, ma non
-# entrano nel path di default. Effetto lato `cargo audit`: le CVE
-# transitive di tiberius/mysql_async non compaiono sul Cargo.lock del
-# default build (Fase 2 le sbloccherà una volta bonificate upstream).
+# I default-members escludono i provider driver non-Postgres e i bindings
+# Python. `cargo build`, `cargo test`, `cargo clippy` senza `-p` operano
+# solo su core + Postgres + CLI. MySQL, SQL Server e i bindings Python
+# (che richiedono maturin per il wheel) restano compilabili on-demand con
+# `-p plenora-db-mysql` / `-p plenora-database-py`, ma non entrano nel
+# path di default. Effetto lato `cargo audit`: le CVE transitive di
+# tiberius/mysql_async e la superficie pyo3 non compaiono sul Cargo.lock
+# del default build.
 default-members = [
     "crates/plenora-database-core",
     "crates/plenora-database-sql",
