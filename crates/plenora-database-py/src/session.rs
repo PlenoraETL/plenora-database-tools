@@ -6,15 +6,20 @@
 //! import plenora_database
 //! with plenora_database.connect(dsn="host=localhost user=me dbname=app") as s:
 //!     print(s.server_version, s.postgis_version)
+//!     affected = s.execute("INSERT INTO t(x) VALUES ($1)", [42])
+//!     value = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM t")
+//!     rows = s.execute_returning_rows("SELECT id, name FROM t WHERE id = $1", [1])
 //! ```
-//!
-//! F3-2 espone solo la parte di lifecycle (connect, close, context manager)
-//! + i metadata scoperti in probe. Le API di query/exec sono F3-3.
 //!
 //! Runtime tokio globale (`OnceLock`) condiviso da tutte le Session: evita
 //! di ricreare un runtime per ogni chiamata e permette di riusare il pool
 //! di worker thread di tokio. Non è mai droppato durante la vita del
 //! processo Python.
+//!
+//! Ogni chiamata `execute*` apre una transazione dedicata, esegue lo
+//! statement e committa; questo dà semantica auto-commit stile psycopg
+//! `autocommit=True`. Le transazioni esplicite gestite dall'utente
+//! (`with s.begin() as tx:`) sono milestone F3-5.
 
 // Suppressioni per idiomi PyO3:
 // - doc_markdown: firma dei pymethod cita nomi Python (close, __enter__)
@@ -28,11 +33,15 @@
     clippy::needless_pass_by_value,
 )]
 
+use crate::py_convert::{param_to_python, params_from_python};
 use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::CancellationToken;
+use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::transaction::{Statement, TransactionOptions};
+use plenora_database_core::{CancellationToken, DatabaseError, Row};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 
@@ -48,20 +57,82 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+fn default_budget() -> ResourceBudget {
+    ResourceBudget::new(ResourceLimits::default()).expect("default budget")
+}
+
+/// Trasforma un errore Rust in RuntimeError Python con prefisso categoria.
+fn to_py_err(e: DatabaseError) -> PyErr {
+    PyRuntimeError::new_err(format!("{:?}: {}", e.category, e.message))
+}
+
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
 /// scoperti in probe. È un context manager: `with connect(...) as s: ...`.
-///
-/// La versione F3-2 non espone `execute`/`query` ancora — quelli arrivano
-/// in F3-3. Qui basta validare la DSN e memorizzare cosa il probe scopre
-/// sul server (versione, estensioni).
 #[pyclass(module = "plenora_database._native")]
-#[allow(dead_code)] // provider + secret usati da F3-3 (execute/query API)
 pub struct Session {
     provider: Arc<PostgresProvider>,
     secret: SecretString,
     server_version: String,
     postgis_version: Option<String>,
     closed: bool,
+}
+
+impl Session {
+    fn ensure_open(&self) -> PyResult<()> {
+        if self.closed {
+            return Err(PyRuntimeError::new_err(
+                "sessione chiusa: aprine una nuova con plenora_database.connect(...)",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Esegue uno statement in una transazione dedicata e committa.
+    fn run_tx<F, R>(&self, py: Python<'_>, work: F) -> PyResult<R>
+    where
+        F: for<'a> FnOnce(
+                &'a mut dyn plenora_database_core::transaction::TransactionScope,
+                &'a CancellationToken,
+            ) -> plenora_database_core::provider::ProviderFuture<'a, R>
+            + Send
+            + 'static,
+        R: Send + 'static,
+    {
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        py.allow_threads(|| {
+            runtime().block_on(async move {
+                let cancel = CancellationToken::new();
+                let mut tx = provider
+                    .begin_transaction(&secret, &TransactionOptions::default(), &default_budget(), &cancel)
+                    .await?;
+                let result = work(tx.as_mut(), &cancel).await;
+                match result {
+                    Ok(value) => {
+                        let outcome = Box::new(tx).commit(&cancel).await?;
+                        if !outcome.is_committed() {
+                            return Err(DatabaseError {
+                                category: plenora_database_core::ErrorCategory::Internal,
+                                phase: plenora_database_core::ErrorPhase::Write,
+                                remote_effect: plenora_database_core::RemoteEffect::None,
+                                retry: plenora_database_core::RetryDisposition::Never,
+                                provider: None,
+                                execution_id: None,
+                                message: "commit outcome unknown: verificare stato del target".to_owned(),
+                                diagnostics: None,
+                            });
+                        }
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        let _ = Box::new(tx).rollback(&cancel).await;
+                        Err(e)
+                    }
+                }
+            })
+        })
+        .map_err(to_py_err)
+    }
 }
 
 #[pymethods]
@@ -86,10 +157,76 @@ impl Session {
     }
 
     /// Marca la sessione come chiusa. Idempotente. Le risorse di connessione
-    /// vengono rilasciate quando l'oggetto Python viene garbage-collected
-    /// (Drop di Arc<PostgresProvider>).
+    /// vengono rilasciate quando l'oggetto Python viene garbage-collected.
     fn close(&mut self) {
         self.closed = true;
+    }
+
+    /// Esegue un statement DML/DDL e ritorna il numero di righe modificate.
+    ///
+    /// I placeholder sono positional-style Postgres: `$1`, `$2`, ...
+    /// I parametri sono una `list` Python (o None) con valori serializzabili
+    /// per il type mapping (`py_convert`).
+    #[pyo3(signature = (sql, params=None))]
+    fn execute(
+        &self,
+        py: Python<'_>,
+        sql: &str,
+        params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<u64> {
+        self.ensure_open()?;
+        let param_values = params_from_python(params.as_ref())?;
+        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { tx.execute(&statement, cancel).await })
+        })
+    }
+
+    /// Esegue una query e ritorna il primo valore (prima riga, prima colonna).
+    /// `None` se la query non ritorna righe.
+    #[pyo3(signature = (sql, params=None))]
+    fn execute_scalar<'py>(
+        &self,
+        py: Python<'py>,
+        sql: &str,
+        params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let param_values = params_from_python(params.as_ref())?;
+        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { tx.query(&statement, cancel).await })
+        })?;
+        rows.first().and_then(|r| r.get_index(0)).map_or_else(
+            || Ok(py.None().into_bound(py)),
+            |v| param_to_python(py, v),
+        )
+    }
+
+    /// Esegue una query e ritorna tutte le righe come lista di dict
+    /// (`colonna` → `valore`).
+    #[pyo3(signature = (sql, params=None))]
+    fn execute_returning_rows<'py>(
+        &self,
+        py: Python<'py>,
+        sql: &str,
+        params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let param_values = params_from_python(params.as_ref())?;
+        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { tx.query(&statement, cancel).await })
+        })?;
+        let out = PyList::empty(py);
+        for row in rows {
+            let dict = PyDict::new(py);
+            for (col, val) in row.columns().iter().zip(row.values().iter()) {
+                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
+            }
+            out.append(dict)?;
+        }
+        Ok(out)
     }
 
     /// Context manager: entrata restituisce self.
@@ -120,11 +257,6 @@ impl Session {
 /// Apre una nuova sessione Postgres. La DSN è nel formato libpq
 /// (`host=... user=... password=... dbname=...`).
 ///
-/// Fa fail-fast: se la DSN è invalida, la rete non risponde o le
-/// credenziali sono errate, ritorna `RuntimeError` con un messaggio
-/// che include la categoria dell'errore (per orientarsi anche senza
-/// stack trace).
-///
 /// # Errors
 ///
 /// Restituisce `PyRuntimeError` con messaggio "<category>: <message>"
@@ -137,12 +269,13 @@ pub fn connect(py: Python<'_>, dsn: &str) -> PyResult<Session> {
     let provider_for_probe = Arc::clone(&provider);
     let secret_for_probe = SecretString::new(dsn.to_owned());
     let caps_result = py.allow_threads(|| {
-        runtime()
-            .block_on(async move { provider_for_probe.probe_capabilities(&secret_for_probe, &cancel).await })
+        runtime().block_on(async move {
+            provider_for_probe
+                .probe_capabilities(&secret_for_probe, &cancel)
+                .await
+        })
     });
-    let caps = caps_result.map_err(|e| {
-        PyRuntimeError::new_err(format!("{:?}: {}", e.category, e.message))
-    })?;
+    let caps = caps_result.map_err(to_py_err)?;
     Ok(Session {
         provider,
         secret,

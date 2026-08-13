@@ -1195,6 +1195,7 @@ dependencies = [
  "plenora-database-core",
  "plenora-db-postgres",
  "pyo3",
+ "serde_json",
  "tokio",
 ]
 
@@ -1348,6 +1349,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+ "serde",
  "unindent",
 ]
 

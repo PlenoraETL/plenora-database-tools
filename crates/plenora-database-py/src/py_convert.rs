@@ -1,0 +1,213 @@
+//! Conversioni Python ↔ `ParameterValue`.
+//!
+//! Tabella di supporto (Python → ParameterValue):
+//!
+//! | Python                | ParameterValue        | Note                            |
+//! |-----------------------|-----------------------|---------------------------------|
+//! | `None`                | `Null { type_name }`  | type_name = "unknown"           |
+//! | `bool`                | `Bool`                |                                 |
+//! | `int` (i32 range)     | `I32`                 |                                 |
+//! | `int` (i64 range)     | `I64`                 |                                 |
+//! | `float`               | `F64`                 |                                 |
+//! | `str`                 | `String`              |                                 |
+//! | `bytes`, `bytearray`  | `Bytes`               |                                 |
+//! | `dict` / `list`       | `Json(Value)`         | via traversal (no `json.dumps`) |
+//!
+//! In direzione opposta (server → Python):
+//!
+//! | ParameterValue                                                        | Python  |
+//! |-----------------------------------------------------------------------|---------|
+//! | `Bool`                                                                | `bool`  |
+//! | `I32`, `I64`                                                          | `int`   |
+//! | `F64`                                                                 | `float` |
+//! | `String`, `Date`, `Timestamp`, `TimestampTz`, `Decimal`, `Uuid`       | `str`   |
+//! | `Bytes`                                                               | `bytes` |
+//! | `Json`                                                                | `dict` / `list` / scalar |
+//! | `Null`                                                                | `None`  |
+//!
+//! Il mapping ricco di date/timestamp/uuid/Decimal a tipi Python nativi
+//! (`datetime.date`, `uuid.UUID`, `decimal.Decimal`) è deferito a una
+//! milestone successiva (probabilmente F3-6 insieme all'error mapping).
+
+#![allow(clippy::doc_markdown)]
+
+use plenora_database_core::provider::ParameterValue;
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::*;
+use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyFloat, PyList, PyString};
+use pyo3::IntoPyObjectExt;
+
+/// Converte una lista Python di parametri in `Vec<ParameterValue>`.
+///
+/// # Errors
+///
+/// Ritorna `PyTypeError` se un elemento ha tipo non supportato.
+pub fn params_from_python(
+    params: Option<&Bound<'_, PyList>>,
+) -> PyResult<Vec<ParameterValue>> {
+    let Some(list) = params else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        out.push(python_to_param(&item).map_err(|e| {
+            PyTypeError::new_err(format!("parametro #{i}: {e}"))
+        })?);
+    }
+    Ok(out)
+}
+
+/// Converte un singolo valore Python in `ParameterValue`.
+///
+/// # Errors
+///
+/// Ritorna `PyTypeError` se il tipo non è supportato.
+pub fn python_to_param(value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
+    // Ordine importante: `bool` è sottoclasse di `int` in Python; senza
+    // controllo esplicito, `True`/`False` verrebbero estratti come 1/0.
+    if value.is_none() {
+        return Ok(ParameterValue::Null {
+            type_name: "unknown".to_owned(),
+        });
+    }
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(ParameterValue::Bool(b));
+    }
+    if value.is_instance_of::<PyFloat>() {
+        let f: f64 = value.extract()?;
+        return Ok(ParameterValue::F64(f));
+    }
+    if let Ok(i) = value.extract::<i64>() {
+        return i32::try_from(i).map_or_else(
+            |_| Ok(ParameterValue::I64(i)),
+            |i32v| Ok(ParameterValue::I32(i32v)),
+        );
+    }
+    if value.is_instance_of::<PyString>() {
+        let s: String = value.extract()?;
+        return Ok(ParameterValue::String(s));
+    }
+    if let Ok(bytes) = value.downcast::<PyBytes>() {
+        return Ok(ParameterValue::Bytes(bytes.as_bytes().to_vec()));
+    }
+    if value.is_instance_of::<PyDict>() || value.is_instance_of::<PyList>() {
+        let json = python_to_json(value)?;
+        return Ok(ParameterValue::Json(json));
+    }
+    Err(PyTypeError::new_err(format!(
+        "tipo Python non supportato come parametro: {}",
+        type_name_of(value)
+    )))
+}
+
+fn type_name_of(value: &Bound<'_, PyAny>) -> String {
+    value
+        .get_type()
+        .name()
+        .map_or_else(|_| "<sconosciuto>".to_owned(), |cow| cow.to_string())
+}
+
+/// Converte un `ParameterValue` in un oggetto Python (owned reference).
+///
+/// # Errors
+///
+/// Ritorna errore solo se una conversione JSON annidata fallisce.
+pub fn param_to_python<'py>(
+    py: Python<'py>,
+    value: &ParameterValue,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        ParameterValue::Bool(b) => b.into_bound_py_any(py),
+        ParameterValue::I32(i) => i.into_bound_py_any(py),
+        ParameterValue::I64(i) => i.into_bound_py_any(py),
+        ParameterValue::F64(f) => f.into_bound_py_any(py),
+        ParameterValue::String(s)
+        | ParameterValue::Date(s)
+        | ParameterValue::Timestamp(s)
+        | ParameterValue::TimestampTz(s)
+        | ParameterValue::Decimal(s)
+        | ParameterValue::Uuid(s) => s.into_bound_py_any(py),
+        ParameterValue::Bytes(b) => Ok(PyBytes::new(py, b).into_any()),
+        ParameterValue::Wkb { bytes, .. } => Ok(PyBytes::new(py, bytes).into_any()),
+        ParameterValue::Enum { label, .. } => label.into_bound_py_any(py),
+        ParameterValue::Json(v) => json_to_python(py, v),
+        ParameterValue::Null { .. } => Ok(py.None().into_bound(py)),
+    }
+}
+
+fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    if value.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(serde_json::Value::Bool(b));
+    }
+    if value.is_instance_of::<PyFloat>() {
+        let f: f64 = value.extract()?;
+        return Ok(serde_json::Number::from_f64(f)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number));
+    }
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(serde_json::Value::Number(serde_json::Number::from(i)));
+    }
+    if value.is_instance_of::<PyString>() {
+        let s: String = value.extract()?;
+        return Ok(serde_json::Value::String(s));
+    }
+    if let Ok(list) = value.downcast::<PyList>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            out.push(python_to_json(&item)?);
+        }
+        return Ok(serde_json::Value::Array(out));
+    }
+    if let Ok(dict) = value.downcast::<PyDict>() {
+        let mut out = serde_json::Map::with_capacity(dict.len());
+        for (key, val) in dict.iter() {
+            let key_str: String = key.extract().map_err(|_| {
+                PyTypeError::new_err("chiavi JSON devono essere stringhe")
+            })?;
+            out.insert(key_str, python_to_json(&val)?);
+        }
+        return Ok(serde_json::Value::Object(out));
+    }
+    Err(PyTypeError::new_err(format!(
+        "tipo Python non serializzabile a JSON: {}",
+        type_name_of(value)
+    )))
+}
+
+fn json_to_python<'py>(
+    py: Python<'py>,
+    value: &serde_json::Value,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        serde_json::Value::Null => Ok(py.None().into_bound(py)),
+        serde_json::Value::Bool(b) => b.into_bound_py_any(py),
+        serde_json::Value::Number(n) => n.as_i64().map_or_else(
+            || {
+                n.as_f64().map_or_else(
+                    // Numeri esotici (u64 fuori da i64): serializzati come stringa.
+                    || n.to_string().into_bound_py_any(py),
+                    |f| f.into_bound_py_any(py),
+                )
+            },
+            |i| i.into_bound_py_any(py),
+        ),
+        serde_json::Value::String(s) => s.into_bound_py_any(py),
+        serde_json::Value::Array(arr) => {
+            let list = PyList::empty(py);
+            for item in arr {
+                list.append(json_to_python(py, item)?)?;
+            }
+            Ok(list.into_any())
+        }
+        serde_json::Value::Object(obj) => {
+            let dict = PyDict::new(py);
+            for (k, v) in obj {
+                dict.set_item(k, json_to_python(py, v)?)?;
+            }
+            Ok(dict.into_any())
+        }
+    }
+}

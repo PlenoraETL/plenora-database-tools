@@ -8,6 +8,7 @@
 
 use pyo3::prelude::*;
 
+mod py_convert;
 mod session;
 
 use session::{connect, Session};
