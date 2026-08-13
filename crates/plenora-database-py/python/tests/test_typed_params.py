@@ -117,10 +117,9 @@ def test_decimal_typed_accepts_precision_4(session) -> None:
 
 
 def test_decimal_in_numeric_column_roundtrip(session) -> None:
-    # v0.3 (P0.7): il BIND di Decimal su colonna NUMERIC funziona.
-    # La LETTURA di una colonna NUMERIC via decoder OLTP invece ritorna
-    # Unsupported (finding aperto per P0.8 driver): il consumer deve
-    # castare a text nella SELECT.
+    # v0.3 (P0.7 + P0.8): bind Decimal su NUMERIC + read NUMERIC via
+    # decoder OLTP entrambi funzionano nativamente. Nessun cast text
+    # richiesto.
     session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
     session.execute(
         "CREATE TABLE _pyf6b_dec (id INT PRIMARY KEY, bal NUMERIC(12,2))"
@@ -130,12 +129,13 @@ def test_decimal_in_numeric_column_roundtrip(session) -> None:
             "INSERT INTO _pyf6b_dec (id, bal) VALUES ($1, $2)",
             [1, p.decimal("999.99")],
         )
-        # Read con cast text (workaround per NUMERIC read).
-        bal_txt = session.execute_scalar(
-            "SELECT bal::text FROM _pyf6b_dec WHERE id = $1",
-            [1],
+        row = (
+            session.select("_pyf6b_dec")
+            .columns("bal")
+            .where_eq("id", 1)
+            .one()
         )
-        assert bal_txt == "999.99"
+        assert row == {"bal": "999.99"}
     finally:
         session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
 
@@ -183,9 +183,10 @@ def test_untyped_int_still_works(session) -> None:
     assert session.execute_scalar("SELECT $1::int", [42]) == 42
 
 
-def test_full_typed_insert_via_builder(session) -> None:
-    # Insert UUID + Date + Timestamp + Decimal typed → funziona
-    # nativamente (v0.3 P0.7). Read: NUMERIC richiede cast text (P0.8).
+def test_full_typed_returning_via_builder(session) -> None:
+    # Insert UUID + Date + Timestamp + Decimal typed → RETURNING via builder.
+    # v0.3 (P0.7 + P0.8): tutti i tipi supportati nativamente sia in bind
+    # sia in read del decoder OLTP.
     session.execute("DROP TABLE IF EXISTS _pyf6b_types")
     session.execute(
         "CREATE TABLE _pyf6b_types ("
@@ -196,7 +197,6 @@ def test_full_typed_insert_via_builder(session) -> None:
     )
     try:
         uid = "cccccccc-dddd-eeee-ffff-000000000000"
-        # Insert senza returning di amount (NUMERIC unsupported nel read).
         row = (
             session.insert("_pyf6b_types")
             .values(
@@ -205,17 +205,13 @@ def test_full_typed_insert_via_builder(session) -> None:
                 ts=p.timestamp("2026-01-15T09:00:00"),
                 amount=p.decimal("999.99"),
             )
-            .returning("id", "created", "ts")
+            .returning("id", "created", "ts", "amount")
             .one()
         )
+        # Ritorno: server → Python. Uuid/Date/Timestamp/Decimal mappano a str.
         assert row["id"] == uid
         assert row["created"] == "2026-01-15"
+        assert row["amount"] == "999.99"
         assert "2026-01-15" in row["ts"] and "09:00:00" in row["ts"]
-        # amount verificato via cast text separato.
-        bal_txt = session.execute_scalar(
-            "SELECT amount::text FROM _pyf6b_types WHERE id = $1",
-            [p.uuid(uid)],
-        )
-        assert bal_txt == "999.99"
     finally:
         session.execute("DROP TABLE IF EXISTS _pyf6b_types")

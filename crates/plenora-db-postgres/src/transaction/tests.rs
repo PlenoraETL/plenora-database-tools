@@ -1402,25 +1402,21 @@ async fn live_facade_scalar_timestamp_and_timestamptz() {
 }
 
 #[tokio::test]
-async fn live_facade_scalar_decimal_is_unsupported() {
-    // Documentato: decimal via facade OLTP è Unsupported finché non
-    // introduciamo rust_decimal dep (Fase 3). Test verifica che il
-    // driver segnali gracefully invece di panic.
+async fn live_facade_scalar_decimal_returns_string() {
+    // v0.3 (P0.8): decimal via facade OLTP funziona. Il roundtrip
+    // preserva la rappresentazione testuale precisa.
     let provider = provider();
     let cancel = CancellationToken::new();
     let budget = budget();
     let mut tx = scalar_tx(&provider, &cancel, &budget).await;
-    let err = execute_scalar_decimal(
+    let value = execute_scalar_decimal(
         tx.as_mut(),
         &Statement::new("SELECT 3.14::NUMERIC(10,2)"),
         &cancel,
     )
     .await
-    .expect_err("decimal deve essere Unsupported oggi");
-    assert_eq!(
-        err.category,
-        plenora_database_core::ErrorCategory::Unsupported
-    );
+    .expect("decimal roundtrip");
+    assert_eq!(value, "3.14");
     tx.rollback(&cancel).await.expect("rollback");
 }
 

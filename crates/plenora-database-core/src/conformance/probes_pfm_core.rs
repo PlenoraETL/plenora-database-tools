@@ -276,20 +276,23 @@ async fn probe_decimal_roundtrip(
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
-    // Il facade OLTP oggi decodifica NUMERIC come non-supported. Verifichiamo
-    // che la libreria propaghi un `Unsupported` esplicito invece di silenziare.
-    // Il consumer legge decimal via il data plane Arrow.
-    let outcome = crate::facade::query_one(
+    // v0.3 (P0.8): il decoder OLTP ora supporta NUMERIC. Verifichiamo il
+    // roundtrip completo: il valore letterale "123.456" deve tornare
+    // preserved come Decimal(String).
+    let row = crate::facade::query_one(
         tx.as_mut(),
         &Statement::new("SELECT 123.456::NUMERIC(10,3)"),
         cancel,
     )
-    .await;
+    .await
+    .map_err(|e| format!("decimal query: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
-    match outcome {
-        Err(e) if e.category == crate::ErrorCategory::Unsupported => Ok(()),
-        Err(e) => Err(format!("attesa Unsupported, ottenuta {:?}", e.category)),
-        Ok(_) => Err("decimal via facade OLTP dovrebbe essere Unsupported".into()),
+    match &row[0] {
+        ParameterValue::Decimal(v) if v == "123.456" => Ok(()),
+        ParameterValue::Decimal(other) => Err(format!(
+            "decimal roundtrip: atteso \"123.456\", ottenuto {other:?}"
+        )),
+        other => Err(format!("atteso Decimal, ottenuto {other:?}")),
     }
 }
 
