@@ -10,11 +10,15 @@ use pyo3::prelude::*;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
+mod async_session;
+mod async_transaction;
 mod errors;
 mod py_convert;
 mod session;
 mod transaction;
 
+use async_session::{aconnect, init_async_runtime, AsyncSession};
+use async_transaction::AsyncTransaction;
 use session::{connect, Session};
 use transaction::Transaction;
 
@@ -41,10 +45,16 @@ pub const fn version() -> &'static str {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
+    // asyncio ↔ tokio. Chiamato una sola volta all'import del modulo.
+    init_async_runtime();
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
+    m.add_class::<AsyncSession>()?;
+    m.add_class::<AsyncTransaction>()?;
     errors::register(m)?;
     Ok(())
 }

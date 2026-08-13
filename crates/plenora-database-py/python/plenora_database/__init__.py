@@ -21,6 +21,15 @@ Le API di spatial / transaction / async arrivano in F3-5..F3-8.
 from ._native import version
 from ._session import Session
 from ._transaction import Transaction
+from ._async_session import AsyncSession
+from ._async_transaction import AsyncTransaction
+from .async_query import (
+    AsyncDelete,
+    AsyncInsert,
+    AsyncSelect,
+    AsyncUpdate,
+    AsyncUpsert,
+)
 from . import spatial
 from .spatial import SpatialReference
 from .types import (
@@ -55,30 +64,52 @@ from .errors import (
     PlenoraUnsupportedError,
 )
 from .query import Delete, Insert, Select, Update, Upsert
+from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
 
 
 def connect(dsn: str) -> Session:
-    """Apre una nuova sessione Postgres.
+    """Apre una nuova sessione Postgres (sync).
 
     La DSN è nel formato libpq (`host=... user=... password=... dbname=...`).
     Il probe iniziale verifica connessione + PostGIS. Fallisce con
-    RuntimeError se la DSN è invalida, la rete non risponde o l'auth
+    PlenoraError se la DSN è invalida, la rete non risponde o l'auth
     fallisce.
     """
     return Session(_native_connect(dsn))
 
 
+async def aconnect(dsn: str) -> AsyncSession:
+    """Apre una nuova sessione Postgres asincrona.
+
+    Coroutine: `s = await aconnect(dsn)` oppure
+    `async with await aconnect(dsn) as s: ...`.
+
+    Sotto il cofano il probe capabilities usa il runtime tokio condiviso
+    con il resto del SDK (nessuna nuova thread pool viene creata).
+    """
+    native = await _native_aconnect(dsn)
+    return AsyncSession(native)
+
+
 __all__ = [
     "connect",
+    "aconnect",
     "version",
     "Session",
+    "AsyncSession",
     "Transaction",
+    "AsyncTransaction",
     "Select",
     "Insert",
     "Update",
     "Delete",
     "Upsert",
+    "AsyncSelect",
+    "AsyncInsert",
+    "AsyncUpdate",
+    "AsyncDelete",
+    "AsyncUpsert",
     # Spatial
     "spatial",
     "SpatialReference",
