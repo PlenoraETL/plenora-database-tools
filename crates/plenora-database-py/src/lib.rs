@@ -7,11 +7,28 @@
 //! wrapper Python idiomatici vivono in `python/plenora_database/__init__.py`.
 
 use pyo3::prelude::*;
+use std::sync::OnceLock;
+use tokio::runtime::Runtime;
 
 mod py_convert;
 mod session;
+mod transaction;
 
 use session::{connect, Session};
+use transaction::Transaction;
+
+/// Runtime tokio globale condiviso da Session e Transaction. Inizializzato
+/// al primo uso e mai droppato durante la vita del processo Python.
+pub(crate) fn runtime() -> &'static Runtime {
+    static RT: OnceLock<Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("plenora-py")
+            .build()
+            .expect("build tokio runtime")
+    })
+}
 
 /// Versione del bindings crate. Coincide con la versione del workspace
 /// Rust, che è la fonte di verità per compatibilità API.
@@ -26,5 +43,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_class::<Session>()?;
+    m.add_class::<Transaction>()?;
     Ok(())
 }

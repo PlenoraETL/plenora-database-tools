@@ -34,30 +34,19 @@
 )]
 
 use crate::py_convert::{param_to_python, params_from_python};
+use crate::runtime;
+use crate::transaction::{parse_isolation, Transaction};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
-use plenora_database_core::transaction::{Statement, TransactionOptions};
+use plenora_database_core::transaction::{AccessMode, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::sync::{Arc, OnceLock};
-use tokio::runtime::Runtime;
-
-/// Runtime tokio globale, inizializzato al primo uso.
-fn runtime() -> &'static Runtime {
-    static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("plenora-py")
-            .build()
-            .expect("build tokio runtime")
-    })
-}
+use std::sync::Arc;
 
 fn default_budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("default budget")
@@ -282,6 +271,59 @@ impl Session {
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable(tx, &ast, cancel).await })
         })
+    }
+
+    /// Apre una nuova transazione user-managed. Usa `with s.begin() as tx:`
+    /// per commit/rollback automatico (rollback su eccezione, commit su
+    /// uscita normale).
+    ///
+    /// Opzioni:
+    /// - `isolation`: "read_uncommitted" / "read_committed" /
+    ///   "repeatable_read" / "serializable" (None = default sessione)
+    /// - `read_only`: True/False (None = default)
+    /// - `deferrable`: True/False (solo effettivo con Serializable+ReadOnly)
+    /// - `statement_timeout_ms`: timeout per singolo statement
+    #[pyo3(signature = (
+        isolation=None,
+        read_only=None,
+        deferrable=None,
+        statement_timeout_ms=None,
+    ))]
+    fn begin(
+        &self,
+        py: Python<'_>,
+        isolation: Option<&str>,
+        read_only: Option<bool>,
+        deferrable: Option<bool>,
+        statement_timeout_ms: Option<u64>,
+    ) -> PyResult<Transaction> {
+        self.ensure_open()?;
+        let mut opts = TransactionOptions::default();
+        if let Some(iso) = isolation {
+            opts.isolation = Some(parse_isolation(iso)?);
+        }
+        if let Some(ro) = read_only {
+            opts.access_mode = Some(if ro {
+                AccessMode::ReadOnly
+            } else {
+                AccessMode::ReadWrite
+            });
+        }
+        opts.deferrable = deferrable;
+        opts.statement_timeout_ms = statement_timeout_ms;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let tx = py
+            .allow_threads(|| {
+                runtime().block_on(async move {
+                    let cancel = CancellationToken::new();
+                    provider
+                        .begin_transaction(&secret, &opts, &default_budget(), &cancel)
+                        .await
+                })
+            })
+            .map_err(to_py_err)?;
+        Ok(Transaction::new(tx))
     }
 
     /// Context manager: entrata restituisce self.

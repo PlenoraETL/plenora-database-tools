@@ -20,6 +20,7 @@ Le API di spatial / transaction / async arrivano in F3-5..F3-8.
 
 from ._native import version
 from ._session import Session
+from ._transaction import Transaction
 from .query import Delete, Insert, Select, Update, Upsert
 from ._native import connect as _native_connect
 
@@ -39,6 +40,7 @@ __all__ = [
     "connect",
     "version",
     "Session",
+    "Transaction",
     "Select",
     "Insert",
     "Update",

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._native import Session as _NativeSession
+from ._transaction import Transaction
 from .query import Delete, Insert, Select, Update, Upsert
 
 
@@ -63,6 +64,34 @@ class Session:
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return self._native.execute_returning_rows(sql, params)
+
+    # ------------------------ transactions -----------------------------
+
+    def begin(
+        self,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        deferrable: bool | None = None,
+        statement_timeout_ms: int | None = None,
+    ) -> Transaction:
+        """Apre una transazione user-managed.
+
+        Usa come context manager per commit/rollback automatico:
+
+            with s.begin() as tx:
+                tx.execute("INSERT ...")
+
+        Options:
+        - `isolation`: "read_uncommitted" / "read_committed" /
+          "repeatable_read" / "serializable"
+        - `read_only`: True/False
+        - `deferrable`: True/False (solo con Serializable + ReadOnly)
+        - `statement_timeout_ms`: int
+        """
+        native_tx = self._native.begin(
+            isolation, read_only, deferrable, statement_timeout_ms
+        )
+        return Transaction(native_tx)
 
     # -------------------- portable AST builders -------------------------
 
