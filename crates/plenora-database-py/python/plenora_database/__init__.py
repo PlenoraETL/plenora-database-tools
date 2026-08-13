@@ -21,6 +21,28 @@ Le API di spatial / transaction / async arrivano in F3-5..F3-8.
 from ._native import version
 from ._session import Session
 from ._transaction import Transaction
+from .errors import (
+    PlenoraAuthenticationError,
+    PlenoraAuthorizationError,
+    PlenoraCancelledError,
+    PlenoraConcurrentModificationError,
+    PlenoraConflictError,
+    PlenoraCrsError,
+    PlenoraDataMappingError,
+    PlenoraError,
+    PlenoraExecutionError,
+    PlenoraInternalError,
+    PlenoraInvalidConfigurationError,
+    PlenoraInvalidPlanError,
+    PlenoraIoError,
+    PlenoraNotFoundError,
+    PlenoraProtocolError,
+    PlenoraResourceLimitError,
+    PlenoraSchemaError,
+    PlenoraTimeoutError,
+    PlenoraTransientError,
+    PlenoraUnsupportedError,
+)
 from .query import Delete, Insert, Select, Update, Upsert
 from ._native import connect as _native_connect
 
@@ -46,4 +68,25 @@ __all__ = [
     "Update",
     "Delete",
     "Upsert",
+    # Errors
+    "PlenoraError",
+    "PlenoraInvalidPlanError",
+    "PlenoraInvalidConfigurationError",
+    "PlenoraSchemaError",
+    "PlenoraDataMappingError",
+    "PlenoraCrsError",
+    "PlenoraUnsupportedError",
+    "PlenoraNotFoundError",
+    "PlenoraConflictError",
+    "PlenoraConcurrentModificationError",
+    "PlenoraAuthenticationError",
+    "PlenoraAuthorizationError",
+    "PlenoraTimeoutError",
+    "PlenoraCancelledError",
+    "PlenoraResourceLimitError",
+    "PlenoraIoError",
+    "PlenoraProtocolError",
+    "PlenoraTransientError",
+    "PlenoraExecutionError",
+    "PlenoraInternalError",
 ]

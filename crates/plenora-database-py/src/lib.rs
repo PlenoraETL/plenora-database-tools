@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
+mod errors;
 mod py_convert;
 mod session;
 mod transaction;
@@ -44,5 +45,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
+    errors::register(m)?;
     Ok(())
 }

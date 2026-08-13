@@ -19,6 +19,7 @@
     clippy::needless_pass_by_value,
 )]
 
+use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
@@ -33,15 +34,6 @@ fn tx_closed_error() -> PyErr {
     PyRuntimeError::new_err(
         "transaction non attiva: già committata o rollback-ata (o chiusa dal context manager)",
     )
-}
-
-fn to_py_err(e: DatabaseError) -> PyErr {
-    let diag = e
-        .diagnostics
-        .as_ref()
-        .map(|v| format!(" [{v:?}]"))
-        .unwrap_or_default();
-    PyRuntimeError::new_err(format!("{:?}: {}{}", e.category, e.message, diag))
 }
 
 /// Transazione applicativa. Ottenuta da `Session.begin(...)`. Espone gli

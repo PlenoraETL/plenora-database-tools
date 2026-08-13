@@ -33,6 +33,7 @@
     clippy::needless_pass_by_value,
 )]
 
+use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
@@ -50,16 +51,6 @@ use std::sync::Arc;
 
 fn default_budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("default budget")
-}
-
-/// Trasforma un errore Rust in RuntimeError Python con prefisso categoria.
-fn to_py_err(e: DatabaseError) -> PyErr {
-    let diag = e
-        .diagnostics
-        .as_ref()
-        .map(|v| format!(" [{v:?}]"))
-        .unwrap_or_default();
-    PyRuntimeError::new_err(format!("{:?}: {}{}", e.category, e.message, diag))
 }
 
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
