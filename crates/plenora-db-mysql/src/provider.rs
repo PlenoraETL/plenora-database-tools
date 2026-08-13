@@ -624,7 +624,7 @@ async fn write_input_batches(
 ) -> Result<WriteProgress> {
     let mut progress = WriteProgress::default();
     loop {
-        let batch = match input.next_batch_with_cancellation(cancellation).await {
+        let batch = match input.next_batch(cancellation).await {
             Ok(Some(batch)) => batch,
             Ok(None) => break,
             Err(mut error) => {
@@ -1114,10 +1114,11 @@ mod tests {
             Arc::clone(&self.0)
         }
 
-        fn next_batch(
-            &mut self,
+        fn next_batch<'a>(
+            &'a mut self,
+            _cancellation: &'a plenora_database_core::CancellationToken,
         ) -> plenora_database_core::provider::ProviderFuture<
-            '_,
+            'a,
             Option<plenora_database_core::arrow::RecordBatch>,
         > {
             Box::pin(async { Ok(None) })

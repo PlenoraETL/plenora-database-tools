@@ -495,7 +495,7 @@ async fn write_prepared_inner(
         let mut received = 0_u64;
         let mut mutations = MutationCounts::default();
         loop {
-            let batch = match input.next_batch_with_cancellation(control.token()).await {
+            let batch = match input.next_batch(control.token()).await {
                 Ok(Some(batch)) => batch,
                 Ok(None) => break,
                 Err(error) => return Err(rollback_after_error(&mut pooled, error).await),

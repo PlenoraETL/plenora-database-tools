@@ -264,13 +264,9 @@ impl PostgresBatchStream {
     }
 }
 
-impl BatchStream for PostgresBatchStream {
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
+impl PostgresBatchStream {
     #[allow(clippy::too_many_lines)]
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch_inner(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
         Box::pin(async move {
             if self.finished {
                 return Ok(None);
@@ -383,17 +379,27 @@ impl BatchStream for PostgresBatchStream {
             Ok(Some(batch))
         })
     }
+}
 
-    fn next_batch_with_cancellation<'a>(
+impl BatchStream for PostgresBatchStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn next_batch<'a>(
         &'a mut self,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
+            // Stream già terminato: cancel su stream drenato non è un errore.
+            if self.finished {
+                return Ok(None);
+            }
             if cancellation.is_cancelled() {
                 return self.cancelled(cancellation).await;
             }
             let completed = {
-                let next = self.next_batch();
+                let next = self.next_batch_inner();
                 tokio::pin!(next);
                 tokio::select! {
                     result = &mut next => Some(result),

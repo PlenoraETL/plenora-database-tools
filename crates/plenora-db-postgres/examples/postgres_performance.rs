@@ -41,7 +41,7 @@ impl BatchStream for MemoryBatchStream {
         self.schema.clone()
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batches.pop_front())))
     }
 }
@@ -385,14 +385,14 @@ async fn materialize(
     let schema = stream.schema();
 
     let first_started = Instant::now();
-    let first = stream.next_batch().await?;
+    let first = stream.next_batch(&cancellation).await?;
     let first_batch_micros = first_started.elapsed().as_micros();
     let remaining_started = Instant::now();
     let mut batches = Vec::new();
     if let Some(batch) = first {
         batches.push(batch);
     }
-    while let Some(batch) = stream.next_batch().await? {
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
         batches.push(batch);
     }
     let remaining_micros = remaining_started.elapsed().as_micros();

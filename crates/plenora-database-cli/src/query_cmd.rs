@@ -52,7 +52,7 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
 
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await? {
+    while let Some(batch) = stream.next_batch(&cancel).await? {
         batches += 1;
         rows += u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
     }

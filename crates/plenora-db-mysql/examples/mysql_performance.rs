@@ -60,7 +60,7 @@ impl BatchStream for MemoryBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batches.pop_front())))
     }
 }
@@ -254,11 +254,12 @@ fn batch_bytes(batch: &RecordBatch) -> Result<u64, Box<dyn Error>> {
 
 async fn drain(
     mut stream: Box<dyn BatchStream>,
+    cancellation: &plenora_database_core::CancellationToken,
 ) -> Result<(u64, usize, u64, Vec<RecordBatch>), Box<dyn Error>> {
     let mut rows = 0_u64;
     let mut bytes = 0_u64;
     let mut batches = Vec::new();
-    while let Some(batch) = stream.next_batch().await? {
+    while let Some(batch) = stream.next_batch(cancellation).await? {
         rows = rows.saturating_add(u64::try_from(batch.num_rows())?);
         bytes = bytes.saturating_add(batch_bytes(&batch)?);
         batches.push(batch);
@@ -378,7 +379,7 @@ async fn measure_reads(
         )
         .await?;
         let prepare_micros = started.elapsed().as_micros();
-        let first = stream.next_batch().await?;
+        let first = stream.next_batch(cancellation).await?;
         let first_batch_micros = started.elapsed().as_micros();
         let (mut measured_rows, mut measured_batches, mut measured_bytes) = match first {
             Some(batch) => (
@@ -388,7 +389,7 @@ async fn measure_reads(
             ),
             None => (0_u64, 0_usize, 0_u64),
         };
-        let (remaining_rows, remaining_batches, remaining_bytes, _) = drain(stream).await?;
+        let (remaining_rows, remaining_batches, remaining_bytes, _) = drain(stream, cancellation).await?;
         measured_rows = measured_rows.saturating_add(remaining_rows);
         measured_batches = measured_batches.saturating_add(remaining_batches);
         measured_bytes = measured_bytes.saturating_add(remaining_bytes);
@@ -511,7 +512,7 @@ async fn run_campaign(
     )
     .await?;
     let schema = stream.schema();
-    let (fixture_rows, _, _, batches) = drain(stream).await?;
+    let (fixture_rows, _, _, batches) = drain(stream, cancellation).await?;
     if fixture_rows != u64::try_from(campaign.rows)? {
         return Err("fixture prestazionale MySQL incompleta".into());
     }

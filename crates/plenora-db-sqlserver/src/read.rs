@@ -324,15 +324,17 @@ impl BatchStream for SqlServerBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
-        Box::pin(async move { self.next_batch_inner().await })
-    }
-
-    fn next_batch_with_cancellation<'a>(
+    fn next_batch<'a>(
         &'a mut self,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
+            // Stream già terminato (drain o fallimento pregresso): ritorna
+            // None senza consultare la cancellazione — cancel su stream
+            // finito non è un errore, è un no-op.
+            if self.finished {
+                return Ok(None);
+            }
             if cancellation.is_cancelled() {
                 self.cancellation.cancel();
                 self.finished = true;
@@ -1017,7 +1019,7 @@ mod tests {
         // saltando il batch fallito.
         drop(sender);
         assert!(
-            stream.next_batch().await.expect("stream chiuso").is_none(),
+            stream.next_batch(&cancellation).await.expect("stream chiuso").is_none(),
             "una next_batch successiva non deve riprendere dopo un batch fallito"
         );
     }

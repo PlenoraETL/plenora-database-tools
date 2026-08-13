@@ -5,6 +5,7 @@
 //! `Statement` completo (SQL + parametri legati) da passare a
 //! `TransactionScope::query` / `query_stream`.
 
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::transaction::Statement;
 use plenora_database_core::{
@@ -46,8 +47,15 @@ fn validate_identifier(name: &str) -> Result<(), DatabaseError> {
     Ok(())
 }
 
-fn ref_expr(index: usize) -> String {
-    format!("ST_GeomFromEWKB(${index})::geometry")
+fn ref_expr(index: usize, semantics: SpatialSemantics) -> String {
+    // v0.2 (fix P0.5 finding): cast condizionale in base a semantics.
+    // Colonne geometry richiedono ::geometry sul ref; colonne geography
+    // richiedono ::geography (PostGIS non fa il cast implicito e la query
+    // fallirebbe con "operator does not exist: geography && geometry").
+    match semantics {
+        SpatialSemantics::Geometry => format!("ST_GeomFromEWKB(${index})::geometry"),
+        SpatialSemantics::Geography => format!("ST_GeomFromEWKB(${index})::geography"),
+    }
 }
 
 /// Costruisce un `SELECT projection FROM [schema.]table WHERE <predicate>`
@@ -91,7 +99,7 @@ pub fn build_spatial_select(
     params.push(ParameterValue::Bytes(filter.reference.ewkb.clone()));
 
     let column = quote_identifier(&filter.geometry_column);
-    let ref_sql = ref_expr(geom_index);
+    let ref_sql = ref_expr(geom_index, filter.reference.semantics);
 
     let where_sql = match &filter.predicate {
         SpatialPredicate::Intersects => format!("ST_Intersects({column}, {ref_sql})"),
@@ -272,5 +280,35 @@ mod tests {
             reference: dummy_reference(),
         };
         assert!(build_spatial_select(None, "t", &["id"], &filter, None).is_err());
+    }
+
+    #[test]
+    fn geography_semantics_casts_reference_to_geography() {
+        // v0.2 (fix P0.5 finding): con semantics=Geography il ref è castato
+        // a ::geography invece che ::geometry — necessario per query verso
+        // colonne geography (PostGIS non fa cast implicito cross-type).
+        let filter = SpatialFilter {
+            geometry_column: "g".into(),
+            predicate: SpatialPredicate::DWithin {
+                distance_meters: 500.0,
+            },
+            reference: SpatialReference {
+                ewkb: dummy_ewkb(),
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geography,
+            },
+        };
+        let stmt = build_spatial_select(None, "poi", &["id"], &filter, None).expect("build");
+        assert!(
+            stmt.sql.contains("ST_GeomFromEWKB($1)::geography"),
+            "atteso cast ::geography, sql: {}",
+            stmt.sql
+        );
+        assert!(
+            !stmt.sql.contains("::geometry"),
+            "non deve contenere ::geometry con semantics=Geography, sql: {}",
+            stmt.sql
+        );
     }
 }

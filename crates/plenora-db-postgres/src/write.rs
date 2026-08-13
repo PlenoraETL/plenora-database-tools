@@ -297,7 +297,7 @@ pub async fn execute(
     let mut confirmed = 0_u64;
     loop {
         let batch = if let Some(result) =
-            select_with_cancellation(input.next_batch(), cancellation).await
+            select_with_cancellation(input.next_batch(cancellation), cancellation).await
         {
             match result {
                 Ok(batch) => batch,

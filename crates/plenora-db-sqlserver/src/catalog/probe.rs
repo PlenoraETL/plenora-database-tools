@@ -97,6 +97,9 @@ pub async fn list_schemas(
     session: &mut SqlServerSession,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>> {
+    // v0.2 (fix H7.1): esclude system schemas SQL Server (sys, INFORMATION_SCHEMA,
+    // guest, db_*). Il consumer che ha bisogno anche dei system schemas deve
+    // interrogare sys.schemas direttamente.
     let rows = one_result(
         session
             .execute_query(
@@ -104,8 +107,10 @@ pub async fn list_schemas(
                     r"
 SELECT s.name
 FROM sys.schemas AS s
-WHERE HAS_PERMS_BY_NAME(QUOTENAME(s.name), 'SCHEMA', 'SELECT') = 1
-   OR s.principal_id = DATABASE_PRINCIPAL_ID()
+WHERE (HAS_PERMS_BY_NAME(QUOTENAME(s.name), 'SCHEMA', 'SELECT') = 1
+       OR s.principal_id = DATABASE_PRINCIPAL_ID())
+  AND s.name NOT IN ('sys', 'INFORMATION_SCHEMA', 'guest')
+  AND s.name NOT LIKE 'db\_%' ESCAPE '\'
 ORDER BY s.name;
 ",
                 ),

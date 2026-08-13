@@ -527,7 +527,7 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("provider QueryOperation");
     let query_batch = query_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("query batch")
         .expect("query rows");
@@ -537,7 +537,7 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("query ids");
     assert_eq!(query_ids.values(), &[5, 4]);
     assert!(query_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("query end")
         .is_none());
@@ -596,7 +596,7 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("typed spatial QueryOperation");
     let spatial_batch = spatial_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("spatial query batch")
         .expect("spatial query row");
@@ -607,7 +607,7 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("spatial query ids");
     assert_eq!(spatial_ids.values(), &[3]);
     assert!(spatial_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("spatial query end")
         .is_none());
@@ -645,7 +645,7 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("provider bounded read");
     assert_eq!(bounded.schema().fields().len(), 2);
     let batch = bounded
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("bounded batch")
         .expect("bounded rows");
@@ -654,7 +654,7 @@ async fn live_common_provider_contract_read_and_write() {
         .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
         .expect("bounded ids");
     assert_eq!(ids.values(), &[5, 4]);
-    assert!(bounded.next_batch().await.expect("bounded end").is_none());
+    assert!(bounded.next_batch(&cancellation).await.expect("bounded end").is_none());
 
     let read_operation = ReadOperation {
         source: ObjectRef {
@@ -719,7 +719,7 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("provider verify");
     let mut rows = 0_usize;
-    while let Some(batch) = verify.next_batch().await.expect("verify batch") {
+    while let Some(batch) = verify.next_batch(&cancellation).await.expect("verify batch") {
         rows = rows.saturating_add(batch.num_rows());
     }
     assert_eq!(rows, 5);
@@ -870,7 +870,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .await
         .expect("aggregate query");
     let aggregate_batch = aggregate_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("aggregate batch")
         .expect("aggregate rows");
@@ -888,7 +888,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .expect("aggregate counts");
     assert_eq!(counts.values(), &[1, 1, 1]);
     assert!(aggregate_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("aggregate end")
         .is_none());
@@ -943,7 +943,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .await
         .expect("window query");
     let window_batch = window_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("window batch")
         .expect("window rows");
@@ -1034,7 +1034,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .await
         .expect("set query");
     let set_batch = set_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("set batch")
         .expect("set rows");
@@ -1102,7 +1102,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         &DataType::Decimal128(20, 6)
     );
     let native_batch = native_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("native batch")
         .expect("native row");
@@ -1138,7 +1138,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .expect("empty query");
     assert_eq!(empty_stream.schema().fields().len(), 7);
     assert!(empty_stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("empty result")
         .is_none());
@@ -1272,7 +1272,7 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             .await
             .expect("native scalar spatial query");
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial method batch")
             .expect("spatial method row");
@@ -1321,7 +1321,7 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             assert!(values.value(0).abs() <= f64::EPSILON, "{field}.{name}");
         }
         assert!(stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial method end")
             .is_none());
@@ -1454,7 +1454,7 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
             assert_eq!(metadata[protocol::GEOMETRY_SRID], "4326");
         }
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial output batch")
             .expect("spatial output row");
@@ -1466,7 +1466,7 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
             assert_eq!(values.value(0), ewkb_point(3_001, &coordinates));
         }
         assert!(stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial output end")
             .is_none());
@@ -1630,7 +1630,7 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
             assert_eq!(field.metadata()[protocol::GEOMETRY_SRID], "4326");
         }
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial processing batch")
             .expect("spatial processing row");
@@ -1659,7 +1659,7 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
             );
         }
         assert!(stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial processing end")
             .is_none());
@@ -1790,7 +1790,7 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
         );
         assert_eq!(output_field.metadata()[protocol::GEOMETRY_SRID], "4326");
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial join batch")
             .expect("spatial join row");
@@ -1804,7 +1804,7 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
                 .expect("spatial join output inspection");
         assert_eq!(inspected.root.geometry_type_name(), Some("Polygon"));
         assert!(stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial join end")
             .is_none());
@@ -1975,7 +1975,7 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
             );
             assert_eq!(output.metadata()[protocol::GEOMETRY_SRID], "4326");
             let batch = stream
-                .next_batch()
+                .next_batch(&cancellation)
                 .await
                 .expect("spatial scope batch")
                 .expect("spatial scope row");
@@ -2005,7 +2005,7 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
                 std::collections::BTreeSet::from(["Point", "Polygon"])
             );
             assert!(stream
-                .next_batch()
+                .next_batch(&cancellation)
                 .await
                 .expect("spatial scope end")
                 .is_none());
@@ -2086,7 +2086,7 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
             .await
             .unwrap_or_else(|error| panic!("{semantics}.subquery: {error}"));
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("spatial subquery batch")
             .expect("spatial subquery row");
@@ -2228,7 +2228,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             semantics
         );
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("set spatial batch")
             .expect("set spatial rows");
@@ -2283,7 +2283,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             semantics
         );
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("APPLY spatial batch")
             .expect("APPLY spatial rows");
@@ -2389,7 +2389,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             .await
             .unwrap_or_else(|error| panic!("{semantics}.correlated: {error}"));
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("correlated spatial batch")
             .expect("correlated spatial rows");
@@ -2481,7 +2481,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             semantics
         );
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("recursive spatial batch")
             .expect("recursive spatial rows");
@@ -2593,7 +2593,7 @@ async fn live_sqlserver_lock_hints_are_nowait_and_spatial_safe() {
     {
         Err(error) => error,
         Ok(mut stream) => stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect_err("NOWAIT query unexpectedly acquired a contended row"),
     };
@@ -2616,7 +2616,7 @@ async fn live_sqlserver_lock_hints_are_nowait_and_spatial_safe() {
         .await
         .expect("locking query after release");
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("locking spatial batch")
         .expect("locking spatial row");
@@ -3186,7 +3186,7 @@ async fn live_bounded_arrow_stream_maps_scalars_and_spatial() {
     let mut rows = 0_usize;
     let mut first_checked = false;
     while let Some(batch) = stream
-        .next_batch_with_cancellation(&cancellation)
+        .next_batch(&cancellation)
         .await
         .expect("next batch")
     {
@@ -3473,7 +3473,7 @@ async fn live_curved_spatial_types_are_read_as_bounded_wkb() {
     .await
     .expect("read curved fixture");
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("curve batch")
         .expect("curve rows");
@@ -3702,7 +3702,7 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
             );
             for _ in 0..2 {
                 let returned = stream
-                    .next_batch()
+                    .next_batch(&cancellation)
                     .await
                     .expect("dimensional read batch")
                     .expect("dimensional row");
@@ -3718,7 +3718,7 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
                 );
             }
             assert!(stream
-                .next_batch()
+                .next_batch(&cancellation)
                 .await
                 .expect("dimensional stream end")
                 .is_none());
@@ -3787,7 +3787,7 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     .await
     .expect("verify stream");
     let mut rows = 0_usize;
-    while let Some(batch) = verify.next_batch().await.expect("verify batch") {
+    while let Some(batch) = verify.next_batch(&cancellation).await.expect("verify batch") {
         rows = rows.saturating_add(batch.num_rows());
     }
     assert_eq!(rows, 5);
@@ -5185,7 +5185,7 @@ async fn live_submicrosecond_temporal_values_fail_closed() {
     .await
     .expect("prepare temporal read");
     let error = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect_err("100 ns precision must not be truncated");
     drop(stream);
@@ -6221,7 +6221,7 @@ impl BatchStream for VecBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move { Ok(self.batches.pop_front()) })
     }
 }
@@ -6239,7 +6239,7 @@ impl BatchStream for BarrierBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if self.emitted == 1 {
                 if let Some(barrier_reached) = self.barrier_reached.take() {
@@ -6275,8 +6275,8 @@ impl BatchStream for DiagnosticBatchStream {
         self.inner.schema()
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
-        self.inner.next_batch()
+    fn next_batch<'a>(&'a mut self, cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+        self.inner.next_batch(cancellation)
     }
 
     fn declared_input_rows(&self) -> Option<u64> {

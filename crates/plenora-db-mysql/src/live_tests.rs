@@ -510,7 +510,7 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
         .await
         .expect("stream lungo MySQL");
     let first = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("primo batch bounded")
         .expect("batch non vuoto");
@@ -581,19 +581,20 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
         ..ResourceLimits::default()
     })
     .expect("budget righe variabili");
+    let cancellation = CancellationToken::new();
     let mut stream = provider
         .read(
             &live_secret(),
             &operation,
             &ParameterBag::default(),
             &budget,
-            &CancellationToken::new(),
+            &cancellation,
         )
         .await
         .expect("stream righe variabili");
     let mut ids = Vec::new();
     let mut batches = 0_usize;
-    while let Some(batch) = stream.next_batch().await.expect("batch righe variabili") {
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch righe variabili") {
         batches = batches.saturating_add(1);
         let values = batch
             .column_by_name("id")
@@ -657,7 +658,7 @@ async fn live_read_projection_filter_order_and_default_schema() {
         .expect("filtered stream MySQL");
     assert_eq!(stream.schema().fields().len(), 2);
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("filtered batch")
         .expect("filtered row");
@@ -771,7 +772,7 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
     );
 
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch MySQL")
         .expect("prima riga MySQL");
@@ -864,7 +865,7 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
             .expect("GEOMETRYCOLLECTION WKB MySQL valido");
     assert_eq!(collection_inspection.root.dimensions_label(), "xy");
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream MySQL")
         .is_none());
@@ -1072,7 +1073,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
     }
 
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch QueryOperation")
         .expect("riga QueryOperation");
@@ -1203,7 +1204,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
     assert!(cell::<StringArray>(&batch, "absent_note").is_null(0));
 
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream QueryOperation")
         .is_none());
@@ -1376,7 +1377,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
     }
 
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch aggregazione")
         .expect("gruppo aggregato");
@@ -1408,7 +1409,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
         123_450_000_000_i128
     );
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream aggregazione")
         .is_none());
@@ -1451,7 +1452,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
         Some(&"varbinary".to_owned())
     );
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch DISTINCT")
         .expect("riga DISTINCT");
@@ -1466,7 +1467,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
         [0x5A_u8; 1024].as_slice()
     );
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream DISTINCT")
         .is_none());
@@ -1676,7 +1677,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         );
     }
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch INNER JOIN")
         .expect("riga INNER JOIN");
@@ -1709,7 +1710,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         1
     );
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream INNER JOIN")
         .is_none());
@@ -1775,7 +1776,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         Some(&"varbinary".to_owned())
     );
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch LEFT JOIN")
         .expect("riga LEFT JOIN");
@@ -1802,7 +1803,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         .expect("stream_payload")
         .is_null(0));
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream LEFT JOIN")
         .is_none());
@@ -1843,7 +1844,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     assert!(schema.field(1).is_nullable());
     assert!(!schema.field(2).is_nullable());
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch RIGHT JOIN")
         .expect("riga RIGHT JOIN");
@@ -1870,7 +1871,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         2048
     );
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream RIGHT JOIN")
         .is_none());
@@ -1903,7 +1904,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     assert!(!schema.field(0).is_nullable());
     assert!(!schema.field(1).is_nullable());
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch CROSS JOIN")
         .expect("righe CROSS JOIN");
@@ -1921,7 +1922,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     assert_eq!((probe_ids.value(0), stream_ids.value(0)), (1, 1));
     assert_eq!((probe_ids.value(1), stream_ids.value(1)), (1, 2));
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream CROSS JOIN")
         .is_none());
@@ -2134,7 +2135,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
     }
 
     let batch = stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("batch window")
         .expect("righe window");
@@ -2167,7 +2168,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
     assert_eq!(values(&signed(3, "running_max")), vec![2, 2, 3]);
     assert_eq!(values(&signed(4, "peers")), vec![2, 2, 1]);
     assert!(stream
-        .next_batch()
+        .next_batch(&cancellation)
         .await
         .expect("fine stream window")
         .is_none());
@@ -2275,7 +2276,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     let mut batches = 0_usize;
     while rows < 2_048 {
         let batch = stream
-            .next_batch()
+            .next_batch(&cancellation)
             .await
             .expect("batch QueryOperation")
             .expect("batch presente fino al limite righe");
@@ -2323,7 +2324,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
         )
         .await
         .expect("stream QueryOperation da abbandonare");
-    let first = tokio::time::timeout(std::time::Duration::from_secs(2), early.next_batch())
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), early.next_batch(&cancellation))
         .await
         .expect("primo batch bounded QueryOperation")
         .expect("primo batch prima del drop")
@@ -2503,7 +2504,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .await
         .expect("stream cancellation QueryOperation");
     let (cancellation_thread, error) = {
-        let next_batch = stream.next_batch();
+        let next_batch = stream.next_batch(&cancellation);
         tokio::pin!(next_batch);
         let cancellation_thread = tokio::select! {
             owner = observe_inflight_query(&mut audit, &cancellation_marker) => owner,
@@ -2571,7 +2572,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .await
         .expect("stream timeout QueryOperation");
     let (timeout_thread, error) = {
-        let next_batch = stream.next_batch();
+        let next_batch = stream.next_batch(&cancellation);
         tokio::pin!(next_batch);
         let timeout_thread = tokio::select! {
             owner = observe_inflight_query(&mut audit, &timeout_marker) => owner,
@@ -2640,7 +2641,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .await
         .expect("stream deadline QueryOperation");
     let (deadline_thread, error) = {
-        let next_batch = stream.next_batch();
+        let next_batch = stream.next_batch(&cancellation);
         tokio::pin!(next_batch);
         let deadline_thread = tokio::select! {
             owner = observe_inflight_query(&mut audit, &deadline_marker) => owner,
@@ -2898,10 +2899,11 @@ impl plenora_database_core::provider::BatchStream for VecBatchStream {
         std::sync::Arc::clone(&self.schema)
     }
 
-    fn next_batch(
-        &mut self,
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
     ) -> plenora_database_core::provider::ProviderFuture<
-        '_,
+        'a,
         Option<plenora_database_core::arrow::RecordBatch>,
     > {
         Box::pin(async move { Ok(self.batches.pop_front()) })
@@ -2919,13 +2921,14 @@ impl plenora_database_core::provider::BatchStream for DiagnosticBatchStream {
         self.inner.schema()
     }
 
-    fn next_batch(
-        &mut self,
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a plenora_database_core::CancellationToken,
     ) -> plenora_database_core::provider::ProviderFuture<
-        '_,
+        'a,
         Option<plenora_database_core::arrow::RecordBatch>,
     > {
-        self.inner.next_batch()
+        self.inner.next_batch(cancellation)
     }
 
     fn declared_input_rows(&self) -> Option<u64> {
@@ -3064,7 +3067,7 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
         .await
         .expect("rilettura append MySQL live");
     let mut read_batches = Vec::new();
-    while let Some(batch) = stream.next_batch().await.expect("batch di rilettura") {
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch di rilettura") {
         read_batches.push(batch);
     }
     assert_eq!(

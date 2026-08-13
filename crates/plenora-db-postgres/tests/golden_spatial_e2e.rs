@@ -426,10 +426,8 @@ async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
 // su geography ritornano distanze in metri (calcoli geodetici), su geometry
 // in gradi (unità dell'SRS). Verifica con distanza nota Milano-Roma ≈ 477 km.
 //
-// Nota: il portable SpatialPredicate::DWithin è cast::geometry-only nell'attuale
-// builder (`spatial.rs`), quindi il DWithin verso una colonna geography non è
-// ancora supportato via portable AST. Documentato come limitazione: qui uso
-// SQL nativo per il calcolo distanze.
+// (Il portable DWithin verso colonne geography è coperto in S.7 dopo il fix
+// v0.2 del cast condizionale in spatial.rs.)
 
 #[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
 #[tokio::test]
@@ -761,6 +759,119 @@ async fn spatial_s6_3d_zm_roundtrip() {
             other => panic!("id inatteso: {other}"),
         }
     }
+
+    Box::new(tx).rollback(&cancel).await.expect("rollback");
+}
+
+// ============================================================================
+//  S.7 — Portable DWithin su colonna geography: distance in metri
+// ============================================================================
+//
+// v0.2 (fix P0.5 finding): il portable `SpatialPredicate::DWithin` ora casta
+// il ref a `::geography` quando `SpatialReference.semantics = Geography`.
+// Prima produceva sempre `::geometry`, causando fallimento su colonne
+// geography ("operator does not exist: geography && geometry").
+//
+// Verifica end-to-end: DWithin(500 m) su tabella geography(Point, 4326)
+// deve trovare le entità entro 500 metri dalla ref, con distanza in metri
+// (semantica geografica geodetica).
+
+#[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
+#[tokio::test]
+async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
+    let provider = provider();
+    let cancel = CancellationToken::new();
+
+    let mut tx = provider
+        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .await
+        .expect("begin");
+
+    tx.execute(
+        &Statement::new(
+            "CREATE TEMP TABLE _sp_s7 ( \
+             id INT PRIMARY KEY, \
+             name TEXT NOT NULL, \
+             g geography(Point, 4326)) ON COMMIT DROP",
+        ),
+        &cancel,
+    )
+    .await
+    .expect("create");
+
+    // Milano centro (9.190, 45.464) come reference.
+    // Duomo Milano ~9.19, 45.464 → distanza ~0 m dal ref.
+    // Sesto San Giovanni ~9.24, 45.53 → distanza ~7-8 km dal ref.
+    // Torino ~7.68, 45.07 → distanza ~130 km dal ref.
+    tx.execute(
+        &Statement::new(
+            "INSERT INTO _sp_s7 (id, name, g) VALUES \
+             (1, 'Duomo',  ST_SetSRID(ST_MakePoint(9.190, 45.464), 4326)::geography), \
+             (2, 'Sesto',  ST_SetSRID(ST_MakePoint(9.240, 45.530), 4326)::geography), \
+             (3, 'Torino', ST_SetSRID(ST_MakePoint(7.680, 45.070), 4326)::geography)",
+        ),
+        &cancel,
+    )
+    .await
+    .expect("seed");
+
+    // EWKB del reference (Duomo).
+    let rows = tx
+        .query(
+            &Statement::new(
+                "SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.190, 45.464), 4326))",
+            ),
+            &cancel,
+        )
+        .await
+        .expect("ref ewkb");
+    let ref_ewkb = bytes_of(rows.first().and_then(|r| r.get_index(0)));
+
+    let reference = SpatialReference {
+        ewkb: ref_ewkb,
+        srid: 4326,
+        dimensions: Dimensions::Xy,
+        semantics: SpatialSemantics::Geography,
+    };
+
+    // DWithin 1000 m: deve matchare solo Duomo (~0 m). Sesto (~7 km) e
+    // Torino (~130 km) devono essere esclusi.
+    let ast_1km = p_select("_sp_s7", vec!["id", "name"])
+        .where_(p_spatial(
+            "g",
+            SpatialPredicate::DWithin { distance_meters: 1_000.0 },
+            reference.clone(),
+        ))
+        .order_by("id", Direction::Asc)
+        .into_statement();
+    let rows = execute_portable_returning(tx.as_mut(), &ast_1km, &cancel)
+        .await
+        .expect("dwithin 1km");
+    let names: Vec<String> = rows.iter().map(|r| text_of(r.get_index(1))).collect();
+    assert_eq!(
+        names,
+        vec!["Duomo".to_string()],
+        "DWithin(1km) su geography deve trovare solo Duomo"
+    );
+
+    // DWithin 10 km: deve matchare Duomo + Sesto (~7 km), esclude Torino.
+    let ast_10km = p_select("_sp_s7", vec!["id", "name"])
+        .where_(p_spatial(
+            "g",
+            SpatialPredicate::DWithin { distance_meters: 10_000.0 },
+            reference.clone(),
+        ))
+        .order_by("id", Direction::Asc)
+        .into_statement();
+    let rows = execute_portable_returning(tx.as_mut(), &ast_10km, &cancel)
+        .await
+        .expect("dwithin 10km");
+    let names: Vec<String> = rows.iter().map(|r| text_of(r.get_index(1))).collect();
+    assert_eq!(
+        names,
+        vec!["Duomo".to_string(), "Sesto".to_string()],
+        "DWithin(10km) su geography deve trovare Duomo + Sesto"
+    );
 
     Box::new(tx).rollback(&cancel).await.expect("rollback");
 }

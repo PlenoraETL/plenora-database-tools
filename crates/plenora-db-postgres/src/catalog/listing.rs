@@ -16,11 +16,17 @@ pub async fn list_catalogs(client: &Client) -> Result<Vec<String>> {
 }
 
 pub async fn list_schemas(client: &Client) -> Result<Vec<String>> {
+    // v0.2 (fix H7.1): esclude system schemas (pg_catalog, information_schema,
+    // pg_toast, pg_temp_*, pg_toast_temp_*). Il consumer che ha bisogno anche
+    // dei system schemas deve interrogare pg_namespace direttamente.
     let rows = client
         .query(
             r"
             SELECT schema_name
             FROM information_schema.schemata
+            WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND schema_name NOT LIKE 'pg\_temp\_%' ESCAPE '\'
+              AND schema_name NOT LIKE 'pg\_toast\_temp\_%' ESCAPE '\'
             ORDER BY schema_name
             ",
             &[],

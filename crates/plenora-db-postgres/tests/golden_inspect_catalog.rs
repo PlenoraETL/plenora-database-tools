@@ -78,16 +78,13 @@ async fn h7c_list_catalogs_reports_current_database() {
 //  H7c.2 — list_schemas
 // ============================================================================
 
-/// Nota comportamentale (H7c finding, 2026-08-12):
-/// `Provider::inspect::DatabaseListSchemas` restituisce l'elenco **grezzo**
-/// da pg_namespace, senza filtrare pg_catalog / information_schema /
-/// pg_temp_* / pg_toast_*. Il filtro è responsabilità del consumer
-/// (la CLI `inspect-schemas` lo applica esplicitamente).
-/// Questo test documenta il contratto attuale: raw list. Se in futuro
-/// si decide di filtrare a livello Provider, l'asserzione va aggiornata.
+/// v0.2 (fix H7.1): `Provider::inspect::DatabaseListSchemas` filtra i system
+/// schema Postgres (pg_catalog / information_schema / pg_toast / pg_temp_* /
+/// pg_toast_temp_*). Il consumer che ha bisogno anche dei system schema deve
+/// interrogare pg_namespace direttamente.
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
-async fn h7c_list_schemas_returns_raw_pg_namespace_including_system() {
+async fn h7c_list_schemas_excludes_system_schemas() {
     let p = PostgresProvider::new(1_024);
     let cancel = CancellationToken::new();
     let out = p
@@ -102,14 +99,14 @@ async fn h7c_list_schemas_returns_raw_pg_namespace_including_system() {
     let schemas = out.document["schemas"]
         .as_array()
         .expect("schemas array");
-    // public deve esserci
+    // public deve esserci (schema utente default).
     assert!(
         schemas
             .iter()
             .any(|s| s["name"] == "public" || s.as_str() == Some("public")),
         "public assente: {schemas:?}"
     );
-    // Documentiamo che i system schema NON vengono filtrati (contratto attuale)
+    // Nessun system schema.
     let has_system = schemas.iter().any(|s| {
         matches!(
             s.as_str(),
@@ -120,11 +117,8 @@ async fn h7c_list_schemas_returns_raw_pg_namespace_including_system() {
         )
     });
     assert!(
-        has_system,
-        "il contratto attuale del Provider è di restituire i system schema; \
-         se questa asserzione fallisce, o è stato aggiunto il filtro a livello \
-         Provider (aggiornare qui) oppure il DB è configurato in modo anomalo: \
-         {schemas:?}"
+        !has_system,
+        "system schema non deve comparire dopo fix H7.1 v0.2: {schemas:?}"
     );
 }
 

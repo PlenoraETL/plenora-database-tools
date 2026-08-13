@@ -143,7 +143,7 @@ async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
 
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("next batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("next batch") {
         batches += 1;
         rows += batch.num_rows() as u64;
     }
@@ -204,7 +204,7 @@ async fn h7b_read_heterogeneous_types_yields_expected_arrow_schema() {
     }
 
     let mut total_rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("next batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("next batch") {
         total_rows += batch.num_rows() as u64;
     }
     assert_eq!(total_rows, 25, "atteso 25 righe, ottenuto {total_rows}");
@@ -250,7 +250,7 @@ async fn h7b_read_projection_reduces_schema_columns() {
     assert_eq!(names, vec!["id".to_owned(), "name".to_owned()]);
 
     let mut total = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("batch") {
         assert_eq!(batch.num_columns(), 2, "batch deve avere 2 colonne");
         total += batch.num_rows() as u64;
     }
@@ -288,7 +288,7 @@ async fn h7b_read_row_limit_is_honored_by_query_planner() {
         .await
         .expect("read");
     let mut total = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("batch") {
         total += batch.num_rows() as u64;
     }
     assert_eq!(total, 42, "row_limit=42 deve troncare a 42 righe");
@@ -333,7 +333,7 @@ async fn h7b_read_handles_null_values_across_columns() {
 
     let mut total_rows = 0_u64;
     let mut null_labels = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("batch") {
         total_rows += batch.num_rows() as u64;
         // Colonna 'label' → conta null.
         let label_idx = batch
@@ -363,12 +363,12 @@ async fn h7b_read_handles_null_values_across_columns() {
 //  NON accetta un `CancellationToken` in firma e NON è cancel-aware. La
 //  cancellazione a livello di consumer Arrow (via il token passato a
 //  `Provider::read`) non interrompe un batch in-flight né batch successivi.
-//  Esiste `PostgresBatchStream::next_batch_with_cancellation` ma è
+//  Esiste `PostgresBatchStream::next_batch` ma è
 //  pub-crate, usata solo dai path interni (write/row_diagnostics).
 //
 //  Per la Fase 3 Python SDK: se il consumer richiede cancel su Arrow read,
 //  serve estendere il trait `BatchStream::next_batch(&CancellationToken)`
-//  o esporre `next_batch_with_cancellation` pubblicamente.
+//  o esporre `next_batch` pubblicamente.
 //
 //  Questo test verifica che il comportamento attuale sia "continua a
 //  produrre batch anche dopo cancel" — se dovesse cambiare, il test
@@ -398,11 +398,11 @@ async fn h7b_read_stream_batchstream_trait_is_not_cancel_aware_finding() {
         )
         .await
         .expect("read");
-    let _ = stream.next_batch().await.expect("batch1");
+    let _ = stream.next_batch(&cancel).await.expect("batch1");
     cancel.cancel();
 
     // Contratto attuale: continua a produrre. Il test **documenta** questo.
-    let post = stream.next_batch().await.expect("batch post-cancel");
+    let post = stream.next_batch(&cancel).await.expect("batch post-cancel");
     assert!(
         post.is_some(),
         "regressione desiderata: BatchStream::next_batch è diventato cancel-aware; \

@@ -43,7 +43,22 @@ pub trait SecretResolver: Send + Sync {
 
 pub trait BatchStream: Send {
     fn schema(&self) -> SchemaRef;
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>>;
+
+    /// Produce il prossimo batch, rispettando il `CancellationToken`.
+    ///
+    /// v0.2 (fix H7.2): il token è obbligatorio nella firma del trait. Le
+    /// implementazioni devono consultarlo prima e durante l'attesa di dati
+    /// dal server (tipicamente via `tokio::select!` fra la fetch e
+    /// `cancellation.cancelled()`), in modo che un consumer possa
+    /// interrompere read lunghi in flight.
+    ///
+    /// Ritorna `Ok(None)` a fine stream, `Ok(Some(batch))` per un batch,
+    /// `Err(_)` per errore (incluso `ErrorCategory::Cancelled` se il token
+    /// è cancellato).
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>>;
 
     /// Numero di righe sorgente che lo stream si impegna a produrre.
     ///
@@ -58,27 +73,6 @@ pub trait BatchStream: Send {
     /// Politica di pubblicazione degli esempi row-scoped della sorgente.
     fn row_diagnostics_policy(&self) -> crate::row_diagnostics::RowDiagnosticsPolicy {
         crate::row_diagnostics::RowDiagnosticsPolicy::default()
-    }
-
-    fn next_batch_with_cancellation<'a>(
-        &'a mut self,
-        cancellation: &'a CancellationToken,
-    ) -> ProviderFuture<'a, Option<RecordBatch>> {
-        Box::pin(async move {
-            if cancellation.is_cancelled() {
-                return Err(crate::DatabaseError {
-                    category: crate::ErrorCategory::Cancelled,
-                    phase: crate::ErrorPhase::Read,
-                    remote_effect: crate::RemoteEffect::None,
-                    retry: crate::RetryDisposition::Never,
-                    provider: None,
-                    execution_id: None,
-                    message: "lettura cancellata".to_owned(),
-                    diagnostics: None,
-                });
-            }
-            self.next_batch().await
-        })
     }
 }
 

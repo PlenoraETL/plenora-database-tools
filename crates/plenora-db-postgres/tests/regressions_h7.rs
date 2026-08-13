@@ -30,32 +30,27 @@ fn budget() -> ResourceBudget {
 }
 
 // ============================================================================
-//  Finding H7.1 — Provider::inspect::DatabaseListSchemas non filtra i
-//  system schema (pg_catalog / pg_temp_* / pg_toast_* / information_schema)
+//  H7.1 — Provider::inspect::DatabaseListSchemas filtra i system schema
 // ============================================================================
 //
-// Contesto:
-//   Il metodo `Provider::inspect(DatabaseListSchemas)` restituisce l'elenco
-//   grezzo di pg_namespace. Il consumer (es. la CLI `inspect-schemas`)
-//   deve filtrare esplicitamente i system schema.
+// Contesto (v0.2, fix applicato):
+//   Il metodo `Provider::inspect(DatabaseListSchemas)` filtra pg_catalog,
+//   information_schema, pg_toast, pg_temp_* e pg_toast_temp_*. Il consumer
+//   che ha bisogno anche dei system schemas deve interrogare pg_namespace
+//   direttamente (o usare la CLI con un'opzione futura --include-system,
+//   quando disponibile).
 //
-// Impatto:
-//   Un consumer che assume filtri built-in vedrà rumore. Il PFM può cadere
-//   in questa trappola nella prima integration.
-//
-// Piano di fix (v0.2):
-//   Cambiare `Provider::inspect(DatabaseListSchemas { source, include_system })`
-//   con `include_system: bool` default `false`. Breaking del trait: quando
-//   si fixa, la firma cambia e questo test diventa un test del NUOVO
-//   comportamento.
+// Storia:
+//   In v0.1 il metodo restituiva l'elenco grezzo. La CLI `inspect-schemas`
+//   filtrava client-side. Con v0.2 il filtro è built-in: se un consumer
+//   dipendeva dal comportamento precedente, deve aggiornarsi.
 //
 // Se questo test fallisce:
-//   Verificare se il fix è stato applicato. Se sì, il test va aggiornato
-//   con la nuova asserzione (system schema NON presenti by default).
+//   Il filtro è stato rimosso o modificato: valutare l'impatto downstream.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
-async fn regression_h7_1_list_schemas_returns_raw_including_system() {
+async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
     let provider = PostgresProvider::new(1_024);
     let cancel = CancellationToken::new();
     let out = provider
@@ -63,54 +58,53 @@ async fn regression_h7_1_list_schemas_returns_raw_including_system() {
         .await
         .expect("inspect");
     let schemas = out.document["schemas"].as_array().expect("array");
+    let names: Vec<&str> = schemas.iter().filter_map(|s| s.as_str()).collect();
 
-    // Almeno un system schema DEVE essere presente (contract attuale).
-    let has_system = schemas.iter().any(|s| {
-        matches!(
-            s.as_str(),
-            Some("pg_catalog" | "information_schema" | "pg_toast")
-        ) || matches!(
-            s["name"].as_str(),
-            Some("pg_catalog" | "information_schema" | "pg_toast")
-        )
-    });
+    // Nessun system schema deve comparire.
+    for banned in ["pg_catalog", "information_schema", "pg_toast"] {
+        assert!(
+            !names.contains(&banned),
+            "system schema '{banned}' non deve essere nella lista. Schemas: {names:?}"
+        );
+    }
+    // Nessun pg_temp_* / pg_toast_temp_*.
+    for name in &names {
+        assert!(
+            !name.starts_with("pg_temp_") && !name.starts_with("pg_toast_temp_"),
+            "temp schema '{name}' non deve essere nella lista"
+        );
+    }
+    // Almeno 'public' deve esserci (schema utente default).
     assert!(
-        has_system,
-        "REGRESSION H7.1: Provider::inspect(DatabaseListSchemas) non restituisce \
-         più i system schema. Se questo è intenzionale (fix v0.2), aggiornare il \
-         test. Schemas ricevuti: {schemas:?}"
+        names.contains(&"public"),
+        "'public' deve essere presente nella lista. Schemas: {names:?}"
     );
 }
 
 // ============================================================================
-//  Finding H7.2 — BatchStream::next_batch() NON è cancel-aware sul trait
-//  pubblico
+//  H7.2 — BatchStream::next_batch è cancel-aware
 // ============================================================================
 //
-// Contesto:
-//   Il metodo `BatchStream::next_batch(&mut self)` del trait pubblico non
-//   accetta un `CancellationToken`. Esiste `PostgresBatchStream::
-//   next_batch_with_cancellation` ma è `pub(crate)`, quindi il consumer
-//   Arrow bulk non può cancellare uno stream in flight tramite il trait.
+// Contesto (v0.2, fix applicato):
+//   Il metodo `BatchStream::next_batch(&mut self, &CancellationToken)`
+//   accetta ora obbligatoriamente un `CancellationToken`. Le implementazioni
+//   (postgres/mysql/sqlserver) usano `tokio::select!` fra la fetch e
+//   `cancellation.cancelled()`, quindi un consumer può interrompere read
+//   in flight — Python SDK compreso.
 //
-// Impatto:
-//   Chi consuma Arrow read via il trait (Python SDK via pyarrow C stream)
-//   non può interrompere read grossi. Il token passato a `Provider::read`
-//   viene ignorato dopo la creazione dello stream.
-//
-// Piano di fix (v0.2):
-//   Cambiare `BatchStream::next_batch(&CancellationToken)` come firma —
-//   breaking del trait. Alternativa non breaking: aggiungere metodo
-//   `next_batch_with_cancellation` al trait con default impl che ignora
-//   il token (backwards compatible per impl esistenti).
+// Storia:
+//   In v0.1 il trait aveva `next_batch(&mut self)` senza token e un
+//   `next_batch_with_cancellation(&CancellationToken)` come default impl.
+//   La firma inconsistente permetteva ai consumer di dimenticare la
+//   cancellazione. v0.2 unifica il metodo.
 //
 // Se questo test fallisce:
-//   Verificare se il fix è stato applicato. Il fix cambia la firma o
-//   aggiunge un metodo; questo test va aggiornato o eliminato.
+//   Il trait o l'impl postgres non è più cancel-aware. Investigare
+//   PostgresBatchStream::next_batch: deve consumare il token via select!.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
-async fn regression_h7_2_batch_stream_ignores_cancellation_after_start() {
+async fn h7_2_batch_stream_honors_cancellation_after_start() {
     let provider = PostgresProvider::new(1_024);
     let cancel = CancellationToken::new();
 
@@ -132,25 +126,27 @@ async fn regression_h7_2_batch_stream_ignores_cancellation_after_start() {
         .expect("read");
 
     // Consuma il primo batch (esiste sempre — spatial_ref_sys ha >>0 righe).
-    let first = stream.next_batch().await.expect("first").expect("some");
+    let first = stream.next_batch(&cancel).await.expect("first").expect("some");
     assert!(first.num_rows() > 0);
 
     // Cancella il token DOPO lo start del batch.
     cancel.cancel();
 
-    // Il PROSSIMO next_batch NON deve tornare Cancelled (contract attuale):
-    // il trait non consulta il token. Deve tornare Ok(Some) o Ok(None)
-    // normalmente.
-    let post = stream.next_batch().await;
+    // Il PROSSIMO next_batch DEVE riflettere la cancellazione con
+    // Err(Cancelled) — il trait ora è cancel-aware.
+    let post = stream.next_batch(&cancel).await;
     match post {
-        Ok(_) => {
-            // Comportamento attuale desiderato: continua a produrre.
-        }
-        Err(e) => panic!(
-            "REGRESSION H7.2: BatchStream::next_batch è diventato cancel-aware, \
-             ha ritornato errore dopo cancel: {:?} — {}. Se questo è intenzionale \
-             (fix v0.2), aggiornare test e documentare migration path per il consumer.",
-            e.category, e.message
+        Ok(_) => panic!(
+            "REGRESSION H7.2: BatchStream::next_batch NON è cancel-aware. \
+             Un token cancellato dopo il primo batch deve produrre Err(Cancelled)."
         ),
+        Err(e) => {
+            assert!(
+                matches!(e.category, plenora_database_core::ErrorCategory::Cancelled),
+                "atteso categoria Cancelled, trovato {:?}: {}",
+                e.category,
+                e.message
+            );
+        }
     }
 }

@@ -250,15 +250,17 @@ impl BatchStream for MysqlBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
-        Box::pin(async move { self.next_batch_inner().await })
-    }
-
-    fn next_batch_with_cancellation<'a>(
+    fn next_batch<'a>(
         &'a mut self,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
+            // Stream già terminato (Drained o Failed): risultato terminale
+            // ha precedenza sulla cancellazione — cancel su stream chiuso
+            // non è un errore, restituisce lo stato esistente.
+            if let Some(result) = self.state.terminal_result() {
+                return result;
+            }
             if cancellation.is_cancelled() {
                 let error = interruption_error(cancellation, ErrorPhase::Read, RemoteEffect::None);
                 self.fail(error.clone());

@@ -95,7 +95,7 @@ impl<'a> MysqlRowWriter<'a> {
 
             let batch = self
                 .input
-                .next_batch_with_cancellation(self.cancellation)
+                .next_batch(self.cancellation)
                 .await
                 .map_err(|mut error| {
                     error.phase = ErrorPhase::Write;
@@ -166,7 +166,7 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
             loop {
                 match self
                     .input
-                    .next_batch_with_cancellation(self.cancellation)
+                    .next_batch(self.cancellation)
                     .await
                 {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}

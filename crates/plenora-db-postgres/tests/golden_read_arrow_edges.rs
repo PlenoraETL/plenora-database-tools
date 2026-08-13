@@ -167,7 +167,7 @@ async fn edge_e1_single_huge_row_within_default_budget_returns_one_row() {
     let start = std::time::Instant::now();
     let mut batches = 0_u64;
     let mut total_rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await.expect("batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("batch") {
         batches += 1;
         total_rows += batch.num_rows() as u64;
         assert!(
@@ -253,7 +253,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
 
     let mut total_rows = 0_u64;
     let mut columns_per_batch: Vec<usize> = Vec::new();
-    while let Some(batch) = stream.next_batch().await.expect("batch") {
+    while let Some(batch) = stream.next_batch(&cancel).await.expect("batch") {
         total_rows += batch.num_rows() as u64;
         columns_per_batch.push(batch.num_columns());
     }
@@ -310,7 +310,7 @@ async fn edge_e3_tight_memory_with_huge_row_fails_cleanly_or_streams() {
             // Read partì: consuma i batch finché finisce o esplode.
             let mut total = 0_u64;
             loop {
-                match stream.next_batch().await {
+                match stream.next_batch(&cancel).await {
                     Ok(Some(batch)) => {
                         total += batch.num_rows() as u64;
                     }

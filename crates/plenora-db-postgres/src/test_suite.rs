@@ -232,7 +232,7 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
             Box::pin(std::future::ready(Ok(None)))
         }
     }
@@ -242,7 +242,7 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
             Box::pin(std::future::ready(Ok(self.batches.pop_front())))
         }
 
@@ -631,7 +631,7 @@ mod tests {
         let mut rows = 0_usize;
         let mut batches = 0_usize;
         let mut max_rows = 0_usize;
-        while let Some(batch) = stream.next_batch().await.expect("adaptive batch") {
+        while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("adaptive batch") {
             assert!(batch_memory_bytes(&batch) <= 256 * 1024);
             rows += batch.num_rows();
             batches += 1;
@@ -682,13 +682,13 @@ mod tests {
         .await
         .expect("budgeted stream");
         let first = stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("first batch")
             .expect("rows");
         assert_eq!(first.num_rows(), 3);
         let error = stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect_err("row budget must be exhausted");
         assert_eq!(error.category, ErrorCategory::ResourceLimit);
@@ -744,7 +744,7 @@ mod tests {
         .await
         .expect("geometry stream");
         let error = stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect_err("point needs geometry plus coordinate component");
         assert_eq!(error.category, ErrorCategory::ResourceLimit);
@@ -801,7 +801,7 @@ mod tests {
         .await;
         let error = match result {
             Ok(mut stream) => stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect_err("read duration deadline"),
             Err(error) => error,
@@ -1078,7 +1078,7 @@ mod tests {
         );
         let mut rows = 0;
         let mut batches = 0;
-        while let Some(batch) = stream.next_batch().await.expect("batch") {
+        while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("batch") {
             rows += batch.num_rows();
             batches += 1;
         }
@@ -1106,13 +1106,13 @@ mod tests {
             .await
             .expect("filtered read");
         let filtered_batch = filtered_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("filtered batch")
             .expect("rows");
         assert_eq!(filtered_batch.num_rows(), 10);
         assert!(filtered_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("filtered end")
             .is_none());
@@ -1162,7 +1162,7 @@ mod tests {
             .expect("spatial read");
         assert_eq!(
             spatial_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("spatial batch")
                 .expect("spatial rows")
@@ -1263,7 +1263,7 @@ mod tests {
             .await
             .expect("indexed spatial query");
         let indexed_batch = indexed_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("indexed spatial batch")
             .expect("indexed spatial rows");
@@ -1378,7 +1378,7 @@ mod tests {
         );
         assert_eq!(
             query_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("query batch")
                 .expect("query rows")
@@ -1400,7 +1400,7 @@ mod tests {
             .expect("query AST cached plan");
         assert_eq!(
             cached_query_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("cached query batch")
                 .expect("cached query rows")
@@ -1431,7 +1431,7 @@ mod tests {
             Some(GEOARROW_WKB_EXTENSION_NAME)
         );
         assert!(empty_query_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("empty query batch")
             .is_none());
@@ -1509,7 +1509,7 @@ mod tests {
             .expect("window query");
         assert_eq!(
             window_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("window batch")
                 .expect("window rows")
@@ -1627,7 +1627,7 @@ mod tests {
             .expect("lateral query");
         assert_eq!(
             lateral_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("lateral batch")
                 .expect("lateral rows")
@@ -1684,7 +1684,7 @@ mod tests {
             .expect("set operation query");
         assert_eq!(
             set_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("set batch")
                 .expect("set rows")
@@ -1810,7 +1810,7 @@ mod tests {
         );
         assert_eq!(
             dimensions_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("spatial dimension batch")
                 .expect("spatial dimension row")
@@ -1990,7 +1990,7 @@ mod tests {
         );
         assert_eq!(
             advanced_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("advanced batch")
                 .expect("advanced row")
@@ -2041,7 +2041,7 @@ mod tests {
             .expect("typed parameters");
         assert_eq!(
             typed_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("typed parameter batch")
                 .expect("typed parameter row")
@@ -2080,7 +2080,7 @@ mod tests {
             .await
             .expect("typed null parameter");
         assert!(null_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("typed null batch")
             .is_none());
@@ -2102,7 +2102,7 @@ mod tests {
             )
             .await
             .expect("limited stream");
-        let limited_error = limited_stream.next_batch().await.expect_err("byte budget");
+        let limited_error = limited_stream.next_batch(&NeverCancelled).await.expect_err("byte budget");
         assert_eq!(limited_error.category, ErrorCategory::ResourceLimit);
 
         let mut cancelled_stream = provider
@@ -2121,7 +2121,7 @@ mod tests {
             .await
             .expect("cancel stream");
         let cancelled_error = cancelled_stream
-            .next_batch_with_cancellation(&AlwaysCancelled)
+            .next_batch(&AlwaysCancelled)
             .await
             .expect_err("cancelled stream");
         assert_eq!(cancelled_error.category, ErrorCategory::Cancelled);
@@ -2219,7 +2219,7 @@ mod tests {
             .expect("quoted read");
         assert_eq!(
             quoted_stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("quoted batch")
                 .expect("quoted row")
@@ -3379,7 +3379,7 @@ mod tests {
                 .expect("cached schema read");
             assert_eq!(
                 stream
-                    .next_batch()
+                    .next_batch(&NeverCancelled)
                     .await
                     .expect("cached schema batch")
                     .expect("cached schema row")
@@ -3387,7 +3387,7 @@ mod tests {
                 1
             );
             assert!(stream
-                .next_batch()
+                .next_batch(&NeverCancelled)
                 .await
                 .expect("cached schema end")
                 .is_none());
@@ -3449,7 +3449,7 @@ mod tests {
         );
         assert!(evolved.schema().field_with_name("extra").is_ok());
         while evolved
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("evolved schema batch")
             .is_some()
@@ -3495,7 +3495,7 @@ mod tests {
             .await
             .expect("LRU second object");
         while other_stream
-            .next_batch()
+            .next_batch(&NeverCancelled)
             .await
             .expect("LRU second object batch")
             .is_some()
@@ -3629,7 +3629,7 @@ mod tests {
                         )
                         .await
                         .expect("concurrent read");
-                    while let Some(batch) = stream.next_batch().await.expect("concurrent batch") {
+                    while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("concurrent batch") {
                         rows += u64::try_from(batch.num_rows()).expect("row count");
                     }
                 }
@@ -3719,7 +3719,7 @@ mod tests {
                     .await
                 {
                     Ok(mut stream) => stream
-                        .next_batch_with_cancellation(&cancellation)
+                        .next_batch(&cancellation)
                         .await
                         .expect_err("cancelled slow stream"),
                     Err(error) => error,

@@ -84,7 +84,7 @@ impl BatchStream for MemoryStream {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
-    fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
         let next = self.batches.pop_front();
         Box::pin(std::future::ready(Ok(next)))
     }

@@ -135,10 +135,15 @@ pub async fn list_schemas(
     session: &mut MysqlSession,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>> {
+    // v0.2 (fix H7.1): esclude system schemas MySQL (information_schema, mysql,
+    // performance_schema, sys). Il consumer che ha bisogno anche dei system
+    // schemas deve interrogare information_schema.schemata direttamente.
     session
         .query_rows(
             "SELECT SCHEMA_NAME AS schema_name \
-             FROM information_schema.schemata ORDER BY SCHEMA_NAME",
+             FROM information_schema.schemata \
+             WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
+             ORDER BY SCHEMA_NAME",
             ErrorPhase::Probe,
             cancellation,
         )

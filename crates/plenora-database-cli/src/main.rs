@@ -296,13 +296,14 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
         row_limit: None,
         filter: None,
     };
+    let cancellation = CancellationToken::new();
     let mut stream = provider
         .read(
             &secret,
             &operation,
             &ParameterBag::default(),
             &ResourceBudget::new(ResourceLimits::default())?,
-            &CancellationToken::new(),
+            &cancellation,
         )
         .await?;
     let schema = stream.schema();
@@ -320,7 +321,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
         .collect::<Vec<_>>();
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await? {
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
         batches += 1;
         rows +=
             u64::try_from(batch.num_rows()).map_err(|_| "conteggio righe oltre u64".to_owned())?;
@@ -364,16 +365,17 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         "max_output_bytes": options.limits.output_bytes,
         "timeout_ms": options.limits.duration_ms,
     });
+    let cancellation = CancellationToken::new();
     let mut stream = provider
         .read(
             &secret,
             &operation,
             &options.parameters,
             &ResourceBudget::new(options.limits)?,
-            &CancellationToken::new(),
+            &cancellation,
         )
         .await?;
-    let mut report = write_stream_to_ipc(Path::new(&output), stream.as_mut()).await?;
+    let mut report = write_stream_to_ipc(Path::new(&output), stream.as_mut(), &cancellation).await?;
     // Un solo `as_object_mut`: le due `expect` che seguivano ripetevano un
     // controllo gia' fatto qui sopra, e ripeterlo con un panico invece che con
     // un errore era l'unico punto del binario che poteva abbattere il processo.
@@ -477,6 +479,7 @@ fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
 async fn write_stream_to_ipc(
     output: &Path,
     stream: &mut dyn BatchStream,
+    cancellation: &CancellationToken,
 ) -> CliResult<serde_json::Value> {
     if output.exists() {
         return Err(local_artifact_error(
@@ -494,7 +497,7 @@ async fn write_stream_to_ipc(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| CliError::from("percorso output Arrow IPC non valido"))?;
     let (temporary, mut file) = create_ipc_temporary(parent, name)?;
-    let result = write_ipc_batches(&mut file, stream).await;
+    let result = write_ipc_batches(&mut file, stream, cancellation).await;
     let (batches, rows) = match result {
         Ok(counts) => counts,
         Err(mut error) => {
@@ -627,7 +630,7 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
     ))
 }
 
-async fn write_ipc_batches(file: &mut File, stream: &mut dyn BatchStream) -> CliResult<(u64, u64)> {
+async fn write_ipc_batches(file: &mut File, stream: &mut dyn BatchStream, cancellation: &CancellationToken) -> CliResult<(u64, u64)> {
     let schema = stream.schema();
     let mut writer = FileWriter::try_new_buffered(&mut *file, &schema).map_err(|_| {
         local_artifact_error(
@@ -640,7 +643,7 @@ async fn write_ipc_batches(file: &mut File, stream: &mut dyn BatchStream) -> Cli
     })?;
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch().await? {
+    while let Some(batch) = stream.next_batch(cancellation).await? {
         batches = batches.checked_add(1).ok_or_else(|| {
             local_artifact_error(
                 ErrorCategory::ResourceLimit,
@@ -1294,7 +1297,7 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch(&mut self) -> ProviderFuture<'_, Option<RecordBatch>> {
+        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
             let outcome = self.outcomes.pop_front().unwrap_or(Ok(None));
             Box::pin(async move { outcome })
         }
@@ -1450,7 +1453,7 @@ mod tests {
         let batch = test_batch(stream.schema());
         stream.outcomes = VecDeque::from([Ok(Some(batch)), Ok(None)]);
 
-        let report = write_stream_to_ipc(&output, &mut stream)
+        let report = write_stream_to_ipc(&output, &mut stream, &CancellationToken::new())
             .await
             .expect("materialize IPC");
 
@@ -1497,7 +1500,7 @@ mod tests {
             )),
         ]);
 
-        let error = write_stream_to_ipc(&output, &mut stream)
+        let error = write_stream_to_ipc(&output, &mut stream, &CancellationToken::new())
             .await
             .expect_err("stream failure");
 
@@ -1513,7 +1516,7 @@ mod tests {
         fs::write(&output, b"existing artifact").expect("write existing output");
         let mut stream = stream_with_outcomes(VecDeque::new());
 
-        let error = write_stream_to_ipc(&output, &mut stream)
+        let error = write_stream_to_ipc(&output, &mut stream, &CancellationToken::new())
             .await
             .expect_err("existing output must be rejected");
 
