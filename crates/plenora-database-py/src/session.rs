@@ -34,6 +34,8 @@
 )]
 
 use crate::py_convert::{param_to_python, params_from_python};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
@@ -63,7 +65,12 @@ fn default_budget() -> ResourceBudget {
 
 /// Trasforma un errore Rust in RuntimeError Python con prefisso categoria.
 fn to_py_err(e: DatabaseError) -> PyErr {
-    PyRuntimeError::new_err(format!("{:?}: {}", e.category, e.message))
+    let diag = e
+        .diagnostics
+        .as_ref()
+        .map(|v| format!(" [{v:?}]"))
+        .unwrap_or_default();
+    PyRuntimeError::new_err(format!("{:?}: {}{}", e.category, e.message, diag))
 }
 
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
@@ -227,6 +234,54 @@ impl Session {
             out.append(dict)?;
         }
         Ok(out)
+    }
+
+    /// Esegue un `PortableStatement` (serializzato come JSON) e ritorna
+    /// le righe come `list[dict]`. Usato dal layer di builder Python
+    /// (`plenora_database.query`) per Select o statement con RETURNING.
+    ///
+    /// # Errors
+    ///
+    /// - `PyRuntimeError` se il JSON non è un AST valido
+    /// - `PyRuntimeError` mappato da `DatabaseError` in caso di errore SQL
+    fn execute_portable_rows<'py>(
+        &self,
+        py: Python<'py>,
+        ast_json: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+        })?;
+        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
+        })?;
+        let out = PyList::empty(py);
+        for row in rows {
+            let dict = PyDict::new(py);
+            for (col, val) in row.columns().iter().zip(row.values().iter()) {
+                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
+            }
+            out.append(dict)?;
+        }
+        Ok(out)
+    }
+
+    /// Esegue un `PortableStatement` (serializzato come JSON) senza
+    /// RETURNING e ritorna il numero di righe modificate. Solo per
+    /// Insert/Update/Delete/Upsert privi di RETURNING.
+    ///
+    /// # Errors
+    ///
+    /// Come `execute_portable_rows`.
+    fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+        })?;
+        self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { execute_portable(tx, &ast, cancel).await })
+        })
     }
 
     /// Context manager: entrata restituisce self.
