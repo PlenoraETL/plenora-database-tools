@@ -1,0 +1,10 @@
+# Artifacts di build maturin/pyo3
+*.so
+*.pyd
+*.dylib
+*.egg-info/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+target/

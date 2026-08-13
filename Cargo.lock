@@ -1193,7 +1193,9 @@ name = "plenora-database-py"
 version = "1.1.0"
 dependencies = [
  "plenora-database-core",
+ "plenora-db-postgres",
  "pyo3",
+ "tokio",
 ]
 
 [[package]]

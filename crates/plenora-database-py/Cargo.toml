@@ -15,7 +15,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 plenora-database-core.workspace = true
+plenora-db-postgres.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

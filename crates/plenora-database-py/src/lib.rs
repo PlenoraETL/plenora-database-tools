@@ -1,14 +1,16 @@
 //! Bindings Python (`PyO3`) di `plenora-database-tools`.
 //!
-//! F3-1 skeleton: espone solo `version()` per validare la toolchain
-//! `maturin` + `PyO3` + abi3 end-to-end. Le API vere (Session, execute,
-//! portable AST, spatial, transaction context) arrivano nelle milestone
-//! successive F3-2..F3-8.
+//! Milestone corrente: F3-2 (`Session` + `connect()` context manager, Postgres).
+//! Le API di query / spatial / transaction arrivano in F3-3..F3-8.
 //!
 //! Il modulo nativo è compilato come `plenora_database._native`; i
 //! wrapper Python idiomatici vivono in `python/plenora_database/__init__.py`.
 
 use pyo3::prelude::*;
+
+mod session;
+
+use session::{connect, Session};
 
 /// Versione del bindings crate. Coincide con la versione del workspace
 /// Rust, che è la fonte di verità per compatibilità API.
@@ -21,5 +23,7 @@ pub const fn version() -> &'static str {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_class::<Session>()?;
     Ok(())
 }
