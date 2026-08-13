@@ -21,6 +21,8 @@ Le API di spatial / transaction / async arrivano in F3-5..F3-8.
 from ._native import version
 from ._session import Session
 from ._transaction import Transaction
+from . import spatial
+from .spatial import SpatialReference
 from .types import (
     TypedValue,
     date,
@@ -77,6 +79,9 @@ __all__ = [
     "Update",
     "Delete",
     "Upsert",
+    # Spatial
+    "spatial",
+    "SpatialReference",
     # Typed params helpers
     "TypedValue",
     "uuid",

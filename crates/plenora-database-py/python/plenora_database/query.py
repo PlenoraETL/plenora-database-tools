@@ -15,6 +15,11 @@ import json
 from typing import Any, TYPE_CHECKING
 
 from ._ast import and_predicates, column_expr, literal_expr, table_ref
+from .spatial import (
+    SpatialReference,
+    _spatial_predicate_dict,
+    _spatial_reference_dict,
+)
 
 if TYPE_CHECKING:
     from ._session import Session
@@ -81,6 +86,35 @@ class _WhereMixin:
 
     def where_is_not_null(self, column: str) -> "_WhereMixin":
         self._add({"op": "is_not_null", "column": column})
+        return self
+
+    def where_spatial(
+        self,
+        column: str,
+        predicate: str,
+        reference: SpatialReference,
+        distance_meters: float | None = None,
+    ) -> "_WhereMixin":
+        """Predicato spaziale portable.
+
+        Args:
+            column: nome colonna geometry/geography sul target.
+            predicate: "intersects" / "contains" / "within" /
+                       "bounding_box" / "d_within".
+            reference: `SpatialReference` (crea con `spatial.geometry(...)`
+                       o `spatial.geography(...)`).
+            distance_meters: obbligatorio se predicate == "d_within".
+
+        Il core Rust compila in `ST_<Predicate>(column, ST_GeomFromEWKB($n)::<cast>)`
+        con `<cast>` = `geometry` o `geography` in base a
+        `reference.semantics` (fix driver v0.2).
+        """
+        self._add({
+            "op": "spatial",
+            "column": column,
+            "predicate": _spatial_predicate_dict(predicate, distance_meters),
+            "reference": _spatial_reference_dict(reference),
+        })
         return self
 
     def _add(self, pred: dict) -> None:
