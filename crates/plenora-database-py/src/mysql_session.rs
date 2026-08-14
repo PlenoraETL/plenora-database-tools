@@ -30,7 +30,9 @@
     clippy::unused_self,
 )]
 
+use crate::arrow_reader::BatchReader;
 use crate::errors::to_py_err;
+use crate::mysql_arrow_reader::open_mysql_reader;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
@@ -292,6 +294,54 @@ impl MysqlSession {
             })
             .map_err(to_py_err)?;
         Ok(Transaction::new(scope))
+    }
+
+    /// Apre uno stream Arrow IPC su una tabella/vista MySQL.
+    ///
+    /// Ritorna un `BatchReader` che implementa il Python iterator protocol;
+    /// ogni `next(reader)` produce `bytes` Arrow IPC stream self-contained
+    /// (schema + 1 record batch + EOS marker).
+    ///
+    /// Parametri opzionali:
+    /// - `projection`: lista di colonne (default: tutte)
+    /// - `order_by`: lista di `(colonna, "asc"|"desc")` per ORDER BY
+    /// - `limit`: numero massimo di righe (default: nessun limite)
+    ///
+    /// Uso tipico (richiede pyarrow):
+    ///
+    /// ```python
+    /// import io, pyarrow.ipc as ipc
+    /// for chunk in s.read("mydb", "events", limit=10000):
+    ///     batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+    /// ```
+    ///
+    /// La size dei batch è decisa dal provider (MySQL: bounded dal
+    /// buffer del cursor `mysql_async`).
+    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
+    fn read(
+        &self,
+        py: Python<'_>,
+        schema: &str,
+        object: &str,
+        projection: Option<Vec<String>>,
+        order_by: Option<Vec<(String, String)>>,
+        limit: Option<u64>,
+    ) -> PyResult<BatchReader> {
+        self.ensure_open()?;
+        let projection = projection.unwrap_or_default();
+        let order_by = order_by.unwrap_or_default();
+        py.allow_threads(|| {
+            open_mysql_reader(
+                &self.provider,
+                &self.secret,
+                schema,
+                object,
+                projection,
+                order_by,
+                limit,
+            )
+        })
+        .map_err(to_py_err)
     }
 
     /// Bulk write MySQL via `prepare_write` + `write` del provider.

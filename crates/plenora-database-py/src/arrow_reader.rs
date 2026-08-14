@@ -39,7 +39,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-fn default_budget() -> ResourceBudget {
+pub(crate) fn default_budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("default budget")
 }
 
@@ -146,7 +146,7 @@ impl BatchReader {
 ///
 /// `PlenoraError::invalid_plan` se la direzione ORDER BY non è
 /// `"asc"` o `"desc"`.
-fn make_read_operation(
+pub(crate) fn make_read_operation(
     schema: &str,
     object: &str,
     projection: Vec<String>,

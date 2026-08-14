@@ -176,6 +176,37 @@ class _MysqlSessionWrapper:
     ):
         return self._native.begin(isolation, read_only, statement_timeout_ms)
 
+    def read(
+        self,
+        schema: str,
+        object: str,
+        *,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
+    ):
+        """Apre uno stream Arrow IPC su una tabella/vista MySQL.
+
+        Ritorna un `BatchReader` che implementa il Python iterator
+        protocol; ogni `next(reader)` produce `bytes` Arrow IPC stream
+        (schema + 1 record batch + EOS marker).
+
+        Uso tipico (richiede pyarrow installato):
+
+            import io, pyarrow.ipc as ipc
+            for chunk in s.read("mydb", "large_table", limit=10000):
+                batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+
+        Parametri opzionali:
+          - `projection`: lista di colonne (default: tutte)
+          - `order_by`: lista di `(colonna, "asc"|"desc")` per ORDER BY
+          - `limit`: numero massimo di righe (default: nessun limite)
+
+        Non carica l'intero dataset in memoria — legge batch-by-batch
+        dal cursor `mysql_async`.
+        """
+        return self._native.read(schema, object, projection, order_by, limit)
+
     def copy_from(
         self,
         schema: str,

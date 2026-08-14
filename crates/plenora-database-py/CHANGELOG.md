@@ -11,6 +11,65 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.7.0] — 2026-08-14
+
+Streaming Arrow read MySQL — `MysqlSession.read()`.
+
+### Added
+
+- **`MysqlSession.read(schema, object, projection=None, order_by=None, limit=None)`**
+  → ritorna `BatchReader` (pyclass provider-agnostic ereditato dal path
+  Postgres). Il consumer itera bytes Arrow IPC stream chunk-by-chunk:
+
+  ```python
+  import io, pyarrow.ipc as ipc
+
+  with p.connect_mysql("localhost", "db", "u", "p") as s:
+      for chunk in s.read("mydb", "large_events", limit=100_000, order_by=[("id", "asc")]):
+          batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+          process(batch)
+  ```
+
+- **Refactor `arrow_reader.rs`**: helper generici ora `pub(crate)`
+  (`make_read_operation`, `default_budget`, `BatchReader` pyclass) —
+  riusati dal nuovo `mysql_arrow_reader.rs`.
+
+- **Nuovo modulo `mysql_arrow_reader.rs`** (~70 righe): `open_mysql_reader`
+  che chiama `MysqlProvider::read()` e ritorna un `BatchReader`
+  identico al path Postgres. Zero duplication del pyclass o della
+  logica IPC streaming.
+
+### Design
+
+Streaming server-side via `mysql_async` cursor: bounded, no
+materializzazione dell'intero result set. Batch size decisa dal
+provider (non configurabile dal SDK).
+
+### Compatibilità
+
+- 100% backward-compat con v0.6.0.
+- Aggiunta additiva su `MysqlSession`.
+
+### Roadmap SDK MySQL post-0.7
+
+- `AsyncMysqlSession` con `aread()` e `acopy_from()` async
+- Portable AST builders (`select/insert/update/delete/upsert`) —
+  richiede `compile_portable_for_provider(Mysql)` nel core facade
+- Spatial predicates + `SpatialReference` — 26 funzioni ST_* già
+  verified nel provider Rust MySQL v1.2
+- Typed params helper (uuid/date/decimal) — probabilmente funziona
+  già, serve solo verify + doc
+
+### Wheel
+
+- `plenora_database-0.7.0-cp310-abi3-manylinux_2_34_x86_64.whl`
+- `plenora_database-0.7.0-cp310-abi3-macosx_11_0_arm64.whl`
+- `plenora_database-0.7.0-cp310-abi3-win_amd64.whl`
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.7.0>
+
+---
+
 ## [0.6.0] — 2026-08-14
 
 Completa il pattern bulk-write MySQL: `MysqlSession.copy_from` con tutti

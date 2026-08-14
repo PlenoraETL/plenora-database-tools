@@ -48,6 +48,14 @@ class MysqlSession:
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
     ) -> Transaction: ...
+    def read(
+        self,
+        schema: str,
+        object: str,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
+    ) -> BatchReader: ...
     def copy_from(
         self,
         schema: str,
