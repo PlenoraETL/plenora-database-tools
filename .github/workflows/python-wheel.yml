@@ -45,20 +45,17 @@ jobs:
           name: wheel-linux-x86_64
           path: dist/*.whl
 
-  # ---------------- macOS (arm64 + x86_64) ----------------
+  # ---------------- macOS (arm64 only) ----------------
+  # Nota: Intel Mac x86_64 rimosso — Apple ha terminato Intel Mac nel
+  # 2022, i runner GitHub `macos-13` sono spesso in coda a lungo e
+  # rallentano il release. Se serve wheel Intel Mac, buildarlo
+  # localmente con `maturin build --target x86_64-apple-darwin`.
   macos:
-    name: build macos-${{ matrix.target }}
-    strategy:
-      matrix:
-        include:
-          - target: aarch64
-            runs-on: macos-latest       # runner ARM (M1/M2)
-          - target: x86_64
-            runs-on: macos-13           # runner Intel
-    runs-on: ${{ matrix.runs-on }}
+    name: build macos-aarch64
+    runs-on: macos-latest       # runner ARM (M1/M2)
     steps:
       - uses: actions/checkout@v4
-      - name: Build wheel (${{ matrix.target }})
+      - name: Build wheel (aarch64)
         uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -66,11 +63,11 @@ jobs:
             --release
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
-            --target ${{ matrix.target }}-apple-darwin
+            --target aarch64-apple-darwin
           rust-toolchain: '1.92.0'
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-macos-${{ matrix.target }}
+          name: wheel-macos-aarch64
           path: dist/*.whl
 
   # ---------------- Windows (x86_64) ----------------
