@@ -520,12 +520,20 @@ async fn execute_mysql_write(
     // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo
     // allora il percorso diagnostico riga per riga ha un input_total da
     // pubblicare, e il costo di uno statement per riga è giustificato.
-    // La policy va rifiutata prima di aprire la transazione: un errore di
-    // configurazione non può lasciare affidamento implicito al pool reset.
-    let diagnostic_input = input
-        .declared_input_rows()
-        .map(|rows| validate_diagnostic_input(&schema, rows, input.row_diagnostics_policy()))
-        .transpose()?;
+    //
+    // v1.2: Row-scoped diagnostics ha semantica valida SOLO per Append —
+    // Upsert MySQL ritorna affected_rows=2 per UPDATE, che il validatore
+    // per-row rifiuta ("conteggio incoerente"). Per Create/TruncateInsert
+    // il diagnostic path è tecnicamente supportabile ma bulk INSERT è
+    // preferibile (throughput). Semplifichiamo: solo Append attiva diagnostic.
+    let diagnostic_input = if operation.mode == plenora_database_core::plan::WriteMode::Append {
+        input
+            .declared_input_rows()
+            .map(|rows| validate_diagnostic_input(&schema, rows, input.row_diagnostics_policy()))
+            .transpose()?
+    } else {
+        None
+    };
     let execution_id = start_write_transaction(&mut session, token).await?;
     if let Some((declared_rows, policy)) = diagnostic_input {
         let result = diagnostic_mysql_write(
@@ -567,7 +575,12 @@ async fn execute_mysql_write(
         .await
     {
         Ok(()) => {
-            crate::write::committed_outcome(execution_id, progress.received, progress.inserted)
+            crate::write::committed_outcome_for_mode(
+                execution_id,
+                progress.received,
+                progress.inserted,
+                operation.mode,
+            )
         }
         Err(error) => {
             session.discard().await;
@@ -1276,7 +1289,9 @@ mod tests {
         let provider = MysqlProvider::new(config, 1).expect("provider");
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         let mut operation = append_write_operation();
-        operation.mode = plenora_database_core::plan::WriteMode::Upsert;
+        // v1.2: Upsert/Create/TruncateInsert ora qualificati. Usa Update
+        // che resta Unsupported in questa tranche.
+        operation.mode = plenora_database_core::plan::WriteMode::Update;
         let outcome = provider
             .prepare_write(
                 &SecretString::new("unique-secret"),
@@ -1287,7 +1302,7 @@ mod tests {
             )
             .await;
         let Err(error) = outcome else {
-            panic!("upsert MySQL non qualificato accettato");
+            panic!("update MySQL non qualificato accettato");
         };
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);

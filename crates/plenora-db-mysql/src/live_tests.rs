@@ -4270,3 +4270,92 @@ async fn live_v12_write_truncate_insert_clears_and_reinserts() {
     check.connection_mut().unwrap()
         .query_drop("DROP TABLE _v12_trunc").await.ok();
 }
+
+fn write_op_with_keys(
+    schema: &str,
+    table: &str,
+    mode: plenora_database_core::plan::WriteMode,
+    keys: Vec<String>,
+) -> plenora_database_core::plan::WriteOperation {
+    let mut op = write_op_scalar(schema, table, mode);
+    op.keys = keys;
+    op
+}
+
+#[tokio::test]
+async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upsert").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_upsert (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
+            .await.expect("create");
+        setup.connection_mut().unwrap()
+            .query_drop("INSERT INTO _v12_upsert VALUES (1, 'old-1'), (2, 'old-2')")
+            .await.expect("seed");
+    }
+
+    // Upsert: id=1 (esistente, sarà aggiornato); id=3 (nuovo, sarà inserito).
+    let (schema, batch) = scalar_batch(&[1, 3], &["upd-1", "new-3"]);
+    let operation = write_op_with_keys(
+        "dataflow_test",
+        "_v12_upsert",
+        plenora_database_core::plan::WriteMode::Upsert,
+        vec!["id".to_owned()],
+    );
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare upsert");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 2,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write upsert");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+
+    // Verifica: id=1 aggiornato (upd-1), id=2 invariato (old-2), id=3 nuovo (new-3)
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let rows: Vec<(i64, String)> = check.connection_mut().unwrap()
+        .query::<(i64, String), _>("SELECT id, label FROM _v12_upsert ORDER BY id")
+        .await.expect("select");
+    assert_eq!(rows, vec![
+        (1, "upd-1".to_owned()),
+        (2, "old-2".to_owned()),
+        (3, "new-3".to_owned()),
+    ]);
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_upsert").await.ok();
+}
+
+#[tokio::test]
+async fn live_v12_write_upsert_without_keys_rejected() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let (schema, _batch) = scalar_batch(&[1], &["x"]);
+    // Upsert senza keys → InvalidPlan al prepare (validate_operation).
+    let operation = write_op_scalar("dataflow_test", "_v12_no_upsert",
+        plenora_database_core::plan::WriteMode::Upsert);
+
+    let result = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await;
+    assert!(matches!(
+        result.err().map(|e| e.category),
+        Some(ErrorCategory::InvalidPlan)
+    ), "upsert senza keys deve fallire con InvalidPlan");
+}

@@ -46,6 +46,9 @@ struct MysqlWriteColumn {
 pub struct MysqlWritePlan {
     quoted_target: String,
     columns: Vec<MysqlWriteColumn>,
+    /// Colonne (quoted) da aggiornare nel `ON DUPLICATE KEY UPDATE` di
+    /// una Upsert. Vuoto per Append/Create/TruncateInsert.
+    upsert_update_columns: Vec<String>,
 }
 
 fn compile_write_column(
@@ -163,9 +166,29 @@ impl MysqlWritePlan {
             .map(|field| compile_write_column(field, &renderer))
             .collect::<Result<Vec<_>>>()?;
         validate_spatial_policy(operation, &columns)?;
+        // Per Upsert: le colonne non-key vengono aggiornate.
+        // Verifica anche che ogni key sia presente nello schema Arrow.
+        let upsert_update_columns = if operation.mode == WriteMode::Upsert {
+            for key in &operation.keys {
+                if !columns.iter().any(|c| c.name == *key) {
+                    return Err(prepare_error(
+                        ErrorCategory::InvalidPlan,
+                        format!("chiave upsert MySQL '{key}' assente dallo schema Arrow"),
+                    ));
+                }
+            }
+            columns
+                .iter()
+                .filter(|c| !operation.keys.contains(&c.name))
+                .map(|c| c.quoted.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             quoted_target: renderer.quote_object(&target),
             columns,
+            upsert_update_columns,
         })
     }
 
@@ -225,6 +248,19 @@ impl MysqlWritePlan {
             sql.push('(');
             sql.push_str(&row_placeholders);
             sql.push(')');
+        }
+        // Upsert v1.2: ON DUPLICATE KEY UPDATE per le colonne non-key.
+        // Uso `VALUES(col)` (deprecato in 8.0.20+ ma ancora funzionante in
+        // 8.4 LTS). Migrare a alias `AS new / new.col` in un giro futuro.
+        if !self.upsert_update_columns.is_empty() {
+            let updates = self
+                .upsert_update_columns
+                .iter()
+                .map(|c| format!("{c}=VALUES({c})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(" ON DUPLICATE KEY UPDATE ");
+            sql.push_str(&updates);
         }
         sql.push(';');
         Ok(sql)
@@ -463,20 +499,50 @@ pub fn committed_outcome(
     received: u64,
     inserted: u64,
 ) -> Result<WriteOutcome> {
-    let outcome = WriteOutcome {
-        schema_version: 1,
-        status: WriteStatus::Committed,
-        execution_id,
-        provider: plenora_database_core::plan::ProviderKind::Mysql,
-        rows: RowCounts {
+    committed_outcome_for_mode(execution_id, received, inserted, WriteMode::Append)
+}
+
+/// Version mode-aware di `committed_outcome`.
+///
+/// Per Upsert: MySQL restituisce `affected_rows` misto (1 per insert, 2 per
+/// update); non abbiamo il breakdown esatto senza query aggiuntive. Usiamo
+/// `confirmed = received` (tutte processate) e `inserted/updated = None`.
+///
+/// # Errors
+///
+/// Fallisce se il RowCounts non valida contro il contratto core.
+pub fn committed_outcome_for_mode(
+    execution_id: String,
+    received: u64,
+    affected_or_inserted: u64,
+    mode: WriteMode,
+) -> Result<WriteOutcome> {
+    let rows = match mode {
+        WriteMode::Upsert => RowCounts {
             received,
-            confirmed: inserted,
-            inserted: Some(inserted),
+            confirmed: received,
+            inserted: None,
+            updated: None,
+            deleted: Some(0),
+            failed: 0,
+            skipped: 0,
+        },
+        _ => RowCounts {
+            received,
+            confirmed: affected_or_inserted,
+            inserted: Some(affected_or_inserted),
             updated: Some(0),
             deleted: Some(0),
             failed: 0,
             skipped: 0,
         },
+    };
+    let outcome = WriteOutcome {
+        schema_version: 1,
+        status: WriteStatus::Committed,
+        execution_id,
+        provider: plenora_database_core::plan::ProviderKind::Mysql,
+        rows,
         layer_outcomes: Vec::new(),
         recovery: None,
     };
@@ -696,14 +762,17 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    // v1.2: Append + Create + TruncateInsert supportati.
-    // Update/Upsert/Replace/DeleteByKeys pianificati per future tranches.
+    // v1.2: Append + Create + TruncateInsert + Upsert supportati.
+    // Update/Replace/DeleteByKeys pianificati per future tranches.
     match operation.mode {
-        WriteMode::Append | WriteMode::Create | WriteMode::TruncateInsert => {}
+        WriteMode::Append
+        | WriteMode::Create
+        | WriteMode::TruncateInsert
+        | WriteMode::Upsert => {}
         other => {
             return Err(unsupported(format!(
                 "write mode '{other:?}' MySQL non ancora qualificato \
-                 (supportati: Append, Create, TruncateInsert)"
+                 (supportati: Append, Create, TruncateInsert, Upsert)"
             )));
         }
     }
@@ -720,7 +789,21 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.allow_partial {
         return Err(unsupported("write MySQL parziale non qualificata"));
     }
-    if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
+    // Upsert richiede keys; le altre mode invece rifiutano keys/update_columns.
+    if operation.mode == WriteMode::Upsert {
+        if operation.keys.is_empty() {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                "upsert MySQL richiede almeno una key column",
+            ));
+        }
+        if !operation.update_columns.is_empty() {
+            return Err(unsupported(
+                "upsert MySQL v1.2 aggiorna automaticamente tutte le colonne non-key \
+                 (update_columns esplicite pianificate per WriteMode::Update)",
+            ));
+        }
+    } else if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
         return Err(unsupported(
             "keys e update_columns non appartengono ad Append MySQL",
         ));
