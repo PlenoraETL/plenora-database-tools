@@ -305,7 +305,7 @@ impl MysqlSession {
     /// Esegue SQL senza parametri via **text protocol** (`query_drop`).
     ///
     /// Uso: comandi di controllo di sessione (`SET`, `SAVEPOINT`,
-    /// `ROLLBACK TO`, `START TRANSACTION`, DDL raw) che MySQL rifiuta
+    /// `ROLLBACK TO`, `START TRANSACTION`, DDL raw) che `MySQL` rifiuta
     /// nel prepared statement protocol (errore 1295).
     pub(crate) async fn exec_control(
         &mut self,

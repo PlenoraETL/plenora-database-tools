@@ -1,4 +1,13 @@
-//! Prima tranche offline del path write `MySQL`.
+//! Path write `MySQL`. v1.2 estende Append (unica mode originale) con
+//! Create + TruncateInsert (Blocco A). Upsert/Update/Replace/DeleteByKeys
+//! pianificati per tranches future.
+
+#![allow(
+    clippy::doc_markdown,
+    clippy::too_many_lines,
+    clippy::option_if_let_else,
+    clippy::redundant_pub_crate,
+)]
 
 use crate::types::{mysql_identifier, mysql_renderer};
 use crate::{MysqlColumnKind, MysqlColumnSpec, MysqlObjectDescription};
@@ -687,23 +696,29 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    if operation.mode != WriteMode::Append {
-        return Err(unsupported(
-            "solo Append MySQL e qualificata in questa tranche",
-        ));
+    // v1.2: Append + Create + TruncateInsert supportati.
+    // Update/Upsert/Replace/DeleteByKeys pianificati per future tranches.
+    match operation.mode {
+        WriteMode::Append | WriteMode::Create | WriteMode::TruncateInsert => {}
+        other => {
+            return Err(unsupported(format!(
+                "write mode '{other:?}' MySQL non ancora qualificato \
+                 (supportati: Append, Create, TruncateInsert)"
+            )));
+        }
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
         return Err(unsupported(
-            "append MySQL richiede il profilo SingleTransaction",
+            "write MySQL richiede il profilo SingleTransaction",
         ));
     }
     if operation.mapping_policy != MappingPolicy::Strict {
         return Err(unsupported(
-            "append MySQL richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
+            "write MySQL richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
         ));
     }
     if operation.allow_partial {
-        return Err(unsupported("append MySQL parziale non qualificata"));
+        return Err(unsupported("write MySQL parziale non qualificata"));
     }
     if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
         return Err(unsupported(
@@ -775,6 +790,115 @@ fn write_column_kind(field: &Field) -> Result<MysqlColumnKind> {
 
 fn unsupported(message: impl Into<String>) -> DatabaseError {
     prepare_error(ErrorCategory::Unsupported, message)
+}
+
+// ============================ v1.2 — DDL support (Create/TruncateInsert) =======
+
+/// Genera la dichiarazione MySQL per un tipo di colonna.
+///
+/// Tipi geometrici: `GEOMETRY [NOT NULL] SRID <srid>` (MySQL 8.0+ dichiara
+/// SRID come constraint di colonna quando noto).
+fn mysql_column_ddl(kind: &MysqlColumnKind, spatial_srid: Option<u32>) -> String {
+    match kind {
+        MysqlColumnKind::Bool => "TINYINT(1)".to_owned(),
+        MysqlColumnKind::I8 => "TINYINT".to_owned(),
+        MysqlColumnKind::U8 => "TINYINT UNSIGNED".to_owned(),
+        MysqlColumnKind::I16 => "SMALLINT".to_owned(),
+        MysqlColumnKind::U16 => "SMALLINT UNSIGNED".to_owned(),
+        MysqlColumnKind::I32 => "INT".to_owned(),
+        MysqlColumnKind::U32 => "INT UNSIGNED".to_owned(),
+        MysqlColumnKind::I64 => "BIGINT".to_owned(),
+        MysqlColumnKind::U64 => "BIGINT UNSIGNED".to_owned(),
+        MysqlColumnKind::F32 => "FLOAT".to_owned(),
+        MysqlColumnKind::F64 => "DOUBLE".to_owned(),
+        // TEXT senza length hint: general-purpose (no VARCHAR(N) perché
+        // il Arrow schema non porta max length). Consumer può ALTER
+        // dopo il create se serve VARCHAR indexed.
+        MysqlColumnKind::Utf8 => "TEXT".to_owned(),
+        MysqlColumnKind::Binary => "BLOB".to_owned(),
+        MysqlColumnKind::Date => "DATE".to_owned(),
+        MysqlColumnKind::Time => "TIME".to_owned(),
+        // DATETIME(6) = microseconds precision, allineato con
+        // Timestamp(Microsecond) del Arrow schema.
+        MysqlColumnKind::Timestamp => "DATETIME(6)".to_owned(),
+        MysqlColumnKind::Decimal { precision, scale } => {
+            format!("DECIMAL({precision},{scale})")
+        }
+        MysqlColumnKind::Geometry => match spatial_srid {
+            Some(srid) => format!("GEOMETRY SRID {srid}"),
+            None => "GEOMETRY".to_owned(),
+        },
+    }
+}
+
+/// Costruisce `CREATE TABLE` MySQL da un `SchemaRef` Arrow.
+///
+/// - Colonne: derivate dallo schema (nome + tipo MySQL + NOT NULL/NULL).
+/// - PRIMARY KEY: dal parametro `operation.keys` se non vuoto (WriteMode::Create
+///   di solito non ha keys, ma se dato si applica).
+/// - Engine: InnoDB (transactional, richiesto per il pattern OLTP OLTP).
+/// - Charset: utf8mb4 (default moderno MySQL 8.4).
+///
+/// # Errors
+///
+/// `Unsupported` se un tipo Arrow non ha mapping MySQL (delega a `compile_write_column`).
+pub(crate) fn build_create_table_sql(
+    schema: &SchemaRef,
+    operation: &WriteOperation,
+    database: &str,
+) -> Result<String> {
+    let renderer = mysql_renderer();
+    let target_schema = operation.target.schema.as_deref().unwrap_or(database);
+    let object_name = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(target_schema)?),
+        object: mysql_identifier(&operation.target.object)?,
+    };
+    let quoted_target = renderer.quote_object(&object_name);
+
+    let columns: Vec<MysqlWriteColumn> = schema
+        .fields()
+        .iter()
+        .map(|field| compile_write_column(field, &renderer))
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut lines = Vec::with_capacity(columns.len() + 1);
+    for col in &columns {
+        let type_decl = mysql_column_ddl(&col.kind, col.spatial_srid);
+        let null_decl = if col.nullable { "NULL" } else { "NOT NULL" };
+        lines.push(format!("    {} {} {}", col.quoted, type_decl, null_decl));
+    }
+    if !operation.keys.is_empty() {
+        let pk_cols = operation
+            .keys
+            .iter()
+            .map(|k| {
+                mysql_identifier(k)
+                    .map(|id| renderer.quote_identifier(&id))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        lines.push(format!("    PRIMARY KEY ({})", pk_cols.join(", ")));
+    }
+
+    Ok(format!(
+        "CREATE TABLE {quoted_target} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        lines.join(",\n")
+    ))
+}
+
+/// Genera `TRUNCATE TABLE db.table` per WriteMode::TruncateInsert.
+pub(crate) fn build_truncate_sql(operation: &WriteOperation, database: &str) -> Result<String> {
+    let renderer = mysql_renderer();
+    let target_schema = operation.target.schema.as_deref().unwrap_or(database);
+    let object_name = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(target_schema)?),
+        object: mysql_identifier(&operation.target.object)?,
+    };
+    Ok(format!(
+        "TRUNCATE TABLE {}",
+        renderer.quote_object(&object_name)
+    ))
 }
 
 fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

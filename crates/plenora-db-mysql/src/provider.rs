@@ -333,18 +333,32 @@ impl Provider for MysqlProvider {
                 )
             })?;
             let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-            let pool = self.pool_for(secret)?;
-            let mut session = pool.checkout(token).await?;
-            let target_schema = operation
-                .target
-                .schema
-                .as_deref()
-                .unwrap_or_else(|| self.config.database());
-            let target =
-                describe_object(&mut session, target_schema, &operation.target.object, token)
-                    .await?;
-            let loss_report = plan.preflight(&target)?;
-            drop(session);
+            let loss_report = if operation.mode == plenora_database_core::plan::WriteMode::Create {
+                // Create: la tabella target non esiste ancora — skip describe.
+                // Il preflight viene rifatto in `write` dopo il CREATE TABLE,
+                // e il confronto con questo LossReport vuoto passa se lo
+                // schema Arrow matcha esattamente il DDL generato (che è
+                // sempre il caso perché il DDL è derivato dallo schema stesso).
+                plenora_database_core::loss::LossReport {
+                    schema_version: 1,
+                    policy: operation.mapping_policy,
+                    losses: Vec::new(),
+                }
+            } else {
+                let pool = self.pool_for(secret)?;
+                let mut session = pool.checkout(token).await?;
+                let target_schema = operation
+                    .target
+                    .schema
+                    .as_deref()
+                    .unwrap_or_else(|| self.config.database());
+                let target =
+                    describe_object(&mut session, target_schema, &operation.target.object, token)
+                        .await?;
+                let report = plan.preflight(&target)?;
+                drop(session);
+                report
+            };
             Ok(PreparedWrite {
                 operation: operation.clone(),
                 input_schema,
@@ -411,6 +425,7 @@ impl Provider for MysqlProvider {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute_mysql_write(
     provider: &MysqlProvider,
     secret: &SecretString,
@@ -454,6 +469,35 @@ async fn execute_mysql_write(
         .schema
         .as_deref()
         .unwrap_or_else(|| provider.config.database());
+
+    // v1.2 — Prepare target step per Create / TruncateInsert.
+    // Create: verifica NON exists, poi esegue CREATE TABLE.
+    // TruncateInsert: verifica exists via describe (sotto), poi TRUNCATE.
+    // Append: no-op (path originale).
+    if operation.mode == plenora_database_core::plan::WriteMode::Create {
+        let pre_check =
+            describe_object(&mut session, target_schema, &operation.target.object, token).await;
+        match pre_check {
+            Ok(_) => {
+                return Err(provider_error(
+                    ErrorCategory::Conflict,
+                    ErrorPhase::Prepare,
+                    "target MySQL già esistente (mode='create')",
+                ));
+            }
+            Err(err) if err.category == ErrorCategory::NotFound => {}
+            Err(other) => return Err(other),
+        }
+        let ddl = crate::write::build_create_table_sql(
+            &schema,
+            &operation,
+            provider.config.database(),
+        )?;
+        session
+            .exec_control(&ddl, ErrorPhase::Prepare, token)
+            .await?;
+    }
+
     let target =
         describe_object(&mut session, target_schema, &operation.target.object, token).await?;
     if plan.preflight(&target)? != prepared_loss {
@@ -462,6 +506,15 @@ async fn execute_mysql_write(
             ErrorPhase::Prepare,
             "preflight MySQL cambiato fra prepare e write",
         ));
+    }
+
+    // v1.2 — TruncateInsert: TRUNCATE prima del bulk INSERT.
+    if operation.mode == plenora_database_core::plan::WriteMode::TruncateInsert {
+        let truncate =
+            crate::write::build_truncate_sql(&operation, provider.config.database())?;
+        session
+            .exec_control(&truncate, ErrorPhase::Prepare, token)
+            .await?;
     }
     // Quando la sorgente dichiara quante righe produrrà, la scrittura può
     // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo

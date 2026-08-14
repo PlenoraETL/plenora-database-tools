@@ -4043,3 +4043,230 @@ async fn live_v12_conditional_update_rolls_back_on_mismatch() {
         .await
         .ok();
 }
+
+// ============================ v1.2 — Write bulk modes (Create/TruncateInsert) ==
+
+fn write_op_scalar(
+    schema: &str,
+    table: &str,
+    mode: plenora_database_core::plan::WriteMode,
+) -> plenora_database_core::plan::WriteOperation {
+    plenora_database_core::plan::WriteOperation {
+        target: plenora_database_core::plan::ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: table.to_owned(),
+            layer_id: None,
+        },
+        mode,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile:
+            plenora_database_core::plan::TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    }
+}
+
+fn scalar_batch(
+    ids: &[i64],
+    labels: &[&str],
+) -> (
+    plenora_database_core::arrow::SchemaRef,
+    plenora_database_core::arrow::RecordBatch,
+) {
+    use plenora_database_core::arrow::array::{Int64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    use plenora_database_core::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    let schema: plenora_database_core::arrow::SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            Arc::new(StringArray::from(labels.to_vec())),
+        ],
+    )
+    .expect("scalar batch");
+    (schema, batch)
+}
+
+struct BatchesStream {
+    schema: plenora_database_core::arrow::SchemaRef,
+    batches: std::collections::VecDeque<plenora_database_core::arrow::RecordBatch>,
+    declared: u64,
+}
+
+impl plenora_database_core::provider::BatchStream for BatchesStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        Box::pin(async move { Ok(self.batches.pop_front()) })
+    }
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.declared)
+    }
+}
+
+#[tokio::test]
+async fn live_v12_write_create_mode_builds_table_and_inserts() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    // Cleanup
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_create")
+            .await
+            .ok();
+    }
+
+    let (schema, batch) = scalar_batch(&[1, 2, 3], &["a", "b", "c"]);
+    let operation = write_op_scalar("dataflow_test", "_v12_create",
+        plenora_database_core::plan::WriteMode::Create);
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare_write create");
+
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 3,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write create");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(outcome.rows.received, 3);
+    assert_eq!(outcome.rows.confirmed, 3);
+
+    // Verifica DDL applicato
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let exists: Option<u64> = check.connection_mut().unwrap()
+        .query_first(
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema='dataflow_test' AND table_name='_v12_create'"
+        ).await.expect("exists");
+    assert_eq!(exists, Some(1));
+    let count: Option<u64> = check.connection_mut().unwrap()
+        .query_first("SELECT COUNT(*) FROM _v12_create").await.expect("count");
+    assert_eq!(count, Some(3));
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_create").await.ok();
+}
+
+#[tokio::test]
+async fn live_v12_write_create_mode_conflict_if_exists() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    // Setup: crea la tabella prima
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_create_conflict").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_create_conflict (id BIGINT PRIMARY KEY) ENGINE=InnoDB")
+            .await.expect("create");
+    }
+
+    let (schema, batch) = scalar_batch(&[1], &["x"]);
+    let operation = write_op_scalar("dataflow_test", "_v12_create_conflict",
+        plenora_database_core::plan::WriteMode::Create);
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 1,
+    };
+    let result = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await;
+    assert!(matches!(
+        result.err().map(|e| e.category),
+        Some(ErrorCategory::Conflict)
+    ), "mode=create su target esistente deve restituire Conflict");
+
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation).await.expect("cleanup");
+    cleanup.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_create_conflict").await.ok();
+}
+
+#[tokio::test]
+async fn live_v12_write_truncate_insert_clears_and_reinserts() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    // Setup: crea target + seed
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_trunc").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_trunc (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
+            .await.expect("create");
+        setup.connection_mut().unwrap()
+            .query_drop("INSERT INTO _v12_trunc VALUES (99, 'old-1'), (100, 'old-2')")
+            .await.expect("seed");
+    }
+
+    let (schema, batch) = scalar_batch(&[1, 2], &["new-a", "new-b"]);
+    let operation = write_op_scalar("dataflow_test", "_v12_trunc",
+        plenora_database_core::plan::WriteMode::TruncateInsert);
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare truncate");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 2,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write truncate_insert");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(outcome.rows.confirmed, 2);
+
+    // Verifica: solo le 2 nuove righe, non le vecchie
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let rows: Vec<i64> = check.connection_mut().unwrap()
+        .query::<i64, _>("SELECT id FROM _v12_trunc ORDER BY id")
+        .await.expect("select");
+    assert_eq!(rows, vec![1, 2], "TRUNCATE deve aver eliminato le righe seed");
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_trunc").await.ok();
+}
