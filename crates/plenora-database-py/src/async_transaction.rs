@@ -154,7 +154,7 @@ impl AsyncTransaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
@@ -176,7 +176,7 @@ impl AsyncTransaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {

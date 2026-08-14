@@ -228,7 +228,7 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -299,7 +299,7 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();

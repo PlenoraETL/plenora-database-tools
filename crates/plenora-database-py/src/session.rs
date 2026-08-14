@@ -231,7 +231,7 @@ impl Session {
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
@@ -257,7 +257,7 @@ impl Session {
     fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable(tx, &ast, cancel).await })

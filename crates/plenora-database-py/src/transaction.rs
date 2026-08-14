@@ -134,7 +134,7 @@ impl Transaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyList>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let tx = self.tx_mut()?;
         let rows: Vec<Row> = py
@@ -151,7 +151,7 @@ impl Transaction {
     /// Esegue un `PortableStatement` (senza RETURNING) nella transazione.
     fn execute_portable_count(&mut self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            PyRuntimeError::new_err(format!("AST portable non valida: {e}"))
+            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
         })?;
         let tx = self.tx_mut()?;
         py.allow_threads(|| {
