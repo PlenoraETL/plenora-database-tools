@@ -15,6 +15,13 @@ Questa cartella contiene due famiglie di misure, con regole diverse.
    raw in `raw/offline-rust-microbench.jsonl`. **Non sono un gate**: i budget
    prestazionali di quelle superfici non sono stati fissati e il workflow
    `.github/workflows/rust-microbench.yml` si limita a misurare e pubblicare.
+3. **Python SDK vs subprocess CLI**: parity bench live sul driver Postgres,
+   in `crates/plenora-database-py/python/tests/bench_*.py`. Misura latenza
+   per-chiamata dal Python (in-process PyO3 vs subprocess CLI). Numeri di
+   riferimento e note in
+   [`crates/plenora-database-py/README.md`](../crates/plenora-database-py/README.md#performance)
+   (~13× più veloce del CLI, 0.62 ms/call vs 8.40 ms/call sul workload di
+   riferimento). Opt-in, non gate.
 
 ## Harness
 

@@ -1,7 +1,14 @@
 # ADR 0004 — Provider SQL e ArcGIS
 
-Stato: **accettato**  
+Stato: **accettato — ArcGIS deferred**
 Data: 2026-07-27
+Ultimo aggiornamento: 2026-08-14
+
+> **Nota v0.1**: il provider ArcGIS è deferred. La v0.1 include solo
+> i provider SQL (`plenora-db-postgres`, `plenora-db-mysql`,
+> `plenora-db-sqlserver`). Il capability-driven `Provider` trait resta
+> valido come framework: quando ArcGIS entrerà in scope, l'ADR non
+> richiederà revisione strutturale.
 
 ## Contesto
 

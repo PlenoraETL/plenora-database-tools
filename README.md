@@ -37,6 +37,8 @@ Documenti principali:
 
 - [Architetture.md](Architetture.md);
 - [Prestazioni.md](Prestazioni.md);
+- [Python SDK v0.1](crates/plenora-database-py/README.md) (`pip install plenora-database`, ~13× più veloce del subprocess CLI);
+- [guida migrazione CLI → SDK](crates/plenora-database-py/docs/MIGRATION_FROM_CLI.md);
 - [gate pre-database](docs/history/phase-0/pre-database-gate.md);
 - [stato Fase 1 Rust](docs/history/phase-1/README.md);
 - [driver PostgreSQL/PostGIS](docs/postgres/README.md);
