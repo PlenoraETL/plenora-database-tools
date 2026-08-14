@@ -10,3 +10,4 @@ fuzz/artifacts/
 fuzz/corpus/
 fuzz/coverage/
 fuzz/target/
+.claude/
