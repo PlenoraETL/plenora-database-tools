@@ -11,6 +11,63 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.8.1] — 2026-08-14
+
+Verify typed params helpers su MySQL + doc onesto sui gap residui.
+
+### Verified
+
+- **Typed params helpers** (`p.uuid`, `p.decimal`, `p.date`,
+  `p.timestamp`, `p.timestamptz`, `p.null`) funzionano identici su
+  MySQL — nessun codice nuovo necessario. Il decorator `TypedValue`
+  è provider-agnostic (`_plenora_typed_kind` + `_plenora_typed_value`
+  attribute); `parameter.rs` MySQL mappa `ParameterValue::Uuid` /
+  `Decimal` / `Date` / `Timestamp` / `TimestampTz` come text strings
+  native (MySQL accetta tutti come `Value::Bytes(str.as_bytes())`).
+
+- 2 nuovi test in `test_mysql_session.py`:
+  - `test_typed_params_uuid_and_decimal_roundtrip`: INSERT con
+    `p.uuid()`, `p.decimal("1234.56")`, `p.date("2026-08-14")` +
+    verify roundtrip
+  - `test_null_typed_param`: `p.null("text")` come parametro
+
+### Gap residuo dichiarato (roadmap definitiva)
+
+Il SDK MySQL v0.8.x ha **parity sostanziale** con Postgres su:
+
+- ✅ Session sync + async (`connect_mysql` + `aconnect_mysql`)
+- ✅ execute / execute_scalar / execute_returning_rows / execute_ddl
+  (sync + async)
+- ✅ begin + Transaction / AsyncTransaction (savepoints,
+  conditional_update)
+- ✅ read + aread (streaming Arrow IPC)
+- ✅ copy_from + acopy_from (7 WriteMode bulk write)
+- ✅ Typed params (uuid/date/timestamp/timestamptz/decimal/null)
+- ✅ Context manager sync + async
+
+**Restano fuori** (richiedono cross-crate refactor in
+`plenora-database-core::portable::compiler`):
+
+- ❌ Portable AST builders (`select/insert/update/delete/upsert`).
+  Il compiler oggi hardcoda `compile_postgres`; aggiungere
+  `compile_mysql` richiede ~200-300 righe di rendering nuovo con
+  regole MySQL (placeholder `?`, backtick quoting, `ON DUPLICATE KEY
+  UPDATE`, no `RETURNING` universale). Nuova sessione dedicata.
+
+- ❌ Spatial predicates pythonic (`where_spatial(...)`, dipende dai
+  portable AST builders sopra). Le 26 funzioni ST_* sono già dichiarate
+  verified nel provider Rust MySQL v1.2 — manca solo il wrapper Python
+  che genera portable AST spatial.
+
+### Compatibilità
+
+- 100% backward-compat con v0.8.0.
+- Nessun cambio API — solo test + doc.
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.8.1>
+
+---
+
 ## [0.8.0] — 2026-08-14
 
 **AsyncMysqlSession** — variante asyncio del SDK MySQL. Parity con

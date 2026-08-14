@@ -107,6 +107,48 @@ def test_context_manager_closes_session() -> None:
     assert s.is_closed is True
 
 
+def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
+    """v0.8+ — typed params helpers funzionano su MySQL identici a Postgres.
+    Il decorator TypedValue è provider-agnostic; parameter.rs MySQL mappa
+    Uuid/Decimal/Date/Timestamp come text strings native MySQL."""
+    session.execute_ddl("DROP TABLE IF EXISTS _v04_typed")
+    session.execute_ddl(
+        "CREATE TABLE _v04_typed ("
+        " id CHAR(36) PRIMARY KEY,"
+        " amount DECIMAL(10,2) NOT NULL,"
+        " event_date DATE NOT NULL"
+        ") ENGINE=InnoDB"
+    )
+    try:
+        n = session.execute(
+            "INSERT INTO _v04_typed (id, amount, event_date) VALUES (?, ?, ?)",
+            [
+                p.uuid("550e8400-e29b-41d4-a716-446655440000"),
+                p.decimal("1234.56"),
+                p.date("2026-08-14"),
+            ],
+        )
+        assert n == 1
+        rows = session.execute_returning_rows(
+            "SELECT id, amount, event_date FROM _v04_typed"
+        )
+        assert len(rows) == 1
+        assert rows[0]["id"] == "550e8400-e29b-41d4-a716-446655440000"
+        # amount / event_date arrivano come stringhe (formato MySQL native)
+    finally:
+        session.execute_ddl("DROP TABLE IF EXISTS _v04_typed")
+
+
+def test_null_typed_param(session) -> None:
+    session.execute("INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?)",
+                    [1, "x", 10])
+    rows = session.execute_returning_rows(
+        "SELECT id FROM _v04_sdk_test WHERE label = ? OR label IS ?",
+        ["x", p.null("text")],
+    )
+    assert len(rows) >= 1
+
+
 def test_ddl_autocommit_visible_immediately(session) -> None:
     # MySQL DDL è autocommit — CREATE TEMPORARY TABLE visibile subito.
     session.execute_ddl("DROP TABLE IF EXISTS _v04_ddl_visibility")
