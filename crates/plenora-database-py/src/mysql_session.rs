@@ -36,6 +36,9 @@ use crate::mysql_arrow_reader::open_mysql_reader;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::portable::PortableStatement;
+use plenora_database_core::Row;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{
@@ -294,6 +297,47 @@ impl MysqlSession {
             })
             .map_err(to_py_err)?;
         Ok(Transaction::new(scope))
+    }
+
+    /// Esegue un PortableStatement (JSON) e ritorna rows come list[dict].
+    /// Usato dai builder Python (`s.select(t).where_eq(...).all()`).
+    fn execute_portable_rows<'py>(
+        &self,
+        py: Python<'py>,
+        ast_json: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
+        })?;
+        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
+        })?;
+        let out = PyList::empty(py);
+        for row in rows {
+            let dict = PyDict::new(py);
+            for (col, val) in row.columns().iter().zip(row.values().iter()) {
+                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
+            }
+            out.append(dict)?;
+        }
+        Ok(out)
+    }
+
+    /// Esegue un PortableStatement (JSON) senza RETURNING e ritorna
+    /// affected_rows. Per Insert/Update/Delete/Upsert MySQL (no RETURNING).
+    fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
+        })?;
+        self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { execute_portable(tx, &ast, cancel).await })
+        })
     }
 
     /// Apre uno stream Arrow IPC su una tabella/vista MySQL.

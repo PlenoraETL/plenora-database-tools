@@ -30,6 +30,8 @@ use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::transaction::parse_isolation;
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{
@@ -292,6 +294,63 @@ impl AsyncMysqlSession {
                 let tx = AsyncTransaction::new(scope);
                 Ok(Py::new(py, tx)?.into_pyobject(py)?.into_any().unbind())
             })
+        })
+    }
+
+    /// Esegue un PortableStatement async e ritorna rows come list[dict].
+    fn execute_portable_rows<'py>(
+        &self,
+        py: Python<'py>,
+        ast_json: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
+        })?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        future_into_py(py, async move {
+            let rows: Vec<Row> = Self::run_tx(provider, secret, move |tx, cancel| {
+                Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
+            })
+            .await
+            .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                let out = PyList::empty(py);
+                for row in rows {
+                    let dict = PyDict::new(py);
+                    for (col, val) in row.columns().iter().zip(row.values().iter()) {
+                        dict.set_item(col.as_str(), param_to_python(py, val)?)?;
+                    }
+                    out.append(dict)?;
+                }
+                Ok(out.into_any().unbind())
+            })
+        })
+    }
+
+    /// Esegue un PortableStatement async e ritorna affected_rows.
+    fn execute_portable_count<'py>(
+        &self,
+        py: Python<'py>,
+        ast_json: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
+        })?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        future_into_py(py, async move {
+            Self::run_tx(provider, secret, move |tx, cancel| {
+                Box::pin(async move { execute_portable(tx, &ast, cancel).await })
+            })
+            .await
+            .map_err(to_py_err)
         })
     }
 

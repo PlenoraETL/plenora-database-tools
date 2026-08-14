@@ -63,6 +63,7 @@ from .errors import (
     PlenoraTransientError,
     PlenoraUnsupportedError,
 )
+from .async_query import AsyncDelete, AsyncInsert, AsyncSelect, AsyncUpdate, AsyncUpsert  # noqa: F401
 from .query import Delete, Insert, Select, Update, Upsert
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
@@ -212,6 +213,29 @@ class _MysqlSessionWrapper:
         """
         return self._native.read(schema, object, projection, order_by, limit)
 
+    # -------------------- portable AST builders (v0.9+) -----------------
+
+    def select(self, table: str, schema: str | None = None) -> "Select":
+        return Select(self, table, schema)
+
+    def insert(self, table: str, schema: str | None = None) -> "Insert":
+        return Insert(self, table, schema)
+
+    def update(self, table: str, schema: str | None = None) -> "Update":
+        return Update(self, table, schema)
+
+    def delete(self, table: str, schema: str | None = None) -> "Delete":
+        return Delete(self, table, schema)
+
+    def upsert(self, table: str, schema: str | None = None) -> "Upsert":
+        return Upsert(self, table, schema)
+
+    def _execute_portable_rows(self, ast_json: str) -> list[dict]:
+        return self._native.execute_portable_rows(ast_json)
+
+    def _execute_portable_count(self, ast_json: str) -> int:
+        return self._native.execute_portable_count(ast_json)
+
     def copy_from(
         self,
         schema: str,
@@ -256,7 +280,7 @@ async def aconnect_mysql(
     password: str,
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
-) -> AsyncMysqlSession:
+) -> "_AsyncMysqlSessionWrapper":
     """Apre una nuova sessione MySQL async (v0.8+).
 
     Awaitable analogo di `connect_mysql`. `AsyncMysqlSession` espone
@@ -269,7 +293,123 @@ async def aconnect_mysql(
             n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
             v = await s.execute_scalar("SELECT COUNT(*) FROM t")
     """
-    return await _native_aconnect_mysql(host, database, user, password, port, tls_ca_pem)
+    native = await _native_aconnect_mysql(host, database, user, password, port, tls_ca_pem)
+    return _AsyncMysqlSessionWrapper(native)
+
+
+class _AsyncMysqlSessionWrapper:
+    """Wrapper Python-side per AsyncMysqlSession: aggiunge ergonomia
+    `acopy_from` con auto-conversion source + portable AST builders
+    async (`await s.select(t).where_eq(...).all()`)."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native: AsyncMysqlSession) -> None:
+        self._native = native
+
+    def __getattr__(self, name: str):
+        return getattr(self._native, name)
+
+    @property
+    def server_version(self) -> str:
+        return self._native.server_version
+
+    @property
+    def is_closed(self) -> bool:
+        return self._native.is_closed
+
+    def close(self) -> None:
+        self._native.close()
+
+    async def __aenter__(self):
+        await self._native.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        return await self._native.__aexit__(exc_type, exc_value, traceback)
+
+    def __repr__(self) -> str:
+        return repr(self._native)
+
+    # --- delegazione async coroutines ---
+    async def execute(self, sql, params=None):
+        return await self._native.execute(sql, params)
+
+    async def execute_scalar(self, sql, params=None):
+        return await self._native.execute_scalar(sql, params)
+
+    async def execute_returning_rows(self, sql, params=None):
+        return await self._native.execute_returning_rows(sql, params)
+
+    async def execute_ddl(self, sql):
+        return await self._native.execute_ddl(sql)
+
+    async def begin(
+        self,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+    ):
+        return await self._native.begin(isolation, read_only, statement_timeout_ms)
+
+    async def aread(
+        self,
+        schema: str,
+        object: str,
+        *,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
+    ):
+        return await self._native.aread(schema, object, projection, order_by, limit)
+
+    async def acopy_from(
+        self,
+        schema: str,
+        table: str,
+        source,
+        *,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
+    ) -> dict:
+        """Bulk write async MySQL. `source` accetta pyarrow/pandas/list-of-dict/bytes."""
+        from ._arrow_io import _to_ipc_bytes
+        ipc_bytes = _to_ipc_bytes(source)
+        return await self._native.acopy_from(
+            schema, table, ipc_bytes, mode, transaction_profile,
+            mapping_policy, keys, update_columns,
+        )
+
+    # -------------------- portable AST builders async (v0.9+) -----------
+
+    def select(self, table: str, schema: str | None = None):
+        from .async_query import AsyncSelect
+        return AsyncSelect(self, table, schema)
+
+    def insert(self, table: str, schema: str | None = None):
+        from .async_query import AsyncInsert
+        return AsyncInsert(self, table, schema)
+
+    def update(self, table: str, schema: str | None = None):
+        from .async_query import AsyncUpdate
+        return AsyncUpdate(self, table, schema)
+
+    def delete(self, table: str, schema: str | None = None):
+        from .async_query import AsyncDelete
+        return AsyncDelete(self, table, schema)
+
+    def upsert(self, table: str, schema: str | None = None):
+        from .async_query import AsyncUpsert
+        return AsyncUpsert(self, table, schema)
+
+    async def _execute_portable_rows(self, ast_json: str) -> list[dict]:
+        return await self._native.execute_portable_rows(ast_json)
+
+    async def _execute_portable_count(self, ast_json: str) -> int:
+        return await self._native.execute_portable_count(ast_json)
 
 
 async def aconnect(dsn: str) -> AsyncSession:
