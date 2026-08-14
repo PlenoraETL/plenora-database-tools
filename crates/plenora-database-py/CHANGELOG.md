@@ -11,6 +11,57 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.5.0] — 2026-08-14
+
+Completa il pattern OLTP MySQL: `MysqlSession.begin()` + savepoints
+via il `Transaction` provider-agnostic esistente.
+
+### Added
+
+- **`MysqlSession.begin(isolation=None, read_only=None, statement_timeout_ms=None)`**
+  → ritorna la classe `Transaction` (provider-agnostic, ereditata dal
+  path Postgres). Sblocca tutti i pattern OLTP dal Python MySQL:
+
+  ```python
+  with s.begin(isolation="serializable") as tx:
+      tx.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+      tx.savepoint("sp1")
+      tx.execute("...")
+      tx.rollback_to_savepoint("sp1")
+      tx.release_savepoint("sp1")
+      # commit auto su __exit__; rollback su eccezione
+  ```
+
+- Metodi ereditati da `Transaction` disponibili anche per MySQL:
+  - `execute` / `execute_scalar` / `execute_returning_rows`
+  - `savepoint` / `rollback_to_savepoint` / `release_savepoint`
+  - `commit` / `rollback` / `conditional_update`
+  - `is_active`, `__enter__/__exit__`, `__repr__`
+
+- MySQL non ha `deferrable` (parametro Postgres-only) — non esposto.
+
+### Design
+
+Zero duplication: `Transaction` è già un wrapper sopra
+`Box<dyn TransactionScope>` — non provider-specific. La modifica è
+piccola (~40 righe) nel `mysql_session.rs`: parsing opzioni + call a
+`provider.begin_transaction` + `Transaction::new(scope)`.
+
+### Compatibilità
+
+- 100% backward-compat con v0.4.0: nessun cambio all'API esistente.
+- Aggiunta additiva su `MysqlSession`.
+
+### Wheel
+
+- `plenora_database-0.5.0-cp310-abi3-manylinux_2_34_x86_64.whl`
+- `plenora_database-0.5.0-cp310-abi3-macosx_11_0_arm64.whl`
+- `plenora_database-0.5.0-cp310-abi3-win_amd64.whl`
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.5.0>
+
+---
+
 ## [0.4.0] — 2026-08-14
 
 Prima esposizione MySQL nel SDK Python (scaffold, non feature parity
