@@ -287,7 +287,9 @@ impl AsyncSession {
         ipc_bytes,
         mode="append",
         transaction_profile="single_transaction",
+        mapping_policy="compatible",
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn acopy_from<'py>(
         &self,
         py: Python<'py>,
@@ -296,6 +298,7 @@ impl AsyncSession {
         ipc_bytes: &[u8],
         mode: &str,
         transaction_profile: &str,
+        mapping_policy: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -305,6 +308,7 @@ impl AsyncSession {
         let ipc_owned = ipc_bytes.to_vec();
         let mode_owned = mode.to_owned();
         let profile_owned = transaction_profile.to_owned();
+        let policy_owned = mapping_policy.to_owned();
         future_into_py(py, async move {
             let outcome = crate::write::copy_from_async(
                 provider,
@@ -314,6 +318,7 @@ impl AsyncSession {
                 ipc_owned,
                 mode_owned,
                 profile_owned,
+                policy_owned,
             )
             .await
             .map_err(crate::errors::to_py_err)?;

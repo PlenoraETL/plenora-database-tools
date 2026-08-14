@@ -405,7 +405,9 @@ impl Session {
         ipc_bytes,
         mode="append",
         transaction_profile="single_transaction",
+        mapping_policy="compatible",
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn copy_from<'py>(
         &self,
         py: Python<'py>,
@@ -414,6 +416,7 @@ impl Session {
         ipc_bytes: &[u8],
         mode: &str,
         transaction_profile: &str,
+        mapping_policy: &str,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         self.ensure_open()?;
         let result = py.allow_threads(|| {
@@ -425,6 +428,7 @@ impl Session {
                 ipc_bytes,
                 mode,
                 transaction_profile,
+                mapping_policy,
             )
         });
         crate::write::wrap_outcome(py, result)

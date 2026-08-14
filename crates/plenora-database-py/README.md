@@ -185,6 +185,10 @@ Mode: `append` (default) / `create` / `replace` / `truncate_insert` /
 `update` / `upsert` / `delete_by_keys`.
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
+Mapping policy: `compatible` (default) / `strict` / `lossy` / `native`.
+`strict` boccia ogni loss anche minore (es. Arrow nullable → PG NOT NULL);
+`compatible` tollera le loss non-DataLoss — scelta consigliata per input
+pyarrow tipici (dove i campi sono nullable per default).
 
 L'outcome è un dict con struttura `WriteOutcome` del core (status,
 rows.confirmed / .inserted / .failed / .skipped, layer_outcomes, recovery).

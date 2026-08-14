@@ -107,14 +107,15 @@ class AsyncSession:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
     ) -> dict:
         """Bulk write async — analogo di `Session.copy_from`. Vedi la
-        docstring lì per l'input `source` e i mode supportati.
+        docstring lì per l'input `source`, i mode e le mapping policy.
         """
         from ._arrow_io import _to_ipc_bytes
         ipc_bytes = _to_ipc_bytes(source)
         return await self._native.acopy_from(
-            schema, table, ipc_bytes, mode, transaction_profile
+            schema, table, ipc_bytes, mode, transaction_profile, mapping_policy
         )
 
     # -------------------- transactions ----------------------------------

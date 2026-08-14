@@ -102,6 +102,7 @@ class Session:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
     ) -> dict:
         """Bulk write via `prepare_write` + `write` del provider.
 
@@ -119,6 +120,10 @@ class Session:
             | "update" | "upsert" | "delete_by_keys" (default "append")
           - `transaction_profile`: "single_transaction" | "chunk_committed"
             | "staged_swap" | "best_effort_ddl" (default "single_transaction")
+          - `mapping_policy`: "strict" | "compatible" | "lossy" | "native"
+            (default "compatible"). "strict" boccia ogni loss anche minore
+            (e.g. Arrow nullable verso PG NOT NULL); "compatible" tollera
+            loss non-DataLoss; scelta consigliata per input pyarrow tipici.
 
         Ritorna un dict con struttura `WriteOutcome`:
 
@@ -135,7 +140,7 @@ class Session:
         """
         ipc_bytes = _to_ipc_bytes(source)
         return self._native.copy_from(
-            schema, table, ipc_bytes, mode, transaction_profile
+            schema, table, ipc_bytes, mode, transaction_profile, mapping_policy
         )
 
     # ------------------------ transactions -----------------------------

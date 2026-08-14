@@ -102,6 +102,23 @@ def test_copy_from_ipc_bytes_pass_through(session) -> None:
     assert outcome["rows"]["confirmed"] == 100
 
 
+def test_copy_from_strict_policy_rejects_nullable_to_not_null(session) -> None:
+    """Con mapping_policy='strict' il preflight boccia il pattern
+    comune Arrow-nullable → PG NOT NULL (severity DataLoss).
+    Il default 'compatible' invece lo tollera."""
+    tbl = _make_table(3)  # pyarrow.Table con schema tutto nullable
+    with pytest.raises(p.PlenoraDataMappingError):
+        session.copy_from("public", "_pyp3_copy", tbl, mapping_policy="strict")
+
+
+def test_copy_from_invalid_mapping_policy_raises_invalid_plan(session) -> None:
+    tbl = _make_table(3)
+    with pytest.raises(p.PlenoraInvalidPlanError):
+        session.copy_from(
+            "public", "_pyp3_copy", tbl, mapping_policy="not_a_policy"
+        )
+
+
 def test_copy_from_invalid_mode_raises_invalid_plan(session) -> None:
     tbl = _make_table(5)
     with pytest.raises(p.PlenoraInvalidPlanError):

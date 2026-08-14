@@ -60,6 +60,7 @@ class Session:
         ipc_bytes: bytes,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
     ) -> dict: ...
 
 # ============================ Transaction (sync) ============================
@@ -134,6 +135,7 @@ class AsyncSession:
         ipc_bytes: bytes,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
     ) -> Any: ...  # awaitable → dict
 
 

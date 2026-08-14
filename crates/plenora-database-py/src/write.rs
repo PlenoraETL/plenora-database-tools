@@ -97,6 +97,19 @@ fn parse_profile(s: &str) -> Result<TransactionProfile, DatabaseError> {
     }
 }
 
+fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseError> {
+    match s {
+        "strict" => Ok(MappingPolicy::Strict),
+        "compatible" => Ok(MappingPolicy::Compatible),
+        "lossy" => Ok(MappingPolicy::Lossy),
+        "native" => Ok(MappingPolicy::Native),
+        other => Err(DatabaseError::invalid_plan(format!(
+            "mapping_policy sconosciuta '{other}': attesi \
+             strict/compatible/lossy/native"
+        ))),
+    }
+}
+
 // ------------------------------ IPC decode -----------------------------
 
 fn decode_ipc_stream(
@@ -183,6 +196,7 @@ fn make_operation(
     table: &str,
     mode: WriteMode,
     profile: TransactionProfile,
+    mapping_policy: MappingPolicy,
 ) -> WriteOperation {
     WriteOperation {
         target: ObjectRef {
@@ -192,7 +206,7 @@ fn make_operation(
             layer_id: None,
         },
         mode,
-        mapping_policy: MappingPolicy::Strict,
+        mapping_policy,
         transaction_profile: profile,
         keys: Vec::new(),
         update_columns: Vec::new(),
@@ -223,6 +237,7 @@ async fn do_copy_from_async(
     table_name: String,
     mode: WriteMode,
     profile: TransactionProfile,
+    mapping_policy: MappingPolicy,
     ipc_bytes: Vec<u8>,
 ) -> Result<WriteOutcome, DatabaseError> {
     let (input_schema, batches, declared_rows) = decode_ipc_stream(&ipc_bytes)?;
@@ -231,7 +246,7 @@ async fn do_copy_from_async(
         batches,
         declared_rows,
     };
-    let operation = make_operation(&schema_name, &table_name, mode, profile);
+    let operation = make_operation(&schema_name, &table_name, mode, profile, mapping_policy);
     let budget = default_budget();
     let cancel = CancellationToken::new();
     let prepared = provider
@@ -259,9 +274,11 @@ pub(crate) fn copy_from_sync(
     ipc_bytes: &[u8],
     mode: &str,
     transaction_profile: &str,
+    mapping_policy: &str,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(mode)?;
     let profile_enum = parse_profile(transaction_profile)?;
+    let policy_enum = parse_mapping_policy(mapping_policy)?;
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
     let schema_owned = schema.to_owned();
@@ -275,6 +292,7 @@ pub(crate) fn copy_from_sync(
             table_owned,
             mode_enum,
             profile_enum,
+            policy_enum,
             ipc_owned,
         )
         .await
@@ -296,9 +314,11 @@ pub(crate) async fn copy_from_async(
     ipc_bytes: Vec<u8>,
     mode: String,
     transaction_profile: String,
+    mapping_policy: String,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(&mode)?;
     let profile_enum = parse_profile(&transaction_profile)?;
+    let policy_enum = parse_mapping_policy(&mapping_policy)?;
     do_copy_from_async(
         provider,
         secret,
@@ -306,6 +326,7 @@ pub(crate) async fn copy_from_async(
         table,
         mode_enum,
         profile_enum,
+        policy_enum,
         ipc_bytes,
     )
     .await
