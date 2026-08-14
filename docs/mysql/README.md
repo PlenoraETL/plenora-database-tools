@@ -1,7 +1,10 @@
 # Provider MySQL
 
-Baseline di riferimento: MySQL 8.4 LTS. La matrice versionata qualifica MySQL
-8.0.46 e 8.4.11 su immagini fissate per digest. Il provider usa protocollo
+Baseline di riferimento: **MySQL 9.7 LTS** (rilasciato 21 aprile 2026, primo
+LTS dopo 8.4). La matrice versionata qualifica anche MySQL 8.4.11 e 8.0.46
+su immagini fissate per digest, per retrocompatibilità con installazioni
+legacy. Tutti i 129 test live passano identici su 8.4/9.7 — la superficie
+`plenora-db-mysql` è dialect-invariante tra 8.x e 9.x. Il provider usa protocollo
 nativo asincrono e TLS rustls; MariaDB resta fuori scope fino a una qualifica
 indipendente.
 

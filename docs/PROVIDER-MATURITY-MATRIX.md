@@ -17,7 +17,7 @@ Legenda:
 | --- | --- | --- |
 | PostgreSQL/PostGIS | PostgreSQL 16 / PostGIS 3.4 | `python scripts/check_postgres_reference.py` |
 | SQL Server | SQL Server 2022, compatibility level 160, immagine fissata per digest | `python scripts/check_sqlserver_reference.py` |
-| MySQL | MySQL 8.0.46 e 8.4.11, immagini fissate per digest | `python scripts/check_mysql_matrix.py` e `python scripts/check_mysql_reference.py` |
+| MySQL | MySQL 9.7 LTS (baseline v1.2), 8.4.11 e 8.0.46 (matrice retrocompat), immagini fissate per digest | `python scripts/check_mysql_matrix.py` e `python scripts/check_mysql_reference.py` |
 
 MariaDB non è dedotto come compatibile con MySQL e non appartiene al riferimento
 MySQL.
