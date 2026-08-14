@@ -93,6 +93,30 @@ class Session:
         )
         return Transaction(native_tx)
 
+    # --------------------- observability + inspect ----------------------
+
+    def metrics(self) -> dict:
+        """Snapshot dei contatori interni del provider (pool_checkouts,
+        schema_cache_hits/misses, catalog_introspections, read_rows,
+        writes_committed, ecc.).
+
+        Ritorna un dict con ~25 chiavi u64. Uso tipico: espone al sistema
+        di monitoring / oncall per diagnosticare cold cache, pool
+        exhaustion, write ambiguità.
+        """
+        return self._native.metrics()
+
+    @property
+    def inspect(self) -> "_Inspector":
+        """Namespace per catalog introspection:
+
+            s.inspect.catalogs()             -> list[str]
+            s.inspect.schemas()              -> list[str]
+            s.inspect.tables(schema)         -> list[dict]
+            s.inspect.describe(schema, name) -> dict
+        """
+        return _Inspector(self._native)
+
     # -------------------- portable AST builders -------------------------
 
     def select(self, table: str, schema: str | None = None) -> Select:
@@ -117,3 +141,35 @@ class Session:
 
     def _execute_portable_count(self, ast_json: str) -> int:
         return self._native.execute_portable_count(ast_json)
+
+
+class _Inspector:
+    """Namespace per operazioni di catalog introspection.
+
+    Ottenuto via `session.inspect`. Non istanziato direttamente.
+    """
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native: _NativeSession) -> None:
+        self._native = native
+
+    def catalogs(self) -> list[str]:
+        """Ritorna la lista dei catalog (database) accessibili all'utente."""
+        return self._native.inspect_catalogs()
+
+    def schemas(self) -> list[str]:
+        """Ritorna la lista degli schemas utente (system schemas esclusi
+        di default: pg_catalog, information_schema, pg_toast, ...)."""
+        return self._native.inspect_schemas()
+
+    def tables(self, schema: str) -> list[dict]:
+        """Ritorna la lista degli oggetti (tabelle, viste, materialized,
+        foreign tables, partition parents) nello schema indicato.
+        Ogni entry è dict con `{name, kind, is_partition}`."""
+        return self._native.inspect_tables(schema)
+
+    def describe(self, schema: str, table: str) -> dict:
+        """Descrive un oggetto: ritorna dict con `schema`, `columns`,
+        `schema_token` (fingerprint strutturale per invalidazione cache)."""
+        return self._native.inspect_describe(schema, table)

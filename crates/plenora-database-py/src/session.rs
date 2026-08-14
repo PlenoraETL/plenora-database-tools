@@ -38,6 +38,7 @@ use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
@@ -65,6 +66,26 @@ pub struct Session {
 }
 
 impl Session {
+    /// Chiama `Provider::inspect(op)` sul runtime tokio globale e ritorna
+    /// il documento JSON come `serde_json::Value`.
+    fn run_inspect(
+        &self,
+        py: Python<'_>,
+        op: Operation,
+    ) -> PyResult<serde_json::Value> {
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancel = CancellationToken::new();
+        let inspection = py
+            .allow_threads(|| {
+                runtime().block_on(async move {
+                    provider.inspect(&secret, &op, &cancel).await
+                })
+            })
+            .map_err(to_py_err)?;
+        Ok(inspection.document)
+    }
+
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(
@@ -264,6 +285,75 @@ impl Session {
         })
     }
 
+    /// Snapshot dei contatori interni del `PostgresProvider`
+    /// (pool_checkouts, schema_cache_hits/misses, catalog_introspections,
+    /// read_rows/bytes, writes_committed, ecc.). Utile per osservabilità
+    /// oncall.
+    ///
+    /// Ritorna un dict con ~25 chiavi u64.
+    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let snap = self.provider.metrics_snapshot();
+        let value = serde_json::to_value(snap).map_err(|e| {
+            PyRuntimeError::new_err(format!("metrics serialize: {e}"))
+        })?;
+        let json_str = value.to_string();
+        let json_mod = py.import("json")?;
+        let obj = json_mod.getattr("loads")?.call1((json_str,))?;
+        Ok(obj.downcast_into::<PyDict>()?)
+    }
+
+    /// Ritorna l'elenco dei catalog (database) accessibili.
+    fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let doc = self.run_inspect(py, Operation::DatabaseListCatalogs)?;
+        json_to_pylist_of_strings(py, &doc, "catalogs")
+    }
+
+    /// Ritorna l'elenco degli schemas (filtrati dai system schemas).
+    fn inspect_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let doc = self.run_inspect(py, Operation::DatabaseListSchemas { source: None })?;
+        json_to_pylist_of_strings(py, &doc, "schemas")
+    }
+
+    /// Ritorna la lista degli oggetti (tabelle, viste, materialized views,
+    /// foreign tables, partition parents) nello schema indicato. Ogni
+    /// entry ha `{name, kind, is_partition}`.
+    fn inspect_tables<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let source = Some(ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: String::new(),
+            layer_id: None,
+        });
+        let doc = self.run_inspect(py, Operation::DatabaseListObjects { source })?;
+        json_to_pylist_of_dicts(py, &doc, "objects")
+    }
+
+    /// Descrive una tabella/vista: ritorna dict con schema, columns,
+    /// schema_token (fingerprint strutturale).
+    fn inspect_describe<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        object: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_open()?;
+        let source = ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        };
+        let doc = self.run_inspect(py, Operation::DatabaseDescribeObject { source })?;
+        json_value_to_pydict(py, &doc)
+    }
+
     /// Apre una nuova transazione user-managed. Usa `with s.begin() as tx:`
     /// per commit/rollback automatico (rollback su eccezione, commit su
     /// uscita normale).
@@ -340,6 +430,65 @@ impl Session {
             self.server_version, self.postgis_version, self.closed
         )
     }
+}
+
+/// Helper: estrae `doc[key]` come `Vec<Value::String>` e la trasforma
+/// in `PyList<str>`.
+fn json_to_pylist_of_strings<'py>(
+    py: Python<'py>,
+    doc: &serde_json::Value,
+    key: &str,
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    let Some(arr) = doc.get(key).and_then(|v| v.as_array()) else {
+        return Ok(out);
+    };
+    for item in arr {
+        if let Some(s) = item.as_str() {
+            out.append(s)?;
+        } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+            out.append(name)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Helper: estrae `doc[key]` come `Vec<dict>` (ogni entry è un JSON
+/// object con `{name, kind, is_partition}`).
+fn json_to_pylist_of_dicts<'py>(
+    py: Python<'py>,
+    doc: &serde_json::Value,
+    key: &str,
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    let Some(arr) = doc.get(key).and_then(|v| v.as_array()) else {
+        return Ok(out);
+    };
+    for item in arr {
+        let dict = json_value_to_pydict(py, item)?;
+        out.append(dict)?;
+    }
+    Ok(out)
+}
+
+/// Converte un `serde_json::Value::Object` in `PyDict`. Se il Value non
+/// è un object, ritorna dict vuoto (il caller ha già filtrato).
+fn json_value_to_pydict<'py>(
+    py: Python<'py>,
+    value: &serde_json::Value,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    let Some(obj) = value.as_object() else {
+        return Ok(dict);
+    };
+    let json_mod = py.import("json")?;
+    let loads = json_mod.getattr("loads")?;
+    for (k, v) in obj {
+        let serialized = v.to_string();
+        let py_v = loads.call1((serialized,))?;
+        dict.set_item(k, py_v)?;
+    }
+    Ok(dict)
 }
 
 /// Apre una nuova sessione Postgres. La DSN è nel formato libpq

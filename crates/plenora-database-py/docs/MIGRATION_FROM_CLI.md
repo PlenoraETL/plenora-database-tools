@@ -144,18 +144,13 @@ plenora-database inspect-schemas PFM_DSN
 ```
 
 ```python
-# Il SDK non espone ancora `inspect(*)` — usa una query diretta:
-schemas = s.execute_returning_rows(
-    "SELECT schema_name AS name FROM information_schema.schemata "
-    "WHERE schema_name NOT IN ('pg_catalog','information_schema','pg_toast') "
-    "AND schema_name NOT LIKE 'pg\\_temp\\_%' ESCAPE '\\' "
-    "ORDER BY schema_name"
-)
-# → [{"name":"public"}, ...]
+# Namespace nativo (F4-1):
+schemas = s.inspect.schemas()          # ['public', ...]  (system esclusi)
+catalogs = s.inspect.catalogs()        # ['app_prod', ...]
+tables = s.inspect.tables("public")    # [{'name': 't1', 'kind': 'table', 'is_partition': False}, ...]
+desc = s.inspect.describe("public", "users")
+# → {'schema': ..., 'columns': [...], 'schema_token': ...}
 ```
-
-**Roadmap**: aggiungere `s.inspect.schemas()` / `s.inspect.tables()` /
-`s.inspect.database()` come helper — banale ma non ancora fatto.
 
 ### `doctor` / `diagnose` / `profile-check`
 
@@ -324,9 +319,27 @@ except p.PlenoraError as e:
 
 ### Passo 5 — Osservabilità
 
-Il SDK non emette metriche di default (roadmap: expose
-`provider.metrics_snapshot()` in Python). Nel frattempo, wrappa le
-chiamate hot in un decorator che misura:
+Il SDK espone i contatori interni del provider (F4-1):
+
+```python
+snap = s.metrics()
+# → dict con ~25 chiavi u64
+for name, value in snap.items():
+    metrics_client.gauge(f"pfm.db.{name}", value)
+```
+
+Chiavi principali per l'oncall:
+- `pool_checkouts` / `pool_reuses` / `pool_timeouts` / `pool_new_connections`
+- `schema_cache_hits` / `schema_cache_misses` / `schema_cache_evictions` /
+  `schema_cache_invalidations` (cold cache detection)
+- `catalog_introspections` (introspezione al server)
+- `read_batches` / `read_rows` / `read_bytes`
+- `writes_committed` / `writes_outcome_unknown` (> 0 = commit ambiguo,
+  verificare out-of-band)
+- `cancellations` / `invalidated_sessions`
+
+Per instrumentation puntuale per-operazione (latency histograms),
+wrappa le chiamate hot in un decorator che misura:
 
 ```python
 import time
