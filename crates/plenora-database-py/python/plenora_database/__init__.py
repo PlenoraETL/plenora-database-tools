@@ -66,7 +66,12 @@ from .errors import (
 from .query import Delete, Insert, Select, Update, Upsert
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
-from ._native import MysqlSession, connect_mysql as _native_connect_mysql
+from ._native import (
+    AsyncMysqlSession,
+    MysqlSession,
+    aconnect_mysql as _native_aconnect_mysql,
+    connect_mysql as _native_connect_mysql,
+)
 
 
 def connect(dsn: str) -> Session:
@@ -244,6 +249,29 @@ class _MysqlSessionWrapper:
         )
 
 
+async def aconnect_mysql(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+) -> AsyncMysqlSession:
+    """Apre una nuova sessione MySQL async (v0.8+).
+
+    Awaitable analogo di `connect_mysql`. `AsyncMysqlSession` espone
+    execute/execute_scalar/execute_returning_rows/execute_ddl come
+    coroutines + begin() → AsyncTransaction + aread() + acopy_from().
+
+    Uso:
+
+        async with await aconnect_mysql("localhost", "db", "u", "p") as s:
+            n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+            v = await s.execute_scalar("SELECT COUNT(*) FROM t")
+    """
+    return await _native_aconnect_mysql(host, database, user, password, port, tls_ca_pem)
+
+
 async def aconnect(dsn: str) -> AsyncSession:
     """Apre una nuova sessione Postgres asincrona.
 
@@ -261,7 +289,9 @@ __all__ = [
     "connect",
     "aconnect",
     "connect_mysql",
+    "aconnect_mysql",
     "MysqlSession",
+    "AsyncMysqlSession",
     "version",
     "Session",
     "AsyncSession",

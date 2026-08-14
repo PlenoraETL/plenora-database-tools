@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
 mod arrow_reader;
+mod async_mysql_session;
 mod async_session;
 mod async_transaction;
 mod errors;
@@ -23,6 +24,7 @@ mod transaction;
 mod write;
 
 use arrow_reader::{AsyncBatchReader, BatchReader};
+use async_mysql_session::{aconnect_mysql, AsyncMysqlSession};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_transaction::AsyncTransaction;
 use mysql_session::{connect_mysql, MysqlSession};
@@ -60,6 +62,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect_mysql, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;
@@ -67,6 +70,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BatchReader>()?;
     m.add_class::<AsyncBatchReader>()?;
     m.add_class::<MysqlSession>()?;
+    m.add_class::<AsyncMysqlSession>()?;
     errors::register(m)?;
     Ok(())
 }

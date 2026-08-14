@@ -25,6 +25,16 @@ def connect_mysql(
     tls_ca_pem: bytes | None = None,
 ) -> MysqlSession: ...
 
+def aconnect_mysql(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+) -> Any:  # awaitable → AsyncMysqlSession
+    ...
+
 # ============================ MysqlSession (v0.4-alpha, scaffold) ============
 
 class MysqlSession:
@@ -48,6 +58,51 @@ class MysqlSession:
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
     ) -> Transaction: ...
+
+# ============================ AsyncMysqlSession (v0.8+) ==================
+
+class AsyncMysqlSession:
+    @property
+    def server_version(self) -> str: ...
+    @property
+    def is_closed(self) -> bool: ...
+    def close(self) -> None: ...
+    def __aenter__(self) -> Any: ...  # awaitable → AsyncMysqlSession
+    def __aexit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> Any: ...  # awaitable → bool
+    def __repr__(self) -> str: ...
+    def execute(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → int
+    def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → Any
+    def execute_returning_rows(
+        self, sql: str, params: list | None = None
+    ) -> Any: ...  # awaitable → list[dict]
+    def execute_ddl(self, sql: str) -> Any: ...  # awaitable → None
+    def begin(
+        self,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+    ) -> Any: ...  # awaitable → AsyncTransaction
+    def aread(
+        self,
+        schema: str,
+        object: str,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
+    ) -> Any: ...  # awaitable → AsyncBatchReader
+    def acopy_from(
+        self,
+        schema: str,
+        table: str,
+        ipc_bytes: bytes,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
+    ) -> Any: ...  # awaitable → dict
     def read(
         self,
         schema: str,

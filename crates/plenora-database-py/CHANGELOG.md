@@ -11,6 +11,87 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.8.0] — 2026-08-14
+
+**AsyncMysqlSession** — variante asyncio del SDK MySQL. Parity con
+`AsyncSession` Postgres per la superficie non-portable-AST.
+
+### Added
+
+- **`aconnect_mysql(host, database, user, password, port=None, tls_ca_pem=None)`**
+  → awaitable → `AsyncMysqlSession`. Factory async.
+
+- **`AsyncMysqlSession`** con API async completa:
+
+  ```python
+  async with await p.aconnect_mysql("localhost", "db", "u", "p") as s:
+      n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+      v = await s.execute_scalar("SELECT COUNT(*) FROM t")
+      rows = await s.execute_returning_rows("SELECT id FROM t WHERE amount>?", [10])
+      await s.execute_ddl("CREATE INDEX idx_t ON t(id)")
+
+      # Transaction
+      tx = await s.begin(isolation="serializable")
+      await tx.execute("...")
+      await tx.commit()  # or await tx.rollback()
+
+      # Streaming read
+      reader = await s.aread("db", "large_table", limit=10000)
+      async for chunk in reader:
+          batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+
+      # Bulk write
+      outcome = await s.acopy_from("db", "events", ipc_bytes, mode="upsert", keys=["id"])
+  ```
+
+- Metodi:
+  - `execute` / `execute_scalar` / `execute_returning_rows` /
+    `execute_ddl` — coroutines
+  - `begin(isolation, read_only, statement_timeout_ms)` →
+    `AsyncTransaction` (provider-agnostic, ereditato dal path Postgres)
+  - `aread(schema, object, projection, order_by, limit)` →
+    `AsyncBatchReader` (streaming Arrow IPC async)
+  - `acopy_from(schema, table, ipc_bytes, mode, ...)` — bulk write
+    async (7 WriteMode, come `copy_from` sync)
+  - `__aenter__/__aexit__/close/is_closed/server_version/__repr__`
+
+### Design
+
+Nuovo modulo `async_mysql_session.rs` (~380 righe) con pattern
+`future_into_py` per convertire Rust future in Python awaitable.
+Riusa gli helper generici di `write.rs` (parse_mode/profile/
+mapping_policy, decode_ipc_stream, make_operation, VecBatchStream)
+e `arrow_reader.rs` (make_read_operation, default_budget,
+AsyncBatchReader). Zero duplicazione del pyclass `AsyncTransaction`
+(già provider-agnostic).
+
+### Compatibilità
+
+- 100% backward-compat con v0.7.0.
+- Additiva: `aconnect_mysql` + `AsyncMysqlSession` sono nuove.
+
+### Roadmap SDK MySQL post-0.8
+
+- **Portable AST builders** (`select/insert/update/delete/upsert`) —
+  richiede `compile_portable_for_provider(Mysql)` nel core facade
+  (oggi Postgres-only). Cross-crate refactor.
+- **Spatial predicates** + `SpatialReference` — 26 funzioni ST_* già
+  verified nel provider Rust MySQL v1.2; SDK builder pythonic da
+  aggiungere (dipende da portable AST).
+- **Typed params helper** (`uuid`/`date`/`decimal`/`null`) — probabilmente
+  già funziona (decorator string-based provider-agnostic); serve verify
+  + doc.
+
+### Wheel
+
+- `plenora_database-0.8.0-cp310-abi3-manylinux_2_34_x86_64.whl`
+- `plenora_database-0.8.0-cp310-abi3-macosx_11_0_arm64.whl`
+- `plenora_database-0.8.0-cp310-abi3-win_amd64.whl`
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.8.0>
+
+---
+
 ## [0.7.0] — 2026-08-14
 
 Streaming Arrow read MySQL — `MysqlSession.read()`.
