@@ -99,7 +99,7 @@ impl From<&str> for CliError {
     }
 }
 
-#[allow(clippy::needless_collect)]
+#[allow(clippy::needless_collect, clippy::too_many_lines)]
 // std::env::Args non è Send: materializzare prima degli await mantiene il
 // future del main compatibile con il runtime multi-thread.
 async fn run() -> CliResult<()> {
@@ -185,6 +185,23 @@ async fn run() -> CliResult<()> {
         "benchmark-write" => benchmark::benchmark_write(&mut args).await,
         #[cfg(feature = "postgres")]
         "benchmark-spatial" => benchmark_spatial(&mut args).await,
+        // MySQL v1.2 subset — parity iniziale col path Postgres.
+        #[cfg(feature = "mysql")]
+        "mysql-probe" => mysql_cmd::mysql_probe(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-describe" => mysql_cmd::mysql_describe(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-inspect-schemas" => mysql_cmd::mysql_inspect_schemas(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-inspect-tables" => mysql_cmd::mysql_inspect_tables(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-execute-sql" => mysql_cmd::mysql_execute_sql(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-execute-ddl" => mysql_cmd::mysql_execute_ddl(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-execute-scalar" => mysql_cmd::mysql_execute_scalar(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-transaction-test" => mysql_cmd::mysql_transaction_test(&mut args).await,
         _ => Err(usage().into()),
     }
 }
@@ -1219,6 +1236,17 @@ fn usage() -> String {
         "  benchmark-write <dsn-env> [iterations=200] [batch_size=10]  (--allow-write-tests)",
         "  benchmark-spatial <dsn-env> [iterations=50]",
         "",
+        "== MySQL (v1.2, subset iniziale) ==",
+        "  args comuni: <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]",
+        "  mysql-probe <args...>              — test_connection + probe_capabilities",
+        "  mysql-describe <args...> <schema> <object>  — describe target (colonne, tipi, keys)",
+        "  mysql-inspect-schemas <args...>    — list schemas",
+        "  mysql-inspect-tables <args...> <schema>  — list objects in schema",
+        "  mysql-execute-sql <args...> <sql>  — DML raw in una tx (INSERT/UPDATE/DELETE)",
+        "  mysql-execute-ddl <args...> <sql>  — DDL raw (CREATE/DROP/ALTER, autocommit MySQL)",
+        "  mysql-execute-scalar <args...> <sql>  — SELECT scalare (1 riga × 1 colonna)",
+        "  mysql-transaction-test <args...>   — smoke OLTP: begin + savepoint + rollback_to + commit",
+        "",
         "== dataset / plan (offline) ==",
         "  inspect-dataset <file.arrow>",
         "  validate-plan <file.json>",
@@ -1242,6 +1270,7 @@ mod benchmark;
 #[cfg(feature = "postgres")]
 mod diagnose;
 mod format;
+mod mysql_cmd;
 #[cfg(feature = "postgres")]
 mod inspect;
 mod inspect_dataset;
