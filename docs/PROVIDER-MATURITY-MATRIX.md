@@ -99,9 +99,34 @@ Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
   spatial_intersects` passa da `false` a `true`. Test live: query con
   `ST_Area` in projection + WHERE `ST_Intersects(field, ?)` — entrambi
   pass end-to-end contro dataflow-mysql 8.4.
-- **Blocco D (dims XYZ)**: non affrontato — MySQL 8 non ha supporto
+- **Blocco D (dims XYZ)**: non affrontato — MySQL 8/9 non ha supporto
   nativo per dimensioni 3D/M (`Z`/`M`/`ZM`); `spatial.dimensions` resta
   `[Xy]`. Non pianificato.
+
+### Gate baseline aggiornato a MySQL 9.7 LTS
+
+Post-Blocchi B/A/C, il gate `docker-compose.mysql.yml` usa MySQL 9.7 LTS
+(primo LTS dopo 8.4, rilasciato 21 aprile 2026 — 5 anni premier + 3
+estesi). Tutti i 129 test live pass identici su 9.7 e 8.4: il protocollo
+binario MySQL è retrocompat sul subset OLTP + Arrow bulk. La matrice
+8.0.46/8.4.11/9.7 resta qualificata via `check_mysql_matrix.py`.
+
+### Consumer surface (post-sessione)
+
+Dopo Blocchi B/A/C + upgrade 9.7:
+
+- **CLI MySQL**: 8 sub-comandi (`mysql-probe`, `mysql-describe`,
+  `mysql-inspect-schemas`, `mysql-inspect-tables`, `mysql-execute-sql`,
+  `mysql-execute-ddl`, `mysql-execute-scalar`, `mysql-transaction-test`)
+  — parity iniziale col path Postgres. Restano ~20 sub-comandi non
+  esposti (bulk-write, benchmark-*, diagnose, doctor, ecc.) — nuova
+  tranche futura.
+- **SDK Python MySQL v0.4-alpha scaffold**: `connect_mysql(host, database,
+  user, password, port=None, tls_ca_pem=None)` + `MysqlSession` con
+  execute / execute_scalar / execute_returning_rows / execute_ddl +
+  context manager. Non incluso (roadmap): Transaction, copy_from,
+  read streaming, portable AST builders, spatial predicates, async
+  variant. Sufficiente per script batch, integrazione, migrazione.
 
 Test live totali dopo v1.2: **129 unit + integration** (110 v1.1 + 19 nuovi
 v1.2: 6 OLTP + 3 Create/TruncateInsert + 2 Upsert + 2 DeleteByKeys + 2 Update

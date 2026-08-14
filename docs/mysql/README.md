@@ -75,3 +75,42 @@ implicito). L'implementazione v1.2 di Create/TruncateInsert/Replace usa
 TEMPORARY perché `RENAME TABLE` rifiuta temporanee) con cleanup del
 backup post-swap; se la swap fallisce, la staging orfana viene droppata
 via best-effort.
+
+## Consumer surface
+
+Post-Blocchi B/A/C, il driver MySQL è accessibile dai consumer:
+
+**CLI** (8 sub-comandi, tutti behind `--features full`):
+
+```
+plenora-database mysql-probe <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]
+plenora-database mysql-describe <args...> <schema> <object>
+plenora-database mysql-inspect-schemas <args...>
+plenora-database mysql-inspect-tables <args...> <schema>
+plenora-database mysql-execute-sql <args...> <sql>
+plenora-database mysql-execute-ddl <args...> <sql>
+plenora-database mysql-execute-scalar <args...> <sql>
+plenora-database mysql-transaction-test <args...>
+```
+
+**SDK Python** (v0.4-alpha, scaffold):
+
+```python
+import plenora_database as p
+
+with p.connect_mysql("localhost", "mydb", "user", "pwd") as s:
+    n = s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+    v = s.execute_scalar("SELECT COUNT(*) FROM t")
+    rows = s.execute_returning_rows("SELECT id, label FROM t WHERE id > ?", [0])
+    s.execute_ddl("CREATE INDEX idx_label ON t(label(64))")
+```
+
+Non incluso nel SDK MySQL v0.4 (roadmap): `begin()` + `Transaction`
+(savepoints), `copy_from` bulk write, `read()` streaming Arrow,
+portable AST builders (`select/insert/update/delete/upsert`), spatial
+predicates + `SpatialReference`, `AsyncMysqlSession`.
+
+Non incluso nel CLI MySQL v1.2 (roadmap): `bulk-write` (Arrow IPC),
+`benchmark-*`, `diagnose`, `doctor`, `explain`, `pool-status`,
+`conditional-update`, `test-cancellation/streaming/spatial/concurrency`,
+`portable-execute`.
