@@ -37,8 +37,9 @@ pub(crate) fn runtime() -> &'static Runtime {
     })
 }
 
-/// Versione del bindings crate. Coincide con la versione del workspace
-/// Rust, che è la fonte di verità per compatibilità API.
+/// Versione del SDK Python. Coincide con `pyproject.toml::version` e
+/// con il filename del wheel prodotto. La versione del Rust workspace
+/// (driver core, provider) è indipendente.
 #[pyfunction]
 #[must_use]
 pub const fn version() -> &'static str {
