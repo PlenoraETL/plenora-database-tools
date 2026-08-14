@@ -22,7 +22,9 @@ use plenora_database_core::field_contract::validate_schema_contract;
 #[cfg(test)]
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
-use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
+use plenora_database_core::plan::{
+    ObjectRef, ProviderKind, TransactionProfile, WriteMode, WriteOperation,
+};
 #[cfg(test)]
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{BatchStream, PreparedWrite, SecretString};
@@ -143,18 +145,29 @@ pub async fn execute(
     }
     let schema = input.schema();
     let column_plans = compile_schema_plan(&schema, &prepared.operation)?;
-    let diagnostic_input = input
-        .declared_input_rows()
-        .map(|input_total| {
-            row_diagnostics::validate_input(
-                &prepared.input_schema,
-                &schema,
-                &prepared.operation,
-                input_total,
-                input.row_diagnostics_policy(),
-            )
-        })
-        .transpose()?;
+    // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
+    // (l'unico scenario dove ha senso quarantinare righe: il target esiste
+    // già e si stanno aggiungendo N righe di cui alcune possono fallire).
+    // Per Create/Replace/TruncateInsert/Update/Upsert/DeleteByKeys si salta
+    // il gate e si va al path normale.
+    let diagnostic_input = if prepared.operation.mode == WriteMode::Append
+        && prepared.operation.transaction_profile == TransactionProfile::SingleTransaction
+    {
+        input
+            .declared_input_rows()
+            .map(|input_total| {
+                row_diagnostics::validate_input(
+                    &prepared.input_schema,
+                    &schema,
+                    &prepared.operation,
+                    input_total,
+                    input.row_diagnostics_policy(),
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let execution_id = format!(
         "pg-{}-{}",
         std::process::id(),

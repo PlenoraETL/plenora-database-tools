@@ -102,6 +102,54 @@ def test_copy_from_ipc_bytes_pass_through(session) -> None:
     assert outcome["rows"]["confirmed"] == 100
 
 
+def test_copy_from_mode_create_builds_table_from_arrow_schema(session) -> None:
+    """v0.2.0 — mode='create' crea la tabella target dallo schema Arrow.
+
+    Il provider Postgres genera CREATE TABLE dallo schema Arrow. Il target
+    NON deve esistere già (o Conflict); il preflight `Create + !exists`
+    procede, il write path esegue DDL + COPY in stessa transazione.
+    """
+    session.execute("DROP TABLE IF EXISTS _pyv020_create")
+    try:
+        tbl = pyarrow.table(
+            {
+                "id": pyarrow.array([1, 2, 3, 4, 5], type=pyarrow.int64()),
+                "label": pyarrow.array(["a", "b", "c", "d", "e"]),
+                "amount": pyarrow.array(
+                    [10.5, 20.5, 30.5, 40.5, 50.5], type=pyarrow.float64()
+                ),
+            }
+        )
+        outcome = session.copy_from("public", "_pyv020_create", tbl, mode="create")
+        assert outcome["status"] == "committed"
+        assert outcome["rows"]["confirmed"] == 5
+
+        # Verifica DDL applicato
+        cols = session.execute_returning_rows(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='_pyv020_create' "
+            "ORDER BY ordinal_position"
+        )
+        col_names = [c["column_name"] for c in cols]
+        assert col_names == ["id", "label", "amount"]
+
+        # Verifica dati landed
+        count = session.execute_scalar(
+            "SELECT COUNT(*)::BIGINT FROM _pyv020_create"
+        )
+        assert count == 5
+    finally:
+        session.execute("DROP TABLE IF EXISTS _pyv020_create")
+
+
+def test_copy_from_mode_create_conflicts_if_target_exists(session) -> None:
+    """mode='create' con target esistente deve restituire Conflict."""
+    tbl = _make_table(3)
+    # _pyp3_copy esiste (creata dalla fixture)
+    with pytest.raises(p.PlenoraConflictError):
+        session.copy_from("public", "_pyp3_copy", tbl, mode="create")
+
+
 def test_copy_from_strict_policy_rejects_nullable_to_not_null(session) -> None:
     """Con mapping_policy='strict' il preflight boccia il pattern
     comune Arrow-nullable → PG NOT NULL (severity DataLoss).

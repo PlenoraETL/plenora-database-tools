@@ -171,8 +171,12 @@ tbl = pa.table({
     "amount": pa.array([i * 10 for i in range(1, 100_001)], type=pa.int32()),
 })
 
+# Append in target esistente
 outcome = s.copy_from("public", "measurements", tbl, mode="append")
 # {"status": "committed", "rows": {"received": 100000, "confirmed": 100000, ...}}
+
+# ETL scratch — crea tabella dallo schema Arrow (nessun DDL preventivo)
+outcome = s.copy_from("public", "measurements_new", tbl, mode="create")
 
 # Async equivalente
 outcome = await s.acopy_from("public", "measurements", tbl)
@@ -181,8 +185,15 @@ outcome = await s.acopy_from("public", "measurements", tbl)
 `source` accetta `pyarrow.Table`, `pyarrow.RecordBatch`, iterable di batch
 o `bytes` (Arrow IPC stream self-contained, per zero-copy da altri produttori).
 
-Mode: `append` (default) / `create` / `replace` / `truncate_insert` /
-`update` / `upsert` / `delete_by_keys`.
+Mode:
+- `append` (**default**) — INSERT bulk via COPY nel target esistente
+- `create` — CREATE TABLE dallo schema Arrow + COPY (fallisce se
+  target esiste)
+- `replace` — CREATE TABLE staging + COPY + swap atomico verso target
+- `truncate_insert` — TRUNCATE + INSERT bulk (target deve esistere)
+- `update` / `upsert` / `delete_by_keys` — supportati dal provider ma
+  richiedono `keys` / `update_columns` (parametri v0.3+ per esporli
+  dal SDK; per ora usa il path OLTP `Transaction.upsert`)
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
 Mapping policy: `compatible` (default) / `strict` / `lossy` / `native`.
