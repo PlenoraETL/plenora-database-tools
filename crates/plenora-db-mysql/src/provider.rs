@@ -333,12 +333,16 @@ impl Provider for MysqlProvider {
                 )
             })?;
             let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-            let loss_report = if operation.mode == plenora_database_core::plan::WriteMode::Create {
-                // Create: la tabella target non esiste ancora — skip describe.
-                // Il preflight viene rifatto in `write` dopo il CREATE TABLE,
-                // e il confronto con questo LossReport vuoto passa se lo
-                // schema Arrow matcha esattamente il DDL generato (che è
-                // sempre il caso perché il DDL è derivato dallo schema stesso).
+            let loss_report = if matches!(
+                operation.mode,
+                plenora_database_core::plan::WriteMode::Create
+                    | plenora_database_core::plan::WriteMode::DeleteByKeys
+            ) {
+                // Create: target non esiste ancora — skip describe.
+                // DeleteByKeys: schema Arrow è keys-only; il preflight
+                // standard rifiuterebbe le colonne target non nello schema.
+                // In entrambi i casi LossReport vuoto (schema matcha per
+                // costruzione).
                 plenora_database_core::loss::LossReport {
                     schema_version: 1,
                     policy: operation.mapping_policy,
@@ -500,7 +504,16 @@ async fn execute_mysql_write(
 
     let target =
         describe_object(&mut session, target_schema, &operation.target.object, token).await?;
-    if plan.preflight(&target)? != prepared_loss {
+    // Skip preflight compare per Create (target appena creato dallo schema)
+    // e DeleteByKeys (schema keys-only, preflight standard non applicabile).
+    // Il target deve comunque esistere ed essere BASE TABLE InnoDB — questo
+    // è validato implicitamente dal describe_object che precede.
+    if !matches!(
+        operation.mode,
+        plenora_database_core::plan::WriteMode::Create
+            | plenora_database_core::plan::WriteMode::DeleteByKeys
+    ) && plan.preflight(&target)? != prepared_loss
+    {
         return Err(provider_error(
             ErrorCategory::Schema,
             ErrorPhase::Prepare,
@@ -556,6 +569,7 @@ async fn execute_mysql_write(
         input.as_mut(),
         &schema,
         &plan,
+        operation.mode,
         budget,
         token,
     )
@@ -716,11 +730,13 @@ struct WriteProgress {
     inserted: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_input_batches(
     session: &mut crate::MysqlSession,
     input: &mut dyn BatchStream,
     schema: &SchemaRef,
     plan: &crate::write::MysqlWritePlan,
+    mode: plenora_database_core::plan::WriteMode,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteProgress> {
@@ -755,7 +771,8 @@ async fn write_input_batches(
                 "overflow conteggio righe MySQL",
             )
         })?;
-        let affected = write_batch_chunks(session, &batch, plan, cancellation).await?;
+        let affected =
+            write_batch_chunks_for_mode(session, &batch, plan, mode, cancellation).await?;
         progress.inserted = progress.inserted.checked_add(affected).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,
@@ -768,31 +785,38 @@ async fn write_input_batches(
     Ok(progress)
 }
 
-async fn write_batch_chunks(
+/// Mode-aware — dispatch tra INSERT bulk (Append/Create/TruncateInsert/
+/// Upsert) e DELETE by keys.
+async fn write_batch_chunks_for_mode(
     session: &mut crate::MysqlSession,
     batch: &plenora_database_core::arrow::RecordBatch,
     plan: &crate::write::MysqlWritePlan,
+    mode: plenora_database_core::plan::WriteMode,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
-    let mut inserted = 0_u64;
+    let mut affected_total = 0_u64;
     let mut start = 0_usize;
     while start < batch.num_rows() {
         let rows = plan.rows_per_statement().min(batch.num_rows() - start);
         let parameters = plan.bind_chunk(batch, start, rows)?;
-        let sql = plan.render_insert(rows)?;
+        let sql = if mode == plenora_database_core::plan::WriteMode::DeleteByKeys {
+            plan.render_delete_by_keys(rows)?
+        } else {
+            plan.render_insert(rows)?
+        };
         let affected = session
             .exec_write(&sql, parameters, ErrorPhase::Write, cancellation)
             .await?;
-        inserted = inserted.checked_add(affected).ok_or_else(|| {
+        affected_total = affected_total.checked_add(affected).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
-                "overflow righe inserite MySQL",
+                "overflow righe write MySQL",
             )
         })?;
         start += rows;
     }
-    Ok(inserted)
+    Ok(affected_total)
 }
 
 async fn rollback_after_failure(

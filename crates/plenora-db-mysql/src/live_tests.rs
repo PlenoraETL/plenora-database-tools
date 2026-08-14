@@ -1,3 +1,5 @@
+#![allow(clippy::significant_drop_tightening)]
+
 use crate::{
     describe_object, list_objects, list_schemas, probe_server, MysqlCertificatePolicy, MysqlConfig,
     MysqlProvider, MysqlSession,
@@ -4337,6 +4339,105 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
     ]);
     check.connection_mut().unwrap()
         .query_drop("DROP TABLE _v12_upsert").await.ok();
+}
+
+fn keys_only_batch(
+    ids: &[i64],
+) -> (
+    plenora_database_core::arrow::SchemaRef,
+    plenora_database_core::arrow::RecordBatch,
+) {
+    use plenora_database_core::arrow::array::Int64Array;
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    use plenora_database_core::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    let schema: plenora_database_core::arrow::SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(ids.to_vec()))],
+    )
+    .expect("keys-only batch");
+    (schema, batch)
+}
+
+#[tokio::test]
+async fn live_v12_write_delete_by_keys_removes_matching_rows() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_del").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_del (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
+            .await.expect("create");
+        setup.connection_mut().unwrap()
+            .query_drop("INSERT INTO _v12_del VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')")
+            .await.expect("seed");
+    }
+
+    // Delete id=2 e id=4; id=99 non esiste (idempotent)
+    let (schema, batch) = keys_only_batch(&[2, 4, 99]);
+    let operation = write_op_with_keys(
+        "dataflow_test",
+        "_v12_del",
+        plenora_database_core::plan::WriteMode::DeleteByKeys,
+        vec!["id".to_owned()],
+    );
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare delete");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 3,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write delete");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    // 3 keys ricevute, 2 effettivamente cancellate (id 2 e 4); id 99 skipped
+    assert_eq!(outcome.rows.received, 3);
+    assert_eq!(outcome.rows.confirmed, 2);
+    assert_eq!(outcome.rows.deleted, Some(2));
+    assert_eq!(outcome.rows.skipped, 1);
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let remaining: Vec<i64> = check.connection_mut().unwrap()
+        .query::<i64, _>("SELECT id FROM _v12_del ORDER BY id")
+        .await.expect("select");
+    assert_eq!(remaining, vec![1, 3]);
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_del").await.ok();
+}
+
+#[tokio::test]
+async fn live_v12_write_delete_by_keys_without_keys_rejected() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let (schema, _batch) = keys_only_batch(&[1]);
+    let operation = write_op_scalar("dataflow_test", "_v12_del_no_keys",
+        plenora_database_core::plan::WriteMode::DeleteByKeys);
+
+    let result = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await;
+    assert!(matches!(
+        result.err().map(|e| e.category),
+        Some(ErrorCategory::InvalidPlan)
+    ), "delete_by_keys senza keys deve fallire InvalidPlan");
 }
 
 #[tokio::test]

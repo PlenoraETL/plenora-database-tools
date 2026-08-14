@@ -166,17 +166,37 @@ impl MysqlWritePlan {
             .map(|field| compile_write_column(field, &renderer))
             .collect::<Result<Vec<_>>>()?;
         validate_spatial_policy(operation, &columns)?;
-        // Per Upsert: le colonne non-key vengono aggiornate.
-        // Verifica anche che ogni key sia presente nello schema Arrow.
-        let upsert_update_columns = if operation.mode == WriteMode::Upsert {
+        // Per Upsert/DeleteByKeys: verifica ogni key nello schema Arrow.
+        // Per DeleteByKeys: solo le colonne key devono essere nello schema
+        // (nessuna colonna extra — solo keys per il filter DELETE).
+        if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys) {
             for key in &operation.keys {
                 if !columns.iter().any(|c| c.name == *key) {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
-                        format!("chiave upsert MySQL '{key}' assente dallo schema Arrow"),
+                        format!(
+                            "chiave {:?} MySQL '{key}' assente dallo schema Arrow",
+                            operation.mode
+                        ),
                     ));
                 }
             }
+        }
+        if operation.mode == WriteMode::DeleteByKeys {
+            for col in &columns {
+                if !operation.keys.contains(&col.name) {
+                    return Err(prepare_error(
+                        ErrorCategory::InvalidPlan,
+                        format!(
+                            "DeleteByKeys MySQL: colonna '{}' non è una key — schema Arrow \
+                             deve contenere solo le colonne key",
+                            col.name
+                        ),
+                    ));
+                }
+            }
+        }
+        let upsert_update_columns = if operation.mode == WriteMode::Upsert {
             columns
                 .iter()
                 .filter(|c| !operation.keys.contains(&c.name))
@@ -269,6 +289,63 @@ impl MysqlWritePlan {
     #[must_use]
     pub(super) const fn rows_per_statement(&self) -> usize {
         crate::MAX_BIND_PARAMETERS / self.columns.len()
+    }
+
+    /// Renderizza `DELETE FROM target WHERE (k1, k2, ...) IN ((?, ?, ...), ...)`
+    /// per WriteMode::DeleteByKeys. Il numero di colonne dello schema
+    /// coincide con quello delle keys (`MysqlWritePlan::compile` fa la check).
+    ///
+    /// # Errors
+    ///
+    /// Fallisce fuori dai limiti di binding di `MySQL`.
+    pub(super) fn render_delete_by_keys(&self, rows: usize) -> Result<String> {
+        if rows == 0 {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                "DELETE MySQL richiede almeno una riga di keys",
+            ));
+        }
+        let placeholder_count = rows.checked_mul(self.columns.len()).ok_or_else(|| {
+            prepare_error(
+                ErrorCategory::ResourceLimit,
+                "overflow nel conteggio dei placeholder MySQL",
+            )
+        })?;
+        if placeholder_count > crate::MAX_BIND_PARAMETERS {
+            return Err(prepare_error(
+                ErrorCategory::ResourceLimit,
+                format!(
+                    "DELETE MySQL con {placeholder_count} placeholder oltre il limite di {}",
+                    crate::MAX_BIND_PARAMETERS
+                ),
+            ));
+        }
+        let keys_tuple = self
+            .columns
+            .iter()
+            .map(|c| c.quoted.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let row_placeholders = self
+            .columns
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut sql = format!(
+            "DELETE FROM {} WHERE ({keys_tuple}) IN (",
+            self.quoted_target
+        );
+        for row in 0..rows {
+            if row > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('(');
+            sql.push_str(&row_placeholders);
+            sql.push(')');
+        }
+        sql.push_str(");");
+        Ok(sql)
     }
 
     pub(super) fn bind_chunk(
@@ -527,6 +604,17 @@ pub fn committed_outcome_for_mode(
             failed: 0,
             skipped: 0,
         },
+        WriteMode::DeleteByKeys => RowCounts {
+            received,
+            // affected_or_inserted = # righe cancellate (0 <= affected <= received).
+            // Le keys non trovate non sono un errore (idempotency).
+            confirmed: affected_or_inserted,
+            inserted: Some(0),
+            updated: Some(0),
+            deleted: Some(affected_or_inserted),
+            failed: 0,
+            skipped: received.saturating_sub(affected_or_inserted),
+        },
         _ => RowCounts {
             received,
             confirmed: affected_or_inserted,
@@ -762,17 +850,18 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    // v1.2: Append + Create + TruncateInsert + Upsert supportati.
-    // Update/Replace/DeleteByKeys pianificati per future tranches.
+    // v1.2: Append + Create + TruncateInsert + Upsert + DeleteByKeys
+    // supportati. Update/Replace pianificati per future tranches.
     match operation.mode {
         WriteMode::Append
         | WriteMode::Create
         | WriteMode::TruncateInsert
-        | WriteMode::Upsert => {}
+        | WriteMode::Upsert
+        | WriteMode::DeleteByKeys => {}
         other => {
             return Err(unsupported(format!(
                 "write mode '{other:?}' MySQL non ancora qualificato \
-                 (supportati: Append, Create, TruncateInsert, Upsert)"
+                 (supportati: Append, Create, TruncateInsert, Upsert, DeleteByKeys)"
             )));
         }
     }
@@ -789,18 +878,21 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.allow_partial {
         return Err(unsupported("write MySQL parziale non qualificata"));
     }
-    // Upsert richiede keys; le altre mode invece rifiutano keys/update_columns.
-    if operation.mode == WriteMode::Upsert {
+    // Upsert e DeleteByKeys richiedono keys; le altre mode le rifiutano.
+    if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys) {
         if operation.keys.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "upsert MySQL richiede almeno una key column",
+                format!(
+                    "mode '{:?}' MySQL richiede almeno una key column",
+                    operation.mode
+                ),
             ));
         }
         if !operation.update_columns.is_empty() {
             return Err(unsupported(
-                "upsert MySQL v1.2 aggiorna automaticamente tutte le colonne non-key \
-                 (update_columns esplicite pianificate per WriteMode::Update)",
+                "update_columns esplicite pianificate per WriteMode::Update; \
+                 v1.2 Upsert aggiorna tutte le non-key, DeleteByKeys non usa update_columns",
             ));
         }
     } else if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
