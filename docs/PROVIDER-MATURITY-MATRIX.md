@@ -38,27 +38,33 @@ MySQL.
 | Lettura Arrow bounded/streaming | live | live | live; allocazione pre-bounded e drop anticipato con cleanup bounded |
 | Projection/filter/order/limit bind-safe | live | live | live |
 | Query relazionale pubblica | live | live | live; lifecycle prepare/query e drain completo |
-| Scrittura | live | live | live; Append e SingleTransaction, rollback o quarantine |
+| Scrittura bulk (Append) | live | live | live; SingleTransaction, rollback o quarantine |
+| Scrittura bulk (Create, Replace, TruncateInsert) | live | live | live: Create + TruncateInsert (v1.2); Replace out-of-scope MySQL |
+| Scrittura bulk (Upsert, Update, DeleteByKeys) | live | live | live: tutti e 3 (v1.2); Upsert via `ON DUPLICATE KEY UPDATE`, Update via staging TEMPORARY, DeleteByKeys via `WHERE (keys) IN` |
+| Transazioni OLTP (`begin_transaction` + savepoints + `execute_ddl`) | live | fail-closed (aperto) | live (v1.2); `MysqlTransaction` con START/COMMIT/ROLLBACK/SAVEPOINT/ROLLBACK TO/RELEASE + conditional_update |
 | Tipi scalari di riferimento | live, profilo esteso | live, profilo esteso | live: integer, decimal, bool, UTF-8, binary, date, datetime, JSON |
 | Spatial generico | live | live | live: `GEOMETRY -> mixed` |
 | Spatial tipizzato | live | live | live: `POINT` e `GEOMETRYCOLLECTION -> exact` |
 | Dimensioni spatial | XY/XYZ/XYM/XYZM secondo gate | geometry/geography secondo gate | XY; Z/M/ZM non pubblicate |
 | Contratto schema canonico | offline/live | offline/live | offline/live tramite `validate_schema_contract` |
 | Gate fmt + Clippy `-D warnings` | sì | sì | sì |
-| Gate live corrente | suite reference | 44 test live attesi | 23 test live attesi per nome su 8.0.46 e 8.4.11 |
+| Gate live corrente | suite reference | 44 test live attesi | 33 test live attesi (23 v1.1 + 10 v1.2: OLTP + write modes) su 8.0.46 e 8.4.11 |
 
 ## Esito di parità
 
 MySQL ha raggiunto disciplina di assurance e parità per le capability pubblicate:
 connessione TLS, introspezione, query relazionale, lettura streaming bounded,
-scrittura Append/SingleTransaction, tipi dichiarati, spatial XY/SRID, reset,
-timeout, cancellazione, rollback e quarantena. La matrice live copre sia 8.0.46
-sia 8.4.11.
+scrittura bulk (Append/Create/TruncateInsert/Upsert/DeleteByKeys/Update),
+transazioni OLTP con savepoints + conditional_update, DDL raw via
+`execute_ddl`, tipi dichiarati, spatial XY/SRID, reset, timeout, cancellazione,
+rollback e quarantena.
 
 La superficie non deduce capability non provate: Z, M e ZM continuano a fallire
-chiuso; MariaDB non è qualificato; geography e spatial index non sono pubblicati.
-Questi limiti non possono essere nascosti tramite feature flag né descritti come
-supportati.
+chiuso; MariaDB non è qualificato; geography e spatial index non sono pubblicati;
+Replace bulk (staging + RENAME atomico) resta out-of-scope in v1.2; spatial
+functions dichiarate `Vec::new()` — nessuna funzione ST_* è marked verified nel
+capability probe. Questi limiti non possono essere nascosti tramite feature
+flag né descritti come supportati.
 
 ## Decisione della metadata candidate 1.1.0
 
@@ -66,3 +72,28 @@ La minor release espone la nuova superficie MySQL relazionale e write già
 qualificata live. Non dichiara equivalenza oltre il profilo pubblicato e non
 promuove claim di sistema: le catene cross-library PostgreSQL/MySQL restano un
 gate separato prima del tag.
+
+## v1.2 MySQL — estensione delle capability qualificate
+
+Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
+
+- **Blocco B (OLTP)**: `Provider::begin_transaction` + `TransactionScope`
+  (execute/query/savepoint/rollback_to/release/commit/rollback + conditional_update)
+  + `Provider::execute_ddl`. Chiude il gap di parità con PostgreSQL sul path
+  applicativo OLTP. Il `TransactionCapabilities.savepoints` passa da `false`
+  a `true`.
+
+- **Blocco A (write modes)**: 5 modi bulk aggiuntivi oltre Append —
+  **Create** (CREATE TABLE dallo schema Arrow), **TruncateInsert**
+  (TRUNCATE + INSERT bulk), **Upsert** (`INSERT ... ON DUPLICATE KEY UPDATE`),
+  **DeleteByKeys** (`DELETE ... WHERE (keys) IN (...)`),
+  **Update** (staging TEMPORARY + `UPDATE JOIN`). Residuo: Replace
+  (staging + RENAME atomico) rimandato a giro futuro.
+
+- **Blocchi C/D (spatial)**: non affrontati in questo giro; le funzioni ST_*
+  restano marcate `Vec::new()` nel capability probe (dichiarate ma non
+  qualificate) e le dimensioni Z/M/ZM restano fail-closed. Non pianificati per
+  MySQL v1.2 — MySQL 8 non ha geography né tipi 3D nativi.
+
+Test live totali dopo v1.2: **125 unit + integration** (110 v1.1 + 15 nuovi
+v1.2: 6 OLTP + 3 Create/TruncateInsert + 2 Upsert + 2 DeleteByKeys + 2 Update).

@@ -28,10 +28,13 @@ schema evolution additiva. Passa gate live, fault matrix e benchmark
 differenziali. Il relativo safety case rende esplicite prove, assunzioni e
 rischi residui; non costituisce certificazione aeronautica. SQL Server 2022 ha
 un gate reference separato. MySQL 8.0.46 e 8.4.11 hanno una superficie stabile
-per query relazionale, lettura bounded e scrittura Append/SingleTransaction,
-con TLS verificato tramite CA privata e hostname, catalogo, spatial XY/SRID,
-reset, timeout, cancellazione, rollback e quarantena provati live. MariaDB e le
-dimensioni Z/M/ZM restano fail-closed.
+per query relazionale, lettura bounded, scrittura bulk (Append, Create,
+TruncateInsert, Upsert, DeleteByKeys, Update — v1.2), transazioni OLTP con
+savepoints e `conditional_update` (v1.2), DDL raw via `execute_ddl` (v1.2),
+TLS verificato tramite CA privata e hostname, catalogo, spatial XY/SRID, reset,
+timeout, cancellazione, rollback e quarantena provati live. MariaDB, le
+dimensioni Z/M/ZM e il write mode Replace restano fail-closed / out-of-scope
+in v1.2.
 
 Documenti principali:
 
