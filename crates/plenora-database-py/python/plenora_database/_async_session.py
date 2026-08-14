@@ -83,6 +83,21 @@ class AsyncSession:
     ) -> list[dict]:
         return await self._native.execute_returning_rows(sql, params)
 
+    # ------------------------ Arrow batch read -------------------------
+
+    async def aread(
+        self,
+        schema: str,
+        object: str,
+        batch_rows: int | None = None,
+    ):
+        """Async equivalente di `Session.read()`.
+
+        Ritorna un awaitable che si risolve in `AsyncBatchReader`
+        (async iterator protocol: `async for chunk in reader`).
+        """
+        return await self._native.aread(schema, object, batch_rows)
+
     # -------------------- transactions ----------------------------------
 
     async def begin(

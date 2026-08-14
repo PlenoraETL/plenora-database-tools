@@ -33,6 +33,7 @@
     clippy::needless_pass_by_value,
 )]
 
+use crate::arrow_reader::{open_reader, BatchReader};
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
@@ -352,6 +353,36 @@ impl Session {
         };
         let doc = self.run_inspect(py, Operation::DatabaseDescribeObject { source })?;
         json_value_to_pydict(py, &doc)
+    }
+
+    /// Apre uno stream di record batch Arrow su una tabella/vista.
+    ///
+    /// Ritorna un `BatchReader` che implementa il Python iterator
+    /// protocol: ogni `next(reader)` produce `bytes` Arrow IPC stream
+    /// self-contained (schema + 1 record batch + EOS).
+    ///
+    /// Uso:
+    ///
+    ///     import io, pyarrow.ipc as ipc
+    ///     for chunk in s.read("public", "large_table"):
+    ///         batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+    ///
+    /// Non carica tutto il dataset in memoria: legge batch-by-batch
+    /// dal cursor server-side. Sblocca la migrazione dal CLI
+    /// `postgres-read-ipc` per query >1M righe.
+    #[pyo3(signature = (schema, object, batch_rows=None))]
+    fn read(
+        &self,
+        py: Python<'_>,
+        schema: &str,
+        object: &str,
+        batch_rows: Option<u32>,
+    ) -> PyResult<BatchReader> {
+        self.ensure_open()?;
+        py.allow_threads(|| {
+            open_reader(&self.provider, &self.secret, schema, object, batch_rows)
+        })
+        .map_err(to_py_err)
     }
 
     /// Apre una nuova transazione user-managed. Usa `with s.begin() as tx:`

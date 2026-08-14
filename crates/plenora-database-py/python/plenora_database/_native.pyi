@@ -48,6 +48,12 @@ class Session:
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
     ) -> Transaction: ...
+    def read(
+        self,
+        schema: str,
+        object: str,
+        batch_rows: int | None = None,
+    ) -> BatchReader: ...
 
 # ============================ Transaction (sync) ============================
 
@@ -109,6 +115,26 @@ class AsyncSession:
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
     ) -> Any: ...  # awaitable → AsyncTransaction
+    def aread(
+        self,
+        schema: str,
+        object: str,
+        batch_rows: int | None = None,
+    ) -> Any: ...  # awaitable → AsyncBatchReader
+
+
+class BatchReader:
+    def __iter__(self) -> BatchReader: ...
+    def __next__(self) -> bytes: ...
+    def schema_bytes(self) -> bytes: ...
+    def __repr__(self) -> str: ...
+
+
+class AsyncBatchReader:
+    def __aiter__(self) -> AsyncBatchReader: ...
+    def __anext__(self) -> Any: ...  # awaitable → bytes
+    def schema_bytes(self) -> Any: ...  # awaitable → bytes
+    def __repr__(self) -> str: ...
 
 # ============================ AsyncTransaction ============================
 

@@ -16,6 +16,8 @@ crate-type = ["cdylib"]
 [dependencies]
 plenora-database-core.workspace = true
 plenora-db-postgres.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310", "serde"] }
 pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
 serde_json.workspace = true

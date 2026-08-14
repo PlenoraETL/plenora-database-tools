@@ -14,6 +14,7 @@
     clippy::too_many_lines,
 )]
 
+use crate::arrow_reader::open_reader_async;
 use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
@@ -239,6 +240,43 @@ impl AsyncSession {
             .await
             .map_err(to_py_err)?;
             rows_to_pyobject(rows)
+        })
+    }
+
+    /// Apre uno stream async di record batch Arrow. Ritorna un
+    /// awaitable che si risolve in `AsyncBatchReader`, che implementa
+    /// il Python async iterator protocol.
+    ///
+    /// Uso tipico:
+    ///
+    ///     import io, pyarrow.ipc as ipc
+    ///     reader = await s.aread("public.large_table")
+    ///     async for chunk in reader:
+    ///         batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+    ///
+    /// Non carica tutto in memoria; legge batch-by-batch dal cursor
+    /// server-side sul runtime tokio (non blocca l'event loop).
+    #[pyo3(signature = (schema, object, batch_rows=None))]
+    fn aread<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        object: &str,
+        batch_rows: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let schema = schema.to_owned();
+        let object = object.to_owned();
+        future_into_py(py, async move {
+            let reader = open_reader_async(provider, secret, schema, object, batch_rows)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                let obj = Py::new(py, reader)?;
+                Ok(obj.into_pyobject(py)?.into_any().unbind())
+            })
         })
     }
 

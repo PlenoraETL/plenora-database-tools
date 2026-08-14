@@ -101,23 +101,49 @@ rows = s.select("users").columns("id","email").where_eq("id", 1).all()
 rows = s._native.execute_portable_rows(json_ast_string)
 ```
 
-### `postgres-read-summary`
+### `postgres-read-summary` / `postgres-read-ipc`
 
 ```bash
 plenora-database postgres-read-summary PFM_DSN public users
 # → {"provider":"postgres","rows":N,"batches":M,"fields":[...]}
+
+plenora-database postgres-read-ipc PFM_DSN public large_table out.arrow
+# → scrive Arrow IPC file
 ```
 
+**Sync (F4-3)**:
 ```python
-# Streaming Arrow non ancora esposto al SDK (roadmap Fase 4).
-# Per ora usa il facade con execute_returning_rows se il dataset
-# entra in memoria; altrimenti resta col CLI per read grossi.
+import io, pyarrow.ipc as ipc
+
+# In-memory (dataset piccolo, ≤ 100k righe)
 rows = s.execute_returning_rows("SELECT * FROM public.users")
+
+# Streaming Arrow (qualsiasi dimensione — non carica tutto in memoria)
+for chunk in s.read("public", "large_table"):
+    batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+    process(batch)     # pyarrow.Table con 1 record batch
+
+# Se serve scrivere su file .arrow come il CLI:
+with pa.OSFile("out.arrow", "wb") as sink:
+    reader = s.read("public", "large_table")
+    schema_chunk = reader.schema_bytes()
+    schema = ipc.open_stream(io.BytesIO(schema_chunk)).schema
+    with ipc.new_file(sink, schema) as writer:
+        for chunk in reader:
+            batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+            for b in batch.to_batches():
+                writer.write(b)
 ```
 
-**Nota**: `postgres-read-ipc` (streaming Arrow su file IPC) NON ha
-equivalente SDK oggi. È l'unico use case dove il CLI resta necessario
-finché non arriva il batch reader esposto in Fase 4.
+**Async (F4-3)**:
+```python
+reader = await s.aread("public", "large_table")
+async for chunk in reader:
+    ...
+```
+
+Il reader legge batch-by-batch dal cursor server-side — nessun limit
+di memoria del client.
 
 ### `bulk-write`
 

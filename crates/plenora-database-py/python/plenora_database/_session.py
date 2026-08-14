@@ -65,6 +65,33 @@ class Session:
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return self._native.execute_returning_rows(sql, params)
 
+    # ------------------------ Arrow batch read -------------------------
+
+    def read(
+        self,
+        schema: str,
+        object: str,
+        batch_rows: int | None = None,
+    ):
+        """Apre uno stream Arrow IPC su una tabella/vista Postgres.
+
+        Ritorna un `BatchReader` che implementa il Python iterator
+        protocol; ogni `next(reader)` produce `bytes` Arrow IPC stream
+        (schema + 1 record batch + EOS marker).
+
+        Uso tipico (richiede pyarrow installato):
+
+            import io, pyarrow.ipc as ipc
+            for chunk in s.read("public", "large_table"):
+                batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
+                # batch è pyarrow.Table
+
+        Non carica l'intero dataset in memoria — legge batch-by-batch
+        dal cursor server-side. Sblocca la migrazione da CLI
+        `postgres-read-ipc` per query >1M righe.
+        """
+        return self._native.read(schema, object, batch_rows)
+
     # ------------------------ transactions -----------------------------
 
     def begin(

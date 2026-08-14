@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
+mod arrow_reader;
 mod async_session;
 mod async_transaction;
 mod errors;
@@ -17,6 +18,7 @@ mod py_convert;
 mod session;
 mod transaction;
 
+use arrow_reader::{AsyncBatchReader, BatchReader};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_transaction::AsyncTransaction;
 use session::{connect, Session};
@@ -55,6 +57,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;
     m.add_class::<AsyncTransaction>()?;
+    m.add_class::<BatchReader>()?;
+    m.add_class::<AsyncBatchReader>()?;
     errors::register(m)?;
     Ok(())
 }

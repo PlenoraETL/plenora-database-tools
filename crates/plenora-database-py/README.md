@@ -243,17 +243,13 @@ versioni Python ≥ 3.10.
 ## Limitations (v0.1)
 
 - **Solo Postgres** — MySQL / SQL Server tramite il driver Rust del
-  workspace, non ancora esposti al SDK Python (roadmap Fase 4).
-- **No streaming reads** — le read caricano tutto in memoria via
-  `execute_returning_rows`. Per query >1M righe usare per ora il CLI
-  `postgres-read-ipc` che streama in Arrow IPC file. Roadmap.
-- **No batch/bulk write** — insert massivi passano via SQL raw. Il
-  bulk COPY del driver è esposto solo via CLI oggi.
+  workspace, non ancora esposti al SDK Python.
+- **No batch/bulk write** — insert massivi passano via SQL raw o
+  builder multi-row (`.insert(...).rows([...])`). Il bulk COPY del
+  driver è esposto solo via CLI oggi.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
-- **ConditionalUpdate del trait Rust** non esposto — usare pattern
-  `where_eq("version", current)` come mostrato sopra.
 
 ## Sviluppo
 
