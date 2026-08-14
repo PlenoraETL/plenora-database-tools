@@ -27,7 +27,7 @@
 use crate::errors::to_py_err;
 use crate::runtime;
 use arrow_ipc::writer::StreamWriter;
-use plenora_database_core::plan::{ObjectRef, ReadOperation};
+use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::provider::{BatchStream, ParameterBag, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::{CancellationToken, DatabaseError};
@@ -136,12 +136,56 @@ impl BatchReader {
     }
 }
 
+/// Costruisce un `ReadOperation` da parametri Python.
+///
+/// - `projection`: lista di nomi di colonna da leggere (vuota = tutte)
+/// - `order_by`: lista di `(nome, "asc"|"desc")` per l'ORDER BY
+/// - `limit`: numero massimo di righe (None = nessun limite)
+///
+/// # Errors
+///
+/// `PlenoraError::invalid_plan` se la direzione ORDER BY non è
+/// `"asc"` o `"desc"`.
+fn make_read_operation(
+    schema: &str,
+    object: &str,
+    projection: Vec<String>,
+    order_by: Vec<(String, String)>,
+    limit: Option<u64>,
+) -> Result<ReadOperation, DatabaseError> {
+    let order_by_parsed: Vec<OrderBy> = order_by
+        .into_iter()
+        .map(|(field, dir)| {
+            let direction = match dir.as_str() {
+                "asc" => SortDirection::Asc,
+                "desc" => SortDirection::Desc,
+                other => {
+                    return Err(DatabaseError::invalid_plan(format!(
+                        "order_by direzione sconosciuta '{other}': attesi 'asc' o 'desc'"
+                    )));
+                }
+            };
+            Ok(OrderBy { field, direction })
+        })
+        .collect::<Result<Vec<_>, DatabaseError>>()?;
+    Ok(ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: object.to_owned(),
+            layer_id: None,
+        },
+        projection,
+        order_by: order_by_parsed,
+        row_limit: limit,
+        filter: None,
+    })
+}
+
 /// Apre un BatchReader su una tabella/vista Postgres.
 ///
 /// La size dei batch prodotti dallo stream è decisa internamente dal
 /// provider (per Postgres: bounded dal buffer del cursore server-side).
-/// Non è configurabile dall'API SDK v0.1.x perché `Provider::read()`
-/// del core Rust non espone un parametro batch size.
 ///
 /// # Errors
 ///
@@ -151,19 +195,11 @@ pub(crate) fn open_reader(
     secret: &SecretString,
     schema: &str,
     object: &str,
+    projection: Vec<String>,
+    order_by: Vec<(String, String)>,
+    limit: Option<u64>,
 ) -> Result<BatchReader, DatabaseError> {
-    let operation = ReadOperation {
-        source: ObjectRef {
-            catalog: None,
-            schema: Some(schema.to_owned()),
-            object: object.to_owned(),
-            layer_id: None,
-        },
-        projection: Vec::new(),
-        order_by: Vec::new(),
-        row_limit: None,
-        filter: None,
-    };
+    let operation = make_read_operation(schema, object, projection, order_by, limit)?;
     let cancel = CancellationToken::new();
     let stream = runtime().block_on(async move {
         provider
@@ -257,19 +293,11 @@ pub(crate) async fn open_reader_async(
     secret: SecretString,
     schema: String,
     object: String,
+    projection: Vec<String>,
+    order_by: Vec<(String, String)>,
+    limit: Option<u64>,
 ) -> Result<AsyncBatchReader, DatabaseError> {
-    let operation = ReadOperation {
-        source: ObjectRef {
-            catalog: None,
-            schema: Some(schema),
-            object,
-            layer_id: None,
-        },
-        projection: Vec::new(),
-        order_by: Vec::new(),
-        row_limit: None,
-        filter: None,
-    };
+    let operation = make_read_operation(&schema, &object, projection, order_by, limit)?;
     let cancel = CancellationToken::new();
     let stream = provider
         .read(&secret, &operation, &ParameterBag::default(), &default_budget(), &cancel)

@@ -11,6 +11,64 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.3.0] — 2026-08-14
+
+Completa la superficie Postgres del SDK. Tre gap P1 chiusi:
+1. bulk write UPSERT/UPDATE/DELETE
+2. read() con projection/order_by/limit
+3. `copy_from` accetta pandas.DataFrame + list[dict]
+
+### Added
+
+- **`copy_from(mode="upsert", keys=[...])`** — INSERT ... ON CONFLICT
+  DO UPDATE dallo schema Arrow, con conflict target dato dai `keys`.
+  Sblocca ETL idempotenti (import periodici con chiave primaria).
+- **`copy_from(mode="update", keys=[...], update_columns=[...])`** —
+  UPDATE ... FROM dallo staging (implementato dal provider Rust).
+- **`copy_from(mode="delete_by_keys", keys=[...])`** — DELETE ... USING
+  dallo staging (basta la colonna key nel dataset).
+- **`read(projection=[...], order_by=[...], limit=N)`** — SELECT
+  projection + ORDER BY + LIMIT sul cursore server-side. Prima
+  scaricava tutta la tabella. `order_by` è list di
+  `("column", "asc"|"desc")`.
+- **`copy_from(source=list[dict])`** — convertito via
+  `pyarrow.Table.from_pylist`. Ergonomia per script Python senza
+  pyarrow object model esposto.
+- **`copy_from(source=pandas.DataFrame)`** — convertito via
+  `pyarrow.Table.from_pandas`. Zero-boilerplate per data scientist
+  che partono da pandas.
+- Validation early: `keys` è obbligatorio per upsert/update/delete_by_keys;
+  errore con messaggio chiaro se assente. Rifiutato per gli altri mode
+  (Append/Create/etc.) per prevenire mismatch.
+- 12 nuovi test in `test_v030_p1.py` (upsert happy path + error paths,
+  read projection/limit/order_by, list[dict] + pandas + edge cases).
+
+### Compatibilità
+
+- **Backward-compat** con v0.2.0 per il pattern `copy_from(mode="append")`
+  senza `keys` (funziona identico).
+- Chi passava `keys=[...]` per mode diverso da upsert/update/delete_by_keys
+  in v0.2.0 (impossibile — parametro non esisteva) ora otterrebbe errore
+  early: nessun consumer impattato.
+- API sync + async stubs `.pyi` aggiornati.
+
+### Stato Postgres SDK
+
+Dopo v0.3.0 la copertura Postgres è **complete** rispetto ai gap
+P1 identificati per il primo consumer target (PFM). Restano gap P2
+(async cancellation graceful, pool config esposto, altre 67 funzioni
+PostGIS come builder) rimandati a rispettivi minor bump quando
+prioritari.
+
+Da v0.3.0 il SDK è pronto come **base pattern** per esporre MySQL e
+SQL Server (che il core Rust supporta già). Il pattern binding
+(session/tx/copy_from/read) è stabilizzato — le duplicazioni cross-provider
+si applicano con la stessa struttura.
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.3.0>
+
+---
+
 ## [0.2.0] — 2026-08-14
 
 Nuove capability bulk-write. Prima minor bump del SDK.

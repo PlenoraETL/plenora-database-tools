@@ -370,16 +370,29 @@ impl Session {
     /// Non carica tutto il dataset in memoria: legge batch-by-batch
     /// dal cursor server-side. Sblocca la migrazione dal CLI
     /// `postgres-read-ipc` per query >1M righe.
-    #[pyo3(signature = (schema, object))]
+    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
     fn read(
         &self,
         py: Python<'_>,
         schema: &str,
         object: &str,
+        projection: Option<Vec<String>>,
+        order_by: Option<Vec<(String, String)>>,
+        limit: Option<u64>,
     ) -> PyResult<BatchReader> {
         self.ensure_open()?;
+        let projection = projection.unwrap_or_default();
+        let order_by = order_by.unwrap_or_default();
         py.allow_threads(|| {
-            open_reader(&self.provider, &self.secret, schema, object)
+            open_reader(
+                &self.provider,
+                &self.secret,
+                schema,
+                object,
+                projection,
+                order_by,
+                limit,
+            )
         })
         .map_err(to_py_err)
     }
@@ -406,6 +419,8 @@ impl Session {
         mode="append",
         transaction_profile="single_transaction",
         mapping_policy="compatible",
+        keys=None,
+        update_columns=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn copy_from<'py>(
@@ -417,8 +432,12 @@ impl Session {
         mode: &str,
         transaction_profile: &str,
         mapping_policy: &str,
+        keys: Option<Vec<String>>,
+        update_columns: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         self.ensure_open()?;
+        let keys = keys.unwrap_or_default();
+        let update_columns = update_columns.unwrap_or_default();
         let result = py.allow_threads(|| {
             crate::write::copy_from_sync(
                 &self.provider,
@@ -429,6 +448,8 @@ impl Session {
                 mode,
                 transaction_profile,
                 mapping_policy,
+                keys,
+                update_columns,
             )
         });
         crate::write::wrap_outcome(py, result)

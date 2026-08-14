@@ -52,6 +52,9 @@ class Session:
         self,
         schema: str,
         object: str,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
     ) -> BatchReader: ...
     def copy_from(
         self,
@@ -61,6 +64,8 @@ class Session:
         mode: str = "append",
         transaction_profile: str = "single_transaction",
         mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
     ) -> dict: ...
 
 # ============================ Transaction (sync) ============================
@@ -127,6 +132,9 @@ class AsyncSession:
         self,
         schema: str,
         object: str,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
     ) -> Any: ...  # awaitable → AsyncBatchReader
     def acopy_from(
         self,
@@ -136,6 +144,8 @@ class AsyncSession:
         mode: str = "append",
         transaction_profile: str = "single_transaction",
         mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
     ) -> Any: ...  # awaitable → dict
 
 

@@ -197,8 +197,41 @@ fn make_operation(
     mode: WriteMode,
     profile: TransactionProfile,
     mapping_policy: MappingPolicy,
-) -> WriteOperation {
-    WriteOperation {
+    keys: Vec<String>,
+    update_columns: Vec<String>,
+) -> Result<WriteOperation, DatabaseError> {
+    // Validazione early: i mode che richiedono chiavi rifiutano input vacuo
+    // (invece di produrre SQL malformato più a valle).
+    match mode {
+        WriteMode::Upsert | WriteMode::Update | WriteMode::DeleteByKeys => {
+            if keys.is_empty() {
+                return Err(DatabaseError::invalid_plan(format!(
+                    "mode '{}' richiede almeno una key column via keys=[...]",
+                    match mode {
+                        WriteMode::Upsert => "upsert",
+                        WriteMode::Update => "update",
+                        WriteMode::DeleteByKeys => "delete_by_keys",
+                        _ => unreachable!(),
+                    }
+                )));
+            }
+        }
+        _ => {
+            if !keys.is_empty() {
+                return Err(DatabaseError::invalid_plan(format!(
+                    "keys=[...] è supportato solo per mode upsert/update/delete_by_keys, \
+                     non per '{mode:?}'"
+                )));
+            }
+            if !update_columns.is_empty() {
+                return Err(DatabaseError::invalid_plan(format!(
+                    "update_columns=[...] è supportato solo per mode update, \
+                     non per '{mode:?}'"
+                )));
+            }
+        }
+    }
+    Ok(WriteOperation {
         target: ObjectRef {
             catalog: None,
             schema: Some(schema.to_owned()),
@@ -208,12 +241,12 @@ fn make_operation(
         mode,
         mapping_policy,
         transaction_profile: profile,
-        keys: Vec::new(),
-        update_columns: Vec::new(),
+        keys,
+        update_columns,
         srid_policy: None,
         create_spatial_index: false,
         allow_partial: false,
-    }
+    })
 }
 
 fn default_budget() -> ResourceBudget {
@@ -238,6 +271,8 @@ async fn do_copy_from_async(
     mode: WriteMode,
     profile: TransactionProfile,
     mapping_policy: MappingPolicy,
+    keys: Vec<String>,
+    update_columns: Vec<String>,
     ipc_bytes: Vec<u8>,
 ) -> Result<WriteOutcome, DatabaseError> {
     let (input_schema, batches, declared_rows) = decode_ipc_stream(&ipc_bytes)?;
@@ -246,7 +281,15 @@ async fn do_copy_from_async(
         batches,
         declared_rows,
     };
-    let operation = make_operation(&schema_name, &table_name, mode, profile, mapping_policy);
+    let operation = make_operation(
+        &schema_name,
+        &table_name,
+        mode,
+        profile,
+        mapping_policy,
+        keys,
+        update_columns,
+    )?;
     let budget = default_budget();
     let cancel = CancellationToken::new();
     let prepared = provider
@@ -266,6 +309,7 @@ async fn do_copy_from_async(
 ///
 /// `DatabaseError` in caso di IPC malformato, mode/profile invalidi o
 /// errore del provider durante prepare/write.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn copy_from_sync(
     provider: &Arc<PostgresProvider>,
     secret: &SecretString,
@@ -275,6 +319,8 @@ pub(crate) fn copy_from_sync(
     mode: &str,
     transaction_profile: &str,
     mapping_policy: &str,
+    keys: Vec<String>,
+    update_columns: Vec<String>,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(mode)?;
     let profile_enum = parse_profile(transaction_profile)?;
@@ -293,6 +339,8 @@ pub(crate) fn copy_from_sync(
             mode_enum,
             profile_enum,
             policy_enum,
+            keys,
+            update_columns,
             ipc_owned,
         )
         .await
@@ -306,6 +354,7 @@ pub(crate) fn copy_from_sync(
 /// # Errors
 ///
 /// Come `copy_from_sync`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn copy_from_async(
     provider: Arc<PostgresProvider>,
     secret: SecretString,
@@ -315,6 +364,8 @@ pub(crate) async fn copy_from_async(
     mode: String,
     transaction_profile: String,
     mapping_policy: String,
+    keys: Vec<String>,
+    update_columns: Vec<String>,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(&mode)?;
     let profile_enum = parse_profile(&transaction_profile)?;
@@ -327,6 +378,8 @@ pub(crate) async fn copy_from_async(
         mode_enum,
         profile_enum,
         policy_enum,
+        keys,
+        update_columns,
         ipc_bytes,
     )
     .await

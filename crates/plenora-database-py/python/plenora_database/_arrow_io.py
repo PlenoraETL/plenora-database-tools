@@ -17,11 +17,13 @@ def _to_ipc_bytes(source: Any) -> bytes:
       - `bytes` — passato-through (assunto IPC valido, verificato dal Rust)
       - `pyarrow.Table` — batches iterati e scritti
       - `pyarrow.RecordBatch` — un unico batch
-      - iterable di `pyarrow.RecordBatch` (tutti con stesso schema)
+      - lista di `pyarrow.RecordBatch` (tutti con stesso schema)
+      - `pandas.DataFrame` — convertito via `pyarrow.Table.from_pandas`
+      - `list[dict]` — convertito via `pyarrow.Table.from_pylist`
 
     Raises:
       - `TypeError` se il tipo non è supportato
-      - `ValueError` se la lista di batches è vuota
+      - `ValueError` se la lista è vuota o gli elementi hanno tipi misti
       - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -36,27 +38,39 @@ def _to_ipc_bytes(source: Any) -> bytes:
             "non è già bytes: `pip install pyarrow`"
         ) from exc
 
+    # pandas DataFrame — richiede pandas installato solo se usato
+    if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
+        # duck-type: pandas.DataFrame ha to_dict + iloc + columns
+        source = pa.Table.from_pandas(source, preserve_index=False)
+
     if isinstance(source, pa.Table):
         schema = source.schema
         batches = source.to_batches()
     elif isinstance(source, pa.RecordBatch):
         schema = source.schema
         batches = [source]
-    elif hasattr(source, "__iter__"):
-        batches = list(source)
-        if not batches:
-            raise ValueError("copy_from: lista batches vuota")
-        first = batches[0]
-        if not isinstance(first, pa.RecordBatch):
+    elif isinstance(source, list):
+        if not source:
+            raise ValueError("copy_from: lista vuota")
+        first = source[0]
+        if isinstance(first, pa.RecordBatch):
+            # lista di RecordBatch — tutti devono avere stesso schema
+            batches = source
+            schema = first.schema
+        elif isinstance(first, dict):
+            # lista di dict — convertibile via pyarrow.Table.from_pylist
+            tbl = pa.Table.from_pylist(source)
+            schema = tbl.schema
+            batches = tbl.to_batches()
+        else:
             raise TypeError(
-                f"copy_from: iterable deve contenere pyarrow.RecordBatch, "
+                f"copy_from: lista deve contenere pyarrow.RecordBatch o dict, "
                 f"trovato {type(first).__name__}"
             )
-        schema = first.schema
     else:
         raise TypeError(
-            f"copy_from: source deve essere bytes, pyarrow.Table, "
-            f"pyarrow.RecordBatch o iterable di RecordBatch — "
+            f"copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
+            f"list di RecordBatch/dict o pandas.DataFrame — "
             f"trovato {type(source).__name__}"
         )
 

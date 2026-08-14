@@ -72,6 +72,10 @@ class Session:
         self,
         schema: str,
         object: str,
+        *,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
     ):
         """Apre uno stream Arrow IPC su una tabella/vista Postgres.
 
@@ -79,18 +83,31 @@ class Session:
         protocol; ogni `next(reader)` produce `bytes` Arrow IPC stream
         (schema + 1 record batch + EOS marker).
 
+        Parametri opzionali:
+          - `projection`: lista di colonne da leggere (default: tutte)
+          - `order_by`: lista di `(colonna, "asc"|"desc")` per ORDER BY
+          - `limit`: numero massimo di righe (default: nessun limite)
+
         Uso tipico (richiede pyarrow installato):
 
             import io, pyarrow.ipc as ipc
-            for chunk in s.read("public", "large_table"):
+            for chunk in s.read(
+                "public", "large_table",
+                projection=["id", "amount"],
+                order_by=[("id", "asc")],
+                limit=10000,
+            ):
                 batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
-                # batch è pyarrow.Table
 
         Non carica l'intero dataset in memoria — legge batch-by-batch
         dal cursor server-side. La size dei batch è decisa dal provider
         (Postgres: bounded dal buffer del cursore server-side).
+
+        Nota: per filter WHERE, usa il builder pythonic
+        `s.select(table).where_eq(...).all()` (path OLTP portable AST).
+        Lo streaming con filter arriverà come `Select.stream()` in v0.3+.
         """
-        return self._native.read(schema, object)
+        return self._native.read(schema, object, projection, order_by, limit)
 
     # ------------------------ Arrow bulk write -------------------------
 
@@ -103,10 +120,14 @@ class Session:
         mode: str = "append",
         transaction_profile: str = "single_transaction",
         mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
     ) -> dict:
         """Bulk write via `prepare_write` + `write` del provider.
 
-        Postgres usa COPY internamente per mode `append`.
+        Postgres usa COPY internamente per mode `append`; per gli altri
+        mode combina COPY con DDL / SQL (CREATE / TRUNCATE / INSERT ...
+        ON CONFLICT / UPDATE ... FROM / DELETE ...).
 
         Parametri:
           - `schema`, `table`: target
@@ -114,6 +135,9 @@ class Session:
               * `pyarrow.Table` (schema derivato)
               * `pyarrow.RecordBatch`
               * lista di `pyarrow.RecordBatch` (tutti con stesso schema)
+              * `list[dict]` (v0.3.0+, convertito via `pa.Table.from_pylist`)
+              * `pandas.DataFrame` (v0.3.0+, convertito via
+                `pa.Table.from_pandas`, richiede pandas installato)
               * `bytes` — buffer Arrow IPC stream self-contained (schema
                 + N batches + EOS). Utile per zero-copy da altri produttori.
           - `mode`: "append" | "create" | "replace" | "truncate_insert"
@@ -124,6 +148,11 @@ class Session:
             (default "compatible"). "strict" boccia ogni loss anche minore
             (e.g. Arrow nullable verso PG NOT NULL); "compatible" tollera
             loss non-DataLoss; scelta consigliata per input pyarrow tipici.
+          - `keys`: lista di colonne key (v0.3.0+). Obbligatorio per
+            mode "upsert" / "update" / "delete_by_keys". Rifiutato con
+            errore per gli altri mode.
+          - `update_columns`: lista di colonne da aggiornare per mode
+            "update" (v0.3.0+). Vuoto = tutte le non-key.
 
         Ritorna un dict con struttura `WriteOutcome`:
 
@@ -140,7 +169,8 @@ class Session:
         """
         ipc_bytes = _to_ipc_bytes(source)
         return self._native.copy_from(
-            schema, table, ipc_bytes, mode, transaction_profile, mapping_policy
+            schema, table, ipc_bytes, mode, transaction_profile,
+            mapping_policy, keys, update_columns,
         )
 
     # ------------------------ transactions -----------------------------

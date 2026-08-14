@@ -89,13 +89,20 @@ class AsyncSession:
         self,
         schema: str,
         object: str,
+        *,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
     ):
-        """Async equivalente di `Session.read()`.
+        """Async equivalente di `Session.read()`. Accetta gli stessi
+        parametri opzionali `projection` / `order_by` / `limit`.
 
         Ritorna un awaitable che si risolve in `AsyncBatchReader`
         (async iterator protocol: `async for chunk in reader`).
         """
-        return await self._native.aread(schema, object)
+        return await self._native.aread(
+            schema, object, projection, order_by, limit
+        )
 
     # ------------------------ Arrow bulk write -------------------------
 
@@ -108,14 +115,18 @@ class AsyncSession:
         mode: str = "append",
         transaction_profile: str = "single_transaction",
         mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
     ) -> dict:
         """Bulk write async — analogo di `Session.copy_from`. Vedi la
-        docstring lì per l'input `source`, i mode e le mapping policy.
+        docstring lì per l'input `source`, i mode, le mapping policy
+        e i parametri `keys` / `update_columns` (v0.3.0+).
         """
         from ._arrow_io import _to_ipc_bytes
         ipc_bytes = _to_ipc_bytes(source)
         return await self._native.acopy_from(
-            schema, table, ipc_bytes, mode, transaction_profile, mapping_policy
+            schema, table, ipc_bytes, mode, transaction_profile,
+            mapping_policy, keys, update_columns,
         )
 
     # -------------------- transactions ----------------------------------

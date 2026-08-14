@@ -256,22 +256,29 @@ impl AsyncSession {
     ///
     /// Non carica tutto in memoria; legge batch-by-batch dal cursor
     /// server-side sul runtime tokio (non blocca l'event loop).
-    #[pyo3(signature = (schema, object))]
+    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
     fn aread<'py>(
         &self,
         py: Python<'py>,
         schema: &str,
         object: &str,
+        projection: Option<Vec<String>>,
+        order_by: Option<Vec<(String, String)>>,
+        limit: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let schema = schema.to_owned();
         let object = object.to_owned();
+        let projection = projection.unwrap_or_default();
+        let order_by = order_by.unwrap_or_default();
         future_into_py(py, async move {
-            let reader = open_reader_async(provider, secret, schema, object)
-                .await
-                .map_err(to_py_err)?;
+            let reader = open_reader_async(
+                provider, secret, schema, object, projection, order_by, limit,
+            )
+            .await
+            .map_err(to_py_err)?;
             Python::with_gil(|py| {
                 let obj = Py::new(py, reader)?;
                 Ok(obj.into_pyobject(py)?.into_any().unbind())
@@ -288,6 +295,8 @@ impl AsyncSession {
         mode="append",
         transaction_profile="single_transaction",
         mapping_policy="compatible",
+        keys=None,
+        update_columns=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn acopy_from<'py>(
@@ -299,6 +308,8 @@ impl AsyncSession {
         mode: &str,
         transaction_profile: &str,
         mapping_policy: &str,
+        keys: Option<Vec<String>>,
+        update_columns: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -309,6 +320,8 @@ impl AsyncSession {
         let mode_owned = mode.to_owned();
         let profile_owned = transaction_profile.to_owned();
         let policy_owned = mapping_policy.to_owned();
+        let keys_owned = keys.unwrap_or_default();
+        let update_columns_owned = update_columns.unwrap_or_default();
         future_into_py(py, async move {
             let outcome = crate::write::copy_from_async(
                 provider,
@@ -319,6 +332,8 @@ impl AsyncSession {
                 mode_owned,
                 profile_owned,
                 policy_owned,
+                keys_owned,
+                update_columns_owned,
             )
             .await
             .map_err(crate::errors::to_py_err)?;
