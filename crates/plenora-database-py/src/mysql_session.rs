@@ -33,9 +33,12 @@
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
+use crate::transaction::{parse_isolation, Transaction};
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
-use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
+use plenora_database_core::transaction::{
+    AccessMode, Statement, TransactionOptions, TransactionScope,
+};
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_mysql::{MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
 use pyo3::exceptions::PyRuntimeError;
@@ -238,6 +241,57 @@ impl MysqlSession {
             out.append(dict)?;
         }
         Ok(out)
+    }
+
+    /// Apre una nuova transazione user-managed su MySQL.
+    ///
+    /// Uso: `with s.begin() as tx: tx.execute(...); tx.commit()`.
+    /// `Transaction` è provider-agnostic (wrapper sopra `dyn TransactionScope`)
+    /// e supporta savepoints, conditional_update, execute_returning_rows.
+    ///
+    /// Opzioni:
+    /// - `isolation`: "read_uncommitted" / "read_committed" /
+    ///   "repeatable_read" / "serializable" (None = default MySQL)
+    /// - `read_only`: True/False (default: False)
+    /// - `statement_timeout_ms`: MAX_EXECUTION_TIME session-scoped
+    ///
+    /// Nota: MySQL non ha `deferrable` — parametro non esposto qui.
+    #[pyo3(signature = (isolation=None, read_only=None, statement_timeout_ms=None))]
+    fn begin(
+        &self,
+        py: Python<'_>,
+        isolation: Option<&str>,
+        read_only: Option<bool>,
+        statement_timeout_ms: Option<u64>,
+    ) -> PyResult<Transaction> {
+        self.ensure_open()?;
+        let mut opts = TransactionOptions::default();
+        if let Some(iso) = isolation {
+            opts.isolation = Some(parse_isolation(iso)?);
+        }
+        if let Some(ro) = read_only {
+            opts.access_mode = Some(if ro {
+                AccessMode::ReadOnly
+            } else {
+                AccessMode::ReadWrite
+            });
+        }
+        if let Some(ms) = statement_timeout_ms {
+            opts.statement_timeout_ms = Some(ms);
+        }
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let scope = py
+            .allow_threads(|| {
+                runtime().block_on(async move {
+                    let cancel = CancellationToken::new();
+                    provider
+                        .begin_transaction(&secret, &opts, &default_budget(), &cancel)
+                        .await
+                })
+            })
+            .map_err(to_py_err)?;
+        Ok(Transaction::new(scope))
     }
 
     /// DDL raw (CREATE/DROP/ALTER). MySQL fa autocommit implicito.

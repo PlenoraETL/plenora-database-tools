@@ -284,6 +284,163 @@ pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cl
     }))
 }
 
+/// `mysql-conditional-update <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] <UPDATE_SQL> <EXPECTED_AFFECTED>`
+///
+/// Pattern optimistic-lock: esegue UPDATE in una tx dedicata, verifica
+/// affected_rows == expected. Se mismatch → `ConcurrentModification`.
+pub async fn mysql_conditional_update(
+    args: &mut impl Iterator<Item = String>,
+) -> CliResult<()> {
+    let (provider, secret, remaining) = mysql_provider_from_args(args)?;
+    let mut it = remaining.into_iter();
+    let update_sql = it
+        .next()
+        .ok_or_else(|| "manca UPDATE_SQL".to_owned())?;
+    let expected_str = it
+        .next()
+        .ok_or_else(|| "manca EXPECTED_AFFECTED (numero intero)".to_owned())?;
+    let expected: u64 = expected_str
+        .parse()
+        .map_err(|_| format!("EXPECTED_AFFECTED non numerico: {expected_str}"))?;
+    if it.next().is_some() {
+        return Err("argomenti extra dopo EXPECTED_AFFECTED".to_owned().into());
+    }
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    let update = plenora_database_core::transaction::Statement {
+        sql: update_sql,
+        params: Vec::new(),
+    };
+    let request = plenora_database_core::transaction::ConditionalUpdate {
+        update: &update,
+        key_probe: None,
+        expected_affected_rows: expected,
+    };
+    let result = tx.execute_conditional_update(request, &cancellation).await;
+    match result {
+        Ok(()) => {
+            let commit = tx.commit(&cancellation).await?;
+            print_json(&json!({
+                "provider": "mysql",
+                "outcome": "matched",
+                "expected_affected": expected,
+                "commit": format!("{commit:?}").to_lowercase(),
+            }))
+        }
+        Err(e) if e.category == plenora_database_core::ErrorCategory::ConcurrentModification => {
+            let _ = tx.rollback(&cancellation).await;
+            print_json(&json!({
+                "provider": "mysql",
+                "outcome": "concurrent_modification",
+                "expected_affected": expected,
+                "message": e.message,
+            }))
+        }
+        Err(e) => {
+            let _ = tx.rollback(&cancellation).await;
+            Err(e.into())
+        }
+    }
+}
+
+/// `mysql-portable-execute` — **non disponibile** (v1.2).
+///
+/// Il facade `execute_portable` del core supporta il compile-portable solo
+/// per Postgres. Estendere a MySQL richiede refactor cross-crate del
+/// facade + un dispatcher `compile_portable_for_provider(provider_kind)`
+/// non ancora implementato. Deferito a giro futuro.
+#[allow(dead_code)]
+async fn mysql_portable_execute_unused(
+    args: &mut impl Iterator<Item = String>,
+) -> CliResult<()> {
+    let (provider, secret, remaining) = mysql_provider_from_args(args)?;
+    let mut it = remaining.into_iter();
+    let path = it
+        .next()
+        .ok_or_else(|| "manca PORTABLE.json path".to_owned())?;
+    if it.next().is_some() {
+        return Err("argomenti extra dopo PORTABLE.json".to_owned().into());
+    }
+    let json_str = std::fs::read_to_string(&path)
+        .map_err(|e| format!("lettura {path} fallita: {e}"))?;
+    let portable: plenora_database_core::portable::PortableStatement =
+        serde_json::from_str(&json_str)
+            .map_err(|e| format!("parse PortableStatement JSON fallito: {e}"))?;
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    // Semplificazione: solo Select ritorna rows deterministicamente.
+    // Insert/Update/Delete/Upsert con RETURNING (Postgres-only) non
+    // sono tipicamente usati con MySQL — se emerge use case, il caller
+    // può usare execute_portable_returning direttamente.
+    let returns_rows = matches!(
+        portable,
+        plenora_database_core::portable::PortableStatement::Select(_)
+    );
+    let result = if returns_rows {
+        let rows = plenora_database_core::facade::execute_portable_returning(
+            tx.as_mut(),
+            &portable,
+            &cancellation,
+        )
+        .await?;
+        let commit = tx.commit(&cancellation).await?;
+        let json_rows: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|row| {
+                let names: Vec<String> = row.columns().to_vec();
+                let values: Vec<plenora_database_core::provider::ParameterValue> =
+                    row.values().to_vec();
+                let mut obj = serde_json::Map::new();
+                for (name, value) in names.iter().zip(values.iter()) {
+                    obj.insert(
+                        name.clone(),
+                        serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
+        json!({
+            "provider": "mysql",
+            "kind": "select",
+            "rows": json_rows,
+            "row_count": json_rows.len(),
+            "commit": format!("{commit:?}").to_lowercase(),
+        })
+    } else {
+        let affected = plenora_database_core::facade::execute_portable(
+            tx.as_mut(),
+            &portable,
+            &cancellation,
+        )
+        .await?;
+        let commit = tx.commit(&cancellation).await?;
+        json!({
+            "provider": "mysql",
+            "kind": "dml",
+            "affected_rows": affected,
+            "commit": format!("{commit:?}").to_lowercase(),
+        })
+    };
+    print_json(&result)
+}
+
 /// `mysql-transaction-test <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]`
 ///
 /// Test smoke OLTP end-to-end: crea temp table, INSERT + SAVEPOINT +

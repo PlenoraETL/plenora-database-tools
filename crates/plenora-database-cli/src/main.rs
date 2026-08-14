@@ -202,6 +202,8 @@ async fn run() -> CliResult<()> {
         "mysql-execute-scalar" => mysql_cmd::mysql_execute_scalar(&mut args).await,
         #[cfg(feature = "mysql")]
         "mysql-transaction-test" => mysql_cmd::mysql_transaction_test(&mut args).await,
+        #[cfg(feature = "mysql")]
+        "mysql-conditional-update" => mysql_cmd::mysql_conditional_update(&mut args).await,
         _ => Err(usage().into()),
     }
 }
@@ -1157,6 +1159,7 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
     format::print_active(value)
 }
 
+#[allow(clippy::too_many_lines)]
 fn usage() -> String {
     [
         "uso: plenora-database [flag-globali] COMANDO [args...]",
@@ -1246,6 +1249,7 @@ fn usage() -> String {
         "  mysql-execute-ddl <args...> <sql>  — DDL raw (CREATE/DROP/ALTER, autocommit MySQL)",
         "  mysql-execute-scalar <args...> <sql>  — SELECT scalare (1 riga × 1 colonna)",
         "  mysql-transaction-test <args...>   — smoke OLTP: begin + savepoint + rollback_to + commit",
+        "  mysql-conditional-update <args...> <UPDATE_SQL> <EXPECTED_AFFECTED>  — pattern optimistic-lock",
         "",
         "== dataset / plan (offline) ==",
         "  inspect-dataset <file.arrow>",
