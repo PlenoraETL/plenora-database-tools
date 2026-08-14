@@ -66,6 +66,14 @@ class Transaction:
     def release_savepoint(self, name: str) -> None: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+    def conditional_update(
+        self,
+        update_sql: str,
+        update_params: list | None = None,
+        expected_affected_rows: int = 1,
+        key_probe_sql: str | None = None,
+        key_probe_params: list | None = None,
+    ) -> None: ...
     def __enter__(self) -> Transaction: ...
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
     def __repr__(self) -> str: ...
@@ -121,6 +129,14 @@ class AsyncTransaction:
     def release_savepoint(self, name: str) -> Any: ...  # awaitable → None
     def commit(self) -> Any: ...  # awaitable → None
     def rollback(self) -> Any: ...  # awaitable → None
+    def conditional_update(
+        self,
+        update_sql: str,
+        update_params: list | None = None,
+        expected_affected_rows: int = 1,
+        key_probe_sql: str | None = None,
+        key_probe_params: list | None = None,
+    ) -> Any: ...  # awaitable → None
     def __aenter__(self) -> Any: ...  # awaitable → AsyncTransaction
     def __aexit__(
         self, exc_type: object, exc_value: object, traceback: object

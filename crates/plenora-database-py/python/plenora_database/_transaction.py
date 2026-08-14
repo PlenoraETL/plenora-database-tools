@@ -67,6 +67,45 @@ class Transaction:
     def release_savepoint(self, name: str) -> None:
         self._native.release_savepoint(name)
 
+    def conditional_update(
+        self,
+        update_sql: str,
+        update_params: list | None = None,
+        expected_affected_rows: int = 1,
+        key_probe_sql: str | None = None,
+        key_probe_params: list | None = None,
+    ) -> None:
+        """Update ottimistico condizionato con classificazione errore
+        precisa (NotFound vs ConcurrentModification).
+
+        Rispetto al pattern manuale `.update().where_eq("version", cur).execute()`
+        + check `n == 0`, questo metodo distingue:
+          - `PlenoraNotFoundError` — chiave assente (probe conferma)
+          - `PlenoraConcurrentModificationError` — chiave esiste ma
+            versione diversa (o probe assente)
+
+        Args:
+            update_sql: UPDATE con WHERE key + version, tipicamente
+                `UPDATE t SET x=$1, version=$2 WHERE id=$3 AND version=$4`.
+            update_params: parametri positional per l'UPDATE.
+            expected_affected_rows: righe attese (default 1).
+            key_probe_sql: SELECT che verifica se la chiave esiste
+                (usato solo su mismatch). Se None, tutti i mismatch
+                sono classificati come ConcurrentModification.
+            key_probe_params: parametri positional per il probe.
+
+        Raises:
+            PlenoraNotFoundError: chiave assente.
+            PlenoraConcurrentModificationError: mismatch versione.
+        """
+        self._native.conditional_update(
+            update_sql,
+            update_params,
+            expected_affected_rows,
+            key_probe_sql,
+            key_probe_params,
+        )
+
     def __enter__(self) -> "Transaction":
         return self
 

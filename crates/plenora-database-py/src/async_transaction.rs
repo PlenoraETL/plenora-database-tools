@@ -24,7 +24,7 @@ use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::portable::PortableStatement;
-use plenora_database_core::transaction::{Statement, TransactionScope};
+use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionScope};
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -184,6 +184,49 @@ impl AsyncTransaction {
             let tx = guard.as_mut().expect("guard checked non-None");
             let cancel = CancellationToken::new();
             execute_portable(&mut **tx, &ast, &cancel)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Async equivalente di `Transaction.conditional_update`.
+    /// Vedi la docstring sync per la semantica.
+    #[pyo3(signature = (
+        update_sql,
+        update_params=None,
+        expected_affected_rows=1,
+        key_probe_sql=None,
+        key_probe_params=None,
+    ))]
+    fn conditional_update<'py>(
+        &self,
+        py: Python<'py>,
+        update_sql: &str,
+        update_params: Option<Bound<'_, PyList>>,
+        expected_affected_rows: u64,
+        key_probe_sql: Option<&str>,
+        key_probe_params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let update_values = params_from_python(update_params.as_ref())?;
+        let update_stmt =
+            Statement::new(update_sql.to_owned()).with_params(update_values);
+        let probe_stmt = if let Some(sql) = key_probe_sql {
+            let probe_values = params_from_python(key_probe_params.as_ref())?;
+            Some(Statement::new(sql.to_owned()).with_params(probe_values))
+        } else {
+            None
+        };
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let mut guard = locked_tx(&inner).await?;
+            let tx = guard.as_mut().expect("guard checked non-None");
+            let cancel = CancellationToken::new();
+            let request = ConditionalUpdate {
+                update: &update_stmt,
+                key_probe: probe_stmt.as_ref(),
+                expected_affected_rows,
+            };
+            tx.execute_conditional_update(request, &cancel)
                 .await
                 .map_err(to_py_err)
         })

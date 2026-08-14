@@ -58,6 +58,24 @@ class AsyncTransaction:
     async def release_savepoint(self, name: str) -> None:
         await self._native.release_savepoint(name)
 
+    async def conditional_update(
+        self,
+        update_sql: str,
+        update_params: list | None = None,
+        expected_affected_rows: int = 1,
+        key_probe_sql: str | None = None,
+        key_probe_params: list | None = None,
+    ) -> None:
+        """Async equivalente di `Transaction.conditional_update`.
+        Vedi la docstring sync per la semantica."""
+        await self._native.conditional_update(
+            update_sql,
+            update_params,
+            expected_affected_rows,
+            key_probe_sql,
+            key_probe_params,
+        )
+
     async def __aenter__(self) -> "AsyncTransaction":
         return self
 
