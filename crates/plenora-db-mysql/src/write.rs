@@ -45,10 +45,17 @@ struct MysqlWriteColumn {
 #[derive(Debug, Clone)]
 pub struct MysqlWritePlan {
     quoted_target: String,
+    /// Nome del target senza quoting (per staging table naming).
+    target_object_raw: String,
     columns: Vec<MysqlWriteColumn>,
     /// Colonne (quoted) da aggiornare nel `ON DUPLICATE KEY UPDATE` di
     /// una Upsert. Vuoto per Append/Create/TruncateInsert.
     upsert_update_columns: Vec<String>,
+    /// Colonne (quoted) da usare come JOIN keys per Update via staging.
+    /// Vuoto per non-Update modes.
+    update_key_columns: Vec<String>,
+    /// Colonne (quoted) da aggiornare in UPDATE (default: tutte non-key).
+    update_set_columns: Vec<String>,
 }
 
 fn compile_write_column(
@@ -205,11 +212,120 @@ impl MysqlWritePlan {
         } else {
             Vec::new()
         };
+        // Update-specific: mappa keys + update columns quoted.
+        let (update_key_columns, update_set_columns) = if operation.mode == WriteMode::Update {
+            let key_quoted: Vec<String> = operation
+                .keys
+                .iter()
+                .map(|k| {
+                    columns
+                        .iter()
+                        .find(|c| &c.name == k)
+                        .map(|c| c.quoted.clone())
+                        .ok_or_else(|| {
+                            prepare_error(
+                                ErrorCategory::InvalidPlan,
+                                format!("chiave Update MySQL '{k}' assente dallo schema Arrow"),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            // Default: tutte le colonne non-key. Se update_columns esplicite, uso quelle.
+            let set_names: Vec<&String> = if operation.update_columns.is_empty() {
+                columns
+                    .iter()
+                    .filter(|c| !operation.keys.contains(&c.name))
+                    .map(|c| &c.name)
+                    .collect()
+            } else {
+                operation.update_columns.iter().collect()
+            };
+            if set_names.is_empty() {
+                return Err(prepare_error(
+                    ErrorCategory::InvalidPlan,
+                    "Update MySQL: nessuna colonna da aggiornare (schema = keys only)",
+                ));
+            }
+            let set_quoted: Vec<String> = set_names
+                .iter()
+                .map(|name| {
+                    columns
+                        .iter()
+                        .find(|c| &c.name == *name)
+                        .map(|c| c.quoted.clone())
+                        .ok_or_else(|| {
+                            prepare_error(
+                                ErrorCategory::InvalidPlan,
+                                format!(
+                                    "Update MySQL: colonna '{name}' \
+                                     non presente nello schema Arrow"
+                                ),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (key_quoted, set_quoted)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Ok(Self {
             quoted_target: renderer.quote_object(&target),
+            target_object_raw: operation.target.object.clone(),
             columns,
             upsert_update_columns,
+            update_key_columns,
+            update_set_columns,
         })
+    }
+
+    /// Nome staging table temporary per Update (deterministico per target).
+    ///
+    /// TEMPORARY table MySQL sono session-scoped; il naming deve solo
+    /// evitare collision col target reale. Prefix `__pln_stg_` +
+    /// short target hash è unica per sessione.
+    #[must_use]
+    pub(super) fn staging_temp_name(&self, execution_id: &str) -> String {
+        format!(
+            "__pln_stg_{}_{}",
+            self.target_object_raw.chars().take(24).collect::<String>(),
+            execution_id.replace('-', "_"),
+        )
+    }
+
+    /// Renderizza `UPDATE target JOIN staging ON keys SET updates` per
+    /// WriteMode::Update.
+    #[must_use]
+    pub(super) fn render_update_from_staging(&self, staging_quoted: &str) -> String {
+        let on_clause = self
+            .update_key_columns
+            .iter()
+            .map(|k| format!("t.{k} = s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let set_clause = self
+            .update_set_columns
+            .iter()
+            .map(|c| format!("t.{c} = s.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "UPDATE {} AS t JOIN {staging_quoted} AS s ON {on_clause} SET {set_clause};",
+            self.quoted_target
+        )
+    }
+
+    /// Renderizza INSERT verso una staging table (target diverso dal target
+    /// reale, senza clausola ON DUPLICATE KEY). Usato per Update via staging.
+    ///
+    /// # Errors
+    ///
+    /// Come `render_insert`.
+    pub(super) fn render_insert_into_staging(
+        &self,
+        staging_quoted: &str,
+        rows: usize,
+    ) -> Result<String> {
+        self.render_insert_generic(staging_quoted, rows, &[])
     }
 
     /// Renderizza un INSERT multi-riga con soli placeholder.
@@ -218,6 +334,15 @@ impl MysqlWritePlan {
     ///
     /// Fallisce chiuso fuori dai limiti di binding di `MySQL`.
     pub(super) fn render_insert(&self, rows: usize) -> Result<String> {
+        self.render_insert_generic(&self.quoted_target, rows, &self.upsert_update_columns)
+    }
+
+    fn render_insert_generic(
+        &self,
+        target: &str,
+        rows: usize,
+        upsert_update_columns: &[String],
+    ) -> Result<String> {
         if rows == 0 {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
@@ -257,10 +382,7 @@ impl MysqlWritePlan {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut sql = format!(
-            "INSERT INTO {} ({quoted_columns}) VALUES ",
-            self.quoted_target
-        );
+        let mut sql = format!("INSERT INTO {target} ({quoted_columns}) VALUES ");
         for row in 0..rows {
             if row > 0 {
                 sql.push_str(", ");
@@ -272,9 +394,8 @@ impl MysqlWritePlan {
         // Upsert v1.2: ON DUPLICATE KEY UPDATE per le colonne non-key.
         // Uso `VALUES(col)` (deprecato in 8.0.20+ ma ancora funzionante in
         // 8.4 LTS). Migrare a alias `AS new / new.col` in un giro futuro.
-        if !self.upsert_update_columns.is_empty() {
-            let updates = self
-                .upsert_update_columns
+        if !upsert_update_columns.is_empty() {
+            let updates = upsert_update_columns
                 .iter()
                 .map(|c| format!("{c}=VALUES({c})"))
                 .collect::<Vec<_>>()
@@ -604,6 +725,18 @@ pub fn committed_outcome_for_mode(
             failed: 0,
             skipped: 0,
         },
+        WriteMode::Update => RowCounts {
+            received,
+            // affected_or_inserted = # righe target aggiornate dopo l'UPDATE
+            // JOIN. Le righe input che non trovano match in target sono
+            // no-op (idempotent), tracciate come skipped.
+            confirmed: affected_or_inserted,
+            inserted: Some(0),
+            updated: Some(affected_or_inserted),
+            deleted: Some(0),
+            failed: 0,
+            skipped: received.saturating_sub(affected_or_inserted),
+        },
         WriteMode::DeleteByKeys => RowCounts {
             received,
             // affected_or_inserted = # righe cancellate (0 <= affected <= received).
@@ -850,19 +983,20 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    // v1.2: Append + Create + TruncateInsert + Upsert + DeleteByKeys
-    // supportati. Update/Replace pianificati per future tranches.
+    // v1.2: Append + Create + TruncateInsert + Upsert + DeleteByKeys +
+    // Update supportati. Replace pianificato per future tranches.
     match operation.mode {
         WriteMode::Append
         | WriteMode::Create
         | WriteMode::TruncateInsert
         | WriteMode::Upsert
-        | WriteMode::DeleteByKeys => {}
-        other => {
-            return Err(unsupported(format!(
-                "write mode '{other:?}' MySQL non ancora qualificato \
-                 (supportati: Append, Create, TruncateInsert, Upsert, DeleteByKeys)"
-            )));
+        | WriteMode::DeleteByKeys
+        | WriteMode::Update => {}
+        WriteMode::Replace => {
+            return Err(unsupported(
+                "write mode 'Replace' MySQL non ancora qualificato \
+                 (supportati v1.2: Append, Create, TruncateInsert, Upsert, DeleteByKeys, Update)",
+            ));
         }
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
@@ -878,8 +1012,11 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.allow_partial {
         return Err(unsupported("write MySQL parziale non qualificata"));
     }
-    // Upsert e DeleteByKeys richiedono keys; le altre mode le rifiutano.
-    if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys) {
+    // Upsert, DeleteByKeys e Update richiedono keys; le altre mode le rifiutano.
+    if matches!(
+        operation.mode,
+        WriteMode::Upsert | WriteMode::DeleteByKeys | WriteMode::Update
+    ) {
         if operation.keys.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
@@ -889,10 +1026,14 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
                 ),
             ));
         }
-        if !operation.update_columns.is_empty() {
+        // Upsert/DeleteByKeys: update_columns esplicite non permesse (v1.2).
+        // Update: update_columns esplicite opzionali (default = tutte non-key).
+        if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys)
+            && !operation.update_columns.is_empty()
+        {
             return Err(unsupported(
-                "update_columns esplicite pianificate per WriteMode::Update; \
-                 v1.2 Upsert aggiorna tutte le non-key, DeleteByKeys non usa update_columns",
+                "update_columns esplicite valide solo per WriteMode::Update; \
+                 Upsert aggiorna tutte le non-key, DeleteByKeys non usa update_columns",
             ));
         }
     } else if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
@@ -1059,6 +1200,62 @@ pub(crate) fn build_create_table_sql(
         "CREATE TABLE {quoted_target} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         lines.join(",\n")
     ))
+}
+
+/// Genera `CREATE TEMPORARY TABLE staging_name (...)` con la stessa
+/// struttura dello schema Arrow. Usato per WriteMode::Update / Replace
+/// che accumulano dati in una staging table e poi eseguono UPDATE JOIN /
+/// RENAME atomico.
+///
+/// # Errors
+///
+/// Come `build_create_table_sql`.
+pub(crate) fn build_temp_staging_sql(
+    schema: &SchemaRef,
+    staging_name: &str,
+    database: &str,
+) -> Result<String> {
+    let renderer = mysql_renderer();
+    let staging_ident = mysql_identifier(staging_name)?;
+    let db_ident = mysql_identifier(database)?;
+    let staging_object = ObjectName {
+        catalog: None,
+        schema: Some(db_ident),
+        object: staging_ident,
+    };
+    let quoted_staging = renderer.quote_object(&staging_object);
+    let columns: Vec<MysqlWriteColumn> = schema
+        .fields()
+        .iter()
+        .map(|field| compile_write_column(field, &renderer))
+        .collect::<Result<Vec<_>>>()?;
+    let lines: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let ty = mysql_column_ddl(&c.kind, c.spatial_srid);
+            let null = if c.nullable { "NULL" } else { "NOT NULL" };
+            format!("    {} {} {}", c.quoted, ty, null)
+        })
+        .collect();
+    Ok(format!(
+        "CREATE TEMPORARY TABLE {quoted_staging} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        lines.join(",\n")
+    ))
+}
+
+/// Genera nome quoted per staging table (usato dopo `build_temp_staging_sql`).
+///
+/// # Errors
+///
+/// Se `staging_name` o `database` non sono identifier MySQL validi.
+pub(crate) fn quote_staging_name(staging_name: &str, database: &str) -> Result<String> {
+    let renderer = mysql_renderer();
+    let obj = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(database)?),
+        object: mysql_identifier(staging_name)?,
+    };
+    Ok(renderer.quote_object(&obj))
 }
 
 /// Genera `TRUNCATE TABLE db.table` per WriteMode::TruncateInsert.
@@ -1244,7 +1441,8 @@ mod tests {
         let mut cases = Vec::new();
 
         let mut operation = append_operation();
-        operation.mode = WriteMode::Update;
+        // v1.2: Update ora qualified. Usa Replace che resta Unsupported.
+        operation.mode = WriteMode::Replace;
         cases.push(operation);
 
         let mut operation = append_operation();

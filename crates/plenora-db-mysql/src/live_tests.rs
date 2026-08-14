@@ -4421,6 +4421,86 @@ async fn live_v12_write_delete_by_keys_removes_matching_rows() {
 }
 
 #[tokio::test]
+async fn live_v12_write_update_via_staging_updates_matching_rows() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upd").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_upd (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
+            .await.expect("create");
+        setup.connection_mut().unwrap()
+            .query_drop("INSERT INTO _v12_upd VALUES (1, 'orig-1'), (2, 'orig-2'), (3, 'orig-3')")
+            .await.expect("seed");
+    }
+
+    // Update: id=1 → new-1, id=2 → new-2, id=99 → no-op (non trovato)
+    let (schema, batch) = scalar_batch(&[1, 2, 99], &["new-1", "new-2", "ghost"]);
+    let operation = write_op_with_keys(
+        "dataflow_test",
+        "_v12_upd",
+        plenora_database_core::plan::WriteMode::Update,
+        vec!["id".to_owned()],
+    );
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare update");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 3,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write update");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(outcome.rows.received, 3);
+    assert_eq!(outcome.rows.confirmed, 2, "2 righe target aggiornate (id 1 e 2)");
+    assert_eq!(outcome.rows.updated, Some(2));
+    assert_eq!(outcome.rows.skipped, 1, "id 99 non trovato in target = skipped");
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let rows: Vec<(i64, String)> = check.connection_mut().unwrap()
+        .query::<(i64, String), _>("SELECT id, label FROM _v12_upd ORDER BY id")
+        .await.expect("select");
+    assert_eq!(rows, vec![
+        (1, "new-1".to_owned()),
+        (2, "new-2".to_owned()),
+        (3, "orig-3".to_owned()),
+    ]);
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_upd").await.ok();
+}
+
+#[tokio::test]
+async fn live_v12_write_update_without_keys_rejected() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let (schema, _batch) = scalar_batch(&[1], &["x"]);
+    let operation = write_op_scalar("dataflow_test", "_v12_upd_no_keys",
+        plenora_database_core::plan::WriteMode::Update);
+
+    let result = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await;
+    assert!(matches!(
+        result.err().map(|e| e.category),
+        Some(ErrorCategory::InvalidPlan)
+    ), "update senza keys deve fallire InvalidPlan");
+}
+
+#[tokio::test]
 async fn live_v12_write_delete_by_keys_without_keys_rejected() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
     let cancellation = CancellationToken::new();

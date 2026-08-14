@@ -337,6 +337,7 @@ impl Provider for MysqlProvider {
                 operation.mode,
                 plenora_database_core::plan::WriteMode::Create
                     | plenora_database_core::plan::WriteMode::DeleteByKeys
+                    | plenora_database_core::plan::WriteMode::Update
             ) {
                 // Create: target non esiste ancora — skip describe.
                 // DeleteByKeys: schema Arrow è keys-only; il preflight
@@ -512,6 +513,7 @@ async fn execute_mysql_write(
         operation.mode,
         plenora_database_core::plan::WriteMode::Create
             | plenora_database_core::plan::WriteMode::DeleteByKeys
+            | plenora_database_core::plan::WriteMode::Update
     ) && plan.preflight(&target)? != prepared_loss
     {
         return Err(provider_error(
@@ -529,6 +531,31 @@ async fn execute_mysql_write(
             .exec_control(&truncate, ErrorPhase::Prepare, token)
             .await?;
     }
+
+    // v1.2 — Update: crea staging TEMPORARY TABLE. Il bulk INSERT
+    // sotto scriverà in staging invece del target; dopo, UPDATE JOIN.
+    let update_staging_quoted: Option<String> =
+        if operation.mode == plenora_database_core::plan::WriteMode::Update {
+            let seed = format!(
+                "{}-{}",
+                std::process::id(),
+                WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            );
+            let staging_name = plan.staging_temp_name(&seed);
+            let staging_ddl = crate::write::build_temp_staging_sql(
+                &schema,
+                &staging_name,
+                provider.config.database(),
+            )?;
+            session
+                .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
+                .await?;
+            let quoted =
+                crate::write::quote_staging_name(&staging_name, provider.config.database())?;
+            Some(quoted)
+        } else {
+            None
+        };
     // Quando la sorgente dichiara quante righe produrrà, la scrittura può
     // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo
     // allora il percorso diagnostico riga per riga ha un input_total da
@@ -570,6 +597,7 @@ async fn execute_mysql_write(
         &schema,
         &plan,
         operation.mode,
+        update_staging_quoted.as_deref(),
         budget,
         token,
     )
@@ -580,6 +608,34 @@ async fn execute_mysql_write(
             return Err(rollback_after_failure(&mut session, error, &execution_id).await);
         }
     };
+
+    // v1.2 — Update: dopo aver riempito staging, esegui UPDATE JOIN.
+    // Il numero di righe aggiornate rimpiazza `progress.inserted` per il
+    // RowCounts finale (il committed_outcome_for_mode Update usa
+    // affected = updated_target_rows).
+    let mut final_affected = progress.inserted;
+    if operation.mode == plenora_database_core::plan::WriteMode::Update {
+        if let Some(staging) = update_staging_quoted.as_deref() {
+            let update_sql = plan.render_update_from_staging(staging);
+            match session
+                .exec_write(
+                    &update_sql,
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Write,
+                    token,
+                )
+                .await
+            {
+                Ok(updated) => {
+                    final_affected = updated;
+                }
+                Err(error) => {
+                    return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+                }
+            }
+        }
+    }
+
     let result = match session
         .exec_transaction(
             crate::session::MysqlTransactionCommand::Commit,
@@ -592,7 +648,7 @@ async fn execute_mysql_write(
             crate::write::committed_outcome_for_mode(
                 execution_id,
                 progress.received,
-                progress.inserted,
+                final_affected,
                 operation.mode,
             )
         }
@@ -737,6 +793,7 @@ async fn write_input_batches(
     schema: &SchemaRef,
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
+    staging_override: Option<&str>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteProgress> {
@@ -771,8 +828,15 @@ async fn write_input_batches(
                 "overflow conteggio righe MySQL",
             )
         })?;
-        let affected =
-            write_batch_chunks_for_mode(session, &batch, plan, mode, cancellation).await?;
+        let affected = write_batch_chunks_for_mode(
+            session,
+            &batch,
+            plan,
+            mode,
+            staging_override,
+            cancellation,
+        )
+        .await?;
         progress.inserted = progress.inserted.checked_add(affected).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,
@@ -786,12 +850,17 @@ async fn write_input_batches(
 }
 
 /// Mode-aware — dispatch tra INSERT bulk (Append/Create/TruncateInsert/
-/// Upsert) e DELETE by keys.
+/// Upsert), DELETE by keys, INSERT verso staging (Update).
+///
+/// `staging_override`: se Some, il SQL punta a staging invece del target
+/// reale (usato per Update — accumulazione dati in staging table prima
+/// del successivo UPDATE JOIN).
 async fn write_batch_chunks_for_mode(
     session: &mut crate::MysqlSession,
     batch: &plenora_database_core::arrow::RecordBatch,
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
+    staging_override: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
     let mut affected_total = 0_u64;
@@ -801,6 +870,8 @@ async fn write_batch_chunks_for_mode(
         let parameters = plan.bind_chunk(batch, start, rows)?;
         let sql = if mode == plenora_database_core::plan::WriteMode::DeleteByKeys {
             plan.render_delete_by_keys(rows)?
+        } else if let Some(staging) = staging_override {
+            plan.render_insert_into_staging(staging, rows)?
         } else {
             plan.render_insert(rows)?
         };
@@ -1313,9 +1384,9 @@ mod tests {
         let provider = MysqlProvider::new(config, 1).expect("provider");
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         let mut operation = append_write_operation();
-        // v1.2: Upsert/Create/TruncateInsert ora qualificati. Usa Update
-        // che resta Unsupported in questa tranche.
-        operation.mode = plenora_database_core::plan::WriteMode::Update;
+        // v1.2: 5/7 modes ora qualificati (Append/Create/TruncateInsert/
+        // Upsert/DeleteByKeys/Update). Usa Replace che resta Unsupported.
+        operation.mode = plenora_database_core::plan::WriteMode::Replace;
         let outcome = provider
             .prepare_write(
                 &SecretString::new("unique-secret"),
