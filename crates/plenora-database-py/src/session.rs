@@ -120,14 +120,18 @@ impl Session {
                     Ok(value) => {
                         let outcome = Box::new(tx).commit(&cancel).await?;
                         if !outcome.is_committed() {
+                            // Fix review #7: coerente con async_session (Unknown, non None).
+                            // Il commit outcome unknown implica che il server potrebbe aver
+                            // applicato le modifiche remote-side ma il canale è compromesso —
+                            // remote_effect None indurrebbe retry sbagliati.
                             return Err(DatabaseError {
                                 category: plenora_database_core::ErrorCategory::Internal,
                                 phase: plenora_database_core::ErrorPhase::Write,
-                                remote_effect: plenora_database_core::RemoteEffect::None,
+                                remote_effect: plenora_database_core::RemoteEffect::Unknown,
                                 retry: plenora_database_core::RetryDisposition::Never,
                                 provider: None,
                                 execution_id: None,
-                                message: "commit outcome unknown: verificare stato del target".to_owned(),
+                                message: "commit outcome unknown: verificare stato del target out-of-band".to_owned(),
                                 diagnostics: None,
                             });
                         }

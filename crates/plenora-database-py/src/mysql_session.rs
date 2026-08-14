@@ -109,7 +109,7 @@ impl MysqlSession {
                             return Err(DatabaseError {
                                 category: plenora_database_core::ErrorCategory::Internal,
                                 phase: plenora_database_core::ErrorPhase::Write,
-                                remote_effect: plenora_database_core::RemoteEffect::None,
+                                remote_effect: plenora_database_core::RemoteEffect::Unknown,
                                 retry: plenora_database_core::RetryDisposition::Never,
                                 provider: Some(
                                     plenora_database_core::plan::ProviderKind::Mysql,
