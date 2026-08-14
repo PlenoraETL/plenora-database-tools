@@ -1,0 +1,162 @@
+name: python-wheel
+
+# Builda wheel abi3-py310 per Linux (manylinux_2_34), macOS (arm64 +
+# x86_64) e Windows (x86_64). Un unico wheel per platform copre
+# Python >= 3.10.
+#
+# Triggers:
+#   - `workflow_dispatch` (manuale): produce artifact scaricabili
+#     dalla UI Actions. Se `publish_pypi=true`, uploada anche a PyPI.
+#   - `release` (published): produce artifact + li allega al release
+#     GitHub. Upload a PyPI opt-in via input separato del release.
+#
+# Secrets richiesti:
+#   PYPI_TOKEN  — API token PyPI (solo se publish_pypi abilitato)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: 'Upload dei wheel su PyPI (default false)'
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+jobs:
+  # ---------------- Linux (manylinux_2_34) ----------------
+  linux:
+    name: build linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheel (manylinux_2_34)
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: >-
+            --release
+            --out dist
+            --manifest-path crates/plenora-database-py/Cargo.toml
+          manylinux: 2_34
+          rust-toolchain: '1.92'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux-x86_64
+          path: dist/*.whl
+
+  # ---------------- macOS (arm64 + x86_64) ----------------
+  macos:
+    name: build macos-${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64
+            runs-on: macos-latest       # runner ARM (M1/M2)
+          - target: x86_64
+            runs-on: macos-13           # runner Intel
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheel (${{ matrix.target }})
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: >-
+            --release
+            --out dist
+            --manifest-path crates/plenora-database-py/Cargo.toml
+            --target ${{ matrix.target }}-apple-darwin
+          rust-toolchain: '1.92'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-${{ matrix.target }}
+          path: dist/*.whl
+
+  # ---------------- Windows (x86_64) ----------------
+  windows:
+    name: build windows-x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: >-
+            --release
+            --out dist
+            --manifest-path crates/plenora-database-py/Cargo.toml
+          rust-toolchain: '1.92'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows-x86_64
+          path: dist/*.whl
+
+  # ---------------- Smoke test ----------------
+  # Scarica il wheel Linux, lo installa in una venv pulita e verifica
+  # che l'import e la version() funzionino. Blocca il release se
+  # qualcosa nel packaging è rotto.
+  smoke-test:
+    name: smoke-test linux wheel
+    needs: [linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-linux-x86_64
+          path: dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install wheel
+        run: pip install dist/*.whl
+      - name: Verify import + version
+        run: |
+          python -c "import plenora_database as p; print('version:', p.version())"
+          python -c "import plenora_database as p; s = p.Session; assert hasattr(s, 'execute'); print('Session OK')"
+          python -c "import plenora_database as p; print('errors:', p.PlenoraError.__name__)"
+
+  # ---------------- Attach to GitHub Release ----------------
+  # Solo su release publish: scarica tutti i wheel e li allega alla
+  # release corrente. Non tocca PyPI.
+  attach-to-release:
+    name: attach wheels to release
+    needs: [linux, macos, windows, smoke-test]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List collected wheels
+        run: ls -la dist/
+      - name: Upload wheels to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+
+  # ---------------- Upload to PyPI (opt-in) ----------------
+  # Attivato solo con `workflow_dispatch` + input `publish_pypi=true`.
+  # Richiede il secret PYPI_TOKEN configurato nel repo.
+  publish-pypi:
+    name: publish to PyPI
+    needs: [linux, macos, windows, smoke-test]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --skip-existing dist/*.whl
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
