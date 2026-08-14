@@ -89,14 +89,33 @@ class AsyncSession:
         self,
         schema: str,
         object: str,
-        batch_rows: int | None = None,
     ):
         """Async equivalente di `Session.read()`.
 
         Ritorna un awaitable che si risolve in `AsyncBatchReader`
         (async iterator protocol: `async for chunk in reader`).
         """
-        return await self._native.aread(schema, object, batch_rows)
+        return await self._native.aread(schema, object)
+
+    # ------------------------ Arrow bulk write -------------------------
+
+    async def acopy_from(
+        self,
+        schema: str,
+        table: str,
+        source: Any,
+        *,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+    ) -> dict:
+        """Bulk write async — analogo di `Session.copy_from`. Vedi la
+        docstring lì per l'input `source` e i mode supportati.
+        """
+        from ._arrow_io import _to_ipc_bytes
+        ipc_bytes = _to_ipc_bytes(source)
+        return await self._native.acopy_from(
+            schema, table, ipc_bytes, mode, transaction_profile
+        )
 
     # -------------------- transactions ----------------------------------
 

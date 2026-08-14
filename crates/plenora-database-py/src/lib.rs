@@ -17,6 +17,7 @@ mod errors;
 mod py_convert;
 mod session;
 mod transaction;
+mod write;
 
 use arrow_reader::{AsyncBatchReader, BatchReader};
 use async_session::{aconnect, init_async_runtime, AsyncSession};

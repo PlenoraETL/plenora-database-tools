@@ -256,13 +256,12 @@ impl AsyncSession {
     ///
     /// Non carica tutto in memoria; legge batch-by-batch dal cursor
     /// server-side sul runtime tokio (non blocca l'event loop).
-    #[pyo3(signature = (schema, object, batch_rows=None))]
+    #[pyo3(signature = (schema, object))]
     fn aread<'py>(
         &self,
         py: Python<'py>,
         schema: &str,
         object: &str,
-        batch_rows: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -270,12 +269,57 @@ impl AsyncSession {
         let schema = schema.to_owned();
         let object = object.to_owned();
         future_into_py(py, async move {
-            let reader = open_reader_async(provider, secret, schema, object, batch_rows)
+            let reader = open_reader_async(provider, secret, schema, object)
                 .await
                 .map_err(to_py_err)?;
             Python::with_gil(|py| {
                 let obj = Py::new(py, reader)?;
                 Ok(obj.into_pyobject(py)?.into_any().unbind())
+            })
+        })
+    }
+
+    /// Bulk write async — analogo di `Session.copy_from`. Ritorna un
+    /// awaitable che si risolve in dict `WriteOutcome`.
+    #[pyo3(signature = (
+        schema,
+        table,
+        ipc_bytes,
+        mode="append",
+        transaction_profile="single_transaction",
+    ))]
+    fn acopy_from<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        table: &str,
+        ipc_bytes: &[u8],
+        mode: &str,
+        transaction_profile: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let schema_owned = schema.to_owned();
+        let table_owned = table.to_owned();
+        let ipc_owned = ipc_bytes.to_vec();
+        let mode_owned = mode.to_owned();
+        let profile_owned = transaction_profile.to_owned();
+        future_into_py(py, async move {
+            let outcome = crate::write::copy_from_async(
+                provider,
+                secret,
+                schema_owned,
+                table_owned,
+                ipc_owned,
+                mode_owned,
+                profile_owned,
+            )
+            .await
+            .map_err(crate::errors::to_py_err)?;
+            Python::with_gil(|py| {
+                let d = crate::write::outcome_into_py(py, &outcome)?;
+                Ok(d.into_any().unbind())
             })
         })
     }

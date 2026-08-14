@@ -5,7 +5,7 @@ description = "Bindings Python (PyO3) di plenora-database-tools"
 # release proprio (semver PyPI) separato dal Rust workspace (v1.x).
 # Deve coincidere con `pyproject.toml::version` altrimenti wheel filename
 # e `p.version()` divergono (bug v0.1.0 fixato in v0.1.1).
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 publish = false

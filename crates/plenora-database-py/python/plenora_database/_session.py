@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._arrow_io import _to_ipc_bytes
 from ._native import Session as _NativeSession
 from ._transaction import Transaction
 from .query import Delete, Insert, Select, Update, Upsert
@@ -71,7 +72,6 @@ class Session:
         self,
         schema: str,
         object: str,
-        batch_rows: int | None = None,
     ):
         """Apre uno stream Arrow IPC su una tabella/vista Postgres.
 
@@ -87,10 +87,56 @@ class Session:
                 # batch è pyarrow.Table
 
         Non carica l'intero dataset in memoria — legge batch-by-batch
-        dal cursor server-side. Sblocca la migrazione da CLI
-        `postgres-read-ipc` per query >1M righe.
+        dal cursor server-side. La size dei batch è decisa dal provider
+        (Postgres: bounded dal buffer del cursore server-side).
         """
-        return self._native.read(schema, object, batch_rows)
+        return self._native.read(schema, object)
+
+    # ------------------------ Arrow bulk write -------------------------
+
+    def copy_from(
+        self,
+        schema: str,
+        table: str,
+        source: Any,
+        *,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+    ) -> dict:
+        """Bulk write via `prepare_write` + `write` del provider.
+
+        Postgres usa COPY internamente per mode `append`.
+
+        Parametri:
+          - `schema`, `table`: target
+          - `source`: input dati. Accetta:
+              * `pyarrow.Table` (schema derivato)
+              * `pyarrow.RecordBatch`
+              * lista di `pyarrow.RecordBatch` (tutti con stesso schema)
+              * `bytes` — buffer Arrow IPC stream self-contained (schema
+                + N batches + EOS). Utile per zero-copy da altri produttori.
+          - `mode`: "append" | "create" | "replace" | "truncate_insert"
+            | "update" | "upsert" | "delete_by_keys" (default "append")
+          - `transaction_profile`: "single_transaction" | "chunk_committed"
+            | "staged_swap" | "best_effort_ddl" (default "single_transaction")
+
+        Ritorna un dict con struttura `WriteOutcome`:
+
+            {
+              "status": "committed",
+              "execution_id": "...",
+              "provider": "postgres",
+              "rows": {"received": N, "confirmed": N, "inserted": N, ...},
+              "layer_outcomes": [...],
+              "recovery": None,
+            }
+
+        Richiede pyarrow installato (a meno che `source` sia già bytes).
+        """
+        ipc_bytes = _to_ipc_bytes(source)
+        return self._native.copy_from(
+            schema, table, ipc_bytes, mode, transaction_profile
+        )
 
     # ------------------------ transactions -----------------------------
 

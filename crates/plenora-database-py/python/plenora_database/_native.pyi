@@ -52,8 +52,15 @@ class Session:
         self,
         schema: str,
         object: str,
-        batch_rows: int | None = None,
     ) -> BatchReader: ...
+    def copy_from(
+        self,
+        schema: str,
+        table: str,
+        ipc_bytes: bytes,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+    ) -> dict: ...
 
 # ============================ Transaction (sync) ============================
 
@@ -119,8 +126,15 @@ class AsyncSession:
         self,
         schema: str,
         object: str,
-        batch_rows: int | None = None,
     ) -> Any: ...  # awaitable → AsyncBatchReader
+    def acopy_from(
+        self,
+        schema: str,
+        table: str,
+        ipc_bytes: bytes,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+    ) -> Any: ...  # awaitable → dict
 
 
 class BatchReader:

@@ -370,19 +370,64 @@ impl Session {
     /// Non carica tutto il dataset in memoria: legge batch-by-batch
     /// dal cursor server-side. Sblocca la migrazione dal CLI
     /// `postgres-read-ipc` per query >1M righe.
-    #[pyo3(signature = (schema, object, batch_rows=None))]
+    #[pyo3(signature = (schema, object))]
     fn read(
         &self,
         py: Python<'_>,
         schema: &str,
         object: &str,
-        batch_rows: Option<u32>,
     ) -> PyResult<BatchReader> {
         self.ensure_open()?;
         py.allow_threads(|| {
-            open_reader(&self.provider, &self.secret, schema, object, batch_rows)
+            open_reader(&self.provider, &self.secret, schema, object)
         })
         .map_err(to_py_err)
+    }
+
+    /// Bulk write via `prepare_write` + `write` del provider Postgres
+    /// (usa COPY internamente per mode `append`). Il consumer Python
+    /// passa un buffer Arrow IPC stream contenente schema + N record
+    /// batches + EOS.
+    ///
+    /// Ritorna un dict con struttura `WriteOutcome`:
+    ///
+    ///     {
+    ///       "status": "committed",
+    ///       "execution_id": "...",
+    ///       "provider": "postgres",
+    ///       "rows": {"received": N, "confirmed": N, "inserted": N, ...},
+    ///       "layer_outcomes": [...],
+    ///       "recovery": None,
+    ///     }
+    #[pyo3(signature = (
+        schema,
+        table,
+        ipc_bytes,
+        mode="append",
+        transaction_profile="single_transaction",
+    ))]
+    fn copy_from<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        table: &str,
+        ipc_bytes: &[u8],
+        mode: &str,
+        transaction_profile: &str,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        self.ensure_open()?;
+        let result = py.allow_threads(|| {
+            crate::write::copy_from_sync(
+                &self.provider,
+                &self.secret,
+                schema,
+                table,
+                ipc_bytes,
+                mode,
+                transaction_profile,
+            )
+        });
+        crate::write::wrap_outcome(py, result)
     }
 
     /// Apre una nuova transazione user-managed. Usa `with s.begin() as tx:`

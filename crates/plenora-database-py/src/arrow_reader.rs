@@ -138,6 +138,11 @@ impl BatchReader {
 
 /// Apre un BatchReader su una tabella/vista Postgres.
 ///
+/// La size dei batch prodotti dallo stream è decisa internamente dal
+/// provider (per Postgres: bounded dal buffer del cursore server-side).
+/// Non è configurabile dall'API SDK v0.1.x perché `Provider::read()`
+/// del core Rust non espone un parametro batch size.
+///
 /// # Errors
 ///
 /// `PlenoraError` se l'apertura dello stream fallisce.
@@ -146,7 +151,6 @@ pub(crate) fn open_reader(
     secret: &SecretString,
     schema: &str,
     object: &str,
-    batch_rows: Option<u32>,
 ) -> Result<BatchReader, DatabaseError> {
     let operation = ReadOperation {
         source: ObjectRef {
@@ -162,7 +166,6 @@ pub(crate) fn open_reader(
     };
     let cancel = CancellationToken::new();
     let stream = runtime().block_on(async move {
-        let _ = batch_rows; // TODO: passare a Provider::read se supportato
         provider
             .read(secret, &operation, &ParameterBag::default(), &default_budget(), &cancel)
             .await
@@ -254,7 +257,6 @@ pub(crate) async fn open_reader_async(
     secret: SecretString,
     schema: String,
     object: String,
-    _batch_rows: Option<u32>,
 ) -> Result<AsyncBatchReader, DatabaseError> {
     let operation = ReadOperation {
         source: ObjectRef {

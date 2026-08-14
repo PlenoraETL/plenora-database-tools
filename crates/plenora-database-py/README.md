@@ -157,6 +157,83 @@ near = (
 
 Predicati: `intersects` / `contains` / `within` / `bounding_box` / `d_within`.
 
+## Bulk write (COPY)
+
+Per import massivo Postgres usa COPY internamente (via `prepare_write` +
+`write` del provider). Il consumer Python passa dati Arrow:
+
+```python
+import pyarrow as pa
+
+tbl = pa.table({
+    "id": pa.array(range(1, 100_001), type=pa.int64()),
+    "label": [f"row-{i}" for i in range(1, 100_001)],
+    "amount": pa.array([i * 10 for i in range(1, 100_001)], type=pa.int32()),
+})
+
+outcome = s.copy_from("public", "measurements", tbl, mode="append")
+# {"status": "committed", "rows": {"received": 100000, "confirmed": 100000, ...}}
+
+# Async equivalente
+outcome = await s.acopy_from("public", "measurements", tbl)
+```
+
+`source` accetta `pyarrow.Table`, `pyarrow.RecordBatch`, iterable di batch
+o `bytes` (Arrow IPC stream self-contained, per zero-copy da altri produttori).
+
+Mode: `append` (default) / `create` / `replace` / `truncate_insert` /
+`update` / `upsert` / `delete_by_keys`.
+Transaction profile: `single_transaction` (default) / `chunk_committed` /
+`staged_swap` / `best_effort_ddl`.
+
+L'outcome è un dict con struttura `WriteOutcome` del core (status,
+rows.confirmed / .inserted / .failed / .skipped, layer_outcomes, recovery).
+
+## Observability
+
+`Session.metrics()` restituisce uno snapshot dict compatibile con export
+Prometheus / OpenTelemetry:
+
+```python
+snap = s.metrics()
+# {"database": {"queries_total": N, "queries_failed": N,
+#               "write_committed_total": N, ...},
+#  "connection_pool": {"in_use": N, "available": N, ...}}
+
+# Esempio integrazione OpenTelemetry (structured log)
+import logging
+logger = logging.getLogger("plenora.db")
+logger.info(
+    "db.snapshot",
+    extra={
+        "db.queries_total": snap["database"]["queries_total"],
+        "db.pool_in_use": snap["connection_pool"]["in_use"],
+        "service.version": p.version(),
+    },
+)
+```
+
+Per catch degli errori con contesto strutturato, tutti i campi diagnostici
+sono attributi sulle `PlenoraError`:
+
+```python
+try:
+    s.execute(sql, params)
+except p.PlenoraError as e:
+    logger.error(
+        "db.error",
+        extra={
+            "db.category": e.category,
+            "db.phase": e.phase,
+            "db.retry": e.retry,
+            "db.remote_effect": e.remote_effect,
+            "db.provider": e.provider,
+            "db.execution_id": e.execution_id,
+        },
+    )
+    raise
+```
+
 ## Error hierarchy
 
 Tutti gli errori discendono da `PlenoraError` (che a sua volta
