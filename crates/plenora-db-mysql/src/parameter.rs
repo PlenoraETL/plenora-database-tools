@@ -5,6 +5,23 @@ use plenora_database_core::{
 };
 use std::collections::BTreeSet;
 
+/// Codifica una sequenza posizionale di `ParameterValue` in `Params`.
+///
+/// Uso: `TransactionScope::execute` riceve `Statement { sql, params:
+/// `Vec<ParameterValue>` }` con placeholder `?` `MySQL` nell'ordine di `params`.
+///
+/// # Errors
+///
+/// Propaga `parameter_value` errors (float non finiti, stringhe con NUL, ecc.).
+pub fn bind_positional_params(params: &[ParameterValue]) -> Result<Params> {
+    let values = params.iter().map(parameter_value).collect::<Result<Vec<_>>>()?;
+    if values.is_empty() {
+        Ok(Params::Empty)
+    } else {
+        Ok(Params::Positional(values))
+    }
+}
+
 /// Codifica i parametri nell'ordine prodotto dal renderer `MySQL`.
 ///
 /// # Errors
@@ -38,7 +55,15 @@ pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Pa
     Ok(Params::Positional(values))
 }
 
-fn parameter_value(value: &ParameterValue) -> Result<Value> {
+/// Converte un singolo `ParameterValue` in `mysql_async::Value`.
+///
+/// Esposto per il transaction module (positional binding).
+///
+/// # Errors
+///
+/// Errore `DataMapping` per float non finiti, stringhe con NUL,
+/// tipi non supportati (Geometry, Interval).
+pub fn parameter_value(value: &ParameterValue) -> Result<Value> {
     match value {
         ParameterValue::Bool(value) => Ok(Value::Int(i64::from(*value))),
         ParameterValue::I32(value) => Ok(Value::Int(i64::from(*value))),

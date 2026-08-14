@@ -1,0 +1,493 @@
+//! Transaction scope MySQL — implementa `TransactionScope` del core.
+//!
+//! Copre begin con opzioni (isolation, access mode, statement_timeout),
+//! savepoint annidati con quoting sicuro, commit/rollback disambiguato
+//! (`OutcomeUnknown` in caso di canale compromesso in fase Commit).
+//!
+//! Non implementa (deferito a minor future):
+//! - `query_stream` — richiede cursor MySQL (mysql_async non ha API
+//!   nativa: bisogna implementare via SELECT + LIMIT/OFFSET chunked)
+//!
+//! Riuso: sfrutta `MysqlSession::exec_write` / `query_rows` /
+//! `exec_transaction` già presenti. Aggiunge parsing di Row al formato
+//! canonico `plenora_database_core::Row`.
+
+#![allow(
+    clippy::too_many_lines,
+    clippy::doc_markdown,
+    clippy::missing_errors_doc,
+    clippy::missing_const_for_fn,
+    clippy::option_if_let_else,
+    clippy::future_not_send,
+    clippy::significant_drop_tightening,
+)]
+
+use crate::error::driver_error;
+use crate::parameter::bind_positional_params;
+use crate::session::{MysqlSession, MysqlTransactionCommand};
+use mysql_async::prelude::Queryable;
+use mysql_async::{Row as MyRow, Value};
+use plenora_database_core::provider::{ParameterValue, ProviderFuture};
+use plenora_database_core::row::Row;
+use plenora_database_core::transaction::{
+    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
+};
+use plenora_database_core::{
+    plan::ProviderKind, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
+    Result, RetryDisposition,
+};
+use std::sync::Arc;
+
+pub struct MysqlTransaction {
+    session: MysqlSession,
+    open: bool,
+}
+
+impl MysqlTransaction {
+    /// Apre la transazione emettendo `START TRANSACTION` con opzioni.
+    ///
+    /// # Errors
+    ///
+    /// Errore se la sessione non è pronta, il canale è cancellato, o il
+    /// server rigetta le opzioni.
+    pub async fn begin(
+        mut session: MysqlSession,
+        options: &TransactionOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<Self> {
+        // 1. Isolation level (SET TRANSACTION prima di START).
+        //    MySQL non supporta "deferrable" (skip); "read only" è opzione
+        //    di START TRANSACTION, non di SET.
+        if let Some(isolation) = options.isolation {
+            let iso_sql = match isolation {
+                plenora_database_core::transaction::IsolationLevel::ReadUncommitted => {
+                    "SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
+                }
+                plenora_database_core::transaction::IsolationLevel::ReadCommitted => {
+                    "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED"
+                }
+                plenora_database_core::transaction::IsolationLevel::RepeatableRead => {
+                    "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+                }
+                plenora_database_core::transaction::IsolationLevel::Serializable => {
+                    "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+                }
+            };
+            raw_exec(&mut session, iso_sql, ErrorPhase::Prepare, cancellation).await?;
+        }
+
+        // 2. Statement timeout MySQL: MAX_EXECUTION_TIME (session-scoped, ms).
+        if let Some(timeout_ms) = options.statement_timeout_ms {
+            let sql = format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}");
+            raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
+        }
+
+        // 3. START TRANSACTION [READ ONLY | READ WRITE].
+        let start_sql = match options.access_mode {
+            Some(plenora_database_core::transaction::AccessMode::ReadOnly) => {
+                "START TRANSACTION READ ONLY"
+            }
+            Some(plenora_database_core::transaction::AccessMode::ReadWrite) => {
+                "START TRANSACTION READ WRITE"
+            }
+            None => "START TRANSACTION",
+        };
+        raw_exec(&mut session, start_sql, ErrorPhase::Prepare, cancellation).await?;
+
+        // 4. Session context (SET @plenora_ctx_name = value).
+        //    MySQL user variables sono session-scoped, resettati alla
+        //    disconnessione; non participano al rollback ma è OK: sono
+        //    context info, non state applicativo.
+        for (name, entry) in options.context.iter() {
+            if !is_safe_context_name(name.as_str()) {
+                return Err(DatabaseError::invalid_plan(format!(
+                    "session context MySQL: nome non sicuro '{name}'"
+                )));
+            }
+            let value = entry.value.as_provider_string();
+            let sql = format!(
+                "SET @plenora_ctx_{name} = {}",
+                mysql_string_literal(&value)
+            );
+            raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
+        }
+
+        Ok(Self { session, open: true })
+    }
+
+}
+
+fn is_safe_context_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 60
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn mysql_string_literal(value: &str) -> String {
+    // Escape single quotes + backslashes. Nessun altro carattere richiede
+    // escape con `NO_BACKSLASH_ESCAPES` disabilitato (default MySQL).
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
+}
+
+fn quote_savepoint_name(name: &str) -> Result<String> {
+    validate_savepoint_name(name)?;
+    // Savepoint identifiers vanno backtick-quoted; validate_savepoint_name
+    // già rifiuta backtick/nul.
+    Ok(format!("`{name}`"))
+}
+
+/// Esegue un SQL raw (nessun parametro) sulla sessione via **text protocol**.
+///
+/// MySQL rifiuta `SET`, `SAVEPOINT`, `START TRANSACTION` ecc. nel prepared
+/// statement protocol (errore 1295). `exec_control` usa `query_drop`.
+async fn raw_exec(
+    session: &mut MysqlSession,
+    sql: &str,
+    phase: ErrorPhase,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    session.exec_control(sql, phase, cancellation).await
+}
+
+/// Converte una `mysql_async::Row` in `plenora_database_core::Row`.
+///
+/// I tipi non nativi (Date/Time/Decimal) sono estratti come stringhe UTF-8
+/// (formato server-side); il consumer riconverte con `p.date(str)` etc.
+fn decode_row(mut row: MyRow, columns: &Arc<[String]>) -> Result<Row> {
+    let mut values = Vec::with_capacity(columns.len());
+    for idx in 0..columns.len() {
+        let value = row.take_opt::<Value, _>(idx).unwrap_or(Ok(Value::NULL));
+        let raw = value.map_err(|error| {
+            DatabaseError {
+                category: ErrorCategory::DataMapping,
+                phase: ErrorPhase::Read,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                provider: Some(ProviderKind::Mysql),
+                execution_id: None,
+                diagnostics: None,
+                message: format!("decode colonna MySQL idx={idx}: {error}"),
+            }
+        })?;
+        values.push(convert_value(raw, idx)?);
+    }
+    Ok(Row::new(Arc::clone(columns), values))
+}
+
+fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
+    Ok(match value {
+        Value::NULL => ParameterValue::Null {
+            type_name: "unknown".to_owned(),
+        },
+        Value::Int(v) => ParameterValue::I64(v),
+        Value::UInt(v) => {
+            // MySQL UInt64 può eccedere I64 (>2^63); il decoder canonico non
+            // ha un tipo unsigned. Falliamo esplicito piuttosto che overflow.
+            i64::try_from(v).map(ParameterValue::I64).map_err(|_| DatabaseError {
+                category: ErrorCategory::DataMapping,
+                phase: ErrorPhase::Read,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                provider: Some(ProviderKind::Mysql),
+                execution_id: None,
+                diagnostics: None,
+                message: format!("colonna MySQL idx={idx} UInt eccede i64"),
+            })?
+        }
+        Value::Float(v) => ParameterValue::F64(f64::from(v)),
+        Value::Double(v) => ParameterValue::F64(v),
+        Value::Bytes(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(s) => ParameterValue::String(s.to_owned()),
+            Err(_) => ParameterValue::Bytes(bytes),
+        },
+        Value::Date(y, mo, d, h, mi, s, us) => {
+            if h == 0 && mi == 0 && s == 0 && us == 0 {
+                ParameterValue::Date(format!("{y:04}-{mo:02}-{d:02}"))
+            } else {
+                ParameterValue::Timestamp(format!(
+                    "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{us:06}"
+                ))
+            }
+        }
+        Value::Time(is_neg, days, h, mi, s, us) => {
+            // TIME MySQL può eccedere 24h; rappresentazione canonica:
+            // "[-]HHH:MM:SS.uuuuuu"
+            let sign = if is_neg { "-" } else { "" };
+            let total_hours = u32::from(h) + days * 24;
+            ParameterValue::String(format!(
+                "{sign}{total_hours:03}:{mi:02}:{s:02}.{us:06}"
+            ))
+        }
+    })
+}
+
+// ------------------------------ TransactionScope impl -----------------------
+
+impl TransactionScope for MysqlTransaction {
+    fn provider_kind(&self) -> ProviderKind {
+        ProviderKind::Mysql
+    }
+
+    fn execute<'a>(
+        &'a mut self,
+        statement: &'a Statement,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, u64> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Write));
+            }
+            let params = bind_positional_params(&statement.params)?;
+            self.session
+                .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
+                .await
+        })
+    }
+
+    fn query<'a>(
+        &'a mut self,
+        statement: &'a Statement,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Vec<Row>> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Read));
+            }
+            let params = bind_positional_params(&statement.params)?;
+            // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
+            let timeout = self.session.operation_timeout();
+            let connection = self
+                .session
+                .connection_mut()
+                .ok_or_else(|| closed_error(ErrorPhase::Read))?;
+            let execution = connection.exec::<MyRow, _, _>(&statement.sql, params);
+            let outcome = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    self.session.discard().await;
+                    self.open = false;
+                    return Err(DatabaseError {
+                        category: ErrorCategory::Cancelled,
+                        phase: ErrorPhase::Read,
+                        remote_effect: RemoteEffect::None,
+                        retry: RetryDisposition::Never,
+                        provider: Some(ProviderKind::Mysql),
+                        execution_id: None,
+                        diagnostics: None,
+                        message: "query MySQL cancellata".to_owned(),
+                    });
+                }
+                result = tokio::time::timeout(timeout, execution) => result,
+            };
+            let rows = match outcome {
+                Ok(Ok(rows)) => rows,
+                Ok(Err(error)) => {
+                    return Err(driver_error(&error, ErrorPhase::Read, RemoteEffect::None));
+                }
+                Err(_) => {
+                    self.session.discard().await;
+                    self.open = false;
+                    return Err(DatabaseError {
+                        category: ErrorCategory::Timeout,
+                        phase: ErrorPhase::Read,
+                        remote_effect: RemoteEffect::None,
+                        retry: RetryDisposition::Never,
+                        provider: Some(ProviderKind::Mysql),
+                        execution_id: None,
+                        diagnostics: None,
+                        message: "query MySQL timeout".to_owned(),
+                    });
+                }
+            };
+            // Extract column names dal primo row (o vuoto se nessun result).
+            let columns: Arc<[String]> = if rows.is_empty() {
+                Arc::from(Vec::<String>::new())
+            } else {
+                let names: Vec<String> = rows[0]
+                    .columns_ref()
+                    .iter()
+                    .map(|c| c.name_str().to_string())
+                    .collect();
+                Arc::from(names)
+            };
+            rows.into_iter()
+                .map(|r| decode_row(r, &columns))
+                .collect::<Result<Vec<_>>>()
+        })
+    }
+
+    fn query_stream<'a>(
+        &'a mut self,
+        _statement: &'a Statement,
+        _batch_size: u32,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
+        Box::pin(async move {
+            Err(DatabaseError {
+                category: ErrorCategory::Unsupported,
+                phase: ErrorPhase::Prepare,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                provider: Some(ProviderKind::Mysql),
+                execution_id: None,
+                diagnostics: None,
+                message: "query_stream MySQL non ancora implementato in v1 \
+                          (usa Provider::read per stream Arrow bulk)"
+                    .to_owned(),
+            })
+        })
+    }
+
+    fn savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Prepare));
+            }
+            let quoted = quote_savepoint_name(name)?;
+            raw_exec(&mut self.session, &format!("SAVEPOINT {quoted}"), ErrorPhase::Prepare, cancellation).await
+        })
+    }
+
+    fn rollback_to_savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Prepare));
+            }
+            let quoted = quote_savepoint_name(name)?;
+            raw_exec(
+                &mut self.session,
+                &format!("ROLLBACK TO SAVEPOINT {quoted}"),
+                ErrorPhase::Write,
+                cancellation,
+            )
+            .await
+        })
+    }
+
+    fn release_savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Prepare));
+            }
+            let quoted = quote_savepoint_name(name)?;
+            raw_exec(
+                &mut self.session,
+                &format!("RELEASE SAVEPOINT {quoted}"),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await
+        })
+    }
+
+    fn commit(
+        mut self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> ProviderFuture<'_, CommitOutcome> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Commit));
+            }
+            let outcome = self
+                .session
+                .exec_transaction(MysqlTransactionCommand::Commit, ErrorPhase::Commit, cancellation)
+                .await;
+            self.open = false;
+            match outcome {
+                Ok(()) => Ok(CommitOutcome::Committed),
+                Err(err) if matches!(
+                    err.category,
+                    ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
+                ) => {
+                    // Canale compromesso durante commit: outcome ignoto.
+                    Ok(CommitOutcome::OutcomeUnknown {
+                        recovery: outcome_unknown_recovery(),
+                    })
+                }
+                Err(err) => Err(err),
+            }
+        })
+    }
+
+    fn rollback(
+        mut self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> ProviderFuture<'_, ()> {
+        Box::pin(async move {
+            if !self.open {
+                return Ok(());
+            }
+            let outcome = self
+                .session
+                .exec_transaction(
+                    MysqlTransactionCommand::Rollback,
+                    ErrorPhase::Rollback,
+                    cancellation,
+                )
+                .await;
+            self.open = false;
+            outcome
+        })
+    }
+
+    fn execute_conditional_update<'a>(
+        &'a mut self,
+        request: ConditionalUpdate<'a>,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.open {
+                return Err(closed_error(ErrorPhase::Write));
+            }
+            // Pattern:
+            //   1. SAVEPOINT __plenora_cu
+            //   2. UPDATE ... → verifica affected_rows == expected
+            //   3. Se ok, RELEASE; se no, ROLLBACK TO + return ConcurrentModification
+            let sp = "__plenora_cu";
+            self.savepoint(sp, cancellation).await?;
+            let params = bind_positional_params(&request.update.params)?;
+            let affected = self
+                .session
+                .exec_write(&request.update.sql, params, ErrorPhase::Write, cancellation)
+                .await?;
+            if affected == request.expected_affected_rows {
+                self.release_savepoint(sp, cancellation).await?;
+                Ok(())
+            } else {
+                self.rollback_to_savepoint(sp, cancellation).await?;
+                Err(concurrent_modification_error(format!(
+                    "MySQL: expected {} affected rows, got {}",
+                    request.expected_affected_rows, affected
+                )))
+            }
+        })
+    }
+}
+
+fn closed_error(phase: ErrorPhase) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::InvalidPlan,
+        phase,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(ProviderKind::Mysql),
+        execution_id: None,
+        diagnostics: None,
+        message: "MysqlTransaction già chiusa".to_owned(),
+    }
+}

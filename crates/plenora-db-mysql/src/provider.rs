@@ -226,7 +226,7 @@ impl Provider for MysqlProvider {
                 },
                 transactions: TransactionCapabilities {
                     single_transaction: true,
-                    savepoints: false,
+                    savepoints: true,
                     transactional_ddl: false,
                     staged_swap: false,
                     scope: TransactionScope::Transaction,
@@ -372,6 +372,42 @@ impl Provider for MysqlProvider {
             budget,
             cancellation,
         ))
+    }
+
+    fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a plenora_database_core::transaction::TransactionOptions,
+        _budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            let session = pool.checkout(cancellation).await?;
+            let transaction =
+                crate::transaction::MysqlTransaction::begin(session, options, cancellation).await?;
+            Ok(Box::new(transaction)
+                as Box<dyn plenora_database_core::transaction::TransactionScope>)
+        })
+    }
+
+    fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            let mut session = pool.checkout(cancellation).await?;
+            // DDL raw: use query_drop (nessun affected_rows semantic).
+            // Nota: MySQL fa autocommit su DDL (transactional_ddl=false nel
+            // capability probe), quindi non si può usare dentro una tx.
+            session
+                .exec_write(sql, mysql_async::Params::Empty, ErrorPhase::Prepare, cancellation)
+                .await
+                .map(|_| ())
+        })
     }
 }
 

@@ -3668,3 +3668,378 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
     drop(audit);
     drop(setup);
 }
+
+// ============================ v1.2 — Transaction OLTP live ================
+
+#[tokio::test]
+async fn live_v12_transaction_execute_and_commit() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider tx live");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup connect");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_tx_commit")
+            .await
+            .expect("drop");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_tx_commit (id BIGINT PRIMARY KEY, label TEXT NOT NULL) \
+                 ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+    }
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin tx");
+    let stmt = plenora_database_core::transaction::Statement {
+        sql: "INSERT INTO _v12_tx_commit (id, label) VALUES (?, ?)".to_owned(),
+        params: vec![
+            plenora_database_core::provider::ParameterValue::I64(1),
+            plenora_database_core::provider::ParameterValue::String("alfa".to_owned()),
+        ],
+    };
+    let affected = tx.execute(&stmt, &cancellation).await.expect("insert");
+    assert_eq!(affected, 1);
+    let commit = tx.commit(&cancellation).await.expect("commit");
+    assert!(matches!(
+        commit,
+        plenora_database_core::transaction::CommitOutcome::Committed
+    ));
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let count: Option<u64> = check
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _v12_tx_commit WHERE id = 1")
+        .await
+        .expect("count");
+    assert_eq!(count, Some(1));
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_tx_commit")
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn live_v12_transaction_rollback_drops_all_writes() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_tx_rb")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("CREATE TABLE _v12_tx_rb (id BIGINT PRIMARY KEY) ENGINE=InnoDB")
+            .await
+            .expect("create");
+    }
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin");
+    for id in 1..=3_i64 {
+        let stmt = plenora_database_core::transaction::Statement {
+            sql: "INSERT INTO _v12_tx_rb (id) VALUES (?)".to_owned(),
+            params: vec![plenora_database_core::provider::ParameterValue::I64(id)],
+        };
+        tx.execute(&stmt, &cancellation).await.expect("insert");
+    }
+    tx.rollback(&cancellation).await.expect("rollback");
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let count: Option<u64> = check
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _v12_tx_rb")
+        .await
+        .expect("count");
+    assert_eq!(count, Some(0), "rollback deve annullare tutti gli insert");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_tx_rb")
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn live_v12_transaction_savepoint_rollback_to_partial() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_tx_sp")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("CREATE TABLE _v12_tx_sp (id BIGINT PRIMARY KEY) ENGINE=InnoDB")
+            .await
+            .expect("create");
+    }
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin");
+
+    let stmt1 = plenora_database_core::transaction::Statement {
+        sql: "INSERT INTO _v12_tx_sp (id) VALUES (?)".to_owned(),
+        params: vec![plenora_database_core::provider::ParameterValue::I64(1)],
+    };
+    tx.execute(&stmt1, &cancellation).await.expect("insert 1");
+
+    tx.savepoint("sp1", &cancellation).await.expect("savepoint");
+
+    let stmt2 = plenora_database_core::transaction::Statement {
+        sql: "INSERT INTO _v12_tx_sp (id) VALUES (?)".to_owned(),
+        params: vec![plenora_database_core::provider::ParameterValue::I64(2)],
+    };
+    tx.execute(&stmt2, &cancellation).await.expect("insert 2");
+    let stmt3 = plenora_database_core::transaction::Statement {
+        sql: "INSERT INTO _v12_tx_sp (id) VALUES (?)".to_owned(),
+        params: vec![plenora_database_core::provider::ParameterValue::I64(3)],
+    };
+    tx.execute(&stmt3, &cancellation).await.expect("insert 3");
+
+    tx.rollback_to_savepoint("sp1", &cancellation)
+        .await
+        .expect("rollback to sp");
+    tx.release_savepoint("sp1", &cancellation)
+        .await
+        .expect("release sp");
+
+    let commit = tx.commit(&cancellation).await.expect("commit");
+    assert!(matches!(
+        commit,
+        plenora_database_core::transaction::CommitOutcome::Committed
+    ));
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let rows: Vec<u64> = check
+        .connection_mut()
+        .unwrap()
+        .query::<u64, _>("SELECT id FROM _v12_tx_sp ORDER BY id")
+        .await
+        .expect("select");
+    assert_eq!(rows, vec![1], "solo l'insert fuori savepoint deve essere committato");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_tx_sp")
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn live_v12_transaction_query_returns_typed_rows() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_tx_query")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_tx_query (id BIGINT PRIMARY KEY, val DOUBLE NOT NULL) \
+                 ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("INSERT INTO _v12_tx_query VALUES (1, 10.5), (2, 20.5), (3, 30.5)")
+            .await
+            .expect("seed");
+    }
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin");
+    let stmt = plenora_database_core::transaction::Statement {
+        sql: "SELECT id, val FROM _v12_tx_query WHERE id >= ? ORDER BY id".to_owned(),
+        params: vec![plenora_database_core::provider::ParameterValue::I64(2)],
+    };
+    let rows = tx.query(&stmt, &cancellation).await.expect("query");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].columns().len(), 2);
+
+    tx.rollback(&cancellation).await.expect("rollback");
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_tx_query")
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn live_v12_provider_execute_ddl_creates_and_drops_table() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+
+    provider
+        .execute_ddl(
+            &live_secret(),
+            "CREATE TABLE _v12_ddl (id BIGINT PRIMARY KEY) ENGINE=InnoDB",
+            &cancellation,
+        )
+        .await
+        .expect("execute_ddl CREATE");
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let exists: Option<u64> = check
+        .connection_mut()
+        .unwrap()
+        .query_first(
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema='dataflow_test' AND table_name='_v12_ddl'",
+        )
+        .await
+        .expect("check exists");
+    assert_eq!(exists, Some(1));
+
+    provider
+        .execute_ddl(&live_secret(), "DROP TABLE _v12_ddl", &cancellation)
+        .await
+        .expect("execute_ddl DROP");
+}
+
+#[tokio::test]
+async fn live_v12_conditional_update_rolls_back_on_mismatch() {
+    use plenora_database_core::transaction::ConditionalUpdate;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_cu")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_cu (id BIGINT PRIMARY KEY, version INT NOT NULL) \
+                 ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("INSERT INTO _v12_cu VALUES (1, 100)")
+            .await
+            .expect("seed");
+    }
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin");
+
+    let update = plenora_database_core::transaction::Statement {
+        sql: "UPDATE _v12_cu SET version = version + 1 WHERE id = ? AND version = ?".to_owned(),
+        params: vec![
+            plenora_database_core::provider::ParameterValue::I64(1),
+            plenora_database_core::provider::ParameterValue::I32(99),
+        ],
+    };
+    let request = ConditionalUpdate {
+        update: &update,
+        key_probe: None,
+        expected_affected_rows: 1,
+    };
+    let result = tx.execute_conditional_update(request, &cancellation).await;
+    assert!(matches!(
+        result.as_ref().err().map(|e| e.category),
+        Some(ErrorCategory::ConcurrentModification)
+    ));
+
+    let stmt_check = plenora_database_core::transaction::Statement {
+        sql: "SELECT version FROM _v12_cu WHERE id = 1".to_owned(),
+        params: vec![],
+    };
+    let rows = tx.query(&stmt_check, &cancellation).await.expect("query");
+    assert_eq!(rows.len(), 1);
+
+    tx.rollback(&cancellation).await.expect("rollback");
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_cu")
+        .await
+        .ok();
+}

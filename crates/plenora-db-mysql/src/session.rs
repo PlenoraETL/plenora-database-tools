@@ -121,6 +121,20 @@ impl MysqlSession {
         matches!(self.state, MysqlSessionState::Ready) && self.connection.is_some()
     }
 
+    /// Accessor mutabile alla `Conn` sottostante — per il transaction
+    /// module che usa direttamente `mysql_async` API (exec + query
+    /// tipizzati).
+    #[must_use]
+    pub const fn connection_mut(&mut self) -> Option<&mut Conn> {
+        self.connection.as_mut()
+    }
+
+    /// Timeout di operazione configurato al connect.
+    #[must_use]
+    pub const fn operation_timeout(&self) -> std::time::Duration {
+        self.operation_timeout
+    }
+
     pub(crate) async fn query_rows(
         &mut self,
         sql: &str,
@@ -284,6 +298,42 @@ impl MysqlSession {
             Err(_) => {
                 self.quarantine().await;
                 Err(timeout_error(phase, RemoteEffect::None))
+            }
+        }
+    }
+
+    /// Esegue SQL senza parametri via **text protocol** (`query_drop`).
+    ///
+    /// Uso: comandi di controllo di sessione (`SET`, `SAVEPOINT`,
+    /// `ROLLBACK TO`, `START TRANSACTION`, DDL raw) che MySQL rifiuta
+    /// nel prepared statement protocol (errore 1295).
+    pub(crate) async fn exec_control(
+        &mut self,
+        sql: &str,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_ready(phase)?;
+        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let execution = connection.query_drop(sql);
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(cancellation, phase, RemoteEffect::Unknown));
+            }
+            result = tokio::time::timeout(self.operation_timeout, execution) => result,
+        };
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                Err(driver_error(&error, phase, RemoteEffect::None))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(phase, RemoteEffect::Unknown))
             }
         }
     }

@@ -17,6 +17,7 @@ mod query;
 mod read;
 mod row_diagnostics;
 mod session;
+mod transaction;
 mod types;
 mod write;
 
