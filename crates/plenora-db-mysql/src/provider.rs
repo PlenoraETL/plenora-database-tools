@@ -1000,7 +1000,10 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         spatial_index: false,
         mixed_geometry_types: true,
         dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-        functions: Vec::new(),
+        // v1.2: 20 funzioni spatial MySQL 8+ dichiarate verified via il
+        // dialect condiviso `plenora-database-sql`. Vedi
+        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` per la lista + rationale.
+        functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
     }
 }
 

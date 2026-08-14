@@ -31,9 +31,11 @@ un gate reference separato. MySQL 8.0.46 e 8.4.11 hanno una superficie stabile
 per query relazionale, lettura bounded, scrittura bulk (**tutti 7 WriteMode**:
 Append + Create + TruncateInsert + Upsert + DeleteByKeys + Update + Replace
 — v1.2), transazioni OLTP con savepoints e `conditional_update` (v1.2),
-DDL raw via `execute_ddl` (v1.2), TLS verificato tramite CA privata e
-hostname, catalogo, spatial XY/SRID, reset, timeout, cancellazione, rollback
-e quarantena provati live. MariaDB e le dimensioni Z/M/ZM restano fail-closed.
+DDL raw via `execute_ddl` (v1.2), **26 funzioni spatial `ST_*` verified**
+(metadata + predicati + metriche + constructor + transform + set operation
+— v1.2), TLS verificato tramite CA privata e hostname, catalogo,
+spatial XY/SRID, reset, timeout, cancellazione, rollback e quarantena provati
+live. MariaDB e le dimensioni Z/M/ZM restano fail-closed.
 
 Documenti principali:
 

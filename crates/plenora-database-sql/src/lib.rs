@@ -1348,12 +1348,27 @@ impl Renderer {
         distance_parameter: Option<&str>,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        if !self.capabilities.spatial_intersects || self.dialect != Dialect::Postgres {
+        if !self.capabilities.spatial_intersects {
             return Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
-                "predicato spatial non supportato dal dialect",
+                "AST spatial non abilitato per il dialect",
             ));
+        }
+        // MySQL v1.2: predicati spatial dichiarati verified (subset — vedi
+        // `plenora_db_mysql::query::VERIFIED_SPATIAL_FUNCTIONS`).
+        // DWithin non è nativo MySQL (no ST_DWithin diretto); resta unsupported
+        // finché non emergono profili che ne giustifichino l'emulazione via
+        // ST_Distance + confronto scalare.
+        match self.dialect {
+            Dialect::Postgres | Dialect::Mysql => {}
+            _ => {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "predicato spatial non supportato dal dialect",
+                ));
+            }
         }
         let quoted = self.quote(field);
         if function.is_unary_predicate() {
@@ -1363,8 +1378,22 @@ impl Renderer {
             DatabaseError::invalid_plan("predicato spatial senza parametro geometria")
         })?;
         let geometry = self.bind(geometry_name, binds);
-        let right = format!("ST_GeomFromEWKB({geometry})");
+        // Postgres accetta EWKB (WKB con SRID embedded); MySQL usa WKB puro
+        // + SRID come secondo argomento opzionale (non passiamo SRID —
+        // il consumer deve fornire WKB con SRID già settato via ST_SRID).
+        let right = match self.dialect {
+            Dialect::Postgres => format!("ST_GeomFromEWKB({geometry})"),
+            Dialect::Mysql => format!("ST_GeomFromWKB({geometry})"),
+            _ => unreachable!("dialect check sopra"),
+        };
         if function == SpatialFunction::DWithin {
+            if self.dialect != Dialect::Postgres {
+                return Err(DatabaseError::unsupported(
+                    self.provider_kind(),
+                    ErrorPhase::Prepare,
+                    "d_within richiede Postgres/PostGIS (MySQL non ha ST_DWithin nativo)",
+                ));
+            }
             let distance_name = distance_parameter
                 .ok_or_else(|| DatabaseError::invalid_plan("d_within senza parametro distanza"))?;
             let distance = self.bind(distance_name, binds);

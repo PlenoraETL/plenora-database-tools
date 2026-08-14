@@ -529,7 +529,10 @@ pub const fn mysql_renderer() -> Renderer {
     Renderer::new(
         Dialect::Mysql,
         DialectCapabilities {
-            spatial_intersects: false,
+            // v1.2: abilita l'AST spatial (predicate + funzioni scalari).
+            // Il rendering usa `ST_*` naming standard MySQL 8.4 e
+            // `ST_GeomFromWKB` per i parametri geometry.
+            spatial_intersects: true,
         },
     )
 }

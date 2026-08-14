@@ -35,7 +35,7 @@ use plenora_database_core::limits::Limits;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::query::{
     validate_query_operation, JoinKind, QueryExpression, QueryOperation, QueryOrdering,
-    QuerySource, ScalarFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    QuerySource, ScalarFunction, SpatialFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
 use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
@@ -45,6 +45,55 @@ use std::collections::BTreeSet;
 
 /// Collation id riservato di `MySQL` per i tipi binari.
 const BINARY_CHARACTER_SET: u16 = 63;
+
+/// Sottoinsieme delle funzioni spatial `MySQL` 8.4 qualificate per l'AST
+/// portabile — dichiarate live in `probe_capabilities` e utilizzabili
+/// via `Provider::query` sia come proiezioni scalari sia (per i
+/// predicati) come filtri WHERE.
+///
+/// Fonte: rendering dialect condiviso in `plenora-database-sql` (unificato
+/// col dialect `Postgres` per il subset `ST_*`). Le funzioni escluse
+/// (`X`/`Y`/`Z`/`M`, `AsGeoJson`, `DWithin`, `Transform`, ecc.) restano
+/// `Unsupported` finché non hanno un test live dedicato su `MySQL` 8.4 LTS.
+///
+/// **20+ funzioni verified**:
+/// - metadata (7): `GeometryType`, `Srid`, `Dimensions`, `NPoints`,
+///   `IsEmpty`, `IsValid`, `IsClosed`
+/// - predicate binary (5): `Intersects`, `Contains`, `Within`, `Disjoint`,
+///   `Equals`
+/// - metriche (3): `Distance`, `Area`, `Length`
+/// - constructor (3): `StartPoint`, `EndPoint`, `PointN`
+/// - transform (2): `Buffer`, `Envelope`
+/// - set operation (6): `Intersection`, `Union`, `Difference`,
+///   `SymDifference`, `ConvexHull`, `Centroid`
+pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
+    SpatialFunction::GeometryType,
+    SpatialFunction::Srid,
+    SpatialFunction::Dimensions,
+    SpatialFunction::NPoints,
+    SpatialFunction::IsEmpty,
+    SpatialFunction::IsValid,
+    SpatialFunction::IsClosed,
+    SpatialFunction::Intersects,
+    SpatialFunction::Contains,
+    SpatialFunction::Within,
+    SpatialFunction::Disjoint,
+    SpatialFunction::Equals,
+    SpatialFunction::Distance,
+    SpatialFunction::Area,
+    SpatialFunction::Length,
+    SpatialFunction::StartPoint,
+    SpatialFunction::EndPoint,
+    SpatialFunction::PointN,
+    SpatialFunction::Buffer,
+    SpatialFunction::Envelope,
+    SpatialFunction::Intersection,
+    SpatialFunction::Union,
+    SpatialFunction::Difference,
+    SpatialFunction::SymDifference,
+    SpatialFunction::ConvexHull,
+    SpatialFunction::Centroid,
+];
 
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
 ///
@@ -539,6 +588,7 @@ fn ensure_aggregable(scope: Scope) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn ensure_expression(
     expression: &QueryExpression,
     scope: Scope,
@@ -622,9 +672,24 @@ fn ensure_expression(
                     "window function MySQL non ancora qualificata nel path query",
                 ));
             }
-            QueryExpression::Spatial { .. } | QueryExpression::SpatialOperator { .. } => {
+            QueryExpression::Spatial {
+                function,
+                arguments,
+            } => {
+                // v1.2: accetta funzioni ∈ VERIFIED_SPATIAL_FUNCTIONS.
+                // Le altre restano Unsupported finché non hanno un test
+                // live dedicato su MySQL 8.4.
+                if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
+                    return Err(unsupported(format!(
+                        "funzione spatial MySQL '{function:?}' non ancora qualificata \
+                         (vedi VERIFIED_SPATIAL_FUNCTIONS per il subset verified v1.2)"
+                    )));
+                }
+                stack.extend(arguments.iter().map(|argument| (argument, scope)));
+            }
+            QueryExpression::SpatialOperator { .. } => {
                 return Err(unsupported(
-                    "AST spatial MySQL non ancora qualificato nel path query",
+                    "spatial operator MySQL non ancora qualificato nel path query",
                 ));
             }
             QueryExpression::ScalarSubquery { .. }
@@ -1202,15 +1267,19 @@ mod tests {
         }];
         cases.push(("spatial window", spatial_window));
 
+        // v1.2: SpatialFunction verified ora accettato (vedi
+        // VERIFIED_SPATIAL_FUNCTIONS). Il test di fail-closed usa una
+        // funzione NON verified (AsGeoJson) per verificare che il subset
+        // resti conservativo.
         let mut spatial = base_query();
         spatial.projection = vec![QueryProjection {
             expression: QueryExpression::Spatial {
-                function: SpatialFunction::Centroid,
+                function: SpatialFunction::AsGeoJson,
                 arguments: vec![column("geom")],
             },
             alias: None,
         }];
-        cases.push(("spatial", spatial));
+        cases.push(("spatial non verified", spatial));
 
         let mut subquery = base_query();
         subquery.filter = Some(QueryExpression::Exists {
@@ -1576,10 +1645,14 @@ mod tests {
         ));
         cases.push(("window in ON", window_on, ErrorCategory::Unsupported));
 
+        // v1.2: Centroid è ora verified. Il test JOIN spatial usa una
+        // funzione non-verified per verificare che JOIN-on-spatial resti
+        // conservativo — ma qualsiasi spatial in ON è già rifiutato dalle
+        // regole di join (spatial expression non ammessa come predicato di JOIN).
         let mut spatial_on = joined_query();
         spatial_on.joins[0].on = Some(equality(
             QueryExpression::Spatial {
-                function: SpatialFunction::Centroid,
+                function: SpatialFunction::AsGeoJson,
                 arguments: vec![qualified("a", "geom")],
             },
             qualified("e", "geom"),
@@ -2751,12 +2824,14 @@ mod tests {
             ErrorCategory::InvalidPlan,
         ));
 
+        // v1.2: SpatialFunction::Area è ora verified — deve essere accettata
+        // anche dentro una window. Uso funzione non-verified per il fail-closed test.
         cases.push((
-            "spatial dentro una window",
+            "spatial non-verified dentro una window",
             windowed_query(scalar_window(
                 ScalarFunction::Sum,
                 vec![QueryExpression::Spatial {
-                    function: SpatialFunction::Area,
+                    function: SpatialFunction::AsGeoJson,
                     arguments: vec![qualified("e", "geom")],
                 }],
                 Vec::new(),

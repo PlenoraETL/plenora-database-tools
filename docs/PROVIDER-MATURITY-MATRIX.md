@@ -48,7 +48,7 @@ MySQL.
 | Dimensioni spatial | XY/XYZ/XYM/XYZM secondo gate | geometry/geography secondo gate | XY; Z/M/ZM non pubblicate |
 | Contratto schema canonico | offline/live | offline/live | offline/live tramite `validate_schema_contract` |
 | Gate fmt + Clippy `-D warnings` | sì | sì | sì |
-| Gate live corrente | suite reference | 44 test live attesi | 34 test live attesi (23 v1.1 + 11 v1.2: OLTP + write modes) su 8.0.46 e 8.4.11 |
+| Gate live corrente | suite reference | 44 test live attesi | 37 test live attesi (23 v1.1 + 14 v1.2: OLTP + write modes + spatial verified) su 8.0.46 e 8.4.11 |
 
 ## Esito di parità
 
@@ -60,10 +60,10 @@ transazioni OLTP con savepoints + conditional_update, DDL raw via
 rollback e quarantena.
 
 La superficie non deduce capability non provate: Z, M e ZM continuano a fallire
-chiuso; MariaDB non è qualificato; geography e spatial index non sono pubblicati;
-spatial functions dichiarate `Vec::new()` — nessuna funzione ST_* è marked
-verified nel capability probe. Questi limiti non possono essere nascosti tramite
-feature flag né descritti come supportati.
+chiuso; MariaDB non è qualificato; geography e spatial index non sono pubblicati.
+Le funzioni `ST_*` fuori dal subset verified (`X`/`Y`/`Z`/`M`, `AsGeoJson`,
+`DWithin`, `Transform`, ecc.) restano `Unsupported`. Questi limiti non possono
+essere nascosti tramite feature flag né descritti come supportati.
 
 ## Decisione della metadata candidate 1.1.0
 
@@ -90,11 +90,20 @@ Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
   **Replace** (staging persistent + `RENAME TABLE` atomico multi-table
   + DROP backup). **Tutti 7 WriteMode ora qualificati per MySQL.**
 
-- **Blocchi C/D (spatial)**: non affrontati in questo giro; le funzioni ST_*
-  restano marcate `Vec::new()` nel capability probe (dichiarate ma non
-  qualificate) e le dimensioni Z/M/ZM restano fail-closed. Non pianificati per
-  MySQL v1.2 — MySQL 8 non ha geography né tipi 3D nativi.
+- **Blocco C (spatial functions verified)**: 26 funzioni `ST_*` dichiarate
+  verified in `crate::query::VERIFIED_SPATIAL_FUNCTIONS` — metadata (7),
+  predicate binary (5), metriche (3), constructor (3), transform (2),
+  set operation (6). Il renderer condiviso `plenora-database-sql` è stato
+  esteso: `render_spatial_predicate` supporta ora `Dialect::Mysql` con
+  `ST_GeomFromWKB` (vs `ST_GeomFromEWKB` per Postgres) e `DialectCapabilities.
+  spatial_intersects` passa da `false` a `true`. Test live: query con
+  `ST_Area` in projection + WHERE `ST_Intersects(field, ?)` — entrambi
+  pass end-to-end contro dataflow-mysql 8.4.
+- **Blocco D (dims XYZ)**: non affrontato — MySQL 8 non ha supporto
+  nativo per dimensioni 3D/M (`Z`/`M`/`ZM`); `spatial.dimensions` resta
+  `[Xy]`. Non pianificato.
 
-Test live totali dopo v1.2: **126 unit + integration** (110 v1.1 + 16 nuovi
+Test live totali dopo v1.2: **129 unit + integration** (110 v1.1 + 19 nuovi
 v1.2: 6 OLTP + 3 Create/TruncateInsert + 2 Upsert + 2 DeleteByKeys + 2 Update
-+ 1 Replace).
++ 1 Replace + 3 spatial: capabilities publish + query spatial + WHERE
+spatial predicate).

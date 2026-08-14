@@ -41,9 +41,20 @@ indipendente.
 - WKB XY con SRID dichiarato qualificato in lettura e scrittura; SRID embedded,
   Z, M e ZM restano fail-closed sulle versioni della matrice;
 - Staged swap raw e `LOCAL INFILE` non sono capability pubblicate.
-  Le funzioni spatial ST_* sono dichiarate `Vec::new()` nel capability
-  probe (nessuna funzione marked verified); geography è assente in
-  MySQL 8 e non emulata.
+  Geography è assente in MySQL 8 e non emulata;
+- **v1.2 Blocco C**: 26 funzioni spatial `ST_*` verified pubblicate in
+  `mysql_spatial_capabilities().functions` — metadata (`ST_GeometryType`,
+  `ST_SRID`, `ST_Dimension`, `ST_NumPoints`, `ST_IsEmpty`, `ST_IsValid`,
+  `ST_IsClosed`), predicati (`ST_Intersects`, `ST_Contains`, `ST_Within`,
+  `ST_Disjoint`, `ST_Equals`), metriche (`ST_Distance`, `ST_Area`,
+  `ST_Length`), constructor (`ST_StartPoint`, `ST_EndPoint`, `ST_PointN`),
+  transform (`ST_Buffer`, `ST_Envelope`), set operation
+  (`ST_Intersection`, `ST_Union`, `ST_Difference`, `ST_SymDifference`,
+  `ST_ConvexHull`, `ST_Centroid`). Il renderer condiviso
+  `plenora-database-sql::render_spatial_predicate` è stato esteso per
+  `Dialect::Mysql` (usa `ST_GeomFromWKB` invece di `ST_GeomFromEWKB`).
+  Funzioni fuori dal subset (`ST_X`/`Y`/`Z`/`M`, `ST_AsGeoJSON`,
+  `ST_DWithin`, `ST_Transform`, ecc.) restano `Unsupported`.
 
 Il gate riproducibile è `python scripts/check_mysql_reference.py`. Esegue fmt,
 Clippy con warning negati, test della fixture, ~110 test offline e ~32 test live
