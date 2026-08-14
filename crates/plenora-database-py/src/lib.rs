@@ -14,6 +14,7 @@ mod arrow_reader;
 mod async_session;
 mod async_transaction;
 mod errors;
+mod mysql_session;
 mod py_convert;
 mod session;
 mod transaction;
@@ -22,6 +23,7 @@ mod write;
 use arrow_reader::{AsyncBatchReader, BatchReader};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_transaction::AsyncTransaction;
+use mysql_session::{connect_mysql, MysqlSession};
 use session::{connect, Session};
 use transaction::Transaction;
 
@@ -55,12 +57,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;
     m.add_class::<AsyncTransaction>()?;
     m.add_class::<BatchReader>()?;
     m.add_class::<AsyncBatchReader>()?;
+    m.add_class::<MysqlSession>()?;
     errors::register(m)?;
     Ok(())
 }

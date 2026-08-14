@@ -1217,11 +1217,12 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-py"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "plenora-database-core",
+ "plenora-db-mysql",
  "plenora-db-postgres",
  "pyo3",
  "pyo3-async-runtimes",

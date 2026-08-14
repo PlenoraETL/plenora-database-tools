@@ -66,6 +66,7 @@ from .errors import (
 from .query import Delete, Insert, Select, Update, Upsert
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
+from ._native import MysqlSession, connect_mysql as _native_connect_mysql
 
 
 def connect(dsn: str) -> Session:
@@ -77,6 +78,38 @@ def connect(dsn: str) -> Session:
     fallisce.
     """
     return Session(_native_connect(dsn))
+
+
+def connect_mysql(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+) -> MysqlSession:
+    """Apre una nuova sessione MySQL (sync).
+
+    Scaffold v0.4-alpha — API subset ridotta rispetto a Postgres:
+    - execute(sql, params) → affected_rows
+    - execute_scalar(sql, params) → value
+    - execute_returning_rows(sql, params) → list[dict]
+    - execute_ddl(sql) → None
+    - close(), __enter__/__exit__, is_closed, server_version
+
+    Non incluso (roadmap SDK MySQL): begin()/Transaction, copy_from,
+    read (Arrow stream), portable AST builders (select/insert/etc.),
+    async variant.
+
+    Placeholder MySQL: `?` (non `$1` come Postgres).
+
+    Parametri:
+      - host, database, user, password: obbligatori
+      - port: default 3306
+      - tls_ca_pem: bytes del PEM della CA privata. Se None, usa
+        TrustServerCertificate (solo per sviluppo)
+    """
+    return _native_connect_mysql(host, database, user, password, port, tls_ca_pem)
 
 
 async def aconnect(dsn: str) -> AsyncSession:
@@ -95,6 +128,8 @@ async def aconnect(dsn: str) -> AsyncSession:
 __all__ = [
     "connect",
     "aconnect",
+    "connect_mysql",
+    "MysqlSession",
     "version",
     "Session",
     "AsyncSession",

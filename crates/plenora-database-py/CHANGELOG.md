@@ -11,6 +11,68 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.4.0] — 2026-08-14
+
+Prima esposizione MySQL nel SDK Python (scaffold, non feature parity
+con Postgres).
+
+### Added
+
+- **`connect_mysql(host, database, user, password, port=None, tls_ca_pem=None)`** —
+  factory per aprire una sessione MySQL. Non usa DSN libpq (che è
+  Postgres-specifico); accetta componenti separati.
+- **`MysqlSession`** (nuova classe Python + nativa Rust) con subset:
+  - `execute(sql, params) → int` (affected_rows, DML in tx dedicata)
+  - `execute_scalar(sql, params) → Any` (SELECT 1 riga × 1 colonna)
+  - `execute_returning_rows(sql, params) → list[dict]` (SELECT con rows)
+  - `execute_ddl(sql) → None` (DDL raw, autocommit MySQL)
+  - `close()`, `__enter__/__exit__`, `is_closed`, `server_version`, `__repr__`
+- Placeholder syntax: `?` (convenzione MySQL, non `$1` come Postgres).
+- Type stubs `.pyi` (`_native.pyi` + `MysqlSession` export in `__init__.pyi`
+  se presente).
+- Test live `test_mysql_session.py` (6 test): connect + server_version,
+  execute/scalar/rows roundtrip, NULL handling, context manager, DDL
+  autocommit visibility.
+
+### Not Included (roadmap SDK MySQL post-0.4)
+
+- `begin()` + `Transaction` context manager (savepoints, conditional_update)
+- `copy_from` bulk write (7 WriteMode via Arrow IPC)
+- `read()` streaming Arrow
+- Portable AST builders (`select/insert/update/delete/upsert`)
+- Spatial predicates + `SpatialReference`
+- Typed params (uuid/decimal/date/etc. — MySQL binding usa string
+  passthrough per ora)
+- `AsyncMysqlSession` async variant
+- Metrics + inspect namespace (analogo a Session Postgres)
+
+### Motivo scaffold
+
+Il gap Consumer Surface era enorme: prima MySQL era raggiungibile solo
+via API Rust diretta o CLI generic `database-probe`. Questa release
+sblocca il pattern OLTP base (probe + execute + query + DDL) dal Python
+consumer, che è sufficiente per validare il driver end-to-end e per
+casi d'uso semplici (script batch, migrazione dati, integration tests).
+Il resto delle capability arriverà quando serve un consumer PFM
+concreto — evita over-engineering di feature non richieste.
+
+### Compatibilità
+
+100% backward-compatible con v0.3.0: nessun cambio all'API Postgres
+(`Session`, `AsyncSession`, `Transaction`, `copy_from`, `read`, portable
+builders, ecc.). L'aggiunta è additiva (`connect_mysql` + `MysqlSession`
+sono nuove).
+
+### Wheel
+
+- `plenora_database-0.4.0-cp310-abi3-manylinux_2_34_x86_64.whl`
+- `plenora_database-0.4.0-cp310-abi3-macosx_11_0_arm64.whl`
+- `plenora_database-0.4.0-cp310-abi3-win_amd64.whl`
+
+**Release**: <https://github.com/PlenoraETL/plenora-database-tools/releases/tag/py-v0.4.0>
+
+---
+
 ## [0.3.0] — 2026-08-14
 
 Completa la superficie Postgres del SDK. Tre gap P1 chiusi:

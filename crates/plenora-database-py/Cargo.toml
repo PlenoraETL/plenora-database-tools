@@ -5,7 +5,7 @@ description = "Bindings Python (PyO3) di plenora-database-tools"
 # release proprio (semver PyPI) separato dal Rust workspace (v1.x).
 # Deve coincidere con `pyproject.toml::version` altrimenti wheel filename
 # e `p.version()` divergono (bug v0.1.0 fixato in v0.1.1).
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -20,6 +20,7 @@ crate-type = ["cdylib"]
 [dependencies]
 plenora-database-core.workspace = true
 plenora-db-postgres.workspace = true
+plenora-db-mysql.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310", "serde"] }
