@@ -15,6 +15,7 @@ mod async_session;
 mod async_transaction;
 mod errors;
 mod mysql_session;
+mod mysql_write;
 mod py_convert;
 mod session;
 mod transaction;

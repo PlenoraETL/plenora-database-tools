@@ -42,10 +42,10 @@ use std::sync::Arc;
 
 // ------------------------------ BatchStream helper ---------------------
 
-struct VecBatchStream {
-    schema: SchemaRef,
-    batches: VecDeque<RecordBatch>,
-    declared_rows: u64,
+pub(crate) struct VecBatchStream {
+    pub(crate) schema: SchemaRef,
+    pub(crate) batches: VecDeque<RecordBatch>,
+    pub(crate) declared_rows: u64,
 }
 
 impl BatchStream for VecBatchStream {
@@ -67,7 +67,7 @@ impl BatchStream for VecBatchStream {
 
 // ------------------------------ Mode / profile parse -------------------
 
-fn parse_mode(s: &str) -> Result<WriteMode, DatabaseError> {
+pub(crate) fn parse_mode(s: &str) -> Result<WriteMode, DatabaseError> {
     match s {
         "create" => Ok(WriteMode::Create),
         "append" => Ok(WriteMode::Append),
@@ -83,7 +83,7 @@ fn parse_mode(s: &str) -> Result<WriteMode, DatabaseError> {
     }
 }
 
-fn parse_profile(s: &str) -> Result<TransactionProfile, DatabaseError> {
+pub(crate) fn parse_profile(s: &str) -> Result<TransactionProfile, DatabaseError> {
     match s {
         "read_only" => Ok(TransactionProfile::ReadOnly),
         "single_transaction" => Ok(TransactionProfile::SingleTransaction),
@@ -97,7 +97,7 @@ fn parse_profile(s: &str) -> Result<TransactionProfile, DatabaseError> {
     }
 }
 
-fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseError> {
+pub(crate) fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseError> {
     match s {
         "strict" => Ok(MappingPolicy::Strict),
         "compatible" => Ok(MappingPolicy::Compatible),
@@ -112,7 +112,7 @@ fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseError> {
 
 // ------------------------------ IPC decode -----------------------------
 
-fn decode_ipc_stream(
+pub(crate) fn decode_ipc_stream(
     ipc_bytes: &[u8],
 ) -> Result<(SchemaRef, VecDeque<RecordBatch>, u64), DatabaseError> {
     let cursor = Cursor::new(ipc_bytes);
@@ -191,7 +191,7 @@ fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<B
 
 // ------------------------------ Core bulk write ------------------------
 
-fn make_operation(
+pub(crate) fn make_operation(
     schema: &str,
     table: &str,
     mode: WriteMode,
@@ -249,7 +249,7 @@ fn make_operation(
     })
 }
 
-fn default_budget() -> ResourceBudget {
+pub(crate) fn default_budget() -> ResourceBudget {
     // Budget generoso per bulk write: coerente con quello usato dal CLI
     // per `write-arrow` (rows 10M, memoria 128 MiB). Se emergono workload
     // più grandi, esporre come parametro all'API.

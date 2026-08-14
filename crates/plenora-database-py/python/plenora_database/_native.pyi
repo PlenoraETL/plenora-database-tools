@@ -42,6 +42,23 @@ class MysqlSession:
         self, sql: str, params: list | None = None
     ) -> list[dict]: ...
     def execute_ddl(self, sql: str) -> None: ...
+    def begin(
+        self,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+    ) -> Transaction: ...
+    def copy_from(
+        self,
+        schema: str,
+        table: str,
+        ipc_bytes: bytes,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
+    ) -> dict: ...
 
 # ============================ Session (sync) ============================
 

@@ -11,6 +11,84 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.6.0] — 2026-08-14
+
+Completa il pattern bulk-write MySQL: `MysqlSession.copy_from` con tutti
+7 WriteMode + accettazione flessibile dell'input (pyarrow / pandas /
+list-of-dict / bytes IPC).
+
+### Added
+
+- **`MysqlSession.copy_from(schema, table, source, mode='append',
+  transaction_profile='single_transaction', mapping_policy='compatible',
+  keys=None, update_columns=None) → dict`** — bulk write MySQL:
+
+  ```python
+  import pyarrow as pa
+  with p.connect_mysql("localhost", "db", "u", "p") as s:
+      # Append (default)
+      tbl = pa.table({"id": [1, 2, 3], "label": ["a", "b", "c"]})
+      outcome = s.copy_from("mydb", "events", tbl)
+
+      # Create (CREATE TABLE dallo schema Arrow + INSERT bulk)
+      outcome = s.copy_from("mydb", "events_new", tbl, mode="create")
+
+      # Upsert (INSERT ... ON DUPLICATE KEY UPDATE)
+      outcome = s.copy_from("mydb", "events", tbl, mode="upsert", keys=["id"])
+
+      # Update (staging TEMPORARY table + UPDATE JOIN)
+      outcome = s.copy_from("mydb", "events", tbl, mode="update", keys=["id"])
+
+      # Replace (staging persistent + RENAME atomic swap)
+      outcome = s.copy_from("mydb", "events", tbl, mode="replace")
+
+      # DeleteByKeys (DELETE ... WHERE (keys) IN (...))
+      outcome = s.copy_from("mydb", "events", keys_tbl, mode="delete_by_keys", keys=["id"])
+  ```
+
+- **`source` accetta**:
+  - `pyarrow.Table` / `pyarrow.RecordBatch` / `list[pyarrow.RecordBatch]`
+  - `list[dict]` (convertito via `pa.Table.from_pylist`)
+  - `pandas.DataFrame` (convertito via `pa.Table.from_pandas`)
+  - `bytes` (Arrow IPC stream self-contained per zero-copy)
+
+- **Mode / profile / policy**: stessi valori di `Session.copy_from`
+  Postgres. Il provider MySQL supporta tutti 7 WriteMode (v1.2 core
+  Rust); ora esposti dal SDK Python.
+
+- **Wrapper Python `_MysqlSessionWrapper`** in `__init__.py`: aggiunge
+  ergonomia `copy_from` con auto-conversion `source → ipc_bytes` via
+  helper `_to_ipc_bytes` (riusato dal path Postgres). L'API sottostante
+  `MysqlSession._native.copy_from(schema, table, ipc_bytes, ...)`
+  rimane accessibile per il consumer che preferisce bytes precompilati.
+
+### Design
+
+Zero duplication su Postgres:
+- Helper generici in `write.rs` (parse_mode/profile/mapping_policy,
+  decode_ipc_stream, make_operation, default_budget, VecBatchStream,
+  outcome_into_py, wrap_outcome) sono ora `pub(crate)` e usati sia
+  dal path Postgres sia MySQL.
+- Nuovo modulo `mysql_write.rs` (~100 righe) contiene solo la
+  differenza: `Arc<MysqlProvider>` invece di `Arc<PostgresProvider>`
+  nella chiamata `prepare_write` + `write`.
+
+### Compatibilità
+
+- 100% backward-compat con v0.5.0 (nessun cambio API esistente).
+- `MysqlSession` API additiva: `copy_from` nuovo, tutto il resto
+  invariato.
+
+### Wheel
+
+- `plenora_database-0.6.0-cp310-abi3-manylinux_2_34_x86_64.whl`
+- `plenora_database-0.6.0-cp310-abi3-macosx_11_0_arm64.whl`
+- `plenora_database-0.6.0-cp310-abi3-win_amd64.whl`
+
+**Release**: <https://github.com/PlenoraETL/generic-database-tools/releases/tag/py-v0.6.0>
+
+---
+
 ## [0.5.0] — 2026-08-14
 
 Completa il pattern OLTP MySQL: `MysqlSession.begin()` + savepoints

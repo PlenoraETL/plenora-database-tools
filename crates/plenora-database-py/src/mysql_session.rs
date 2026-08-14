@@ -294,6 +294,60 @@ impl MysqlSession {
         Ok(Transaction::new(scope))
     }
 
+    /// Bulk write MySQL via `prepare_write` + `write` del provider.
+    /// Il consumer Python passa un buffer Arrow IPC stream (schema + N
+    /// record batches + EOS). Supporta tutti 7 WriteMode del provider MySQL:
+    /// `append` (default) / `create` / `truncate_insert` / `upsert` /
+    /// `update` / `delete_by_keys` / `replace`.
+    ///
+    /// Signature identica a `Session.copy_from` (Postgres) — vedi docstring
+    /// wrapper Python `_mysql_session.py::copy_from` per esempi.
+    ///
+    /// Ritorna dict con struttura `WriteOutcome`:
+    /// `{ "status": "committed", "rows": {"received": N, "confirmed": N, ...}, ...}`
+    #[pyo3(signature = (
+        schema,
+        table,
+        ipc_bytes,
+        mode="append",
+        transaction_profile="single_transaction",
+        mapping_policy="compatible",
+        keys=None,
+        update_columns=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn copy_from<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        table: &str,
+        ipc_bytes: &[u8],
+        mode: &str,
+        transaction_profile: &str,
+        mapping_policy: &str,
+        keys: Option<Vec<String>>,
+        update_columns: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        self.ensure_open()?;
+        let keys = keys.unwrap_or_default();
+        let update_columns = update_columns.unwrap_or_default();
+        let result = py.allow_threads(|| {
+            crate::mysql_write::copy_from_sync_mysql(
+                &self.provider,
+                &self.secret,
+                schema,
+                table,
+                ipc_bytes,
+                mode,
+                transaction_profile,
+                mapping_policy,
+                keys,
+                update_columns,
+            )
+        });
+        crate::write::wrap_outcome(py, result)
+    }
+
     /// DDL raw (CREATE/DROP/ALTER). MySQL fa autocommit implicito.
     fn execute_ddl(&self, py: Python<'_>, sql: &str) -> PyResult<()> {
         self.ensure_open()?;

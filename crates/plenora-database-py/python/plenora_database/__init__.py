@@ -90,16 +90,25 @@ def connect_mysql(
 ) -> MysqlSession:
     """Apre una nuova sessione MySQL (sync).
 
-    Scaffold v0.4-alpha — API subset ridotta rispetto a Postgres:
-    - execute(sql, params) → affected_rows
-    - execute_scalar(sql, params) → value
-    - execute_returning_rows(sql, params) → list[dict]
-    - execute_ddl(sql) → None
-    - close(), __enter__/__exit__, is_closed, server_version
+    API disponibili in MysqlSession:
+    - `execute(sql, params) → int`
+    - `execute_scalar(sql, params) → Any`
+    - `execute_returning_rows(sql, params) → list[dict]`
+    - `execute_ddl(sql) → None`
+    - `begin(isolation, read_only, statement_timeout_ms) → Transaction`
+      (v0.5+, supporta savepoints + conditional_update via Transaction
+      provider-agnostic)
+    - `copy_from(schema, table, source, mode, transaction_profile,
+      mapping_policy, keys, update_columns) → dict` (v0.6+, bulk write
+      via Arrow IPC; supporta tutti 7 WriteMode)
+    - `close()`, `__enter__/__exit__`, `is_closed`, `server_version`
 
-    Non incluso (roadmap SDK MySQL): begin()/Transaction, copy_from,
-    read (Arrow stream), portable AST builders (select/insert/etc.),
-    async variant.
+    Non incluso (roadmap SDK MySQL post-0.6):
+    - read (Arrow stream)
+    - portable AST builders (select/insert/etc.)
+    - AsyncMysqlSession
+    - spatial predicates + SpatialReference
+    - typed params helper (uuid/date/decimal)
 
     Placeholder MySQL: `?` (non `$1` come Postgres).
 
@@ -109,7 +118,99 @@ def connect_mysql(
       - tls_ca_pem: bytes del PEM della CA privata. Se None, usa
         TrustServerCertificate (solo per sviluppo)
     """
-    return _native_connect_mysql(host, database, user, password, port, tls_ca_pem)
+    native = _native_connect_mysql(host, database, user, password, port, tls_ca_pem)
+    return _MysqlSessionWrapper(native)
+
+
+class _MysqlSessionWrapper:
+    """Wrapper Python-side che aggiunge `copy_from` con conversione
+    automatica dell'input (pyarrow.Table / RecordBatch / list[dict] /
+    pandas.DataFrame / bytes IPC) verso Arrow IPC bytes."""
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native: MysqlSession) -> None:
+        self._native = native
+
+    def __getattr__(self, name: str):
+        return getattr(self._native, name)
+
+    @property
+    def server_version(self) -> str:
+        return self._native.server_version
+
+    @property
+    def is_closed(self) -> bool:
+        return self._native.is_closed
+
+    def close(self) -> None:
+        self._native.close()
+
+    def __enter__(self):
+        self._native.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        return self._native.__exit__(exc_type, exc_value, traceback)
+
+    def __repr__(self) -> str:
+        return repr(self._native)
+
+    def execute(self, sql, params=None):
+        return self._native.execute(sql, params)
+
+    def execute_scalar(self, sql, params=None):
+        return self._native.execute_scalar(sql, params)
+
+    def execute_returning_rows(self, sql, params=None):
+        return self._native.execute_returning_rows(sql, params)
+
+    def execute_ddl(self, sql):
+        return self._native.execute_ddl(sql)
+
+    def begin(
+        self,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+    ):
+        return self._native.begin(isolation, read_only, statement_timeout_ms)
+
+    def copy_from(
+        self,
+        schema: str,
+        table: str,
+        source,
+        *,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+        mapping_policy: str = "compatible",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
+    ) -> dict:
+        """Bulk write MySQL via `prepare_write` + `write` del provider.
+
+        Supporta tutti 7 WriteMode: append (default), create,
+        truncate_insert, upsert, update, delete_by_keys, replace.
+
+        `source` accetta:
+          - `pyarrow.Table` / `RecordBatch` / list[RecordBatch]
+          - `list[dict]` (converted via pa.Table.from_pylist)
+          - `pandas.DataFrame` (converted via pa.Table.from_pandas)
+          - `bytes` (Arrow IPC stream self-contained)
+
+        Placeholder MySQL: `?` (non `$1` come Postgres). Ritorna dict
+        con struttura `WriteOutcome` del core (status, rows.confirmed
+        / .inserted / .updated / .deleted / .failed / .skipped, ecc.).
+
+        Vedi Session.copy_from docstring per parametri completi.
+        """
+        from ._arrow_io import _to_ipc_bytes
+        ipc_bytes = _to_ipc_bytes(source)
+        return self._native.copy_from(
+            schema, table, ipc_bytes, mode, transaction_profile,
+            mapping_policy, keys, update_columns,
+        )
 
 
 async def aconnect(dsn: str) -> AsyncSession:
