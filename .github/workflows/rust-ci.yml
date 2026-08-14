@@ -46,10 +46,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
-      # Runna solo i test non-live: quelli marcati #[ignore] o che
-      # controllano env vars saranno skippati automaticamente.
-      - name: cargo test --workspace (senza live)
-        run: cargo test --workspace
+      # Runna solo i test non-live. Nel workspace ci sono ~88 test
+      # nominati `live_*` (in src/**/tests/) che sono `#[tokio::test]`
+      # (non `#[ignore]`) e hardcodano `host=dataflow-postgres` in
+      # secret(): senza il container Postgres locale falliscono. Sono
+      # coperti dal gate live `scripts/check_postgres_reference.py`
+      # invocato out-of-CI. Qui li filtriamo per nome.
+      - name: cargo test --workspace (senza live_*)
+        run: cargo test --workspace -- --skip live_
 
 # NOTA: cargo fmt --check non è in CI perché il codebase corrente ha
 # stile non uniformato pre-Fase-3. Se in futuro si vuole imporre lo
