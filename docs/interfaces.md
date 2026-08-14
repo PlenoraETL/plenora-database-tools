@@ -472,7 +472,7 @@ Gerarchico (child_token cancellato dal parent), deadline-aware, deregistrazione 
 
 **Confermato out-of-scope**:
 
-- **Migration engine**. B2 esplicitamente cancellato. Il consumer usa un tool esterno (refinery, sqlx-migrate). Vedi `docs/phase-1/migration-plane-design.md`.
+- **Migration engine**. B2 esplicitamente cancellato. Il consumer usa un tool esterno (refinery, sqlx-migrate). Vedi `docs/history/phase-1/migration-plane-design.md`.
 - **ORM / mapping dominio**. Nessuna nozione di `Asset`, `WorkOrder`, `Tenant`, ecc.
 - **Authorization engine**. La libreria NON valuta policy: passa il `SessionContext` al DB, che le applica via RLS/altro.
 - **Audit ledger**. L'observability sta in sink dedicati, non in tabelle owned dalla libreria.

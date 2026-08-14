@@ -74,7 +74,7 @@ python scripts\phase0_report.py `
 Il report calcola mediana, p95 nearest-rank, min/max, delta RSS e stabilità del
 digest semantico. I raw iniziali hanno un solo campione e restano smoke di
 convalida; non vanno presentati come baseline statistica. La baseline
-definitiva segue `docs/phase-0/baseline-plan.md`.
+definitiva segue `docs/history/phase-0/baseline-plan.md`.
 
 ## Raw iniziali
 

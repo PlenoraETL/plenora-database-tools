@@ -37,8 +37,8 @@ Documenti principali:
 
 - [Architetture.md](Architetture.md);
 - [Prestazioni.md](Prestazioni.md);
-- [gate pre-database](docs/phase-0/pre-database-gate.md);
-- [stato Fase 1 Rust](docs/phase-1/README.md);
+- [gate pre-database](docs/history/phase-0/pre-database-gate.md);
+- [stato Fase 1 Rust](docs/history/phase-1/README.md);
 - [driver PostgreSQL/PostGIS](docs/postgres/README.md);
 - [freeze PostgreSQL/PostGIS v0.1](docs/postgres/REFERENCE-V0.1.md);
 - [hardening PostgreSQL/PostGIS](docs/postgres/HARDENING.md);
@@ -48,7 +48,7 @@ Documenti principali:
 - [contratto canonico Arrow condiviso](docs/adr/0011-canonical-field-contract.md);
 - [provider MySQL](docs/mysql/README.md);
 - [matrice di maturità dei provider](docs/PROVIDER-MATURITY-MATRIX.md);
-- [decisioni che richiedono i target](docs/phase-0/open-decisions.md);
+- [decisioni che richiedono i target](docs/history/phase-0/open-decisions.md);
 - [contratti v1](contracts/v1/README.md);
 - [benchmark Fase 0](benchmarks/README.md).
 
