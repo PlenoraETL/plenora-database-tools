@@ -30,4 +30,9 @@ Repository = "https://github.com/PlenoraETL/plenora-database-tools"
 python-source = "python"
 module-name = "plenora_database._native"
 features = ["pyo3/extension-module"]
+# Include i type stubs (*.pyi) + il marker PEP 561 (py.typed).
+include = [
+    "python/plenora_database/py.typed",
+    "python/plenora_database/*.pyi",
+]
 # Con abi3-py310 basta un wheel per Python >= 3.10 per la stessa piattaforma.

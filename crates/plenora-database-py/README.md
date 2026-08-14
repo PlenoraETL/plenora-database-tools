@@ -1,27 +1,311 @@
 # plenora-database
 
-Python SDK per `plenora-database-tools` (Postgres/PostGIS, MySQL, SQL Server).
+Python SDK per `plenora-database-tools` — bindings PyO3 sopra al core
+Rust del progetto. Espone Postgres/PostGIS con API sync + async
+Pythonic, portable AST builder, error hierarchy tipizzata, spatial
+predicates e context manager per transazioni.
 
-**Stato**: skeleton (Fase 3, milestone F3-1). Espone solo `version()`.
+- **Status**: Fase 3 completata (F3-1 → F3-8 + P0.7 + P0.8)
+- **Postgres**: OLTP + PostGIS coperti
+- **MySQL / SQL Server**: driver Rust presenti nel workspace ma
+  non ancora esposti al SDK Python (roadmap Fase 4)
+- **Async**: `asyncio` bridge sopra al runtime tokio condiviso
+- **Performance**: ~13× più veloce del subprocess CLI (vedi bench)
 
-## Build (dev)
+## Install
 
-Richiede Python 3.10+ e [maturin](https://maturin.rs).
+Richiede Python **3.10+**. Il wheel è `abi3-py310` → un unico wheel
+copre 3.10 / 3.11 / 3.12 / 3.13 per la stessa piattaforma.
+
+### Da wheel pre-costruito (produzione)
+
+```bash
+pip install plenora-database
+```
+
+### Da sorgenti (dev)
+
+Richiede Rust 1.92+ e [maturin](https://maturin.rs).
 
 ```bash
 pip install maturin
 cd crates/plenora-database-py
 maturin develop --release
-python -c "import plenora_database; print(plenora_database.version())"
+python -c "import plenora_database as p; print(p.version())"
 ```
 
-## Milestone roadmap
+## Quickstart
 
-- **F3-1** — Skeleton + `version()` [current]
-- **F3-2** — `Session` + `connect()` context manager
-- **F3-3** — `execute()`, `execute_scalar()`, `execute_returning_rows()`
-- **F3-4** — Portable AST builder
-- **F3-5** — Spatial + typed params + transaction context
-- **F3-6** — Error mapping (`PlenoraError` gerarchia)
-- **F3-7** — `AsyncSession` (asyncio)
-- **F3-8** — E2E test + benchmark parity vs CLI subprocess
+### Sync
+
+```python
+import plenora_database as p
+
+with p.connect("host=localhost user=me dbname=app") as s:
+    # SQL raw con parametri positional
+    n = s.execute("INSERT INTO users(name) VALUES ($1)", ["Ada"])
+    cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
+    rows = s.execute_returning_rows(
+        "SELECT id, name FROM users WHERE id = $1", [1]
+    )
+
+    # Portable AST — provider-agnostic
+    row = s.select("users").columns("id", "name").where_eq("id", 1).one()
+    new = s.insert("users").values(name="Alan").returning("id").one()
+    s.update("users").set(name="Grace").where_eq("id", 1).execute()
+    s.delete("users").where_lt("last_seen", "2020-01-01").execute()
+```
+
+### Async
+
+```python
+import asyncio
+import plenora_database as p
+
+async def main():
+    async with await p.aconnect("host=localhost user=me dbname=app") as s:
+        cnt = await s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
+        rows = await s.select("users").where_eq("active", True).all()
+
+        # Concorrenza: gather non blocca l'event loop
+        results = await asyncio.gather(
+            *(s.execute_scalar("SELECT $1::int", [i]) for i in range(10))
+        )
+
+asyncio.run(main())
+```
+
+## Transaction context
+
+```python
+with s.begin(isolation="serializable", read_only=False) as tx:
+    tx.execute("INSERT INTO t(x) VALUES ($1)", [1])
+    row = tx.select("t").where_eq("x", 1).one()
+    # commit auto su exit normale, rollback su eccezione
+
+# Async equivalente:
+async with await s.begin(isolation="serializable") as tx:
+    await tx.insert("t").values(x=1).returning("id").one()
+```
+
+### Savepoints
+
+```python
+with s.begin() as tx:
+    tx.execute("INSERT INTO t(x) VALUES ($1)", [1])
+    tx.savepoint("sp1")
+    try:
+        tx.execute("... query rischiosa ...")
+    except p.PlenoraError:
+        tx.rollback_to_savepoint("sp1")
+    tx.release_savepoint("sp1")
+    # commit finale
+```
+
+## Typed params (bypass auto-inference)
+
+Python `str` è ambiguo (text? uuid? timestamp?). Helper esplicit:
+
+```python
+s.execute(
+    "INSERT INTO events(id, ts, amount) VALUES ($1, $2, $3)",
+    [
+        p.uuid("550e8400-e29b-41d4-a716-446655440000"),
+        p.timestamptz("2026-08-13T10:00:00+02:00"),
+        p.decimal("1234.56"),   # preserva precisione, no float
+    ],
+)
+
+# NULL con hint di tipo (quando il target non è inferibile)
+s.execute("INSERT INTO t(val) VALUES ($1)", [p.null("text")])
+```
+
+Formati:
+- `p.uuid(str)` — 36 char con dash
+- `p.date(str)` — `YYYY-MM-DD`
+- `p.timestamp(str)` — ISO-8601 senza tz (`YYYY-MM-DDTHH:MM:SS`)
+- `p.timestamptz(str)` — RFC-3339 (`YYYY-MM-DDTHH:MM:SS±HH:MM`)
+- `p.decimal(str)` — stringa numerica precisa
+- `p.null(type_name)` — hint tipo colonna
+
+## Spatial (PostGIS)
+
+```python
+# 1. Estrai EWKB di riferimento
+ref_ewkb = s.execute_scalar(
+    "SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326))"
+)
+ref = p.spatial.geometry(ewkb=ref_ewkb, srid=4326)
+# oppure p.spatial.geography(...) per calcoli metrici geodetici
+
+# 2. Predicato spatial chain-abile con altri where_*
+rows = (
+    s.select("poi")
+     .columns("id", "name")
+     .where_spatial("geom", "intersects", ref)
+     .where_eq("category", "restaurant")
+     .all()
+)
+
+# DWithin con distanza
+near = (
+    s.select("poi")
+     .where_spatial("g", "d_within", ref, distance_meters=500.0)
+     .all()
+)
+```
+
+Predicati: `intersects` / `contains` / `within` / `bounding_box` / `d_within`.
+
+## Error hierarchy
+
+Tutti gli errori discendono da `PlenoraError` (che a sua volta
+discende da `RuntimeError` → retro-compat con `except RuntimeError`).
+
+```python
+try:
+    s.select("users").where_eq("id", 42).one()
+except p.PlenoraNotFoundError as e:
+    # oggetto SQL inesistente
+    log.warn("target missing", extra={
+        "category": e.category,        # "not_found"
+        "phase": e.phase,              # "read" / "prepare" / ...
+        "retry": e.retry,              # "never" / "safe" / "requires_recovery" / ...
+        "remote_effect": e.remote_effect,  # "none" / "rolled_back" / ...
+        "provider": e.provider,        # "postgres"
+    })
+except p.PlenoraTimeoutError:
+    ...
+except p.PlenoraCancelledError:
+    ...
+except p.PlenoraConcurrentModificationError:
+    ...
+except p.PlenoraError:
+    # catch-all su tutti gli errori del SDK
+    ...
+```
+
+Le 19 sottoclassi corrispondono 1:1 al `ErrorCategory` del core Rust:
+
+`PlenoraInvalidPlanError`, `PlenoraInvalidConfigurationError`,
+`PlenoraSchemaError`, `PlenoraDataMappingError`, `PlenoraCrsError`,
+`PlenoraUnsupportedError`, `PlenoraNotFoundError`, `PlenoraConflictError`,
+`PlenoraConcurrentModificationError`, `PlenoraAuthenticationError`,
+`PlenoraAuthorizationError`, `PlenoraTimeoutError`, `PlenoraCancelledError`,
+`PlenoraResourceLimitError`, `PlenoraIoError`, `PlenoraProtocolError`,
+`PlenoraTransientError`, `PlenoraExecutionError`, `PlenoraInternalError`.
+
+## Optimistic conflict pattern
+
+```python
+# UPDATE ottimistico con expected_version
+n = (
+    s.update("orders")
+     .set(status="paid", version=current + 1)
+     .where_eq("id", order_id)
+     .where_eq("version", current)    # stale-check
+     .execute()
+)
+if n == 0:
+    # version cambiato sotto — refresh e riprova
+    fresh = s.select("orders").columns("version").where_eq("id", order_id).scalar()
+    ...
+```
+
+## Performance
+
+Bench live PG 16 + PostGIS 3.4 su docker (`test_benchmark_parity.py`,
+opt-in con `PLENORA_BENCH_PARITY=1`):
+
+| Modalità | ms/call | Speedup |
+|---|---|---|
+| Subprocess `plenora-database` CLI | 8.40 | 1× |
+| **SDK in-process (Session riusata)** | **0.62** | **13.5×** |
+| SDK new-Session per call | 5.62 | 1.5× |
+
+Il vantaggio deriva da:
+1. Connection pooling (~5 ms/call risparmiati)
+2. No fork+exec+startup (~2 ms/call risparmiati)
+3. No serialize JSON stdin/stdout (~0.5 ms/call risparmiati)
+
+Per endpoint FastAPI con 3-5 query/richiesta, il PFM passa da **~40 ms** a **~3 ms** di tempo DB.
+
+## Compatibility
+
+| | Python | Rust | Postgres | PostGIS |
+|---|---|---|---|---|
+| Min supportato | 3.10 | 1.92 | 12+ | 3.0+ |
+| Testato in CI | 3.10, 3.11, 3.12, 3.13 | 1.92 | 16.4 | 3.4.3 |
+
+Wheel: `abi3-py310` → un solo wheel per platform copre tutte le
+versioni Python ≥ 3.10.
+
+## Limitations (v0.1)
+
+- **Solo Postgres** — MySQL / SQL Server tramite il driver Rust del
+  workspace, non ancora esposti al SDK Python (roadmap Fase 4).
+- **No streaming reads** — le read caricano tutto in memoria via
+  `execute_returning_rows`. Per query >1M righe usare per ora il CLI
+  `postgres-read-ipc` che streama in Arrow IPC file. Roadmap.
+- **No batch/bulk write** — insert massivi passano via SQL raw. Il
+  bulk COPY del driver è esposto solo via CLI oggi.
+- **Portable spatial DWithin unità SRS** — per predicato DWithin su
+  colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
+  Usare `spatial.geography(...)` per unità metriche geodetiche.
+- **ConditionalUpdate del trait Rust** non esposto — usare pattern
+  `where_eq("version", current)` come mostrato sopra.
+
+## Sviluppo
+
+### Test
+
+```bash
+# In un container rust:1.92 con Postgres raggiungibile su
+# dataflow-postgres:5432 (compose in root repo):
+maturin develop --release
+export PLENORA_TEST_POSTGRES_DSN="host=dataflow-postgres user=dataflow \
+  password=dataflow_test_2026 dbname=dataflow_test"
+pytest python/tests/ --asyncio-mode=auto
+```
+
+### Benchmark opt-in
+
+```bash
+export PLENORA_BENCH_PARITY=1
+cargo build --release -p plenora-database-cli
+pytest python/tests/test_benchmark_parity.py -s
+```
+
+### Struttura
+
+```
+crates/plenora-database-py/
+├── Cargo.toml           # cdylib + pyo3 abi3-py310 + pyo3-async-runtimes
+├── pyproject.toml       # maturin backend, python-source=python/
+├── src/                 # bindings PyO3
+│   ├── lib.rs           # #[pymodule] + init runtime
+│   ├── session.rs       # Session sync
+│   ├── transaction.rs   # Transaction sync
+│   ├── async_session.rs # AsyncSession
+│   ├── async_transaction.rs # AsyncTransaction
+│   ├── py_convert.rs    # Python ↔ ParameterValue conversion
+│   └── errors.rs        # PlenoraError gerarchia
+└── python/
+    ├── plenora_database/
+    │   ├── __init__.py           # entry point
+    │   ├── _session.py           # wrapper Session
+    │   ├── _transaction.py       # wrapper Transaction
+    │   ├── _async_session.py     # wrapper AsyncSession
+    │   ├── _async_transaction.py # wrapper AsyncTransaction
+    │   ├── query.py              # builder Select/Insert/Update/Delete/Upsert
+    │   ├── async_query.py        # subclass async dei builder
+    │   ├── spatial.py            # SpatialReference + helpers
+    │   ├── types.py              # TypedValue + p.uuid/date/decimal/...
+    │   ├── errors.py             # reexport PlenoraError classi
+    │   └── _ast.py               # helper serializzazione AST
+    └── tests/                    # pytest (sync + async)
+```
+
+## License
+
+Proprietary. Vedi `Cargo.toml` workspace.
