@@ -716,6 +716,18 @@ pub fn committed_outcome_for_mode(
     mode: WriteMode,
 ) -> Result<WriteOutcome> {
     let rows = match mode {
+        WriteMode::Replace => RowCounts {
+            // Replace: tutte le righe input sono le nuove righe target
+            // (il vecchio target è stato droppato dal RENAME swap).
+            // affected_or_inserted = righe inserite in staging = received.
+            received,
+            confirmed: received,
+            inserted: Some(received),
+            updated: Some(0),
+            deleted: Some(0),
+            failed: 0,
+            skipped: 0,
+        },
         WriteMode::Upsert => RowCounts {
             received,
             confirmed: received,
@@ -991,13 +1003,8 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         | WriteMode::TruncateInsert
         | WriteMode::Upsert
         | WriteMode::DeleteByKeys
-        | WriteMode::Update => {}
-        WriteMode::Replace => {
-            return Err(unsupported(
-                "write mode 'Replace' MySQL non ancora qualificato \
-                 (supportati v1.2: Append, Create, TruncateInsert, Upsert, DeleteByKeys, Update)",
-            ));
-        }
+        | WriteMode::Update
+        | WriteMode::Replace => {}
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
         return Err(unsupported(
@@ -1243,6 +1250,108 @@ pub(crate) fn build_temp_staging_sql(
     ))
 }
 
+/// Genera `CREATE TABLE staging_name (...)` **persistent** (non TEMPORARY)
+/// per WriteMode::Replace. Il pattern Replace è:
+/// 1. CREATE staging con struttura del target (via questa funzione)
+/// 2. INSERT bulk in staging
+/// 3. RENAME TABLE target TO backup, staging TO target (atomic multi-table)
+/// 4. DROP TABLE backup
+///
+/// Serve persistent (non TEMPORARY) per il RENAME atomico che rifiuta
+/// tabelle temporary. Il nome staging include un execution_id univoco
+/// per evitare collision.
+///
+/// # Errors
+///
+/// Come `build_create_table_sql`.
+pub(crate) fn build_persistent_staging_sql(
+    schema: &SchemaRef,
+    staging_name: &str,
+    database: &str,
+) -> Result<String> {
+    // Riusa la stessa logica CREATE TABLE, ma con nome staging.
+    let renderer = mysql_renderer();
+    let staging_object = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(database)?),
+        object: mysql_identifier(staging_name)?,
+    };
+    let quoted_staging = renderer.quote_object(&staging_object);
+    let columns: Vec<MysqlWriteColumn> = schema
+        .fields()
+        .iter()
+        .map(|field| compile_write_column(field, &renderer))
+        .collect::<Result<Vec<_>>>()?;
+    let lines: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let ty = mysql_column_ddl(&c.kind, c.spatial_srid);
+            let null = if c.nullable { "NULL" } else { "NOT NULL" };
+            format!("    {} {} {}", c.quoted, ty, null)
+        })
+        .collect();
+    Ok(format!(
+        "CREATE TABLE {quoted_staging} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        lines.join(",\n")
+    ))
+}
+
+/// Genera lo statement atomic RENAME per il swap Replace:
+/// `RENAME TABLE db.target TO db.backup, db.staging TO db.target;`
+///
+/// # Errors
+///
+/// Se target/staging/backup non sono identifier MySQL validi.
+pub(crate) fn build_replace_swap_sql(
+    operation: &WriteOperation,
+    staging_name: &str,
+    backup_name: &str,
+    database: &str,
+) -> Result<String> {
+    let renderer = mysql_renderer();
+    let target_schema = operation.target.schema.as_deref().unwrap_or(database);
+    let target_obj = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(target_schema)?),
+        object: mysql_identifier(&operation.target.object)?,
+    };
+    let staging_obj = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(database)?),
+        object: mysql_identifier(staging_name)?,
+    };
+    let backup_obj = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(target_schema)?),
+        object: mysql_identifier(backup_name)?,
+    };
+    Ok(format!(
+        "RENAME TABLE {} TO {}, {} TO {}",
+        renderer.quote_object(&target_obj),
+        renderer.quote_object(&backup_obj),
+        renderer.quote_object(&staging_obj),
+        renderer.quote_object(&target_obj),
+    ))
+}
+
+/// Genera `DROP TABLE backup_name` per cleanup post-Replace.
+///
+/// # Errors
+///
+/// Se backup_name non è identifier MySQL valido.
+pub(crate) fn build_drop_backup_sql(
+    backup_name: &str,
+    database: &str,
+) -> Result<String> {
+    let renderer = mysql_renderer();
+    let backup_obj = ObjectName {
+        catalog: None,
+        schema: Some(mysql_identifier(database)?),
+        object: mysql_identifier(backup_name)?,
+    };
+    Ok(format!("DROP TABLE {}", renderer.quote_object(&backup_obj)))
+}
+
 /// Genera nome quoted per staging table (usato dopo `build_temp_staging_sql`).
 ///
 /// # Errors
@@ -1440,11 +1549,12 @@ mod tests {
         let input = schema(vec![Field::new("id", DataType::Int64, false)]);
         let mut cases = Vec::new();
 
-        let mut operation = append_operation();
-        // v1.2: Update ora qualified. Usa Replace che resta Unsupported.
-        operation.mode = WriteMode::Replace;
-        cases.push(operation);
-
+        // v1.2: tutti i 7 WriteMode ora qualified. Rimango unqualified:
+        // - transaction_profile != SingleTransaction
+        // - allow_partial
+        // - keys/update_columns per mode senza semantica keys
+        // - create_spatial_index
+        // - mapping_policy != Strict
         let mut operation = append_operation();
         operation.transaction_profile = TransactionProfile::ChunkCommitted;
         cases.push(operation);

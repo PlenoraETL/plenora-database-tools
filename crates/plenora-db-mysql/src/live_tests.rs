@@ -4481,6 +4481,68 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
 }
 
 #[tokio::test]
+async fn live_v12_write_replace_swaps_old_target_with_staging() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_rep").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop("CREATE TABLE _v12_rep (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
+            .await.expect("create");
+        setup.connection_mut().unwrap()
+            .query_drop("INSERT INTO _v12_rep VALUES (100, 'old-100'), (200, 'old-200')")
+            .await.expect("seed old");
+    }
+
+    // Replace: nuove righe id=1, 2, 3 sostituiscono completamente il target.
+    let (schema, batch) = scalar_batch(&[1, 2, 3], &["new-1", "new-2", "new-3"]);
+    let operation = write_op_scalar("dataflow_test", "_v12_rep",
+        plenora_database_core::plan::WriteMode::Replace);
+
+    let prepared = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+        .expect("prepare replace");
+    let stream = BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 3,
+    };
+    let outcome = provider
+        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .await
+        .expect("write replace");
+    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(outcome.rows.received, 3);
+    assert_eq!(outcome.rows.confirmed, 3);
+    assert_eq!(outcome.rows.inserted, Some(3));
+
+    // Verifica: solo le 3 nuove righe (id 1/2/3), nessuna vecchia (id 100/200)
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    let rows: Vec<i64> = check.connection_mut().unwrap()
+        .query::<i64, _>("SELECT id FROM _v12_rep ORDER BY id")
+        .await.expect("select");
+    assert_eq!(rows, vec![1, 2, 3], "Replace deve aver sostituito completamente il target");
+
+    // Verifica cleanup: backup + staging non devono esistere
+    let orphans: Option<u64> = check.connection_mut().unwrap()
+        .query_first(
+            "SELECT COUNT(*) FROM information_schema.tables \
+             WHERE table_schema='dataflow_test' \
+               AND (table_name LIKE '__pln_bak_%' OR table_name LIKE '__pln_repl_%')"
+        )
+        .await.expect("orphans");
+    assert_eq!(orphans, Some(0), "backup e staging devono essere puliti dopo Replace");
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_rep").await.ok();
+}
+
+#[tokio::test]
 async fn live_v12_write_update_without_keys_rejected() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
     let cancellation = CancellationToken::new();

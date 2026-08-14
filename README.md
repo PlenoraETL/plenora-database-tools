@@ -28,19 +28,18 @@ schema evolution additiva. Passa gate live, fault matrix e benchmark
 differenziali. Il relativo safety case rende esplicite prove, assunzioni e
 rischi residui; non costituisce certificazione aeronautica. SQL Server 2022 ha
 un gate reference separato. MySQL 8.0.46 e 8.4.11 hanno una superficie stabile
-per query relazionale, lettura bounded, scrittura bulk (Append, Create,
-TruncateInsert, Upsert, DeleteByKeys, Update — v1.2), transazioni OLTP con
-savepoints e `conditional_update` (v1.2), DDL raw via `execute_ddl` (v1.2),
-TLS verificato tramite CA privata e hostname, catalogo, spatial XY/SRID, reset,
-timeout, cancellazione, rollback e quarantena provati live. MariaDB, le
-dimensioni Z/M/ZM e il write mode Replace restano fail-closed / out-of-scope
-in v1.2.
+per query relazionale, lettura bounded, scrittura bulk (**tutti 7 WriteMode**:
+Append + Create + TruncateInsert + Upsert + DeleteByKeys + Update + Replace
+— v1.2), transazioni OLTP con savepoints e `conditional_update` (v1.2),
+DDL raw via `execute_ddl` (v1.2), TLS verificato tramite CA privata e
+hostname, catalogo, spatial XY/SRID, reset, timeout, cancellazione, rollback
+e quarantena provati live. MariaDB e le dimensioni Z/M/ZM restano fail-closed.
 
 Documenti principali:
 
 - [Architetture.md](Architetture.md);
 - [Prestazioni.md](Prestazioni.md);
-- [Python SDK v0.1](crates/plenora-database-py/README.md) (`pip install plenora-database`, ~13× più veloce del subprocess CLI);
+- [Python SDK v0.3](crates/plenora-database-py/README.md) (`pip install plenora-database`, ~13× più veloce del subprocess CLI; include bulk `copy_from` con upsert/create/replace/etc.);
 - [guida migrazione CLI → SDK](crates/plenora-database-py/docs/MIGRATION_FROM_CLI.md);
 - [gate pre-database](docs/history/phase-0/pre-database-gate.md);
 - [stato Fase 1 Rust](docs/history/phase-1/README.md);

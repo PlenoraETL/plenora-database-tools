@@ -24,12 +24,12 @@ indipendente.
 - query relazionale qualificata con bind posizionale e lifecycle bounded;
 - write bulk qualificato dentro `SingleTransaction`, con rollback certo
   prima del commit e outcome `Unknown` più quarantena quando il commit è
-  ambiguo. **v1.2**: modi qualificati Append + **Create** (CREATE TABLE
-  dallo schema Arrow) + **TruncateInsert** (TRUNCATE + INSERT bulk) +
+  ambiguo. **v1.2**: tutti 7 modi qualificati — Append + **Create** (CREATE
+  TABLE dallo schema Arrow) + **TruncateInsert** (TRUNCATE + INSERT bulk) +
   **Upsert** (`INSERT ... ON DUPLICATE KEY UPDATE`) + **DeleteByKeys**
   (`DELETE ... WHERE (keys) IN (...)`) + **Update** (staging TEMPORARY +
-  `UPDATE JOIN`). Residuo Replace (staging + RENAME atomico) — non
-  pubblicato;
+  `UPDATE JOIN`) + **Replace** (staging persistent + `RENAME TABLE` atomico
+  multi-table + DROP backup);
 - **v1.2**: transazioni OLTP applicative via `Provider::begin_transaction`
   qualificate — `START TRANSACTION` con isolation/access mode/statement
   timeout, savepoint annidati (`SAVEPOINT` / `ROLLBACK TO SAVEPOINT` /
@@ -40,7 +40,7 @@ indipendente.
   DDL (non transazionale, come dichiarato dalle capabilities esistenti);
 - WKB XY con SRID dichiarato qualificato in lettura e scrittura; SRID embedded,
   Z, M e ZM restano fail-closed sulle versioni della matrice;
-- Replace, staged swap e `LOCAL INFILE` non sono capability pubblicate.
+- Staged swap raw e `LOCAL INFILE` non sono capability pubblicate.
   Le funzioni spatial ST_* sono dichiarate `Vec::new()` nel capability
   probe (nessuna funzione marked verified); geography è assente in
   MySQL 8 e non emulata.
@@ -56,6 +56,8 @@ misurata finché non ne esiste una comparabile. La matrice 8.0/8.4 è
 in [`docs/PROVIDER-MATURITY-MATRIX.md`](../PROVIDER-MATURITY-MATRIX.md).
 
 Il DDL atomico MySQL non viene equiparato a DDL transazionale (autocommit
-implicito). L'implementazione v1.2 di Create/TruncateInsert usa `exec_control`
-via text protocol; Replace (staging + RENAME atomico) richiederà un
-lifecycle di recovery dedicato quando affrontato.
+implicito). L'implementazione v1.2 di Create/TruncateInsert/Replace usa
+`exec_control` via text protocol; Replace usa staging PERSISTENT (non
+TEMPORARY perché `RENAME TABLE` rifiuta temporanee) con cleanup del
+backup post-swap; se la swap fallisce, la staging orfana viene droppata
+via best-effort.

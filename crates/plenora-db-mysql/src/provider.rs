@@ -338,6 +338,7 @@ impl Provider for MysqlProvider {
                 plenora_database_core::plan::WriteMode::Create
                     | plenora_database_core::plan::WriteMode::DeleteByKeys
                     | plenora_database_core::plan::WriteMode::Update
+                    | plenora_database_core::plan::WriteMode::Replace
             ) {
                 // Create: target non esiste ancora — skip describe.
                 // DeleteByKeys: schema Arrow è keys-only; il preflight
@@ -514,6 +515,7 @@ async fn execute_mysql_write(
         plenora_database_core::plan::WriteMode::Create
             | plenora_database_core::plan::WriteMode::DeleteByKeys
             | plenora_database_core::plan::WriteMode::Update
+            | plenora_database_core::plan::WriteMode::Replace
     ) && plan.preflight(&target)? != prepared_loss
     {
         return Err(provider_error(
@@ -556,6 +558,39 @@ async fn execute_mysql_write(
         } else {
             None
         };
+
+    // v1.2 — Replace: crea staging PERSISTENT (RENAME atomico rifiuta
+    // TEMPORARY). Bulk INSERT in staging, poi swap. Naming: staging con
+    // prefix `__pln_repl_` + execution seed; backup con prefix
+    // `__pln_bak_` + stesso seed. Se il commit fallisce fra CREATE
+    // staging e RENAME, la staging resta orfana → DROP di cleanup nel
+    // catch error. Se fallisce dopo RENAME (target è già lo staging),
+    // il backup resta orfano → DROP successivo.
+    let replace_setup: Option<(String, String, String, String)> =
+        if operation.mode == plenora_database_core::plan::WriteMode::Replace {
+            let seed = format!(
+                "{}_{}",
+                std::process::id(),
+                WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            );
+            let staging_name = format!("__pln_repl_{seed}");
+            let backup_name = format!("__pln_bak_{seed}");
+            let staging_ddl = crate::write::build_persistent_staging_sql(
+                &schema,
+                &staging_name,
+                provider.config.database(),
+            )?;
+            session
+                .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
+                .await?;
+            let quoted =
+                crate::write::quote_staging_name(&staging_name, provider.config.database())?;
+            Some((staging_name, backup_name, quoted.clone(), quoted))
+        } else {
+            None
+        };
+    // Per il bulk INSERT: se Replace, l'INSERT va nella staging.
+    let replace_staging_quoted = replace_setup.as_ref().map(|(_, _, _, q)| q.clone());
     // Quando la sorgente dichiara quante righe produrrà, la scrittura può
     // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo
     // allora il percorso diagnostico riga per riga ha un input_total da
@@ -591,13 +626,16 @@ async fn execute_mysql_write(
         drop(session);
         return result;
     }
+    let effective_staging = update_staging_quoted
+        .as_deref()
+        .or(replace_staging_quoted.as_deref());
     let progress = match write_input_batches(
         &mut session,
         input.as_mut(),
         &schema,
         &plan,
         operation.mode,
-        update_staging_quoted.as_deref(),
+        effective_staging,
         budget,
         token,
     )
@@ -633,6 +671,45 @@ async fn execute_mysql_write(
                     return Err(rollback_after_failure(&mut session, error, &execution_id).await);
                 }
             }
+        }
+    }
+
+    // v1.2 — Replace: dopo bulk INSERT nella staging persistent, esegui
+    // RENAME atomico + DROP del backup.
+    // Nota: RENAME MySQL fa autocommit implicito, quindi il COMMIT che
+    // segue è no-op per il RENAME (la staging swap è già persistita).
+    if operation.mode == plenora_database_core::plan::WriteMode::Replace {
+        if let Some((staging_name, backup_name, _, _)) = &replace_setup {
+            let swap_sql = crate::write::build_replace_swap_sql(
+                &operation,
+                staging_name,
+                backup_name,
+                provider.config.database(),
+            )?;
+            if let Err(error) = session
+                .exec_control(&swap_sql, ErrorPhase::Write, token)
+                .await
+            {
+                // Cleanup staging orfana (il RENAME non è avvenuto → staging
+                // esiste ancora col nome staging_name).
+                let cleanup_staging = crate::write::build_drop_backup_sql(
+                    staging_name,
+                    provider.config.database(),
+                );
+                if let Ok(cleanup_sql) = cleanup_staging {
+                    let _ = session
+                        .exec_control(&cleanup_sql, ErrorPhase::Write, token)
+                        .await;
+                }
+                return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+            }
+            // RENAME OK → drop backup. Fail non fatale (il target è già
+            // valido; il backup orfano è cosmetic).
+            let drop_backup =
+                crate::write::build_drop_backup_sql(backup_name, provider.config.database())?;
+            let _ = session
+                .exec_control(&drop_backup, ErrorPhase::Write, token)
+                .await;
         }
     }
 
@@ -1384,9 +1461,9 @@ mod tests {
         let provider = MysqlProvider::new(config, 1).expect("provider");
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         let mut operation = append_write_operation();
-        // v1.2: 5/7 modes ora qualificati (Append/Create/TruncateInsert/
-        // Upsert/DeleteByKeys/Update). Usa Replace che resta Unsupported.
-        operation.mode = plenora_database_core::plan::WriteMode::Replace;
+        // v1.2: 7/7 modes ora qualificati. Uso mapping_policy=Lossy che
+        // resta Unsupported (finché il loss preflight non è qualificato).
+        operation.mapping_policy = plenora_database_core::loss::MappingPolicy::Lossy;
         let outcome = provider
             .prepare_write(
                 &SecretString::new("unique-secret"),
