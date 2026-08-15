@@ -386,13 +386,17 @@ impl AsyncMysqlSession {
     }
 
     /// Bulk write async. Awaitable → dict `WriteOutcome`.
+    ///
+    /// Vedi `MysqlSession::copy_from` sync per WriteMode disponibili
+    /// (5 attivi, 2 fail-closed) e `mapping_policy` obbligatorio
+    /// `"strict"` (default post py-v0.9.2).
     #[pyo3(signature = (
         schema,
         table,
         ipc_bytes,
         mode="append",
         transaction_profile="single_transaction",
-        mapping_policy="compatible",
+        mapping_policy="strict",
         keys=None,
         update_columns=None,
     ))]

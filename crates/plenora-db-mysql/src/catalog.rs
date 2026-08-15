@@ -114,10 +114,39 @@ pub async fn probe_server(
             diagnostics: None,
         });
     }
+    let product_version: String = required(&row, "product_version", "product_version")?;
+    let version_comment: String = required(&row, "version_comment", "version_comment")?;
+
+    // Fix P1 review MySQL 2026-08-15: fail-closed su MariaDB.
+    // MariaDB non è testato né qualificato: differenze rilevanti su
+    // sequenze, INSERT ... ON DUPLICATE KEY, MERGE syntax, spatial
+    // (GEOMETRYCOLLECTION), pool prepared statement cache, e
+    // isolation semantics. Il consumer che dichiara MariaDB usa il
+    // fork sbagliato — meglio errore chiaro alla probe che silenti
+    // divergenze in produzione.
+    let looks_like_mariadb = product_version.to_ascii_lowercase().contains("mariadb")
+        || version_comment.to_ascii_lowercase().contains("mariadb");
+    if looks_like_mariadb {
+        return Err(DatabaseError {
+            category: ErrorCategory::Unsupported,
+            phase: ErrorPhase::Probe,
+            remote_effect: RemoteEffect::None,
+            retry: RetryDisposition::Never,
+            provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+            execution_id: None,
+            message: format!(
+                "MariaDB rilevato (product_version={product_version:?}, \
+                 version_comment={version_comment:?}) — provider `mysql` non \
+                 qualificato per MariaDB. Un provider dedicato è in roadmap."
+            ),
+            diagnostics: None,
+        });
+    }
+
     Ok(MysqlProbe {
-        product_version: required(&row, "product_version", "product_version")?,
+        product_version,
         database: required(&row, "database_name", "database_name")?,
-        version_comment: required(&row, "version_comment", "version_comment")?,
+        version_comment,
         lower_case_table_names: required(&row, "lower_case_table_names", "lower_case_table_names")?,
         sql_mode: required(&row, "sql_mode", "sql_mode")?,
         time_zone: required(&row, "time_zone", "time_zone")?,

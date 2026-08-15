@@ -260,14 +260,29 @@ class _MysqlSessionWrapper:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
+        mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
         """Bulk write MySQL via `prepare_write` + `write` del provider.
 
-        Supporta tutti 7 WriteMode: append (default), create,
-        truncate_insert, upsert, update, delete_by_keys, replace.
+        **WriteMode supportati** (post py-v0.9.1):
+        - `append` (default)
+        - `create` (CREATE TABLE + INSERT)
+        - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
+        - `update` (UPDATE JOIN staging)
+        - `delete_by_keys` (DELETE WHERE keys IN staging)
+
+        **Fail-closed** (`PlenoraUnsupportedError`):
+        - `replace` — staging + RENAME perde vincoli/indici/FK/trigger.
+        - `truncate_insert` — TRUNCATE è DDL con commit implicito
+          (non rollback-safe). Vedi CHANGELOG 0.9.1 per workaround.
+
+        `mapping_policy` **deve essere** `"strict"` su MySQL (default
+        post py-v0.9.2; prima era `"compatible"` che il provider
+        rifiutava con `PlenoraUnsupportedError` "richiede
+        MappingPolicy::Strict"). Loss preflight non ancora
+        qualificato per MySQL.
 
         `source` accetta:
           - `pyarrow.Table` / `RecordBatch` / list[RecordBatch]
@@ -389,11 +404,18 @@ class _AsyncMysqlSessionWrapper:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
+        mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
-        """Bulk write async MySQL. `source` accetta pyarrow/pandas/list-of-dict/bytes."""
+        """Bulk write async MySQL.
+
+        Come `_MysqlSessionWrapper.copy_from` sync — vedi docstring per
+        WriteMode disponibili (5, non 7) e `mapping_policy` obbligatorio
+        `"strict"` su MySQL.
+
+        `source` accetta pyarrow/pandas/list-of-dict/bytes.
+        """
         from ._arrow_io import _to_ipc_bytes
         ipc_bytes = _to_ipc_bytes(source)
         return await self._native.acopy_from(

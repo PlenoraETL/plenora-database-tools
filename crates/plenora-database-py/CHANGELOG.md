@@ -11,6 +11,56 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.9.2] — 2026-08-15
+
+Fix pre-PyPI review. 0.9.1 aveva chiuso i 3 P0 MySQL ma il default
+`copy_from` restava incompatibile col validator MySQL, gli stub
+top-level MySQL erano incompleti, la doc citava "7 WriteMode" e il
+probe MySQL non fail-closed su MariaDB.
+
+### Fix P0 — `copy_from` MySQL default `mapping_policy="strict"`
+
+Prima: wrapper Python passava `mapping_policy="compatible"` come
+default. Il provider MySQL rifiuta con `PlenoraUnsupportedError`
+(`"richiede MappingPolicy::Strict finche il loss preflight non e
+qualificato"`). Ogni chiamata `s.copy_from(...)` senza override
+esplicito falliva.
+
+Ora default `"strict"` in `copy_from` sync + `acopy_from` async.
+Il pyo3 signature default nel binding nativo è allineato.
+
+### Fix P1 — Stub top-level MySQL
+
+`plenora_database/__init__.pyi` ora esporta:
+- `connect_mysql(host, database, user, password, port, tls_ca_pem, tls_mode) -> MysqlSession`
+- `aconnect_mysql(...) -> AsyncMysqlSession`
+- `MysqlSession`, `AsyncMysqlSession`, `SessionContext`,
+  `PlenoraCommitOutcomeUnknownError` (mancanti pre-0.9.2).
+
+Type checker (mypy, pyright, pylance) ora riconoscono correttamente
+il MySQL SDK dall'import top-level.
+
+### Fix P1 — Documentazione WriteMode MySQL
+
+Docstring `copy_from` / `acopy_from` / `MysqlSession.copy_from`
+(binding nativo) aggiornati:
+- **5 modalità disponibili**: `append`, `create`, `upsert`, `update`,
+  `delete_by_keys`.
+- **2 fail-closed** (post 0.9.1): `replace`, `truncate_insert` con
+  motivazione + workaround.
+
+Prima dicevano "tutti 7 WriteMode" — legacy da 0.8.x.
+
+### Fix P1 — Probe MySQL fail-closed su MariaDB
+
+`probe_server` (`catalog.rs`) ora rileva MariaDB da `VERSION()` o
+`@@version_comment` e ritorna `PlenoraUnsupportedError`. MariaDB
+non è testato/qualificato: sequenze, ON DUPLICATE KEY, spatial
+GEOMETRYCOLLECTION, prepared statement cache, isolation semantics —
+tutti punti di divergenza silenziosa.
+
+Il provider dedicato MariaDB resta in roadmap.
+
 ## [0.9.1] — 2026-08-15
 
 Hardening MySQL. Chiude 3 findings **P0** identificati dalla review

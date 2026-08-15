@@ -11,7 +11,8 @@
 //!
 //! **Non incluso** (roadmap SDK MySQL):
 //! - `begin()` + `Transaction` context manager
-//! - `copy_from` bulk write (7 WriteMode via Arrow IPC)
+//! - `copy_from` bulk write (5 WriteMode attivi via Arrow IPC;
+//!   `Replace` e `TruncateInsert` fail-closed dal 0.9.1)
 //! - `read()` streaming Arrow
 //! - Portable AST builders (`select/insert/update/delete/upsert`)
 //! - Spatial predicates + typed params (uuid/decimal/etc.)
@@ -380,12 +381,23 @@ impl MysqlSession {
 
     /// Bulk write MySQL via `prepare_write` + `write` del provider.
     /// Il consumer Python passa un buffer Arrow IPC stream (schema + N
-    /// record batches + EOS). Supporta tutti 7 WriteMode del provider MySQL:
-    /// `append` (default) / `create` / `truncate_insert` / `upsert` /
-    /// `update` / `delete_by_keys` / `replace`.
+    /// record batches + EOS).
     ///
-    /// Signature identica a `Session.copy_from` (Postgres) — vedi docstring
-    /// wrapper Python `_mysql_session.py::copy_from` per esempi.
+    /// **WriteMode supportati** (post py-v0.9.1):
+    /// - `append` (default)
+    /// - `create` (CREATE TABLE + INSERT)
+    /// - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
+    /// - `update` (UPDATE JOIN staging)
+    /// - `delete_by_keys` (DELETE WHERE keys IN staging)
+    ///
+    /// **Fail-closed** (`PlenoraUnsupportedError`):
+    /// - `replace` — staging + RENAME perde vincoli/indici/FK/trigger.
+    /// - `truncate_insert` — TRUNCATE è DDL con commit implicito,
+    ///   non rollback-safe.
+    ///
+    /// `mapping_policy` deve essere `"strict"` (il provider rifiuta
+    /// `"compatible"` con `Unsupported` finché loss preflight non è
+    /// qualificato).
     ///
     /// Ritorna dict con struttura `WriteOutcome`:
     /// `{ "status": "committed", "rows": {"received": N, "confirmed": N, ...}, ...}`
@@ -395,7 +407,7 @@ impl MysqlSession {
         ipc_bytes,
         mode="append",
         transaction_profile="single_transaction",
-        mapping_policy="compatible",
+        mapping_policy="strict",
         keys=None,
         update_columns=None,
     ))]
