@@ -53,12 +53,28 @@ pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// SRID che rappresentano coordinate geografiche (lat/lon in gradi).
+///
+/// Single-source-of-truth: la lista è definita in
+/// `plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS` e
+/// esposta qui perché `spatial.py` la consulti per fast-fail
+/// client-side su `DWithin + Geometry + SRID geografico`.
+///
+/// Prima di Fase A la lista era duplicata (Rust + Python) con rischio
+/// di divergenza silente.
+#[pyfunction]
+#[must_use]
+pub fn geographic_srids() -> Vec<u32> {
+    plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS.to_vec()
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
     // asyncio ↔ tokio. Chiamato una sola volta all'import del modulo.
     init_async_runtime();
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;

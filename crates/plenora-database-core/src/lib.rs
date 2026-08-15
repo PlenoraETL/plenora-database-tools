@@ -10,6 +10,7 @@ pub mod ewkb;
 pub mod facade;
 pub mod field_contract;
 pub mod geometry;
+pub mod identifier;
 pub mod limits;
 pub mod loss;
 pub mod metrics_recorder;
@@ -25,6 +26,7 @@ pub mod row;
 pub mod row_diagnostics;
 pub mod session_context;
 pub mod spatial_catalog;
+pub mod spatial_policy;
 pub mod spatial_predicate;
 pub mod transaction;
 

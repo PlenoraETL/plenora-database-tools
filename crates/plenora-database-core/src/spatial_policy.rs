@@ -1,0 +1,272 @@
+//! Policy spaziale unificata: SRID geografici, semantica di `DWithin`,
+//! validazione predicati portable.
+//!
+//! Prima di questo modulo la stessa lista di SRID e la stessa
+//! validazione erano duplicate in:
+//! - `plenora-database-core/src/portable/compiler.rs` (GEOGRAPHIC_SRIDS,
+//!   DWithin+Geometry+geog check, BoundingBox+Geography check)
+//! - `plenora-database-py/python/plenora_database/spatial.py`
+//!   (_GEOGRAPHIC_SRIDS, `_validate_predicate_reference_combo`)
+//! - `plenora-db-postgres/src/spatial.rs` (cast condizionale)
+//!
+//! Ora single-source-of-truth. Il crate `plenora-database-py` espone
+//! la lista via pyfunction `geographic_srids()` così `spatial.py` legge
+//! dal Rust invece di replicare.
+
+use crate::geometry::SpatialSemantics;
+use crate::plan::ProviderKind;
+use crate::spatial_predicate::{SpatialPredicate, SpatialReference};
+use crate::{DatabaseError, Result};
+
+/// SRID che rappresentano coordinate geografiche (lat/lon in gradi).
+///
+/// **Perché la lista è fissa e non un flag su SRID arbitrari**: PFM e
+/// consumer tipici trattano una manciata di SRID globali. Aggiungerne
+/// uno è additivo (safe); catturarne uno in più darebbe falsi positivi
+/// solo su casi patologici (SRID custom che coincidono con codici
+/// standard, non realistico per PFM).
+///
+/// Riferimento: EPSG registry, categoria "Geographic 2D".
+pub const GEOGRAPHIC_SRIDS: &[u32] = &[
+    4326, // WGS 84 (GPS)
+    4269, // NAD 83
+    4267, // NAD 27
+    4258, // ETRS89
+    4283, // GDA94
+];
+
+/// True se il SRID rappresenta un sistema di coordinate geografiche
+/// (lat/lon in gradi) — su questi SRID le funzioni PostGIS `geometry`
+/// producono distanze in gradi, non in metri.
+#[must_use]
+pub fn is_geographic_srid(srid: u32) -> bool {
+    GEOGRAPHIC_SRIDS.contains(&srid)
+}
+
+/// Cast SQL da applicare per il dialetto Postgres in base a `semantics`.
+/// Ritorna il suffisso completo pronto (`"::geometry"` o `"::geography"`).
+///
+/// Per MySQL non c'è distinzione tipo, quindi questa funzione non è
+/// applicabile (il compiler MySQL passa Geography come hint senza cast).
+#[must_use]
+pub const fn postgres_cast_for(semantics: SpatialSemantics) -> &'static str {
+    match semantics {
+        SpatialSemantics::Geometry => "::geometry",
+        SpatialSemantics::Geography => "::geography",
+    }
+}
+
+/// Valida la combinazione `(predicate, reference)` prima della
+/// compilazione. Restituisce `InvalidPlan` per combinazioni che
+/// produrrebbero silent wrong result e `Unsupported` per predicati
+/// non implementati sul provider.
+///
+/// Casi coperti (fix review #4/#5):
+/// - `DWithin` + `Geometry` + SRID geografico → `InvalidPlan`
+///   (silent wrong result: distanza in gradi rispetto al nome
+///   `distance_meters`).
+/// - `BoundingBox` + `Geography` su Postgres → `Unsupported`
+///   (operator `&&` esiste solo per `geometry`).
+/// - `DWithin` su MySQL → `Unsupported` (no `ST_DWithin` nativo).
+/// - `DWithin` con distanza non-finita o negativa → `InvalidPlan`.
+///
+/// # Errors
+///
+/// Vedi elenco sopra.
+pub fn validate_predicate(
+    provider: ProviderKind,
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+) -> Result<()> {
+    // Check universale su DWithin: distanza finita non-negativa.
+    if let SpatialPredicate::DWithin { distance_meters } = predicate {
+        if !distance_meters.is_finite() || *distance_meters < 0.0 {
+            return Err(DatabaseError::invalid_plan(
+                "DWithin richiede distanza finita non-negativa",
+            ));
+        }
+    }
+
+    match provider {
+        ProviderKind::Postgres => validate_postgres(predicate, reference),
+        ProviderKind::Mysql => validate_mysql(predicate),
+        // Altri provider: la validazione portable non li supporta —
+        // il compilatore fallisce Unsupported prima di arrivare qui.
+        _ => Ok(()),
+    }
+}
+
+fn validate_postgres(
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+) -> Result<()> {
+    match predicate {
+        SpatialPredicate::BoundingBox
+            if reference.semantics == SpatialSemantics::Geography =>
+        {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Postgres,
+                crate::ErrorPhase::Prepare,
+                "BoundingBox con SpatialSemantics::Geography non supportato \
+                 (operator && è solo geometry). Usa Intersects.",
+            ))
+        }
+        SpatialPredicate::DWithin { .. }
+            if reference.semantics == SpatialSemantics::Geometry
+                && is_geographic_srid(reference.srid) =>
+        {
+            Err(DatabaseError::invalid_plan(format!(
+                "DWithin con SpatialSemantics::Geometry su SRID geografico {} \
+                 produrrebbe distanza in gradi (fuorviante rispetto al nome \
+                 `distance_meters`). Usa SpatialSemantics::Geography per metri \
+                 reali, oppure riproietta su un SRID planare.",
+                reference.srid
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_mysql(predicate: &SpatialPredicate) -> Result<()> {
+    match predicate {
+        SpatialPredicate::DWithin { .. } => Err(DatabaseError::unsupported(
+            ProviderKind::Mysql,
+            crate::ErrorPhase::Prepare,
+            "DWithin non supportato da MySQL (no ST_DWithin nativo). \
+             Usa ST_Distance() < X come workaround via SQL raw.",
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::Dimensions;
+
+    fn ref_with(srid: u32, semantics: SpatialSemantics) -> SpatialReference {
+        SpatialReference {
+            ewkb: vec![0x01],
+            srid,
+            dimensions: Dimensions::Xy,
+            semantics,
+        }
+    }
+
+    #[test]
+    fn geographic_srids_include_wgs84_and_nad_family() {
+        assert!(is_geographic_srid(4326));
+        assert!(is_geographic_srid(4269));
+        assert!(is_geographic_srid(4267));
+        assert!(is_geographic_srid(4258));
+        assert!(is_geographic_srid(4283));
+    }
+
+    #[test]
+    fn projected_srids_are_not_geographic() {
+        // Web mercator, UTM 32N, UTM 33N — tutti planari con unità
+        // metri, tipici per PFM.
+        assert!(!is_geographic_srid(3857));
+        assert!(!is_geographic_srid(25832));
+        assert!(!is_geographic_srid(32633));
+    }
+
+    #[test]
+    fn cast_dispatch_matches_semantics() {
+        assert_eq!(postgres_cast_for(SpatialSemantics::Geometry), "::geometry");
+        assert_eq!(
+            postgres_cast_for(SpatialSemantics::Geography),
+            "::geography"
+        );
+    }
+
+    #[test]
+    fn dwithin_geometry_on_wgs84_is_rejected_for_postgres() {
+        let err = validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::DWithin {
+                distance_meters: 100.0,
+            },
+            &ref_with(4326, SpatialSemantics::Geometry),
+        )
+        .unwrap_err();
+        assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
+        assert!(err.message.contains("Geography"));
+    }
+
+    #[test]
+    fn dwithin_geography_on_wgs84_is_accepted() {
+        validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::DWithin {
+                distance_meters: 100.0,
+            },
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn dwithin_geometry_on_projected_srid_is_accepted() {
+        validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::DWithin {
+                distance_meters: 100.0,
+            },
+            &ref_with(3857, SpatialSemantics::Geometry),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bounding_box_with_geography_is_rejected_for_postgres() {
+        let err = validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::BoundingBox,
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .unwrap_err();
+        assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn dwithin_on_mysql_is_unsupported() {
+        let err = validate_predicate(
+            ProviderKind::Mysql,
+            &SpatialPredicate::DWithin {
+                distance_meters: 100.0,
+            },
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .unwrap_err();
+        assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn dwithin_negative_distance_is_rejected_universally() {
+        for provider in [ProviderKind::Postgres, ProviderKind::Mysql] {
+            let err = validate_predicate(
+                provider,
+                &SpatialPredicate::DWithin {
+                    distance_meters: -1.0,
+                },
+                &ref_with(3857, SpatialSemantics::Geometry),
+            )
+            .unwrap_err();
+            assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
+        }
+    }
+
+    #[test]
+    fn dwithin_nan_is_rejected() {
+        let err = validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::DWithin {
+                distance_meters: f64::NAN,
+            },
+            &ref_with(3857, SpatialSemantics::Geometry),
+        )
+        .unwrap_err();
+        assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
+    }
+}

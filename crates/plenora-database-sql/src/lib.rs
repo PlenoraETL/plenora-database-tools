@@ -87,6 +87,27 @@ pub enum Dialect {
     Duckdb,
 }
 
+impl Dialect {
+    /// Mappa il dialetto ricco del renderer sul dialetto ridotto usato
+    /// da `plenora-database-core::identifier`. Oracle/Db2/Sqlite/Duckdb
+    /// usano il quoting SQL standard (double-quote) come Postgres.
+    #[must_use]
+    fn to_identifier_dialect(
+        self,
+    ) -> plenora_database_core::identifier::IdentifierDialect {
+        use plenora_database_core::identifier::IdentifierDialect as D;
+        match self {
+            Self::Postgres
+            | Self::Oracle
+            | Self::Db2
+            | Self::Sqlite
+            | Self::Duckdb => D::Postgres,
+            Self::Mysql => D::Mysql,
+            Self::SqlServer => D::SqlServer,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DialectCapabilities {
     pub spatial_intersects: bool,
@@ -1441,21 +1462,24 @@ impl Renderer {
     }
 
     fn quote(&self, identifier: &Identifier) -> String {
-        match self.dialect {
-            Dialect::Mysql => {
-                format!("`{}`", identifier.as_str().replace('`', "``"))
-            }
-            Dialect::SqlServer => {
-                format!("[{}]", identifier.as_str().replace(']', "]]"))
-            }
-            Dialect::Postgres
-            | Dialect::Oracle
-            | Dialect::Db2
-            | Dialect::Sqlite
-            | Dialect::Duckdb => {
-                format!("\"{}\"", identifier.as_str().replace('"', "\"\""))
-            }
-        }
+        // Fase A2: delega a `plenora-database-core::identifier`. Prima
+        // duplicava la stessa logica del compiler portable con rischio
+        // di divergenza (es. MySQL escape backtick trattato diversamente).
+        //
+        // `Identifier::new` ha già validato lunghezza/nul, per cui qui
+        // `quote_identifier` non fallirà in condizioni normali. Il
+        // fallback `format!` è difensivo per gestire il caso teorico
+        // in cui `Identifier` venga costruito bypassando le check.
+        plenora_database_core::identifier::quote_identifier(
+            self.dialect.to_identifier_dialect(),
+            identifier.as_str(),
+        )
+        .unwrap_or_else(|_| {
+            // Non usiamo unwrap panic: preserviamo il comportamento
+            // originale (produce sempre stringa) — il fallback riproduce
+            // il quoting più permissivo (Postgres double-quote).
+            format!("\"{}\"", identifier.as_str().replace('"', "\"\""))
+        })
     }
 
     fn render_object(&self, object: &ObjectName) -> String {

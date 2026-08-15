@@ -15,6 +15,8 @@ use super::{
 use crate::plan::ProviderKind;
 use crate::provider::ParameterValue;
 use crate::geometry::SpatialSemantics;
+use crate::identifier::{self, IdentifierDialect};
+use crate::spatial_policy;
 use crate::spatial_predicate::{SpatialPredicate, SpatialReference};
 use crate::transaction::Statement;
 use crate::{DatabaseError, Result};
@@ -88,39 +90,20 @@ impl CompileContext {
 
 // ---- Helpers ----------------------------------------------------------------
 
+/// Delega a `plenora-database-core::identifier` (Fase A2). Prima
+/// duplicava le stesse regole di `plenora-database-sql::Renderer::quote`
+/// con rischio di divergenza.
 fn quote_identifier(name: &str, dialect: DialectKind) -> Result<String> {
-    validate_identifier(name)?;
-    match dialect {
-        DialectKind::Postgres => {
-            let escaped = name.replace('"', "\"\"");
-            Ok(format!("\"{escaped}\""))
-        }
-        DialectKind::Mysql => {
-            if name.contains('`') {
-                return Err(DatabaseError::invalid_plan(
-                    "identificatore MySQL non può contenere backtick",
-                ));
-            }
-            Ok(format!("`{name}`"))
-        }
-    }
+    identifier::quote_identifier(dialect.into(), name)
 }
 
-fn validate_identifier(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(DatabaseError::invalid_plan("identificatore vuoto"));
+impl From<DialectKind> for IdentifierDialect {
+    fn from(kind: DialectKind) -> Self {
+        match kind {
+            DialectKind::Postgres => Self::Postgres,
+            DialectKind::Mysql => Self::Mysql,
+        }
     }
-    if name.len() > 63 {
-        return Err(DatabaseError::invalid_plan(
-            "identificatore eccede 63 caratteri",
-        ));
-    }
-    if name.chars().any(char::is_control) {
-        return Err(DatabaseError::invalid_plan(
-            "identificatore contiene caratteri di controllo",
-        ));
-    }
-    Ok(())
 }
 
 fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
@@ -233,26 +216,6 @@ fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<Strin
     }
 }
 
-/// SRID che rappresentano coordinate geografiche (lat/lon in gradi).
-/// Su questi SRID, `Geometry` + `DWithin` produce distanza in **gradi**,
-/// non in metri — silent wrong result rispetto al nome `distance_meters`.
-/// Il compiler blocca fail-closed la combinazione e chiede
-/// `SpatialSemantics::Geography` esplicito.
-///
-/// Lista non esaustiva ma copre i casi PFM più comuni.
-/// Riferimento: EPSG registry.
-const GEOGRAPHIC_SRIDS: &[u32] = &[
-    4326, // WGS 84 (GPS)
-    4269, // NAD 83
-    4267, // NAD 27
-    4258, // ETRS89
-    4283, // GDA94
-];
-
-fn is_geographic_srid(srid: u32) -> bool {
-    GEOGRAPHIC_SRIDS.contains(&srid)
-}
-
 fn compile_spatial(
     column: &str,
     predicate: &SpatialPredicate,
@@ -272,14 +235,15 @@ fn compile_spatial_postgres(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
-    // Fix review #4: `SpatialSemantics` decide il cast PostGIS.
-    // - `Geometry`  → `::geometry` (planare, unità = unità di SRID)
-    // - `Geography` → `::geography` (WGS84 sphere, unità sempre = metri)
-    // Il cast della colonna è necessario perché la colonna può essere
-    // dichiarata `geometry` anche se il consumer vuole semantica geographic.
-    let (cast, col_cast) = match reference.semantics {
-        SpatialSemantics::Geometry => ("::geometry", col.to_owned()),
-        SpatialSemantics::Geography => ("::geography", format!("{col}::geography")),
+    // Fase B: validazione + cast delegati a `spatial_policy` (single
+    // source of truth). Prima erano inline duplicati con `spatial.rs`
+    // e `spatial.py`.
+    spatial_policy::validate_predicate(ProviderKind::Postgres, predicate, reference)?;
+    let cast = spatial_policy::postgres_cast_for(reference.semantics);
+    let col_cast = if reference.semantics == SpatialSemantics::Geography {
+        format!("{col}::geography")
+    } else {
+        col.to_owned()
     };
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
     let geom_expr = format!("ST_GeomFromEWKB({geom_placeholder}){cast}");
@@ -287,41 +251,8 @@ fn compile_spatial_postgres(
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col_cast}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col_cast}, {geom_expr})")),
         SpatialPredicate::Within => Ok(format!("ST_Within({col_cast}, {geom_expr})")),
-        SpatialPredicate::BoundingBox => {
-            // Operator `&&` funziona solo su `geometry`. Per `geography`
-            // non c'è equivalente index-friendly nativo — fail-closed.
-            if reference.semantics == SpatialSemantics::Geography {
-                return Err(DatabaseError::unsupported(
-                    ProviderKind::Postgres,
-                    crate::ErrorPhase::Prepare,
-                    "BoundingBox con SpatialSemantics::Geography non supportato \
-                     (operator && è solo geometry). Usa Intersects.",
-                ));
-            }
-            Ok(format!("{col_cast} && {geom_expr}"))
-        }
+        SpatialPredicate::BoundingBox => Ok(format!("{col_cast} && {geom_expr}")),
         SpatialPredicate::DWithin { distance_meters } => {
-            if !distance_meters.is_finite() || *distance_meters < 0.0 {
-                return Err(DatabaseError::invalid_plan(
-                    "DWithin richiede distanza finita non-negativa",
-                ));
-            }
-            // Fix review #5: fail-closed su Geometry + SRID geografico.
-            // Su SRID 4326 (WGS84) con semantics=Geometry, PostGIS produce
-            // distanza in GRADI, non in metri — silent wrong result
-            // rispetto al nome del campo `distance_meters`.
-            // Chiede al consumer semantics=Geography esplicito.
-            if reference.semantics == SpatialSemantics::Geometry
-                && is_geographic_srid(reference.srid)
-            {
-                return Err(DatabaseError::invalid_plan(format!(
-                    "DWithin con SpatialSemantics::Geometry su SRID geografico {} \
-                     produrrebbe distanza in gradi (fuorviante rispetto al nome \
-                     `distance_meters`). Usa SpatialSemantics::Geography per metri \
-                     reali, oppure riproietta su un SRID planare.",
-                    reference.srid
-                )));
-            }
             let dist_placeholder = ctx.bind(ParameterValue::F64(*distance_meters));
             Ok(format!(
                 "ST_DWithin({col_cast}, {geom_expr}, {dist_placeholder})"
@@ -337,11 +268,9 @@ fn compile_spatial_mysql(
     ctx: &mut CompileContext,
 ) -> Result<String> {
     // MySQL: no distinzione geometry/geography a livello tipo — la semantica
-    // deriva dal SRID della colonna (geografico → funzioni usano metri via
-    // ST_Distance_Sphere/ST_Distance con SRID axis order). Fix review #4:
-    // `Geography` è accettato ma trattato come hint semantico, non come cast
-    // (MySQL non ha `::geography`). Se il consumer vuole distanze in metri
-    // deve usare SRID geografico sulla colonna target.
+    // deriva dal SRID della colonna. Validazione (DWithin unsupported,
+    // distanza finita) delegata a `spatial_policy` in Fase B.
+    spatial_policy::validate_predicate(ProviderKind::Mysql, predicate, reference)?;
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
     let geom_expr = format!("ST_GeomFromWKB({geom_placeholder})");
     match predicate {
@@ -349,12 +278,11 @@ fn compile_spatial_mysql(
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col}, {geom_expr})")),
         SpatialPredicate::Within => Ok(format!("ST_Within({col}, {geom_expr})")),
         SpatialPredicate::BoundingBox => Ok(format!("MBRIntersects({col}, {geom_expr})")),
-        SpatialPredicate::DWithin { .. } => Err(DatabaseError::unsupported(
-            ProviderKind::Mysql,
-            crate::ErrorPhase::Prepare,
-            "DWithin non supportato da MySQL (no ST_DWithin nativo). \
-             Usa ST_Distance() < X come workaround via SQL raw.",
-        )),
+        // DWithin è già escluso da validate_predicate (Unsupported), qui
+        // non è raggiungibile — ma il match deve essere exhaustive.
+        SpatialPredicate::DWithin { .. } => unreachable!(
+            "spatial_policy::validate_predicate deve aver già rifiutato DWithin su MySQL"
+        ),
     }
 }
 

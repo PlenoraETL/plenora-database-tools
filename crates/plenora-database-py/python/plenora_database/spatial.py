@@ -51,11 +51,29 @@ from typing import Union
 _VALID_DIMENSIONS = frozenset({"xy", "xyz", "xym", "xyzm", "unknown"})
 # Semantics supportate.
 _VALID_SEMANTICS = frozenset({"geometry", "geography"})
+
+
 # SRID geografici (lat/lon in gradi): con semantics=geometry + DWithin
 # il compilatore Rust rifiuta (silent wrong result: distanza in gradi).
-# Client-side fast-fail per UX migliore. Deve restare in sync con
-# GEOGRAPHIC_SRIDS in compiler.rs.
-_GEOGRAPHIC_SRIDS = frozenset({4326, 4269, 4267, 4258, 4283})
+# Client-side fast-fail per UX migliore.
+#
+# Fase A1: la lista è caricata **al primo accesso** dal modulo nativo
+# `plenora_database._native.geographic_srids()` che a sua volta legge da
+# `plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS`.
+# Single-source-of-truth Rust: se il core aggiunge un SRID, Python lo
+# vede automaticamente al prossimo import senza toccare questo file.
+def _load_geographic_srids() -> frozenset[int]:
+    try:
+        from . import _native  # type: ignore[attr-defined]
+        return frozenset(_native.geographic_srids())
+    except (ImportError, AttributeError):
+        # Fallback difensivo per contesti in cui il native non è
+        # ancora caricato (test unitari puro-Python, doctest). Deve
+        # restare in sync col Rust ma è solo un safety net.
+        return frozenset({4326, 4269, 4267, 4258, 4283})
+
+
+_GEOGRAPHIC_SRIDS: frozenset[int] = _load_geographic_srids()
 # Predicati supportati (SpatialPredicate::Kind, snake_case).
 _VALID_PREDICATES = frozenset({
     "intersects", "contains", "within", "bounding_box", "d_within",
