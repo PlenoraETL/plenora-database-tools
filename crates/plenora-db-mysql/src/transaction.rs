@@ -242,9 +242,26 @@ impl TransactionScope for MysqlTransaction {
                 return Err(closed_error(ErrorPhase::Write));
             }
             let params = bind_positional_params(&statement.params)?;
-            self.session
+            let result = self
+                .session
                 .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
-                .await
+                .await;
+            // Fix P0 review MySQL 2026-08-15: quando MySQL rifiuta lo
+            // statement con `RolledBack` (deadlock 1213, ambiguous
+            // timeout, ecc.), il server auto-annulla la transazione
+            // vittima. Prima `self.open` restava `true` e le scritture
+            // successive andavano in **autocommit** (silent write fuori
+            // dalla tx supposta). Ora chiudo la tx dopo qualsiasi
+            // errore che modifica lo stato server-side.
+            if let Err(ref error) = result {
+                if matches!(
+                    error.remote_effect,
+                    RemoteEffect::RolledBack | RemoteEffect::Unknown
+                ) {
+                    self.open = false;
+                }
+            }
+            result
         })
     }
 

@@ -474,7 +474,8 @@ impl AsyncMysqlSession {
 ///
 /// `PlenoraError` se la configurazione è invalida o la connessione fallisce.
 #[pyfunction]
-#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None))]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql sync
 pub fn aconnect_mysql<'py>(
     py: Python<'py>,
     host: &str,
@@ -483,11 +484,15 @@ pub fn aconnect_mysql<'py>(
     password: &str,
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
     let host = host.to_owned();
     let database = database.to_owned();
     let user = user.to_owned();
     let secret = SecretString::new(password.to_owned());
+    // Fix P1 review MySQL: default TLS `require` (Verify webpki),
+    // `insecure_trust_server` opt-in esplicito.
+    let tls_mode_owned = tls_mode.to_owned();
     future_into_py(py, async move {
         let mut config = MysqlConfig::new(host, database, user, secret.clone());
         if let Some(p) = port {
@@ -498,8 +503,19 @@ pub fn aconnect_mysql<'py>(
                 return Err(PyRuntimeError::new_err("CA PEM MySQL oltre 1 MiB"));
             }
             config = config.with_private_ca_certificate_pem(pem);
-        } else {
-            config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+        }
+        match tls_mode_owned.as_str() {
+            "require" => {}
+            "insecure_trust_server" => {
+                config = config
+                    .with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+            }
+            other => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "tls_mode non riconosciuto: {other:?}. Valori: \
+                     'require' (default) | 'insecure_trust_server'"
+                )));
+            }
         }
         let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
         let cancel = CancellationToken::new();

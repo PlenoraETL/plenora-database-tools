@@ -40,6 +40,7 @@ def connect_mysql(
     password: str,
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
 ) -> MysqlSession: ...
 
 def aconnect_mysql(
@@ -49,6 +50,7 @@ def aconnect_mysql(
     password: str,
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
 ) -> Any:  # awaitable → AsyncMysqlSession
     ...
 

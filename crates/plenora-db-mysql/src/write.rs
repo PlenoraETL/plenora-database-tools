@@ -995,16 +995,44 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    // v1.2: Append + Create + TruncateInsert + Upsert + DeleteByKeys +
-    // Update supportati. Replace pianificato per future tranches.
+    // Post review MySQL 2026-08-15:
+    // - `Replace` è **unsafe** su MySQL: il pattern staging + RENAME
+    //   perde vincoli/metadati non riproducibili in
+    //   `build_create_table_sql` (indici secondari, FK, TRIGGER,
+    //   check, permessi ACL, tablespace, partizioni). Il consumer
+    //   che aspetta idempotenza vede il target ricreato con schema
+    //   parziale.
+    // - `TruncateInsert` non è rollback-safe: `TRUNCATE TABLE` è DDL
+    //   e su MySQL/InnoDB fa **commit implicito** — il rollback
+    //   della tx non ripristina i dati eliminati.
+    //
+    // Entrambi restano `Unsupported` finché non implementiamo il
+    // preflight di metadata migration (Replace) e il fallback
+    // DELETE-in-tx (TruncateInsert). Il consumer che ne ha bisogno
+    // sa che sta facendo trade-off espliciti.
     match operation.mode {
         WriteMode::Append
         | WriteMode::Create
-        | WriteMode::TruncateInsert
         | WriteMode::Upsert
         | WriteMode::DeleteByKeys
-        | WriteMode::Update
-        | WriteMode::Replace => {}
+        | WriteMode::Update => {}
+        WriteMode::Replace => {
+            return Err(unsupported(
+                "WriteMode::Replace su MySQL rimosso: staging + RENAME perde \
+                 vincoli/indici/FK/trigger/permessi non ricostruibili. \
+                 Workaround: eseguire manualmente CREATE TABLE con schema \
+                 completo, poi Append. Ri-abilitato quando il preflight \
+                 di metadata migration è qualificato.",
+            ));
+        }
+        WriteMode::TruncateInsert => {
+            return Err(unsupported(
+                "WriteMode::TruncateInsert su MySQL rimosso: TRUNCATE è DDL \
+                 con commit implicito → non rollback-safe se l'INSERT \
+                 successivo fallisce. Workaround: DELETE FROM in Update mode, \
+                 o pattern staging in tx dedicata.",
+            ));
+        }
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
         return Err(unsupported(

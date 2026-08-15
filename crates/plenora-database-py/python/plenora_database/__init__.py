@@ -103,6 +103,7 @@ def connect_mysql(
     password: str,
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
 ) -> MysqlSession:
     """Apre una nuova sessione MySQL (sync).
 
@@ -112,29 +113,34 @@ def connect_mysql(
     - `execute_returning_rows(sql, params) → list[dict]`
     - `execute_ddl(sql) → None`
     - `begin(isolation, read_only, statement_timeout_ms) → Transaction`
-      (v0.5+, supporta savepoints + conditional_update via Transaction
-      provider-agnostic)
     - `copy_from(schema, table, source, mode, transaction_profile,
-      mapping_policy, keys, update_columns) → dict` (v0.6+, bulk write
-      via Arrow IPC; supporta tutti 7 WriteMode)
+      mapping_policy, keys, update_columns) → dict`
     - `close()`, `__enter__/__exit__`, `is_closed`, `server_version`
 
-    Non incluso (roadmap SDK MySQL post-0.6):
-    - read (Arrow stream)
-    - portable AST builders (select/insert/etc.)
-    - AsyncMysqlSession
-    - spatial predicates + SpatialReference
-    - typed params helper (uuid/date/decimal)
-
     Placeholder MySQL: `?` (non `$1` come Postgres).
+
+    TLS (parity con Postgres 0.9.0):
+    - `tls_mode="require"` (default): TLS + verifica certificato server
+      via WebPKI trust store pubblico. Se `tls_ca_pem` è passato viene
+      usata come CA privata invece di WebPKI.
+    - `tls_mode="insecure_trust_server"`: TLS attivo ma senza verifica
+      del certificato. **Solo test/dev locali** (vulnerabile a MITM).
+
+    ⚠️ WriteMode residui (post-review 2026-08-15):
+    - `Replace` e `TruncateInsert` sono **fail-closed Unsupported** su
+      MySQL. `Replace` (staging+RENAME) perde vincoli/indici/FK; MySQL
+      `TRUNCATE` è DDL con commit implicito → non rollback-safe.
+      Workaround: `Create` + `Append`, o `Update` con `DELETE FROM`.
 
     Parametri:
       - host, database, user, password: obbligatori
       - port: default 3306
-      - tls_ca_pem: bytes del PEM della CA privata. Se None, usa
-        TrustServerCertificate (solo per sviluppo)
+      - tls_ca_pem: bytes del PEM di una CA privata (opzionale)
+      - tls_mode: `"require"` (default) | `"insecure_trust_server"`
     """
-    native = _native_connect_mysql(host, database, user, password, port, tls_ca_pem)
+    native = _native_connect_mysql(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
     return _MysqlSessionWrapper(native)
 
 
@@ -290,12 +296,12 @@ async def aconnect_mysql(
     password: str,
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
 ) -> "_AsyncMysqlSessionWrapper":
-    """Apre una nuova sessione MySQL async (v0.8+).
+    """Apre una nuova sessione MySQL async.
 
-    Awaitable analogo di `connect_mysql`. `AsyncMysqlSession` espone
-    execute/execute_scalar/execute_returning_rows/execute_ddl come
-    coroutines + begin() → AsyncTransaction + aread() + acopy_from().
+    Awaitable analogo di `connect_mysql` — vedi docstring per TLS,
+    WriteMode residui e API.
 
     Uso:
 
@@ -303,7 +309,9 @@ async def aconnect_mysql(
             n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
             v = await s.execute_scalar("SELECT COUNT(*) FROM t")
     """
-    native = await _native_aconnect_mysql(host, database, user, password, port, tls_ca_pem)
+    native = await _native_aconnect_mysql(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
     return _AsyncMysqlSessionWrapper(native)
 
 

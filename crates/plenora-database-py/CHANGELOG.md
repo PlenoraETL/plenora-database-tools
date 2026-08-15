@@ -11,6 +11,88 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.9.1] — 2026-08-15
+
+Hardening MySQL. Chiude 3 findings **P0** identificati dalla review
+MySQL post-0.9.0. Nessun cambio alle API Postgres.
+
+### 🚨 BREAKING — MySQL write modes `Replace` e `TruncateInsert` rimossi
+
+Entrambi erano **unsafe** su MySQL e producevano risultati diversi
+dal contratto Plenora:
+
+- **`Replace`** su MySQL usava pattern staging + `RENAME TABLE`
+  atomico. Il problema: `build_create_table_sql` MySQL non ricrea
+  indici secondari, foreign key, trigger, check constraint,
+  tablespace, partizioni, permessi ACL. Il target dopo Replace
+  perdeva metadati non riproducibili — silenzio strutturale.
+
+- **`TruncateInsert`** usava `TRUNCATE TABLE` prima del bulk INSERT.
+  `TRUNCATE` è DDL su MySQL/InnoDB e fa **commit implicito**: il
+  rollback della transazione non ripristina i dati eliminati. Se
+  il bulk INSERT successivo fallisce, il target resta vuoto.
+
+Entrambi ora fail-closed `PlenoraUnsupportedError` con messaggio
+esplicativo + workaround suggerito (`Create`+`Append`, o `Update`
+con `DELETE FROM`).
+
+**Workaround per Replace**:
+```python
+with s.begin() as tx:
+    tx.execute("DELETE FROM t")             # rollback-safe (DML)
+    s.copy_from("public", "t", data,
+                mode="append")               # bulk
+```
+
+**Impatto**: consumer che si appoggia su questi due modi vede
+`PlenoraUnsupportedError` all'invocazione. Nessun rollback runtime
+richiesto — il codice fallisce prima di toccare il DB.
+
+### Fix P0 — MysqlTransaction su deadlock
+
+Prima del fix: se MySQL rollback la transazione lato server per
+deadlock (errcode 1213) o timeout ambiguo, `MysqlTransaction`
+manteneva `open = true`. Le scritture successive andavano in
+**autocommit** — silent write fuori dalla tx supposta.
+
+Ora `execute()` chiude la tx (`open = false`) se l'errore ha
+`RemoteEffect::RolledBack` o `Unknown`. Le successive `execute` /
+`commit` ricevono `PlenoraInvalidPlanError` "transazione già
+chiusa".
+
+### Fix P1 — MySQL SDK TLS secure-by-default (parity Postgres 0.9.0)
+
+Prima: `connect_mysql(dsn, tls_ca_pem=None)` settava
+`MysqlCertificatePolicy::TrustServerCertificate` come fallback —
+TLS attivo ma **senza verifica del certificato server**
+(vulnerabile a MITM).
+
+Ora:
+- Default `tls_mode="require"` = `MysqlCertificatePolicy::Verify`
+  (WebPKI trust store pubblico o CA privata se `tls_ca_pem` passata).
+- Opt-in esplicito `tls_mode="insecure_trust_server"` per test/dev
+  locali (nome esplicito).
+
+```python
+# Prima (0.9.0)
+s = p.connect_mysql("host", "db", "u", "p")                # ← TrustServerCertificate silente
+
+# Dopo (0.9.1) — produzione
+s = p.connect_mysql("host", "db", "u", "p")                # ← Verify WebPKI
+
+# Dopo (0.9.1) — dev locale
+s = p.connect_mysql("host", "db", "u", "p",
+                    tls_mode="insecure_trust_server")
+```
+
+Parametro esteso anche a `aconnect_mysql`.
+
+### Documentazione
+
+- Docstring `connect_mysql` aggiornato con WriteMode residui +
+  parametri TLS espliciti.
+- Stub `.pyi` allineato.
+
 ## [0.9.0] — 2026-08-15
 
 Security-hardening + PFM-ITS-DB-001 (CHG-001..004) + chiusura

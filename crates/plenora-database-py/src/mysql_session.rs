@@ -461,7 +461,7 @@ impl MysqlSession {
 /// `PlenoraError` se la configurazione è invalida, la connessione fallisce,
 /// o il probe capabilities restituisce errore.
 #[pyfunction]
-#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None))]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
 pub fn connect_mysql(
     host: &str,
     database: &str,
@@ -469,7 +469,16 @@ pub fn connect_mysql(
     password: &str,
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
 ) -> PyResult<MysqlSession> {
+    // Fix P1 review MySQL 2026-08-15 (parity con Postgres SDK 0.9.0):
+    // prima il default settava `TrustServerCertificate` quando
+    // `tls_ca_pem` era None — quindi ogni consumer che non forniva
+    // una CA privata usava TLS senza verifica del certificato
+    // server (vulnerabile a MITM). Ora il default è
+    // `MysqlCertificatePolicy::Verify` (WebPKI trust store);
+    // `tls_mode="insecure_trust_server"` è opt-in esplicito per
+    // test/dev locali.
     let secret = SecretString::new(password.to_owned());
     let mut config = MysqlConfig::new(host, database, user, secret.clone());
     if let Some(p) = port {
@@ -480,8 +489,22 @@ pub fn connect_mysql(
             return Err(PyRuntimeError::new_err("CA PEM MySQL oltre 1 MiB"));
         }
         config = config.with_private_ca_certificate_pem(pem);
-    } else {
-        config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+    }
+    match tls_mode {
+        "require" => {
+            // Default `MysqlCertificatePolicy::Verify` — nessun
+            // override necessario.
+        }
+        "insecure_trust_server" => {
+            config = config
+                .with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+        }
+        other => {
+            return Err(PyRuntimeError::new_err(format!(
+                "tls_mode non riconosciuto: {other:?}. Valori: \
+                 'require' (default) | 'insecure_trust_server'"
+            )));
+        }
     }
     let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
     let provider_probe = Arc::clone(&provider);
