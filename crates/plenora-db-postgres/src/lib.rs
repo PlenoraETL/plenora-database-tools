@@ -167,6 +167,17 @@ pub enum PostgresSchemaEvolution {
 }
 
 impl Default for PostgresProvider {
+    /// **Attenzione (review #6)**: il default usa
+    /// `PostgresTlsMode::Disabled` per compat con setup dev/staging
+    /// pre-esistenti. Per uso produzione **usare esplicitamente**
+    /// [`PostgresProvider::default_secure`] o
+    /// `PostgresProvider::default().with_tls_mode(PostgresTlsMode::Require)
+    ///  .with_tls_config(PostgresTlsConfig::webpki())`.
+    ///
+    /// Cambiare il default a `Require` è un breaking change
+    /// comportamentale: le CI/dev-env che oggi si connettono su
+    /// container `docker-compose` senza TLS smetterebbero di
+    /// funzionare. Decisione a valle di roadmap PFM.
     fn default() -> Self {
         Self::for_profile(PostgresPerformanceProfile::LowLatency)
     }
@@ -199,6 +210,19 @@ impl PostgresProvider {
     #[must_use]
     pub fn new(batch_rows: usize) -> Self {
         Self::build(batch_rows)
+    }
+
+    /// Provider con TLS `Require` + trust store `WebPKI` pubblico
+    /// (raccomandato per produzione). Fix review #6.
+    ///
+    /// Rifiuta connessioni plaintext. Per CA private/mTLS costruire
+    /// il `PostgresTlsConfig` manualmente e passarlo con
+    /// `.with_tls_config(...)`.
+    #[must_use]
+    pub fn default_secure() -> Self {
+        Self::default()
+            .with_tls_mode(PostgresTlsMode::Require)
+            .with_tls_config(PostgresTlsConfig::webpki())
     }
 
     /// Costruisce il provider con un profilo prestazionale misurato.

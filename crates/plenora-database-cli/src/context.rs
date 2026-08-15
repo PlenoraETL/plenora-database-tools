@@ -74,11 +74,13 @@ impl PostgresCommandContext {
     /// # Errors
     ///
     /// Vedi `for_pfm`.
-    #[allow(dead_code)] // API pubblica per migrazione TLS review #1; consumer non ancora migrato
+    #[allow(dead_code)] // API pubblica per migrazione TLS review #6; consumer non ancora migrato
     pub(crate) fn for_pfm_secure(dsn_env: &str) -> CliResult<Self> {
         Ok(Self {
             secret: secret_from_env(dsn_env)?,
-            provider: PostgresProvider::default().with_tls_mode(PostgresTlsMode::Require),
+            // Fix review #6: usa `default_secure` (Require + WebPKI)
+            // invece di mutare manualmente il default.
+            provider: PostgresProvider::default_secure(),
             budget: ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?,
             cancel: CancellationToken::new(),
         })

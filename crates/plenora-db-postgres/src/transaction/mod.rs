@@ -22,6 +22,7 @@ mod stream;
 #[cfg(test)]
 mod tests;
 
+use crate::control::select_with_cancellation;
 use crate::error::{check_cancelled, classify_error, public_error};
 use crate::pool::PooledClient;
 use decode::decode_rows;
@@ -127,7 +128,34 @@ impl TransactionScope for PostgresTransaction {
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
             let client = self.client.client()?;
-            match client.execute(statement.sql.as_str(), &param_refs).await {
+            // Fix review #7: la execute era `client.execute().await`
+            // senza race col cancellation token — un cancel durante
+            // pg_sleep/lock wait/query lunga non veniva onorato.
+            // Ora `select_with_cancellation` mette in race la query
+            // con `cancellation.cancelled()`. Su cancel il client
+            // resta in stato ambiguo (query può essere già
+            // completata server-side) → invalida per sicurezza.
+            //
+            // NB: cancel_query lato Postgres non lo mandiamo qui
+            // perché è expensive (nuova connessione + protocol) e
+            // non è thread-safe rispetto al client in uso.
+            // L'invalidazione del pool è più conservativa.
+            let Some(result) = select_with_cancellation(
+                client.execute(statement.sql.as_str(), &param_refs),
+                cancellation,
+            )
+            .await
+            else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(public_error(
+                    ErrorCategory::Cancelled,
+                    phase,
+                    false,
+                    "operazione cancellata durante l'esecuzione",
+                ));
+            };
+            match result {
                 Ok(affected) => Ok(affected),
                 Err(error) => {
                     let mapped = classify_error(phase, &error);
@@ -150,11 +178,21 @@ impl TransactionScope for PostgresTransaction {
             check_cancelled(cancellation, ErrorPhase::Write)?;
             validate_savepoint_name(name)?;
             let sql = format!("SAVEPOINT {}", quote_identifier(name));
-            self.client
-                .client()?
-                .batch_execute(&sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))
+            let client = self.client.client()?;
+            if let Some(result) =
+                select_with_cancellation(client.batch_execute(&sql), cancellation).await
+            {
+                result.map_err(|error| classify_error(ErrorPhase::Write, &error))
+            } else {
+                self.client.invalidate();
+                self.open = false;
+                Err(public_error(
+                    ErrorCategory::Cancelled,
+                    ErrorPhase::Write,
+                    false,
+                    "SAVEPOINT cancellato durante l'esecuzione",
+                ))
+            }
         })
     }
 
@@ -206,9 +244,24 @@ impl TransactionScope for PostgresTransaction {
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
             let client = self.client.client()?;
-            let rows = client
-                .query(statement.sql.as_str(), &param_refs)
-                .await
+            // Fix review #7: cancellation con race in-flight (vedi
+            // note in `execute`).
+            let Some(query_result) = select_with_cancellation(
+                client.query(statement.sql.as_str(), &param_refs),
+                cancellation,
+            )
+            .await
+            else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(public_error(
+                    ErrorCategory::Cancelled,
+                    ErrorPhase::Read,
+                    false,
+                    "operazione cancellata durante l'esecuzione",
+                ));
+            };
+            let rows = query_result
                 .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
             decode_rows(&rows)
         })

@@ -280,17 +280,9 @@ impl AsyncTransaction {
             let cancel = CancellationToken::new();
             let outcome = tx.commit(&cancel).await.map_err(to_py_err)?;
             if !outcome.is_committed() {
-                return Err(to_py_err(DatabaseError {
-                    category: plenora_database_core::ErrorCategory::Internal,
-                    phase: plenora_database_core::ErrorPhase::Write,
-                    remote_effect: plenora_database_core::RemoteEffect::Unknown,
-                    retry: plenora_database_core::RetryDisposition::Never,
-                    provider: None,
-                    execution_id: None,
-                    message: "commit outcome unknown: verificare stato del target out-of-band"
-                        .to_owned(),
-                    diagnostics: None,
-                }));
+                return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
+                    plenora_database_core::plan::ProviderKind::Postgres,
+                )));
             }
             Ok(())
         })
@@ -335,17 +327,9 @@ impl AsyncTransaction {
             if is_ok {
                 let outcome = tx.commit(&cancel).await.map_err(to_py_err)?;
                 if !outcome.is_committed() {
-                    return Err(to_py_err(DatabaseError {
-                        category: plenora_database_core::ErrorCategory::Internal,
-                        phase: plenora_database_core::ErrorPhase::Write,
-                        remote_effect: plenora_database_core::RemoteEffect::Unknown,
-                        retry: plenora_database_core::RetryDisposition::Never,
-                        provider: None,
-                        execution_id: None,
-                        message: "commit outcome unknown: verificare stato del target out-of-band"
-                            .to_owned(),
-                        diagnostics: None,
-                    }));
+                    return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
+                        plenora_database_core::plan::ProviderKind::Postgres,
+                    )));
                 }
             } else {
                 let _ = tx.rollback(&cancel).await;

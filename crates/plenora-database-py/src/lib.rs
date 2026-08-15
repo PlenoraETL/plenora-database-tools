@@ -16,6 +16,7 @@ mod async_session;
 mod async_transaction;
 mod budget;
 mod errors;
+mod errors_commit;
 mod mysql_arrow_reader;
 mod mysql_session;
 mod mysql_write;
@@ -69,6 +70,51 @@ pub fn geographic_srids() -> Vec<u32> {
     plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS.to_vec()
 }
 
+/// Valida che `srid` e `dimensions` dichiarati coincidano con quelli
+/// realmente presenti nel buffer EWKB. Fix review #5.
+///
+/// - `dimensions` accetta `"xy"|"xyz"|"xym"|"xyzm"|"unknown"`.
+///   `"unknown"` bypassa il check dimensioni.
+/// - Se l'EWKB non ha SRID embedded (WKB puro), il check SRID è
+///   permissivo (accetta qualsiasi srid dichiarato).
+///
+/// Ritorna `None` su successo, solleva `ValueError` su mismatch.
+///
+/// # Errors
+///
+/// `PyValueError` se `dimensions` non è una stringa valida oppure se
+/// l'EWKB non è consistente col SRID / dimensioni dichiarate.
+#[pyfunction]
+pub fn validate_ewkb_reference(
+    ewkb: &[u8],
+    srid: u32,
+    dimensions: &str,
+) -> PyResult<()> {
+    use plenora_database_core::geometry::Dimensions;
+    use pyo3::exceptions::PyValueError;
+
+    let dims = match dimensions {
+        "xy" => Dimensions::Xy,
+        "xyz" => Dimensions::Xyz,
+        "xym" => Dimensions::Xym,
+        "xyzm" => Dimensions::Xyzm,
+        "unknown" => Dimensions::Unknown,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "dimensions non valida: {other:?}"
+            )))
+        }
+    };
+    plenora_database_core::spatial_predicate::SpatialReference::new_validated(
+        ewkb.to_vec(),
+        srid,
+        dims,
+        plenora_database_core::geometry::SpatialSemantics::Geometry,
+    )
+    .map(|_| ())
+    .map_err(|e| PyValueError::new_err(e.message))
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
@@ -76,6 +122,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     init_async_runtime();
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;

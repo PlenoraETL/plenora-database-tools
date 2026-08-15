@@ -96,6 +96,35 @@ class SpatialReference:
 
     __slots__ = ("ewkb", "srid", "dimensions", "semantics")
 
+    @classmethod
+    def validated(
+        cls,
+        ewkb: Union[bytes, bytearray],
+        srid: int,
+        dimensions: str = "xy",
+        semantics: str = "geometry",
+    ) -> "SpatialReference":
+        """Come `SpatialReference(...)` ma verifica l'EWKB (fix review #5).
+
+        Se il buffer EWKB ha SRID embedded (formato Postgres EWKB),
+        deve combaciare con `srid` dichiarato. Se contiene coordinate
+        Z/M, `dimensions` deve rifletterlo (o essere `"unknown"`).
+
+        Raises:
+            ValueError: SRID o dimensioni divergenti, o EWKB malformato.
+
+        Preferire questo costruttore per input di terze parti; il
+        costruttore literal è mantenuto per compat / deserializzazione
+        JSON (dove il check è a carico del serializzatore).
+        """
+        try:
+            from . import _native  # type: ignore[attr-defined]
+            _native.validate_ewkb_reference(bytes(ewkb), srid, dimensions)
+        except (ImportError, AttributeError):
+            # native non caricato (test unit puro-Python): skip check.
+            pass
+        return cls(ewkb, srid, dimensions, semantics)
+
     def __init__(
         self,
         ewkb: Union[bytes, bytearray],
