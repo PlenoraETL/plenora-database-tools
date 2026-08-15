@@ -527,8 +527,11 @@ async fn spatial_s4_geography_distance_in_meters() {
 // Verifiche:
 //   - ST_Contains(g, REF): quali g contengono REF? → {R1, R2}
 //   - ST_Within(g, REF): quali g stanno dentro REF? → {} (nessuno più piccolo)
-//   - ST_DWithin(g, REF, 50°): quali g sono entro 50 gradi da REF? → {R1, R2}
-//     (R3 è a >90 gradi). NB: distanza in unità SRS (gradi per 4326).
+//   - ST_DWithin(g::geography, REF::geography, 5_000_000 m): quali g sono
+//     entro ~5000 km da REF? → {R1, R2}. R3 (100°,100°) è a distanza
+//     geodetica maggiore.
+//     NB post-review #5: DWithin con SpatialSemantics::Geometry su SRID
+//     4326 è fail-closed (silent wrong result rischio). Usiamo Geography.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
 #[tokio::test]
@@ -624,13 +627,23 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
         rows.len()
     );
 
-    // Portable DWithin — 50 gradi coprono R1 e R2 (adiacenti/sovrapposti) ma
-    // non R3 (a ~100 gradi). NB: DWithin su geometry usa unità SRS (gradi).
+    // Portable DWithin — con Geography (fix review #5): distanza in metri
+    // veri. 5000 km coprono R1/R2 (vicini), R3 a >5000 km di distanza
+    // geodetica da REF (2.5..3.5) — R3 è a lon 100° dove il gap è enorme.
+    // Nota: il compiler ora casta col::geography e ref::geography.
+    let reference_geog = SpatialReference {
+        ewkb: reference.ewkb.clone(),
+        srid: 4326,
+        dimensions: Dimensions::Xy,
+        semantics: SpatialSemantics::Geography,
+    };
     let ast_dwithin = p_select("_sp_s5", vec!["id", "name"])
         .where_(p_spatial(
             "g",
-            SpatialPredicate::DWithin { distance_meters: 50.0 },
-            reference.clone(),
+            SpatialPredicate::DWithin {
+                distance_meters: 5_000_000.0,
+            },
+            reference_geog,
         ))
         .order_by("id", Direction::Asc)
         .into_statement();
@@ -641,7 +654,7 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
     assert_eq!(
         names_dw,
         vec!["R1_big".to_string(), "R2_mid".to_string()],
-        "ST_DWithin(50°) atteso {{R1,R2}}"
+        "ST_DWithin(5000km, geography) atteso {{R1,R2}}"
     );
 
     Box::new(tx).rollback(&cancel).await.expect("rollback");

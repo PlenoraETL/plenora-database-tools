@@ -19,6 +19,7 @@ from .spatial import (
     SpatialReference,
     _spatial_predicate_dict,
     _spatial_reference_dict,
+    _validate_predicate_reference_combo,
 )
 
 if TYPE_CHECKING:
@@ -107,8 +108,13 @@ class _WhereMixin:
 
         Il core Rust compila in `ST_<Predicate>(column, ST_GeomFromEWKB($n)::<cast>)`
         con `<cast>` = `geometry` o `geography` in base a
-        `reference.semantics` (fix driver v0.2).
+        `reference.semantics` (fix driver v0.2, ora esteso review #4).
+
+        Raises:
+            ValueError: se predicate/semantics/srid producono un silent
+                wrong result (es. d_within + geometry + SRID 4326).
         """
+        _validate_predicate_reference_combo(predicate, reference)
         self._add({
             "op": "spatial",
             "column": column,

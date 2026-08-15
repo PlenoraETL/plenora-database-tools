@@ -29,11 +29,17 @@ Uso tipico:
              .all()
         )
 
-        # DWithin richiede distance_meters (semantica geodetica se
-        # geography, unità SRS se geometry — es. gradi per SRID 4326).
+        # DWithin richiede distance_meters. **Attenzione unità**:
+        # - Geography + qualsiasi SRID → metri (garantito).
+        # - Geometry + SRID planare (3857, 25832) → unità del SRID (metri
+        #   per web mercator e UTM).
+        # - Geometry + SRID geografico (4326, 4269, 4267, 4258, 4283) →
+        #   il compilatore Rust **rifiuta** (silent wrong result: sarebbero
+        #   gradi, non metri). Usa `spatial.geography(...)` per WGS84.
+        ref_geog = p.spatial.geography(ewkb=ref_ewkb, srid=4326)
         rows = (
             s.select("poi")
-             .where_spatial("geom", "d_within", ref, distance_meters=500.0)
+             .where_spatial("geom", "d_within", ref_geog, distance_meters=500.0)
              .all()
         )
 """
@@ -45,6 +51,11 @@ from typing import Union
 _VALID_DIMENSIONS = frozenset({"xy", "xyz", "xym", "xyzm", "unknown"})
 # Semantics supportate.
 _VALID_SEMANTICS = frozenset({"geometry", "geography"})
+# SRID geografici (lat/lon in gradi): con semantics=geometry + DWithin
+# il compilatore Rust rifiuta (silent wrong result: distanza in gradi).
+# Client-side fast-fail per UX migliore. Deve restare in sync con
+# GEOGRAPHIC_SRIDS in compiler.rs.
+_GEOGRAPHIC_SRIDS = frozenset({4326, 4269, 4267, 4258, 4283})
 # Predicati supportati (SpatialPredicate::Kind, snake_case).
 _VALID_PREDICATES = frozenset({
     "intersects", "contains", "within", "bounding_box", "d_within",
@@ -149,6 +160,35 @@ def _spatial_predicate_dict(predicate: str, distance_meters: float | None) -> di
             f"(solo d_within lo richiede)"
         )
     return {"kind": predicate}
+
+
+def _validate_predicate_reference_combo(
+    predicate: str, reference: SpatialReference
+) -> None:
+    """Fast-fail client-side per combinazioni fuorvianti.
+
+    Reason: il compilatore Rust rifiuta comunque (fix review #5), ma il
+    round-trip include serialization + IPC + parsing — errore locale
+    dà stacktrace più utile.
+    """
+    if (
+        predicate == "d_within"
+        and reference.semantics == "geometry"
+        and reference.srid in _GEOGRAPHIC_SRIDS
+    ):
+        raise ValueError(
+            f"where_spatial('d_within', ...) con semantics='geometry' su "
+            f"SRID {reference.srid} (geografico lat/lon) produrrebbe distanza "
+            f"in gradi (fuorviante rispetto al nome distance_meters). "
+            f"Usa spatial.geography(...) per distanze in metri reali, "
+            f"oppure riproietta il dato su un SRID planare (es. 3857)."
+        )
+    if predicate == "bounding_box" and reference.semantics == "geography":
+        raise ValueError(
+            "where_spatial('bounding_box', ...) non supportato con "
+            "semantics='geography' (operator && è solo geometry). "
+            "Usa 'intersects'."
+        )
 
 
 def _spatial_reference_dict(ref: SpatialReference) -> dict:

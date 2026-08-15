@@ -23,6 +23,23 @@ pub enum SpatialPredicate {
     /// La colonna è contenuta nel riferimento.
     Within,
     /// La colonna è entro `distance_meters` dal riferimento.
+    ///
+    /// **Semantica delle unità**: il nome del campo implica metri, ma il
+    /// significato effettivo dipende dalla combinazione
+    /// `SpatialReference.semantics` × `srid`:
+    ///
+    /// - `Geography` + qualsiasi SRID → **metri** (garantito, `PostGIS`
+    ///   cast automatico a sfera WGS84).
+    /// - `Geometry` + SRID planare/proiettato (es. 3857, 25832, 32633) →
+    ///   **unità del SRID** (tipicamente metri, ma dipende dal CRS).
+    /// - `Geometry` + SRID geografico (4326, 4269, 4267, 4258, 4283) →
+    ///   **gradi** (silent wrong result rispetto al nome del campo).
+    ///   Il compilatore portable **rifiuta** questa combinazione con
+    ///   `InvalidPlan` per evitare risultati fuorvianti. Usa
+    ///   `SpatialSemantics::Geography` per distanze in metri.
+    ///
+    /// `MySQL`: `DWithin` non supportato (nessun `ST_DWithin` nativo);
+    /// il compilatore fallisce `Unsupported`.
     DWithin { distance_meters: f64 },
     /// `Bounding-box` overlap (indice-friendly): equivalente a `&&` in
     /// `PostGIS`. Utile per filtri di viewport prima di predicati più stretti.

@@ -214,8 +214,10 @@ fn identifiers_are_quoted_and_double_quotes_escaped() {
 
 #[test]
 fn unsupported_provider_returns_unsupported() {
+    // SQL Server e Oracle non sono ancora supportati dal compiler
+    // portable — MySQL è stato aggiunto in sessione C.
     let stmt = select_all("t").into_statement();
-    let err = compile_portable(ProviderKind::Mysql, &stmt).unwrap_err();
+    let err = compile_portable(ProviderKind::Sqlserver, &stmt).unwrap_err();
     assert_eq!(err.category, crate::ErrorCategory::Unsupported);
 }
 
@@ -260,6 +262,7 @@ fn spatial_predicate_intersects_binds_ewkb() {
 #[test]
 fn spatial_predicate_dwithin_binds_distance() {
     use crate::geometry::{Dimensions, SpatialSemantics};
+    // SRID 3857 (web mercator, unità metri) + Geometry: unità coerenti.
     let stmt = select("poi", vec!["id"])
         .where_(spatial(
             "geom",
@@ -268,7 +271,7 @@ fn spatial_predicate_dwithin_binds_distance() {
             },
             SpatialReference {
                 ewkb: vec![0xff],
-                srid: 4326,
+                srid: 3857,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
             },
@@ -285,6 +288,9 @@ fn spatial_predicate_dwithin_binds_distance() {
 #[test]
 fn spatial_dwithin_negative_distance_is_rejected() {
     use crate::geometry::{Dimensions, SpatialSemantics};
+    // Uso 3857 per isolare il check "distanza negativa" da quello
+    // "Geometry + SRID geografico" (entrambi rifiuterebbero — vogliamo
+    // esercitare specifico il primo).
     let stmt = select("t", vec!["id"])
         .where_(spatial(
             "geom",
@@ -293,7 +299,7 @@ fn spatial_dwithin_negative_distance_is_rejected() {
             },
             SpatialReference {
                 ewkb: vec![0x00],
-                srid: 4326,
+                srid: 3857,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
             },
@@ -344,6 +350,165 @@ fn spatial_composes_with_scalar_predicates() {
     assert!(compiled.sql.contains("ST_Intersects"));
     assert!(compiled.sql.contains(r#""status" = $2"#));
     assert_eq!(compiled.params.len(), 2);
+}
+
+// ---- Review #4 + #5: SpatialSemantics + DWithin unit safety ----------------
+
+#[test]
+fn spatial_geography_uses_geography_cast_postgres() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let stmt = select("poi", vec!["id"])
+        .where_(spatial(
+            "geom",
+            SpatialPredicate::Intersects,
+            SpatialReference {
+                ewkb: vec![0x01],
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geography,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+    // Fix #4: cast della colonna + del riferimento a geography.
+    assert!(
+        compiled.sql.contains(r#"ST_Intersects("geom"::geography, ST_GeomFromEWKB($1)::geography)"#),
+        "sql inatteso: {}",
+        compiled.sql
+    );
+}
+
+#[test]
+fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let stmt = select("poi", vec!["id"])
+        .where_(spatial(
+            "geom",
+            SpatialPredicate::DWithin {
+                distance_meters: 500.0,
+            },
+            SpatialReference {
+                ewkb: vec![0xff],
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geography,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+    // Geography su 4326 → cast a geography, DWithin usa metri veri.
+    assert!(compiled
+        .sql
+        .contains(r#"ST_DWithin("geom"::geography, ST_GeomFromEWKB($1)::geography, $2)"#));
+    assert!(matches!(&compiled.params[1], ParameterValue::F64(v) if *v == 500.0));
+}
+
+#[test]
+fn spatial_dwithin_geometry_on_geographic_srid_is_rejected() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    // Fix #5: Geometry + SRID 4326 + DWithin = silent wrong result
+    // (distanza in gradi invece che metri) → fail-closed InvalidPlan.
+    for srid in [4326_u32, 4269, 4267, 4258, 4283] {
+        let stmt = select("poi", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::DWithin {
+                    distance_meters: 100.0,
+                },
+                SpatialReference {
+                    ewkb: vec![0xff],
+                    srid,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        let err = compile_portable(ProviderKind::Postgres, &stmt).unwrap_err();
+        assert_eq!(
+            err.category,
+            crate::ErrorCategory::InvalidPlan,
+            "SRID {srid} doveva essere rifiutato"
+        );
+        assert!(
+            err.message.contains("SpatialSemantics::Geography"),
+            "err message deve suggerire Geography: {}",
+            err.message
+        );
+    }
+}
+
+#[test]
+fn spatial_dwithin_geometry_on_projected_srid_is_allowed() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    // Geometry + SRID proiettato (3857 web-mercator, 25832 ETRS89/UTM 32N) →
+    // le unità del SRID sono metri, distance_meters è semanticamente corretto.
+    for srid in [3857_u32, 25832, 32633] {
+        let stmt = select("poi", vec!["id"])
+            .where_(spatial(
+                "geom",
+                SpatialPredicate::DWithin {
+                    distance_meters: 100.0,
+                },
+                SpatialReference {
+                    ewkb: vec![0xff],
+                    srid,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement();
+        let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
+        assert!(
+            compiled.sql.contains("ST_DWithin"),
+            "SRID {srid}: sql inatteso {}",
+            compiled.sql
+        );
+        assert!(compiled.sql.contains("::geometry"));
+    }
+}
+
+#[test]
+fn spatial_bounding_box_with_geography_is_rejected() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    // BoundingBox usa operator `&&` che esiste solo su geometry.
+    let stmt = select("t", vec!["id"])
+        .where_(spatial(
+            "geom",
+            SpatialPredicate::BoundingBox,
+            SpatialReference {
+                ewkb: vec![0x01],
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geography,
+            },
+        ))
+        .into_statement();
+    let err = compile_portable(ProviderKind::Postgres, &stmt).unwrap_err();
+    assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+    assert!(err.message.contains("BoundingBox"));
+}
+
+#[test]
+fn spatial_mysql_geography_is_accepted_as_hint_only() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    // MySQL non ha `::geography` — Geography è hint semantico, non cast.
+    let stmt = select("poi", vec!["id"])
+        .where_(spatial(
+            "geom",
+            SpatialPredicate::Intersects,
+            SpatialReference {
+                ewkb: vec![0x01],
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geography,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
+    // Nessun cast, solo ST_GeomFromWKB.
+    assert!(compiled.sql.contains("ST_Intersects(`geom`, ST_GeomFromWKB(?))"));
+    // Sanity: no `::geography`.
+    assert!(!compiled.sql.contains("::geography"));
 }
 
 #[test]
