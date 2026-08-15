@@ -365,18 +365,18 @@ mod tests {
             &[Some(point_xy())],
         );
         let error = inspect(&fixture.0).expect_err("conflicting CRS");
-        assert_eq!(error.0.category, plenora_database_core::ErrorCategory::Crs);
-        assert_eq!(error.0.phase, plenora_database_core::ErrorPhase::Validate);
+        assert_eq!(error.database_error().category, plenora_database_core::ErrorCategory::Crs);
+        assert_eq!(error.database_error().phase, plenora_database_core::ErrorPhase::Validate);
         assert_eq!(
-            error.0.remote_effect,
+            error.database_error().remote_effect,
             plenora_database_core::RemoteEffect::None
         );
         assert_eq!(
-            error.0.retry,
+            error.database_error().retry,
             plenora_database_core::RetryDisposition::Never
         );
         assert_eq!(
-            error.0.message,
+            error.database_error().message,
             "identificatore CRS e SRID numerico divergenti"
         );
         let envelope: Value =
@@ -397,7 +397,7 @@ mod tests {
             &[Some(vec![1, 2, 3])],
         );
         let error = inspect(&fixture.0).expect_err("malformed WKB");
-        assert!(error.0.message.contains("batch 0 riga 0"));
+        assert!(error.database_error().message.contains("batch 0 riga 0"));
     }
 
     #[test]

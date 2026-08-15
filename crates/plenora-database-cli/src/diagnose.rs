@@ -77,7 +77,13 @@ pub(crate) async fn diagnose(args: &mut impl Iterator<Item = String>) -> CliResu
             "PFM_GIS_V1": pfm_gis_report,
         },
         "findings": findings,
-    }))
+    }))?;
+    // Fix review #10.
+    if overall_pass {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 async fn probe_server_config(

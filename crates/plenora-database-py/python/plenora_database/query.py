@@ -209,12 +209,32 @@ class Insert:
         return self
 
     def rows(self, rows: list[dict]) -> "Insert":
-        """Multi-row: ogni dict deve avere le stesse chiavi."""
+        """Multi-row: ogni dict deve avere ESATTAMENTE le stesse chiavi.
+
+        Fix review #13: prima le chiavi extra rispetto alla prima riga
+        venivano silently ignorate (perdita di dati). Ora fail-closed
+        se le chiavi non combaciano — meglio errore esplicito che
+        INSERT con colonne dimenticate.
+        """
         if not rows:
             return self
         if not self._columns:
             self._columns = list(rows[0].keys())
-        for r in rows:
+        expected = set(self._columns)
+        for i, r in enumerate(rows):
+            actual = set(r.keys())
+            if actual != expected:
+                missing = expected - actual
+                extra = actual - expected
+                parts = []
+                if missing:
+                    parts.append(f"colonne mancanti: {sorted(missing)}")
+                if extra:
+                    parts.append(f"chiavi extra ignorate: {sorted(extra)}")
+                raise ValueError(
+                    f"Insert.rows() riga {i} ha chiavi diverse dalla prima: "
+                    f"{'; '.join(parts)}. Attesi esattamente {sorted(expected)}."
+                )
             self._values.append([literal_expr(r[col]) for col in self._columns])
         return self
 
@@ -367,11 +387,26 @@ class Upsert:
         return self
 
     def rows(self, rows: list[dict]) -> "Upsert":
+        """Multi-row: fail-closed su chiavi non uniformi (fix review #13)."""
         if not rows:
             return self
         if not self._columns:
             self._columns = list(rows[0].keys())
-        for r in rows:
+        expected = set(self._columns)
+        for i, r in enumerate(rows):
+            actual = set(r.keys())
+            if actual != expected:
+                missing = expected - actual
+                extra = actual - expected
+                parts = []
+                if missing:
+                    parts.append(f"colonne mancanti: {sorted(missing)}")
+                if extra:
+                    parts.append(f"chiavi extra ignorate: {sorted(extra)}")
+                raise ValueError(
+                    f"Upsert.rows() riga {i} ha chiavi diverse dalla prima: "
+                    f"{'; '.join(parts)}. Attesi esattamente {sorted(expected)}."
+                )
             self._values.append([literal_expr(r[col]) for col in self._columns])
         return self
 

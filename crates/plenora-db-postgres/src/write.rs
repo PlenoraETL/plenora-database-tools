@@ -219,14 +219,7 @@ pub async fn execute(
     let transaction = if let Some(result) =
         select_with_cancellation(client.client_mut()?.transaction(), cancellation).await
     {
-        result.map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                false,
-                "avvio transazione PostgreSQL fallito",
-            )
-        })?
+        result.map_err(|e| classify_error(ErrorPhase::Write, &e))?
     } else {
         runtime.metrics.cancellation();
         return Err(public_error(
@@ -689,14 +682,15 @@ async fn write_batch(
         }
     }
     let (sql, indexes) = statement(operation, target, batch.schema_ref(), plans)?;
-    let statement = transaction.prepare(&sql).await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Prepare,
-            false,
-            "preparazione write PostgreSQL fallita",
-        )
-    })?;
+    // Fix review #8: usa classify_error per preservare SQLSTATE
+    // (Conflict, InvalidPlan, NotFound, Authorization, ecc.) invece
+    // di collassare tutto a Protocol. Prima consumer non riusciva a
+    // distinguere unique violation (retryable=Never, ma Conflict) da
+    // errori di protocollo (Fatal).
+    let statement = transaction
+        .prepare(&sql)
+        .await
+        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
     let mut affected = 0;
     for row in 0..batch.num_rows() {
         let values = indexes
@@ -707,14 +701,10 @@ async fn write_batch(
             .iter()
             .map(|value| value.as_ref() as &(dyn ToSql + Sync))
             .collect::<Vec<_>>();
-        affected += transaction.execute(&statement, &refs).await.map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                false,
-                "esecuzione write PostgreSQL fallita",
-            )
-        })?;
+        affected += transaction
+            .execute(&statement, &refs)
+            .await
+            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
     }
     Ok(affected)
 }
@@ -739,14 +729,7 @@ async fn copy_binary_batch(
             quote_object(target)?
         ))
         .await
-        .map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Prepare,
-                false,
-                "preparazione tipi COPY binario fallita",
-            )
-        })?;
+        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
     let types = type_probe
         .columns()
         .iter()
@@ -759,14 +742,7 @@ async fn copy_binary_batch(
             columns.join(", ")
         ))
         .await
-        .map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Prepare,
-                false,
-                "apertura COPY binario fallita",
-            )
-        })?;
+        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
     let writer = BinaryCopyInWriter::new(sink, &types);
     futures_util::pin_mut!(writer);
     for row in 0..batch.num_rows() {
@@ -783,23 +759,17 @@ async fn copy_binary_batch(
             .iter()
             .map(|value| value.as_ref() as &(dyn ToSql + Sync))
             .collect::<Vec<_>>();
-        writer.as_mut().write(&refs).await.map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                false,
-                "riga COPY binario PostgreSQL fallita",
-            )
-        })?;
+        writer
+            .as_mut()
+            .write(&refs)
+            .await
+            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
     }
-    writer.as_mut().finish().await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Write,
-            false,
-            "finalizzazione COPY binario fallita",
-        )
-    })
+    writer
+        .as_mut()
+        .finish()
+        .await
+        .map_err(|e| classify_error(ErrorPhase::Write, &e))
 }
 
 async fn copy_batch(
@@ -820,34 +790,19 @@ async fn copy_batch(
         quote_object(target)?,
         columns.join(", ")
     );
-    let sink = transaction.copy_in(&sql).await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Prepare,
-            false,
-            "preparazione COPY PostgreSQL fallita",
-        )
-    })?;
+    let sink = transaction
+        .copy_in(&sql)
+        .await
+        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
     futures_util::pin_mut!(sink);
     sink.as_mut()
         .send(Bytes::from(copy_buffer(batch, plans)?))
         .await
-        .map_err(|_| {
-            public_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                false,
-                "invio COPY PostgreSQL fallito",
-            )
-        })?;
-    sink.as_mut().finish().await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Write,
-            false,
-            "finalizzazione COPY PostgreSQL fallita",
-        )
-    })
+        .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+    sink.as_mut()
+        .finish()
+        .await
+        .map_err(|e| classify_error(ErrorPhase::Write, &e))
 }
 
 async fn publish_replacement(
@@ -888,9 +843,19 @@ async fn create_spatial_indexes(
         }
         let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
         let index_raw = format!("{}_{}_gix", target.object, field.name());
-        let index_name = renderer.quote_identifier(&Identifier::new(
-            index_raw.chars().take(63).collect::<String>(),
-        )?);
+        // Fix review #12: il limite Postgres NAMEDATALEN è 63 **byte**,
+        // non caratteri Unicode. `chars().take(63)` era doppiamente
+        // buggato:
+        // 1. multibyte (es. accentate) potevano superare 63 byte
+        // 2. troncamento greedy: due nomi lunghi differenti sulla stessa
+        //    tabella potevano collidere sullo stesso prefisso, causando
+        //    "relation already exists" o silent overwrite di indice
+        //    diverso.
+        // Ora: byte-safe truncation + suffix hash-8 basato sul nome
+        // originale intero per garantire unicità.
+        let index_name_str = truncate_index_name_63_bytes(&index_raw);
+        let index_name =
+            renderer.quote_identifier(&Identifier::new(index_name_str)?);
         execute_sql(
             transaction,
             &format!(
@@ -904,19 +869,107 @@ async fn create_spatial_indexes(
     Ok(())
 }
 
+/// Tronca un nome di indice a max 63 byte (limite Postgres NAMEDATALEN
+/// default) preservando unicità tramite suffix hash-8 in base16 derivato
+/// dal nome completo. Fix review #12.
+///
+/// Contratto:
+/// - Se input ≤ 63 byte → ritornato invariato.
+/// - Se input > 63 byte → prefisso troncato al confine char + `_` + 8
+///   caratteri hex (32 bit del hash SipHasher/DefaultHasher del nome
+///   originale intero) = totale ≤ 63 byte.
+///
+/// Deterministico: stesso input → stesso output. Collisioni statistiche
+/// possibili ma con probabilità ≈ 2^-32 per due input distinti che si
+/// aggirano sullo stesso prefisso.
+fn truncate_index_name_63_bytes(name: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    const MAX_BYTES: usize = 63;
+    // Riserva: 1 byte per '_' + 8 byte per hash hex = 9 byte suffix.
+    const SUFFIX_LEN: usize = 9;
+    const PREFIX_BUDGET: usize = MAX_BYTES - SUFFIX_LEN;
+    if name.len() <= MAX_BYTES {
+        return name.to_owned();
+    }
+    let mut prefix_end = 0;
+    for (i, _) in name.char_indices() {
+        if i > PREFIX_BUDGET {
+            break;
+        }
+        prefix_end = i;
+    }
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    let h = hasher.finish();
+    // Prendo i 32 bit bassi in hex → 8 caratteri esatti.
+    let suffix = format!("_{:08x}", (h & 0xFFFF_FFFF) as u32);
+    let mut out = String::with_capacity(MAX_BYTES);
+    out.push_str(&name[..prefix_end]);
+    out.push_str(&suffix);
+    out
+}
+
+#[cfg(test)]
+mod truncate_index_name_tests {
+    use super::truncate_index_name_63_bytes;
+
+    #[test]
+    fn short_names_pass_through() {
+        let s = "short_col_gix";
+        assert_eq!(truncate_index_name_63_bytes(s), s);
+    }
+
+    #[test]
+    fn exactly_63_bytes_passes_through() {
+        let s: String = "a".repeat(63);
+        assert_eq!(truncate_index_name_63_bytes(&s), s);
+    }
+
+    #[test]
+    fn over_63_bytes_gets_hash_suffix_and_fits() {
+        let s: String = "verylongtablename_verylongcolumnname_gix".repeat(3);
+        let out = truncate_index_name_63_bytes(&s);
+        assert!(out.len() <= 63, "output {} byte", out.len());
+        assert!(out.contains('_'));
+    }
+
+    #[test]
+    fn different_long_names_get_different_hashes() {
+        let base = "T".repeat(60);
+        let a = format!("{base}alpha_gix");
+        let b = format!("{base}bravo_gix");
+        let a_out = truncate_index_name_63_bytes(&a);
+        let b_out = truncate_index_name_63_bytes(&b);
+        // Il prefisso troncato coincide, ma il suffix hash deve
+        // differire — altrimenti collisione (regressione).
+        assert_ne!(a_out, b_out);
+    }
+
+    #[test]
+    fn multibyte_utf8_stays_valid_and_within_budget() {
+        // Nome con caratteri multibyte (é = 2 byte). Verifica che il
+        // truncation non spezza a metà uno scalar UTF-8.
+        let s = "é".repeat(40); // 80 byte, 40 char
+        let out = truncate_index_name_63_bytes(&s);
+        assert!(out.len() <= 63);
+        // Valid UTF-8 automatico: se String::push_str è stato ok, ok.
+        assert!(out.chars().all(|c| c == 'é' || c == '_' || c.is_ascii_hexdigit()));
+    }
+}
+
 async fn execute_sql(
     transaction: &Transaction<'_>,
     sql: &str,
     params: &[&(dyn ToSql + Sync)],
 ) -> Result<u64> {
-    transaction.execute(sql, params).await.map_err(|_| {
-        public_error(
-            ErrorCategory::Protocol,
-            ErrorPhase::Write,
-            false,
-            "DDL/DML PostgreSQL fallita",
-        )
-    })
+    // Fix review #8: preserva SQLSTATE per DDL / staging swaps /
+    // spatial index creation. Prima "CREATE INDEX gix esistente"
+    // veniva mappato a Protocol invece di Conflict (42P07).
+    transaction
+        .execute(sql, params)
+        .await
+        .map_err(|e| classify_error(ErrorPhase::Write, &e))
 }
 
 fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, plan: &WriteColumnPlan) -> Result<()> {

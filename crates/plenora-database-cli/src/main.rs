@@ -31,10 +31,18 @@ use arrow_ipc::writer::FileWriter;
 async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
+        Err(CliError::Silent) => {
+            // Fix review #10: comandi ops/doctor/pool-status hanno già
+            // stampato il JSON con `status: unhealthy | fail | ...`
+            // sopra. Qui serve solo trasmettere l'exit code non-zero
+            // per rendere affidabile l'uso in CI, senza duplicare il
+            // JSON con un secondo blocco `status: error`.
+            ExitCode::FAILURE
+        }
+        Err(CliError::Fatal(error)) => {
             println!(
                 "{}",
-                error
+                CliError::Fatal(error)
                     .to_json()
                     .unwrap_or_else(|_| ERROR_SERIALIZATION_FALLBACK.to_owned())
             );
@@ -50,7 +58,14 @@ const ERROR_SERIALIZATION_FALLBACK: &str = concat!(
 );
 
 #[derive(Debug)]
-pub(crate) struct CliError(DatabaseError);
+pub(crate) enum CliError {
+    /// Errore fatale — main stampa il JSON `status: error` + exit=1.
+    Fatal(DatabaseError),
+    /// Fallimento logico già stampato dal sottocomando (es. doctor →
+    /// `status: unhealthy`). Main emette solo exit=1 senza duplicare
+    /// output. Fix review #10.
+    Silent,
+}
 
 pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
@@ -71,31 +86,54 @@ struct IpcOptions {
 }
 
 impl CliError {
+    /// Accesso al `DatabaseError` sottostante per test / mutazioni
+    /// diagnostiche. Panica per `Silent` (uso post-review #10).
+    #[cfg(test)]
+    fn database_error(&self) -> &DatabaseError {
+        match self {
+            Self::Fatal(db_err) => db_err,
+            Self::Silent => panic!("CliError::Silent non ha DatabaseError"),
+        }
+    }
+
+    /// Accesso mutabile al `DatabaseError` sottostante. Panica per `Silent`.
+    fn database_error_mut(&mut self) -> &mut DatabaseError {
+        match self {
+            Self::Fatal(db_err) => db_err,
+            Self::Silent => panic!("CliError::Silent non ha DatabaseError"),
+        }
+    }
+
     fn to_json(&self) -> Result<String, serde_json::Error> {
-        let error = serde_json::to_value(&self.0)?;
-        serde_json::to_string(&json!({
-            "status": "error",
-            "protocol_version": 1,
-            "error": error,
-        }))
+        match self {
+            Self::Fatal(db_err) => {
+                let error = serde_json::to_value(db_err)?;
+                serde_json::to_string(&json!({
+                    "status": "error",
+                    "protocol_version": 1,
+                    "error": error,
+                }))
+            }
+            Self::Silent => Ok(String::new()),
+        }
     }
 }
 
 impl From<DatabaseError> for CliError {
     fn from(error: DatabaseError) -> Self {
-        Self(error)
+        Self::Fatal(error)
     }
 }
 
 impl From<String> for CliError {
     fn from(message: String) -> Self {
-        Self(DatabaseError::invalid_plan(message))
+        Self::Fatal(DatabaseError::invalid_plan(message))
     }
 }
 
 impl From<&str> for CliError {
     fn from(message: &str) -> Self {
-        Self(DatabaseError::invalid_plan(message))
+        Self::Fatal(DatabaseError::invalid_plan(message))
     }
 }
 
@@ -233,7 +271,7 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
         kind,
         ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Sqlserver
     ) {
-        return Err(CliError(DatabaseError::unsupported(
+        return Err(CliError::Fatal(DatabaseError::unsupported(
             kind,
             ErrorPhase::Prepare,
             "provider dichiarato dal contratto ma adapter non disponibile",
@@ -523,7 +561,7 @@ async fn write_stream_to_ipc(
             drop(file);
             match fs::remove_file(&temporary) {
                 Ok(()) => {
-                    error.0.remote_effect = RemoteEffect::RolledBack;
+                    error.database_error_mut().remote_effect = RemoteEffect::RolledBack;
                     return Err(error);
                 }
                 Err(cleanup_error) => {
@@ -558,7 +596,7 @@ async fn write_stream_to_ipc(
         );
         return match fs::remove_file(&temporary) {
             Ok(()) => {
-                publish_error.0.remote_effect = RemoteEffect::RolledBack;
+                publish_error.database_error_mut().remote_effect = RemoteEffect::RolledBack;
                 Err(publish_error)
             }
             Err(cleanup_error) => Err(local_artifact_error(
@@ -730,7 +768,7 @@ fn local_artifact_error(
     retry: RetryDisposition,
     message: impl Into<String>,
 ) -> CliError {
-    CliError(DatabaseError {
+    CliError::Fatal(DatabaseError {
         category,
         phase,
         remote_effect,
@@ -900,7 +938,7 @@ fn parse_provider_arguments(
                 // Copre i rami disabilitati a feature-time e qualsiasi altra
                 // variante futura non prevista: errore controllato invece di
                 // panic.
-                _ => Err(CliError(DatabaseError::unsupported(
+                _ => Err(CliError::Fatal(DatabaseError::unsupported(
                     kind,
                     ErrorPhase::Prepare,
                     "provider dichiarato dal contratto ma adapter non disponibile \
@@ -908,7 +946,7 @@ fn parse_provider_arguments(
                 ))),
             }
         }
-        unsupported_kind => Err(CliError(DatabaseError::unsupported(
+        unsupported_kind => Err(CliError::Fatal(DatabaseError::unsupported(
             unsupported_kind,
             ErrorPhase::Prepare,
             "provider dichiarato dal contratto ma adapter non disponibile \
@@ -1416,7 +1454,7 @@ mod tests {
 
     #[test]
     fn crs_error_envelope_matches_protocol_v1() {
-        let envelope = CliError(DatabaseError {
+        let envelope = CliError::Fatal(DatabaseError {
             category: ErrorCategory::Crs,
             phase: ErrorPhase::Validate,
             remote_effect: RemoteEffect::None,
@@ -1449,7 +1487,7 @@ mod tests {
 
     #[test]
     fn delayed_retry_is_explicit_and_keeps_the_delay() {
-        let envelope = CliError(DatabaseError {
+        let envelope = CliError::Fatal(DatabaseError {
             category: ErrorCategory::Transient,
             phase: ErrorPhase::Connect,
             remote_effect: RemoteEffect::None,
@@ -1537,7 +1575,7 @@ mod tests {
             .await
             .expect_err("stream failure");
 
-        assert_eq!(error.0.category, ErrorCategory::Cancelled);
+        assert_eq!(error.database_error().category, ErrorCategory::Cancelled);
         assert!(!output.exists());
         assert!(partial_artifacts(&output).is_empty());
     }
@@ -1553,9 +1591,9 @@ mod tests {
             .await
             .expect_err("existing output must be rejected");
 
-        assert_eq!(error.0.category, ErrorCategory::Conflict);
-        assert_eq!(error.0.phase, ErrorPhase::Validate);
-        assert_eq!(error.0.provider, None);
+        assert_eq!(error.database_error().category, ErrorCategory::Conflict);
+        assert_eq!(error.database_error().phase, ErrorPhase::Validate);
+        assert_eq!(error.database_error().provider, None);
         assert_eq!(
             fs::read(&output).expect("existing output"),
             b"existing artifact"
@@ -1678,8 +1716,8 @@ mod tests {
             let error = build_provider(kind, &secret, &mut values)
                 .err()
                 .expect("missing TLS CA path environment must fail closed");
-            assert_eq!(error.0.category, ErrorCategory::InvalidPlan);
-            assert_eq!(error.0.message, "variabile path TLS assente");
+            assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.database_error().message, "variabile path TLS assente");
         }
     }
 

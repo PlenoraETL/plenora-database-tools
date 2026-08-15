@@ -50,8 +50,21 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
     let (raw_value, ty) = spec
         .rsplit_once(':')
         .ok_or_else(|| format!("param senza separatore ':': {spec}"))?;
-    // Trim quotes attorno al valore se presenti (per fair usage da shell).
-    let value = raw_value.trim_matches(|c: char| c == '"' || c == '\'');
+    // Fix review #15: prima usavamo `trim_matches('"' | '\'')` che
+    // eliminava quote iniziali/finali indiscriminatamente,
+    // corrompendo:
+    // 1. Stringhe che contengono realmente virgolette (es. testo
+    //    citato `"he said \"hi\""` → perdeva le virgolette esterne).
+    // 2. Valori JSON stringa top-level `"foo"` → parsed come `foo`
+    //    che non è valid JSON.
+    // 3. Stringhe asimmetriche `"foo'` → strip di caratteri validi.
+    //
+    // Ora: strip solo una coppia matched (stesso quote ad entrambi
+    // gli estremi) — è il pattern comune in cui la shell ha
+    // conservato le quote, non un valore che le contiene realmente.
+    // Per JSON e bytes-hex non strippo mai (i loro parser non
+    // dipendono dallo strip esterno).
+    let value = strip_matching_outer_quotes(raw_value, ty);
     match ty {
         "null" => Err(
             "sintassi null: usa direttamente 'null:<sub-type>' senza valore, es 'null:uuid'"
@@ -110,6 +123,34 @@ pub(crate) fn parse_named_value_type(spec: &str) -> CliResult<(String, Parameter
     }
     let value = parse_value_type(rest)?;
     Ok((name.to_owned(), value))
+}
+
+/// Rimuove al massimo una coppia matched di quote esterne
+/// (`"..."` o `'...'`) da un valore CLI, senza corrompere valori
+/// che contengono realmente virgolette. Fix review #15.
+///
+/// Politica per tipo:
+/// - `json`, `bytes-hex`, `bytea`: **mai** strip — il parser JSON
+///   richiede quote esplicite per stringhe top-level; hex non ha
+///   quote di suo.
+/// - Altri tipi: strip solo se stringa lunga ≥ 2 e inizia+finisce con
+///   lo stesso quote character.
+fn strip_matching_outer_quotes<'a>(raw: &'a str, ty: &str) -> &'a str {
+    match ty {
+        "json" | "bytes-hex" | "bytea" => return raw,
+        _ => {}
+    }
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            // Safe slice: entrambi i quote sono ASCII single-byte,
+            // quindi 1 e len-1 sono char boundary validi.
+            return &raw[1..raw.len() - 1];
+        }
+    }
+    raw
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
@@ -247,6 +288,50 @@ mod tests {
         assert_eq!(params.0.len(), 2);
         assert!(matches!(params.0[0], ParameterValue::I32(42)));
         assert!(matches!(params.0[1], ParameterValue::String(ref s) if s == "hello"));
+    }
+
+    // ---- Fix review #15: strip_matching_outer_quotes -----------------------
+
+    #[test]
+    fn matched_outer_double_quotes_are_stripped() {
+        // Shell può aver conservato le quote: user ha scritto "hello".
+        let v = parse_value_type(r#""hello":string"#).unwrap();
+        assert!(matches!(v, ParameterValue::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn matched_outer_single_quotes_are_stripped() {
+        let v = parse_value_type("'hello':string").unwrap();
+        assert!(matches!(v, ParameterValue::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn asymmetric_quotes_are_preserved() {
+        // Pre-fix rimuoveva sia `"` iniziale che `'` finale — corrompendo
+        // il valore. Ora solo coppie matched sono strippate.
+        let v = parse_value_type(r#""hello':string"#).unwrap();
+        assert!(matches!(v, ParameterValue::String(s) if s == r#""hello'"#));
+    }
+
+    #[test]
+    fn internal_quotes_are_preserved() {
+        // Il valore contiene realmente virgolette interne, non wrapping.
+        let v = parse_value_type(r#"he said "hi":string"#).unwrap();
+        assert!(matches!(v, ParameterValue::String(s) if s == r#"he said "hi""#));
+    }
+
+    #[test]
+    fn json_string_top_level_is_not_stripped() {
+        // JSON top-level: `"foo"` è una JSON string valida. Pre-fix
+        // veniva strippato a `foo` che non è JSON valido.
+        let v = parse_value_type(r#""foo":json"#).unwrap();
+        assert!(matches!(v, ParameterValue::Json(ref j) if j == &json!("foo")));
+    }
+
+    #[test]
+    fn bytes_hex_never_strips() {
+        let v = parse_value_type("deadbeef:bytes-hex").unwrap();
+        assert!(matches!(v, ParameterValue::Bytes(ref b) if b == &vec![0xde, 0xad, 0xbe, 0xef]));
     }
 
     #[test]

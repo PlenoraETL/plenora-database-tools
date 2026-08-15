@@ -154,7 +154,14 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         "error_category": category,
         "message": message,
         "expected_affected": expected,
-    }))
+    }))?;
+    // Fix review #10: exit code non-zero se update non-ok (concurrent /
+    // not_found / error) — permette a CI di gestire concorrenza.
+    if status == "ok" {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 // ============================================================================
@@ -178,6 +185,7 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
     // Nota: il pool interno non espone metriche pubbliche granulari
     // (deadpool-postgres::Status non è re-esportato dalla nostra API).
     // Aggiungeremo un getter con metrics_recorder in una futura milestone.
+    let ok = connection.is_ok();
     let payload = match connection {
         Ok(info) => json!({
             "status": "ok",
@@ -193,7 +201,13 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
             "error": e,
         }),
     };
-    print_json(&payload)
+    print_json(&payload)?;
+    // Fix review #10: exit code non-zero se pool acquire fallisce.
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 // ============================================================================

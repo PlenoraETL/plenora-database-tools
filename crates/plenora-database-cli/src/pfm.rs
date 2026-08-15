@@ -98,7 +98,14 @@ pub(crate) async fn doctor(args: &mut impl Iterator<Item = String>) -> CliResult
             "PFM_CORE_V1": pfm_core_report,
             "PFM_GIS_V1": pfm_gis_report,
         }
-    }))
+    }))?;
+    // Fix review #10: exit code non-zero se logicamente unhealthy,
+    // così `doctor` è affidabile in CI (`sh -c 'plenora-db-cli doctor ... || fail'`).
+    if overall_pass {
+        Ok(())
+    } else {
+        Err(CliError::Silent)
+    }
 }
 
 pub(crate) async fn execute_ddl_cmd(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -273,7 +280,13 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
         "context_inside_tx1": inside,
         "context_after_commit": after,
         "leak_free": leak_free,
-    }))
+    }))?;
+    // Fix review #10: exit code non-zero se leak rilevato.
+    if leak_free {
+        Ok(())
+    } else {
+        Err(CliError::Silent)
+    }
 }
 
 // ============================================================================

@@ -81,7 +81,13 @@ pub(crate) async fn test_cancellation(args: &mut impl Iterator<Item = String>) -
         "elapsed_ms": elapsed_ms,
         "error_category": category,
         "message": message,
-    }))
+    }))?;
+    // Fix review #10: exit code non-zero se status != "ok".
+    if status == "ok" {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -291,7 +297,13 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
         "winner_committed": winner_ok,
         "loser_error_category": category,
         "loser_message": message,
-    }))
+    }))?;
+    // Fix review #10.
+    if status == "ok" {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 pub(crate) async fn test_spatial(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
