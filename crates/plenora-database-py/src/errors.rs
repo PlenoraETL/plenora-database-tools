@@ -67,6 +67,14 @@ create_exception!(plenora_database._native, PlenoraProtocolError, PlenoraError);
 create_exception!(plenora_database._native, PlenoraTransientError, PlenoraError);
 create_exception!(plenora_database._native, PlenoraExecutionError, PlenoraError);
 create_exception!(plenora_database._native, PlenoraInternalError, PlenoraError);
+// PFM CHG-004: eccezione dedicata per commit con esito incerto.
+// Il consumer che vuole discriminare recovery/quarantine dalla generica
+// "internal" filtra qui direttamente.
+create_exception!(
+    plenora_database._native,
+    PlenoraCommitOutcomeUnknownError,
+    PlenoraInternalError
+);
 
 /// Registra tutte le classi di eccezione nel pymodule.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -102,36 +110,57 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PlenoraTransientError", m.py().get_type::<PlenoraTransientError>())?;
     m.add("PlenoraExecutionError", m.py().get_type::<PlenoraExecutionError>())?;
     m.add("PlenoraInternalError", m.py().get_type::<PlenoraInternalError>())?;
+    m.add(
+        "PlenoraCommitOutcomeUnknownError",
+        m.py().get_type::<PlenoraCommitOutcomeUnknownError>(),
+    )?;
     Ok(())
 }
 
 /// Traduce un `DatabaseError` nella `PyErr` con la sottoclasse giusta.
 /// Aggancia inoltre metadata (category, phase, retry, remote_effect,
 /// provider, execution_id, diagnostics) come attributi sull'istanza.
+///
+/// PFM CHG-004: se il pattern coincide con "commit outcome unknown"
+/// (`Internal` + `Commit` phase + `Unknown` remote_effect + `Never`
+/// retry), l'errore ottiene la classe dedicata
+/// `PlenoraCommitOutcomeUnknownError` invece di `PlenoraInternalError`
+/// generico. Il consumer può filtrare separatamente per retry/quarantine
+/// logic senza matching stringhe nel messaggio.
 pub fn to_py_err(err: DatabaseError) -> PyErr {
     let message = format!("{}: {}", category_name(err.category), err.message);
-    let pyerr = match err.category {
-        ErrorCategory::InvalidPlan => PlenoraInvalidPlanError::new_err(message),
-        ErrorCategory::InvalidConfiguration => PlenoraInvalidConfigurationError::new_err(message),
-        ErrorCategory::Schema => PlenoraSchemaError::new_err(message),
-        ErrorCategory::DataMapping => PlenoraDataMappingError::new_err(message),
-        ErrorCategory::Crs => PlenoraCrsError::new_err(message),
-        ErrorCategory::Unsupported => PlenoraUnsupportedError::new_err(message),
-        ErrorCategory::NotFound => PlenoraNotFoundError::new_err(message),
-        ErrorCategory::Conflict => PlenoraConflictError::new_err(message),
-        ErrorCategory::ConcurrentModification => {
-            PlenoraConcurrentModificationError::new_err(message)
+    let is_commit_outcome_unknown = err.category == ErrorCategory::Internal
+        && err.phase == ErrorPhase::Commit
+        && err.remote_effect == RemoteEffect::Unknown
+        && matches!(err.retry, RetryDisposition::Never);
+    let pyerr = if is_commit_outcome_unknown {
+        PlenoraCommitOutcomeUnknownError::new_err(message)
+    } else {
+        match err.category {
+            ErrorCategory::InvalidPlan => PlenoraInvalidPlanError::new_err(message),
+            ErrorCategory::InvalidConfiguration => {
+                PlenoraInvalidConfigurationError::new_err(message)
+            }
+            ErrorCategory::Schema => PlenoraSchemaError::new_err(message),
+            ErrorCategory::DataMapping => PlenoraDataMappingError::new_err(message),
+            ErrorCategory::Crs => PlenoraCrsError::new_err(message),
+            ErrorCategory::Unsupported => PlenoraUnsupportedError::new_err(message),
+            ErrorCategory::NotFound => PlenoraNotFoundError::new_err(message),
+            ErrorCategory::Conflict => PlenoraConflictError::new_err(message),
+            ErrorCategory::ConcurrentModification => {
+                PlenoraConcurrentModificationError::new_err(message)
+            }
+            ErrorCategory::Authentication => PlenoraAuthenticationError::new_err(message),
+            ErrorCategory::Authorization => PlenoraAuthorizationError::new_err(message),
+            ErrorCategory::Timeout => PlenoraTimeoutError::new_err(message),
+            ErrorCategory::Cancelled => PlenoraCancelledError::new_err(message),
+            ErrorCategory::ResourceLimit => PlenoraResourceLimitError::new_err(message),
+            ErrorCategory::Io => PlenoraIoError::new_err(message),
+            ErrorCategory::Protocol => PlenoraProtocolError::new_err(message),
+            ErrorCategory::Transient => PlenoraTransientError::new_err(message),
+            ErrorCategory::Execution => PlenoraExecutionError::new_err(message),
+            ErrorCategory::Internal => PlenoraInternalError::new_err(message),
         }
-        ErrorCategory::Authentication => PlenoraAuthenticationError::new_err(message),
-        ErrorCategory::Authorization => PlenoraAuthorizationError::new_err(message),
-        ErrorCategory::Timeout => PlenoraTimeoutError::new_err(message),
-        ErrorCategory::Cancelled => PlenoraCancelledError::new_err(message),
-        ErrorCategory::ResourceLimit => PlenoraResourceLimitError::new_err(message),
-        ErrorCategory::Io => PlenoraIoError::new_err(message),
-        ErrorCategory::Protocol => PlenoraProtocolError::new_err(message),
-        ErrorCategory::Transient => PlenoraTransientError::new_err(message),
-        ErrorCategory::Execution => PlenoraExecutionError::new_err(message),
-        ErrorCategory::Internal => PlenoraInternalError::new_err(message),
     };
     Python::with_gil(|py| {
         let bound = pyerr.value(py);
@@ -159,6 +188,15 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
                     .ok()
             });
         let _ = bound.setattr("diagnostics", diagnostics_py);
+        // PFM CHG-004: attributi extra su commit-outcome-unknown per
+        // guidare il recovery lato consumer.
+        if is_commit_outcome_unknown {
+            let _ = bound.setattr("automatic_retry_allowed", false);
+            let _ = bound.setattr(
+                "recovery_action",
+                "verificare fuori banda lo stato del target prima di ritentare",
+            );
+        }
     });
     pyerr
 }

@@ -22,6 +22,7 @@ mod mysql_session;
 mod mysql_write;
 mod py_convert;
 mod session;
+mod session_context_py;
 mod transaction;
 mod write;
 
@@ -135,6 +136,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AsyncBatchReader>()?;
     m.add_class::<MysqlSession>()?;
     m.add_class::<AsyncMysqlSession>()?;
+    m.add_class::<session_context_py::PySessionContext>()?;
     errors::register(m)?;
     Ok(())
 }

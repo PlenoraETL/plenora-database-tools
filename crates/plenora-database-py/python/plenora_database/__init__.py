@@ -45,6 +45,7 @@ from .errors import (
     PlenoraAuthenticationError,
     PlenoraAuthorizationError,
     PlenoraCancelledError,
+    PlenoraCommitOutcomeUnknownError,
     PlenoraConcurrentModificationError,
     PlenoraConflictError,
     PlenoraCrsError,
@@ -65,6 +66,7 @@ from .errors import (
 )
 from .async_query import AsyncDelete, AsyncInsert, AsyncSelect, AsyncUpdate, AsyncUpsert  # noqa: F401
 from .query import Delete, Insert, Select, Update, Upsert
+from ._native import SessionContext  # PFM CHG-002
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
 from ._native import (
@@ -479,4 +481,7 @@ __all__ = [
     "PlenoraTransientError",
     "PlenoraExecutionError",
     "PlenoraInternalError",
+    "PlenoraCommitOutcomeUnknownError",
+    # PFM CHG-002
+    "SessionContext",
 ]

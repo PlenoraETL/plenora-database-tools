@@ -59,6 +59,27 @@ pub struct TransactionOptions {
     pub native_query_policy: NativeQueryPolicy,
 }
 
+impl TransactionOptions {
+    /// Opzioni PFM production-safe (CHG-003):
+    /// - `native_query_policy: Deny` (solo SELECT/WITH/INSERT/UPDATE/
+    ///   DELETE/VALUES/TABLE/MERGE, no DDL/session commands).
+    /// - `access_mode: None` (auto — dipende dallo statement).
+    /// - `isolation: None` (default provider).
+    /// - `context: default vuoto`.
+    ///
+    /// I comandi PFM high-level (`doctor`, `execute-sql`, tx-test)
+    /// devono partire da questo baseline. Consumer raw-SQL deve
+    /// esplicitamente scegliere `TransactionOptions::default()` +
+    /// `native_query_policy: Allow`.
+    #[must_use]
+    pub fn pfm_defaults() -> Self {
+        Self {
+            native_query_policy: NativeQueryPolicy::Deny,
+            ..Self::default()
+        }
+    }
+}
+
 /// Statement portabile eseguibile dentro una transazione.
 ///
 /// Il SQL è visto come opaco dal core: la validazione (allow-list, ban di

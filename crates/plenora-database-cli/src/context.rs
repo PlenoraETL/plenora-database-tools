@@ -27,6 +27,7 @@
 use crate::{secret_from_env, CliError, CliResult};
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::transaction::TransactionOptions;
 use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 
@@ -78,5 +79,20 @@ impl PostgresCommandContext {
             budget: ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?,
             cancel: CancellationToken::new(),
         })
+    }
+
+    /// Opzioni PFM baseline: `native_query_policy: Deny` (CHG-003).
+    /// I comandi high-level (`transaction-test`, `execute-sql`) partono
+    /// da qui. Aggiungere `.native_query_policy = Allow` esplicitamente
+    /// solo per `execute-sql` con `--allow-raw` (opt-in dichiarato).
+    #[must_use]
+    #[allow(dead_code, clippy::unused_self)] // adottato incrementalmente
+    pub(crate) fn pfm_transaction_options(&self) -> TransactionOptions {
+        // `&self` lo teniamo per API estendibile futura (context, override
+        // isolation, ecc.); attualmente le opzioni sono globali stateless.
+        TransactionOptions {
+            context: crate::session_ctx::active(),
+            ..TransactionOptions::pfm_defaults()
+        }
     }
 }

@@ -481,6 +481,7 @@ impl Session {
         read_only=None,
         deferrable=None,
         statement_timeout_ms=None,
+        context=None,
     ))]
     fn begin(
         &self,
@@ -489,6 +490,7 @@ impl Session {
         read_only: Option<bool>,
         deferrable: Option<bool>,
         statement_timeout_ms: Option<u64>,
+        context: Option<crate::session_context_py::PySessionContext>,
     ) -> PyResult<Transaction> {
         self.ensure_open()?;
         let mut opts = TransactionOptions::default();
@@ -504,6 +506,12 @@ impl Session {
         }
         opts.deferrable = deferrable;
         opts.statement_timeout_ms = statement_timeout_ms;
+        // PFM CHG-002: applica il session context passato dal consumer.
+        // I valori diventano transaction-local `SET LOCAL` e vengono
+        // resettati automaticamente al commit/rollback.
+        if let Some(ctx) = context {
+            opts.context = ctx.inner;
+        }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let tx = py
