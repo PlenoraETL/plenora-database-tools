@@ -23,9 +23,12 @@ pub(super) fn compile_row_statement(
     renderer: &Renderer,
     quoted_object: &str,
 ) -> Result<RowStatement> {
-    let quoted_columns = columns
+    let quoted_columns: Vec<String> = columns
         .iter()
-        .map(|column| sql_identifier(&column.name).map(|name| renderer.quote_identifier(&name)))
+        .map(|column| {
+            let name = sql_identifier(&column.name)?;
+            renderer.quote_identifier(&name)
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut next_ordinal = 1_usize;
     let ordinals = columns
@@ -50,7 +53,8 @@ pub(super) fn compile_row_statement(
         Ok(placeholder_expression(&columns[index], ordinals[index]))
     };
     let quoted_for = |name: &str| -> Result<String> {
-        sql_identifier(name).map(|identifier| renderer.quote_identifier(&identifier))
+        let identifier = sql_identifier(name)?;
+        renderer.quote_identifier(&identifier)
     };
     let key_input_indices = operation
         .keys

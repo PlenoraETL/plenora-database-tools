@@ -394,7 +394,7 @@ impl ColumnSpec {
 
     pub fn projection_sql(&self, renderer: &Renderer) -> Result<String> {
         let identifier = Identifier::new(self.name.clone())?;
-        let quoted = renderer.quote_identifier(&identifier);
+        let quoted = renderer.quote_identifier(&identifier)?;
         let expression = match self.kind {
             ColumnKind::Decimal { .. } => format!("{quoted}::text"),
             ColumnKind::Range => format!(

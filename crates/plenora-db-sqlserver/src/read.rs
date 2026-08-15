@@ -671,8 +671,8 @@ async fn preflight_spatial(
             spatial_intersects: false,
         },
     );
-    let quoted_schema = renderer.quote_identifier(&sql_server_identifier(schema)?);
-    let quoted_object = renderer.quote_identifier(&sql_server_identifier(object)?);
+    let quoted_schema = renderer.quote_identifier(&sql_server_identifier(schema)?)?;
+    let quoted_object = renderer.quote_identifier(&sql_server_identifier(object)?)?;
     let spatial = plan
         .columns
         .iter()
@@ -681,7 +681,7 @@ async fn preflight_spatial(
         .map(|(index, column)| (index, column.name.clone()))
         .collect::<Vec<_>>();
     for (index, name) in spatial {
-        let quoted_column = renderer.quote_identifier(&sql_server_identifier(&name)?);
+        let quoted_column = renderer.quote_identifier(&sql_server_identifier(&name)?)?;
         let sql = format!(
             "SELECT COUNT_BIG(DISTINCT CASE WHEN {quoted_column} IS NULL THEN NULL ELSE \
              {quoted_column}.STSrid END), MIN(CASE WHEN {quoted_column} IS NULL THEN NULL ELSE \

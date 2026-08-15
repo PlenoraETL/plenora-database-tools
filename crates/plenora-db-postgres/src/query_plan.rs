@@ -97,7 +97,7 @@ fn build_read_sql(
         .join(", ");
     let mut sql = format!(
         "SELECT {projection} FROM {}",
-        renderer.quote_object(&source)
+        renderer.quote_object(&source)?
     );
     let mut bind_names = Vec::new();
     if let Some(filter) = &operation.filter {
@@ -122,7 +122,7 @@ fn build_read_sql(
                     "colonna ORDER BY non presente nella projection",
                 ));
             }
-            let quoted = renderer.quote_identifier(&Identifier::new(order.field.clone())?);
+            let quoted = renderer.quote_identifier(&Identifier::new(order.field.clone())?)?;
             let direction = match order.direction {
                 SortDirection::Asc => "ASC",
                 SortDirection::Desc => "DESC",

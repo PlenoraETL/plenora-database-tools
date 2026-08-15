@@ -119,7 +119,7 @@ impl WritePlan {
             schema: Some(sql_identifier(&description.schema)?),
             object: sql_identifier(&description.name)?,
         };
-        let quoted_object = renderer.quote_object(&object_name);
+        let quoted_object = renderer.quote_object(&object_name)?;
         let mut columns = Vec::with_capacity(input_schema.fields().len());
         let mut added_columns = Vec::new();
         let mut add_columns_sql = Vec::new();
@@ -162,7 +162,7 @@ impl WritePlan {
                 if let Some(collation) = &target_spec.collation {
                     validate_collation_name(collation)?;
                 }
-                let quoted_column = renderer.quote_identifier(&sql_identifier(field.name())?);
+                let quoted_column = renderer.quote_identifier(&sql_identifier(field.name())?)?;
                 let mut definition = format!("{quoted_column} {}", target_spec.native_declaration);
                 if let Some(collation) = &target_spec.collation {
                     definition.push_str(" COLLATE ");
@@ -347,7 +347,7 @@ fn compile_new_target(
         catalog: None,
         schema: Some(sql_identifier(schema)?),
         object: sql_identifier(write_object)?,
-    });
+    })?;
     let mut columns = Vec::with_capacity(input_schema.fields().len());
     for (input_index, field) in input_schema.fields().iter().enumerate() {
         let spec = SqlServerColumnSpec::from_create_field(field)?;
@@ -387,7 +387,7 @@ fn compile_new_target(
             catalog: None,
             schema: Some(sql_identifier(&description.schema)?),
             object: sql_identifier(&description.name)?,
-        });
+        })?;
         TargetLifecycle::Replace {
             lock_sql: lock_sql(&quoted_original),
             schema_fingerprint: description.token.structural_fingerprint.clone(),
@@ -442,8 +442,8 @@ fn compile_spatial_indexes(
             })?;
             let name = format!("IX_pln_spatial_{index_ordinal}");
             Ok(SpatialIndexPlan {
-                quoted_name: renderer.quote_identifier(&sql_identifier(&name)?),
-                quoted_column: renderer.quote_identifier(&sql_identifier(&column.name)?),
+                quoted_name: renderer.quote_identifier(&sql_identifier(&name)?)?,
+                quoted_column: renderer.quote_identifier(&sql_identifier(&column.name)?)?,
                 kind,
             })
         })
@@ -493,7 +493,7 @@ fn create_table_sql(
     let mut definitions = columns
         .iter()
         .map(|column| {
-            let name = renderer.quote_identifier(&sql_identifier(&column.name)?);
+            let name = renderer.quote_identifier(&sql_identifier(&column.name)?)?;
             let collation = if let Some(value) = &column.collation {
                 validate_collation_name(value)?;
                 format!(" COLLATE {value}")
@@ -529,7 +529,7 @@ fn create_table_sql(
                     "chiave primaria create SQL Server non puo essere nullable",
                 ));
             }
-            quoted_keys.push(renderer.quote_identifier(&sql_identifier(key)?));
+            quoted_keys.push(renderer.quote_identifier(&sql_identifier(key)?)?);
         }
         definitions.push(format!("PRIMARY KEY ({})", quoted_keys.join(", ")));
     }

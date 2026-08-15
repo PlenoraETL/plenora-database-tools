@@ -240,16 +240,14 @@ impl Renderer {
                 sql.push_str(") ");
             }
         }
-        sql.push_str(
-            &select
-                .projection
-                .iter()
-                .map(|field| self.quote(field))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        let projection_sql: Result<Vec<String>> = select
+            .projection
+            .iter()
+            .map(|field| self.quote(field))
+            .collect();
+        sql.push_str(&projection_sql?.join(", "));
         sql.push_str(" FROM ");
-        sql.push_str(&self.render_object(&select.source));
+        sql.push_str(&self.render_object(&select.source)?);
 
         let mut binds = Vec::new();
         if let Some(filter) = &select.filter {
@@ -258,20 +256,18 @@ impl Renderer {
         }
         if !select.order_by.is_empty() {
             sql.push_str(" ORDER BY ");
-            sql.push_str(
-                &select
-                    .order_by
-                    .iter()
-                    .map(|order| {
-                        let direction = match order.direction {
-                            SortDirection::Asc => "ASC",
-                            SortDirection::Desc => "DESC",
-                        };
-                        format!("{} {direction}", self.quote(&order.field))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
+            let order_parts: Result<Vec<String>> = select
+                .order_by
+                .iter()
+                .map(|order| {
+                    let direction = match order.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    };
+                    Ok(format!("{} {direction}", self.quote(&order.field)?))
+                })
+                .collect();
+            sql.push_str(&order_parts?.join(", "));
         }
         if let Some(limit) = select.limit {
             match self.dialect {
@@ -356,7 +352,7 @@ impl Renderer {
                 .common_table_expressions
                 .iter()
                 .map(|cte| {
-                    let name = self.quote(&Identifier::new(cte.name.clone())?);
+                    let name = self.quote(&Identifier::new(cte.name.clone())?)?;
                     let body = self.render_query_inner(&cte.query, &mut binds, false)?;
                     Ok(format!("{name} AS ({body})"))
                 })
@@ -427,7 +423,7 @@ impl Renderer {
                 .common_table_expressions
                 .iter()
                 .map(|cte| {
-                    let name = self.quote(&Identifier::new(cte.name.clone())?);
+                    let name = self.quote(&Identifier::new(cte.name.clone())?)?;
                     let body = self.render_query_inner(&cte.query, binds, false)?;
                     Ok(format!("{name} AS ({body})"))
                 })
@@ -492,7 +488,7 @@ impl Renderer {
                 }
                 if let Some(alias) = &item.alias {
                     rendered.push_str(" AS ");
-                    rendered.push_str(&self.quote(&Identifier::new(alias.clone())?));
+                    rendered.push_str(&self.quote(&Identifier::new(alias.clone())?)?);
                 }
                 Ok(rendered)
             })
@@ -648,15 +644,15 @@ impl Renderer {
                 });
                 if !locking.relations.is_empty() {
                     sql.push_str(" OF ");
-                    let relations = locking
+                    let relations: Result<Vec<String>> = locking
                         .relations
                         .iter()
                         .map(|relation| {
-                            Identifier::new(relation.clone())
-                                .map(|identifier| self.quote(&identifier))
+                            let ident = Identifier::new(relation.clone())?;
+                            self.quote(&ident)
                         })
-                        .collect::<Result<Vec<_>>>()?;
-                    sql.push_str(&relations.join(", "));
+                        .collect();
+                    sql.push_str(&relations?.join(", "));
                 }
                 match locking.wait {
                     QueryLockWait::Wait => {}
@@ -683,10 +679,10 @@ impl Renderer {
                 .map(|part| Identifier::new(part.clone()))
                 .transpose()?,
             object: Identifier::new(source.object.object.clone())?,
-        });
+        })?;
         if let Some(alias) = &source.alias {
             value.push_str(" AS ");
-            value.push_str(&self.quote(&Identifier::new(alias.clone())?));
+            value.push_str(&self.quote(&Identifier::new(alias.clone())?)?);
         }
         Ok(value)
     }
@@ -726,7 +722,7 @@ impl Renderer {
                     ));
                 }
                 let body = self.render_query_inner(&derived.query, binds, false)?;
-                let alias = self.quote(&Identifier::new(derived.alias.clone())?);
+                let alias = self.quote(&Identifier::new(derived.alias.clone())?)?;
                 Ok(format!(
                     "{}({body}) AS {alias}",
                     if lateral && self.dialect == Dialect::Postgres {
@@ -846,18 +842,18 @@ impl Renderer {
                 if let Some(relation) = relation {
                     Ok(format!(
                         "{}.*",
-                        self.quote(&Identifier::new(relation.clone())?)
+                        self.quote(&Identifier::new(relation.clone())?)?
                     ))
                 } else {
                     Ok("*".to_owned())
                 }
             }
             QueryExpression::Column { column } => {
-                let field = self.quote(&Identifier::new(column.field.clone())?);
+                let field = self.quote(&Identifier::new(column.field.clone())?)?;
                 if let Some(relation) = &column.relation {
                     Ok(format!(
                         "{}.{field}",
-                        self.quote(&Identifier::new(relation.clone())?)
+                        self.quote(&Identifier::new(relation.clone())?)?
                     ))
                 } else {
                     Ok(field)
@@ -1227,13 +1223,16 @@ impl Renderer {
         Ok(RenderedSql { sql, binds })
     }
 
-    #[must_use]
-    pub fn quote_identifier(&self, identifier: &Identifier) -> String {
+    /// # Errors
+    /// Restituisce `InvalidPlan` per identificatori vuoti, con
+    /// caratteri di controllo o oltre il limite del dialetto.
+    pub fn quote_identifier(&self, identifier: &Identifier) -> Result<String> {
         self.quote(identifier)
     }
 
-    #[must_use]
-    pub fn quote_object(&self, object: &ObjectName) -> String {
+    /// # Errors
+    /// Come `quote_identifier` per ognuna delle componenti.
+    pub fn quote_object(&self, object: &ObjectName) -> Result<String> {
         self.render_object(object)
     }
 
@@ -1260,10 +1259,10 @@ impl Renderer {
                     ComparisonOperator::Gte => ">=",
                 };
                 let placeholder = self.bind(parameter, binds);
-                Ok(format!("{} {symbol} {placeholder}", self.quote(field)))
+                Ok(format!("{} {symbol} {placeholder}", self.quote(field)?))
             }
-            Expression::IsNull(field) => Ok(format!("{} IS NULL", self.quote(field))),
-            Expression::IsNotNull(field) => Ok(format!("{} IS NOT NULL", self.quote(field))),
+            Expression::IsNull(field) => Ok(format!("{} IS NULL", self.quote(field)?)),
+            Expression::IsNotNull(field) => Ok(format!("{} IS NOT NULL", self.quote(field)?)),
             Expression::In { field, parameters } => {
                 if parameters.is_empty() {
                     return Err(DatabaseError::invalid_plan("filtro IN senza parametri"));
@@ -1274,7 +1273,7 @@ impl Renderer {
                     .collect::<Vec<_>>();
                 Ok(format!(
                     "{} IN ({})",
-                    self.quote(field),
+                    self.quote(field)?,
                     placeholders.join(", ")
                 ))
             }
@@ -1285,7 +1284,7 @@ impl Renderer {
             } => {
                 let lower = self.bind(lower_parameter, binds);
                 let upper = self.bind(upper_parameter, binds);
-                Ok(format!("{} BETWEEN {lower} AND {upper}", self.quote(field)))
+                Ok(format!("{} BETWEEN {lower} AND {upper}", self.quote(field)?))
             }
             Expression::Like {
                 field,
@@ -1298,7 +1297,7 @@ impl Renderer {
                 } else {
                     "LIKE"
                 };
-                Ok(format!("{} {operator} {placeholder}", self.quote(field)))
+                Ok(format!("{} {operator} {placeholder}", self.quote(field)?))
             }
             Expression::SpatialIntersects {
                 field,
@@ -1319,7 +1318,7 @@ impl Renderer {
                     ));
                 }
                 let placeholder = self.bind(wkb_parameter, binds);
-                let quoted = self.quote(field);
+                let quoted = self.quote(field)?;
                 let expression = match self.dialect {
                     Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
                         format!("ST_Intersects({quoted}, ST_GeomFromWKB({placeholder}))")
@@ -1391,7 +1390,7 @@ impl Renderer {
                 ));
             }
         }
-        let quoted = self.quote(field);
+        let quoted = self.quote(field)?;
         if function.is_unary_predicate() {
             return Ok(format!("{}({quoted})", spatial_name(function)));
         }
@@ -1461,36 +1460,31 @@ impl Renderer {
         }
     }
 
-    fn quote(&self, identifier: &Identifier) -> String {
-        // Fase A2: delega a `plenora-database-core::identifier`. Prima
-        // duplicava la stessa logica del compiler portable con rischio
-        // di divergenza (es. MySQL escape backtick trattato diversamente).
+    fn quote(&self, identifier: &Identifier) -> Result<String> {
+        // Fase A2 + fix post-review: delega a
+        // `plenora-database-core::identifier` e **propaga** l'errore
+        // invece di applicare un fallback silente.
         //
-        // `Identifier::new` ha già validato lunghezza/nul, per cui qui
-        // `quote_identifier` non fallirà in condizioni normali. Il
-        // fallback `format!` è difensivo per gestire il caso teorico
-        // in cui `Identifier` venga costruito bypassando le check.
+        // Prima il fallback su `unwrap_or_else` scartava l'errore e
+        // produceva SQL con:
+        // - identificatori oltre il limite del dialetto (ora fail-closed)
+        // - identificatori con caratteri di controllo (idem)
+        // - quoting sbagliato per MySQL/SQL Server (usava " Postgres)
         plenora_database_core::identifier::quote_identifier(
             self.dialect.to_identifier_dialect(),
             identifier.as_str(),
         )
-        .unwrap_or_else(|_| {
-            // Non usiamo unwrap panic: preserviamo il comportamento
-            // originale (produce sempre stringa) — il fallback riproduce
-            // il quoting più permissivo (Postgres double-quote).
-            format!("\"{}\"", identifier.as_str().replace('"', "\"\""))
-        })
     }
 
-    fn render_object(&self, object: &ObjectName) -> String {
-        object
+    fn render_object(&self, object: &ObjectName) -> Result<String> {
+        let parts: Result<Vec<String>> = object
             .catalog
             .iter()
             .chain(object.schema.iter())
             .chain(std::iter::once(&object.object))
             .map(|part| self.quote(part))
-            .collect::<Vec<_>>()
-            .join(".")
+            .collect();
+        Ok(parts?.join("."))
     }
 
     fn validate_select_dialect_limits(&self, select: &Select) -> Result<()> {

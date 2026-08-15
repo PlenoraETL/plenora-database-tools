@@ -47,7 +47,7 @@ pub(super) fn statement(
                     let identifier = Identifier::new(name.clone())?;
                     Ok(format!(
                         "{} = {value}",
-                        renderer.quote_identifier(&identifier)
+                        renderer.quote_identifier(&identifier)?
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -79,11 +79,12 @@ pub(super) fn statement(
                 .collect::<Result<Vec<_>>>()?,
         )),
         _ => {
-            let columns = schema
+            let columns: Vec<String> = schema
                 .fields()
                 .iter()
                 .map(|field| {
-                    Identifier::new(field.name().clone()).map(|id| renderer.quote_identifier(&id))
+                    let id = Identifier::new(field.name().clone())?;
+                    renderer.quote_identifier(&id)
                 })
                 .collect::<Result<Vec<_>>>()?;
             let values = schema
@@ -93,22 +94,22 @@ pub(super) fn statement(
                 .map(|(index, _)| placeholder_expression(&plans[index], index + 1))
                 .collect::<Vec<_>>();
             let conflict = if operation.mode == WriteMode::Upsert {
-                let keys = operation
+                let keys: Vec<String> = operation
                     .keys
                     .iter()
                     .map(|key| {
-                        Identifier::new(key.clone()).map(|id| renderer.quote_identifier(&id))
+                        let id = Identifier::new(key.clone())?;
+                        renderer.quote_identifier(&id)
                     })
                     .collect::<Result<Vec<_>>>()?;
-                let updates = schema
+                let updates: Vec<String> = schema
                     .fields()
                     .iter()
                     .filter(|field| !operation.keys.contains(field.name()))
                     .map(|field| {
-                        Identifier::new(field.name().clone()).map(|identifier| {
-                            let name = renderer.quote_identifier(&identifier);
-                            format!("{name} = EXCLUDED.{name}")
-                        })
+                        let identifier = Identifier::new(field.name().clone())?;
+                        let name = renderer.quote_identifier(&identifier)?;
+                        Ok(format!("{name} = EXCLUDED.{name}"))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 if updates.is_empty() {
@@ -170,14 +171,16 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
 }
 
 fn key_predicates(renderer: &Renderer, keys: &[String], first: usize) -> Result<String> {
-    keys.iter()
+    let items: Result<Vec<String>> = keys
+        .iter()
         .enumerate()
         .map(|(offset, key)| {
-            Identifier::new(key.clone())
-                .map(|id| format!("{} = ${}", renderer.quote_identifier(&id), first + offset))
+            let id = Identifier::new(key.clone())?;
+            let quoted = renderer.quote_identifier(&id)?;
+            Ok(format!("{quoted} = ${}", first + offset))
         })
-        .collect::<Result<Vec<_>>>()
-        .map(|items| items.join(" AND "))
+        .collect();
+    Ok(items?.join(" AND "))
 }
 
 pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
@@ -289,22 +292,21 @@ pub(super) fn native_declaration_sql(contract: &FieldContract<'_>) -> Option<Str
                     .all(|character| character.is_ascii_alphanumeric() || character == '_')
         }) {
             let renderer = renderer();
-            let quoted = base
+            let quoted: Result<Vec<String>> = base
                 .split('.')
                 .map(|part| {
-                    Identifier::new(part.to_owned())
-                        .map(|identifier| renderer.quote_identifier(&identifier))
+                    let identifier = Identifier::new(part.to_owned())?;
+                    renderer.quote_identifier(&identifier)
                 })
-                .collect::<Result<Vec<_>>>()
-                .ok()?;
-            return Some(format!("{}{array_suffix}", quoted.join(".")));
+                .collect();
+            return Some(format!("{}{array_suffix}", quoted.ok()?.join(".")));
         }
     }
     None
 }
 
 pub(super) fn quote_object(target: &ObjectRef) -> Result<String> {
-    Ok(renderer().quote_object(&ObjectName {
+    renderer().quote_object(&ObjectName {
         catalog: None,
         schema: target
             .schema
@@ -312,7 +314,7 @@ pub(super) fn quote_object(target: &ObjectRef) -> Result<String> {
             .map(|value| Identifier::new(value.clone()))
             .transpose()?,
         object: Identifier::new(target.object.clone())?,
-    }))
+    })
 }
 
 pub(super) const fn renderer() -> Renderer {

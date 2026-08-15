@@ -111,6 +111,34 @@ fn validate_postgres(
                  (operator && è solo geometry). Usa Intersects.",
             ))
         }
+        // Fix review: PostGIS ST_Contains e ST_Within sono definite
+        // SOLO per geometry, NON per geography. Chiamare
+        // ST_Contains(geography, geography) causa "function does not
+        // exist" a runtime.
+        // Ref: https://postgis.net/docs/manual-dev/ST_Contains.html
+        //      https://postgis.net/docs/manual-dev/en/ST_Within.html
+        SpatialPredicate::Contains
+            if reference.semantics == SpatialSemantics::Geography =>
+        {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Postgres,
+                crate::ErrorPhase::Prepare,
+                "ST_Contains non supportato per SpatialSemantics::Geography \
+                 (PostGIS espone Contains solo per geometry). \
+                 Riproietta su geometry o usa ST_Covers/ST_Intersects.",
+            ))
+        }
+        SpatialPredicate::Within
+            if reference.semantics == SpatialSemantics::Geography =>
+        {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Postgres,
+                crate::ErrorPhase::Prepare,
+                "ST_Within non supportato per SpatialSemantics::Geography \
+                 (PostGIS espone Within solo per geometry). \
+                 Riproietta su geometry o usa ST_CoveredBy/ST_Intersects.",
+            ))
+        }
         SpatialPredicate::DWithin { .. }
             if reference.semantics == SpatialSemantics::Geometry
                 && is_geographic_srid(reference.srid) =>
@@ -227,6 +255,31 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn contains_and_within_with_geography_are_rejected_for_postgres() {
+        // Fix review: PostGIS non ha ST_Contains/ST_Within per geography.
+        for predicate in [SpatialPredicate::Contains, SpatialPredicate::Within] {
+            let err = validate_predicate(
+                ProviderKind::Postgres,
+                &predicate,
+                &ref_with(4326, SpatialSemantics::Geography),
+            )
+            .unwrap_err();
+            assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+        }
+    }
+
+    #[test]
+    fn intersects_with_geography_is_accepted() {
+        // ST_Intersects è disponibile sia per geometry che per geography.
+        validate_predicate(
+            ProviderKind::Postgres,
+            &SpatialPredicate::Intersects,
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .unwrap();
     }
 
     #[test]

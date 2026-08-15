@@ -191,17 +191,17 @@ pub(super) async fn publish_replacement(
         catalog: None,
         schema: Some(schema_id.clone()),
         object: original_id,
-    });
+    })?;
     let staging = renderer.quote_object(&ObjectName {
         catalog: None,
         schema: Some(schema_id.clone()),
         object: staging_id,
-    });
+    })?;
     let backup = renderer.quote_object(&ObjectName {
         catalog: None,
         schema: Some(schema_id),
         object: backup_id,
-    });
+    })?;
     let mut query = Query::new(format!(
         "EXEC sys.sp_rename @P1, @P2, N'OBJECT'; \
          EXEC sys.sp_rename @P3, @P4, N'OBJECT'; \

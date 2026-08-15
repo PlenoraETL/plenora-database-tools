@@ -420,6 +420,20 @@ fn reference(ewkb: Vec<u8>) -> SpatialReference {
     }
 }
 
+/// Helper per test `DWithin`: SRID 4326 + `Geography`.
+///
+/// Post fix review: `DWithin` + `Geometry` + SRID geografico è fail-closed
+/// (silent wrong result risk). Test live che vuole esercitare
+/// `DWithin` su WGS84 deve usare `Geography` per distanze in metri.
+fn reference_geography(ewkb: Vec<u8>) -> SpatialReference {
+    SpatialReference {
+        ewkb,
+        srid: 4326,
+        dimensions: Dimensions::Xy,
+        semantics: SpatialSemantics::Geography,
+    }
+}
+
 #[tokio::test]
 async fn live_spatial_intersects_polygon_returns_points_inside() {
     setup_spatial_scratch("b1_intersects").await;
@@ -471,15 +485,16 @@ async fn live_spatial_dwithin_uses_distance_parameter() {
     let provider = provider();
     let cancel = CancellationToken::new();
 
-    // Filter DWithin di 500 metri (usando ST_DWithin geografico via cast).
-    // NB: per un test onesto sui gradi, uso una distanza in "degrees" con
-    // ST_DWithin(geometry, geometry, degrees). 100m a Milano è circa 0.0013°.
+    // Post fix review: uso Geography per DWithin su SRID 4326. In
+    // Geography la distanza è in metri veri (calcolo geodetico
+    // WGS84). 100m a Milano → DWithin(150) matcha il punto vicino,
+    // DWithin(50) no.
     let filter = SpatialFilter {
         geometry_column: "geom".into(),
         predicate: SpatialPredicate::DWithin {
-            distance_meters: 0.01,
+            distance_meters: 150.0,
         },
-        reference: reference(near_milan),
+        reference: reference_geography(near_milan),
     };
     let stmt = build_spatial_select(None, "b1_dwithin", &["id"], &filter, None)
         .expect("build");
@@ -996,17 +1011,19 @@ async fn live_portable_spatial_dwithin_end_to_end() {
         .await
         .expect("begin");
 
+    // Post fix review: Geography obbligatorio per DWithin su SRID 4326.
+    // Distanza in metri veri (150m > 100m di offset → matcha Milano).
     let stmt = p_select("f1e_dwithin", vec!["id"])
         .where_(p_spatial(
             "geom",
             SpatialPredicate::DWithin {
-                distance_meters: 0.01,
+                distance_meters: 150.0,
             },
             SpatialReference {
                 ewkb: near_milan,
                 srid: 4326,
                 dimensions: Dimensions::Xy,
-                semantics: SpatialSemantics::Geometry,
+                semantics: SpatialSemantics::Geography,
             },
         ))
         .into_statement();
@@ -1015,7 +1032,7 @@ async fn live_portable_spatial_dwithin_end_to_end() {
         .await
         .expect("spatial dwithin");
 
-    // Solo Milano è entro ~0.01° dal punto di riferimento.
+    // Solo Milano è entro 150m dal punto di riferimento.
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].get_index(0), Some(ParameterValue::I32(1))));
 

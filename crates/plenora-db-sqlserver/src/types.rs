@@ -141,7 +141,7 @@ impl SqlServerReadPlan {
             schema: contract_schema(fields),
             sql: format!(
                 "SELECT {projection} FROM {} ORDER BY (SELECT NULL);",
-                renderer.quote_object(&object)
+                renderer.quote_object(&object)?
             ),
             bind_names: Vec::new(),
             structural_fingerprint: description.token.structural_fingerprint.clone(),
@@ -185,7 +185,7 @@ impl SqlServerReadPlan {
         }
         sql.push_str(&projection);
         sql.push_str(" FROM ");
-        sql.push_str(&renderer.quote_object(&object));
+        sql.push_str(&renderer.quote_object(&object)?);
 
         let mut bind_names = Vec::new();
         if let Some(filter) = &operation.filter {
@@ -212,7 +212,7 @@ impl SqlServerReadPlan {
                             "colonna ORDER BY SQL Server non trovata",
                         ));
                     }
-                    let field = renderer.quote_identifier(&sql_server_identifier(&order.field)?);
+                    let field = renderer.quote_identifier(&sql_server_identifier(&order.field)?)?;
                     let direction = match order.direction {
                         SortDirection::Asc => "ASC",
                         SortDirection::Desc => "DESC",
@@ -625,7 +625,7 @@ impl SqlServerColumnSpec {
 
     fn projection(&self, renderer: &Renderer) -> Result<String> {
         let identifier = sql_server_identifier(&self.name)?;
-        let quoted = renderer.quote_identifier(&identifier);
+        let quoted = renderer.quote_identifier(&identifier)?;
         let expression = match (&self.kind, self.native_type.as_str()) {
             (SqlServerColumnKind::Decimal { .. }, _) => {
                 format!("CONVERT(varchar(50), {quoted})")

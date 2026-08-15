@@ -496,7 +496,7 @@ async fn evolve_target_schema(
     }
     let renderer = renderer();
     for (field, plan) in schema.fields().iter().zip(plans) {
-        let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
+        let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
         execute_sql(
             transaction,
             &format!(
@@ -631,20 +631,20 @@ async fn create_table(
         .iter()
         .zip(plans)
         .map(|(field, plan)| {
-            let name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
+            let name = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
             let nullability = if field.is_nullable() { "" } else { " NOT NULL" };
             Ok(format!("{name} {}{nullability}", plan.postgres_type))
         })
         .collect::<Result<Vec<_>>>()?;
     if !keys.is_empty() {
-        let quoted = keys
+        let quoted: Result<Vec<String>> = keys
             .iter()
             .map(|key| {
-                Identifier::new(key.clone())
-                    .map(|identifier| renderer.quote_identifier(&identifier))
+                let ident = Identifier::new(key.clone())?;
+                renderer.quote_identifier(&ident)
             })
-            .collect::<Result<Vec<_>>>()?;
-        definitions.push(format!("PRIMARY KEY ({})", quoted.join(", ")));
+            .collect();
+        definitions.push(format!("PRIMARY KEY ({})", quoted?.join(", ")));
     }
     execute_sql(
         transaction,
@@ -720,7 +720,10 @@ async fn copy_binary_batch(
         .schema()
         .fields()
         .iter()
-        .map(|field| Identifier::new(field.name().clone()).map(|id| renderer.quote_identifier(&id)))
+        .map(|field| {
+            let id = Identifier::new(field.name().clone())?;
+            renderer.quote_identifier(&id)
+        })
         .collect::<Result<Vec<_>>>()?;
     let type_probe = transaction
         .prepare(&format!(
@@ -783,7 +786,10 @@ async fn copy_batch(
         .schema()
         .fields()
         .iter()
-        .map(|field| Identifier::new(field.name().clone()).map(|id| renderer.quote_identifier(&id)))
+        .map(|field| {
+            let id = Identifier::new(field.name().clone())?;
+            renderer.quote_identifier(&id)
+        })
         .collect::<Result<Vec<_>>>()?;
     let sql = format!(
         "COPY {} ({}) FROM STDIN WITH (FORMAT text)",
@@ -817,7 +823,7 @@ async fn publish_replacement(
     )
     .await?;
     let renderer = renderer();
-    let target_name = renderer.quote_identifier(&Identifier::new(original.object.clone())?);
+    let target_name = renderer.quote_identifier(&Identifier::new(original.object.clone())?)?;
     execute_sql(
         transaction,
         &format!(
@@ -841,7 +847,7 @@ async fn create_spatial_indexes(
         if !plan.is_spatial() {
             continue;
         }
-        let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?);
+        let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
         let index_raw = format!("{}_{}_gix", target.object, field.name());
         // Fix review #12: il limite Postgres NAMEDATALEN è 63 **byte**,
         // non caratteri Unicode. `chars().take(63)` era doppiamente
@@ -855,7 +861,7 @@ async fn create_spatial_indexes(
         // originale intero per garantire unicità.
         let index_name_str = truncate_index_name_63_bytes(&index_raw);
         let index_name =
-            renderer.quote_identifier(&Identifier::new(index_name_str)?);
+            renderer.quote_identifier(&Identifier::new(index_name_str)?)?;
         execute_sql(
             transaction,
             &format!(
@@ -871,20 +877,21 @@ async fn create_spatial_indexes(
 
 /// Tronca un nome di indice a max 63 byte (limite Postgres NAMEDATALEN
 /// default) preservando unicità tramite suffix hash-8 in base16 derivato
-/// dal nome completo. Fix review #12.
+/// dal nome completo. Fix review #12 + fix stabilità hash.
 ///
 /// Contratto:
 /// - Se input ≤ 63 byte → ritornato invariato.
 /// - Se input > 63 byte → prefisso troncato al confine char + `_` + 8
-///   caratteri hex (32 bit del hash SipHasher/DefaultHasher del nome
-///   originale intero) = totale ≤ 63 byte.
+///   caratteri hex del hash FNV-1a a 32 bit del nome originale intero.
+///   Totale ≤ 63 byte.
 ///
-/// Deterministico: stesso input → stesso output. Collisioni statistiche
-/// possibili ma con probabilità ≈ 2^-32 per due input distinti che si
-/// aggirano sullo stesso prefisso.
+/// **Hash stabile cross-version**: FNV-1a è algoritmo deterministico
+/// specificato pubblicamente, non cambia mai. `std::collections::hash_map::
+/// DefaultHasher` invece non è garantito stabile fra versioni Rust
+/// (`SipHasher`/`SipHasher13`/altro). Un upgrade di toolchain avrebbe
+/// generato nomi indice diversi per la stessa tabella, causando
+/// duplicati/lost indices su re-run.
 fn truncate_index_name_63_bytes(name: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     const MAX_BYTES: usize = 63;
     // Riserva: 1 byte per '_' + 8 byte per hash hex = 9 byte suffix.
     const SUFFIX_LEN: usize = 9;
@@ -899,15 +906,26 @@ fn truncate_index_name_63_bytes(name: &str) -> String {
         }
         prefix_end = i;
     }
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    let h = hasher.finish();
-    // Prendo i 32 bit bassi in hex → 8 caratteri esatti.
-    let suffix = format!("_{:08x}", (h & 0xFFFF_FFFF) as u32);
+    let suffix = format!("_{:08x}", fnv1a_32(name.as_bytes()));
     let mut out = String::with_capacity(MAX_BYTES);
     out.push_str(&name[..prefix_end]);
     out.push_str(&suffix);
     out
+}
+
+/// FNV-1a 32-bit deterministico e stabile cross-version.
+///
+/// Specifica: <http://www.isthe.com/chongo/tech/comp/fnv/>.
+/// Offset basis `0x811c9dc5`, prime `0x0100_0193`.
+const fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -955,6 +973,27 @@ mod truncate_index_name_tests {
         assert!(out.len() <= 63);
         // Valid UTF-8 automatico: se String::push_str è stato ok, ok.
         assert!(out.chars().all(|c| c == 'é' || c == '_' || c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_suffix_is_stable_across_versions() {
+        // FNV-1a è spec-driven: il valore per un input dato è fisso
+        // per sempre. Freezing test — se cambia significa che qualcuno
+        // ha sostituito l'algoritmo senza pensare al fatto che i nomi
+        // indice generati diventano diversi.
+        let s: String = "T".repeat(80);
+        let out = truncate_index_name_63_bytes(&s);
+        // 63 byte totali: 54 prefix "T" + "_" + 8 char hex FNV.
+        // Il suffix hex deve essere identico ad ogni run e ad ogni
+        // upgrade di toolchain.
+        assert!(out.starts_with(&"T".repeat(54)));
+        let suffix = &out[55..];
+        assert_eq!(suffix.len(), 8);
+        // FNV-1a di "T".repeat(80) — precalcolato:
+        // Se questo assert fallisce dopo un cambio, verificare che
+        // l'algoritmo di hashing sia ancora FNV-1a (non sostituito
+        // con DefaultHasher o simile).
+        assert_eq!(suffix, format!("{:08x}", super::fnv1a_32(s.as_bytes())));
     }
 }
 

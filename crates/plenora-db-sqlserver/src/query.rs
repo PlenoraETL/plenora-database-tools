@@ -1221,11 +1221,13 @@ async fn observe_spatial_srid(
 ) -> Result<Option<i32>> {
     let renderer = sql_server_renderer();
     let schema = source.source.object.schema.as_deref().unwrap_or("dbo");
-    let quoted_schema = renderer.quote_identifier(&plenora_database_sql::Identifier::new(schema)?);
+    let quoted_schema =
+        renderer.quote_identifier(&plenora_database_sql::Identifier::new(schema)?)?;
     let quoted_object = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
         source.source.object.object.clone(),
-    )?);
-    let quoted_column = renderer.quote_identifier(&plenora_database_sql::Identifier::new(column)?);
+    )?)?;
+    let quoted_column =
+        renderer.quote_identifier(&plenora_database_sql::Identifier::new(column)?)?;
     let sql = format!(
         "SELECT COUNT_BIG(DISTINCT {quoted_column}.STSrid), \
          MIN({quoted_column}.STSrid) FROM {quoted_schema}.{quoted_object} \
@@ -1341,7 +1343,7 @@ async fn profile_spatial_outputs(
     let identifier_renderer = sql_server_renderer();
     let derived_alias = identifier_renderer.quote_identifier(
         &plenora_database_sql::Identifier::new("_plenora_spatial_result")?,
-    );
+    )?;
     let mut contracts = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let semantics = native_types
@@ -1356,7 +1358,7 @@ async fn profile_spatial_outputs(
             })?;
         let field = identifier_renderer.quote_identifier(&plenora_database_sql::Identifier::new(
             format!("_plenora_spatial_profile_{}", candidate.projection_index),
-        )?);
+        )?)?;
         let value = format!("{derived_alias}.{field}");
         let sql = format!(
             "{}SELECT \

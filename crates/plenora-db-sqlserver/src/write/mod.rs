@@ -1163,14 +1163,14 @@ async fn inspect_target_spatial_contracts(
             spatial_intersects: false,
         },
     );
-    let schema = renderer.quote_identifier(&sql_identifier(&description.schema)?);
-    let object = renderer.quote_identifier(&sql_identifier(&description.name)?);
+    let schema = renderer.quote_identifier(&sql_identifier(&description.schema)?)?;
+    let object = renderer.quote_identifier(&sql_identifier(&description.name)?)?;
     let mut contracts = HashMap::new();
     for column in &description.columns {
         if !matches!(column.native_type.as_str(), "geometry" | "geography") {
             continue;
         }
-        let name = renderer.quote_identifier(&sql_identifier(&column.name)?);
+        let name = renderer.quote_identifier(&sql_identifier(&column.name)?)?;
         let sql = format!(
             "SELECT COUNT_BIG(DISTINCT CASE WHEN {name} IS NULL THEN NULL ELSE {name}.STSrid END), \
              MIN(CASE WHEN {name} IS NULL THEN NULL ELSE {name}.STSrid END), \

@@ -3223,6 +3223,6 @@ mod tests {
     #[test]
     fn renderer_is_the_shared_mysql_dialect() {
         let identifier = plenora_database_sql::Identifier::new("we`ird").expect("identifier");
-        assert_eq!(mysql_renderer().quote_identifier(&identifier), "`we``ird`");
+        assert_eq!(mysql_renderer().quote_identifier(&identifier).unwrap(), "`we``ird`");
     }
 }

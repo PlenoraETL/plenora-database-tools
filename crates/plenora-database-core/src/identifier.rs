@@ -35,13 +35,18 @@ pub enum IdentifierDialect {
     SqlServer,
 }
 
-/// Max byte-length per un identificatore.
+/// Limiti per dialetto sui nomi di identificatori.
 ///
-/// `PostgreSQL` default `NAMEDATALEN` = 64 → 63 byte usabili.
-/// `MySQL`: 64 caratteri (byte).
-/// `SQL Server`: 128 caratteri Unicode. Il vincolo per `SQL Server` è
-/// caratteri (per compat con `nvarchar`), gestito a parte.
-const MAX_IDENTIFIER_BYTES_POSTGRES_MYSQL: usize = 63;
+/// - `PostgreSQL`: `NAMEDATALEN` = 64 → 63 byte usabili. Il vincolo è
+///   in **byte** perché il nome è memorizzato in un buffer C fisso.
+/// - `MySQL` / `MariaDB`: 64 **caratteri** UTF-8 (non byte) —
+///   riferimento "Identifier Length Limits" `MySQL` 8.0. Con caratteri
+///   multibyte l'identificatore può superare 64 byte ma resta valido.
+///   Ref: <https://dev.mysql.com/doc/refman/8.0/en/identifier-length.html>
+/// - `SQL Server` / `Sybase`: 128 caratteri Unicode (per compat con
+///   `nvarchar(128)`), non byte.
+const MAX_IDENTIFIER_BYTES_POSTGRES: usize = 63;
+const MAX_IDENTIFIER_CHARS_MYSQL: usize = 64;
 const MAX_IDENTIFIER_CHARS_SQL_SERVER: usize = 128;
 
 /// Valida un identificatore SQL secondo le regole comuni:
@@ -66,10 +71,17 @@ pub fn validate_identifier(dialect: IdentifierDialect, name: &str) -> Result<()>
         ));
     }
     match dialect {
-        IdentifierDialect::Postgres | IdentifierDialect::Mysql => {
-            if name.len() > MAX_IDENTIFIER_BYTES_POSTGRES_MYSQL {
+        IdentifierDialect::Postgres => {
+            if name.len() > MAX_IDENTIFIER_BYTES_POSTGRES {
                 return Err(DatabaseError::invalid_plan(
-                    "identificatore eccede 63 byte",
+                    "identificatore PostgreSQL eccede 63 byte (NAMEDATALEN)",
+                ));
+            }
+        }
+        IdentifierDialect::Mysql => {
+            if name.chars().count() > MAX_IDENTIFIER_CHARS_MYSQL {
+                return Err(DatabaseError::invalid_plan(
+                    "identificatore MySQL eccede 64 caratteri",
                 ));
             }
         }
@@ -170,17 +182,35 @@ mod tests {
     }
 
     #[test]
-    fn postgres_mysql_limit_is_63_bytes_not_chars() {
-        // 63 char ASCII = 63 byte → passa.
+    fn postgres_limit_is_63_bytes_not_chars() {
         let s = "a".repeat(63);
         assert!(quote_identifier(IdentifierDialect::Postgres, &s).is_ok());
-        // 64 char ASCII → rifiuta.
         let s64 = "a".repeat(64);
         assert!(quote_identifier(IdentifierDialect::Postgres, &s64).is_err());
         // 32 char UTF-8 accentate (2 byte cad = 64 byte) → rifiuta.
         let s_multibyte = "à".repeat(32);
         assert_eq!(s_multibyte.len(), 64);
-        assert!(quote_identifier(IdentifierDialect::Mysql, &s_multibyte).is_err());
+        assert!(quote_identifier(IdentifierDialect::Postgres, &s_multibyte).is_err());
+    }
+
+    #[test]
+    fn mysql_limit_is_64_chars_not_bytes() {
+        // MySQL 8.0 counts characters, not bytes — riferimento:
+        // https://dev.mysql.com/doc/refman/8.0/en/identifier-length.html
+        // 64 char ASCII (= 64 byte) → passa.
+        let ascii64 = "a".repeat(64);
+        assert!(quote_identifier(IdentifierDialect::Mysql, &ascii64).is_ok());
+        // 65 char ASCII → rifiuta.
+        let ascii65 = "a".repeat(65);
+        assert!(quote_identifier(IdentifierDialect::Mysql, &ascii65).is_err());
+        // 64 char UTF-8 accentate (2 byte cad = 128 byte) → **passa**
+        // (era il bug pre-fix: aggregava byte anche per MySQL).
+        let multibyte64 = "à".repeat(64);
+        assert_eq!(multibyte64.len(), 128);
+        assert!(quote_identifier(IdentifierDialect::Mysql, &multibyte64).is_ok());
+        // 65 char UTF-8 accentate → rifiuta.
+        let multibyte65 = "à".repeat(65);
+        assert!(quote_identifier(IdentifierDialect::Mysql, &multibyte65).is_err());
     }
 
     #[test]

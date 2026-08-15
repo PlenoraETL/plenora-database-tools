@@ -97,7 +97,7 @@ impl MysqlReadPlan {
         };
         let mut sql = format!(
             "SELECT {projection} FROM {}",
-            renderer.quote_object(&object)
+            renderer.quote_object(&object)?
         );
         let mut bind_names = Vec::new();
         if let Some(filter) = &operation.filter {
@@ -122,7 +122,7 @@ impl MysqlReadPlan {
                             "colonna ORDER BY MySQL non trovata",
                         ));
                     }
-                    let field = renderer.quote_identifier(&mysql_identifier(&order.field)?);
+                    let field = renderer.quote_identifier(&mysql_identifier(&order.field)?)?;
                     let direction = match order.direction {
                         SortDirection::Asc => "ASC",
                         SortDirection::Desc => "DESC",
@@ -246,7 +246,7 @@ impl MysqlColumnSpec {
 
     fn projection(&self, renderer: &Renderer) -> Result<String> {
         let identifier = mysql_identifier(&self.name)?;
-        let quoted = renderer.quote_identifier(&identifier);
+        let quoted = renderer.quote_identifier(&identifier)?;
         if self.kind == MysqlColumnKind::Geometry {
             Ok(format!("ST_AsBinary({quoted}) AS {quoted}"))
         } else {

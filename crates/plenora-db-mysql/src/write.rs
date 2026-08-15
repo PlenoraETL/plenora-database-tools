@@ -105,7 +105,7 @@ fn compile_write_column(
         name: field.name().clone(),
         kind,
         nullable: field.is_nullable(),
-        quoted: renderer.quote_identifier(&mysql_identifier(field.name())?),
+        quoted: renderer.quote_identifier(&mysql_identifier(field.name())?)?,
         spatial_srid,
         exact_geometry_type,
     })
@@ -269,7 +269,7 @@ impl MysqlWritePlan {
             (Vec::new(), Vec::new())
         };
         Ok(Self {
-            quoted_target: renderer.quote_object(&target),
+            quoted_target: renderer.quote_object(&target)?,
             target_object_raw: operation.target.object.clone(),
             columns,
             upsert_update_columns,
@@ -1177,7 +1177,7 @@ pub(crate) fn build_create_table_sql(
         schema: Some(mysql_identifier(target_schema)?),
         object: mysql_identifier(&operation.target.object)?,
     };
-    let quoted_target = renderer.quote_object(&object_name);
+    let quoted_target = renderer.quote_object(&object_name)?;
 
     let columns: Vec<MysqlWriteColumn> = schema
         .fields()
@@ -1192,12 +1192,12 @@ pub(crate) fn build_create_table_sql(
         lines.push(format!("    {} {} {}", col.quoted, type_decl, null_decl));
     }
     if !operation.keys.is_empty() {
-        let pk_cols = operation
+        let pk_cols: Vec<String> = operation
             .keys
             .iter()
             .map(|k| {
-                mysql_identifier(k)
-                    .map(|id| renderer.quote_identifier(&id))
+                let id = mysql_identifier(k)?;
+                renderer.quote_identifier(&id)
             })
             .collect::<Result<Vec<_>>>()?;
         lines.push(format!("    PRIMARY KEY ({})", pk_cols.join(", ")));
@@ -1230,7 +1230,7 @@ pub(crate) fn build_temp_staging_sql(
         schema: Some(db_ident),
         object: staging_ident,
     };
-    let quoted_staging = renderer.quote_object(&staging_object);
+    let quoted_staging = renderer.quote_object(&staging_object)?;
     let columns: Vec<MysqlWriteColumn> = schema
         .fields()
         .iter()
@@ -1276,7 +1276,7 @@ pub(crate) fn build_persistent_staging_sql(
         schema: Some(mysql_identifier(database)?),
         object: mysql_identifier(staging_name)?,
     };
-    let quoted_staging = renderer.quote_object(&staging_object);
+    let quoted_staging = renderer.quote_object(&staging_object)?;
     let columns: Vec<MysqlWriteColumn> = schema
         .fields()
         .iter()
@@ -1327,10 +1327,10 @@ pub(crate) fn build_replace_swap_sql(
     };
     Ok(format!(
         "RENAME TABLE {} TO {}, {} TO {}",
-        renderer.quote_object(&target_obj),
-        renderer.quote_object(&backup_obj),
-        renderer.quote_object(&staging_obj),
-        renderer.quote_object(&target_obj),
+        renderer.quote_object(&target_obj)?,
+        renderer.quote_object(&backup_obj)?,
+        renderer.quote_object(&staging_obj)?,
+        renderer.quote_object(&target_obj)?,
     ))
 }
 
@@ -1349,7 +1349,7 @@ pub(crate) fn build_drop_backup_sql(
         schema: Some(mysql_identifier(database)?),
         object: mysql_identifier(backup_name)?,
     };
-    Ok(format!("DROP TABLE {}", renderer.quote_object(&backup_obj)))
+    Ok(format!("DROP TABLE {}", renderer.quote_object(&backup_obj)?))
 }
 
 /// Genera nome quoted per staging table (usato dopo `build_temp_staging_sql`).
@@ -1364,7 +1364,7 @@ pub(crate) fn quote_staging_name(staging_name: &str, database: &str) -> Result<S
         schema: Some(mysql_identifier(database)?),
         object: mysql_identifier(staging_name)?,
     };
-    Ok(renderer.quote_object(&obj))
+    renderer.quote_object(&obj)
 }
 
 /// Genera `TRUNCATE TABLE db.table` per WriteMode::TruncateInsert.
@@ -1378,7 +1378,7 @@ pub(crate) fn build_truncate_sql(operation: &WriteOperation, database: &str) -> 
     };
     Ok(format!(
         "TRUNCATE TABLE {}",
-        renderer.quote_object(&object_name)
+        renderer.quote_object(&object_name)?
     ))
 }
 
