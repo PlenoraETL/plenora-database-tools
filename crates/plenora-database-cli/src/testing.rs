@@ -127,14 +127,21 @@ pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> C
     drop(stream);
     tx.rollback(&cancel).await?;
 
+    let is_ok = total == row_count;
     print_json(&json!({
-        "status": if total == row_count { "ok" } else { "row_count_mismatch" },
+        "status": if is_ok { "ok" } else { "row_count_mismatch" },
         "expected_rows": row_count,
         "actual_rows": total,
         "batches": batches,
         "batch_size": batch_size,
         "elapsed_ms": elapsed_ms,
-    }))
+    }))?;
+    // Fix review #10 residuo: exit=1 su row_count_mismatch.
+    if is_ok {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 #[allow(clippy::too_many_lines)] // scenario end-to-end tenuto lineare per leggibilità

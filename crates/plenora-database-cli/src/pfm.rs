@@ -51,7 +51,16 @@ pub(crate) async fn profile_check(args: &mut impl Iterator<Item = String>) -> Cl
         }
     };
     let report = check_profile(profile, &evidence);
-    print_json(&serde_json::to_value(&report).map_err(|_| "report non serializzabile".to_owned())?)
+    let is_pass = matches!(report.status, ProfileStatus::Pass);
+    print_json(&serde_json::to_value(&report).map_err(|_| "report non serializzabile".to_owned())?)?;
+    // Fix review #10 residuo: profile-check ritornava sempre Ok, anche
+    // per report Fail. Ora exit=1 se profilo non è Pass, così CI può
+    // gate su risultato conformance.
+    if is_pass {
+        Ok(())
+    } else {
+        Err(CliError::Silent)
+    }
 }
 
 pub(crate) async fn doctor(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -198,6 +207,8 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
             &ctx.cancel,
         )
         .await?;
+    let savepoint_result = tx.savepoint("smoke", &ctx.cancel).await;
+    let release_result = tx.release_savepoint("smoke", &ctx.cancel).await;
     let steps = vec![
         ("begin", "ok".to_owned()),
         (
@@ -209,25 +220,34 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
         ),
         (
             "savepoint",
-            match tx.savepoint("smoke", &ctx.cancel).await {
+            match &savepoint_result {
                 Ok(()) => "ok".to_owned(),
                 Err(e) => format!("fail: {}", e.message),
             },
         ),
         (
             "release_savepoint",
-            match tx.release_savepoint("smoke", &ctx.cancel).await {
+            match &release_result {
                 Ok(()) => "ok".to_owned(),
                 Err(e) => format!("fail: {}", e.message),
             },
         ),
     ];
+    // Fix review #10 residuo: prima "status: ok" era hardcoded anche
+    // se savepoint o release_savepoint fallivano. Ora status derivato
+    // dagli step reali; exit=1 se qualche step ha fallito.
+    let all_steps_ok = savepoint_result.is_ok() && release_result.is_ok();
     let commit = tx.commit(&ctx.cancel).await?;
     print_json(&json!({
-        "status": "ok",
+        "status": if all_steps_ok { "ok" } else { "fail" },
         "steps": steps.into_iter().map(|(k, v)| json!({ "step": k, "result": v })).collect::<Vec<_>>(),
         "commit": commit,
-    }))
+    }))?;
+    if all_steps_ok {
+        Ok(())
+    } else {
+        Err(CliError::Silent)
+    }
 }
 
 pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
