@@ -32,7 +32,7 @@
 #![allow(clippy::doc_markdown)]
 
 use plenora_database_core::provider::ParameterValue;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyFloat, PyList, PyString};
 use pyo3::IntoPyObjectExt;
@@ -180,8 +180,20 @@ fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     }
     if value.is_instance_of::<PyFloat>() {
         let f: f64 = value.extract()?;
-        return Ok(serde_json::Number::from_f64(f)
-            .map_or(serde_json::Value::Null, serde_json::Value::Number));
+        // Fix review (JSON silent coercion): JSON standard non ammette
+        // NaN/±Infinity. Prima: silent conversion a `null` (perdita
+        // di informazione + fuorviante). Ora: fail-closed con errore
+        // esplicito che dice al consumer di gestire il caso.
+        if !f.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "float non-finito ({f}) non serializzabile a JSON: JSON \
+                 standard ammette solo numeri finiti. Sanitizza il valore \
+                 lato Python (None, math.isfinite check) prima di passarlo."
+            )));
+        }
+        return Ok(serde_json::Value::Number(
+            serde_json::Number::from_f64(f).expect("valore f64 finito"),
+        ));
     }
     if let Ok(i) = value.extract::<i64>() {
         return Ok(serde_json::Value::Number(serde_json::Number::from(i)));
