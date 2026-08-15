@@ -95,7 +95,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::default();
+        let provider = PostgresProvider::insecure_local();
         let secret = SecretString::new(dsn);
         let operations = [
             Operation::DatabaseListCatalogs,
@@ -348,7 +348,7 @@ mod tests {
                 .expect("columns lease"),
         };
         let error = Provider::write(
-            &PostgresProvider::default(),
+            &PostgresProvider::insecure_local(),
             &SecretString::new("host=must-not-connect.invalid"),
             prepared,
             Box::new(NoBatchStream { schema }),
@@ -475,7 +475,7 @@ mod tests {
             "\"balanced_bulk\""
         );
 
-        let low_latency = PostgresProvider::default();
+        let low_latency = PostgresProvider::insecure_local();
         assert_eq!(low_latency.batch_rows, 1_024);
         assert_eq!(low_latency.insert_mode, PostgresInsertMode::CopyText);
         assert_eq!(low_latency.target_batch_bytes, Some(1024 * 1024));
@@ -865,7 +865,7 @@ mod tests {
             create_spatial_index: false,
             allow_partial: false,
         };
-        let error = PostgresProvider::default()
+        let error = PostgresProvider::insecure_local()
             .prepare_write_with_test_budget(
                 &SecretString::new(dsn),
                 &operation,

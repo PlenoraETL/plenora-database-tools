@@ -31,7 +31,7 @@ fn provider_and_performance_profiles_are_frozen_at_v0_1() {
         4 * 1024 * 1024
     );
     assert_eq!(
-        Provider::kind(&PostgresProvider::default()),
+        Provider::kind(&PostgresProvider::insecure_local()),
         ProviderKind::Postgres
     );
     assert_eq!(

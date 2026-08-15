@@ -12,11 +12,15 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
-use plenora_db_postgres::{PostgresProvider, PostgresTlsMode};
+use plenora_db_postgres::PostgresProvider;
 use serde_json::json;
 
+/// Helper storico per test / call sites legacy non ancora migrati
+/// al `PostgresCommandContext`. Post ADR-011, riflette il nuovo
+/// default `Require`. Per test/dev locali usare `insecure_local()`
+/// esplicitamente.
 pub(crate) fn postgres_provider_for_pfm() -> PostgresProvider {
-    PostgresProvider::default().with_tls_mode(PostgresTlsMode::Disabled)
+    PostgresProvider::default()
 }
 
 pub(crate) fn pfm_budget() -> CliResult<ResourceBudget> {

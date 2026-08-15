@@ -167,19 +167,17 @@ pub enum PostgresSchemaEvolution {
 }
 
 impl Default for PostgresProvider {
-    /// **Attenzione (review #6)**: il default usa
-    /// `PostgresTlsMode::Disabled` per compat con setup dev/staging
-    /// pre-esistenti. Per uso produzione **usare esplicitamente**
-    /// [`PostgresProvider::default_secure`] o
-    /// `PostgresProvider::default().with_tls_mode(PostgresTlsMode::Require)
-    ///  .with_tls_config(PostgresTlsConfig::webpki())`.
+    /// TLS `Require` + trust store `WebPKI` pubblico (secure-by-default).
     ///
-    /// Cambiare il default a `Require` è un breaking change
-    /// comportamentale: le CI/dev-env che oggi si connettono su
-    /// container `docker-compose` senza TLS smetterebbero di
-    /// funzionare. Decisione a valle di roadmap PFM.
+    /// Cambio breaking in `1.2.0` — ADR-011: prima era `Disabled`.
+    /// Per test/dev locali senza TLS usare esplicitamente
+    /// [`PostgresProvider::insecure_local`].
+    ///
+    /// Per CA private / mTLS: `default().with_tls_config(custom)`.
     fn default() -> Self {
         Self::for_profile(PostgresPerformanceProfile::LowLatency)
+            .with_tls_mode(PostgresTlsMode::Require)
+            .with_tls_config(PostgresTlsConfig::webpki())
     }
 }
 
@@ -212,17 +210,29 @@ impl PostgresProvider {
         Self::build(batch_rows)
     }
 
-    /// Provider con TLS `Require` + trust store `WebPKI` pubblico
-    /// (raccomandato per produzione). Fix review #6.
+    /// Provider **senza TLS** (`PostgresTlsMode::Disabled`).
     ///
-    /// Rifiuta connessioni plaintext. Per CA private/mTLS costruire
-    /// il `PostgresTlsConfig` manualmente e passarlo con
-    /// `.with_tls_config(...)`.
+    /// **Solo per test/dev locali** contro `docker-compose` o setup
+    /// dev-env noti. In produzione l'operatore ha responsabilità di
+    /// non usare questo costruttore: il nome è esplicito per non
+    /// nasconderlo dietro un default.
+    ///
+    /// ADR-011: introdotto in `1.2.0` insieme al flip di `default()`
+    /// a `Require`. Sostituisce il pattern
+    /// `PostgresProvider::default().with_tls_mode(Disabled)`.
     #[must_use]
+    pub fn insecure_local() -> Self {
+        Self::for_profile(PostgresPerformanceProfile::LowLatency)
+            .with_tls_mode(PostgresTlsMode::Disabled)
+    }
+
+    /// Alias storico di [`Self::default`] (pre-`1.2.0` era necessario
+    /// perché `default()` era Disabled). Mantenuto per non rompere
+    /// consumer intermedio che aveva già migrato al secure factory.
+    #[must_use]
+    #[deprecated(since = "1.2.0", note = "usa Self::default() (ora secure-by-default) — ADR-011")]
     pub fn default_secure() -> Self {
         Self::default()
-            .with_tls_mode(PostgresTlsMode::Require)
-            .with_tls_config(PostgresTlsConfig::webpki())
     }
 
     /// Costruisce il provider con un profilo prestazionale misurato.

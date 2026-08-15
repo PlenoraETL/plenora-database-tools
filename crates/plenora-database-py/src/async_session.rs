@@ -437,12 +437,19 @@ fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<PyObject> {
 ///
 /// L'awaitable rifiuta con `PlenoraError` (categoria mappata) se il
 /// probe iniziale fallisce.
+///
+/// # TLS (ADR-011, py-v0.9.0)
+///
+/// Come `connect()` sync: default `tls_mode="require"`; per dev/test
+/// senza TLS passare `tls_mode="insecure_local"`.
 #[pyfunction]
-pub fn aconnect<'py>(py: Python<'py>, dsn: &str) -> PyResult<Bound<'py, PyAny>> {
+#[pyo3(signature = (dsn, tls_mode="require"))]
+pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bound<'py, PyAny>> {
+    let provider_built = crate::session::build_provider(tls_mode)?;
     let secret_for_result = SecretString::new(dsn.to_owned());
     let secret_for_probe = SecretString::new(dsn.to_owned());
     future_into_py(py, async move {
-        let provider = Arc::new(PostgresProvider::default());
+        let provider = Arc::new(provider_built);
         let provider_for_probe = Arc::clone(&provider);
         let cancel = CancellationToken::new();
         let caps = provider_for_probe

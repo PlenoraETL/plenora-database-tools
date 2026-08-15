@@ -56,6 +56,22 @@ use std::sync::Arc;
 // 5 moduli SDK.
 use crate::budget::session_budget as default_budget;
 
+/// Mappa `tls_mode` (parametro Python) a `PostgresProvider` configurato.
+/// Solo due varianti supportate: `"require"` (default sicuro, WebPKI) e
+/// `"insecure_local"` (Disabled, per dev/test locali).
+///
+/// ADR-011: nomi espliciti, no default booleano che nasconde il rischio.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn build_provider(tls_mode: &str) -> PyResult<PostgresProvider> {
+    match tls_mode {
+        "require" => Ok(PostgresProvider::default()),
+        "insecure_local" => Ok(PostgresProvider::insecure_local()),
+        other => Err(PyRuntimeError::new_err(format!(
+            "tls_mode non riconosciuto: {other:?}. Valori: 'require' | 'insecure_local'"
+        ))),
+    }
+}
+
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
 /// scoperti in probe. È un context manager: `with connect(...) as s: ...`.
 #[pyclass(module = "plenora_database._native")]
@@ -590,13 +606,21 @@ fn json_value_to_pydict<'py>(
 /// Apre una nuova sessione Postgres. La DSN è nel formato libpq
 /// (`host=... user=... password=... dbname=...`).
 ///
+/// # TLS (ADR-011, py-v0.9.0)
+///
+/// Default: `tls_mode="require"` + WebPKI trust store pubblico.
+/// Per test/dev locali senza TLS passare `tls_mode="insecure_local"`.
+/// Per CA private / mTLS costruire il provider Rust in-process (non
+/// esposto via `connect(dsn)`).
+///
 /// # Errors
 ///
 /// Restituisce `PyRuntimeError` con messaggio "<category>: <message>"
-/// se il probe iniziale fallisce.
+/// se il probe iniziale fallisce (tipicamente handshake TLS o auth).
 #[pyfunction]
-pub fn connect(py: Python<'_>, dsn: &str) -> PyResult<Session> {
-    let provider = Arc::new(PostgresProvider::default());
+#[pyo3(signature = (dsn, tls_mode="require"))]
+pub fn connect(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<Session> {
+    let provider = Arc::new(build_provider(tls_mode)?);
     let secret = SecretString::new(dsn.to_owned());
     let cancel = CancellationToken::new();
     let provider_for_probe = Arc::clone(&provider);

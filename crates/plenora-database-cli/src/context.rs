@@ -28,7 +28,7 @@ use crate::{secret_from_env, CliError, CliResult};
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::CancellationToken;
-use plenora_db_postgres::{PostgresProvider, PostgresTlsMode};
+use plenora_db_postgres::PostgresProvider;
 
 /// Ambiente d'esecuzione di un sottocomando Postgres CLI.
 ///
@@ -43,16 +43,11 @@ pub(crate) struct PostgresCommandContext {
 }
 
 impl PostgresCommandContext {
-    /// Contesto per comandi PFM tradizionali: TLS **disabled** (compat
-    /// con setup dev/staging pre-review #1), budget PFM default.
+    /// Contesto per comandi PFM: TLS `Require` + `WebPKI` trust store
+    /// (secure-by-default). ADR-011.
     ///
-    /// # TLS default — decisione review #1
-    ///
-    /// Il default resta `Disabled` per non rompere consumer esistenti
-    /// che passano DSN senza TLS material. La review raccomanda TLS
-    /// obbligatorio per produzione: per quel caso usare
-    /// [`Self::for_pfm_secure`] esplicitamente. Il consumer PFM può
-    /// migrare gradualmente al secure senza cambiare il default.
+    /// Per test/dev locali contro Docker senza TLS usare
+    /// [`Self::for_pfm_insecure_local`].
     ///
     /// # Errors
     ///
@@ -62,25 +57,24 @@ impl PostgresCommandContext {
     pub(crate) fn for_pfm(dsn_env: &str) -> CliResult<Self> {
         Ok(Self {
             secret: secret_from_env(dsn_env)?,
-            provider: PostgresProvider::default().with_tls_mode(PostgresTlsMode::Disabled),
+            provider: PostgresProvider::default(),
             budget: ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?,
             cancel: CancellationToken::new(),
         })
     }
 
-    /// Come `for_pfm` ma con TLS **required** (`PostgresTlsMode::Require`).
-    /// Usare per produzione o quando è richiesto attestation cert.
+    /// Contesto senza TLS per test/dev locali (`insecure_local()`).
+    /// ADR-011: nome esplicito per non nascondere il rischio dietro
+    /// un flag booleano opaco.
     ///
     /// # Errors
     ///
     /// Vedi `for_pfm`.
-    #[allow(dead_code)] // API pubblica per migrazione TLS review #6; consumer non ancora migrato
-    pub(crate) fn for_pfm_secure(dsn_env: &str) -> CliResult<Self> {
+    #[allow(dead_code)] // usato da consumer dev/test, non da tutti i sub-command
+    pub(crate) fn for_pfm_insecure_local(dsn_env: &str) -> CliResult<Self> {
         Ok(Self {
             secret: secret_from_env(dsn_env)?,
-            // Fix review #6: usa `default_secure` (Require + WebPKI)
-            // invece di mutare manualmente il default.
-            provider: PostgresProvider::default_secure(),
+            provider: PostgresProvider::insecure_local(),
             budget: ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?,
             cancel: CancellationToken::new(),
         })
