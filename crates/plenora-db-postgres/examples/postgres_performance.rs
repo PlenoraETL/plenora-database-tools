@@ -285,14 +285,19 @@ fn write_operation(profile: Profile, target: String) -> WriteOperation {
 }
 
 fn profiled_provider(batch_rows: usize, mode: PostgresInsertMode) -> PostgresProvider {
+    // Esempio benchmark contro Docker senza TLS. In produzione:
+    // rimuovere `insecure_local_with_batch_rows` e usare `new(N)` che
+    // ha TLS `Require` di default (ADR-011).
     match (batch_rows, mode) {
         (1_024, PostgresInsertMode::CopyText) => {
-            PostgresProvider::for_profile(PostgresPerformanceProfile::LowLatency)
+            PostgresProvider::insecure_local()
         }
         (8_192, PostgresInsertMode::CopyBinary) => {
-            PostgresProvider::for_profile(PostgresPerformanceProfile::BalancedBulk)
+            PostgresProvider::insecure_local()
+                .with_performance_profile(PostgresPerformanceProfile::BalancedBulk)
         }
-        _ => PostgresProvider::new(batch_rows).with_insert_mode(mode),
+        _ => PostgresProvider::insecure_local_with_batch_rows(batch_rows)
+            .with_insert_mode(mode),
     }
 }
 
@@ -604,9 +609,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .get(0);
 
     let mut provider = match batch_rows {
-        1_024 => PostgresProvider::for_profile(PostgresPerformanceProfile::LowLatency),
-        8_192 => PostgresProvider::for_profile(PostgresPerformanceProfile::BalancedBulk),
-        _ => PostgresProvider::new(batch_rows),
+        1_024 => PostgresProvider::insecure_local(),
+        8_192 => PostgresProvider::insecure_local()
+            .with_performance_profile(PostgresPerformanceProfile::BalancedBulk),
+        _ => PostgresProvider::insecure_local_with_batch_rows(batch_rows),
     };
     if let Some(target) = configured_target_batch_bytes {
         provider = provider.with_target_batch_bytes(target);

@@ -5,6 +5,23 @@ use super::*;
 use crate::plan::ProviderKind;
 use crate::provider::ParameterValue;
 
+/// EWKB Point 2D con SRID prefixed — little-endian.
+/// Formato: 0x01 (byte order LE) + `type_with_srid_flag` (0x20000001)
+/// + srid (u32 LE) + x (f64 LE) + y (f64 LE).
+///
+/// Usato dai test golden compiler post-fix EWKB obbligatorio: prima
+/// bastavano dummy `vec![0x01, 0x02, 0x03]`, ora il compiler chiama
+/// `reference.validate()` che richiede EWKB parsabile.
+fn ewkb_point_2d(srid: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(25);
+    b.push(0x01);
+    b.extend_from_slice(&0x2000_0001_u32.to_le_bytes()); // Point + SRID flag
+    b.extend_from_slice(&srid.to_le_bytes());
+    b.extend_from_slice(&9.19_f64.to_le_bytes());
+    b.extend_from_slice(&45.46_f64.to_le_bytes());
+    b
+}
+
 #[test]
 fn select_all_produces_select_star() {
     let stmt = select_all("users").into_statement();
@@ -240,7 +257,7 @@ fn spatial_predicate_intersects_binds_ewkb() {
             "geom",
             SpatialPredicate::Intersects,
             SpatialReference {
-                ewkb: vec![0x01, 0x02, 0x03],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
@@ -257,7 +274,7 @@ fn spatial_predicate_intersects_binds_ewkb() {
     );
     // Post fix review: 2 params — [0]=ewkb, [1]=srid.
     assert_eq!(compiled.params.len(), 2);
-    assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &[0x01, 0x02, 0x03]));
+    assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &ewkb_point_2d(4326)));
     assert!(matches!(&compiled.params[1], ParameterValue::I32(v) if *v == 4326));
 }
 
@@ -272,7 +289,7 @@ fn spatial_predicate_dwithin_binds_distance() {
                 distance_meters: 250.0,
             },
             SpatialReference {
-                ewkb: vec![0xff],
+                ewkb: ewkb_point_2d(3857),
                 srid: 3857,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
@@ -301,7 +318,7 @@ fn spatial_dwithin_negative_distance_is_rejected() {
                 distance_meters: -1.0,
             },
             SpatialReference {
-                ewkb: vec![0x00],
+                ewkb: ewkb_point_2d(3857),
                 srid: 3857,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
@@ -319,7 +336,7 @@ fn spatial_bounding_box_uses_index_operator() {
             "geom",
             SpatialPredicate::BoundingBox,
             SpatialReference {
-                ewkb: vec![0x01],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geometry,
@@ -340,7 +357,7 @@ fn spatial_composes_with_scalar_predicates() {
                 "geom",
                 SpatialPredicate::Intersects,
                 SpatialReference {
-                    ewkb: vec![0x0a, 0x0b],
+                    ewkb: ewkb_point_2d(4326),
                     srid: 4326,
                     dimensions: Dimensions::Xy,
                     semantics: SpatialSemantics::Geometry,
@@ -366,7 +383,7 @@ fn spatial_geography_uses_geography_cast_postgres() {
             "geom",
             SpatialPredicate::Intersects,
             SpatialReference {
-                ewkb: vec![0x01],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geography,
@@ -392,7 +409,7 @@ fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
                 distance_meters: 500.0,
             },
             SpatialReference {
-                ewkb: vec![0xff],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geography,
@@ -421,7 +438,7 @@ fn spatial_dwithin_geometry_on_geographic_srid_is_rejected() {
                     distance_meters: 100.0,
                 },
                 SpatialReference {
-                    ewkb: vec![0xff],
+                    ewkb: ewkb_point_2d(srid),
                     srid,
                     dimensions: Dimensions::Xy,
                     semantics: SpatialSemantics::Geometry,
@@ -455,7 +472,7 @@ fn spatial_dwithin_geometry_on_projected_srid_is_allowed() {
                     distance_meters: 100.0,
                 },
                 SpatialReference {
-                    ewkb: vec![0xff],
+                    ewkb: ewkb_point_2d(srid),
                     srid,
                     dimensions: Dimensions::Xy,
                     semantics: SpatialSemantics::Geometry,
@@ -481,7 +498,7 @@ fn spatial_bounding_box_with_geography_is_rejected() {
             "geom",
             SpatialPredicate::BoundingBox,
             SpatialReference {
-                ewkb: vec![0x01],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geography,
@@ -502,7 +519,7 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
             "geom",
             SpatialPredicate::Intersects,
             SpatialReference {
-                ewkb: vec![0x01],
+                ewkb: ewkb_point_2d(4326),
                 srid: 4326,
                 dimensions: Dimensions::Xy,
                 semantics: SpatialSemantics::Geography,

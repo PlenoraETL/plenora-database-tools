@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(low_latency.insert_mode, PostgresInsertMode::CopyText);
         assert_eq!(low_latency.target_batch_bytes, Some(1024 * 1024));
 
-        let bulk = PostgresProvider::new(7)
+        let bulk = PostgresProvider::insecure_local_with_batch_rows(7)
             .with_timeouts(321, 123)
             .with_performance_profile(PostgresPerformanceProfile::BalancedBulk);
         assert_eq!(bulk.batch_rows, 8_192);
@@ -604,7 +604,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(10_000)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(10_000)
             .with_target_batch_bytes(64 * 1024)
             .with_byte_limits(256 * 1024, 64 * 1024 * 1024);
         let secret = SecretString::new(dsn);
@@ -656,7 +656,7 @@ mod tests {
             ..plenora_database_core::resource::ResourceLimits::default()
         };
         let budget = ResourceBudget::new(limits).expect("budget");
-        let provider = PostgresProvider::new(10);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(10);
         let secret = SecretString::new(dsn);
         let cancellation = CancellationToken::new();
         let operation = ReadOperation {
@@ -718,7 +718,7 @@ mod tests {
             ..plenora_database_core::resource::ResourceLimits::default()
         };
         let budget = ResourceBudget::new(limits).expect("geometry budget");
-        let provider = PostgresProvider::new(1);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(1);
         let secret = SecretString::new(dsn);
         let cancellation = CancellationToken::new();
         let operation = ReadOperation {
@@ -776,7 +776,7 @@ mod tests {
             ..plenora_database_core::resource::ResourceLimits::default()
         };
         let budget = ResourceBudget::new(limits).expect("duration budget");
-        let provider = PostgresProvider::new(10);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(10);
         let cancellation = CancellationToken::new();
         let operation = ReadOperation {
             source: ObjectRef {
@@ -917,7 +917,7 @@ mod tests {
             &client_private_key,
         )
         .expect("build mTLS config");
-        let provider = PostgresProvider::new(100)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(100)
             .with_pool_size(2, 5_000)
             .with_tls_config(tls_config.clone());
         let secret = SecretString::new(dsn);
@@ -984,13 +984,13 @@ mod tests {
         assert!(metrics.cancellations >= 1);
         assert!(metrics.invalidated_sessions >= 1);
 
-        let untrusted_error = PostgresProvider::new(1)
+        let untrusted_error = PostgresProvider::insecure_local_with_batch_rows(1)
             .with_tls_mode(PostgresTlsMode::Require)
             .test_connection(&secret, &NeverCancelled)
             .await
             .expect_err("private CA accepted by WebPKI");
         assert!(!untrusted_error.to_string().contains("PRIVATE KEY"));
-        let missing_identity = PostgresProvider::new(1)
+        let missing_identity = PostgresProvider::insecure_local_with_batch_rows(1)
             .with_tls_config(PostgresTlsConfig::private_ca_pem(&ca).expect("private CA"))
             .test_connection(&secret, &NeverCancelled)
             .await
@@ -1008,7 +1008,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(777);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(777);
         let secret = SecretString::new(dsn);
         let cancellation = NeverCancelled;
         let info = provider
@@ -2086,7 +2086,7 @@ mod tests {
             .is_none());
         drop(null_stream);
 
-        let limited_provider = PostgresProvider::new(10).with_byte_limits(1, 1);
+        let limited_provider = PostgresProvider::insecure_local_with_batch_rows(10).with_byte_limits(1, 1);
         let mut limited_stream = limited_provider
             .read_with_test_budget(
                 &secret,
@@ -2170,7 +2170,7 @@ mod tests {
         assert!(started.elapsed() < StdDuration::from_secs(2));
         wait_for_no_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
 
-        let single_connection_provider = PostgresProvider::new(10).with_pool_size(1, 25);
+        let single_connection_provider = PostgresProvider::insecure_local_with_batch_rows(10).with_pool_size(1, 25);
         let held_stream = single_connection_provider
             .read_with_test_budget(
                 &secret,
@@ -2371,7 +2371,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(7).with_insert_mode(PostgresInsertMode::CopyBinary);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7).with_insert_mode(PostgresInsertMode::CopyBinary);
         let secret = SecretString::new(dsn);
         let cancellation = NeverCancelled;
         let client = PostgresProvider::connect(&secret).await.expect("client");
@@ -2487,7 +2487,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(7)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7)
             .with_insert_mode(PostgresInsertMode::CopyBinary)
             .with_fault_injection(PostgresFaultPoint::RollbackAcknowledgementLost);
         let secret = SecretString::new(dsn);
@@ -2579,7 +2579,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(7)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7)
             .with_insert_mode(PostgresInsertMode::CopyBinary)
             .with_fault_injection(PostgresFaultPoint::AfterCommitAcknowledgement);
         let secret = SecretString::new(dsn);
@@ -2672,7 +2672,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(7);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7);
         let secret = SecretString::new(dsn);
         let cancellation = NeverCancelled;
         let client = PostgresProvider::connect(&secret).await.expect("client");
@@ -3261,7 +3261,7 @@ mod tests {
             .await
             .expect("fault cleanup");
         let rollback_provider =
-            PostgresProvider::new(7).with_fault_injection(PostgresFaultPoint::BeforeCommit);
+            PostgresProvider::insecure_local_with_batch_rows(7).with_fault_injection(PostgresFaultPoint::BeforeCommit);
         let rollback_stream =
             fixture_stream(&provider, &secret, &cancellation, Vec::new(), 2).await;
         let rollback_prepared = rollback_provider
@@ -3290,7 +3290,7 @@ mod tests {
             .get(0);
         assert!(rolled_back);
 
-        let unknown_provider = PostgresProvider::new(7)
+        let unknown_provider = PostgresProvider::insecure_local_with_batch_rows(7)
             .with_fault_injection(PostgresFaultPoint::AfterCommitAcknowledgement);
         let unknown_stream = fixture_stream(&provider, &secret, &cancellation, Vec::new(), 2).await;
         let unknown_prepared = unknown_provider
@@ -3351,7 +3351,7 @@ mod tests {
             .await
             .expect("schema cache fixture");
 
-        let provider = PostgresProvider::new(16)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(16)
             .with_pool_size(1, 5_000)
             .with_schema_cache_capacity(1);
         let source = ObjectRef {
@@ -3510,7 +3510,7 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::new(8)
+        let provider = PostgresProvider::insecure_local_with_batch_rows(8)
             .with_timeouts(1_234, 567)
             .with_pool_size(1, 5_000);
         let secret = SecretString::new(dsn);
@@ -3593,7 +3593,7 @@ mod tests {
             return;
         };
 
-        let provider = Arc::new(PostgresProvider::new(13).with_pool_size(4, 5_000));
+        let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(13).with_pool_size(4, 5_000));
         let secret = Arc::new(SecretString::new(dsn));
         let operation = Arc::new(ReadOperation {
             source: ObjectRef {
@@ -3688,7 +3688,7 @@ mod tests {
             .await
             .expect("slow hardening view");
 
-        let provider = Arc::new(PostgresProvider::new(100).with_pool_size(WORKERS, 5_000));
+        let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(100).with_pool_size(WORKERS, 5_000));
         let operation = Arc::new(ReadOperation {
             source: ObjectRef {
                 catalog: None,
@@ -3766,7 +3766,7 @@ mod tests {
         let dsn = std::env::var("PLENORA_TEST_POSTGRES_DSN").expect("live DSN");
         let secret = SecretString::new(dsn);
         let cancellation = NeverCancelled;
-        let reader = PostgresProvider::new(1_000);
+        let reader = PostgresProvider::insecure_local_with_batch_rows(1_000);
         let client = PostgresProvider::connect(&secret).await.expect("client");
         client
             .batch_execute(
@@ -3780,7 +3780,7 @@ mod tests {
         let mut copy_operation = write_operation(WriteMode::Create);
         copy_operation.target.object = "bench_copy".to_owned();
         let copy_provider =
-            PostgresProvider::new(1_000).with_insert_mode(PostgresInsertMode::CopyText);
+            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::CopyText);
         let copy_stream = fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let copy_prepared = copy_provider
             .prepare_write_with_test_budget(
@@ -3801,7 +3801,7 @@ mod tests {
         let mut binary_operation = write_operation(WriteMode::Create);
         binary_operation.target.object = "bench_binary".to_owned();
         let binary_provider =
-            PostgresProvider::new(1_000).with_insert_mode(PostgresInsertMode::CopyBinary);
+            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::CopyBinary);
         let binary_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let binary_prepared = binary_provider
@@ -3823,7 +3823,7 @@ mod tests {
         let mut prepared_operation = write_operation(WriteMode::Create);
         prepared_operation.target.object = "bench_prepared".to_owned();
         let prepared_provider =
-            PostgresProvider::new(1_000).with_insert_mode(PostgresInsertMode::Prepared);
+            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::Prepared);
         let prepared_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let prepared = prepared_provider

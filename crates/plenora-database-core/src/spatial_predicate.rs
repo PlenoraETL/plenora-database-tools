@@ -110,27 +110,50 @@ impl SpatialReference {
         dimensions: Dimensions,
         semantics: SpatialSemantics,
     ) -> Result<Self> {
-        // Uso limiti "infiniti" perché il caller ha il proprio budget.
-        // `inspect_ewkb_detailed` è O(bytes) e stateless.
-        let inspection: EwkbInspection = inspect_ewkb_detailed(&ewkb, u64::MAX, u64::MAX)?;
+        let candidate = Self {
+            ewkb,
+            srid,
+            dimensions,
+            semantics,
+        };
+        candidate.validate()?;
+        Ok(candidate)
+    }
 
-        // SRID embedded: se presente, deve coincidere. Se assente
-        // (WKB puro), accettiamo il SRID dichiarato senza check.
+    /// Ri-esegue la validazione EWKB/SRID/dimensioni su un
+    /// `SpatialReference` già costruito. Necessario perché lo struct
+    /// ha campi pubblici (compat serde `deny_unknown_fields`) e può
+    /// essere costruito literal o via `Deserialize` bypassando
+    /// `new_validated`.
+    ///
+    /// Il compiler portable chiama `validate()` prima di generare
+    /// SQL — così anche un `SpatialReference` deserializzato da JSON
+    /// non può aggirare la policy con SRID divergenti.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidPlan` se l'EWKB non è parsabile.
+    /// - `InvalidPlan` se il SRID embedded nell'EWKB differisce da
+    ///   `self.srid` (WKB puro senza SRID embedded è accettato).
+    /// - `InvalidPlan` se le `dimensions` dichiarate divergono da
+    ///   quelle dell'EWKB. `Dimensions::Unknown` è wildcard.
+    pub fn validate(&self) -> Result<()> {
+        let inspection: EwkbInspection =
+            inspect_ewkb_detailed(&self.ewkb, u64::MAX, u64::MAX)?;
+
         if let Some(embedded_srid) = inspection.root.srid {
-            if embedded_srid != srid {
+            if embedded_srid != self.srid {
                 return Err(DatabaseError::invalid_plan(format!(
-                    "SRID divergente: dichiarato {srid}, embedded nell'EWKB {embedded_srid}. \
-                     Ri-serializza l'EWKB con SRID {srid} o correggi la dichiarazione."
+                    "SRID divergente: dichiarato {}, embedded nell'EWKB {embedded_srid}. \
+                     Ri-serializza l'EWKB con SRID {} o correggi la dichiarazione.",
+                    self.srid, self.srid
                 )));
             }
         }
 
-        // Dimensions embedded vs dichiarate. `Dimensions::Unknown`
-        // accetta qualsiasi cosa (compat consumer che non conosce le
-        // dims a priori).
-        if dimensions != Dimensions::Unknown {
+        if self.dimensions != Dimensions::Unknown {
             let embedded_label = inspection.root.dimensions_label();
-            let declared_label = dimensions_label(dimensions);
+            let declared_label = dimensions_label(self.dimensions);
             if embedded_label != declared_label {
                 return Err(DatabaseError::invalid_plan(format!(
                     "dimensioni EWKB divergenti: dichiarato `{declared_label}`, embedded \
@@ -138,13 +161,7 @@ impl SpatialReference {
                 )));
             }
         }
-
-        Ok(Self {
-            ewkb,
-            srid,
-            dimensions,
-            semantics,
-        })
+        Ok(())
     }
 }
 

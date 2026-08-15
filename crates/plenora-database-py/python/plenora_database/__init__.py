@@ -77,15 +77,23 @@ from ._native import (
 )
 
 
-def connect(dsn: str) -> Session:
+def connect(dsn: str, tls_mode: str = "require") -> Session:
     """Apre una nuova sessione Postgres (sync).
 
     La DSN è nel formato libpq (`host=... user=... password=... dbname=...`).
     Il probe iniziale verifica connessione + PostGIS. Fallisce con
     PlenoraError se la DSN è invalida, la rete non risponde o l'auth
     fallisce.
+
+    TLS (ADR-011):
+    - `"require"` (default): TLS obbligatorio + WebPKI trust store pubblico.
+    - `"insecure_local"`: TLS disabilitato. **Solo per test/dev locali.**
+
+    Per CA privata / mTLS costruire il provider Rust in-process (via
+    Rust binding low-level); l'API pubblica `connect(dsn)` copre solo
+    i due preset di produzione più comuni.
     """
-    return Session(_native_connect(dsn))
+    return Session(_native_connect(dsn, tls_mode))
 
 
 def connect_mysql(
@@ -414,7 +422,7 @@ class _AsyncMysqlSessionWrapper:
         return await self._native.execute_portable_count(ast_json)
 
 
-async def aconnect(dsn: str) -> AsyncSession:
+async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
     """Apre una nuova sessione Postgres asincrona.
 
     Coroutine: `s = await aconnect(dsn)` oppure
@@ -422,8 +430,11 @@ async def aconnect(dsn: str) -> AsyncSession:
 
     Sotto il cofano il probe capabilities usa il runtime tokio condiviso
     con il resto del SDK (nessuna nuova thread pool viene creata).
+
+    TLS: come `connect()` sync — default `"require"` + WebPKI.
+    Per test/dev locali passare `tls_mode="insecure_local"`.
     """
-    native = await _native_aconnect(dsn)
+    native = await _native_aconnect(dsn, tls_mode)
     return AsyncSession(native)
 
 

@@ -235,6 +235,13 @@ fn compile_spatial_postgres(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
+    // Fix post-review: validazione EWKB obbligatoria PRIMA di
+    // generare SQL. Blocca `SpatialReference` deserializzati da JSON
+    // o costruiti literal con SRID/dimensioni divergenti dal buffer
+    // EWKB reale. Senza questo check, il consumer poteva aggirare la
+    // spatial_policy dichiarando `srid: 3857` con EWKB WGS84 →
+    // ST_SetSRID sovrascriveva silenziosamente.
+    reference.validate()?;
     // Fase B: validazione + cast delegati a `spatial_policy` (single
     // source of truth). Prima erano inline duplicati con `spatial.rs`
     // e `spatial.py`.
@@ -253,9 +260,18 @@ fn compile_spatial_postgres(
     // fra SRID embedded e dichiarato è garantita da
     // `SpatialReference::new_validated` upstream.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    let srid_placeholder = ctx.bind(ParameterValue::I32(
-        i32::try_from(reference.srid).unwrap_or(i32::MAX),
-    ));
+    // Fix review: fail-closed su SRID > i32::MAX. Prima
+    // `unwrap_or(i32::MAX)` saturava silenziosamente — un consumer che
+    // passa un SRID sopra 2^31-1 avrebbe ottenuto risultati con SRID
+    // sbagliato invece di errore.
+    let srid_i32 = i32::try_from(reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan(format!(
+            "SRID {} eccede il range i32 supportato da PostGIS (max {})",
+            reference.srid,
+            i32::MAX
+        ))
+    })?;
+    let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
     let geom_expr = format!(
         "ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}"
     );
@@ -279,6 +295,9 @@ fn compile_spatial_mysql(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
+    // Fix post-review: validazione EWKB obbligatoria (vedi
+    // `compile_spatial_postgres` per motivazione).
+    reference.validate()?;
     // MySQL: no distinzione geometry/geography a livello tipo — la semantica
     // deriva dal SRID della colonna. Validazione (DWithin unsupported,
     // distanza finita) delegata a `spatial_policy` in Fase B.
@@ -288,9 +307,16 @@ fn compile_spatial_mysql(
     // dichiarato per intercettare il caso WKB puro (senza SRID
     // embedded) che altrimenti arriverebbe come SRID 0.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    let srid_placeholder = ctx.bind(ParameterValue::I32(
-        i32::try_from(reference.srid).unwrap_or(i32::MAX),
-    ));
+    // Fix review: fail-closed su SRID > i32::MAX (vedi
+    // `compile_spatial_postgres`).
+    let srid_i32 = i32::try_from(reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan(format!(
+            "SRID {} eccede il range i32 supportato da MySQL (max {})",
+            reference.srid,
+            i32::MAX
+        ))
+    })?;
+    let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
     let geom_expr = format!("ST_GeomFromWKB({geom_placeholder}, {srid_placeholder})");
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col}, {geom_expr})")),

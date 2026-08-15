@@ -5,6 +5,26 @@
 //! best-effort e disambiguazione dei commit (`OutcomeUnknown` in caso di
 //! canale compromesso in fase `Commit`).
 //!
+//! # Cancellation semantics (post-review 2026-08-15)
+//!
+//! Ogni metodo state-mutating (`execute`, `query`, `savepoint`,
+//! `rollback_to_savepoint`, `release_savepoint`, `query_stream`,
+//! `execute_conditional_update`, `commit`) fa `tokio::select` fra
+//! l'await del client Postgres e `cancellation.cancelled()`. Su
+//! cancel:
+//! - il pool client viene invalidato (`self.client.invalidate()`);
+//! - `self.open = false` blocca chiamate successive con `InvalidPlan`
+//!   via `ensure_open`;
+//! - viene emesso `RemoteEffect::Unknown` per Write/Commit (query
+//!   potenzialmente applicata server-side), `None` per Read/Rollback.
+//!
+//! **Non inviamo `CancelRequest` (Postgres protocol-level cancel)**:
+//! richiederebbe una nuova connessione TCP + handshake sub-protocol
+//! e non è thread-safe rispetto al client in uso. Il DBA vede la
+//! query proseguire fino al `statement_timeout` di sessione (default
+//! 30s). Consumer che vuole cancel server-side deve settare
+//! `statement_timeout_ms` esplicito nelle `TransactionOptions`.
+//!
 //! Struttura interna:
 //!
 //! - `sql`: builder puri (BEGIN, quoting, phase classification)
@@ -244,14 +264,23 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Rollback)?;
             check_cancelled(cancellation, ErrorPhase::Rollback)?;
             validate_savepoint_name(name)?;
             let sql = format!("ROLLBACK TO SAVEPOINT {}", quote_identifier(name));
-            self.client
-                .client()?
-                .batch_execute(&sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Rollback, &error))
+            let client = self.client.client()?;
+            if let Some(result) =
+                select_with_cancellation(client.batch_execute(&sql), cancellation).await
+            {
+                result.map_err(|error| classify_error(ErrorPhase::Rollback, &error))
+            } else {
+                self.client.invalidate();
+                self.open = false;
+                Err(Self::cancelled_error(
+                    ErrorPhase::Rollback,
+                    "ROLLBACK TO SAVEPOINT cancellato durante l'esecuzione",
+                ))
+            }
         })
     }
 
@@ -261,14 +290,23 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Finalize)?;
             check_cancelled(cancellation, ErrorPhase::Finalize)?;
             validate_savepoint_name(name)?;
             let sql = format!("RELEASE SAVEPOINT {}", quote_identifier(name));
-            self.client
-                .client()?
-                .batch_execute(&sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Finalize, &error))
+            let client = self.client.client()?;
+            if let Some(result) =
+                select_with_cancellation(client.batch_execute(&sql), cancellation).await
+            {
+                result.map_err(|error| classify_error(ErrorPhase::Finalize, &error))
+            } else {
+                self.client.invalidate();
+                self.open = false;
+                Err(Self::cancelled_error(
+                    ErrorPhase::Finalize,
+                    "RELEASE SAVEPOINT cancellato durante l'esecuzione",
+                ))
+            }
         })
     }
 
@@ -316,6 +354,7 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Read)?;
             enforce_policy(self.native_query_policy, &statement.sql)?;
             check_cancelled(cancellation, ErrorPhase::Read)?;
             if batch_size == 0 {
@@ -365,11 +404,12 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
+            let phase = phase_of(&request.update.sql);
+            self.ensure_open(phase)?;
             enforce_policy(self.native_query_policy, &request.update.sql)?;
             if let Some(probe) = request.key_probe {
                 enforce_policy(self.native_query_policy, &probe.sql)?;
             }
-            let phase = phase_of(&request.update.sql);
             check_cancelled(cancellation, phase)?;
 
             let update_params = encode_params(&request.update.params)?;

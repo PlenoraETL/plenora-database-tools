@@ -233,6 +233,18 @@ impl PostgresProvider {
             .with_tls_mode(PostgresTlsMode::Disabled)
     }
 
+    /// Variante di [`Self::insecure_local`] con `batch_rows` custom
+    /// (come `new(batch_rows)` ma TLS `Disabled`). Usato dai test
+    /// live in `test_suite` che devono controllare la dimensione del
+    /// batch reader/writer contro Docker plaintext.
+    ///
+    /// **Solo per test/dev**. In produzione: `new(batch_rows)` con
+    /// TLS `Require` default (ADR-011).
+    #[must_use]
+    pub fn insecure_local_with_batch_rows(batch_rows: usize) -> Self {
+        Self::new(batch_rows).with_tls_mode(PostgresTlsMode::Disabled)
+    }
+
     /// Alias storico di [`Self::default`] (pre-`1.2.0` era necessario
     /// perché `default()` era Disabled). Mantenuto per non rompere
     /// consumer intermedio che aveva già migrato al secure factory.
