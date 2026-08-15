@@ -47,7 +47,7 @@ fn budget() -> ResourceBudget {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
-    let provider = Arc::new(PostgresProvider::new(1_024).with_pool_size(8, 5_000));
+    let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 5_000));
     let cancel = CancellationToken::new();
 
     let n = 50_u32;
@@ -93,7 +93,7 @@ async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -127,7 +127,7 @@ async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = provider
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -183,7 +183,7 @@ async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
 async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
     // Pool size 1 → se la connessione non viene invalidata, la stessa
     // sessione tornerà a tx2, con eventuali SET LOCAL/temp-table residui.
-    let provider = PostgresProvider::new(1_024).with_pool_size(1, 5_000);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(1, 5_000);
     let cancel = CancellationToken::new();
     let s = secret();
 
@@ -232,7 +232,7 @@ async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h4_transaction_drop_does_not_leave_pool_permanently_broken() {
     // Dopo il drop, il pool deve poter servire N tx consecutive senza errori.
-    let provider = PostgresProvider::new(1_024).with_pool_size(1, 5_000);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(1, 5_000);
     let cancel = CancellationToken::new();
     let s = secret();
 

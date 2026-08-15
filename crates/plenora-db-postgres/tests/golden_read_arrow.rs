@@ -66,7 +66,7 @@ fn empty_read(source: ObjectRef) -> ReadOperation {
 }
 
 async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &str) {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -93,7 +93,7 @@ async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &st
 }
 
 async fn drop_fixture(table: &str) {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -114,7 +114,7 @@ async fn drop_fixture(table: &str) {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let op = empty_read(public_ref("spatial_ref_sys"));
     let mut stream = p
@@ -178,7 +178,7 @@ async fn h7b_read_heterogeneous_types_yields_expected_arrow_schema() {
     )
     .await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(
@@ -235,7 +235,7 @@ async fn h7b_read_projection_reduces_schema_columns() {
         row_limit: None,
         filter: None,
     };
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(&secret(), &op, &ParameterBag::default(), &budget(), &cancel)
@@ -281,7 +281,7 @@ async fn h7b_read_row_limit_is_honored_by_query_planner() {
         row_limit: Some(42),
         filter: None,
     };
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(&secret(), &op, &ParameterBag::default(), &budget(), &cancel)
@@ -318,7 +318,7 @@ async fn h7b_read_handles_null_values_across_columns() {
     )
     .await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(
@@ -386,7 +386,7 @@ async fn h7b_read_stream_batchstream_trait_is_not_cancel_aware_finding() {
     )
     .await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(

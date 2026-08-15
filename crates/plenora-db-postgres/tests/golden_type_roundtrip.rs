@@ -45,7 +45,7 @@ fn budget() -> ResourceBudget {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -80,7 +80,7 @@ async fn h5_interval_direct_binary_returns_unsupported_or_maps_via_text() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_large_jsonb_roundtrips_bytewise_intact() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -124,7 +124,7 @@ async fn h5_large_jsonb_roundtrips_bytewise_intact() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_large_bytea_roundtrips_bytewise_intact() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -166,7 +166,7 @@ async fn h5_large_bytea_roundtrips_bytewise_intact() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_timetz_via_text_cast_is_readable() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -201,7 +201,7 @@ async fn h5_timetz_via_text_cast_is_readable() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h5_typed_null_binds_correctly_for_each_hint() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)

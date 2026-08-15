@@ -91,7 +91,7 @@ fn ctx_tenant(tenant_id: &str) -> SessionContext {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn pfm_h1_multi_tenant_isolated_via_session_context() {
-    let provider = Arc::new(PostgresProvider::new(1_024).with_pool_size(8, 10_000));
+    let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 10_000));
     let cancel = CancellationToken::new();
 
     // Setup schema condiviso.
@@ -220,7 +220,7 @@ async fn pfm_h1_multi_tenant_isolated_via_session_context() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pfm_h2_portable_insert_returning_then_read_back() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let s = secret();
 
@@ -335,7 +335,7 @@ async fn pfm_h2_portable_insert_returning_then_read_back() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pfm_h3_optimistic_conflict_with_retry_pattern() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let s = secret();
 
@@ -484,7 +484,7 @@ async fn pfm_h3_optimistic_conflict_with_retry_pattern() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pfm_h4_spatial_portable_query_uses_index() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let s = secret();
 

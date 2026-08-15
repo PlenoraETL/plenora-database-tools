@@ -127,7 +127,7 @@ fn write_op(target: &str, mode: WriteMode) -> WriteOperation {
 }
 
 async fn drop_target(table: &str) {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -141,7 +141,7 @@ async fn drop_target(table: &str) {
 }
 
 async fn count_rows(table: &str) -> i64 {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
@@ -172,7 +172,7 @@ async fn h7d_write_create_builds_table_and_inserts_batch() {
     let target = "_h7d_create";
     drop_target(target).await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let b = budget();
     let op = write_op(target, WriteMode::Create);
@@ -205,7 +205,7 @@ async fn h7d_write_append_adds_rows_to_existing_table() {
     let target = "_h7d_append";
     drop_target(target).await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
 
     // Seed: Create con 100 righe. Budget dedicato al seed (viene consumato).
@@ -265,7 +265,7 @@ async fn h7d_write_replace_swaps_table_content() {
     let target = "_h7d_replace";
     drop_target(target).await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
 
     // Seed 100 righe via Create.
@@ -331,7 +331,7 @@ async fn h7d_write_append_on_missing_table_returns_classified_error() {
     let target = "_h7d_nonexistent";
     drop_target(target).await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let outcome = p
         .prepare_write(

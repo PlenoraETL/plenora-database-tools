@@ -382,11 +382,21 @@ impl TransactionScope for PostgresTransaction {
                 "DECLARE {cursor_name} NO SCROLL CURSOR FOR {}",
                 statement.sql
             );
-            self.client
-                .client()?
-                .execute(declare_sql.as_str(), &param_refs)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+            let client = self.client.client()?;
+            let Some(declare_result) = select_with_cancellation(
+                client.execute(declare_sql.as_str(), &param_refs),
+                cancellation,
+            )
+            .await
+            else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(Self::cancelled_error(
+                    ErrorPhase::Prepare,
+                    "DECLARE CURSOR cancellato durante l'esecuzione",
+                ));
+            };
+            declare_result.map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
 
             let stream = PostgresRowStream {
                 client: self.client.client()?,
@@ -418,10 +428,20 @@ impl TransactionScope for PostgresTransaction {
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
             let client = self.client.client()?;
-            let affected = match client
-                .execute(request.update.sql.as_str(), &update_param_refs)
-                .await
-            {
+            let Some(update_result) = select_with_cancellation(
+                client.execute(request.update.sql.as_str(), &update_param_refs),
+                cancellation,
+            )
+            .await
+            else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(Self::cancelled_error(
+                    phase,
+                    "UPDATE condizionale cancellato durante l'esecuzione",
+                ));
+            };
+            let affected = match update_result {
                 Ok(n) => n,
                 Err(error) => {
                     let mapped = classify_error(phase, &error);
@@ -445,9 +465,20 @@ impl TransactionScope for PostgresTransaction {
                     .map(|value| value as &(dyn ToSql + Sync))
                     .collect();
                 let probe_client = self.client.client()?;
-                let rows = probe_client
-                    .query(probe.sql.as_str(), &probe_refs)
-                    .await
+                let Some(probe_result) = select_with_cancellation(
+                    probe_client.query(probe.sql.as_str(), &probe_refs),
+                    cancellation,
+                )
+                .await
+                else {
+                    self.client.invalidate();
+                    self.open = false;
+                    return Err(Self::cancelled_error(
+                        ErrorPhase::Read,
+                        "key probe cancellato durante l'esecuzione",
+                    ));
+                };
+                let rows = probe_result
                     .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
                 if rows.is_empty() {
                     return Err(public_error(
@@ -473,7 +504,20 @@ impl TransactionScope for PostgresTransaction {
             self.ensure_open(ErrorPhase::Commit)?;
             check_cancelled(cancellation, ErrorPhase::Commit)?;
             let client = self.client.client()?;
-            match client.batch_execute("COMMIT").await {
+            let Some(commit_result) =
+                select_with_cancellation(client.batch_execute("COMMIT"), cancellation).await
+            else {
+                // Cancel mid-COMMIT: server può aver già applicato il
+                // commit (out-of-band) → `OutcomeUnknown` con recovery
+                // richiesto, coerente con `RemoteEffect::Unknown` in
+                // fase Commit.
+                self.client.invalidate();
+                self.open = false;
+                return Ok(CommitOutcome::OutcomeUnknown {
+                    recovery: outcome_unknown_recovery(),
+                });
+            };
+            match commit_result {
                 Ok(()) => {
                     self.open = false;
                     Ok(CommitOutcome::Committed)

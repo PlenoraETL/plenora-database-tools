@@ -63,23 +63,18 @@ pub fn enforce_policy(policy: NativeQueryPolicy, sql: &str) -> crate::Result<()>
     Ok(())
 }
 
-/// Strip leading SQL comments (`-- line`, `/* block */`) preservando
-/// il resto della stringa. Non è un parser SQL completo: interpreta
-/// commenti a livello top-level, non dentro literal.
-///
-/// Esposto pub perché il CLI classifier duplica lo stesso pattern
-/// (fix review post-review: dedup #96). Deve restare in sync con
-/// `strip_leading_comments` in `pfm.rs` — meglio delegare qui.
-#[must_use]
-pub fn strip_leading_comments(sql: &str) -> String {
-    strip_comments(sql)
-}
-
 /// Estrae la prima keyword SQL (uppercase ASCII) di uno statement,
 /// dopo aver stripped commenti `--`/`/**/` e whitespace iniziale.
 ///
 /// Usato dai classifier (CLI `execute-sql`, policy check) per
 /// discriminare CRUD verbs da altri comandi.
+///
+/// **Limite noto**: `strip_comments` non è literal-aware — commenti
+/// dentro string literal SQL (`'-- non è commento'`) vengono comunque
+/// riconosciuti come commenti. Per la use case classifier (leggere la
+/// PRIMA keyword) è ininfluente: il primo commento eventuale è
+/// leading e i literal arrivano dopo. Non esporre `strip_comments`
+/// standalone per non incoraggiare usi in cui il bug conta.
 #[must_use]
 pub fn statement_head(sql: &str) -> String {
     strip_comments(sql)

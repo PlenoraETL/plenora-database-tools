@@ -61,7 +61,7 @@ fn secret() -> SecretString {
 }
 
 fn provider() -> PostgresProvider {
-    PostgresProvider::new(1_024)
+    PostgresProvider::insecure_local_with_batch_rows(1_024)
 }
 
 fn budget() -> ResourceBudget {
@@ -267,7 +267,7 @@ async fn golden_optimistic_conflict_cross_transactions() {
 async fn golden_session_context_is_isolated_across_pool_reuse() {
     // Pool size 1 forza il riuso della stessa connessione tra tx1 e tx2 —
     // il pattern peggiore per il context leak.
-    let p = PostgresProvider::new(1_024).with_pool_size(1, 5_000);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(1, 5_000);
     let cancel = CancellationToken::new();
     let s = secret();
 

@@ -53,7 +53,7 @@ fn budget() -> ResourceBudget {
 }
 
 fn provider() -> PostgresProvider {
-    PostgresProvider::new(1_024)
+    PostgresProvider::insecure_local_with_batch_rows(1_024)
 }
 
 /// Legge il DSN "bare" (Postgres senza PostGIS) dall'env. Ritorna `None` se

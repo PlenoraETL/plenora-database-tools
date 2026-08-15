@@ -79,7 +79,7 @@ fn empty_read(object: &str) -> ReadOperation {
 }
 
 async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &str) {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget_default(), &cancel)
@@ -106,7 +106,7 @@ async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &st
 }
 
 async fn drop_fixture(table: &str) {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
         .begin_transaction(&secret(), &TransactionOptions::default(), &budget_default(), &cancel)
@@ -143,7 +143,7 @@ async fn edge_e1_single_huge_row_within_default_budget_returns_one_row() {
     )
     .await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(
@@ -199,7 +199,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
     let table = "_edge_e2_mixed";
     // Setup manuale: il driver è single-statement, quindi 3 execute separati.
     create_persistent_fixture(table, "id INT PRIMARY KEY, payload BYTEA NOT NULL", "").await;
-    let seed_provider = PostgresProvider::new(1_024);
+    let seed_provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let seed_cancel = CancellationToken::new();
     let mut seed_tx = seed_provider
         .begin_transaction(
@@ -244,7 +244,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
         row_limit: None,
         filter: None,
     };
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
         .read(&secret(), &op, &ParameterBag::default(), &budget_default(), &cancel)
@@ -292,7 +292,7 @@ async fn edge_e3_tight_memory_with_huge_row_fails_cleanly_or_streams() {
     )
     .await;
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let start = std::time::Instant::now();
     let stream_res = p

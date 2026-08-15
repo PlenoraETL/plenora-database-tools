@@ -57,7 +57,7 @@ fn budget() -> ResourceBudget {
 }
 
 fn provider() -> PostgresProvider {
-    PostgresProvider::new(1_024)
+    PostgresProvider::insecure_local_with_batch_rows(1_024)
 }
 
 fn bytes_of(v: Option<&ParameterValue>) -> Vec<u8> {

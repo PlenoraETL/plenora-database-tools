@@ -56,7 +56,7 @@ fn public_ref(object: &str) -> ObjectRef {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7c_list_catalogs_reports_current_database() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = p
         .inspect(&secret(), &Operation::DatabaseListCatalogs, &cancel)
@@ -85,7 +85,7 @@ async fn h7c_list_catalogs_reports_current_database() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7c_list_schemas_excludes_system_schemas() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = p
         .inspect(
@@ -130,7 +130,7 @@ async fn h7c_list_schemas_excludes_system_schemas() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7c_list_objects_returns_relations_of_the_schema() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = p
         .inspect(
@@ -162,7 +162,7 @@ async fn h7c_list_objects_returns_relations_of_the_schema() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7c_describe_object_returns_columns_and_schema_token() {
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = p
         .inspect(
@@ -204,7 +204,7 @@ async fn h7c_describe_object_handles_multiple_column_types() {
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
     use plenora_database_core::transaction::{Statement, TransactionOptions};
 
-    let p = PostgresProvider::new(1_024);
+    let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
