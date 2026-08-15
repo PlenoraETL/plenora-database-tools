@@ -180,12 +180,21 @@ mod tests {
 
     #[test]
     fn dwithin_binds_distance_parameter() {
+        // Post-Fase B: DWithin + Geometry + SRID geografico è fail-closed.
+        // Uso SRID 3857 (web mercator, unità metri) per esercitare il
+        // path DWithin senza il check spatial_policy.
+        let reference = SpatialReference {
+            ewkb: dummy_ewkb(),
+            srid: 3857,
+            dimensions: Dimensions::Xy,
+            semantics: SpatialSemantics::Geometry,
+        };
         let filter = SpatialFilter {
             geometry_column: "geom".into(),
             predicate: SpatialPredicate::DWithin {
                 distance_meters: 250.0,
             },
-            reference: dummy_reference(),
+            reference,
         };
         let stmt =
             build_spatial_select(None, "poi", &["id"], &filter, None).expect("build");

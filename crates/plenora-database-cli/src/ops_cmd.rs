@@ -36,31 +36,29 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
     }
     let ty = ty.ok_or("manca --type=TYPE (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)")?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let budget = pfm_budget()?;
-    let cancel = CancellationToken::new();
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let opts = TransactionOptions {
         context: crate::session_ctx::active(),
         ..TransactionOptions::default()
     };
-    let mut tx = provider
-        .begin_transaction(&secret, &opts, &budget, &cancel)
+    let mut tx = ctx
+        .provider
+        .begin_transaction(&ctx.secret, &opts, &ctx.budget, &ctx.cancel)
         .await?;
     let stmt = Statement::new(sql).with_params(params.into_inner());
 
     let value: Value = match ty.as_str() {
-        "bool" => json!(execute_scalar_bool(tx.as_mut(), &stmt, &cancel).await?),
-        "i32" | "int" => json!(execute_scalar_i32(tx.as_mut(), &stmt, &cancel).await?),
-        "i64" | "bigint" => json!(execute_scalar_i64(tx.as_mut(), &stmt, &cancel).await?),
+        "bool" => json!(execute_scalar_bool(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "i32" | "int" => json!(execute_scalar_i32(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "i64" | "bigint" => json!(execute_scalar_i64(tx.as_mut(), &stmt, &ctx.cancel).await?),
         "f64" | "float" | "double" => {
-            json!(execute_scalar_f64(tx.as_mut(), &stmt, &cancel).await?)
+            json!(execute_scalar_f64(tx.as_mut(), &stmt, &ctx.cancel).await?)
         }
-        "string" | "text" => json!(execute_scalar_string(tx.as_mut(), &stmt, &cancel).await?),
-        "uuid" => json!(execute_scalar_uuid(tx.as_mut(), &stmt, &cancel).await?),
-        "json" | "jsonb" => execute_scalar_json(tx.as_mut(), &stmt, &cancel).await?,
+        "string" | "text" => json!(execute_scalar_string(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "uuid" => json!(execute_scalar_uuid(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "json" | "jsonb" => execute_scalar_json(tx.as_mut(), &stmt, &ctx.cancel).await?,
         "bytes" | "bytea" => {
-            let b = execute_scalar_bytes(tx.as_mut(), &stmt, &cancel).await?;
+            let b = execute_scalar_bytes(tx.as_mut(), &stmt, &ctx.cancel).await?;
             // base64 per non gonfiare l'output.
             use base64::Engine as _;
             json!({
@@ -68,9 +66,9 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
                 "value": base64::engine::general_purpose::STANDARD.encode(b),
             })
         }
-        "date" => json!(execute_scalar_date(tx.as_mut(), &stmt, &cancel).await?),
-        "timestamp" => json!(execute_scalar_timestamp(tx.as_mut(), &stmt, &cancel).await?),
-        "timestamptz" => json!(execute_scalar_timestamptz(tx.as_mut(), &stmt, &cancel).await?),
+        "date" => json!(execute_scalar_date(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "timestamp" => json!(execute_scalar_timestamp(tx.as_mut(), &stmt, &ctx.cancel).await?),
+        "timestamptz" => json!(execute_scalar_timestamptz(tx.as_mut(), &stmt, &ctx.cancel).await?),
         other => {
             return Err(format!(
                 "--type sconosciuto: {other} \
@@ -80,7 +78,7 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
         }
     };
 
-    let _ = tx.rollback(&cancel).await;
+    let _ = tx.rollback(&ctx.cancel).await;
     print_json(&json!({ "status": "ok", "type": ty, "value": value }))
 }
 
@@ -105,16 +103,14 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         .parse()
         .map_err(|_| format!("EXPECTED_AFFECTED non valido: {expected_raw}"))?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let budget = pfm_budget()?;
-    let cancel = CancellationToken::new();
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let opts = TransactionOptions {
         context: crate::session_ctx::active(),
         ..TransactionOptions::default()
     };
-    let mut tx = provider
-        .begin_transaction(&secret, &opts, &budget, &cancel)
+    let mut tx = ctx
+        .provider
+        .begin_transaction(&ctx.secret, &opts, &ctx.budget, &ctx.cancel)
         .await?;
 
     let params_vec: Vec<ParameterValue> = params.into_inner();
@@ -128,7 +124,7 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
                 key_probe: Some(&probe),
                 expected_affected_rows: expected,
             },
-            &cancel,
+            &ctx.cancel,
         )
         .await;
 
@@ -145,9 +141,9 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         ),
     };
     if outcome.is_ok() {
-        tx.commit(&cancel).await?;
+        tx.commit(&ctx.cancel).await?;
     } else {
-        let _ = tx.rollback(&cancel).await;
+        let _ = tx.rollback(&ctx.cancel).await;
     }
     print_json(&json!({
         "status": status,
@@ -171,15 +167,9 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
 pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     ensure_end(args)?;
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-
-    // Il PostgresProvider espone probe_capabilities che include info pool.
-    // Come surface additiva minima: forza una test_connection (verifica pool
-    // acquire/release) e riporta se ha successo + timing.
-    let cancel = CancellationToken::new();
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let start = std::time::Instant::now();
-    let connection = provider.test_connection(&secret, &cancel).await;
+    let connection = ctx.provider.test_connection(&ctx.secret, &ctx.cancel).await;
     let elapsed_ms = start.elapsed().as_millis();
 
     // Nota: il pool interno non espone metriche pubbliche granulari
