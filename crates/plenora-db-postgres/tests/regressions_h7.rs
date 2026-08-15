@@ -51,7 +51,7 @@ fn budget() -> ResourceBudget {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = provider
         .inspect(&secret(), &Operation::DatabaseListSchemas { source: None }, &cancel)
@@ -105,7 +105,7 @@ async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn h7_2_batch_stream_honors_cancellation_after_start() {
-    let provider = PostgresProvider::new(1_024);
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
 
     let op = ReadOperation {

@@ -11,6 +11,201 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.9.0] — 2026-08-15
+
+Security-hardening + PFM-ITS-DB-001 (CHG-001..004) + chiusura
+audit review 2026-08-15 (12/15 findings originali + 7 findings
+duplicazioni + 8 findings post-refactor + 6 findings post-PFM + 4
+findings pre-release).
+
+### 🚨 BREAKING — TLS secure-by-default (ADR-011)
+
+`plenora_database.connect(dsn)` e `aconnect(dsn)` ora usano
+**TLS `require`** (WebPKI trust store pubblico) per default. Prima
+usavano TLS disabilitato.
+
+**Impatto**: connessioni verso Postgres senza TLS (es. Docker
+plaintext dev/staging) falliscono con `PlenoraIoError` al probe.
+
+**Migrazione**:
+
+```python
+# Prima (0.8.x)
+s = plenora_database.connect("host=localhost user=... dbname=...")
+
+# Dopo (0.9.0) — produzione (default sicuro)
+s = plenora_database.connect("host=...prod... user=... dbname=...")
+
+# Dopo (0.9.0) — dev/test locale contro Docker senza TLS
+s = plenora_database.connect(
+    "host=localhost user=... dbname=...",
+    tls_mode="insecure_local",
+)
+```
+
+Valori supportati per `tls_mode`:
+- `"require"` (default): TLS + WebPKI trust store pubblico.
+- `"insecure_local"`: TLS disabilitato. **Solo per test/dev.**
+
+Per **CA privata / mTLS**: costruire il provider Rust in-process (via
+Rust binding low-level); `connect(dsn, tls_mode=...)` copre solo i
+due preset più comuni.
+
+Motivazione ADR-011: prima del fix, `probe_capabilities` (usato dal
+setup) applicava TLS Require, mentre i comandi operativi PFM
+applicavano Disabled — un endpoint che passava il probe poteva poi
+essere connesso plaintext. Ora coerente.
+
+### New — SessionContext transaction-local (CHG-002)
+
+Nuova pyclass `plenora_database.SessionContext` per propagare al
+database contesto della richiesta (tenant, actor, correlation_id,
+ecc.) via `SET LOCAL` — transaction-local, no leak fra riusi della
+connessione dal pool.
+
+```python
+import plenora_database as p
+
+ctx = p.SessionContext()
+ctx.insert_public("app.tenant_id", "42")
+ctx.insert_internal("app.correlation_id", "req-abc123")
+ctx.insert_sensitive("app.actor_email", "alice@example.com")
+
+with p.connect(dsn) as s, s.begin(context=ctx) as tx:
+    rows = tx.execute_returning_rows(
+        "SELECT current_setting('app.tenant_id', true)"
+    )
+```
+
+- `insert_public/internal/sensitive(name, value)` — value = str|int|bool
+- `get(name)` / `classification(name)` / `keys()` / `__len__`
+- Sensitive values → `[REDACTED]` in `Debug`/`repr`
+
+### New — NativeQueryPolicy in begin (CHG-003)
+
+`Session.begin()` e `AsyncSession.begin()` accettano
+`native_query_policy="allow"|"deny"`.
+
+Il modo `"deny"` restringe agli statement CRUD OLTP
+(`SELECT`/`WITH`/`INSERT`/`UPDATE`/`DELETE`/`VALUES`/`TABLE`/`MERGE`)
++ rifiuta DDL, session commands, multi-statement.
+
+```python
+with p.connect(dsn) as s, s.begin(native_query_policy="deny") as tx:
+    tx.execute("SELECT id FROM users")     # ok
+    tx.execute("DROP TABLE users")         # PlenoraInvalidPlanError
+```
+
+**Nota**: `deny` è un classifier lessicale sul primo keyword. Non è
+un parser SQL completo — funzioni amministrative come
+`SELECT set_config(...)` passano. Va inteso come protezione da
+errori accidentali, non come sandbox anti-adversarial.
+
+### New — PlenoraCommitOutcomeUnknownError (CHG-004)
+
+Nuova classe di eccezione dedicata per commit con esito ignoto
+(disconnessione fra `COMMIT` e ACK, timeout, cancel mid-commit).
+
+Estende `PlenoraInternalError` — consumer che filtrano su
+`PlenoraError` o `PlenoraInternalError` continuano a intercettarla,
+ma chi vuole gestire quarantine/recovery separatamente può filtrare
+direttamente su `PlenoraCommitOutcomeUnknownError`.
+
+Attributi aggiuntivi sull'istanza:
+- `automatic_retry_allowed: bool` (sempre `False`)
+- `recovery_action: str` (istruzione human-readable per verifica
+  out-of-band)
+
+`ErrorPhase` è ora sempre `Commit` (prima era `Write` in alcuni
+path — bug: la fase incerta è il COMMIT non il DML).
+
+### Hardening — Spatial policy + EWKB validation
+
+- **`SpatialPredicate::Contains` / `Within` + `Geography`** → ora
+  fail-closed `PlenoraUnsupportedError`. PostGIS espone quelle
+  funzioni solo per `geometry`; prima producevano SQL invalido a
+  runtime.
+- **`DWithin { distance_meters }` + `Geometry` + SRID geografico
+  (4326, 4269, 4267, 4258, 4283)** → fail-closed `PlenoraInvalidPlanError`.
+  Su quei SRID PostGIS misura in gradi (silent wrong result vs nome
+  del campo). Consumer deve usare `SpatialSemantics::Geography`.
+- **EWKB validation obbligatoria** al costruttore
+  `SpatialReference.validated()` E nel compiler portable. Prima era
+  possibile dichiarare `srid: 3857` con EWKB WGS84 e ottenere SQL
+  che sovrascriveva il SRID silenziosamente.
+- **`spatial.geometry()` / `spatial.geography()`** ora usano
+  `SpatialReference.validated`.
+
+### Hardening — Cancellation client-side in-flight
+
+Tutti i metodi `Transaction` / `AsyncTransaction` che aprono
+operazioni su Postgres wrappano ora il client await in
+`tokio::select` col cancellation token: `execute`, `query`,
+`savepoint`, `rollback_to_savepoint`, `release_savepoint`,
+`query_stream`, `execute_conditional_update`, `commit`, e
+`RowStream::next_batch`.
+
+Su cancel:
+- Il pool client viene invalidato (`open = false`).
+- Chiamate successive sulla stessa tx ricevono `PlenoraInvalidPlanError`.
+- `RemoteEffect::Unknown` per Write/Commit (query potenzialmente
+  applicata server-side prima del taglio del canale).
+
+**Limite noto**: la cancellazione è **client-side in-flight**. Il
+SDK non invia `CancelRequest` (protocollo Postgres) al server —
+richiederebbe una nuova connessione TCP e non è thread-safe rispetto
+al client in uso. Il comando server-side può continuare fino al
+`statement_timeout` di sessione (default 30s). Consumer che vuole
+cancel server-side deve settare `statement_timeout_ms` esplicito
+nelle `TransactionOptions` (o via SQL `SET LOCAL statement_timeout`).
+
+### Hardening — Errori + robustezza
+
+- **SQLSTATE preservato** nei path write Postgres (era collassato a
+  `Protocol`). Ora `PlenoraConflictError` (23xxx), `PlenoraNotFoundError`
+  (42P01/42703), `PlenoraInvalidPlanError` (42601), ecc.
+- **`Insert.rows()` / `Upsert.rows()`** fail-closed se le chiavi non
+  combaciano con la prima riga (prima le chiavi extra venivano
+  silently ignorate).
+- **JSON float non-finito** (`NaN`, `Infinity`) → `PlenoraError`
+  invece di silent coercion a `null`.
+- **CLI parser typed params** non strippa più quote asimmetriche/
+  interne. Solo coppie matched vengono rimosse.
+- **Hash nome indice spaziale** ora FNV-1a (stabile cross-version
+  Rust) — era `DefaultHasher` che può cambiare a upgrade toolchain.
+- **SRID > `i32::MAX`** → `PlenoraInvalidPlanError` (prima saturava
+  a `i32::MAX`).
+
+### Deduplicazioni
+
+- SRID geografici e quoting identificatori consolidati in
+  `plenora-database-core` (single-source-of-truth).
+- `default_budget()` × 5 → `budget::session_budget` /
+  `write_bulk_budget`.
+- Commit-unknown constructor × 7 → `errors_commit::commit_outcome_unknown`
+  (con `ErrorPhase::Commit` + provider derivato dinamicamente da
+  `TransactionScope::provider_kind()`).
+- `Renderer::quote` propaga `Result` invece di fallback silente
+  (identificatori invalidi ora fail-closed).
+
+### Fix — Import Python top-level
+
+`import plenora_database` risolve ora correttamente
+`PlenoraCommitOutcomeUnknownError`. Fix retroattivo se stavi
+usando 0.9.0-dev / snapshot pre-release.
+
+### Novità versioning
+
+Workspace Rust bump `1.1.0 → 1.2.0` per allineamento con SDK Python
+`0.9.0`. Gli ADR di supporto sono in `docs/adr/`:
+- `0011-tls-secure-by-default.md`
+- `0012-portable-spatial-distance-units.md` (target futuro)
+- `0013-resource-budget-semantics.md` (target futuro)
+
+Review dettagliata in `docs/reviews/2026-08-15-postgres-cli-sdk-review.md`.
+
+---
+
 ## [0.8.1] — 2026-08-14
 
 Verify typed params helpers su MySQL + doc onesto sui gap residui.
