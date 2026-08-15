@@ -3,10 +3,10 @@
 //!
 //! Prima di questo modulo la stessa lista di SRID e la stessa
 //! validazione erano duplicate in:
-//! - `plenora-database-core/src/portable/compiler.rs` (GEOGRAPHIC_SRIDS,
-//!   DWithin+Geometry+geog check, BoundingBox+Geography check)
+//! - `plenora-database-core/src/portable/compiler.rs` (`GEOGRAPHIC_SRIDS`,
+//!   `DWithin`+Geometry+geog check, `BoundingBox`+Geography check)
 //! - `plenora-database-py/python/plenora_database/spatial.py`
-//!   (_GEOGRAPHIC_SRIDS, `_validate_predicate_reference_combo`)
+//!   (`_GEOGRAPHIC_SRIDS`, `_validate_predicate_reference_combo`)
 //! - `plenora-db-postgres/src/spatial.rs` (cast condizionale)
 //!
 //! Ora single-source-of-truth. Il crate `plenora-database-py` espone
@@ -36,18 +36,18 @@ pub const GEOGRAPHIC_SRIDS: &[u32] = &[
 ];
 
 /// True se il SRID rappresenta un sistema di coordinate geografiche
-/// (lat/lon in gradi) — su questi SRID le funzioni PostGIS `geometry`
+/// (lat/lon in gradi) — su questi SRID le funzioni `PostGIS` `geometry`
 /// producono distanze in gradi, non in metri.
 #[must_use]
 pub fn is_geographic_srid(srid: u32) -> bool {
     GEOGRAPHIC_SRIDS.contains(&srid)
 }
 
-/// Cast SQL da applicare per il dialetto Postgres in base a `semantics`.
+/// Cast SQL da applicare per il dialetto `Postgres` in base a `semantics`.
 /// Ritorna il suffisso completo pronto (`"::geometry"` o `"::geography"`).
 ///
-/// Per MySQL non c'è distinzione tipo, quindi questa funzione non è
-/// applicabile (il compiler MySQL passa Geography come hint senza cast).
+/// Per `MySQL` non c'è distinzione tipo, quindi questa funzione non è
+/// applicabile (il compiler `MySQL` passa `Geography` come hint senza cast).
 #[must_use]
 pub const fn postgres_cast_for(semantics: SpatialSemantics) -> &'static str {
     match semantics {
@@ -56,18 +56,18 @@ pub const fn postgres_cast_for(semantics: SpatialSemantics) -> &'static str {
     }
 }
 
-/// Valida la combinazione `(predicate, reference)` prima della
-/// compilazione. Restituisce `InvalidPlan` per combinazioni che
-/// produrrebbero silent wrong result e `Unsupported` per predicati
-/// non implementati sul provider.
+/// Valida la combinazione `(predicate, reference)` prima della compilazione.
+///
+/// Restituisce `InvalidPlan` per combinazioni che produrrebbero silent
+/// wrong result e `Unsupported` per predicati non implementati sul provider.
 ///
 /// Casi coperti (fix review #4/#5):
 /// - `DWithin` + `Geometry` + SRID geografico → `InvalidPlan`
 ///   (silent wrong result: distanza in gradi rispetto al nome
 ///   `distance_meters`).
-/// - `BoundingBox` + `Geography` su Postgres → `Unsupported`
+/// - `BoundingBox` + `Geography` su `Postgres` → `Unsupported`
 ///   (operator `&&` esiste solo per `geometry`).
-/// - `DWithin` su MySQL → `Unsupported` (no `ST_DWithin` nativo).
+/// - `DWithin` su `MySQL` → `Unsupported` (no `ST_DWithin` nativo).
 /// - `DWithin` con distanza non-finita o negativa → `InvalidPlan`.
 ///
 /// # Errors

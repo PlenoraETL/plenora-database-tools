@@ -6,56 +6,40 @@
 //! `TransactionScope::query` / `query_stream`.
 
 use plenora_database_core::geometry::SpatialSemantics;
+use plenora_database_core::identifier::{quote_identifier as core_quote, IdentifierDialect};
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
+use plenora_database_core::spatial_policy;
 use plenora_database_core::transaction::Statement;
 use plenora_database_core::{
     DatabaseError, SpatialFilter, SpatialPredicate, SpatialReference,
 };
 
-/// Quoting sicuro di un identificatore SQL (colonna/tabella/schema).
-///
-/// `PostgreSQL` usa doppi apici. Gli eventuali doppi apici interni vengono
-/// escape-ati raddoppiando.
-fn quote_identifier(name: &str) -> String {
-    let escaped = name.replace('"', "\"\"");
-    format!("\"{escaped}\"")
+/// Delega a `plenora-database-core::identifier` (Fase A2). Prima
+/// duplicava le stesse regole di validazione + quoting di
+/// `compiler.rs` e `sql::Renderer`.
+fn quote_identifier(name: &str) -> Result<String, DatabaseError> {
+    core_quote(IdentifierDialect::Postgres, name)
 }
 
-fn qualify_table(schema: Option<&str>, table: &str) -> String {
-    schema.map_or_else(
-        || quote_identifier(table),
-        |s| format!("{}.{}", quote_identifier(s), quote_identifier(table)),
-    )
-}
-
-fn validate_identifier(name: &str) -> Result<(), DatabaseError> {
-    if name.is_empty() {
-        return Err(DatabaseError::invalid_plan("identificatore vuoto"));
+fn qualify_table(schema: Option<&str>, table: &str) -> Result<String, DatabaseError> {
+    let table_q = quote_identifier(table)?;
+    match schema {
+        None => Ok(table_q),
+        Some(s) => {
+            let schema_q = quote_identifier(s)?;
+            Ok(format!("{schema_q}.{table_q}"))
+        }
     }
-    if name.len() > 63 {
-        return Err(DatabaseError::invalid_plan(
-            "identificatore eccede 63 caratteri (limite Postgres)",
-        ));
-    }
-    // Non impongo case/underscore: Postgres li accetta con quoting.
-    // Blocco solo caratteri di controllo per evitare abuso in log.
-    if name.chars().any(char::is_control) {
-        return Err(DatabaseError::invalid_plan(
-            "identificatore contiene caratteri di controllo",
-        ));
-    }
-    Ok(())
 }
 
 fn ref_expr(index: usize, semantics: SpatialSemantics) -> String {
-    // v0.2 (fix P0.5 finding): cast condizionale in base a semantics.
-    // Colonne geometry richiedono ::geometry sul ref; colonne geography
-    // richiedono ::geography (PostGIS non fa il cast implicito e la query
-    // fallirebbe con "operator does not exist: geography && geometry").
-    match semantics {
-        SpatialSemantics::Geometry => format!("ST_GeomFromEWKB(${index})::geometry"),
-        SpatialSemantics::Geography => format!("ST_GeomFromEWKB(${index})::geography"),
-    }
+    // Fase B: cast delegato a `spatial_policy::postgres_cast_for`.
+    // Prima era inline replicando le regole di `compiler.rs`.
+    format!(
+        "ST_GeomFromEWKB(${index}){}",
+        spatial_policy::postgres_cast_for(semantics)
+    )
 }
 
 /// Costruisce un `SELECT projection FROM [schema.]table WHERE <predicate>`
@@ -79,26 +63,33 @@ pub fn build_spatial_select(
             "projection spaziale non può essere vuota",
         ));
     }
-    validate_identifier(table)?;
-    if let Some(s) = schema {
-        validate_identifier(s)?;
-    }
-    for col in projection {
-        validate_identifier(col)?;
-    }
-    validate_identifier(&filter.geometry_column)?;
 
+    // Fase B: validazione predicato/reference centralizzata in
+    // `spatial_policy`. Copre distanza finita+positiva, DWithin+
+    // Geometry+SRID_geografico fail-closed, BoundingBox+Geography
+    // Unsupported. Prima erano inline duplicati con `compiler.rs`.
+    spatial_policy::validate_predicate(ProviderKind::Postgres, &filter.predicate, &filter.reference)?;
+
+    // Fase A2: quote_identifier centralizzato — valida + quota in
+    // un'unica funzione, ritorna errore uniforme.
     let projection_sql = projection
         .iter()
         .map(|c| quote_identifier(c))
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, _>>()?
         .join(", ");
 
     let mut params: Vec<ParameterValue> = Vec::with_capacity(2);
     let geom_index = 1;
     params.push(ParameterValue::Bytes(filter.reference.ewkb.clone()));
 
-    let column = quote_identifier(&filter.geometry_column);
+    let column_raw = quote_identifier(&filter.geometry_column)?;
+    let column = if filter.reference.semantics == SpatialSemantics::Geography {
+        // Cast anche sulla colonna per operator resolution PostGIS
+        // (allineato con compiler.rs).
+        format!("{column_raw}::geography")
+    } else {
+        column_raw
+    };
     let ref_sql = ref_expr(geom_index, filter.reference.semantics);
 
     let where_sql = match &filter.predicate {
@@ -107,11 +98,7 @@ pub fn build_spatial_select(
         SpatialPredicate::Within => format!("ST_Within({column}, {ref_sql})"),
         SpatialPredicate::BoundingBox => format!("{column} && {ref_sql}"),
         SpatialPredicate::DWithin { distance_meters } => {
-            if !distance_meters.is_finite() || *distance_meters < 0.0 {
-                return Err(DatabaseError::invalid_plan(
-                    "DWithin richiede distanza finita non-negativa",
-                ));
-            }
+            // Distanza già validata (finita, non-negativa) da spatial_policy.
             let dist_index = 2;
             params.push(ParameterValue::F64(*distance_meters));
             format!("ST_DWithin({column}, {ref_sql}, ${dist_index})")
@@ -120,7 +107,7 @@ pub fn build_spatial_select(
 
     let mut sql = format!(
         "SELECT {projection_sql} FROM {} WHERE {where_sql}",
-        qualify_table(schema, table)
+        qualify_table(schema, table)?
     );
     if let Some(n) = limit {
         use std::fmt::Write;

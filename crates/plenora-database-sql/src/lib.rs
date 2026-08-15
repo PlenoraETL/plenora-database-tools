@@ -92,7 +92,7 @@ impl Dialect {
     /// da `plenora-database-core::identifier`. Oracle/Db2/Sqlite/Duckdb
     /// usano il quoting SQL standard (double-quote) come Postgres.
     #[must_use]
-    fn to_identifier_dialect(
+    const fn to_identifier_dialect(
         self,
     ) -> plenora_database_core::identifier::IdentifierDialect {
         use plenora_database_core::identifier::IdentifierDialect as D;

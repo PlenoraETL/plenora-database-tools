@@ -14,6 +14,7 @@ mod arrow_reader;
 mod async_mysql_session;
 mod async_session;
 mod async_transaction;
+mod budget;
 mod errors;
 mod mysql_arrow_reader;
 mod mysql_session;

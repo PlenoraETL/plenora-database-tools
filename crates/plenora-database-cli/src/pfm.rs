@@ -113,11 +113,10 @@ pub(crate) async fn execute_ddl_cmd(args: &mut impl Iterator<Item = String>) -> 
     let sql = args.next().ok_or("manca lo statement SQL")?;
     ensure_end(args)?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let cancel = CancellationToken::new();
-
-    Provider::execute_ddl(&provider, &secret, &sql, &cancel).await?;
+    // Fase C: PostgresCommandContext racchiude secret + provider +
+    // cancel + budget con un unico costruttore nominato.
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
+    Provider::execute_ddl(&ctx.provider, &ctx.secret, &sql, &ctx.cancel).await?;
     print_json(&json!({
         "status": "ok",
         "operation": "execute_ddl",
@@ -133,17 +132,15 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     let sql = rest_iter.next().ok_or("manca lo statement SQL")?;
     ensure_end(&mut rest_iter)?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let cancel = CancellationToken::new();
-    let budget = pfm_budget()?;
-
+    // Fase C: unico context invece di 4 righe di boilerplate.
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let opts = TransactionOptions {
         context: crate::session_ctx::active(),
         ..TransactionOptions::default()
     };
-    let mut tx = provider
-        .begin_transaction(&secret, &opts, &budget, &cancel)
+    let mut tx = ctx
+        .provider
+        .begin_transaction(&ctx.secret, &opts, &ctx.budget, &ctx.cancel)
         .await?;
 
     // Euristica: se lo statement inizia con SELECT/WITH/VALUES/TABLE → query,
@@ -157,7 +154,7 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     let stmt = Statement::new(sql.clone()).with_params(params.into_inner());
     let payload = match head.as_str() {
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "SHOW" => {
-            let rows = tx.query(&stmt, &cancel).await?;
+            let rows = tx.query(&stmt, &ctx.cancel).await?;
             let out: Vec<_> = rows
                 .iter()
                 .map(|r| {
@@ -175,11 +172,11 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
             json!({ "kind": "rows", "rows": out, "count": rows.len() })
         }
         _ => {
-            let affected = tx.execute(&stmt, &cancel).await?;
+            let affected = tx.execute(&stmt, &ctx.cancel).await?;
             json!({ "kind": "affected_rows", "count": affected })
         }
     };
-    let commit = tx.commit(&cancel).await?;
+    let commit = tx.commit(&ctx.cancel).await?;
     print_json(&json!({
         "status": "ok",
         "commit": commit,
@@ -191,13 +188,15 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     ensure_end(args)?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let cancel = CancellationToken::new();
-    let budget = pfm_budget()?;
-
-    let mut tx = provider
-        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+    let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
+    let mut tx = ctx
+        .provider
+        .begin_transaction(
+            &ctx.secret,
+            &TransactionOptions::default(),
+            &ctx.budget,
+            &ctx.cancel,
+        )
         .await?;
     let steps = vec![
         ("begin", "ok".to_owned()),
@@ -205,25 +204,25 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
             "select_one",
             format!(
                 "affected={}",
-                tx.execute(&Statement::new("SELECT 1"), &cancel).await?
+                tx.execute(&Statement::new("SELECT 1"), &ctx.cancel).await?
             ),
         ),
         (
             "savepoint",
-            match tx.savepoint("smoke", &cancel).await {
+            match tx.savepoint("smoke", &ctx.cancel).await {
                 Ok(()) => "ok".to_owned(),
                 Err(e) => format!("fail: {}", e.message),
             },
         ),
         (
             "release_savepoint",
-            match tx.release_savepoint("smoke", &cancel).await {
+            match tx.release_savepoint("smoke", &ctx.cancel).await {
                 Ok(()) => "ok".to_owned(),
                 Err(e) => format!("fail: {}", e.message),
             },
         ),
     ];
-    let commit = tx.commit(&cancel).await?;
+    let commit = tx.commit(&ctx.cancel).await?;
     print_json(&json!({
         "status": "ok",
         "steps": steps.into_iter().map(|(k, v)| json!({ "step": k, "result": v })).collect::<Vec<_>>(),
@@ -235,10 +234,13 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     ensure_end(args)?;
 
-    let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
-    let cancel = CancellationToken::new();
-    let budget = pfm_budget()?;
+    let cmd_ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
+    // Alias per ridurre diff col codice esistente. Le prossime iterazioni
+    // possono sostituire questi shadow con `cmd_ctx.<field>` diretto.
+    let secret = cmd_ctx.secret;
+    let provider = cmd_ctx.provider;
+    let cancel = cmd_ctx.cancel;
+    let budget = cmd_ctx.budget;
 
     let mut ctx = SessionContext::new();
     ctx.insert(

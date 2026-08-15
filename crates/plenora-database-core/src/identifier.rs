@@ -20,26 +20,26 @@ use crate::{DatabaseError, Result};
 /// per non creare cicli con `plenora-database-sql::Dialect`.
 ///
 /// `plenora-database-sql::Dialect` si mappa su questo via `From`
-/// (Oracle/Db2/Sqlite/Duckdb tutti su `Postgres` che è compatibile
+/// (`Oracle`/`Db2`/`Sqlite`/`Duckdb` tutti su `Postgres` che è compatibile
 /// double-quote SQL standard).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentifierDialect {
-    /// PostgreSQL, Oracle, Db2, SQLite, DuckDB: `"identificatore"`
+    /// `PostgreSQL`, `Oracle`, `Db2`, `SQLite`, `DuckDB`: `"identificatore"`
     /// (double-quote, escape raddoppiato).
     Postgres,
-    /// MySQL / MariaDB: `` `identificatore` `` (backtick, escape
+    /// `MySQL` / `MariaDB`: `` `identificatore` `` (backtick, escape
     /// raddoppiato).
     Mysql,
-    /// SQL Server / Sybase: `[identificatore]` (square bracket, escape
+    /// `SQL Server` / `Sybase`: `[identificatore]` (square bracket, escape
     /// solo `]` raddoppiato).
     SqlServer,
 }
 
 /// Max byte-length per un identificatore.
 ///
-/// PostgreSQL default NAMEDATALEN = 64 → 63 byte usabili.
-/// MySQL: 64 caratteri (byte).
-/// SQL Server: 128 caratteri Unicode. Il vincolo per SQL Server è
+/// `PostgreSQL` default `NAMEDATALEN` = 64 → 63 byte usabili.
+/// `MySQL`: 64 caratteri (byte).
+/// `SQL Server`: 128 caratteri Unicode. Il vincolo per `SQL Server` è
 /// caratteri (per compat con `nvarchar`), gestito a parte.
 const MAX_IDENTIFIER_BYTES_POSTGRES_MYSQL: usize = 63;
 const MAX_IDENTIFIER_CHARS_SQL_SERVER: usize = 128;
@@ -89,9 +89,7 @@ pub fn validate_identifier(dialect: IdentifierDialect, name: &str) -> Result<()>
 ///
 /// # Errors
 ///
-/// Vedi `validate_identifier`. Inoltre MySQL rifiuta identificatori
-/// contenenti backtick letterali (l'escape `` `` `` non è supportato
-/// uniformemente su tutti i client).
+/// Vedi `validate_identifier`.
 pub fn quote_identifier(dialect: IdentifierDialect, name: &str) -> Result<String> {
     validate_identifier(dialect, name)?;
     match dialect {
@@ -100,12 +98,10 @@ pub fn quote_identifier(dialect: IdentifierDialect, name: &str) -> Result<String
             Ok(format!("\"{escaped}\""))
         }
         IdentifierDialect::Mysql => {
-            if name.contains('`') {
-                return Err(DatabaseError::invalid_plan(
-                    "identificatore MySQL non può contenere backtick",
-                ));
-            }
-            Ok(format!("`{name}`"))
+            // MySQL escape del backtick: raddoppio (`` `` `` interno).
+            // Compatibile con MySQL 5.7+ e MariaDB 10.x.
+            let escaped = name.replace('`', "``");
+            Ok(format!("`{escaped}`"))
         }
         IdentifierDialect::SqlServer => {
             let escaped = name.replace(']', "]]");
@@ -149,12 +145,16 @@ mod tests {
     }
 
     #[test]
-    fn mysql_uses_backticks_and_rejects_internal_backtick() {
+    fn mysql_uses_backticks_and_escapes_them() {
         assert_eq!(
             quote_identifier(IdentifierDialect::Mysql, "users").unwrap(),
             "`users`"
         );
-        assert!(quote_identifier(IdentifierDialect::Mysql, "evil`table").is_err());
+        // Escape doppio compat con MySQL 5.7+/MariaDB.
+        assert_eq!(
+            quote_identifier(IdentifierDialect::Mysql, "evil`table").unwrap(),
+            "`evil``table`"
+        );
     }
 
     #[test]

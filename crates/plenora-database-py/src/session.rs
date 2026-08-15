@@ -42,7 +42,7 @@ use plenora_database_core::facade::{execute_portable, execute_portable_returning
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::transaction::{AccessMode, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
 use plenora_db_postgres::PostgresProvider;
@@ -51,9 +51,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::Arc;
 
-fn default_budget() -> ResourceBudget {
-    ResourceBudget::new(ResourceLimits::default()).expect("default budget")
-}
+// Fase E: `default_budget()` è stato consolidato in
+// `crate::budget::session_budget()`. Prima era duplicato identico in
+// 5 moduli SDK.
+use crate::budget::session_budget as default_budget;
 
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
 /// scoperti in probe. È un context manager: `with connect(...) as s: ...`.

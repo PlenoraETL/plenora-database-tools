@@ -1310,6 +1310,8 @@ fn usage() -> String {
 #[cfg(feature = "postgres")]
 mod benchmark;
 #[cfg(feature = "postgres")]
+mod context;
+#[cfg(feature = "postgres")]
 mod diagnose;
 mod format;
 mod mysql_cmd;

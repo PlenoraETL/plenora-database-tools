@@ -40,7 +40,7 @@ use plenora_database_core::facade::{execute_portable, execute_portable_returning
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::Row;
 use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::transaction::{
     AccessMode, Statement, TransactionOptions, TransactionScope,
 };
@@ -51,9 +51,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::Arc;
 
-fn default_budget() -> ResourceBudget {
-    ResourceBudget::new(ResourceLimits::default()).expect("default budget")
-}
+// Fase E: consolidato in `crate::budget::session_budget`.
+use crate::budget::session_budget as default_budget;
 
 /// Sessione MySQL. Wrapper thin sopra `MysqlProvider`.
 ///

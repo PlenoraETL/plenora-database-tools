@@ -31,7 +31,7 @@ use plenora_database_core::plan::{
     ObjectRef, TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
-use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::prelude::*;
@@ -249,19 +249,10 @@ pub(crate) fn make_operation(
     })
 }
 
-pub(crate) fn default_budget() -> ResourceBudget {
-    // Budget generoso per bulk write: coerente con quello usato dal CLI
-    // per `write-arrow` (rows 10M, memoria 128 MiB). Se emergono workload
-    // più grandi, esporre come parametro all'API.
-    ResourceBudget::new(ResourceLimits {
-        rows: 10_000_000,
-        memory_bytes: 128 * 1024 * 1024,
-        output_bytes: 128 * 1024 * 1024,
-        cell_bytes: 4 * 1024 * 1024,
-        ..ResourceLimits::default()
-    })
-    .expect("default write budget")
-}
+// Fase E: consolidato in `crate::budget::write_bulk_budget`. Il preset
+// resta identico (rows 10M, mem 128 MiB, cell 4 MiB) — la ridefinizione
+// per-modulo era il rischio, non il valore.
+pub(crate) use crate::budget::write_bulk_budget as default_budget;
 
 async fn do_copy_from_async(
     provider: Arc<PostgresProvider>,
