@@ -181,6 +181,8 @@ class Session:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: "SessionContext | None" = None,  # noqa: F821 (forward-ref)
+        native_query_policy: str | None = None,
     ) -> Transaction:
         """Apre una transazione user-managed.
 
@@ -195,9 +197,18 @@ class Session:
         - `read_only`: True/False
         - `deferrable`: True/False (solo con Serializable + ReadOnly)
         - `statement_timeout_ms`: int
+        - `context` (PFM CHG-002): SessionContext applicato via
+          `SET LOCAL` (transaction-local, no leak fra riusi pool).
+        - `native_query_policy` (PFM CHG-003): "allow" (default) o
+          "deny" — restringe agli statement CRUD OLTP.
         """
         native_tx = self._native.begin(
-            isolation, read_only, deferrable, statement_timeout_ms
+            isolation,
+            read_only,
+            deferrable,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
         )
         return Transaction(native_tx)
 

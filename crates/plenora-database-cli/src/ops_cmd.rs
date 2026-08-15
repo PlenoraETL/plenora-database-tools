@@ -36,14 +36,11 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
     }
     let ty = ty.ok_or("manca --type=TYPE (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)")?;
 
+    // CHG-003: execute-scalar è path PFM → policy Deny.
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
-    let opts = TransactionOptions {
-        context: crate::session_ctx::active(),
-        ..TransactionOptions::default()
-    };
     let mut tx = ctx
         .provider
-        .begin_transaction(&ctx.secret, &opts, &ctx.budget, &ctx.cancel)
+        .begin_transaction(&ctx.secret, &ctx.pfm_transaction_options(), &ctx.budget, &ctx.cancel)
         .await?;
     let stmt = Statement::new(sql).with_params(params.into_inner());
 
@@ -103,14 +100,11 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         .parse()
         .map_err(|_| format!("EXPECTED_AFFECTED non valido: {expected_raw}"))?;
 
+    // CHG-003: conditional-update è path PFM → policy Deny.
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
-    let opts = TransactionOptions {
-        context: crate::session_ctx::active(),
-        ..TransactionOptions::default()
-    };
     let mut tx = ctx
         .provider
-        .begin_transaction(&ctx.secret, &opts, &ctx.budget, &ctx.cancel)
+        .begin_transaction(&ctx.secret, &ctx.pfm_transaction_options(), &ctx.budget, &ctx.cancel)
         .await?;
 
     let params_vec: Vec<ParameterValue> = params.into_inner();

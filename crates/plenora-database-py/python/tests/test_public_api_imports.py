@@ -1,0 +1,104 @@
+"""Smoke test import top-level SDK.
+
+Regression guard sul bug P0 fixato dopo la review 2026-08-15:
+`__init__.py` importava `PlenoraCommitOutcomeUnknownError` da `errors.py`
+ma `errors.py` non la ri-esportava da `_native` → `import
+plenora_database` falliva con `ImportError` all'installazione della
+wheel.
+
+Il test è tollerante quando il modulo nativo non è compilato
+(sviluppo puro-Python senza `maturin develop`): in quel caso
+verifica solo che i moduli Python parseano senza errori sintattici.
+"""
+from __future__ import annotations
+
+import ast
+import importlib
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+
+PACKAGE_DIR = Path(__file__).resolve().parent.parent / "plenora_database"
+
+
+def _module_all(path: Path) -> set[str]:
+    """Estrae la lista __all__ da un modulo Python via AST (no import)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        return {
+                            elt.value
+                            for elt in node.value.elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        }
+    return set()
+
+
+def test_errors_reexports_commit_outcome_unknown() -> None:
+    """errors.py deve esporre PlenoraCommitOutcomeUnknownError.
+
+    Guard esplicito sulla regressione P0.
+    """
+    all_names = _module_all(PACKAGE_DIR / "errors.py")
+    assert "PlenoraCommitOutcomeUnknownError" in all_names, (
+        "errors.py::__all__ deve includere PlenoraCommitOutcomeUnknownError; "
+        "senza il re-export l'import top-level del package fallisce."
+    )
+
+
+def test_init_and_errors_are_consistent() -> None:
+    """Ogni Plenora*Error re-esportato da __init__.py deve esistere in errors.py.
+
+    Previene divergenza fra le due liste (source of truth = errors.py).
+    """
+    init_all = _module_all(PACKAGE_DIR / "__init__.py")
+    errors_all = _module_all(PACKAGE_DIR / "errors.py")
+    error_names_in_init = {n for n in init_all if n.startswith("Plenora")}
+    missing = error_names_in_init - errors_all
+    assert not missing, (
+        f"Errore names in __init__.__all__ ma non in errors.__all__: {sorted(missing)}"
+    )
+
+
+def _native_importable() -> bool:
+    """True se il modulo nativo è realmente importabile su questa
+    piattaforma. Cerca via loader senza triggerare
+    `plenora_database/__init__.py` (che è proprio ciò che vogliamo
+    testare separatamente)."""
+    import sys
+
+    # Il file .so linux non è caricabile su Windows anche se presente
+    # (cross-compile in Docker). Verifichiamo la piattaforma.
+    if sys.platform == "linux":
+        exts = (".so",)
+    elif sys.platform == "win32":
+        exts = (".pyd",)
+    elif sys.platform == "darwin":
+        exts = (".dylib", ".so")
+    else:
+        return False
+    return any(
+        p.suffix.lower() in exts for p in PACKAGE_DIR.glob("_native*.*")
+    )
+
+
+@pytest.mark.skipif(
+    not _native_importable(),
+    reason="modulo nativo non compilato per questa piattaforma (esegui `maturin develop`)",
+)
+def test_top_level_import_works() -> None:
+    """`import plenora_database` deve funzionare senza ImportError.
+
+    Regression guard sul bug P0: dopo aver aggiunto una nuova classe
+    di errore nel modulo nativo, dimenticare il re-export in
+    errors.py rompeva l'import top-level.
+    """
+    mod = importlib.import_module("plenora_database")
+    assert hasattr(mod, "PlenoraError")
+    assert hasattr(mod, "PlenoraCommitOutcomeUnknownError")
+    assert hasattr(mod, "SessionContext")

@@ -267,14 +267,16 @@ impl Transaction {
     /// che segnala l'ambiguità — la sessione va verificata out-of-band.
     fn commit(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
+        // Fix review: leggo provider_kind PRIMA di consumare `tx` in
+        // commit — prima era hardcoded a Postgres, sbagliato per
+        // Transaction che è provider-agnostica (Postgres o MySQL).
+        let provider = tx.provider_kind();
         py.allow_threads(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 let outcome = tx.commit(&cancel).await?;
                 if !outcome.is_committed() {
-                    return Err(crate::errors_commit::commit_outcome_unknown(
-                        plenora_database_core::plan::ProviderKind::Postgres,
-                    ));
+                    return Err(crate::errors_commit::commit_outcome_unknown(provider));
                 }
                 Ok(())
             })
@@ -355,6 +357,20 @@ pub fn parse_isolation(
         "serializable" => Ok(IsolationLevel::Serializable),
         other => Err(PyValueError::new_err(format!(
             "isolation level sconosciuto: {other:?} (attesi: read_uncommitted, read_committed, repeatable_read, serializable)"
+        ))),
+    }
+}
+
+/// Traduce una stringa `native_query_policy` all'enum core (PFM CHG-003).
+pub fn parse_native_query_policy(
+    value: &str,
+) -> PyResult<plenora_database_core::native_query_policy::NativeQueryPolicy> {
+    use plenora_database_core::native_query_policy::NativeQueryPolicy;
+    match value {
+        "allow" => Ok(NativeQueryPolicy::Allow),
+        "deny" => Ok(NativeQueryPolicy::Deny),
+        other => Err(PyValueError::new_err(format!(
+            "native_query_policy sconosciuto: {other:?} (attesi: allow, deny)"
         ))),
     }
 }

@@ -277,11 +277,13 @@ impl AsyncTransaction {
                 let mut guard = inner.lock().await;
                 guard.take().ok_or_else(tx_closed_error)?
             };
+            // Fix review: leggo provider_kind PRIMA di consumare tx.
+            let provider = tx.provider_kind();
             let cancel = CancellationToken::new();
             let outcome = tx.commit(&cancel).await.map_err(to_py_err)?;
             if !outcome.is_committed() {
                 return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
-                    plenora_database_core::plan::ProviderKind::Postgres,
+                    provider,
                 )));
             }
             Ok(())
@@ -325,10 +327,11 @@ impl AsyncTransaction {
             };
             let cancel = CancellationToken::new();
             if is_ok {
+                let provider = tx.provider_kind();
                 let outcome = tx.commit(&cancel).await.map_err(to_py_err)?;
                 if !outcome.is_committed() {
                     return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
-                        plenora_database_core::plan::ProviderKind::Postgres,
+                        provider,
                     )));
                 }
             } else {

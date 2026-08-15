@@ -171,6 +171,8 @@ class Session:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,  # PFM CHG-002
+        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
     ) -> Transaction: ...
     def read(
         self,
@@ -251,6 +253,8 @@ class AsyncSession:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,  # PFM CHG-002
+        native_query_policy: str | None = None,  # PFM CHG-003
     ) -> Any: ...  # awaitable → AsyncTransaction
     def aread(
         self,

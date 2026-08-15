@@ -347,7 +347,10 @@ impl AsyncSession {
         read_only=None,
         deferrable=None,
         statement_timeout_ms=None,
+        context=None,
+        native_query_policy=None,
     ))]
+    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — non fattibile compressione
     fn begin<'py>(
         &self,
         py: Python<'py>,
@@ -355,6 +358,8 @@ impl AsyncSession {
         read_only: Option<bool>,
         deferrable: Option<bool>,
         statement_timeout_ms: Option<u64>,
+        context: Option<crate::session_context_py::PySessionContext>,
+        native_query_policy: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let mut opts = TransactionOptions::default();
@@ -370,6 +375,14 @@ impl AsyncSession {
         }
         opts.deferrable = deferrable;
         opts.statement_timeout_ms = statement_timeout_ms;
+        // PFM CHG-002: SessionContext transaction-local.
+        if let Some(ctx) = context {
+            opts.context = ctx.inner;
+        }
+        // PFM CHG-003: policy Allow|Deny come parametro esplicito.
+        if let Some(policy) = native_query_policy {
+            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
+        }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         future_into_py(py, async move {

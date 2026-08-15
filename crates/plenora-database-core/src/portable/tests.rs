@@ -251,12 +251,14 @@ fn spatial_predicate_intersects_binds_ewkb() {
     assert!(
         compiled
             .sql
-            .contains(r#"ST_Intersects("geom", ST_GeomFromEWKB($1)::geometry)"#),
+            .contains(r#"ST_Intersects("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry)"#),
         "sql inatteso: {}",
         compiled.sql
     );
-    assert_eq!(compiled.params.len(), 1);
+    // Post fix review: 2 params — [0]=ewkb, [1]=srid.
+    assert_eq!(compiled.params.len(), 2);
     assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &[0x01, 0x02, 0x03]));
+    assert!(matches!(&compiled.params[1], ParameterValue::I32(v) if *v == 4326));
 }
 
 #[test]
@@ -280,9 +282,10 @@ fn spatial_predicate_dwithin_binds_distance() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled
         .sql
-        .contains(r#"ST_DWithin("geom", ST_GeomFromEWKB($1)::geometry, $2)"#));
-    assert_eq!(compiled.params.len(), 2);
-    assert!(matches!(&compiled.params[1], ParameterValue::F64(v) if *v == 250.0));
+        .contains(r#"ST_DWithin("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry, $3)"#));
+    // Post fix review: 3 params ora — [0]=ewkb, [1]=srid, [2]=distance.
+    assert_eq!(compiled.params.len(), 3);
+    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 250.0));
 }
 
 #[test]
@@ -324,7 +327,7 @@ fn spatial_bounding_box_uses_index_operator() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
-    assert!(compiled.sql.contains(r#""geom" && ST_GeomFromEWKB"#));
+    assert!(compiled.sql.contains(r#""geom" && ST_SetSRID(ST_GeomFromEWKB"#));
 }
 
 #[test]
@@ -348,8 +351,9 @@ fn spatial_composes_with_scalar_predicates() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled.sql.contains("ST_Intersects"));
-    assert!(compiled.sql.contains(r#""status" = $2"#));
-    assert_eq!(compiled.params.len(), 2);
+    // Post fix review: 3 params ora — [0]=ewkb, [1]=srid, [2]=status.
+    assert!(compiled.sql.contains(r#""status" = $3"#));
+    assert_eq!(compiled.params.len(), 3);
 }
 
 // ---- Review #4 + #5: SpatialSemantics + DWithin unit safety ----------------
@@ -372,7 +376,7 @@ fn spatial_geography_uses_geography_cast_postgres() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Fix #4: cast della colonna + del riferimento a geography.
     assert!(
-        compiled.sql.contains(r#"ST_Intersects("geom"::geography, ST_GeomFromEWKB($1)::geography)"#),
+        compiled.sql.contains(r#"ST_Intersects("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography)"#),
         "sql inatteso: {}",
         compiled.sql
     );
@@ -399,8 +403,9 @@ fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
     // Geography su 4326 → cast a geography, DWithin usa metri veri.
     assert!(compiled
         .sql
-        .contains(r#"ST_DWithin("geom"::geography, ST_GeomFromEWKB($1)::geography, $2)"#));
-    assert!(matches!(&compiled.params[1], ParameterValue::F64(v) if *v == 500.0));
+        .contains(r#"ST_DWithin("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography, $3)"#));
+    // params: [0]=ewkb, [1]=srid, [2]=distance.
+    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 500.0));
 }
 
 #[test]
@@ -506,7 +511,8 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
     // Nessun cast, solo ST_GeomFromWKB.
-    assert!(compiled.sql.contains("ST_Intersects(`geom`, ST_GeomFromWKB(?))"));
+    // Post fix review #5 completo: MySQL usa ST_GeomFromWKB(wkb, srid).
+    assert!(compiled.sql.contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
 }

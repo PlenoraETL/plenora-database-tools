@@ -137,6 +137,8 @@ class AsyncSession:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: "SessionContext | None" = None,  # noqa: F821
+        native_query_policy: str | None = None,
     ) -> "AsyncTransaction":
         """Apre una transazione async user-managed.
 
@@ -145,11 +147,20 @@ class AsyncSession:
 
             async with await s.begin() as tx:
                 await tx.execute(...)
+
+        Options aggiuntive (PFM):
+        - `context` (CHG-002): `SessionContext` transaction-local.
+        - `native_query_policy` (CHG-003): "allow" (default) o "deny".
         """
         from ._async_transaction import AsyncTransaction
 
         native_tx = await self._native.begin(
-            isolation, read_only, deferrable, statement_timeout_ms
+            isolation,
+            read_only,
+            deferrable,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
         )
         return AsyncTransaction(native_tx)
 

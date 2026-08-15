@@ -176,12 +176,18 @@ impl Default for PostgresProvider {
     /// Per CA private / mTLS: `default().with_tls_config(custom)`.
     fn default() -> Self {
         Self::for_profile(PostgresPerformanceProfile::LowLatency)
-            .with_tls_mode(PostgresTlsMode::Require)
-            .with_tls_config(PostgresTlsConfig::webpki())
     }
 }
 
 impl PostgresProvider {
+    /// Costruzione base condivisa da `default()`, `new()`,
+    /// `for_profile()`, `insecure_local()`.
+    ///
+    /// TLS secure-by-default (ADR-011): il baseline è `Require` +
+    /// `WebPKI`. `insecure_local()` esplicito sovrascrive dopo.
+    /// Prima di questo fix `build()` inizializzava `Disabled` e le
+    /// factory `new()`/`for_profile()` restavano plaintext anche dopo
+    /// il flip di `default()`.
     fn build(batch_rows: usize) -> Self {
         let metrics = Arc::new(PostgresMetrics::default());
         Self {
@@ -194,8 +200,8 @@ impl PostgresProvider {
             target_batch_bytes: None,
             max_batch_bytes: 16 * 1024 * 1024,
             max_wkb_cell_bytes: 64 * 1024 * 1024,
-            tls_mode: PostgresTlsMode::Disabled,
-            tls_config: PostgresTlsConfig::default(),
+            tls_mode: PostgresTlsMode::Require,
+            tls_config: PostgresTlsConfig::webpki(),
             network_options: PostgresNetworkOptions::default(),
             schema_evolution: PostgresSchemaEvolution::Disabled,
             pool: Arc::new(PostgresPool::new(8, Arc::clone(&metrics))),
@@ -222,6 +228,7 @@ impl PostgresProvider {
     /// `PostgresProvider::default().with_tls_mode(Disabled)`.
     #[must_use]
     pub fn insecure_local() -> Self {
+        // Parte dal baseline secure e disattiva TLS esplicitamente.
         Self::for_profile(PostgresPerformanceProfile::LowLatency)
             .with_tls_mode(PostgresTlsMode::Disabled)
     }

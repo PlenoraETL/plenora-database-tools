@@ -166,8 +166,13 @@ def geometry(
     dimensions: str = "xy",
 ) -> SpatialReference:
     """SpatialReference con semantics=geometry (predicati usano il cast
-    server-side `::geometry`; distanze in unità SRS)."""
-    return SpatialReference(ewkb, srid, dimensions, "geometry")
+    server-side `::geometry`; distanze in unità SRS).
+
+    Fix review #5: usa `SpatialReference.validated` per verificare che
+    SRID/dimensioni dichiarati coincidano con l'EWKB reale (prevenzione
+    bypass della `spatial_policy`).
+    """
+    return SpatialReference.validated(ewkb, srid, dimensions, "geometry")
 
 
 def geography(
@@ -176,8 +181,11 @@ def geography(
     dimensions: str = "xy",
 ) -> SpatialReference:
     """SpatialReference con semantics=geography (predicati usano il cast
-    server-side `::geography`; distanze in metri, calcoli geodetici)."""
-    return SpatialReference(ewkb, srid, dimensions, "geography")
+    server-side `::geography`; distanze in metri, calcoli geodetici).
+
+    Fix review #5: usa `SpatialReference.validated` — vedi `geometry()`.
+    """
+    return SpatialReference.validated(ewkb, srid, dimensions, "geography")
 
 
 def _validate_predicate(predicate: str) -> None:

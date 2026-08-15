@@ -245,8 +245,20 @@ fn compile_spatial_postgres(
     } else {
         col.to_owned()
     };
+    // Fix review #5 completo: applica il SRID dichiarato via
+    // `ST_SetSRID` per intercettare il caso WKB puro (senza SRID
+    // embedded), che altrimenti arriverebbe al server come SRID=0
+    // producendo silent wrong result. Se l'EWKB ha già un SRID
+    // embedded coerente, `ST_SetSRID` è idempotente. La coerenza
+    // fra SRID embedded e dichiarato è garantita da
+    // `SpatialReference::new_validated` upstream.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    let geom_expr = format!("ST_GeomFromEWKB({geom_placeholder}){cast}");
+    let srid_placeholder = ctx.bind(ParameterValue::I32(
+        i32::try_from(reference.srid).unwrap_or(i32::MAX),
+    ));
+    let geom_expr = format!(
+        "ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}"
+    );
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col_cast}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col_cast}, {geom_expr})")),
@@ -271,8 +283,15 @@ fn compile_spatial_mysql(
     // deriva dal SRID della colonna. Validazione (DWithin unsupported,
     // distanza finita) delegata a `spatial_policy` in Fase B.
     spatial_policy::validate_predicate(ProviderKind::Mysql, predicate, reference)?;
+    // Fix review #5: MySQL 8.0+ `ST_GeomFromWKB(wkb, srid)` accetta
+    // il SRID come secondo argomento. Passiamo sempre il SRID
+    // dichiarato per intercettare il caso WKB puro (senza SRID
+    // embedded) che altrimenti arriverebbe come SRID 0.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    let geom_expr = format!("ST_GeomFromWKB({geom_placeholder})");
+    let srid_placeholder = ctx.bind(ParameterValue::I32(
+        i32::try_from(reference.srid).unwrap_or(i32::MAX),
+    ));
+    let geom_expr = format!("ST_GeomFromWKB({geom_placeholder}, {srid_placeholder})");
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col}, {geom_expr})")),

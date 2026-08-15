@@ -170,12 +170,13 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
 
     // Euristica: se lo statement inizia con SELECT/WITH/VALUES/TABLE → query,
     // altrimenti execute (rows affected).
-    let head = sql
-        .trim_start()
-        .chars()
-        .take_while(char::is_ascii_alphabetic)
-        .collect::<String>()
-        .to_ascii_uppercase();
+    //
+    // Fix review: strip commenti prima di estrarre il keyword. Prima
+    // uno statement come `-- audit\nSELECT ...` finiva nel ramo
+    // `affected_rows` perché il classifier vedeva `--` (non alfabetico
+    // → head vuoto → default match). Ora usa lo stesso comment-stripper
+    // di `native_query_policy` per coerenza.
+    let head = extract_statement_head(&sql);
     let stmt = Statement::new(sql.clone()).with_params(params.into_inner());
     let payload = match head.as_str() {
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "SHOW" => {
@@ -325,6 +326,92 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
         Ok(())
     } else {
         Err(CliError::Silent)
+    }
+}
+
+/// Estrae il primo keyword SQL (uppercase ASCII) dopo aver stripped
+/// commenti `--`/`/* */` e whitespace iniziale. Usato dal classifier
+/// `execute-sql` per distinguere ramo `query` (SELECT/WITH/VALUES/
+/// TABLE/SHOW) da `execute` (default).
+///
+/// Fix review post-CHG-003: senza strip commenti, uno statement come
+/// `-- audit note\nSELECT ...` finiva nel ramo `affected_rows`.
+fn extract_statement_head(sql: &str) -> String {
+    let stripped = strip_leading_comments(sql);
+    stripped
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+fn strip_leading_comments(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '-' if chars.peek() == Some(&'-') => {
+                while let Some(&n) = chars.peek() {
+                    if n == '\n' {
+                        break;
+                    }
+                    chars.next();
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = ' ';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::extract_statement_head;
+
+    #[test]
+    fn head_is_uppercase_first_keyword() {
+        assert_eq!(extract_statement_head("select 1"), "SELECT");
+        assert_eq!(extract_statement_head("  WITH cte AS (...)"), "WITH");
+    }
+
+    #[test]
+    fn line_comment_before_keyword_is_stripped() {
+        assert_eq!(
+            extract_statement_head("-- audit\nSELECT id FROM t"),
+            "SELECT"
+        );
+    }
+
+    #[test]
+    fn block_comment_before_keyword_is_stripped() {
+        assert_eq!(
+            extract_statement_head("/* audit */ SELECT id FROM t"),
+            "SELECT"
+        );
+    }
+
+    #[test]
+    fn multiple_comments_are_stripped() {
+        assert_eq!(
+            extract_statement_head("-- a\n/* b */\n-- c\nUPDATE t SET x=1"),
+            "UPDATE"
+        );
+    }
+
+    #[test]
+    fn head_empty_for_pure_comment() {
+        assert_eq!(extract_statement_head("-- only comment"), "");
     }
 }
 

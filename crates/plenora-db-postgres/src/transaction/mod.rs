@@ -35,7 +35,8 @@ use plenora_database_core::transaction::{
     ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
-    CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
+    RetryDisposition,
 };
 use sql::{build_begin_sql, phase_of, quote_identifier};
 use stream::PostgresRowStream;
@@ -108,6 +109,46 @@ impl Drop for PostgresTransaction {
     }
 }
 
+impl PostgresTransaction {
+    /// Fail-fast se la transazione è stata già chiusa (commit, rollback,
+    /// o cancel in-flight che ha invalidato la sessione). Prima del fix
+    /// review era possibile chiamare `execute`/`commit` dopo una cancel
+    /// mid-flight, con esito ambiguo.
+    fn ensure_open(&self, phase: ErrorPhase) -> Result<()> {
+        if self.open {
+            Ok(())
+        } else {
+            Err(public_error(
+                ErrorCategory::InvalidPlan,
+                phase,
+                false,
+                "transazione già chiusa (commit/rollback/cancel): apri una nuova tx",
+            ))
+        }
+    }
+
+    /// Costruisce l'errore Cancelled con `RemoteEffect::Unknown` nelle
+    /// fasi state-mutating (Write/Commit), dove la query può essere
+    /// stata già applicata server-side. Le fasi Read/Prepare/Rollback
+    /// restano con `None` (nessun effetto).
+    fn cancelled_error(phase: ErrorPhase, message: &str) -> DatabaseError {
+        let remote_effect = match phase {
+            ErrorPhase::Write | ErrorPhase::Commit => RemoteEffect::Unknown,
+            _ => RemoteEffect::None,
+        };
+        DatabaseError {
+            category: ErrorCategory::Cancelled,
+            phase,
+            remote_effect,
+            retry: RetryDisposition::Never,
+            provider: Some(plenora_database_core::plan::ProviderKind::Postgres),
+            execution_id: None,
+            message: message.to_owned(),
+            diagnostics: None,
+        }
+    }
+}
+
 impl TransactionScope for PostgresTransaction {
     fn provider_kind(&self) -> plenora_database_core::plan::ProviderKind {
         plenora_database_core::plan::ProviderKind::Postgres
@@ -119,8 +160,9 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
-            enforce_policy(self.native_query_policy, &statement.sql)?;
             let phase = phase_of(&statement.sql);
+            self.ensure_open(phase)?;
+            enforce_policy(self.native_query_policy, &statement.sql)?;
             check_cancelled(cancellation, phase)?;
             let encoded = encode_params(&statement.params)?;
             let param_refs: Vec<&(dyn ToSql + Sync)> = encoded
@@ -148,10 +190,11 @@ impl TransactionScope for PostgresTransaction {
             else {
                 self.client.invalidate();
                 self.open = false;
-                return Err(public_error(
-                    ErrorCategory::Cancelled,
+                // Fix review: cancel in Write phase → RemoteEffect::Unknown
+                // (la query può essere applicata server-side prima del
+                // taglio del canale).
+                return Err(Self::cancelled_error(
                     phase,
-                    false,
                     "operazione cancellata durante l'esecuzione",
                 ));
             };
@@ -175,6 +218,7 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Write)?;
             check_cancelled(cancellation, ErrorPhase::Write)?;
             validate_savepoint_name(name)?;
             let sql = format!("SAVEPOINT {}", quote_identifier(name));
@@ -186,10 +230,8 @@ impl TransactionScope for PostgresTransaction {
             } else {
                 self.client.invalidate();
                 self.open = false;
-                Err(public_error(
-                    ErrorCategory::Cancelled,
+                Err(Self::cancelled_error(
                     ErrorPhase::Write,
-                    false,
                     "SAVEPOINT cancellato durante l'esecuzione",
                 ))
             }
@@ -236,6 +278,7 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Read)?;
             enforce_policy(self.native_query_policy, &statement.sql)?;
             check_cancelled(cancellation, ErrorPhase::Read)?;
             let encoded = encode_params(&statement.params)?;
@@ -254,10 +297,9 @@ impl TransactionScope for PostgresTransaction {
             else {
                 self.client.invalidate();
                 self.open = false;
-                return Err(public_error(
-                    ErrorCategory::Cancelled,
+                // Read phase → RemoteEffect::None (no state-mutating).
+                return Err(Self::cancelled_error(
                     ErrorPhase::Read,
-                    false,
                     "operazione cancellata durante l'esecuzione",
                 ));
             };
@@ -388,6 +430,7 @@ impl TransactionScope for PostgresTransaction {
         cancellation: &CancellationToken,
     ) -> ProviderFuture<'_, CommitOutcome> {
         Box::pin(async move {
+            self.ensure_open(ErrorPhase::Commit)?;
             check_cancelled(cancellation, ErrorPhase::Commit)?;
             let client = self.client.client()?;
             match client.batch_execute("COMMIT").await {

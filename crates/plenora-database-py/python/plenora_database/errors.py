@@ -31,6 +31,7 @@ from ._native import (
     PlenoraAuthenticationError,
     PlenoraAuthorizationError,
     PlenoraCancelledError,
+    PlenoraCommitOutcomeUnknownError,  # PFM CHG-004
     PlenoraConcurrentModificationError,
     PlenoraConflictError,
     PlenoraCrsError,
@@ -71,4 +72,5 @@ __all__ = [
     "PlenoraTransientError",
     "PlenoraExecutionError",
     "PlenoraInternalError",
+    "PlenoraCommitOutcomeUnknownError",
 ]

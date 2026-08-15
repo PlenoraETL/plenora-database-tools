@@ -482,7 +482,9 @@ impl Session {
         deferrable=None,
         statement_timeout_ms=None,
         context=None,
+        native_query_policy=None,
     ))]
+    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — non fattibile compressione
     fn begin(
         &self,
         py: Python<'_>,
@@ -491,6 +493,7 @@ impl Session {
         deferrable: Option<bool>,
         statement_timeout_ms: Option<u64>,
         context: Option<crate::session_context_py::PySessionContext>,
+        native_query_policy: Option<&str>,
     ) -> PyResult<Transaction> {
         self.ensure_open()?;
         let mut opts = TransactionOptions::default();
@@ -511,6 +514,10 @@ impl Session {
         // resettati automaticamente al commit/rollback.
         if let Some(ctx) = context {
             opts.context = ctx.inner;
+        }
+        // PFM CHG-003: policy esplicita "allow" | "deny".
+        if let Some(policy) = native_query_policy {
+            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
         }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
