@@ -376,6 +376,17 @@ pub async fn execute(
             return Err(recovery.rollback_cancellation(transaction).await);
         }
     }
+    // Il documento si costruisce e si valida **prima** del commit, mentre il
+    // rollback e ancora possibile. Un `Update` su chiavi non univoche puo
+    // confermare piu righe di quante ne ha ricevute — una riga in ingresso ne
+    // tocca molte nel target — e il contratto lo rifiuta: scoprirlo dopo il
+    // commit lascerebbe il chiamante con un errore su dati gia scritti.
+    let outcome = committed_outcome(operation.mode, &execution_id, received, confirmed);
+    if let Err(error) = outcome.validate() {
+        return Err(recovery
+            .rollback_error(transaction, contract_violation(error, &execution_id))
+            .await);
+    }
     if runtime.fault_point == Some(PostgresFaultPoint::BeforeCommit) {
         let error = public_error(
             ErrorCategory::Transient,
@@ -418,7 +429,23 @@ pub async fn execute(
     }
     client.mark_reusable();
     drop(client);
-    let (inserted, updated, deleted) = match operation.mode {
+    // Da qui in poi nulla puo fallire: il documento e gia costruito e
+    // validato sopra, mentre il rollback era ancora possibile. Chi aggiunge
+    // codice sotto questa riga deve mantenerlo infallibile — un `?` qui
+    // produrrebbe un errore su dati gia scritti, e il chiamante non ha modo
+    // di distinguerlo da una scrittura mai avvenuta.
+    runtime.metrics.write_committed(confirmed);
+    Ok(outcome)
+}
+
+/// Il documento di un write andato a buon fine, per mode.
+fn committed_outcome(
+    mode: WriteMode,
+    execution_id: &str,
+    received: u64,
+    confirmed: u64,
+) -> WriteOutcome {
+    let (inserted, updated, deleted) = match mode {
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert => {
             (Some(confirmed), Some(0), Some(0))
         }
@@ -428,10 +455,10 @@ pub async fn execute(
         WriteMode::Upsert => (None, None, Some(0)),
         WriteMode::DeleteByKeys => (Some(0), Some(0), Some(confirmed)),
     };
-    let outcome = WriteOutcome {
+    WriteOutcome {
         schema_version: 1,
         status: WriteStatus::Committed,
-        execution_id,
+        execution_id: execution_id.to_owned(),
         provider: ProviderKind::Postgres,
         rows: RowCounts {
             received,
@@ -444,10 +471,20 @@ pub async fn execute(
         },
         layer_outcomes: Vec::new(),
         recovery: None,
-    };
-    outcome.validate()?;
-    runtime.metrics.write_committed(confirmed);
-    Ok(outcome)
+    }
+}
+
+/// Un documento che non rispetta il contratto, scoperto prima del commit.
+///
+/// La causa e nostra, non del server: la scrittura sarebbe riuscita, ma il
+/// conteggio che pubblicheremmo e incoerente. Il rollback che segue lo rende
+/// un fallimento pulito invece di dati scritti con un esito impresentabile.
+fn contract_violation(mut error: DatabaseError, execution_id: &str) -> DatabaseError {
+    error.category = ErrorCategory::Internal;
+    error.phase = ErrorPhase::Write;
+    error.provider = Some(ProviderKind::Postgres);
+    error.execution_id = Some(execution_id.to_owned());
+    error
 }
 
 fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Result<()> {
@@ -1033,6 +1070,44 @@ fn temporal_range_error() -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un `Update` su chiavi non univoche conferma piu righe di quante ne ha
+    /// ricevute: una riga in ingresso ne tocca molte nel target. Il contratto
+    /// lo rifiuta, e il rifiuto deve arrivare **prima** del commit.
+    ///
+    /// Il documento e ora costruito e validato mentre il rollback e ancora
+    /// possibile: dopo il commit non resta alcuna operazione fallibile, quindi
+    /// non esiste il caso "errore su dati gia scritti" da classificare.
+    #[test]
+    fn a_document_confirming_more_rows_than_received_is_rejected_before_the_commit() {
+        // 3 righe in ingresso, 7 righe aggiornate: chiavi non univoche.
+        let invalid = committed_outcome(WriteMode::Update, "pg-update-1", 3, 7);
+        let error = invalid
+            .validate()
+            .expect_err("documento incoerente accettato");
+        let shaped = contract_violation(error, "pg-update-1");
+        assert_eq!(shaped.category, ErrorCategory::Internal);
+        assert_eq!(shaped.phase, ErrorPhase::Write);
+        assert_eq!(shaped.execution_id.as_deref(), Some("pg-update-1"));
+        // Nessuna dichiarazione di effetto remoto: il rollback che segue la
+        // stabilisce, e a quel punto e `RolledBack` — non dati scritti.
+        assert_eq!(shaped.remote_effect, RemoteEffect::None);
+
+        // Il caso coerente resta valido per ogni mode.
+        for (mode, confirmed) in [
+            (WriteMode::Append, 3),
+            (WriteMode::Create, 3),
+            (WriteMode::Replace, 3),
+            (WriteMode::TruncateInsert, 3),
+            (WriteMode::Update, 2),
+            (WriteMode::Upsert, 3),
+            (WriteMode::DeleteByKeys, 3),
+        ] {
+            committed_outcome(mode, "pg-ok", 3, confirmed)
+                .validate()
+                .unwrap_or_else(|error| panic!("{mode:?} rifiutata: {error:?}"));
+        }
+    }
 
     fn decode_numeric_binary(payload: &[u8]) -> (bool, u128, u16) {
         assert!(payload.len() >= 8);

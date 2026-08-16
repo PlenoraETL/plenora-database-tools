@@ -127,6 +127,17 @@ pub(super) async fn execute(
         }
         Ok(None) => {
             let transaction = writer.take_transaction()?;
+            // Documento costruito e validato prima del commit, mentre il
+            // rollback e ancora possibile: un conteggio incoerente scoperto
+            // dopo lascerebbe il chiamante con un errore su dati gia scritti.
+            let outcome = committed_outcome(
+                execution_id.to_owned(),
+                diagnostic_input.input_total,
+                applied,
+            );
+            if let Err(error) = outcome.validate() {
+                return Err(rollback_error(transaction, error, execution_id).await);
+            }
             let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
             if commit_result.is_none() {
                 runtime.metrics.write_outcome_unknown();
@@ -162,12 +173,8 @@ pub(super) async fn execute(
                     "fault injection: acknowledgement commit PostgreSQL non osservabile",
                 )?);
             }
-            let outcome = committed_outcome(
-                execution_id.to_owned(),
-                diagnostic_input.input_total,
-                applied,
-            );
-            outcome.validate()?;
+            // Il documento e gia stato validato prima del commit: qui non
+            // resta nulla che possa fallire.
             runtime.metrics.write_committed(applied);
             Ok(outcome)
         }
