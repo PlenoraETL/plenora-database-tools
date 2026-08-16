@@ -810,6 +810,58 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ],
         )
 
+    def test_every_compose_declares_its_own_project(self) -> None:
+        """Un progetto Compose per file, altrimenti si cancellano a vicenda.
+
+        Senza `name:` Compose deriva il progetto dalla directory: i quattro
+        compose finiscono nello stesso, e `down --remove-orphans` su uno
+        rimuove i container degli altri provider. Il fallimento successivo e
+        muto — i test live dell'altro provider falliscono su `Connect`, senza
+        alcun indizio che l'host sia semplicemente sparito.
+        """
+
+        declared = {}
+        for compose in sorted(ROOT.glob("docker-compose.*.yml")):
+            lines = compose.read_text(encoding="utf-8").splitlines()
+            names = [
+                line.removeprefix("name:").strip()
+                for line in lines
+                if line.startswith("name:")
+            ]
+            self.assertEqual(
+                len(names), 1, f"{compose.name} non dichiara un progetto Compose"
+            )
+            declared[compose.name] = names[0]
+
+        self.assertGreaterEqual(len(declared), 4)
+        self.assertEqual(
+            len(set(declared.values())),
+            len(declared),
+            f"progetti Compose non distinti: {declared}",
+        )
+
+    def test_no_runner_removes_orphan_containers(self) -> None:
+        """Nessun gate passa `--remove-orphans`.
+
+        I nomi progetto distinti tolgono la causa, questo toglie l'arma: anche
+        se un compose perdesse il suo `name:`, nessun runner del repository
+        potrebbe cancellare i container di un altro provider.
+        """
+
+        sources = sorted((ROOT / "scripts").glob("*.py")) + sorted(
+            (ROOT / ".github" / "workflows").glob("*.yml")
+        )
+        for source in sources:
+            # Questo file nomina il flag per vietarlo: e l'unica occorrenza
+            # legittima nel repository.
+            if source.resolve() == Path(__file__).resolve():
+                continue
+            self.assertNotIn(
+                "--remove-orphans",
+                source.read_text(encoding="utf-8"),
+                f"{source.name} puo cancellare container di altri provider",
+            )
+
     def test_the_reference_matrix_document_is_the_only_place_with_digests(
         self,
     ) -> None:

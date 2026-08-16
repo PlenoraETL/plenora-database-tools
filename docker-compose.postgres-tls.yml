@@ -1,4 +1,7 @@
-name: plenora-database-tools
+# Progetto Compose esplicito, distinto da quello del riferimento
+# plaintext: i due servono lo stesso motore con configurazioni diverse e
+# non devono considerarsi orfani a vicenda.
+name: plenora-postgres-tls
 
 services:
   postgres-tls-certgen:

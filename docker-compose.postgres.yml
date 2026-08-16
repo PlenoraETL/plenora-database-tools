@@ -1,3 +1,9 @@
+# Progetto Compose esplicito. Senza questa riga Compose deriva il nome
+# dalla directory, quindi tutti i compose del repository finirebbero nello
+# stesso progetto e `down --remove-orphans` su uno cancellerebbe i
+# container degli altri provider.
+name: plenora-postgres
+
 services:
   postgres:
     image: postgis/postgis:16-3.4

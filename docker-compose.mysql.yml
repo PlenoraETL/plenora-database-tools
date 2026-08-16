@@ -4,6 +4,12 @@
 # due servizi qui sotto fissino esattamente l'immagine della baseline e nessun
 # digest di compatibilita. I riferimenti 8.4 LTS e 8.0 non si avviano da qui ma
 # da `scripts/check_mysql_matrix.py`, con la stessa fixture TLS e init.
+# Progetto Compose esplicito. Senza questa riga Compose deriva il nome
+# dalla directory, quindi tutti i compose del repository finirebbero nello
+# stesso progetto e `down --remove-orphans` su uno cancellerebbe i
+# container degli altri provider.
+name: plenora-mysql
+
 services:
   mysql-certgen:
     image: mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e

@@ -5910,7 +5910,7 @@ async fn live_v12_write_truncate_insert_rejected_without_remote_effects() {
 }
 
 /// Un `Create` che fallisce dopo la DDL lascia la tabella sul server: il DDL
-/// MySQL fa commit implicito e il `ROLLBACK` annulla solo le righe. L'errore
+/// `MySQL` fa commit implicito e il `ROLLBACK` annulla solo le righe. L'errore
 /// deve dichiarare l'effetto parziale invece di affermare che nulla e
 /// successo — un retry cieco troverebbe `Conflict` su un target che il
 /// chiamante crede assente.
