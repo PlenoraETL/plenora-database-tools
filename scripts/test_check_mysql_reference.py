@@ -1316,12 +1316,22 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         for source in sources:
             # Questo file nomina il flag per vietarlo: e l'unica occorrenza
-            # legittima nel repository.
+            # legittima in codice eseguibile.
             if source.resolve() == Path(__file__).resolve():
                 continue
+            # Solo le righe eseguibili. Un commento che spiega **perche** il
+            # flag non c'e e la documentazione della regola, non una sua
+            # violazione: vietare anche quello obbligherebbe a togliere la
+            # spiegazione insieme al flag, che e il modo in cui una regola
+            # viene reintrodotta da qualcuno che non sa perche esisteva.
+            executable = "\n".join(
+                line
+                for line in source.read_text(encoding="utf-8").splitlines()
+                if not line.lstrip().startswith("#")
+            )
             self.assertNotIn(
                 "--remove-orphans",
-                source.read_text(encoding="utf-8"),
+                executable,
                 f"{source.name} puo cancellare container di altri provider",
             )
 
