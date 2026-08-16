@@ -1,8 +1,8 @@
 #![allow(clippy::significant_drop_tightening)]
 
 use crate::{
-    describe_object, list_objects, list_schemas, probe_server, MysqlCertificatePolicy, MysqlConfig,
-    MysqlProvider, MysqlSession,
+    describe_object, list_objects, list_schemas, probe_server, MysqlConfig, MysqlProvider,
+    MysqlSession,
 };
 use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
@@ -54,8 +54,15 @@ fn live_config() -> MysqlConfig {
     live_config_for_host(environment("PLENORA_MYSQL_HOST", "127.0.0.1"))
 }
 
+/// La configurazione live, sempre con verifica TLS contro la CA della fixture.
+///
+/// La CA privata non e opzionale. Con un fallback a `TrustServerCertificate`
+/// l'intera suite live girerebbe con l'identita del server non verificata, e
+/// i due test di rifiuto hostname proverebbero soltanto se stessi.
 fn live_config_for_host(host: String) -> MysqlConfig {
-    let config = MysqlConfig::new(
+    let ca_path = std::env::var("PLENORA_MYSQL_CA")
+        .expect("PLENORA_MYSQL_CA obbligatoria: la suite live non accetta TLS non verificata");
+    MysqlConfig::new(
         host,
         environment("PLENORA_MYSQL_DATABASE", "dataflow_test"),
         environment("PLENORA_MYSQL_USER", "dataflow"),
@@ -65,12 +72,8 @@ fn live_config_for_host(host: String) -> MysqlConfig {
         environment("PLENORA_MYSQL_PORT", "3306")
             .parse()
             .expect("porta MySQL live"),
-    );
-    if let Ok(ca_path) = std::env::var("PLENORA_MYSQL_CA") {
-        config.with_private_ca_certificate(ca_path)
-    } else {
-        config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate)
-    }
+    )
+    .with_private_ca_certificate(ca_path)
 }
 
 async fn observe_inflight_query(audit: &mut mysql_async::Conn, marker: &str) -> u64 {
@@ -226,9 +229,7 @@ async fn live_reference_probe_catalog_and_spatial_metadata() {
 #[ignore = "richiede MySQL live esplicito con CA privata"]
 async fn live_verified_tls_rejects_a_hostname_mismatch() {
     let cancellation = CancellationToken::new();
-    let ca_path = std::env::var("PLENORA_MYSQL_CA").expect("CA privata richiesta dal gate live");
-    let config = live_config_for_host("mysql-hostname-mismatch".to_owned())
-        .with_private_ca_certificate(ca_path);
+    let config = live_config_for_host("mysql-hostname-mismatch".to_owned());
     let Err(error) = MysqlSession::open(&config, &cancellation).await else {
         panic!("hostname TLS errato accettato");
     };
@@ -240,9 +241,7 @@ async fn live_verified_tls_rejects_a_hostname_mismatch() {
 #[ignore = "richiede MySQL live esplicito con CA privata"]
 async fn live_provider_read_rejects_a_hostname_mismatch() {
     let cancellation = CancellationToken::new();
-    let ca_path = std::env::var("PLENORA_MYSQL_CA").expect("CA privata richiesta dal gate live");
-    let config = live_config_for_host("mysql-hostname-mismatch".to_owned())
-        .with_private_ca_certificate(ca_path);
+    let config = live_config_for_host("mysql-hostname-mismatch".to_owned());
     let provider = MysqlProvider::new(config, 1).expect("provider MySQL live");
     let operation = ReadOperation {
         source: ObjectRef {

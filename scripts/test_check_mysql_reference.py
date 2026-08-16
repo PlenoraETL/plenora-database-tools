@@ -487,6 +487,15 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "PLENORA_MYSQL_CA obbligatoria"):
                 gate.cargo(["test"])
 
+    def test_live_tests_never_fall_back_to_trusting_the_server_certificate(
+        self,
+    ) -> None:
+        """La fixture live esige la CA privata: nessun opt-out silenzioso."""
+
+        source = LIVE_TESTS.read_text(encoding="utf-8")
+        self.assertNotIn("MysqlCertificatePolicy::TrustServerCertificate", source)
+        self.assertIn("PLENORA_MYSQL_CA", source)
+
     def test_network_discovery_requires_the_hostname_mismatch_alias(self) -> None:
         labels = '{"com.docker.compose.project":"mysql-qualified"}'
         without_alias = (
@@ -551,7 +560,21 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_partial_regeneration_invokes_non_executable_generator_via_bash(self) -> None:
         generator_test = GENERATOR_TEST.read_text(encoding="utf-8")
 
-        self.assertEqual(generator_test.count("bash /fixture/generate.sh"), 2)
+        self.assertEqual(generator_test.count("bash /fixture/generate.sh"), 3)
+
+    def test_the_fixture_contract_test_proves_the_mismatch_alias_is_unusable(
+        self,
+    ) -> None:
+        """Il certificato non deve coprire l'alias della prova TLS negativa.
+
+        Se un giorno il SAN includesse `mysql-hostname-mismatch`, i due test
+        di rifiuto passerebbero da prova a tautologia inversa: fallirebbero.
+        Il contratto della fixture lo verifica alla generazione.
+        """
+
+        generator_test = GENERATOR_TEST.read_text(encoding="utf-8")
+        self.assertIn("-checkhost mysql-hostname-mismatch", generator_test)
+        self.assertIn("-checkhost dataflow-mysql", generator_test)
 
     def test_root_credential_is_random_and_unused_by_the_healthcheck(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
