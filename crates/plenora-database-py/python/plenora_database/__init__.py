@@ -126,11 +126,13 @@ def connect_mysql(
     - `tls_mode="insecure_trust_server"`: TLS attivo ma senza verifica
       del certificato. **Solo test/dev locali** (vulnerabile a MITM).
 
-    ⚠️ WriteMode residui (post-review 2026-08-15):
-    - `Replace` e `TruncateInsert` sono **fail-closed Unsupported** su
-      MySQL. `Replace` (staging+RENAME) perde vincoli/indici/FK; MySQL
-      `TRUNCATE` è DDL con commit implicito → non rollback-safe.
-      Workaround: `Create` + `Append`, o `Update` con `DELETE FROM`.
+    ⚠️ WriteMode: 6 disponibili su 7.
+    - `TruncateInsert` è **fail-closed Unsupported** su MySQL: `TRUNCATE`
+      è DDL con commit implicito, quindi non rollback-safe, e non viene
+      emulato con `DELETE` perché avrebbe semantica diversa
+      (`AUTO_INCREMENT` non azzerato, trigger e log riga per riga attivi).
+      Usare `Replace`, che è `DELETE FROM` + insert nella stessa
+      transazione.
 
     Parametri:
       - host, database, user, password: obbligatori
@@ -282,17 +284,22 @@ class _MysqlSessionWrapper:
     ) -> dict:
         """Bulk write MySQL via `prepare_write` + `write` del provider.
 
-        **WriteMode supportati** (post py-v0.9.1):
+        **WriteMode supportati** (6 su 7):
         - `append` (default)
         - `create` (CREATE TABLE + INSERT)
+        - `replace` (DELETE FROM + INSERT nella stessa transazione:
+          il target deve già esistere e non viene ricreato, quindi
+          schema, indici, FK, trigger, check, default, grant e
+          AUTO_INCREMENT restano quelli di prima)
         - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
         - `update` (UPDATE JOIN staging)
         - `delete_by_keys` (DELETE WHERE keys IN staging)
 
         **Fail-closed** (`PlenoraUnsupportedError`):
-        - `replace` — staging + RENAME perde vincoli/indici/FK/trigger.
-        - `truncate_insert` — TRUNCATE è DDL con commit implicito
-          (non rollback-safe). Vedi CHANGELOG 0.9.1 per workaround.
+        - `truncate_insert` — TRUNCATE è DDL con commit implicito, quindi
+          non rollback-safe, e non viene emulato con DELETE perché avrebbe
+          semantica diversa (AUTO_INCREMENT non azzerato, trigger e log
+          riga per riga attivi). Usare `replace`.
 
         `mapping_policy` **deve essere** `"strict"` su MySQL (default
         post py-v0.9.2; prima era `"compatible"` che il provider

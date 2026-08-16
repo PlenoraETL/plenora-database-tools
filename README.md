@@ -27,10 +27,11 @@ cancellazione server-side, COPY text/binario, introspezione strutturale e
 schema evolution additiva. Passa gate live, fault matrix e benchmark
 differenziali. Il relativo safety case rende esplicite prove, assunzioni e
 rischi residui; non costituisce certificazione aeronautica. SQL Server 2022 ha
-un gate reference separato. MySQL 9.7 LTS (baseline v1.2), 8.4.11 e 8.0.46 hanno una superficie stabile
-per query relazionale, lettura bounded, scrittura bulk (**tutti 7 WriteMode**:
-Append + Create + TruncateInsert + Upsert + DeleteByKeys + Update + Replace
-— v1.2), transazioni OLTP con savepoints e `conditional_update` (v1.2),
+un gate reference separato. MySQL 9.7.2 (baseline), 8.4.11 e 8.0.46 hanno una superficie stabile
+per query relazionale, lettura bounded, scrittura bulk (**6 WriteMode su 7**:
+Append + Create + Replace + Upsert + DeleteByKeys + Update; `TruncateInsert`
+resta fail-closed perché `TRUNCATE` è DDL con commit implicito e non è
+rollback-safe), transazioni OLTP con savepoints e `conditional_update` (v1.2),
 DDL raw via `execute_ddl` (v1.2), **26 funzioni spatial `ST_*` verified**
 (metadata + predicati + metriche + constructor + transform + set operation
 — v1.2), TLS verificato tramite CA privata e hostname, catalogo,

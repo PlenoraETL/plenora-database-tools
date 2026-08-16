@@ -77,17 +77,21 @@ Tutti i metodi accettano `secret: &SecretString` (DSN redatto in Debug), `budget
 
 **`WriteOperation`** dichiara: target + mode + input_schema.
 
-**7 write modes** (support dipende dal driver):
+**7 write modes** (support dipende dal driver). `Replace` non ricrea mai il
+target: lo svuota e lo riempie nella stessa transazione, quindi un target
+assente e `NotFound` e schema, indici, vincoli, trigger, default, grant e
+sequence/`AUTO_INCREMENT` sopravvivono alla scrittura.
+
 
 | Mode | Semantica | Postgres | MySQL | SQL Server |
 |---|---|---|---|---|
 | `Create` | CREATE TABLE se non esiste | ✅ | ✅ | ✅ |
 | `Append` | INSERT o COPY bulk | ✅ COPY binario | ✅ Prepared | ✅ Prepared/TdsBulk |
-| `Replace` | DELETE + INSERT atomico | ✅ | ❌ | ✅ |
-| `TruncateInsert` | TRUNCATE + INSERT (non-atomico) | ✅ | ❌ | ✅ |
-| `Update` | UPDATE con WHERE bind-safe | ✅ | ❌ | ✅ |
-| `Upsert` | INSERT ... ON CONFLICT | ✅ | ❌ | ❌ (design) |
-| `DeleteByKeys` | DELETE per lista chiavi | ✅ | ❌ | ⚠️ parziale |
+| `Replace` | DELETE FROM + INSERT nella stessa transazione, su target esistente | ✅ | ✅ | ✅ |
+| `TruncateInsert` | TRUNCATE + INSERT | ✅ TRUNCATE transazionale | ❌ fail-closed (DDL con commit implicito) | ✅ |
+| `Update` | UPDATE con WHERE bind-safe | ✅ | ✅ | ✅ |
+| `Upsert` | INSERT ... ON CONFLICT | ✅ | ✅ ON DUPLICATE KEY | ❌ (design) |
+| `DeleteByKeys` | DELETE per lista chiavi | ✅ | ✅ | ⚠️ parziale |
 
 **`PreparedWrite`** — output di `prepare_write`: contratto Arrow verificato, budget lease, loss report della normalizzazione tipi.
 
@@ -498,9 +502,10 @@ Gerarchico (child_token cancellato dal parent), deadline-aware, deregistrazione 
 |---|---|---|---|
 | `test_connection` / `inspect` / `read` streaming | ✅ | ✅ | ✅ |
 | Bulk write Append | ✅ COPY BIN | ✅ Prepared | ✅ Prep/TdsBulk |
-| Bulk write Replace/TruncateInsert/Update | ✅ | ❌ | ✅ |
-| Bulk write Upsert | ✅ ON CONFLICT | ❌ | ❌ (design) |
-| Bulk write DeleteByKeys | ✅ | ❌ | ⚠️ parziale |
+| Bulk write Replace/Update | ✅ | ✅ | ✅ |
+| Bulk write TruncateInsert | ✅ | ❌ fail-closed | ✅ |
+| Bulk write Upsert | ✅ ON CONFLICT | ✅ ON DUPLICATE KEY | ❌ (design) |
+| Bulk write DeleteByKeys | ✅ | ✅ | ⚠️ parziale |
 | Geometrie 4D (XY/XYZ/XYM/XYZM) | ✅ PostGIS | XY only (Z/M rifiutati) | ✅ geog / ⚠️ geom |
 | `begin_transaction` + savepoint | ✅ | ❌ (non implementato) | ❌ (non implementato) |
 | `execute_conditional_update` | ✅ | ❌ | ❌ |

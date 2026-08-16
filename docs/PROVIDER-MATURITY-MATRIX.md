@@ -39,7 +39,7 @@ MySQL.
 | Projection/filter/order/limit bind-safe | live | live | live |
 | Query relazionale pubblica | live | live | live; lifecycle prepare/query e drain completo |
 | Scrittura bulk (Append) | live | live | live; SingleTransaction, rollback o quarantine |
-| Scrittura bulk (Create, Replace, TruncateInsert) | live | live | live: tutti e 3 (v1.2). Replace usa staging persistent + `RENAME TABLE` atomico multi-table + DROP backup |
+| Scrittura bulk (Create, Replace, TruncateInsert) | live: Replace = `DELETE FROM` + insert in transazione, `TruncateInsert` = `TRUNCATE` transazionale | live | live: Create e Replace (`DELETE FROM` + insert nella stessa transazione InnoDB). `TruncateInsert` fail-closed: `TRUNCATE` è DDL con commit implicito |
 | Scrittura bulk (Upsert, Update, DeleteByKeys) | live | live | live: tutti e 3 (v1.2); Upsert via `ON DUPLICATE KEY UPDATE`, Update via staging TEMPORARY, DeleteByKeys via `WHERE (keys) IN` |
 | Transazioni OLTP (`begin_transaction` + savepoints + `execute_ddl`) | live | fail-closed (aperto) | live (v1.2); `MysqlTransaction` con START/COMMIT/ROLLBACK/SAVEPOINT/ROLLBACK TO/RELEASE + conditional_update |
 | Tipi scalari di riferimento | live, profilo esteso | live, profilo esteso | live: integer, decimal, bool, UTF-8, binary, date, datetime, JSON |
@@ -82,13 +82,15 @@ Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
   applicativo OLTP. Il `TransactionCapabilities.savepoints` passa da `false`
   a `true`.
 
-- **Blocco A (write modes)**: 6 modi bulk aggiuntivi oltre Append —
-  **Create** (CREATE TABLE dallo schema Arrow), **TruncateInsert**
-  (TRUNCATE + INSERT bulk), **Upsert** (`INSERT ... ON DUPLICATE KEY UPDATE`),
+- **Blocco A (write modes)**: 5 modi bulk aggiuntivi oltre Append —
+  **Create** (CREATE TABLE dallo schema Arrow),
+  **Replace** (`DELETE FROM` + INSERT bulk nella stessa transazione InnoDB,
+  su un target che deve già esistere e non viene ricreato),
+  **Upsert** (`INSERT ... ON DUPLICATE KEY UPDATE`),
   **DeleteByKeys** (`DELETE ... WHERE (keys) IN (...)`),
-  **Update** (staging TEMPORARY + `UPDATE JOIN`),
-  **Replace** (staging persistent + `RENAME TABLE` atomico multi-table
-  + DROP backup). **Tutti 7 WriteMode ora qualificati per MySQL.**
+  **Update** (staging TEMPORARY + `UPDATE JOIN`).
+  **Sei WriteMode disponibili su sette**: `TruncateInsert` resta fail-closed
+  perché `TRUNCATE` è DDL con commit implicito e non è rollback-safe.
 
 - **Blocco C (spatial functions verified)**: 26 funzioni `ST_*` dichiarate
   verified in `crate::query::VERIFIED_SPATIAL_FUNCTIONS` — metadata (7),

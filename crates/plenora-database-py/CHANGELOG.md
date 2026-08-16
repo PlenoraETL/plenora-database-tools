@@ -13,9 +13,46 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ## [Unreleased] — 0.9.3
 
-Blocco Upsert/metadata unique (MySQL). Include anche
-`NativeQueryPolicy` MySQL (commit successivo al tag `py-v0.9.2`, quindi
-non presente negli artifact 0.9.2).
+Blocco Upsert/metadata unique (MySQL) e contratto Replace/TruncateInsert.
+Include anche `NativeQueryPolicy` MySQL (commit successivo al tag
+`py-v0.9.2`, quindi non presente negli artifact 0.9.2).
+
+### Contratto Replace/TruncateInsert — MySQL passa a 6 modalità su 7
+
+`write_mode="replace"` torna disponibile su MySQL, ma con una semantica
+diversa da quella che aveva prima di essere rimossa: **`DELETE FROM` +
+INSERT bulk nella stessa transazione InnoDB**, non più staging persistente
++ `RENAME TABLE` + tabella di backup.
+
+La differenza è osservabile:
+
+- il target **deve già esistere** — un target assente è `PlenoraNotFoundError`,
+  non un invito a crearlo. Chi vuole creare la tabella usa `"create"`;
+- il target **non viene ricreato**: object identity, indici, unique, foreign
+  key, trigger, check, default, grant e `AUTO_INCREMENT` sono quelli di prima
+  della scrittura. Il vecchio pattern li perdeva tutti, perché la tabella
+  pubblicata era una tabella nuova costruita dallo schema Arrow;
+- un errore, una cancellazione o un mapping failure **dopo il DELETE**
+  annullano tutto e riportano le righe precedenti. Prima il `RENAME` faceva
+  commit implicito, quindi lo swap sopravviveva al rollback.
+
+`write_mode="truncate_insert"` **resta fail-closed** su MySQL con
+`PlenoraUnsupportedError`. `TRUNCATE TABLE` è DDL con commit implicito: le
+righe sparirebbero prima dell'INSERT e nessun rollback le riporterebbe
+indietro. Non viene emulata con `DELETE` perché sarebbe un'altra cosa con lo
+stesso nome — `AUTO_INCREMENT` non azzerato, trigger e log riga per riga
+attivi. Il messaggio di rifiuto rinvia esplicitamente a `"replace"`, e il
+rifiuto arriva in `prepare_write`, prima del checkout dal pool e quindi
+prima di qualunque effetto remoto.
+
+Su PostgreSQL `"truncate_insert"` resta disponibile e usa un vero
+`TRUNCATE`: lì è transazionale, quindi rollback-safe.
+
+Le capability pubblicate da `capabilities()` riflettono le modalità
+effettivamente disponibili: su MySQL `create`, `append`, `update`, `upsert`,
+`replace`, `delete_by_keys` e `bulk` passano a `true`; `staged_swap` resta
+`false`, perché nessuna modalità pubblica più una tabella al posto di
+un'altra.
 
 ### Fix P1 — Upsert MySQL fail-closed sugli unique index
 

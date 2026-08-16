@@ -11,8 +11,8 @@
 //!
 //! **Non incluso** (roadmap SDK MySQL):
 //! - `begin()` + `Transaction` context manager
-//! - `copy_from` bulk write (5 WriteMode attivi via Arrow IPC;
-//!   `Replace` e `TruncateInsert` fail-closed dal 0.9.1)
+//! - `copy_from` bulk write (6 WriteMode attivi via Arrow IPC;
+//!   `TruncateInsert` resta fail-closed)
 //! - `read()` streaming Arrow
 //! - Portable AST builders (`select/insert/update/delete/upsert`)
 //! - Spatial predicates + typed params (uuid/decimal/etc.)
@@ -407,17 +407,21 @@ impl MysqlSession {
     /// Il consumer Python passa un buffer Arrow IPC stream (schema + N
     /// record batches + EOS).
     ///
-    /// **WriteMode supportati** (post py-v0.9.1):
+    /// **WriteMode supportati** (6 su 7):
     /// - `append` (default)
     /// - `create` (CREATE TABLE + INSERT)
+    /// - `replace` (DELETE FROM + INSERT nella stessa transazione: il
+    ///   target deve gia esistere e non viene ricreato, quindi schema,
+    ///   indici, FK, trigger, check, default, grant e `AUTO_INCREMENT`
+    ///   restano quelli di prima)
     /// - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
     /// - `update` (UPDATE JOIN staging)
     /// - `delete_by_keys` (DELETE WHERE keys IN staging)
     ///
     /// **Fail-closed** (`PlenoraUnsupportedError`):
-    /// - `replace` — staging + RENAME perde vincoli/indici/FK/trigger.
-    /// - `truncate_insert` — TRUNCATE è DDL con commit implicito,
-    ///   non rollback-safe.
+    /// - `truncate_insert` — TRUNCATE e DDL con commit implicito, quindi
+    ///   non rollback-safe, e non viene emulato con DELETE perche avrebbe
+    ///   semantica diversa. Usare `replace`.
     ///
     /// `mapping_policy` deve essere `"strict"` (il provider rifiuta
     /// `"compatible"` con `Unsupported` finché loss preflight non è

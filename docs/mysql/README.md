@@ -31,12 +31,21 @@ indipendente.
 - query relazionale qualificata con bind posizionale e lifecycle bounded;
 - write bulk qualificato dentro `SingleTransaction`, con rollback certo
   prima del commit e outcome `Unknown` più quarantena quando il commit è
-  ambiguo. **v1.2**: tutti 7 modi qualificati — Append + **Create** (CREATE
-  TABLE dallo schema Arrow) + **TruncateInsert** (TRUNCATE + INSERT bulk) +
-  **Upsert** (`INSERT ... ON DUPLICATE KEY UPDATE`) + **DeleteByKeys**
-  (`DELETE ... WHERE (keys) IN (...)`) + **Update** (staging TEMPORARY +
-  `UPDATE JOIN`) + **Replace** (staging persistent + `RENAME TABLE` atomico
-  multi-table + DROP backup);
+  ambiguo. **Sei modalità disponibili su sette**: Append + **Create** (CREATE
+  TABLE dallo schema Arrow) + **Replace** (`DELETE FROM` + INSERT bulk nella
+  stessa transazione InnoDB) + **Upsert** (`INSERT ... ON DUPLICATE KEY
+  UPDATE`) + **DeleteByKeys** (`DELETE ... WHERE (keys) IN (...)`) +
+  **Update** (staging TEMPORARY + `UPDATE JOIN`). **TruncateInsert** resta
+  fail-closed: `TRUNCATE` è DDL con commit implicito, quindi non
+  rollback-safe, e non viene emulata con `DELETE` perché avrebbe semantica
+  diversa (`AUTO_INCREMENT` non azzerato, trigger e log riga per riga
+  attivi). Il rifiuto arriva in `prepare_write`, prima del checkout dal pool
+  e quindi prima di qualunque effetto remoto;
+- **Replace non ricrea il target.** Deve già esistere — altrimenti
+  `NotFound` — e sopravvive alla scrittura con la stessa object identity e
+  con indici, unique, foreign key, trigger, check, default, grant e
+  `AUTO_INCREMENT` invariati. Un errore o una cancellazione dopo il `DELETE`
+  annulla tutto e riporta le righe precedenti;
 - **v1.2**: transazioni OLTP applicative via `Provider::begin_transaction`
   qualificate — `START TRANSACTION` con isolation/access mode/statement
   timeout, savepoint annidati (`SAVEPOINT` / `ROLLBACK TO SAVEPOINT` /
@@ -90,11 +99,12 @@ entrambe le famiglie live senza esclusioni. La matrice comparativa dei provider 
 in [`docs/PROVIDER-MATURITY-MATRIX.md`](../PROVIDER-MATURITY-MATRIX.md).
 
 Il DDL atomico MySQL non viene equiparato a DDL transazionale (autocommit
-implicito). L'implementazione v1.2 di Create/TruncateInsert/Replace usa
-`exec_control` via text protocol; Replace usa staging PERSISTENT (non
-TEMPORARY perché `RENAME TABLE` rifiuta temporanee) con cleanup del
-backup post-swap; se la swap fallisce, la staging orfana viene droppata
-via best-effort.
+implicito). `Create` usa `exec_control` via text protocol. `Replace` non usa
+DDL affatto: è `DELETE FROM` seguito dal bulk INSERT, entrambi dentro la
+transazione InnoDB dichiarata dal profilo `SingleTransaction`. Non esistono
+più staging persistenti, `RENAME TABLE` o tabelle di backup da ripulire —
+e con loro sono spariti gli stati intermedi che il vecchio pattern poteva
+lasciare se il processo moriva tra il `CREATE` e lo swap.
 
 ## Consumer surface
 
