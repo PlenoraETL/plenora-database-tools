@@ -394,11 +394,15 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for arguments in calls
             if "live_database_probe_mysql_private_ca" in arguments
         )
-        self.assertEqual(
-            cli_call[:5], ["test", "-p", "plenora-database-cli", "--test", "live_probe"]
-        )
+        self.assertEqual(cli_call[:3], ["test", "-p", "plenora-database-cli"])
+        self.assertIn("live_probe", cli_call)
         self.assertIn("--exact", cli_call)
         self.assertIn("--ignored", cli_call)
+        # Senza la feature l'adapter MySQL non entra nel binario e il probe
+        # verifica solo che il provider non sia stato compilato.
+        self.assertEqual(
+            cli_call[cli_call.index("--features") + 1], "mysql"
+        )
 
     def test_gate_rejects_unit_test_count_drift(self) -> None:
         calls, run_cargo = gate_run_cargo(
