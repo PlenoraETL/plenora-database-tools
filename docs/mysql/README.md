@@ -7,7 +7,7 @@ di ciascun riferimento sono dichiarati una volta sola in
 [`docker/mysql/references.json`](../../docker/mysql/references.json): il
 compose della baseline, i due gate e i test live leggono quel documento, così
 nessuno può affermare una versione diversa da quella effettivamente avviata.
-I 60 test live — 35 default piu 25 reference — passano identici su 9.7,
+I 62 test live — 37 default piu 25 reference — passano identici su 9.7,
 8.4 e 8.0: la superficie
 `plenora-db-mysql` è dialect-invariante tra 8.x e 9.x. Il provider usa protocollo
 nativo asincrono e TLS rustls; MariaDB resta fuori scope fino a una qualifica
@@ -89,8 +89,8 @@ identificate per nome sulla baseline fissata per digest:
 
 | Famiglia | Runner | Test |
 | --- | --- | --- |
-| unit | `cargo test -- --skip live_` | 126 |
-| live default | `cargo test live_` | 35 |
+| unit | `cargo test -- --skip live_` | 130 |
+| live default | `cargo test live_` | 37 |
 | live reference | `cargo test live_ -- --ignored` | 25 |
 
 `live default` sono i test live **non** `#[ignore]`: una `cargo test` nuda li

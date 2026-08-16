@@ -3897,6 +3897,145 @@ async fn live_v12_transaction_execute_and_commit() {
         .ok();
 }
 
+/// Il riuso di una connessione ripulisce il `SessionContext`.
+///
+/// Le variabili utente `MySQL` sono legate alla **connessione**, non alla
+/// transazione: `COMMIT` e `ROLLBACK` non le toccano. Se il pool riciclasse
+/// una connessione senza ripulirla, il context scritto da un chiamante
+/// resterebbe leggibile dal successivo — una fuga fra tenant, non un
+/// dettaglio di igiene.
+///
+/// Il pool di produzione tiene `min = 0`: nessuna connessione resta idle,
+/// quindi ogni checkout ne apre una nuova e `CONNECTION_ID()` cambia
+/// sempre. Il riuso non e osservabile li, e un test che lo aspettasse
+/// passerebbe per la ragione sbagliata. Con un pool che ne trattiene una —
+/// le stesse `Opts` del provider, solo `min = 1` — il riuso diventa
+/// osservabile e si vede che la variabile e sparita **sulla stessa
+/// connessione**. E cio che protegge il giorno in cui `min` cambiera:
+/// `with_reset_connection(true)`, che il provider imposta.
+#[tokio::test]
+async fn live_v12_session_context_is_cleared_when_a_connection_is_reused() {
+    use mysql_async::prelude::Queryable as _;
+
+    let retaining = mysql_async::Pool::new(mysql_async::Opts::from(
+        mysql_async::OptsBuilder::from_opts(
+            live_config().pooled_driver_opts(1).expect("opts pooled"),
+        )
+        .pool_opts(Some(
+            mysql_async::PoolOpts::default()
+                .with_constraints(mysql_async::PoolConstraints::new(1, 1).expect("vincoli 1..1"))
+                .with_reset_connection(true),
+        )),
+    ));
+
+    let first_id: Option<u64> = {
+        let mut connection = retaining.get_conn().await.expect("checkout iniziale");
+        connection
+            .query_drop("SET @`plenora_ctx_app.tenant` = 'acme'")
+            .await
+            .expect("scrittura context");
+        let written: Option<String> = connection
+            .query_first("SELECT @`plenora_ctx_app.tenant`")
+            .await
+            .expect("rilettura context");
+        assert_eq!(
+            written.as_deref(),
+            Some("acme"),
+            "il context non e stato scritto: il test non proverebbe nulla"
+        );
+        connection
+            .query_first("SELECT CONNECTION_ID()")
+            .await
+            .expect("id")
+    };
+
+    let mut reused = retaining.get_conn().await.expect("checkout riusato");
+    let reused_id: Option<u64> = reused
+        .query_first("SELECT CONNECTION_ID()")
+        .await
+        .expect("id riusato");
+    assert_eq!(
+        reused_id, first_id,
+        "il pool non ha riusato la connessione: la prova non sarebbe valida"
+    );
+    let survived: Option<Option<String>> = reused
+        .query_first("SELECT @`plenora_ctx_app.tenant`")
+        .await
+        .expect("rilettura dopo il riuso");
+    assert_eq!(
+        survived,
+        Some(None),
+        "il context del chiamante precedente e sopravvissuto al riuso"
+    );
+    drop(reused);
+    retaining
+        .disconnect()
+        .await
+        .expect("chiusura pool di prova");
+}
+
+/// Sul percorso reale, il chiamante senza context non vede quello di prima.
+///
+/// Tre transazioni su un pool da uno, chiuse in entrambi i modi: `COMMIT` e
+/// `ROLLBACK` restituiscono la connessione per strade diverse, e nessuna
+/// delle due deve lasciare il context visibile.
+#[tokio::test]
+async fn live_v12_session_context_does_not_reach_the_next_transaction() {
+    use plenora_database_core::session_context::{SessionEntry, SessionValue};
+
+    let provider = MysqlProvider::new(live_config(), 1).expect("provider pool=1");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut with_context = plenora_database_core::transaction::TransactionOptions::default();
+    with_context
+        .context
+        .insert(
+            "app.tenant",
+            SessionEntry::public(SessionValue::Text("acme".to_owned())),
+        )
+        .expect("chiave valida");
+    let leaked = plenora_database_core::transaction::Statement {
+        sql: "SELECT 1 WHERE @`plenora_ctx_app.tenant` IS NOT NULL".to_owned(),
+        params: Vec::new(),
+    };
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &with_context, &budget, &cancellation)
+        .await
+        .expect("begin con context");
+    assert_eq!(
+        tx.query(&leaked, &cancellation)
+            .await
+            .expect("lettura")
+            .len(),
+        1,
+        "il context non e arrivato: la fase successiva non proverebbe nulla"
+    );
+    tx.commit(&cancellation).await.expect("commit");
+
+    let tx = provider
+        .begin_transaction(&live_secret(), &with_context, &budget, &cancellation)
+        .await
+        .expect("begin con context");
+    tx.rollback(&cancellation).await.expect("rollback");
+
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin senza context");
+    assert_eq!(
+        tx.query(&leaked, &cancellation)
+            .await
+            .expect("lettura")
+            .len(),
+        0,
+        "il context del chiamante precedente e ancora leggibile"
+    );
+    tx.rollback(&cancellation).await.expect("rollback finale");
+}
+
 /// Il `SessionContext` raggiunge il server, con la chiave che il core produce.
 ///
 /// Il core impone `namespace.name`, quindi un punto; le variabili utente

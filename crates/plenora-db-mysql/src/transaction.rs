@@ -60,6 +60,14 @@ impl MysqlTransaction {
         options: &TransactionOptions,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
+        // 0. Il context si valida **prima** di qualunque statement.
+        //    Validarlo al passo 4, dopo START TRANSACTION, significava
+        //    aprire una transazione e un isolamento di sessione per poi
+        //    scoprire che una chiave non era scrivibile: il chiamante
+        //    riceveva `InvalidPlan` con una transazione gia aperta sulla
+        //    connessione, che il pool avrebbe poi dovuto ripulire.
+        validate_context_keys(options)?;
+
         // 1. Isolation level (SET TRANSACTION prima di START).
         //    MySQL non supporta "deferrable" (skip); "read only" è opzione
         //    di START TRANSACTION, non di SET.
@@ -111,14 +119,9 @@ impl MysqlTransaction {
         //    mutuamente esclusive, e `begin(context=...)` non poteva
         //    riuscire con un context non vuoto.
         for (name, entry) in options.context.iter() {
-            if !is_safe_context_name(name.as_str()) {
-                return Err(DatabaseError::invalid_plan(format!(
-                    "session context MySQL: nome non sicuro '{name}'"
-                )));
-            }
             let value = entry.value.as_provider_string();
             let sql = format!(
-                "SET @`plenora_ctx_{name}` = {}",
+                "SET @`{CONTEXT_VARIABLE_PREFIX}{name}` = {}",
                 mysql_string_literal(&value)
             );
             raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
@@ -132,6 +135,19 @@ impl MysqlTransaction {
     }
 }
 
+/// Lunghezza massima di un nome di variabile utente `MySQL`.
+const MAX_USER_VARIABLE_NAME: usize = 64;
+
+/// Prefisso applicato a ogni chiave di context.
+const CONTEXT_VARIABLE_PREFIX: &str = "plenora_ctx_";
+
+/// Chiave di context piu lunga che il prefisso lascia scrivere.
+///
+/// Il core ne ammette fino a 63, `MySQL` fino a 64 **incluso il prefisso**:
+/// le due soglie non coincidono, e la differenza e proprio la fascia dove il
+/// piano sembra valido e il server rifiuta.
+const MAX_CONTEXT_KEY: usize = MAX_USER_VARIABLE_NAME - CONTEXT_VARIABLE_PREFIX.len();
+
 /// La chiave di context che `MySQL` accetta di scrivere.
 ///
 /// La regola e quella del core, non una seconda regola locale: il core
@@ -142,6 +158,34 @@ impl MysqlTransaction {
 /// "sicuro" a chi la possiede.
 fn is_safe_context_name(name: &str) -> bool {
     plenora_database_core::session_context::validate_context_key(name).is_ok()
+}
+
+/// Verifica ogni chiave di context prima che parta un solo statement.
+///
+/// # Errors
+///
+/// `InvalidPlan` per una chiave che il core non riconosce, o piu lunga di
+/// [`MAX_CONTEXT_KEY`]: oltre quella soglia il nome della variabile utente
+/// supererebbe i 64 caratteri e il server risponderebbe con un errore di
+/// sintassi, a transazione gia aperta.
+fn validate_context_keys(options: &TransactionOptions) -> Result<()> {
+    for (name, _) in options.context.iter() {
+        if !is_safe_context_name(name.as_str()) {
+            return Err(DatabaseError::invalid_plan(format!(
+                "session context MySQL: nome non sicuro '{name}'"
+            )));
+        }
+        if name.len() > MAX_CONTEXT_KEY {
+            return Err(DatabaseError::invalid_plan(format!(
+                "session context MySQL: chiave '{name}' di {} caratteri; con il \
+                 prefisso '{CONTEXT_VARIABLE_PREFIX}' la variabile utente \
+                 supererebbe i {MAX_USER_VARIABLE_NAME} caratteri ammessi, \
+                 quindi al massimo {MAX_CONTEXT_KEY}",
+                name.len()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn mysql_string_literal(value: &str) -> String {
@@ -556,5 +600,61 @@ fn closed_error(phase: ErrorPhase) -> DatabaseError {
         execution_id: None,
         diagnostics: None,
         message: "MysqlTransaction già chiusa".to_owned(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{validate_context_keys, MAX_CONTEXT_KEY};
+    use plenora_database_core::session_context::{SessionEntry, SessionValue};
+    use plenora_database_core::transaction::TransactionOptions;
+    use plenora_database_core::ErrorCategory;
+
+    /// Una chiave `ns.<riempimento>` lunga esattamente `length` caratteri.
+    fn key_of_length(length: usize) -> String {
+        let prefix = "ns.";
+        format!("{prefix}{}", "a".repeat(length - prefix.len()))
+    }
+
+    fn options_with(key: &str) -> TransactionOptions {
+        let mut options = TransactionOptions::default();
+        options
+            .context
+            .insert(
+                key,
+                SessionEntry::public(SessionValue::Text("v".to_owned())),
+            )
+            .expect("chiave accettata dal core");
+        options
+    }
+
+    #[test]
+    fn the_longest_writable_key_is_fifty_two_characters() {
+        assert_eq!(MAX_CONTEXT_KEY, 52, "64 meno il prefisso `plenora_ctx_`");
+    }
+
+    #[test]
+    fn a_key_of_fifty_two_characters_is_accepted() {
+        let key = key_of_length(52);
+        assert_eq!(key.len(), 52);
+        assert!(validate_context_keys(&options_with(&key)).is_ok());
+    }
+
+    #[test]
+    fn a_key_of_fifty_three_characters_is_refused_before_any_statement() {
+        // Il core la accetta — ne ammette fino a 63 — quindi senza questo
+        // controllo il piano sembrerebbe valido e il rifiuto arriverebbe dal
+        // server, con la transazione gia aperta.
+        let key = key_of_length(53);
+        assert_eq!(key.len(), 53);
+        let error = validate_context_keys(&options_with(&key))
+            .expect_err("chiave da 53 caratteri accettata");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert!(error.message.contains("52"), "{}", error.message);
+        assert!(error.message.contains("64"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_empty_context_is_valid() {
+        assert!(validate_context_keys(&TransactionOptions::default()).is_ok());
     }
 }

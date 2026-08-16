@@ -1342,7 +1342,25 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Il nome finisce in una variabile utente: senza backtick il punto
         # sarebbe un errore di sintassi al server.
-        self.assertIn("SET @`plenora_ctx_{name}`", transaction)
+        self.assertIn("SET @`{CONTEXT_VARIABLE_PREFIX}{name}`", transaction)
+        # E deve starci: 64 caratteri meno il prefisso. Il core ne ammette
+        # 63, quindi la fascia 53..63 e valida per il core e impossibile per
+        # il server — va chiusa prima di aprire la transazione.
+        self.assertIn("const MAX_USER_VARIABLE_NAME: usize = 64;", transaction)
+        self.assertIn(
+            "MAX_USER_VARIABLE_NAME - CONTEXT_VARIABLE_PREFIX.len()", transaction
+        )
+        self.assertIn(
+            "validate_context_keys(options)?;",
+            transaction,
+            "il context va validato prima di qualunque statement",
+        )
+        # Prima di `SET TRANSACTION`, non dopo `START TRANSACTION`.
+        self.assertLess(
+            transaction.index("validate_context_keys(options)?;"),
+            transaction.index("SET SESSION TRANSACTION ISOLATION LEVEL"),
+            "la validazione del context segue il primo statement",
+        )
 
     def test_the_sqlserver_live_count_matches_its_gate(self) -> None:
         """Il conteggio live SQL Server nei documenti segue il suo gate.
