@@ -67,7 +67,26 @@ def postgres_network() -> str:
     return compose_network(CONTAINER, required_alias=CONTAINER)
 
 
-def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
+def cargo(
+    arguments: list[str],
+    dsn: str | None = None,
+    *,
+    insecure_local: bool = False,
+) -> list[str]:
+    """Comando `docker run` per un cargo dentro l'immagine pinnata.
+
+    `insecure_local` esporta `PLENORA_TLS_INSECURE_LOCAL` al CLI. Serve
+    perche il riferimento di questo gate e **plaintext** per costruzione — il
+    riferimento TLS e un compose separato, `dataflow-postgres-tls`, ed e
+    `check_postgres_hardening.py` a provarne la verifica. Dopo ADR-011 il CLI
+    pretende TLS per default, quindi senza l'interruttore il passo IPC
+    falliva in `connect` con un errore di protocollo: non una debolezza
+    scoperta, ma un riferimento che non parla quel protocollo.
+
+    L'interruttore vale solo per i passi che lo chiedono. Estenderlo a tutta
+    la suite renderebbe invisibile una regressione sul default sicuro.
+    """
+
     command = [
         "docker", "run", "--rm",
         "-v", f"{ROOT}:/workspace",
@@ -75,6 +94,8 @@ def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:
         "-v", "plenora-conformance-current-target:/workspace/target",
         "-w", "/workspace",
     ]
+    if insecure_local:
+        command += ["-e", "PLENORA_TLS_INSECURE_LOCAL=1"]
     if dsn is not None:
         command += [
             "--network", postgres_network(),
@@ -94,7 +115,7 @@ def check_ipc_materialization(dsn: str) -> dict[str, object]:
                 "plenora_fixture", "schema_cache_probe", container_output,
                 "--max-rows", "100", "--max-output-bytes", "10485760",
                 "--timeout-ms", "120000", "--order-by", "id",
-            ], dsn),
+            ], dsn, insecure_local=True),
             capture=True,
         ))
         inspected = json.loads(run(
