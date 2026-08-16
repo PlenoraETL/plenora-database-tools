@@ -453,14 +453,26 @@ async fn live_provider_connection_capabilities_and_inspect() {
     assert!(capabilities.reads.projection);
     assert!(capabilities.reads.filter);
     assert!(capabilities.reads.ordering);
-    assert!(!capabilities.writes.create);
+    // Sei mode qualificate; `TruncateInsert` resta fail-closed e non ha un
+    // flag proprio nel contratto — la sua prova e il rifiuto in prepare,
+    // in `live_v12_write_truncate_insert_rejected_without_remote_effects`.
+    assert!(capabilities.writes.create);
     assert!(capabilities.writes.append);
     assert!(capabilities.writes.rollback_on_failure);
-    assert!(!capabilities.writes.update);
-    assert!(!capabilities.writes.upsert);
-    assert!(!capabilities.writes.replace);
+    assert!(capabilities.writes.update);
+    assert!(capabilities.writes.upsert);
+    assert!(capabilities.writes.replace);
+    assert!(capabilities.writes.delete_by_keys);
+    assert!(capabilities.writes.bulk);
+    // Nessuna delle tre e implementata: il contratto non le promette.
+    assert!(!capabilities.writes.array_binding);
+    assert!(!capabilities.writes.returning);
+    assert!(!capabilities.writes.apply_edits);
     assert!(capabilities.transactions.single_transaction);
     assert!(!capabilities.transactions.transactional_ddl);
+    // Lo swap staged non esiste piu su MySQL: Replace e DELETE + insert
+    // nella stessa transazione, non una tabella pubblicata al posto di
+    // un'altra.
     assert!(!capabilities.transactions.staged_swap);
     assert_eq!(
         capabilities.transactions.scope,
@@ -4436,37 +4448,6 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
         .ok();
 }
 
-/// Fail-closed: `TruncateInsert` è stato rimosso su `MySQL` (TRUNCATE è DDL
-/// con commit implicito → non rollback-safe se l'INSERT successivo
-/// fallisce). `prepare_write` deve rifiutarlo come `Unsupported`.
-#[tokio::test]
-async fn live_v12_write_truncate_insert_rejected_fail_closed() {
-    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
-    let cancellation = CancellationToken::new();
-    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-
-    let (schema, _batch) = scalar_batch(&[1, 2], &["new-a", "new-b"]);
-    let operation = write_op_scalar(
-        "dataflow_test",
-        "_v12_trunc",
-        plenora_database_core::plan::WriteMode::TruncateInsert,
-    );
-
-    let Err(error) = provider
-        .prepare_write(
-            &live_secret(),
-            &operation,
-            std::sync::Arc::clone(&schema),
-            &budget,
-            &cancellation,
-        )
-        .await
-    else {
-        panic!("TruncateInsert MySQL deve essere rifiutato fail-closed");
-    };
-    assert_eq!(error.category, ErrorCategory::Unsupported);
-}
-
 fn write_op_with_keys(
     schema: &str,
     table: &str,
@@ -5163,37 +5144,6 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         .ok();
 }
 
-/// Fail-closed: `Replace` è stato rimosso su `MySQL` (staging + RENAME perde
-/// vincoli/indici/FK/trigger/permessi non ricostruibili). `prepare_write`
-/// deve rifiutarlo come `Unsupported`.
-#[tokio::test]
-async fn live_v12_write_replace_rejected_fail_closed() {
-    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
-    let cancellation = CancellationToken::new();
-    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-
-    let (schema, _batch) = scalar_batch(&[1, 2, 3], &["new-1", "new-2", "new-3"]);
-    let operation = write_op_scalar(
-        "dataflow_test",
-        "_v12_rep",
-        plenora_database_core::plan::WriteMode::Replace,
-    );
-
-    let Err(error) = provider
-        .prepare_write(
-            &live_secret(),
-            &operation,
-            std::sync::Arc::clone(&schema),
-            &budget,
-            &cancellation,
-        )
-        .await
-    else {
-        panic!("Replace MySQL deve essere rifiutato fail-closed");
-    };
-    assert_eq!(error.category, ErrorCategory::Unsupported);
-}
-
 #[tokio::test]
 async fn live_v12_write_update_without_keys_rejected() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -5478,5 +5428,483 @@ async fn live_native_query_policy_deny_rejects_conditional_update_ddl() {
             Some(ErrorCategory::InvalidPlan)
         ),
         "conditional_update con SQL non-CRUD sotto pfm_defaults deve fallire con InvalidPlan"
+    );
+}
+
+// ==================== Contratto Replace / TruncateInsert ==================
+//
+// Replace su MySQL e DELETE FROM + bulk insert nella stessa transazione
+// InnoDB. Questi test provano le due meta del contratto: cosa sopravvive
+// (identita della tabella, indici, FK, trigger, check, default,
+// AUTO_INCREMENT) e cosa succede quando la scrittura si rompe a meta.
+
+/// Esegue una lista di statement sulla connessione di servizio.
+async fn replace_fixture_exec(statements: &[String]) {
+    let cancellation = CancellationToken::new();
+    let mut setup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("setup fixture replace");
+    for statement in statements {
+        setup
+            .connection_mut()
+            .expect("connessione fixture")
+            .query_drop(statement.as_str())
+            .await
+            .unwrap_or_else(|error| panic!("statement fixture fallito: {statement} -> {error}"));
+    }
+}
+
+/// Un singolo valore testuale letto dalla connessione di servizio.
+async fn replace_fixture_scalar(sql: &str) -> String {
+    let cancellation = CancellationToken::new();
+    let mut setup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("setup query replace");
+    setup
+        .connection_mut()
+        .expect("connessione query")
+        .query_first::<String, _>(sql)
+        .await
+        .unwrap_or_else(|error| panic!("query fixture fallita: {sql} -> {error}"))
+        .unwrap_or_default()
+}
+
+/// Impronta di tutto cio che Replace deve conservare.
+///
+/// `SHOW CREATE TABLE` copre colonne, default, indici, unique, foreign key,
+/// check, engine e charset; `CREATE_TIME` e il contatore `AUTO_INCREMENT`
+/// distinguono una tabella conservata da una ricreata — una tabella nuova
+/// riparte da `AUTO_INCREMENT = 1` e da un altro istante di creazione.
+async fn replace_metadata_digest(table: &str) -> String {
+    let create = replace_fixture_scalar(&format!(
+        "SELECT CONCAT_WS('|', \
+            (SELECT CREATE_TIME FROM information_schema.TABLES \
+              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'), \
+            (SELECT IFNULL(AUTO_INCREMENT, 0) FROM information_schema.TABLES \
+              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'), \
+            (SELECT IFNULL(GROUP_CONCAT(TRIGGER_NAME ORDER BY TRIGGER_NAME), '-') \
+               FROM information_schema.TRIGGERS \
+              WHERE EVENT_OBJECT_SCHEMA = 'dataflow_test' \
+                AND EVENT_OBJECT_TABLE = '{table}'), \
+            (SELECT IFNULL(GROUP_CONCAT(CONCAT(CONSTRAINT_NAME, ':', CONSTRAINT_TYPE) \
+                                        ORDER BY CONSTRAINT_NAME), '-') \
+               FROM information_schema.TABLE_CONSTRAINTS \
+              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'))"
+    ))
+    .await;
+    let ddl = replace_fixture_scalar(&format!(
+        "SELECT GROUP_CONCAT(CONCAT_WS(':', COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, \
+                                       IFNULL(COLUMN_DEFAULT, '-'), EXTRA) \
+                             ORDER BY ORDINAL_POSITION) \
+           FROM information_schema.COLUMNS \
+          WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+    ))
+    .await;
+    let indexes = replace_fixture_scalar(&format!(
+        "SELECT IFNULL(GROUP_CONCAT(CONCAT_WS(':', INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, \
+                                              NON_UNIQUE) \
+                                    ORDER BY INDEX_NAME, SEQ_IN_INDEX), '-') \
+           FROM information_schema.STATISTICS \
+          WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+    ))
+    .await;
+    format!("{create}||{ddl}||{indexes}")
+}
+
+async fn replace_rows_digest(table: &str) -> String {
+    replace_fixture_scalar(&format!(
+        "SELECT IFNULL(GROUP_CONCAT(CONCAT_WS(':', id, label) ORDER BY id), '') FROM {table}"
+    ))
+    .await
+}
+
+/// Il target del contratto Replace nasce in `docker/mysql/init`, non qui: il
+/// trigger richiede privilegi che l'utente della fixture non ha con il binlog
+/// attivo. I test resettano le righe, mai la definizione.
+const REPLACE_TARGET: &str = "replace_target";
+const REPLACE_AUDIT: &str = "replace_audit";
+/// Nome che la fixture non crea mai: serve alla prova del target assente.
+const REPLACE_MISSING: &str = "replace_target_assente";
+
+/// Riporta la fixture allo stato noto: tre righe nel target e contatore del
+/// trigger azzerato. Nessun DDL — la definizione della tabella e il soggetto
+/// del test, non un suo effetto collaterale.
+async fn replace_fixture_reset() {
+    replace_fixture_exec(&[
+        format!("DELETE FROM {REPLACE_TARGET}"),
+        format!(
+            "INSERT INTO {REPLACE_TARGET} (id, label, parent_id) \
+             VALUES (1, 'prima', 1), (2, 'seconda', 2), (3, 'terza', 1)"
+        ),
+        format!("UPDATE {REPLACE_AUDIT} SET n = 0"),
+    ])
+    .await;
+}
+
+/// Schema Arrow allineato al target della fixture Replace.
+fn replace_batch(
+    rows: &[(i64, &str, i64)],
+) -> (
+    plenora_database_core::arrow::SchemaRef,
+    plenora_database_core::arrow::RecordBatch,
+) {
+    use plenora_database_core::arrow::array::{Int64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    use plenora_database_core::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    let schema: plenora_database_core::arrow::SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("parent_id", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.1).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.2).collect::<Vec<_>>(),
+            )),
+        ],
+    )
+    .expect("batch replace");
+    (schema, batch)
+}
+
+/// Stream che consegna un batch e poi fallisce: il DELETE e gia passato e
+/// alcune righe nuove sono gia scritte quando arriva l'errore.
+struct FailingBatchesStream {
+    schema: plenora_database_core::arrow::SchemaRef,
+    first: Option<plenora_database_core::arrow::RecordBatch>,
+}
+
+impl plenora_database_core::provider::BatchStream for FailingBatchesStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        let next = self.first.take().map_or_else(
+            || {
+                Err(plenora_database_core::DatabaseError::invalid_plan(
+                    "sorgente interrotta a meta stream",
+                ))
+            },
+            |batch| Ok(Some(batch)),
+        );
+        Box::pin(async move { next })
+    }
+}
+
+/// Stream che cancella il token mentre consegna il batch: la scrittura si
+/// trova cancellata con il target gia svuotato dentro la transazione.
+struct CancellingBatchesStream {
+    schema: plenora_database_core::arrow::SchemaRef,
+    batch: Option<plenora_database_core::arrow::RecordBatch>,
+    token: CancellationToken,
+}
+
+impl plenora_database_core::provider::BatchStream for CancellingBatchesStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        let next = self.batch.take();
+        if next.is_some() {
+            self.token.cancel();
+        }
+        Box::pin(async move { Ok(next) })
+    }
+}
+
+/// Replace scrive nel target esistente: la tabella e la stessa, con gli
+/// stessi indici, unique, foreign key, check, default, trigger e contatore
+/// `AUTO_INCREMENT`. Con `staging + RENAME` l'impronta cambierebbe in ogni
+/// sua parte.
+#[tokio::test]
+async fn live_v12_write_replace_preserves_table_identity_and_metadata() {
+    replace_fixture_reset().await;
+    let before = replace_metadata_digest(REPLACE_TARGET).await;
+    assert!(
+        before.contains("replace_target_label_uk"),
+        "fixture senza unique index: {before}"
+    );
+    assert!(
+        before.contains("replace_target_audit"),
+        "fixture senza trigger: {before}"
+    );
+    assert!(
+        before.contains("etichetta-default"),
+        "fixture senza default: {before}"
+    );
+    assert!(
+        before.contains("replace_target_fk:FOREIGN KEY"),
+        "fixture senza foreign key: {before}"
+    );
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, batch) = replace_batch(&[(1, "nuova-a", 1), (2, "nuova-b", 2)]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        REPLACE_TARGET,
+        plenora_database_core::plan::WriteMode::Replace,
+    );
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare replace");
+    let outcome = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(BatchesStream {
+                schema,
+                batches: std::collections::VecDeque::from(vec![batch]),
+                declared: 2,
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("write replace");
+
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
+    assert_eq!(outcome.rows.confirmed, 2);
+    assert_eq!(
+        replace_metadata_digest(REPLACE_TARGET).await,
+        before,
+        "metadata del target mutato"
+    );
+    assert_eq!(
+        replace_rows_digest(REPLACE_TARGET).await,
+        "1:nuova-a,2:nuova-b"
+    );
+    assert_eq!(
+        replace_fixture_scalar(&format!("SELECT CAST(n AS CHAR) FROM {REPLACE_AUDIT}")).await,
+        "2",
+        "il trigger non ha visto le righe nuove"
+    );
+}
+
+/// Il target di Replace deve esistere: non e un `Create` mascherato.
+#[tokio::test]
+async fn live_v12_write_replace_on_a_missing_target_is_not_found() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, _batch) = replace_batch(&[(1, "nuova-a", 1)]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        REPLACE_MISSING,
+        plenora_database_core::plan::WriteMode::Replace,
+    );
+
+    let Err(error) = provider
+        .prepare_write(&live_secret(), &operation, schema, &budget, &cancellation)
+        .await
+    else {
+        panic!("Replace su target assente accettato");
+    };
+    assert_eq!(error.category, ErrorCategory::NotFound);
+}
+
+/// Un errore a meta stream arriva quando il DELETE e gia passato: il rollback
+/// deve riportare esattamente le righe di prima, non un target vuoto.
+#[tokio::test]
+async fn live_v12_write_replace_restores_the_previous_rows_when_the_stream_fails() {
+    replace_fixture_reset().await;
+    let before = replace_rows_digest(REPLACE_TARGET).await;
+    assert_eq!(before, "1:prima,2:seconda,3:terza");
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, batch) = replace_batch(&[(10, "nuova-a", 1)]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        REPLACE_TARGET,
+        plenora_database_core::plan::WriteMode::Replace,
+    );
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare replace");
+    let Err(error) = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(FailingBatchesStream {
+                schema,
+                first: Some(batch),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("stream interrotto accettato come successo");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(
+        replace_rows_digest(REPLACE_TARGET).await,
+        before,
+        "righe precedenti non ripristinate"
+    );
+    assert_eq!(
+        replace_fixture_scalar(&format!("SELECT CAST(n AS CHAR) FROM {REPLACE_AUDIT}")).await,
+        "0",
+        "effetto del trigger sopravvissuto al rollback"
+    );
+}
+
+/// La cancellazione arriva dopo il DELETE: dentro la transazione il target e
+/// gia vuoto, e solo il rollback lo riporta allo stato precedente.
+#[tokio::test]
+async fn live_v12_write_replace_restores_the_previous_rows_on_cancellation() {
+    replace_fixture_reset().await;
+    let before = replace_rows_digest(REPLACE_TARGET).await;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, batch) = replace_batch(&[(10, "nuova-a", 1)]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        REPLACE_TARGET,
+        plenora_database_core::plan::WriteMode::Replace,
+    );
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare replace");
+    let Err(error) = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(CancellingBatchesStream {
+                schema,
+                batch: Some(batch),
+                token: cancellation.clone(),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("cancellazione accettata come successo");
+    };
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    assert_eq!(
+        replace_rows_digest(REPLACE_TARGET).await,
+        before,
+        "righe precedenti non ripristinate dopo cancellazione"
+    );
+}
+
+/// Fail-closed: `TruncateInsert` resta non qualificata su `MySQL` — `TRUNCATE`
+/// e DDL con commit implicito — e il rifiuto arriva in compile, prima del
+/// checkout dal pool e quindi prima di qualunque effetto remoto. Il test lo
+/// prova due volte: nessuna riga toccata e nessuna sessione aperta.
+#[tokio::test]
+async fn live_v12_write_truncate_insert_rejected_without_remote_effects() {
+    replace_fixture_reset().await;
+    let rows_before = replace_rows_digest(REPLACE_TARGET).await;
+    let metadata_before = replace_metadata_digest(REPLACE_TARGET).await;
+    let probe_cancellation = CancellationToken::new();
+    let mut probe = MysqlSession::open(&live_config(), &probe_cancellation)
+        .await
+        .expect("sessione di misura");
+    let connections_before: Option<(String, u64)> = probe
+        .connection_mut()
+        .expect("connessione di misura")
+        .query_first("SHOW GLOBAL STATUS LIKE 'Connections'")
+        .await
+        .expect("contatore connessioni");
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, _batch) = replace_batch(&[(10, "nuova-a", 1)]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        REPLACE_TARGET,
+        plenora_database_core::plan::WriteMode::TruncateInsert,
+    );
+
+    let Err(error) = provider
+        .prepare_write(&live_secret(), &operation, schema, &budget, &cancellation)
+        .await
+    else {
+        panic!("TruncateInsert MySQL deve essere rifiutato fail-closed");
+    };
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert!(
+        error.message.contains("WriteMode::Replace"),
+        "il rifiuto deve indicare l'alternativa qualificata: {}",
+        error.message
+    );
+
+    // Il contatore globale delle connessioni non si e mosso: il rifiuto e
+    // arrivato prima del checkout dal pool, quindi prima di qualunque
+    // effetto remoto. La lettura usa la stessa sessione della misura
+    // iniziale, cosi non e la misura stessa a spostare il contatore.
+    let connections_after: Option<(String, u64)> = probe
+        .connection_mut()
+        .expect("connessione di misura")
+        .query_first("SHOW GLOBAL STATUS LIKE 'Connections'")
+        .await
+        .expect("contatore connessioni");
+    assert_eq!(
+        connections_after, connections_before,
+        "il rifiuto ha aperto una connessione al server"
+    );
+    assert_eq!(replace_rows_digest(REPLACE_TARGET).await, rows_before);
+    assert_eq!(
+        replace_metadata_digest(REPLACE_TARGET).await,
+        metadata_before
     );
 }

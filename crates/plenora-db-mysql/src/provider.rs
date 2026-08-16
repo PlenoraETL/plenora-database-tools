@@ -210,14 +210,18 @@ impl Provider for MysqlProvider {
                     ordering: true,
                     resumable: false,
                 },
+                // Sei mode qualificate su sette. `TruncateInsert` resta
+                // fail-closed e non ha un flag proprio nel contratto: il
+                // consumer che la chiede riceve `Unsupported` in prepare, con
+                // il rinvio a `Replace` nel messaggio.
                 writes: WriteCapabilities {
-                    create: false,
+                    create: true,
                     append: true,
-                    update: false,
-                    upsert: false,
-                    replace: false,
-                    delete_by_keys: false,
-                    bulk: false,
+                    update: true,
+                    upsert: true,
+                    replace: true,
+                    delete_by_keys: true,
+                    bulk: true,
                     array_binding: false,
                     returning: false,
                     apply_edits: false,
@@ -338,7 +342,6 @@ impl Provider for MysqlProvider {
                 plenora_database_core::plan::WriteMode::Create
                     | plenora_database_core::plan::WriteMode::DeleteByKeys
                     | plenora_database_core::plan::WriteMode::Update
-                    | plenora_database_core::plan::WriteMode::Replace
             ) {
                 // Create: target non esiste ancora — skip describe.
                 // DeleteByKeys: schema Arrow è keys-only; il preflight
@@ -519,7 +522,6 @@ async fn execute_mysql_write(
         plenora_database_core::plan::WriteMode::Create
             | plenora_database_core::plan::WriteMode::DeleteByKeys
             | plenora_database_core::plan::WriteMode::Update
-            | plenora_database_core::plan::WriteMode::Replace
     ) && plan.preflight(&target)? != prepared_loss
     {
         return Err(provider_error(
@@ -527,14 +529,6 @@ async fn execute_mysql_write(
             ErrorPhase::Prepare,
             "preflight MySQL cambiato fra prepare e write",
         ));
-    }
-
-    // v1.2 — TruncateInsert: TRUNCATE prima del bulk INSERT.
-    if operation.mode == plenora_database_core::plan::WriteMode::TruncateInsert {
-        let truncate = crate::write::build_truncate_sql(&operation, provider.config.database())?;
-        session
-            .exec_control(&truncate, ErrorPhase::Prepare, token)
-            .await?;
     }
 
     // v1.2 — Update: crea staging TEMPORARY TABLE. Il bulk INSERT
@@ -562,38 +556,18 @@ async fn execute_mysql_write(
         None
     };
 
-    // v1.2 — Replace: crea staging PERSISTENT (RENAME atomico rifiuta
-    // TEMPORARY). Bulk INSERT in staging, poi swap. Naming: staging con
-    // prefix `__pln_repl_` + execution seed; backup con prefix
-    // `__pln_bak_` + stesso seed. Se il commit fallisce fra CREATE
-    // staging e RENAME, la staging resta orfana → DROP di cleanup nel
-    // catch error. Se fallisce dopo RENAME (target è già lo staging),
-    // il backup resta orfano → DROP successivo.
-    let replace_setup: Option<(String, String, String, String)> = if operation.mode
-        == plenora_database_core::plan::WriteMode::Replace
-    {
-        let seed = format!(
-            "{}_{}",
-            std::process::id(),
-            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        );
-        let staging_name = format!("__pln_repl_{seed}");
-        let backup_name = format!("__pln_bak_{seed}");
-        let staging_ddl = crate::write::build_persistent_staging_sql(
-            &schema,
-            &staging_name,
+    // Replace: il DELETE viene reso qui ma eseguito dentro la transazione,
+    // subito prima del bulk insert. Renderlo prima di aprire la transazione
+    // evita di lasciarne una aperta se il target non e un identificatore
+    // valido.
+    let replace_delete_sql = if operation.mode == plenora_database_core::plan::WriteMode::Replace {
+        Some(crate::write::build_delete_all_sql(
+            &operation,
             provider.config.database(),
-        )?;
-        session
-            .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
-            .await?;
-        let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
-        Some((staging_name, backup_name, quoted.clone(), quoted))
+        )?)
     } else {
         None
     };
-    // Per il bulk INSERT: se Replace, l'INSERT va nella staging.
-    let replace_staging_quoted = replace_setup.as_ref().map(|(_, _, _, q)| q.clone());
     // Quando la sorgente dichiara quante righe produrrà, la scrittura può
     // partizionare l'input fra righe rifiutate, annullate e mai tentate: solo
     // allora il percorso diagnostico riga per riga ha un input_total da
@@ -613,6 +587,23 @@ async fn execute_mysql_write(
         None
     };
     let execution_id = start_write_transaction(&mut session, token).await?;
+    // Replace: svuota il target dentro la stessa transazione del bulk insert.
+    // Nessun DDL, quindi identita dell'oggetto, indici, FK, trigger, check,
+    // default, grant e AUTO_INCREMENT restano quelli del target — e un
+    // fallimento successivo riporta indietro anche le righe cancellate.
+    if let Some(delete_sql) = replace_delete_sql.as_deref() {
+        if let Err(error) = session
+            .exec_write(
+                delete_sql,
+                mysql_async::Params::Empty,
+                ErrorPhase::Write,
+                token,
+            )
+            .await
+        {
+            return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+        }
+    }
     if let Some((declared_rows, policy)) = diagnostic_input {
         let result = diagnostic_mysql_write(
             &mut session,
@@ -629,9 +620,7 @@ async fn execute_mysql_write(
         drop(session);
         return result;
     }
-    let effective_staging = update_staging_quoted
-        .as_deref()
-        .or(replace_staging_quoted.as_deref());
+    let effective_staging = update_staging_quoted.as_deref();
     let progress = match write_input_batches(
         &mut session,
         input.as_mut(),
@@ -674,43 +663,6 @@ async fn execute_mysql_write(
                     return Err(rollback_after_failure(&mut session, error, &execution_id).await);
                 }
             }
-        }
-    }
-
-    // v1.2 — Replace: dopo bulk INSERT nella staging persistent, esegui
-    // RENAME atomico + DROP del backup.
-    // Nota: RENAME MySQL fa autocommit implicito, quindi il COMMIT che
-    // segue è no-op per il RENAME (la staging swap è già persistita).
-    if operation.mode == plenora_database_core::plan::WriteMode::Replace {
-        if let Some((staging_name, backup_name, _, _)) = &replace_setup {
-            let swap_sql = crate::write::build_replace_swap_sql(
-                &operation,
-                staging_name,
-                backup_name,
-                provider.config.database(),
-            )?;
-            if let Err(error) = session
-                .exec_control(&swap_sql, ErrorPhase::Write, token)
-                .await
-            {
-                // Cleanup staging orfana (il RENAME non è avvenuto → staging
-                // esiste ancora col nome staging_name).
-                let cleanup_staging =
-                    crate::write::build_drop_backup_sql(staging_name, provider.config.database());
-                if let Ok(cleanup_sql) = cleanup_staging {
-                    let _ = session
-                        .exec_control(&cleanup_sql, ErrorPhase::Write, token)
-                        .await;
-                }
-                return Err(rollback_after_failure(&mut session, error, &execution_id).await);
-            }
-            // RENAME OK → drop backup. Fail non fatale (il target è già
-            // valido; il backup orfano è cosmetic).
-            let drop_backup =
-                crate::write::build_drop_backup_sql(backup_name, provider.config.database())?;
-            let _ = session
-                .exec_control(&drop_backup, ErrorPhase::Write, token)
-                .await;
         }
     }
 

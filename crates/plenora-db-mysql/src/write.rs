@@ -1,5 +1,5 @@
 //! Path write `MySQL`. v1.2 estende Append (unica mode originale) con
-//! Create + TruncateInsert (Blocco A). Upsert/Update/Replace/DeleteByKeys
+//! Create (Blocco A). Upsert/Update/Replace/DeleteByKeys
 //! pianificati per tranches future.
 
 #![allow(
@@ -849,9 +849,9 @@ pub fn committed_outcome_for_mode(
 ) -> Result<WriteOutcome> {
     let rows = match mode {
         WriteMode::Replace => RowCounts {
-            // Replace: tutte le righe input sono le nuove righe target
-            // (il vecchio target è stato droppato dal RENAME swap).
-            // affected_or_inserted = righe inserite in staging = received.
+            // Replace: il target e stato svuotato dal DELETE nella stessa
+            // transazione, quindi le righe input sono esattamente le righe
+            // finali. affected_or_inserted = righe inserite = received.
             received,
             confirmed: received,
             inserted: Some(received),
@@ -1127,42 +1127,33 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
-    // Post review MySQL 2026-08-15:
-    // - `Replace` è **unsafe** su MySQL: il pattern staging + RENAME
-    //   perde vincoli/metadati non riproducibili in
-    //   `build_create_table_sql` (indici secondari, FK, TRIGGER,
-    //   check, permessi ACL, tablespace, partizioni). Il consumer
-    //   che aspetta idempotenza vede il target ricreato con schema
-    //   parziale.
-    // - `TruncateInsert` non è rollback-safe: `TRUNCATE TABLE` è DDL
-    //   e su MySQL/InnoDB fa **commit implicito** — il rollback
-    //   della tx non ripristina i dati eliminati.
+    // `Replace` e qualificata come DELETE FROM + bulk insert nella stessa
+    // transazione InnoDB: nessun DDL, quindi nessuna perdita di indici, FK,
+    // trigger, check, default, grant o AUTO_INCREMENT, e rollback pieno se
+    // qualcosa fallisce dopo il DELETE.
     //
-    // Entrambi restano `Unsupported` finché non implementiamo il
-    // preflight di metadata migration (Replace) e il fallback
-    // DELETE-in-tx (TruncateInsert). Il consumer che ne ha bisogno
-    // sa che sta facendo trade-off espliciti.
+    // `TruncateInsert` resta fail-closed. Su MySQL `TRUNCATE TABLE` e DDL con
+    // commit implicito: le righe sparirebbero prima dell'INSERT e nessun
+    // rollback le riporterebbe indietro. Emularla con `DELETE FROM` sarebbe
+    // peggio di rifiutarla — il consumer chiederebbe TRUNCATE (reset di
+    // AUTO_INCREMENT, nessun trigger, nessun log riga per riga) e ne
+    // otterrebbe un'altra cosa con lo stesso nome. Chi vuole svuotare e
+    // riempire in transazione ha `Replace`, che dichiara esattamente questo.
     match operation.mode {
         WriteMode::Append
         | WriteMode::Create
+        | WriteMode::Replace
         | WriteMode::Upsert
         | WriteMode::DeleteByKeys
         | WriteMode::Update => {}
-        WriteMode::Replace => {
-            return Err(unsupported(
-                "WriteMode::Replace su MySQL rimosso: staging + RENAME perde \
-                 vincoli/indici/FK/trigger/permessi non ricostruibili. \
-                 Workaround: eseguire manualmente CREATE TABLE con schema \
-                 completo, poi Append. Ri-abilitato quando il preflight \
-                 di metadata migration è qualificato.",
-            ));
-        }
         WriteMode::TruncateInsert => {
             return Err(unsupported(
-                "WriteMode::TruncateInsert su MySQL rimosso: TRUNCATE è DDL \
-                 con commit implicito → non rollback-safe se l'INSERT \
-                 successivo fallisce. Workaround: DELETE FROM in Update mode, \
-                 o pattern staging in tx dedicata.",
+                "WriteMode::TruncateInsert non qualificata su MySQL: TRUNCATE e \
+                 DDL con commit implicito, quindi non rollback-safe se l'INSERT \
+                 successivo fallisce, e non viene emulata con DELETE perche \
+                 avrebbe semantica diversa (AUTO_INCREMENT non azzerato, trigger \
+                 e log riga per riga attivi). Usare WriteMode::Replace, che \
+                 dichiara DELETE FROM + insert nella stessa transazione.",
             ));
         }
     }
@@ -1410,108 +1401,6 @@ pub(crate) fn build_temp_staging_sql(
     ))
 }
 
-/// Genera `CREATE TABLE staging_name (...)` **persistent** (non TEMPORARY)
-/// per WriteMode::Replace. Il pattern Replace è:
-/// 1. CREATE staging con struttura del target (via questa funzione)
-/// 2. INSERT bulk in staging
-/// 3. RENAME TABLE target TO backup, staging TO target (atomic multi-table)
-/// 4. DROP TABLE backup
-///
-/// Serve persistent (non TEMPORARY) per il RENAME atomico che rifiuta
-/// tabelle temporary. Il nome staging include un execution_id univoco
-/// per evitare collision.
-///
-/// # Errors
-///
-/// Come `build_create_table_sql`.
-pub(crate) fn build_persistent_staging_sql(
-    schema: &SchemaRef,
-    staging_name: &str,
-    database: &str,
-) -> Result<String> {
-    // Riusa la stessa logica CREATE TABLE, ma con nome staging.
-    let renderer = mysql_renderer();
-    let staging_object = ObjectName {
-        catalog: None,
-        schema: Some(mysql_identifier(database)?),
-        object: mysql_identifier(staging_name)?,
-    };
-    let quoted_staging = renderer.quote_object(&staging_object)?;
-    let columns: Vec<MysqlWriteColumn> = schema
-        .fields()
-        .iter()
-        .map(|field| compile_write_column(field, &renderer))
-        .collect::<Result<Vec<_>>>()?;
-    let lines: Vec<String> = columns
-        .iter()
-        .map(|c| {
-            let ty = mysql_column_ddl(&c.kind, c.spatial_srid);
-            let null = if c.nullable { "NULL" } else { "NOT NULL" };
-            format!("    {} {} {}", c.quoted, ty, null)
-        })
-        .collect();
-    Ok(format!(
-        "CREATE TABLE {quoted_staging} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        lines.join(",\n")
-    ))
-}
-
-/// Genera lo statement atomic RENAME per il swap Replace:
-/// `RENAME TABLE db.target TO db.backup, db.staging TO db.target;`
-///
-/// # Errors
-///
-/// Se target/staging/backup non sono identifier MySQL validi.
-pub(crate) fn build_replace_swap_sql(
-    operation: &WriteOperation,
-    staging_name: &str,
-    backup_name: &str,
-    database: &str,
-) -> Result<String> {
-    let renderer = mysql_renderer();
-    let target_schema = operation.target.schema.as_deref().unwrap_or(database);
-    let target_obj = ObjectName {
-        catalog: None,
-        schema: Some(mysql_identifier(target_schema)?),
-        object: mysql_identifier(&operation.target.object)?,
-    };
-    let staging_obj = ObjectName {
-        catalog: None,
-        schema: Some(mysql_identifier(database)?),
-        object: mysql_identifier(staging_name)?,
-    };
-    let backup_obj = ObjectName {
-        catalog: None,
-        schema: Some(mysql_identifier(target_schema)?),
-        object: mysql_identifier(backup_name)?,
-    };
-    Ok(format!(
-        "RENAME TABLE {} TO {}, {} TO {}",
-        renderer.quote_object(&target_obj)?,
-        renderer.quote_object(&backup_obj)?,
-        renderer.quote_object(&staging_obj)?,
-        renderer.quote_object(&target_obj)?,
-    ))
-}
-
-/// Genera `DROP TABLE backup_name` per cleanup post-Replace.
-///
-/// # Errors
-///
-/// Se backup_name non è identifier MySQL valido.
-pub(crate) fn build_drop_backup_sql(backup_name: &str, database: &str) -> Result<String> {
-    let renderer = mysql_renderer();
-    let backup_obj = ObjectName {
-        catalog: None,
-        schema: Some(mysql_identifier(database)?),
-        object: mysql_identifier(backup_name)?,
-    };
-    Ok(format!(
-        "DROP TABLE {}",
-        renderer.quote_object(&backup_obj)?
-    ))
-}
-
 /// Genera nome quoted per staging table (usato dopo `build_temp_staging_sql`).
 ///
 /// # Errors
@@ -1527,8 +1416,17 @@ pub(crate) fn quote_staging_name(staging_name: &str, database: &str) -> Result<S
     renderer.quote_object(&obj)
 }
 
-/// Genera `TRUNCATE TABLE db.table` per WriteMode::TruncateInsert.
-pub(crate) fn build_truncate_sql(operation: &WriteOperation, database: &str) -> Result<String> {
+/// Genera `DELETE FROM db.table` per `WriteMode::Replace`.
+///
+/// DML, non DDL: sta dentro la transazione del bulk insert, quindi un
+/// fallimento successivo lo annulla insieme alle righe gia scritte. Non tocca
+/// la definizione della tabella, che e esattamente cio che Replace promette di
+/// conservare.
+///
+/// # Errors
+///
+/// Se schema o oggetto del target non sono identificatori `MySQL` validi.
+pub(crate) fn build_delete_all_sql(operation: &WriteOperation, database: &str) -> Result<String> {
     let renderer = mysql_renderer();
     let target_schema = operation.target.schema.as_deref().unwrap_or(database);
     let object_name = ObjectName {
@@ -1537,7 +1435,7 @@ pub(crate) fn build_truncate_sql(operation: &WriteOperation, database: &str) -> 
         object: mysql_identifier(&operation.target.object)?,
     };
     Ok(format!(
-        "TRUNCATE TABLE {}",
+        "DELETE FROM {}",
         renderer.quote_object(&object_name)?
     ))
 }

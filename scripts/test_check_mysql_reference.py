@@ -292,7 +292,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         nella `cargo test` nuda veniva letta come rumore.
         """
 
-        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 25)
+        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 28)
         self.assertIn(
             "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,
@@ -301,6 +301,50 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_native_query_policy_deny_rejects_ddl",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,
         )
+
+    def test_gate_pins_the_replace_and_truncate_contract_tests(self) -> None:
+        """Il contratto Replace/TruncateInsert e fissato per nome.
+
+        Cinque test, una promessa ciascuna: identita e metadata conservati,
+        target assente rifiutato, rollback su errore, rollback su
+        cancellazione, e `TruncateInsert` che resta fail-closed senza toccare
+        il server.
+        """
+
+        for name in (
+            "live_tests::live_v12_write_replace_preserves_table_identity_and_metadata",
+            "live_tests::live_v12_write_replace_on_a_missing_target_is_not_found",
+            "live_tests::live_v12_write_replace_restores_the_previous_rows_when_the_stream_fails",
+            "live_tests::live_v12_write_replace_restores_the_previous_rows_on_cancellation",
+            "live_tests::live_v12_write_truncate_insert_rejected_without_remote_effects",
+        ):
+            self.assertIn(name, gate.EXPECTED_LIVE_DEFAULT_TESTS)
+        # I nomi del vecchio contratto — Replace rifiutata, TruncateInsert
+        # rifiutata senza prova di assenza di effetti — non devono
+        # sopravvivere all'inventario.
+        for gone in (
+            "live_tests::live_v12_write_replace_rejected_fail_closed",
+            "live_tests::live_v12_write_truncate_insert_rejected_fail_closed",
+        ):
+            self.assertNotIn(gone, gate.EXPECTED_LIVE_DEFAULT_TESTS)
+
+    def test_the_versioned_fixture_declares_the_replace_contract_target(self) -> None:
+        """Il target Replace nasce nell'init versionato, non nei test.
+
+        Il trigger richiede privilegi che l'utente della fixture non ha con il
+        binlog attivo: se un test provasse a crearlo fallirebbe con 1419, e la
+        tentazione sarebbe togliere il trigger dalla prova.
+        """
+
+        fixture = (ROOT / "docker" / "mysql" / "init" / "001-reference.sql").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CREATE TABLE replace_target", fixture)
+        self.assertIn("CREATE TRIGGER replace_target_audit", fixture)
+        self.assertIn("AUTO_INCREMENT", fixture)
+        self.assertIn("replace_target_label_uk", fixture)
+        self.assertIn("replace_target_fk", fixture)
+        self.assertIn("replace_target_ck", fixture)
 
     def test_gate_pins_the_offline_write_plan_inventory(self) -> None:
         write_tests = {

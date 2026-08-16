@@ -132,6 +132,30 @@ WITH RECURSIVE sequence (id) AS (
 )
 SELECT id, REPEAT(X'5A', 1024) FROM sequence;
 
+-- Fixture del contratto Replace: AUTO_INCREMENT, default, CHECK, unique index,
+-- foreign key e trigger, cioe tutto cio che una Replace implementata come
+-- staging + RENAME perderebbe. Il trigger deve nascere qui, da root: l'utente
+-- della fixture non ha SUPER e con il binlog attivo MySQL rifiuta CREATE
+-- TRIGGER (errore 1419). I test resettano le righe, non la definizione.
+CREATE TABLE replace_parent (parent_id BIGINT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO replace_parent VALUES (1), (2);
+
+CREATE TABLE replace_audit (n BIGINT NOT NULL) ENGINE=InnoDB;
+INSERT INTO replace_audit VALUES (0);
+
+CREATE TABLE replace_target (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    label VARCHAR(64) NOT NULL DEFAULT 'etichetta-default',
+    parent_id BIGINT NOT NULL,
+    UNIQUE KEY replace_target_label_uk (label),
+    CONSTRAINT replace_target_fk FOREIGN KEY (parent_id)
+        REFERENCES replace_parent (parent_id),
+    CONSTRAINT replace_target_ck CHECK (CHAR_LENGTH(label) > 0)
+) ENGINE=InnoDB;
+
+CREATE TRIGGER replace_target_audit AFTER INSERT ON replace_target
+FOR EACH ROW UPDATE replace_audit SET n = n + 1;
+
 -- View deliberatamente lenta per rendere riproducibili cancellation e timeout
 -- in-flight del percorso QueryOperation. SLEEP e proiettato, quindi il motore
 -- non puo eliminarlo come espressione inutilizzata.
