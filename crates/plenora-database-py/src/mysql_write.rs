@@ -28,7 +28,18 @@ use plenora_database_core::DatabaseError;
 use plenora_db_mysql::MysqlProvider;
 use std::sync::Arc;
 
-async fn do_copy_from_async_mysql(
+/// Bulk write MySQL: decodifica l'IPC, costruisce il piano, scrive.
+///
+/// `pub(crate)` perche la usano entrambi i binding — il sync tramite
+/// `copy_from_sync_mysql`, l'async direttamente da `acopy_from`. Finche non
+/// lo era, il percorso async ne teneva una copia riga per riga, e le due
+/// sarebbero divergute alla prima modifica di una sola.
+///
+/// # Errors
+///
+/// `DatabaseError` per IPC malformato, mode/profile/policy invalidi, keys
+/// mancanti dove servono, o fallimento del provider in prepare/write.
+pub(crate) async fn do_copy_from_async_mysql(
     provider: Arc<MysqlProvider>,
     secret: SecretString,
     schema_name: String,

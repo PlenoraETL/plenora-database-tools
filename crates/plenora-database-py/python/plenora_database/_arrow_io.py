@@ -13,15 +13,31 @@ from typing import Any
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
     """L'equivalente a offset 32 bit di un tipo a offset larghi, se esiste.
 
-    I writer dei provider accettano `string`/`binary`/`list`; `pandas` non
-    lascia scegliere. Con pandas 3 e pyarrow 25 `Table.from_pandas` produce
-    `large_string` per ogni colonna di testo, e `copy_from` finiva su
-    "tipo Arrow non supportato dal writer PostgreSQL" per un DataFrame di tre
-    righe — un limite dell'adapter presentato come limite del provider.
+    Ritorna `None` quando non c'e nulla da convertire.
 
-    La conversione e esplicita e puo fallire: oltre 2 GiB di offset il cast
-    solleva, invece di troncare. E il comportamento giusto — l'alternativa
-    sarebbe scrivere dati diversi da quelli passati.
+    I writer dei provider accettano `string`, `binary` e `list` di scalari;
+    `pandas` non lascia scegliere. Con pandas 3 e pyarrow 25
+    `Table.from_pandas` produce `large_string` per ogni colonna di testo, e
+    `copy_from` finiva su "tipo Arrow non supportato dal writer PostgreSQL"
+    per un DataFrame di tre righe — un limite dell'adapter presentato come
+    limite del provider.
+
+    **La conversione e ricorsiva sulle liste**, che sono l'unico tipo nested
+    qualificato: `PostgreSQL` le scrive come array, con elementi boolean,
+    int32, int64, float32, float64 o testo. Fermarsi al primo livello
+    lasciava `large_list<large_string>` a diventare `list<large_string>`, che
+    il writer rifiuta esattamente come prima — la conversione sembrava fatta
+    e non lo era. Il campo elemento conserva nome, nullability e metadata:
+    sono parte del contratto della colonna, e ricostruirlo con i default li
+    perderebbe in silenzio.
+
+    `struct` e `map` restano intoccati di proposito: nessun provider li
+    scrive, quindi convertirli produrrebbe un tipo comunque rifiutato, con
+    in piu una copia.
+
+    La conversione puo fallire: oltre 2 GiB di offset il cast solleva invece
+    di troncare. E il comportamento giusto — l'alternativa sarebbe scrivere
+    dati diversi da quelli passati.
     """
 
     if pa.types.is_large_string(field_type):
@@ -37,8 +53,21 @@ def _narrowed_type(field_type: Any, pa: Any) -> Any:
         checker = getattr(pa.types, probe, None)
         if checker is not None and checker(field_type):
             return replacement
-    if pa.types.is_large_list(field_type):
-        return pa.list_(field_type.value_type)
+
+    is_large_list = pa.types.is_large_list(field_type)
+    if is_large_list or pa.types.is_list(field_type):
+        element = field_type.value_field
+        narrowed_element = _narrowed_type(element.type, pa)
+        if narrowed_element is None and not is_large_list:
+            return None
+        return pa.list_(
+            pa.field(
+                element.name,
+                narrowed_element if narrowed_element is not None else element.type,
+                element.nullable,
+                element.metadata,
+            )
+        )
     return None
 
 

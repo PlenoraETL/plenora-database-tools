@@ -446,43 +446,20 @@ impl AsyncMysqlSession {
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
         future_into_py(py, async move {
-            // Riusa il helper generic write.rs → mysql_write.rs.
-            // do_copy_from_async_mysql non è pub — replichiamo la logica
-            // qui in modo minimo per non aggiungere altra API pubblica.
-            use crate::write::{
-                decode_ipc_stream, default_budget as write_budget, make_operation,
-                parse_mapping_policy, parse_mode, parse_profile, VecBatchStream,
-            };
-            let mode_enum = parse_mode(&mode).map_err(to_py_err)?;
-            let profile_enum = parse_profile(&profile).map_err(to_py_err)?;
-            let policy_enum = parse_mapping_policy(&policy).map_err(to_py_err)?;
-            let (input_schema, batches, declared_rows) =
-                decode_ipc_stream(&ipc).map_err(to_py_err)?;
-            let stream = VecBatchStream {
-                schema: Arc::clone(&input_schema),
-                batches,
-                declared_rows,
-            };
-            let operation = make_operation(
-                &schema,
-                &table,
-                mode_enum,
-                profile_enum,
-                policy_enum,
+            let outcome = crate::mysql_write::do_copy_from_async_mysql(
+                provider,
+                secret,
+                schema,
+                table,
+                ipc,
+                &mode,
+                &profile,
+                &policy,
                 keys,
                 update_columns,
             )
+            .await
             .map_err(to_py_err)?;
-            let budget = write_budget();
-            let cancel = CancellationToken::new();
-            let prepared = provider
-                .prepare_write(&secret, &operation, input_schema, &budget, &cancel)
-                .await
-                .map_err(to_py_err)?;
-            let outcome = provider
-                .write(&secret, prepared, Box::new(stream), &budget, &cancel)
-                .await
-                .map_err(to_py_err)?;
             Python::with_gil(|py| {
                 let d = crate::write::outcome_into_py(py, &outcome)?;
                 Ok(d.into_any().unbind())
