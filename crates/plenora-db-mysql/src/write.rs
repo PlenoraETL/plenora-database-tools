@@ -44,6 +44,9 @@ struct MysqlWriteColumn {
 
 #[derive(Debug, Clone)]
 pub struct MysqlWritePlan {
+    /// Mode dell'operazione, replicata dal piano per il rendering e il
+    /// preflight (es. la policy fail-closed degli indici Upsert).
+    mode: WriteMode,
     quoted_target: String,
     /// Nome del target senza quoting (per staging table naming).
     target_object_raw: String,
@@ -51,6 +54,12 @@ pub struct MysqlWritePlan {
     /// Colonne (quoted) da aggiornare nel `ON DUPLICATE KEY UPDATE` di
     /// una Upsert. Vuoto per Append/Create/TruncateInsert.
     upsert_update_columns: Vec<String>,
+    /// Colonne key dell'Upsert (nomi grezzi) per la verifica fail-closed
+    /// contro gli unique index del target. Vuoto per non-Upsert.
+    upsert_keys: Vec<String>,
+    /// Colonne key dell'Upsert (quoted) per la clausola `ON DUPLICATE KEY
+    /// UPDATE` no-op degli Upsert keys-only. Vuoto per non-Upsert.
+    upsert_keys_quoted: Vec<String>,
     /// Colonne (quoted) da usare come JOIN keys per Update via staging.
     /// Vuoto per non-Update modes.
     update_key_columns: Vec<String>,
@@ -212,6 +221,31 @@ impl MysqlWritePlan {
         } else {
             Vec::new()
         };
+        // Key columns dell'Upsert: nomi grezzi (per il match con gli unique
+        // index del target) e quoted (per la clausola ON DUPLICATE no-op dei
+        // keys-only). La presenza di ogni key nello schema è già verificata
+        // sopra per Upsert/DeleteByKeys.
+        let (upsert_keys, upsert_keys_quoted) = if operation.mode == WriteMode::Upsert {
+            let quoted: Vec<String> = operation
+                .keys
+                .iter()
+                .map(|k| {
+                    columns
+                        .iter()
+                        .find(|c| &c.name == k)
+                        .map(|c| c.quoted.clone())
+                        .ok_or_else(|| {
+                            prepare_error(
+                                ErrorCategory::InvalidPlan,
+                                format!("chiave Upsert MySQL '{k}' assente dallo schema Arrow"),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (operation.keys.clone(), quoted)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         // Update-specific: mappa keys + update columns quoted.
         let (update_key_columns, update_set_columns) = if operation.mode == WriteMode::Update {
             let key_quoted: Vec<String> = operation
@@ -269,10 +303,13 @@ impl MysqlWritePlan {
             (Vec::new(), Vec::new())
         };
         Ok(Self {
+            mode: operation.mode,
             quoted_target: renderer.quote_object(&target)?,
             target_object_raw: operation.target.object.clone(),
             columns,
             upsert_update_columns,
+            upsert_keys,
+            upsert_keys_quoted,
             update_key_columns,
             update_set_columns,
         })
@@ -325,7 +362,36 @@ impl MysqlWritePlan {
         staging_quoted: &str,
         rows: usize,
     ) -> Result<String> {
-        self.render_insert_generic(staging_quoted, rows, &[])
+        // Staging INSERT: mai ON DUPLICATE KEY (la staging è vuota e senza
+        // vincoli in conflitto; il merge avviene dopo con UPDATE JOIN).
+        self.render_insert_generic(staging_quoted, rows, None)
+    }
+
+    /// Corpo della clausola `ON DUPLICATE KEY UPDATE` per un Upsert verso il
+    /// target reale, oppure `None` per le altre mode.
+    ///
+    /// - Upsert con colonne non-key: `col=VALUES(col), ...`.
+    /// - Upsert **keys-only** (schema di sole key): `k0=k0` — un update no-op
+    ///   che rende l'INSERT idempotente (insert-or-ignore) invece di fallire
+    ///   con duplicate key. Senza questa clausola un Upsert keys-only
+    ///   diventerebbe un INSERT nudo che erra sul primo conflitto.
+    fn upsert_on_duplicate_clause(&self) -> Option<String> {
+        if self.mode != WriteMode::Upsert {
+            return None;
+        }
+        if self.upsert_update_columns.is_empty() {
+            self.upsert_keys_quoted
+                .first()
+                .map(|key| format!("{key}={key}"))
+        } else {
+            Some(
+                self.upsert_update_columns
+                    .iter()
+                    .map(|c| format!("{c}=VALUES({c})"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
     }
 
     /// Renderizza un INSERT multi-riga con soli placeholder.
@@ -334,14 +400,15 @@ impl MysqlWritePlan {
     ///
     /// Fallisce chiuso fuori dai limiti di binding di `MySQL`.
     pub(super) fn render_insert(&self, rows: usize) -> Result<String> {
-        self.render_insert_generic(&self.quoted_target, rows, &self.upsert_update_columns)
+        let on_duplicate = self.upsert_on_duplicate_clause();
+        self.render_insert_generic(&self.quoted_target, rows, on_duplicate.as_deref())
     }
 
     fn render_insert_generic(
         &self,
         target: &str,
         rows: usize,
-        upsert_update_columns: &[String],
+        on_duplicate: Option<&str>,
     ) -> Result<String> {
         if rows == 0 {
             return Err(prepare_error(
@@ -391,17 +458,13 @@ impl MysqlWritePlan {
             sql.push_str(&row_placeholders);
             sql.push(')');
         }
-        // Upsert v1.2: ON DUPLICATE KEY UPDATE per le colonne non-key.
-        // Uso `VALUES(col)` (deprecato in 8.0.20+ ma ancora funzionante in
-        // 8.4 LTS). Migrare a alias `AS new / new.col` in un giro futuro.
-        if !upsert_update_columns.is_empty() {
-            let updates = upsert_update_columns
-                .iter()
-                .map(|c| format!("{c}=VALUES({c})"))
-                .collect::<Vec<_>>()
-                .join(", ");
+        // Upsert v1.2: ON DUPLICATE KEY UPDATE (corpo precalcolato da
+        // `upsert_on_duplicate_clause`). Uso `VALUES(col)` (deprecato in
+        // 8.0.20+ ma ancora funzionante in 8.4 LTS). Migrare a alias
+        // `AS new / new.col` in un giro futuro.
+        if let Some(updates) = on_duplicate {
             sql.push_str(" ON DUPLICATE KEY UPDATE ");
-            sql.push_str(&updates);
+            sql.push_str(updates);
         }
         sql.push(';');
         Ok(sql)
@@ -602,6 +665,75 @@ impl MysqlWritePlan {
         })
     }
 
+    /// Policy fail-closed per gli indici di un Upsert.
+    ///
+    /// `INSERT ... ON DUPLICATE KEY UPDATE` scatta su **qualsiasi** PRIMARY
+    /// KEY o UNIQUE index in conflitto, non solo sulle `keys` dichiarate. Se
+    /// il target ha un unique index diverso dalle keys, una riga in ingresso
+    /// che non collide sulle keys ma collide su quell'altro indice
+    /// aggiornerebbe la **riga sbagliata** (silenziosamente). Quindi
+    /// richiediamo, prima di aprire la transazione:
+    ///
+    /// 1. esiste un PK/UNIQUE index le cui colonne coincidono (come insieme)
+    ///    con le keys — l'ancora che rende deterministico il match;
+    /// 2. **nessun altro** PK/UNIQUE index con un insieme di colonne diverso;
+    /// 3. nessun unique index funzionale (espressione) non confrontabile.
+    ///
+    /// Senza (1) l'`ON DUPLICATE KEY UPDATE` non troverebbe mai un conflitto
+    /// sulle keys e inserirebbe duplicati invece di aggiornare.
+    fn validate_upsert_target_indexes(
+        &self,
+        target: &MysqlObjectDescription,
+    ) -> Result<()> {
+        use std::collections::BTreeSet;
+        let key_set: BTreeSet<&str> = self.upsert_keys.iter().map(String::as_str).collect();
+        if key_set.is_empty() {
+            // validate_operation garantisce keys non vuote; difesa in profondità.
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                "Upsert MySQL richiede almeno una key column",
+            ));
+        }
+        let mut anchor_found = false;
+        for index in &target.indexes {
+            if !index.unique {
+                continue;
+            }
+            if !index.column_backed {
+                return Err(unsupported(format!(
+                    "Upsert MySQL non qualificato: la tabella '{}' ha un unique \
+                     index funzionale/espressione ('{}') non confrontabile con \
+                     le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
+                     riga sbagliata",
+                    target.name, index.name
+                )));
+            }
+            let index_set: BTreeSet<&str> = index.columns.iter().map(String::as_str).collect();
+            if index_set == key_set {
+                anchor_found = true;
+            } else {
+                return Err(unsupported(format!(
+                    "Upsert MySQL non sicuro: keys={:?} ma la tabella '{}' ha un \
+                     altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
+                     UPDATE potrebbe collidere su quell'indice e aggiornare la \
+                     riga sbagliata. Rimuovere l'indice in conflitto o usare \
+                     WriteMode::Update esplicito.",
+                    self.upsert_keys, target.name, index.name, index.columns
+                )));
+            }
+        }
+        if !anchor_found {
+            return Err(unsupported(format!(
+                "Upsert MySQL non sicuro: nessun PRIMARY KEY o UNIQUE index della \
+                 tabella '{}' corrisponde a keys={:?}. Senza un unique index sulle \
+                 keys, ON DUPLICATE KEY UPDATE non rileverebbe i conflitti e \
+                 inserirebbe duplicati invece di aggiornare.",
+                target.name, self.upsert_keys
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) fn preflight(&self, target: &MysqlObjectDescription) -> Result<LossReport> {
         if target.kind != "BASE TABLE" {
             return Err(unsupported("append MySQL richiede una BASE TABLE"));
@@ -610,6 +742,9 @@ impl MysqlWritePlan {
             return Err(unsupported(
                 "append SingleTransaction MySQL richiede una tabella InnoDB",
             ));
+        }
+        if self.mode == WriteMode::Upsert {
+            self.validate_upsert_target_indexes(target)?;
         }
         for column in &self.columns {
             let server = target
@@ -1691,13 +1826,30 @@ mod tests {
     }
 
     fn base_table(columns: Vec<MysqlColumn>) -> MysqlObjectDescription {
+        base_table_with_indexes(columns, Vec::new())
+    }
+
+    fn base_table_with_indexes(
+        columns: Vec<MysqlColumn>,
+        indexes: Vec<crate::MysqlIndex>,
+    ) -> MysqlObjectDescription {
         MysqlObjectDescription {
             schema: "warehouse".to_owned(),
             name: "events".to_owned(),
             kind: "BASE TABLE".to_owned(),
             engine: Some("InnoDB".to_owned()),
             columns,
+            indexes,
             token: MysqlSchemaToken("token".to_owned()),
+        }
+    }
+
+    fn unique_index(name: &str, columns: &[&str]) -> crate::MysqlIndex {
+        crate::MysqlIndex {
+            name: name.to_owned(),
+            unique: true,
+            column_backed: true,
+            columns: columns.iter().map(|c| (*c).to_owned()).collect(),
         }
     }
 
@@ -2295,5 +2447,162 @@ mod tests {
             ErrorCategory::ResourceLimit
         );
         assert_eq!(budget.remaining(ResourceKind::GeometryComponents), 1);
+    }
+
+    // ============================ Upsert: rendering + policy indici ============
+
+    fn upsert_operation(keys: Vec<String>) -> WriteOperation {
+        WriteOperation {
+            mode: WriteMode::Upsert,
+            keys,
+            ..append_operation()
+        }
+    }
+
+    fn upsert_plan(fields: Vec<Field>, keys: Vec<String>) -> MysqlWritePlan {
+        MysqlWritePlan::compile(&schema(fields), &upsert_operation(keys), "warehouse")
+            .expect("piano upsert qualificato")
+    }
+
+    /// Un Upsert con colonne non-key rende `ON DUPLICATE KEY UPDATE` che
+    /// aggiorna esattamente le non-key con i VALUES della riga.
+    #[test]
+    fn upsert_renders_on_duplicate_update_for_non_key_columns() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        assert_eq!(
+            plan.render_insert(1).expect("insert upsert"),
+            "INSERT INTO `warehouse`.`events` (`id`, `label`) VALUES (?, ?) \
+             ON DUPLICATE KEY UPDATE `label`=VALUES(`label`);"
+        );
+    }
+
+    /// Un Upsert **keys-only** (schema di sole key) non deve degradare a un
+    /// INSERT nudo che erra sul primo conflitto: rende una clausola no-op
+    /// `k=k` per ottenere semantica insert-or-ignore idempotente.
+    #[test]
+    fn upsert_keys_only_renders_noop_on_duplicate_clause() {
+        let plan = upsert_plan(
+            vec![Field::new("id", DataType::Int64, false)],
+            vec!["id".to_owned()],
+        );
+        assert_eq!(
+            plan.render_insert(2).expect("insert upsert keys-only"),
+            "INSERT INTO `warehouse`.`events` (`id`) VALUES (?), (?) \
+             ON DUPLICATE KEY UPDATE `id`=`id`;"
+        );
+    }
+
+    /// Le keys devono corrispondere a un PK/UNIQUE index reale.
+    #[test]
+    fn upsert_preflight_accepts_keys_matching_a_unique_index() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        let target = base_table_with_indexes(
+            identity_target(),
+            vec![unique_index("PRIMARY", &["id"])],
+        );
+        assert!(plan.preflight(&target).is_ok());
+    }
+
+    /// Un unique index **aggiuntivo** diverso dalle keys rende l'Upsert
+    /// non sicuro: ON DUPLICATE KEY potrebbe colpire la riga sbagliata.
+    #[test]
+    fn upsert_preflight_rejects_a_conflicting_extra_unique_index() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        let target = base_table_with_indexes(
+            identity_target(),
+            vec![
+                unique_index("PRIMARY", &["id"]),
+                unique_index("uq_label", &["label"]),
+            ],
+        );
+        let error = plan.preflight(&target).expect_err("unique index in conflitto");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+    }
+
+    /// Nessun unique index sulle keys → l'Upsert inserirebbe duplicati.
+    #[test]
+    fn upsert_preflight_rejects_keys_without_a_backing_unique_index() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        // Solo un indice non-unique su id: non ancora l'ancora richiesta.
+        let non_unique = crate::MysqlIndex {
+            name: "idx_id".to_owned(),
+            unique: false,
+            column_backed: true,
+            columns: vec!["id".to_owned()],
+        };
+        let target = base_table_with_indexes(identity_target(), vec![non_unique]);
+        let error = plan.preflight(&target).expect_err("nessun unique index sulle keys");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    /// Un unique index funzionale (espressione) non è confrontabile con le
+    /// keys → fail-closed.
+    #[test]
+    fn upsert_preflight_rejects_a_functional_unique_index() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        let functional = crate::MysqlIndex {
+            name: "uq_expr".to_owned(),
+            unique: true,
+            column_backed: false,
+            columns: Vec::new(),
+        };
+        let target = base_table_with_indexes(
+            identity_target(),
+            vec![unique_index("PRIMARY", &["id"]), functional],
+        );
+        let error = plan.preflight(&target).expect_err("unique index funzionale");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    /// Un unique index composito ridondante sulle **stesse** colonne delle
+    /// keys (stesso insieme) è ammesso: colpisce sempre la stessa riga.
+    #[test]
+    fn upsert_preflight_accepts_a_redundant_unique_index_on_the_same_keys() {
+        let plan = upsert_plan(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("label", DataType::Utf8, true),
+            ],
+            vec!["id".to_owned()],
+        );
+        let target = base_table_with_indexes(
+            identity_target(),
+            vec![
+                unique_index("PRIMARY", &["id"]),
+                unique_index("uq_id_dup", &["id"]),
+            ],
+        );
+        assert!(plan.preflight(&target).is_ok());
     }
 }

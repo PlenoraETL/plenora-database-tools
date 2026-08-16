@@ -65,6 +65,7 @@ fn description(scalars: usize, geometries: usize) -> MysqlObjectDescription {
         kind: "BASE TABLE".to_owned(),
         engine: Some("InnoDB".to_owned()),
         columns,
+        indexes: Vec::new(),
         token: MysqlSchemaToken("mysql-schema-token-benchmark".to_owned()),
     }
 }

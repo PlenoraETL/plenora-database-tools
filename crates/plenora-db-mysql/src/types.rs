@@ -653,6 +653,7 @@ mod tests {
             kind: "BASE TABLE".to_owned(),
             engine: Some("InnoDB".to_owned()),
             columns: vec![column("id", "bigint", "bigint")],
+            indexes: Vec::new(),
             token: crate::MysqlSchemaToken("token".to_owned()),
         };
         let operation = ReadOperation {

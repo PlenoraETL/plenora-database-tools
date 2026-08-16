@@ -26,8 +26,8 @@ mod live_tests;
 
 pub use arrow::MysqlColumnBuffer;
 pub use catalog::{
-    describe_object, list_objects, list_schemas, probe_server, MysqlColumn, MysqlObjectDescription,
-    MysqlObjectSummary, MysqlProbe, MysqlSchemaToken,
+    describe_object, list_objects, list_schemas, probe_server, MysqlColumn, MysqlIndex,
+    MysqlObjectDescription, MysqlObjectSummary, MysqlProbe, MysqlSchemaToken,
 };
 pub use config::{MysqlCertificatePolicy, MysqlConfig};
 pub use parameter::bind_parameters;

@@ -4223,54 +4223,27 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
         .query_drop("DROP TABLE _v12_create_conflict").await.ok();
 }
 
+/// Fail-closed: `TruncateInsert` è stato rimosso su MySQL (TRUNCATE è DDL
+/// con commit implicito → non rollback-safe se l'INSERT successivo
+/// fallisce). `prepare_write` deve rifiutarlo come `Unsupported`.
 #[tokio::test]
-async fn live_v12_write_truncate_insert_clears_and_reinserts() {
+async fn live_v12_write_truncate_insert_rejected_fail_closed() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
-    // Setup: crea target + seed
-    {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_trunc").await.ok();
-        setup.connection_mut().unwrap()
-            .query_drop("CREATE TABLE _v12_trunc (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
-            .await.expect("create");
-        setup.connection_mut().unwrap()
-            .query_drop("INSERT INTO _v12_trunc VALUES (99, 'old-1'), (100, 'old-2')")
-            .await.expect("seed");
-    }
-
-    let (schema, batch) = scalar_batch(&[1, 2], &["new-a", "new-b"]);
+    let (schema, _batch) = scalar_batch(&[1, 2], &["new-a", "new-b"]);
     let operation = write_op_scalar("dataflow_test", "_v12_trunc",
         plenora_database_core::plan::WriteMode::TruncateInsert);
 
-    let prepared = provider
+    let Err(error) = provider
         .prepare_write(&live_secret(), &operation,
             std::sync::Arc::clone(&schema), &budget, &cancellation)
         .await
-        .expect("prepare truncate");
-    let stream = BatchesStream {
-        schema: std::sync::Arc::clone(&schema),
-        batches: std::collections::VecDeque::from(vec![batch]),
-        declared: 2,
+    else {
+        panic!("TruncateInsert MySQL deve essere rifiutato fail-closed");
     };
-    let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
-        .await
-        .expect("write truncate_insert");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
-    assert_eq!(outcome.rows.confirmed, 2);
-
-    // Verifica: solo le 2 nuove righe, non le vecchie
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let rows: Vec<i64> = check.connection_mut().unwrap()
-        .query::<i64, _>("SELECT id FROM _v12_trunc ORDER BY id")
-        .await.expect("select");
-    assert_eq!(rows, vec![1, 2], "TRUNCATE deve aver eliminato le righe seed");
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_trunc").await.ok();
+    assert_eq!(error.category, ErrorCategory::Unsupported);
 }
 
 fn write_op_with_keys(
@@ -4339,6 +4312,52 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
     ]);
     check.connection_mut().unwrap()
         .query_drop("DROP TABLE _v12_upsert").await.ok();
+}
+
+/// Fail-closed: un Upsert su `keys=[id]` verso una tabella che ha un
+/// **secondo** unique index (`code`) deve essere rifiutato in prepare —
+/// `ON DUPLICATE KEY UPDATE` potrebbe collidere su `code` e aggiornare la
+/// riga sbagliata.
+#[tokio::test]
+async fn live_v12_write_upsert_rejects_conflicting_unique_index() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
+        setup.connection_mut().unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upsert_unsafe").await.ok();
+        setup.connection_mut().unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_upsert_unsafe (\
+                 id BIGINT PRIMARY KEY, \
+                 label TEXT NOT NULL, \
+                 code BIGINT NOT NULL, \
+                 UNIQUE KEY uq_code (code)\
+                 ) ENGINE=InnoDB")
+            .await.expect("create");
+    }
+
+    let (schema, _batch) = scalar_batch(&[1], &["x"]);
+    let operation = write_op_with_keys(
+        "dataflow_test",
+        "_v12_upsert_unsafe",
+        plenora_database_core::plan::WriteMode::Upsert,
+        vec!["id".to_owned()],
+    );
+    let Err(error) = provider
+        .prepare_write(&live_secret(), &operation,
+            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .await
+    else {
+        panic!("prepare upsert deve fallire fail-closed sull'indice in conflitto");
+    };
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+
+    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
+    check.connection_mut().unwrap()
+        .query_drop("DROP TABLE _v12_upsert_unsafe").await.ok();
 }
 
 fn keys_only_batch(
@@ -4725,66 +4744,27 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         .query_drop("DROP TABLE _v12_spatial_pred").await.ok();
 }
 
+/// Fail-closed: `Replace` è stato rimosso su MySQL (staging + RENAME perde
+/// vincoli/indici/FK/trigger/permessi non ricostruibili). `prepare_write`
+/// deve rifiutarlo come `Unsupported`.
 #[tokio::test]
-async fn live_v12_write_replace_swaps_old_target_with_staging() {
+async fn live_v12_write_replace_rejected_fail_closed() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
-    {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_rep").await.ok();
-        setup.connection_mut().unwrap()
-            .query_drop("CREATE TABLE _v12_rep (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
-            .await.expect("create");
-        setup.connection_mut().unwrap()
-            .query_drop("INSERT INTO _v12_rep VALUES (100, 'old-100'), (200, 'old-200')")
-            .await.expect("seed old");
-    }
-
-    // Replace: nuove righe id=1, 2, 3 sostituiscono completamente il target.
-    let (schema, batch) = scalar_batch(&[1, 2, 3], &["new-1", "new-2", "new-3"]);
+    let (schema, _batch) = scalar_batch(&[1, 2, 3], &["new-1", "new-2", "new-3"]);
     let operation = write_op_scalar("dataflow_test", "_v12_rep",
         plenora_database_core::plan::WriteMode::Replace);
 
-    let prepared = provider
+    let Err(error) = provider
         .prepare_write(&live_secret(), &operation,
             std::sync::Arc::clone(&schema), &budget, &cancellation)
         .await
-        .expect("prepare replace");
-    let stream = BatchesStream {
-        schema: std::sync::Arc::clone(&schema),
-        batches: std::collections::VecDeque::from(vec![batch]),
-        declared: 3,
+    else {
+        panic!("Replace MySQL deve essere rifiutato fail-closed");
     };
-    let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
-        .await
-        .expect("write replace");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
-    assert_eq!(outcome.rows.received, 3);
-    assert_eq!(outcome.rows.confirmed, 3);
-    assert_eq!(outcome.rows.inserted, Some(3));
-
-    // Verifica: solo le 3 nuove righe (id 1/2/3), nessuna vecchia (id 100/200)
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let rows: Vec<i64> = check.connection_mut().unwrap()
-        .query::<i64, _>("SELECT id FROM _v12_rep ORDER BY id")
-        .await.expect("select");
-    assert_eq!(rows, vec![1, 2, 3], "Replace deve aver sostituito completamente il target");
-
-    // Verifica cleanup: backup + staging non devono esistere
-    let orphans: Option<u64> = check.connection_mut().unwrap()
-        .query_first(
-            "SELECT COUNT(*) FROM information_schema.tables \
-             WHERE table_schema='dataflow_test' \
-               AND (table_name LIKE '__pln_bak_%' OR table_name LIKE '__pln_repl_%')"
-        )
-        .await.expect("orphans");
-    assert_eq!(orphans, Some(0), "backup e staging devono essere puliti dopo Replace");
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_rep").await.ok();
+    assert_eq!(error.category, ErrorCategory::Unsupported);
 }
 
 #[tokio::test]

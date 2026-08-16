@@ -54,6 +54,28 @@ pub struct MysqlColumn {
 #[serde(transparent)]
 pub struct MysqlSchemaToken(pub String);
 
+/// Un indice (PRIMARY / UNIQUE / non-unique) osservato su una tabella.
+///
+/// Serve al preflight Upsert: `ON DUPLICATE KEY UPDATE` scatta su ogni
+/// PK/unique index, non solo sulle `keys` dichiarate, quindi la policy
+/// fail-closed deve poter confrontare le colonne di ciascun unique index
+/// con le keys dell'operazione.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MysqlIndex {
+    pub name: String,
+    /// `true` per PRIMARY e UNIQUE (`NON_UNIQUE` = 0).
+    pub unique: bool,
+    /// `true` se ogni parte dell'indice è una colonna semplice. `false` se
+    /// almeno una parte è un'espressione (functional index, `MySQL` 8.0+):
+    /// in quel caso `columns` non descrive l'indice per intero e non è
+    /// confrontabile con le keys.
+    pub column_backed: bool,
+    /// Colonne dell'indice in ordine `SEQ_IN_INDEX`. Parziale/vuoto quando
+    /// `column_backed` è `false`.
+    pub columns: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MysqlObjectDescription {
@@ -62,6 +84,7 @@ pub struct MysqlObjectDescription {
     pub kind: String,
     pub engine: Option<String>,
     pub columns: Vec<MysqlColumn>,
+    pub indexes: Vec<MysqlIndex>,
     pub token: MysqlSchemaToken,
 }
 
@@ -287,6 +310,25 @@ pub async fn describe_object(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    // Indici: PRIMARY/UNIQUE/non-unique con le loro colonne. Ordinati per
+    // (INDEX_NAME, SEQ_IN_INDEX) così che le parti di ogni indice siano
+    // contigue e in ordine. `EXPRESSION` (MySQL 8.0+) è non-NULL per le
+    // parti funzionali: in quel caso COLUMN_NAME è NULL e l'indice non è
+    // confrontabile per colonne.
+    let index_rows = session
+        .exec_rows(
+            "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
+             SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
+             EXPRESSION AS expression \
+             FROM information_schema.statistics \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            Params::Positional(vec![Value::from(schema), Value::from(name)]),
+            ErrorPhase::Probe,
+            cancellation,
+        )
+        .await?;
+    let indexes = build_indexes(&index_rows)?;
     let schema_name: String = required(object, "table_schema", "table_schema")?;
     let object_name: String = required(object, "table_name", "table_name")?;
     let kind: String = required(object, "table_type", "table_type")?;
@@ -297,6 +339,7 @@ pub async fn describe_object(
         &kind,
         engine.as_deref(),
         &columns,
+        &indexes,
     )?;
     Ok(MysqlObjectDescription {
         schema: schema_name,
@@ -304,8 +347,42 @@ pub async fn describe_object(
         kind,
         engine,
         columns,
+        indexes,
         token,
     })
+}
+
+/// Aggrega le righe di `information_schema.statistics` (una per parte di
+/// indice) in una lista di `MysqlIndex`. Le righe arrivano già ordinate per
+/// `(INDEX_NAME, SEQ_IN_INDEX)`.
+fn build_indexes(rows: &[Row]) -> Result<Vec<MysqlIndex>> {
+    let mut indexes: Vec<MysqlIndex> = Vec::new();
+    for row in rows {
+        let name: String = required(row, "index_name", "index_name")?;
+        let non_unique: i64 = required(row, "non_unique", "non_unique")?;
+        let column: Option<String> = optional(row, "column_name", "column_name")?;
+        let expression: Option<String> = optional(row, "expression", "expression")?;
+        // Nuovo indice se il nome cambia rispetto all'ultimo accumulato.
+        if indexes.last().map(|last| last.name.as_str()) != Some(name.as_str()) {
+            indexes.push(MysqlIndex {
+                name,
+                unique: non_unique == 0,
+                column_backed: true,
+                columns: Vec::new(),
+            });
+        }
+        let current = indexes
+            .last_mut()
+            .ok_or_else(|| mapping_error("aggregazione indici MySQL incoerente"))?;
+        match column {
+            Some(column_name) => current.columns.push(column_name),
+            // Parte funzionale (EXPRESSION non-NULL, COLUMN_NAME NULL):
+            // l'indice non è più confrontabile per colonne.
+            None if expression.is_some() => current.column_backed = false,
+            None => return Err(mapping_error("parte di indice MySQL senza colonna né espressione")),
+        }
+    }
+    Ok(indexes)
 }
 
 fn schema_token(
@@ -314,8 +391,12 @@ fn schema_token(
     kind: &str,
     engine: Option<&str>,
     columns: &[MysqlColumn],
+    indexes: &[MysqlIndex],
 ) -> Result<MysqlSchemaToken> {
-    let bytes = serde_json::to_vec(&(schema, name, kind, engine, columns))
+    // Indici inclusi nel token: una modifica agli indici (es. drop del PK,
+    // aggiunta di un unique index) fra prepare ed esecuzione deve cambiare
+    // il token e non passare inosservata al preflight Upsert.
+    let bytes = serde_json::to_vec(&(schema, name, kind, engine, columns, indexes))
         .map_err(|_| mapping_error("serializzazione token schema MySQL fallita"))?;
     let digest = Sha256::digest(bytes);
     let mut encoded = String::with_capacity(digest.len() * 2);
@@ -406,12 +487,19 @@ mod tests {
             extra: String::new(),
             generation_expression: String::new(),
         };
+        let pk = MysqlIndex {
+            name: "PRIMARY".to_owned(),
+            unique: true,
+            column_backed: true,
+            columns: vec!["id".to_owned()],
+        };
         let first = schema_token(
             "data",
             "items",
             "BASE TABLE",
             Some("InnoDB"),
             std::slice::from_ref(&column),
+            std::slice::from_ref(&pk),
         )
         .expect("token");
         let same = schema_token(
@@ -420,6 +508,7 @@ mod tests {
             "BASE TABLE",
             Some("InnoDB"),
             std::slice::from_ref(&column),
+            std::slice::from_ref(&pk),
         )
         .expect("same token");
         let changed = schema_token(
@@ -429,11 +518,31 @@ mod tests {
             Some("InnoDB"),
             &[MysqlColumn {
                 nullable: true,
-                ..column
+                ..column.clone()
             }],
+            std::slice::from_ref(&pk),
         )
         .expect("changed token");
+        // Una modifica agli indici (aggiunta di un unique index) cambia il token.
+        let index_changed = schema_token(
+            "data",
+            "items",
+            "BASE TABLE",
+            Some("InnoDB"),
+            std::slice::from_ref(&column),
+            &[
+                pk,
+                MysqlIndex {
+                    name: "uq_code".to_owned(),
+                    unique: true,
+                    column_backed: true,
+                    columns: vec!["code".to_owned()],
+                },
+            ],
+        )
+        .expect("index changed token");
         assert_eq!(first, same);
         assert_ne!(first, changed);
+        assert_ne!(first, index_changed);
     }
 }

@@ -11,6 +11,44 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [Unreleased] — 0.9.3
+
+Blocco Upsert/metadata unique (MySQL). Include anche
+`NativeQueryPolicy` MySQL (commit successivo al tag `py-v0.9.2`, quindi
+non presente negli artifact 0.9.2).
+
+### Fix P1 — Upsert MySQL fail-closed sugli unique index
+
+`INSERT ... ON DUPLICATE KEY UPDATE` scatta su **qualsiasi** PRIMARY
+KEY / UNIQUE index in conflitto, non solo sulle `keys` dichiarate. Con
+un secondo unique index una riga in ingresso poteva collidere
+sull'indice sbagliato e aggiornare **silenziosamente la riga
+sbagliata**.
+
+Il preflight Upsert ora verifica (fail-closed, prima di aprire la
+transazione, sia in `prepare` sia in `write`):
+1. esiste un PK/UNIQUE index le cui colonne coincidono (come insieme)
+   con le `keys` — l'ancora del match;
+2. **nessun altro** PK/UNIQUE index con colonne diverse;
+3. nessun unique index funzionale/espressione (non confrontabile).
+
+Fuori da questi vincoli l'Upsert ritorna `PlenoraUnsupportedError`.
+
+Novità di supporto:
+- `MysqlObjectDescription` ora espone `indexes: [MysqlIndex]`
+  (name/unique/column_backed/columns), letti da
+  `information_schema.statistics`.
+- Lo `schema_token` include gli indici: una modifica agli indici fra
+  `prepare` ed esecuzione cambia il token e non passa inosservata.
+
+### Fix — Upsert keys-only idempotente
+
+Un Upsert con schema di sole colonne key non degrada più a un INSERT
+nudo (che erra sul primo duplicate key): rende
+`ON DUPLICATE KEY UPDATE k=k` (no-op) per semantica insert-or-ignore.
+
+---
+
 ## [0.9.2] — 2026-08-15
 
 Fix pre-PyPI review. 0.9.1 aveva chiuso i 3 P0 MySQL ma il default
