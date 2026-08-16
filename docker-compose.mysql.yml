@@ -49,7 +49,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysqladmin ping -h localhost -u dataflow --ssl-mode=REQUIRED --silent || exit 1",
+          "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysqladmin ping -h 127.0.0.1 --protocol=TCP -u dataflow --ssl-mode=REQUIRED --silent || exit 1",
         ]
       interval: 10s
       timeout: 5s

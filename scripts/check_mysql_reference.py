@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Gate riproducibile del riferimento MySQL 8.4 iniziale."""
+"""Gate riproducibile del riferimento MySQL baseline.
+
+La versione e il digest del riferimento non sono scritti qui: arrivano da
+`docker/mysql/references.json`, unica fonte di verita della matrice. Il gate
+avvia la baseline dichiarata, ne verifica l'identita e poi esegue le tre
+famiglie di test del provider, ciascuna con il proprio runner e il proprio
+inventario fissato per nome.
+"""
 
 from __future__ import annotations
 
@@ -11,13 +18,41 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Il gate viene invocato sia come modulo del pacchetto sia come script: la
+# radice del repository deve restare importabile in entrambi i casi.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.mysql_inventory import (  # noqa: E402
+    collect as collect_inventory,
+    difference as inventory_difference,
+)
+from scripts.mysql_references import (  # noqa: E402
+    BASELINE,
+    validate_compose_pins_the_baseline,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "dataflow-mysql"
 RUST_IMAGE = "rust:1.92"
-EXPECTED_DIGEST = "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
-EXPECTED_REFERENCE = f"mysql@{EXPECTED_DIGEST}"
-EXPECTED_OFFLINE_TESTS = {
+EXPECTED_DIGEST = BASELINE.digest
+EXPECTED_REFERENCE = BASELINE.image
+EXPECTED_VERSION = BASELINE.exact_version
+EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
+
+# --- inventario dei test --------------------------------------------------
+#
+# Tre famiglie, tre runner. `unit` gira senza server; `live_default` sono i
+# test live NON marcati `#[ignore]`, che una `cargo test` nuda esegue e che
+# quindi richiedono comunque il riferimento acceso; `live_reference` sono i
+# test live `#[ignore]`, raggiungibili solo con `--ignored`.
+#
+# Le liste sono fissate per nome perche un conteggio non distingue un test
+# sostituito da un test aggiunto. `validate_inventory()` le confronta con la
+# sorgente Rust prima di qualsiasi esecuzione: se divergono, il gate fallisce
+# chiuso invece di qualificare una superficie che non e piu quella dichiarata.
+
+EXPECTED_UNIT_TESTS = {
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
     "catalog::tests::schema_token_is_stable_and_sensitive",
@@ -40,9 +75,9 @@ EXPECTED_OFFLINE_TESTS = {
     "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
     "pool::tests::checkout_preserves_the_independent_acquire_budget",
     "pool::tests::zero_capacity_is_rejected_without_network",
+    "provider::tests::invalid_row_diagnostics_policy_is_rejected_before_transaction_setup",
     "provider::tests::prepare_write_honours_cancellation_before_the_network",
     "provider::tests::prepare_write_rejects_unqualified_operations_before_the_network",
-    "provider::tests::invalid_row_diagnostics_policy_is_rejected_before_transaction_setup",
     "provider::tests::provider_surface_is_typed_and_fail_closed",
     "provider::tests::published_spatial_capabilities_match_generic_geometry_contract",
     "provider::tests::query_demands_the_having_bind_before_reaching_the_network",
@@ -95,8 +130,8 @@ EXPECTED_OFFLINE_TESTS = {
     "read::tests::rows_keep_their_order_and_count_across_batch_boundaries",
     "read::tests::terminal_stream_error_is_sticky_instead_of_becoming_eof",
     "read::tests::unattributable_read_failures_never_invent_provenance",
-    "row_diagnostics::tests::row_rejection_causes_come_from_server_codes_only",
     "row_diagnostics::tests::a_current_batch_with_rows_beyond_the_declared_total_is_rejected",
+    "row_diagnostics::tests::row_rejection_causes_come_from_server_codes_only",
     "row_diagnostics::tests::source_offsets_advance_absolutely_across_batch_boundaries",
     "session::tests::bootstrap_is_explicit_and_deterministic",
     "session::tests::exactly_one_affected_row_is_required_for_row_scoped_success",
@@ -132,33 +167,67 @@ EXPECTED_OFFLINE_TESTS = {
     "write::tests::server_preflight_requires_microsecond_temporal_precision",
     "write::tests::spatial_batch_enforces_exact_type_and_cumulative_component_budget",
     "write::tests::spatial_batch_rejects_ewkb_srid_and_z_before_binding",
+    "write::tests::upsert_keys_only_renders_noop_on_duplicate_clause",
+    "write::tests::upsert_preflight_accepts_a_redundant_unique_index_on_the_same_keys",
+    "write::tests::upsert_preflight_accepts_keys_matching_a_unique_index",
+    "write::tests::upsert_preflight_rejects_a_conflicting_extra_unique_index",
+    "write::tests::upsert_preflight_rejects_a_functional_unique_index",
+    "write::tests::upsert_preflight_rejects_keys_without_a_backing_unique_index",
+    "write::tests::upsert_renders_on_duplicate_update_for_non_key_columns",
 }
-EXPECTED_LIVE_TESTS = {
-    "live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
-    "live_append_batch_failure_rolls_back_without_partial_rows",
-    "live_append_commits_a_single_transaction_and_reads_back_exactly",
-    "live_append_spatial_xy_preserves_srid_and_coordinates",
-    "live_append_timeout_quarantines_and_replaces_the_pooled_session",
-    "live_deadline_reports_timeout_and_quarantines_the_session",
-    "live_default_limits_batch_many_rows_over_four_columns",
-    "live_early_stream_drop_cancels_worker_and_keeps_provider_usable",
-    "live_grouped_aggregate_having_bind_and_distinct_over_verified_tls",
-    "live_inflight_cancellation_quarantines_the_session",
-    "live_operation_timeout_quarantines_the_session",
-    "live_physical_joins_bind_on_clauses_and_publish_outer_nullability",
-    "live_pool_acquire_timeout_is_independent_from_connect_timeout",
-    "live_pool_reset_reapplies_deterministic_session_bootstrap",
-    "live_provider_read_rejects_a_hostname_mismatch",
-    "live_provider_connection_capabilities_and_inspect",
-    "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
-    "live_query_operation_cancellation_and_timeout_quarantine_the_session",
-    "live_query_operation_executes_once_holds_lease_and_stays_demand_bounded",
-    "live_read_projection_filter_order_and_default_schema",
-    "live_reference_probe_catalog_and_spatial_metadata",
-    "live_scalar_single_source_query_uses_prepare_metadata_as_schema",
-    "live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates",
-    "live_streaming_read_maps_scalar_and_xy_geometry_exactly",
-    "live_verified_tls_rejects_a_hostname_mismatch",
+EXPECTED_LIVE_DEFAULT_TESTS = {
+    "live_tests::live_native_query_policy_allow_permits_ddl",
+    "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",
+    "live_tests::live_native_query_policy_deny_rejects_ddl",
+    "live_tests::live_native_query_policy_deny_rejects_ddl_via_query",
+    "live_tests::live_native_query_policy_deny_rejects_session_control",
+    "live_tests::live_v12_capabilities_publish_verified_spatial_functions",
+    "live_tests::live_v12_conditional_update_rolls_back_on_mismatch",
+    "live_tests::live_v12_provider_execute_ddl_creates_and_drops_table",
+    "live_tests::live_v12_query_spatial_functions_render_and_execute",
+    "live_tests::live_v12_query_spatial_predicate_intersects_in_filter",
+    "live_tests::live_v12_transaction_execute_and_commit",
+    "live_tests::live_v12_transaction_query_returns_typed_rows",
+    "live_tests::live_v12_transaction_rollback_drops_all_writes",
+    "live_tests::live_v12_transaction_savepoint_rollback_to_partial",
+    "live_tests::live_v12_write_create_mode_builds_table_and_inserts",
+    "live_tests::live_v12_write_create_mode_conflict_if_exists",
+    "live_tests::live_v12_write_delete_by_keys_removes_matching_rows",
+    "live_tests::live_v12_write_delete_by_keys_without_keys_rejected",
+    "live_tests::live_v12_write_replace_rejected_fail_closed",
+    "live_tests::live_v12_write_truncate_insert_rejected_fail_closed",
+    "live_tests::live_v12_write_update_via_staging_updates_matching_rows",
+    "live_tests::live_v12_write_update_without_keys_rejected",
+    "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
+    "live_tests::live_v12_write_upsert_updates_existing_and_inserts_new",
+    "live_tests::live_v12_write_upsert_without_keys_rejected",
+}
+EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
+    "live_tests::live_append_batch_failure_rolls_back_without_partial_rows",
+    "live_tests::live_append_commits_a_single_transaction_and_reads_back_exactly",
+    "live_tests::live_append_spatial_xy_preserves_srid_and_coordinates",
+    "live_tests::live_append_timeout_quarantines_and_replaces_the_pooled_session",
+    "live_tests::live_deadline_reports_timeout_and_quarantines_the_session",
+    "live_tests::live_default_limits_batch_many_rows_over_four_columns",
+    "live_tests::live_early_stream_drop_cancels_worker_and_keeps_provider_usable",
+    "live_tests::live_grouped_aggregate_having_bind_and_distinct_over_verified_tls",
+    "live_tests::live_inflight_cancellation_quarantines_the_session",
+    "live_tests::live_operation_timeout_quarantines_the_session",
+    "live_tests::live_physical_joins_bind_on_clauses_and_publish_outer_nullability",
+    "live_tests::live_pool_acquire_timeout_is_independent_from_connect_timeout",
+    "live_tests::live_pool_reset_reapplies_deterministic_session_bootstrap",
+    "live_tests::live_provider_connection_capabilities_and_inspect",
+    "live_tests::live_provider_read_rejects_a_hostname_mismatch",
+    "live_tests::live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+    "live_tests::live_query_operation_cancellation_and_timeout_quarantine_the_session",
+    "live_tests::live_query_operation_executes_once_holds_lease_and_stays_demand_bounded",
+    "live_tests::live_read_projection_filter_order_and_default_schema",
+    "live_tests::live_reference_probe_catalog_and_spatial_metadata",
+    "live_tests::live_scalar_single_source_query_uses_prepare_metadata_as_schema",
+    "live_tests::live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates",
+    "live_tests::live_streaming_read_maps_scalar_and_xy_geometry_exactly",
+    "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
 }
 
 
@@ -222,8 +291,12 @@ def mysql_value(statement: str) -> str:
             CONTAINER,
             "/bin/sh",
             "-c",
+            # TCP, non socket: durante il bootstrap l'entrypoint MySQL
+            # avvia un server temporaneo raggiungibile solo dal socket. Una
+            # probe sul socket puo quindi rispondere prima che il server
+            # definitivo esista, e la verifica successiva trova il vuoto.
             'exec env MYSQL_PWD="$MYSQL_PASSWORD" mysql -Nse "$1" '
-            "-u dataflow --ssl-mode=REQUIRED",
+            "-u dataflow -h 127.0.0.1 --protocol=TCP --ssl-mode=REQUIRED",
             "mysql-reference-probe",
             statement,
         ],
@@ -266,7 +339,31 @@ def mysql_network() -> str:
     aliases = network.get("Aliases") if isinstance(network, dict) else None
     if not isinstance(aliases, list) or CONTAINER not in aliases:
         raise RuntimeError("rete Compose del riferimento MySQL assente o senza alias")
+    if "mysql-hostname-mismatch" not in aliases:
+        raise RuntimeError(
+            "alias mysql-hostname-mismatch assente dalla rete Compose: la prova "
+            "TLS negativa diventerebbe un errore DNS invece di un rifiuto di identita"
+        )
     return expected
+
+
+def host_ca_path() -> str:
+    """CA privata esportata sull'host per l'esecuzione con cargo locale.
+
+    # Raises
+
+    `RuntimeError` quando la CA non e disponibile: senza di essa i test live
+    girerebbero con verifica indebolita, cioe proprio la condizione che il
+    gate esiste per escludere.
+    """
+
+    ca_path = os.environ.get("PLENORA_MYSQL_CA")
+    if not ca_path:
+        raise RuntimeError(
+            "PLENORA_MYSQL_CA obbligatoria con cargo host: esportare la CA da "
+            f"{CONTAINER}:/etc/mysql/tls/ca.pem prima di eseguire il gate"
+        )
+    return ca_path
 
 
 def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
@@ -276,8 +373,8 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         environment.setdefault("PLENORA_MYSQL_DATABASE", "dataflow_test")
         environment.setdefault("PLENORA_MYSQL_USER", "dataflow")
         environment.setdefault("PLENORA_MYSQL_PASSWORD", fixture_password())
-        if "PLENORA_MYSQL_CA" not in environment:
-            raise RuntimeError("PLENORA_MYSQL_CA obbligatoria con cargo host")
+        environment["PLENORA_MYSQL_CA"] = host_ca_path()
+        environment["PLENORA_MYSQL_EXPECTED_VERSION"] = EXPECTED_VERSION_PREFIX
         return [os.environ.get("CARGO", "cargo"), *arguments], environment
 
     environment = os.environ.copy()
@@ -308,6 +405,8 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "PLENORA_MYSQL_PASSWORD",
         "-e",
         "PLENORA_MYSQL_CA=/mysql-tls/ca.pem",
+        "-e",
+        f"PLENORA_MYSQL_EXPECTED_VERSION={EXPECTED_VERSION_PREFIX}",
         RUST_IMAGE,
         "/usr/local/cargo/bin/cargo",
         *arguments,
@@ -320,7 +419,31 @@ def run_cargo(arguments: list[str], *, capture: bool = False) -> str:
     return run(command, environment=environment, capture=capture)
 
 
+def validate_inventory() -> None:
+    """L'inventario dichiarato deve coincidere con la sorgente Rust.
+
+    # Raises
+
+    `RuntimeError` appena una famiglia diverge: un test aggiunto e mai
+    eseguito, o rimosso e mai notato, resterebbe altrimenti invisibile.
+    """
+
+    observed = collect_inventory()
+    declared = {
+        "unit": frozenset(EXPECTED_UNIT_TESTS),
+        "live_default": frozenset(EXPECTED_LIVE_DEFAULT_TESTS),
+        "live_reference": frozenset(EXPECTED_LIVE_REFERENCE_TESTS),
+    }
+    for family, names in declared.items():
+        if names != observed[family]:
+            raise RuntimeError(
+                f"inventario {family} MySQL stale rispetto alla sorgente: "
+                f"{inventory_difference(names, observed[family])}"
+            )
+
+
 def validate_fixture() -> None:
+    validate_compose_pins_the_baseline()
     run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
     run(
         [
@@ -346,17 +469,90 @@ def ensure_reference_running() -> None:
 
 
 def validate_reference() -> dict[str, str]:
-    compose = (ROOT / "docker-compose.mysql.yml").read_text(encoding="utf-8")
-    if compose.count(EXPECTED_REFERENCE) != 2:
-        raise RuntimeError("digest MySQL 8.4 non fissato sui due servizi")
     configured = docker_value(["inspect", "--format", "{{.Config.Image}}", CONTAINER])
     image_id = docker_value(["inspect", "--format", "{{.Image}}", CONTAINER])
     if configured != EXPECTED_REFERENCE:
         raise RuntimeError("container MySQL diverso dal digest di riferimento")
     version = mysql_value("SELECT VERSION()")
-    if not version.startswith("8.4."):
-        raise RuntimeError(f"versione MySQL inattesa: {version}")
+    if version != EXPECTED_VERSION:
+        raise RuntimeError(
+            f"versione MySQL inattesa: {version}, attesa {EXPECTED_VERSION}"
+        )
     return {"configured_reference": configured, "image_id": image_id, "version": version}
+
+
+def executed_tests(output: str, pattern: str) -> set[str]:
+    return set(re.findall(pattern, output, re.MULTILINE))
+
+
+def verify_suite(family: str, declared: set[str], observed: set[str]) -> None:
+    if declared != observed:
+        raise RuntimeError(
+            f"inventario test {family} MySQL inatteso: "
+            f"eseguiti {len(observed)}, attesi {len(declared)}, "
+            f"{inventory_difference(frozenset(declared), frozenset(observed))}"
+        )
+
+
+def run_unit_suite() -> None:
+    """I test senza server: il filtro esclude ogni test live per nome."""
+
+    output = run_cargo(
+        ["test", "-p", "plenora-db-mysql", "--locked", "--", "--skip", "live_"],
+        capture=True,
+    )
+    verify_suite(
+        "unit",
+        EXPECTED_UNIT_TESTS,
+        executed_tests(output, r"^test ([^ ]+) \.\.\. ok$"),
+    )
+
+
+def run_live_default_suite() -> None:
+    """I test live che il runner di default esegue senza `--ignored`."""
+
+    output = run_cargo(
+        [
+            "test",
+            "-p",
+            "plenora-db-mysql",
+            "live_",
+            "--locked",
+            "--",
+            "--nocapture",
+            "--test-threads=1",
+        ],
+        capture=True,
+    )
+    verify_suite(
+        "live default",
+        EXPECTED_LIVE_DEFAULT_TESTS,
+        executed_tests(output, r"^test (live_tests::[^ ]+) \.\.\. ok$"),
+    )
+
+
+def run_live_reference_suite() -> None:
+    """I test live `#[ignore]`: l'inventario di qualifica del riferimento."""
+
+    output = run_cargo(
+        [
+            "test",
+            "-p",
+            "plenora-db-mysql",
+            "live_",
+            "--locked",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ],
+        capture=True,
+    )
+    verify_suite(
+        "live reference",
+        EXPECTED_LIVE_REFERENCE_TESTS,
+        executed_tests(output, r"^test (live_tests::[^ ]+) \.\.\. ok$"),
+    )
 
 
 def run_live_cli_probe() -> None:
@@ -386,6 +582,7 @@ def run_live_cli_probe() -> None:
 
 
 def main() -> int:
+    validate_inventory()
     validate_fixture()
     ensure_reference_running()
     identity = validate_reference()
@@ -402,43 +599,9 @@ def main() -> int:
             "warnings",
         ]
     )
-    offline_output = run_cargo(
-        ["test", "-p", "plenora-db-mysql", "--locked"],
-        capture=True,
-    )
-    executed_offline_tests = set(
-        re.findall(r"^test ([^ ]+) \.\.\. ok$", offline_output, re.MULTILINE)
-    )
-    if executed_offline_tests != EXPECTED_OFFLINE_TESTS:
-        missing = sorted(EXPECTED_OFFLINE_TESTS - executed_offline_tests)
-        unexpected = sorted(executed_offline_tests - EXPECTED_OFFLINE_TESTS)
-        raise RuntimeError(
-            "inventario test offline MySQL inatteso: "
-            f"eseguiti {len(executed_offline_tests)}, "
-            f"attesi {len(EXPECTED_OFFLINE_TESTS)}, "
-            f"mancanti={missing}, inattesi={unexpected}"
-        )
-    live_output = run_cargo(
-        [
-            "test",
-            "-p",
-            "plenora-db-mysql",
-            "live_",
-            "--locked",
-            "--",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ],
-        capture=True,
-    )
-    executed_live_tests = set(
-        re.findall(r"^test live_tests::([^ ]+) \.\.\. ok$", live_output, re.MULTILINE)
-    )
-    if executed_live_tests != EXPECTED_LIVE_TESTS:
-        raise RuntimeError(
-            f"set test live MySQL inatteso: {sorted(executed_live_tests)}"
-        )
+    run_unit_suite()
+    run_live_default_suite()
+    run_live_reference_suite()
     run_live_cli_probe()
     print(
         json.dumps(
@@ -446,9 +609,11 @@ def main() -> int:
                 "schema_version": 1,
                 "status": "passed",
                 "provider": "mysql",
-                "reference": "MySQL 8.4 LTS",
-                "offline_tests": len(EXPECTED_OFFLINE_TESTS),
-                "live_tests": len(EXPECTED_LIVE_TESTS),
+                "reference": BASELINE.label,
+                "reference_version": EXPECTED_VERSION,
+                "unit_tests": len(EXPECTED_UNIT_TESTS),
+                "live_default_tests": len(EXPECTED_LIVE_DEFAULT_TESTS),
+                "live_reference_tests": len(EXPECTED_LIVE_REFERENCE_TESTS),
                 "image": identity,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
             },

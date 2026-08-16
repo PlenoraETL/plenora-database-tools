@@ -2704,7 +2704,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .await
         .expect("stream timeout QueryOperation");
     let (timeout_thread, error) = {
-        let next_batch = stream.next_batch(&cancellation);
+        let next_batch = stream.next_batch(&timeout_cancellation);
         tokio::pin!(next_batch);
         let timeout_thread = tokio::select! {
             owner = observe_inflight_query(&mut audit, &timeout_marker) => owner,
@@ -2773,7 +2773,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         .await
         .expect("stream deadline QueryOperation");
     let (deadline_thread, error) = {
-        let next_batch = stream.next_batch(&cancellation);
+        let next_batch = stream.next_batch(&deadline_cancellation);
         tokio::pin!(next_batch);
         let deadline_thread = tokio::select! {
             owner = observe_inflight_query(&mut audit, &deadline_marker) => owner,
@@ -3775,11 +3775,22 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
     assert_eq!(recovered.status, WriteStatus::Committed);
     assert_eq!(recovered.rows.confirmed, 1);
 
-    let final_sessions = pooled_identifiers(&mut audit).await;
-    let replacement = final_sessions
-        .difference(&baseline)
-        .copied()
-        .collect::<Vec<_>>();
+    // La lista processi e uno snapshot: il server puo non aver ancora chiuso
+    // la sessione quarantinata quando la si campiona. Si attende che il pool
+    // si stabilizzi, con scadenza — una sessione di troppo che non sparisce
+    // resta un fallimento, non un'attesa infinita.
+    let mut replacement = Vec::new();
+    for _ in 0..100 {
+        replacement = pooled_identifiers(&mut audit)
+            .await
+            .difference(&baseline)
+            .copied()
+            .collect::<Vec<_>>();
+        if replacement.len() == 1 && replacement[0] != first_session {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(replacement.len(), 1, "pool con piu di una sessione viva");
     assert_ne!(
         replacement[0], first_session,

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Qualifica MySQL 8.0 e 8.4 su immagini fissate per digest.
+"""Qualifica l'intera matrice MySQL su immagini fissate per digest.
 
-Ogni riferimento viene avviato con la stessa fixture versionata del gate 8.4:
-TLS obbligatorio con CA privata, `local_infile` disattivato e `sql_mode`
-stretta. La matrice esegue l'inventario live completo, serializzato, senza
-esclusioni: una semantica che un riferimento non regge resta un blocco
-dichiarato, non un test indebolito.
+Versioni e digest arrivano da `docker/mysql/references.json`, unica fonte di
+verita: la baseline 9.x e i riferimenti di compatibilita 8.4 LTS e 8.0 sono
+qualificati con la stessa fixture — TLS obbligatorio con CA privata,
+`local_infile` disattivato e `sql_mode` stretta. Per ogni riferimento la
+matrice esegue l'inventario live intero, serializzato, senza esclusioni: una
+semantica che una versione non regge resta un blocco dichiarato, non un test
+indebolito.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ import secrets
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.check_mysql_reference import (  # noqa: E402
-    EXPECTED_LIVE_TESTS,
-    EXPECTED_OFFLINE_TESTS,
+    EXPECTED_LIVE_DEFAULT_TESTS,
+    EXPECTED_LIVE_REFERENCE_TESTS,
+    EXPECTED_UNIT_TESTS,
+    validate_inventory,
 )
+from scripts.mysql_references import REFERENCES, MysqlReference  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER_SOURCE = Path(__file__).resolve()
@@ -43,57 +47,8 @@ SQL_MODE = "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTIO
 PASSING_TEST = re.compile(r"^test live_tests::([^ ]+) \.\.\. ok$", re.MULTILINE)
 
 
-@dataclass(frozen=True)
-class MatrixEntry:
-    label: str
-    exact_version: str
-    digest: str
-
-    @property
-    def version_prefix(self) -> str:
-        major_minor, _, _patch = self.exact_version.rpartition(".")
-        return f"{major_minor}."
-
-    @property
-    def image(self) -> str:
-        return f"mysql@sha256:{self.digest}"
-
-    @property
-    def slug(self) -> str:
-        return self.version_prefix.replace(".", "").strip()
-
-    @property
-    def container(self) -> str:
-        return f"plenora-matrix-mysql-{self.slug}"
-
-    @property
-    def aliases(self) -> tuple[str, ...]:
-        # Il certificato della fixture e emesso solo per dataflow-mysql.
-        # L'alias risolvibile ma assente dai SAN rende deterministica la prova
-        # TLS negativa senza introdurre un falso errore DNS.
-        return ("dataflow-mysql", "mysql-hostname-mismatch")
-
-    @property
-    def ca_volume(self) -> str:
-        return f"plenora-matrix-mysql-{self.slug}-ca"
-
-    @property
-    def tls_volume(self) -> str:
-        return f"plenora-matrix-mysql-{self.slug}-tls"
-
-
-MATRIX = (
-    MatrixEntry(
-        "MySQL 8.0",
-        "8.0.46",
-        "7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
-    ),
-    MatrixEntry(
-        "MySQL 8.4 LTS",
-        "8.4.11",
-        "b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
-    ),
-)
+MatrixEntry = MysqlReference
+MATRIX = REFERENCES
 
 
 def server_command(entry: MatrixEntry) -> list[str]:
@@ -109,9 +64,23 @@ def server_command(entry: MatrixEntry) -> list[str]:
     ]
 
 
-def test_command(entry: MatrixEntry) -> list[str]:
-    """L'inventario live intero, un test alla volta: nessuna esclusione."""
-    del entry
+def live_default_command() -> list[str]:
+    """I test live non `#[ignore]`, un test alla volta."""
+    return [
+        "cargo",
+        "test",
+        "-p",
+        "plenora-db-mysql",
+        "live_",
+        "--locked",
+        "--",
+        "--nocapture",
+        "--test-threads=1",
+    ]
+
+
+def live_reference_command() -> list[str]:
+    """L'inventario live `#[ignore]` intero: nessuna esclusione."""
     return [
         "cargo",
         "test",
@@ -127,22 +96,24 @@ def test_command(entry: MatrixEntry) -> list[str]:
 
 
 def live_inventory(output: str) -> set[str]:
-    return set(PASSING_TEST.findall(output))
+    return {f"live_tests::{name}" for name in PASSING_TEST.findall(output)}
 
 
-def verify_live_inventory(entry: MatrixEntry, output: str) -> None:
+def verify_live_inventory(
+    entry: MatrixEntry, family: str, expected: set[str], output: str
+) -> None:
     executed = live_inventory(output)
-    if executed != EXPECTED_LIVE_TESTS:
-        missing = sorted(EXPECTED_LIVE_TESTS - executed)
-        unexpected = sorted(executed - EXPECTED_LIVE_TESTS)
+    if executed != expected:
+        missing = sorted(expected - executed)
+        unexpected = sorted(executed - expected)
         raise RuntimeError(
-            f"inventario live {entry.label} inatteso: "
-            f"eseguiti {len(executed)}, attesi {len(EXPECTED_LIVE_TESTS)}, "
+            f"inventario {family} {entry.label} inatteso: "
+            f"eseguiti {len(executed)}, attesi {len(expected)}, "
             f"mancanti={missing}, inattesi={unexpected}"
         )
 
 
-def verify_candidate_offline() -> None:
+def verify_candidate_unit() -> None:
     output = run(
         [
             "docker",
@@ -162,16 +133,19 @@ def verify_candidate_offline() -> None:
             "-p",
             "plenora-db-mysql",
             "--locked",
+            "--",
+            "--skip",
+            "live_",
         ],
         timeout=1800,
         capture=True,
     )
     executed = set(re.findall(r"^test ([^ ]+) \.\.\. ok$", output, re.MULTILINE))
-    if executed != EXPECTED_OFFLINE_TESTS:
-        missing = sorted(EXPECTED_OFFLINE_TESTS - executed)
-        unexpected = sorted(executed - EXPECTED_OFFLINE_TESTS)
+    if executed != EXPECTED_UNIT_TESTS:
+        missing = sorted(EXPECTED_UNIT_TESTS - executed)
+        unexpected = sorted(executed - EXPECTED_UNIT_TESTS)
         raise RuntimeError(
-            "inventario offline candidato MySQL inatteso: "
+            "inventario unit candidato MySQL inatteso: "
             f"mancanti={missing}, inattesi={unexpected}"
         )
 
@@ -192,12 +166,17 @@ def verify_hardening(entry: MatrixEntry, probe: dict[str, str]) -> None:
 def entry_report(entry: MatrixEntry, probe: dict[str, str]) -> dict[str, Any]:
     return {
         "label": entry.label,
+        "role": entry.role,
         "expected_version": entry.exact_version,
         "image": entry.image,
         "product_version": probe["version"],
-        "live_tests": {
-            "expected": len(EXPECTED_LIVE_TESTS),
-            "passed": len(EXPECTED_LIVE_TESTS),
+        "live_default_tests": {
+            "expected": len(EXPECTED_LIVE_DEFAULT_TESTS),
+            "passed": len(EXPECTED_LIVE_DEFAULT_TESTS),
+        },
+        "live_reference_tests": {
+            "expected": len(EXPECTED_LIVE_REFERENCE_TESTS),
+            "passed": len(EXPECTED_LIVE_REFERENCE_TESTS),
         },
         "hardening": {
             "require_secure_transport": probe["require_secure_transport"],
@@ -311,6 +290,12 @@ def start(entry: MatrixEntry, environment: dict[str, str]) -> None:
 
 
 def mysql_value(entry: MatrixEntry, statement: str) -> tuple[int, str]:
+    """Esegue una probe SQL nel container e riporta codice e stdout.
+
+    Su errore lo stderr del client finisce sullo stderr del gate: una probe
+    che fallisce deve dire perche, non solo che e fallita.
+    """
+
     completed = subprocess.run(
         [
             "docker",
@@ -318,8 +303,12 @@ def mysql_value(entry: MatrixEntry, statement: str) -> tuple[int, str]:
             entry.container,
             "/bin/sh",
             "-c",
+            # TCP, non socket: durante il bootstrap l'entrypoint MySQL
+            # avvia un server temporaneo raggiungibile solo dal socket. Una
+            # probe sul socket puo quindi rispondere prima che il server
+            # definitivo esista, e la verifica successiva trova il vuoto.
             'exec env MYSQL_PWD="$MYSQL_PASSWORD" mysql -Nse "$1" '
-            f"-u {USER} --ssl-mode=REQUIRED",
+            f"-u {USER} -h 127.0.0.1 --protocol=TCP --ssl-mode=REQUIRED",
             "mysql-matrix-probe",
             statement,
         ],
@@ -329,6 +318,8 @@ def mysql_value(entry: MatrixEntry, statement: str) -> tuple[int, str]:
         capture_output=True,
         timeout=60,
     )
+    if completed.returncode:
+        sys.stderr.write(completed.stderr)
     return completed.returncode, completed.stdout.strip()
 
 
@@ -363,7 +354,9 @@ def probe_server(entry: MatrixEntry) -> dict[str, str]:
     }
 
 
-def run_suite(entry: MatrixEntry, environment: dict[str, str]) -> str:
+def run_suite(
+    entry: MatrixEntry, environment: dict[str, str], suite: list[str]
+) -> str:
     command = [
         "docker",
         "run",
@@ -393,7 +386,7 @@ def run_suite(entry: MatrixEntry, environment: dict[str, str]) -> str:
         "-e",
         f"PLENORA_MYSQL_EXPECTED_VERSION={entry.version_prefix}",
         RUST_IMAGE,
-        *test_command(entry),
+        *suite,
     ]
     return run(command, environment=environment, timeout=3600, capture=True)
 
@@ -412,7 +405,18 @@ def qualify(entry: MatrixEntry, environment: dict[str, str]) -> dict[str, Any]:
         wait_ready(entry)
         probe = probe_server(entry)
         verify_hardening(entry, probe)
-        verify_live_inventory(entry, run_suite(entry, environment))
+        verify_live_inventory(
+            entry,
+            "live default",
+            EXPECTED_LIVE_DEFAULT_TESTS,
+            run_suite(entry, environment, live_default_command()),
+        )
+        verify_live_inventory(
+            entry,
+            "live reference",
+            EXPECTED_LIVE_REFERENCE_TESTS,
+            run_suite(entry, environment, live_reference_command()),
+        )
         return entry_report(entry, probe)
     finally:
         discard(entry)
@@ -425,7 +429,8 @@ def main() -> int:
     environment["PLENORA_MYSQL_PASSWORD"] = password
     results: list[dict[str, Any]] = []
     try:
-        verify_candidate_offline()
+        validate_inventory()
+        verify_candidate_unit()
         ensure_network()
         for entry in MATRIX:
             results.append(qualify(entry, environment))
@@ -441,7 +446,10 @@ def main() -> int:
                 "gate": "mysql-version-matrix-v1",
                 "status": "passed",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "live_tests_per_reference": len(EXPECTED_LIVE_TESTS),
+                "live_tests_per_reference": (
+                    len(EXPECTED_LIVE_DEFAULT_TESTS)
+                    + len(EXPECTED_LIVE_REFERENCE_TESTS)
+                ),
                 "results": results,
             },
             ensure_ascii=False,
