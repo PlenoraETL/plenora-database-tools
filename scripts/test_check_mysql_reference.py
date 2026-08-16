@@ -942,6 +942,44 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             f"progetti Compose non distinti: {declared}",
         )
 
+    def test_the_migration_note_lists_every_container_the_composes_declare(
+        self,
+    ) -> None:
+        """La procedura di migrazione non puo dimenticare un container.
+
+        A collidere sono i `container_name`, che sono fissi: se la procedura ne
+        omette uno — `dataflow-sqlserver-certgen` e `dataflow-sqlserver-init`
+        mancavano — chi la segue trova un conflitto al primo `up` del provider
+        dimenticato, molto dopo aver creduto la migrazione conclusa.
+
+        L'elenco si confronta con i Compose, non con la memoria di chi scrive.
+        """
+
+        declared = set()
+        for compose in sorted(ROOT.glob("docker-compose.*.yml")):
+            declared |= set(
+                re.findall(
+                    r"^\s*container_name:\s*(\S+)\s*$",
+                    compose.read_text(encoding="utf-8"),
+                    re.MULTILINE,
+                )
+            )
+        self.assertTrue(declared, "nessun container_name dichiarato nei Compose")
+
+        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
+        body = readme.split("**Migrazione (una tantum).**", 1)[1].split("## ", 1)[0]
+        listed = {
+            token
+            for token in re.findall(r"dataflow-[a-z0-9-]+", body)
+            if not token.endswith("-")
+        }
+        self.assertEqual(
+            listed,
+            declared,
+            f"procedura disallineata: mancanti={sorted(declared - listed)}, "
+            f"inattesi={sorted(listed - declared)}",
+        )
+
     def test_the_migration_note_never_tells_anyone_to_delete_volumes(self) -> None:
         """La migrazione dei progetti Compose non tocca i volumi.
 

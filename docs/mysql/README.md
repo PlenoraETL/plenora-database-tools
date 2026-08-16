@@ -139,9 +139,14 @@ prefissati dal progetto, quindi `database-tools_mysql_data` e
 Rimuovere i soli container, prima del primo `up`:
 
 ```bash
-docker rm -f dataflow-mysql dataflow-mysql-certgen \
-             dataflow-postgres dataflow-postgres-tls dataflow-postgres-tls-certgen \
-             dataflow-sqlserver
+docker rm -f dataflow-mysql \
+             dataflow-mysql-certgen \
+             dataflow-postgres \
+             dataflow-postgres-tls \
+             dataflow-postgres-tls-certgen \
+             dataflow-sqlserver \
+             dataflow-sqlserver-certgen \
+             dataflow-sqlserver-init
 ```
 
 **Non** cancellare i volumi del vecchio progetto: non e necessario e non e
