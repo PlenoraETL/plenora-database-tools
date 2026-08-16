@@ -161,7 +161,7 @@ async fn execute_bulk_write(
     }
 
     let secret = secret_from_env(dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 

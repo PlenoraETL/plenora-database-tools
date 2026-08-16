@@ -321,15 +321,7 @@ async fn postgres_describe(args: &mut impl Iterator<Item = String>) -> CliResult
     let object = args.next().ok_or_else(|| "manca l'oggetto".to_owned())?;
     ensure_end(args)?;
     let secret = secret_from_env(&env_name)?;
-    // ADR-011: `default()` è secure (Require + WebPKI). Per test/dev
-    // locali senza TLS il consumer può settare `PLENORA_TLS_INSECURE_LOCAL=1`
-    // (usato solo dal path canonico non-PFM sotto — comandi PFM usano
-    // `PostgresCommandContext` con factory nominate).
-    let provider = if std::env::var_os("PLENORA_TLS_INSECURE_LOCAL").is_some() {
-        PostgresProvider::insecure_local()
-    } else {
-        PostgresProvider::default()
-    };
+    let provider = pfm::postgres_provider_for_pfm()?;
     let inspection = provider
         .inspect(
             &secret,
@@ -353,15 +345,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
     let object = args.next().ok_or_else(|| "manca l'oggetto".to_owned())?;
     ensure_end(args)?;
     let secret = secret_from_env(&env_name)?;
-    // ADR-011: `default()` è secure (Require + WebPKI). Per test/dev
-    // locali senza TLS il consumer può settare `PLENORA_TLS_INSECURE_LOCAL=1`
-    // (usato solo dal path canonico non-PFM sotto — comandi PFM usano
-    // `PostgresCommandContext` con factory nominate).
-    let provider = if std::env::var_os("PLENORA_TLS_INSECURE_LOCAL").is_some() {
-        PostgresProvider::insecure_local()
-    } else {
-        PostgresProvider::default()
-    };
+    let provider = pfm::postgres_provider_for_pfm()?;
     let operation = ReadOperation {
         source: object_ref(schema, object),
         projection: Vec::new(),
@@ -420,15 +404,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         .ok_or_else(|| "manca il percorso output Arrow IPC".to_owned())?;
     let options = parse_ipc_options(args)?;
     let secret = secret_from_env(&env_name)?;
-    // ADR-011: `default()` è secure (Require + WebPKI). Per test/dev
-    // locali senza TLS il consumer può settare `PLENORA_TLS_INSECURE_LOCAL=1`
-    // (usato solo dal path canonico non-PFM sotto — comandi PFM usano
-    // `PostgresCommandContext` con factory nominate).
-    let provider = if std::env::var_os("PLENORA_TLS_INSECURE_LOCAL").is_some() {
-        PostgresProvider::insecure_local()
-    } else {
-        PostgresProvider::default()
-    };
+    let provider = pfm::postgres_provider_for_pfm()?;
     let operation = ReadOperation {
         source: object_ref(schema, object),
         projection: options.projection.clone(),
@@ -1101,7 +1077,21 @@ fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
     Ok(material)
 }
 
-fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
+/// Legge il materiale TLS il cui percorso e in `env_name`, oppure `None` se la
+/// variabile non e impostata.
+///
+/// # Errors
+///
+/// Fallisce quando la variabile e impostata ma il percorso non e leggibile o
+/// eccede il limite di dimensione del materiale TLS.
+pub(crate) fn tls_material_from_environment(env_name: &str) -> CliResult<Option<Vec<u8>>> {
+    let Some(path) = tls_path_from_environment(Some(env_name))? else {
+        return Ok(None);
+    };
+    Ok(Some(read_bounded_tls_material(&path)?))
+}
+
+pub(crate) fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
     let Some(path) = tls_path_from_environment(env_name)? else {
         return Ok(None);
     };

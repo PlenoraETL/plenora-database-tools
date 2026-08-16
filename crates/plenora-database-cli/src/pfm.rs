@@ -12,15 +12,76 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
-use plenora_db_postgres::PostgresProvider;
+use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
 use serde_json::json;
 
 /// Helper storico per test / call sites legacy non ancora migrati
 /// al `PostgresCommandContext`. Post ADR-011, riflette il nuovo
 /// default `Require`. Per test/dev locali usare `insecure_local()`
 /// esplicitamente.
-pub(crate) fn postgres_provider_for_pfm() -> PostgresProvider {
-    PostgresProvider::default()
+/// Variabili che indicano i *percorsi* del materiale TLS con cui il provider
+/// verifica il server — e, quando il server lo esige, si identifica.
+///
+/// Stessa convenzione di `database-probe` e di `PLENORA_MYSQL_CA` nei gate: il
+/// valore e un percorso, non il PEM.
+pub(crate) const POSTGRES_CA_PATH_ENV: &str = "PLENORA_PG_CA_PATH";
+pub(crate) const POSTGRES_CLIENT_CERT_PATH_ENV: &str = "PLENORA_PG_CLIENT_CERT_PATH";
+pub(crate) const POSTGRES_CLIENT_KEY_PATH_ENV: &str = "PLENORA_PG_CLIENT_KEY_PATH";
+
+/// Interruttore dev/test pre-esistente: disattiva TLS del tutto.
+pub(crate) const POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL";
+
+/// Il provider `PostgreSQL` di **tutti** i sottocomandi.
+///
+/// Prima esistevano quattro sorgenti dello stesso provider — due
+/// `PostgresProvider::default()` in `pfm.rs` e `context.rs`, e tre siti in
+/// `main.rs` che onoravano `PLENORA_TLS_INSECURE_LOCAL` — con il risultato che
+/// alcuni comandi potevano parlare con un riferimento di test e altri no,
+/// nello stesso binario. Le sorgenti divergono; questa e l'unica.
+///
+/// Tre configurazioni, in ordine di precedenza:
+///
+/// 1. `PLENORA_TLS_INSECURE_LOCAL` impostata — TLS disattivato. Interruttore
+///    dev/test gia esistente, semantica invariata: il nome dice il rischio.
+/// 2. `PLENORA_PG_CA_PATH` impostata — TLS obbligatorio e verifica attiva
+///    contro quella CA invece dei root pubblici `WebPKI`. Con
+///    `PLENORA_PG_CLIENT_CERT_PATH` e `PLENORA_PG_CLIENT_KEY_PATH` si aggiunge
+///    l'identita client, per i server che richiedono `clientcert`.
+/// 3. niente — `default()`: TLS obbligatorio, root pubblici. ADR-011.
+///
+/// Il caso (2) non e un opt-out: la verifica resta piena, cambia la radice di
+/// fiducia. Un riferimento con certificato privato e la norma nei test e negli
+/// ambienti interni.
+///
+/// # Errors
+///
+/// Fallisce quando una variabile indica materiale illeggibile o non valido, e
+/// quando certificato e chiave client non sono forniti insieme.
+pub(crate) fn postgres_provider_for_pfm() -> CliResult<PostgresProvider> {
+    if std::env::var_os(POSTGRES_INSECURE_LOCAL_ENV).is_some() {
+        return Ok(PostgresProvider::insecure_local());
+    }
+    let Some(ca) = crate::prepare_private_ca_material(Some(POSTGRES_CA_PATH_ENV))? else {
+        return Ok(PostgresProvider::default());
+    };
+    let certificate = crate::tls_material_from_environment(POSTGRES_CLIENT_CERT_PATH_ENV)?;
+    let key = crate::tls_material_from_environment(POSTGRES_CLIENT_KEY_PATH_ENV)?;
+    let tls_config = match (certificate, key) {
+        (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
+        (Some(certificate), Some(key)) => {
+            PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
+        }
+        _ => {
+            return Err(format!(
+                "l'identita client TLS richiede {POSTGRES_CLIENT_CERT_PATH_ENV} e \
+                 {POSTGRES_CLIENT_KEY_PATH_ENV} insieme"
+            )
+            .into());
+        }
+    };
+    Ok(PostgresProvider::default()
+        .with_tls_mode(PostgresTlsMode::Require)
+        .with_tls_config(tls_config))
 }
 
 pub(crate) fn pfm_budget() -> CliResult<ResourceBudget> {
@@ -33,7 +94,7 @@ pub(crate) async fn profile_check(args: &mut impl Iterator<Item = String>) -> Cl
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let cancel = CancellationToken::new();
 
     let (profile, evidence) = match profile_name.as_str() {
@@ -75,7 +136,7 @@ pub(crate) async fn doctor(args: &mut impl Iterator<Item = String>) -> CliResult
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let cancel = CancellationToken::new();
 
     let connection = match provider.test_connection(&secret, &cancel).await {

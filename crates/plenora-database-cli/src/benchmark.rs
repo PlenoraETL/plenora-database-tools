@@ -43,7 +43,7 @@ pub(crate) async fn benchmark_oltp(args: &mut impl Iterator<Item = String>) -> C
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 
@@ -86,7 +86,7 @@ pub(crate) async fn benchmark_read(args: &mut impl Iterator<Item = String>) -> C
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 
@@ -138,7 +138,7 @@ pub(crate) async fn benchmark_write(args: &mut impl Iterator<Item = String>) -> 
     let ephemeral = crate::safety::ensure_ephemeral_schema(&dsn_env).await?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 
@@ -216,7 +216,7 @@ pub(crate) async fn benchmark_spatial(args: &mut impl Iterator<Item = String>) -
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 

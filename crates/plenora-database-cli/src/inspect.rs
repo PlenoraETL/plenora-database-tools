@@ -15,7 +15,7 @@ pub(crate) async fn inspect_database(args: &mut impl Iterator<Item = String>) ->
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 
@@ -80,7 +80,7 @@ pub(crate) async fn inspect_schemas(args: &mut impl Iterator<Item = String>) -> 
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 
@@ -123,7 +123,7 @@ pub(crate) async fn inspect_catalogs(args: &mut impl Iterator<Item = String>) ->
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let cancel = CancellationToken::new();
 
     let inspection = provider
@@ -144,7 +144,7 @@ pub(crate) async fn inspect_objects(args: &mut impl Iterator<Item = String>) -> 
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let cancel = CancellationToken::new();
 
     let inspection = provider
@@ -173,7 +173,7 @@ pub(crate) async fn inspect_tables(args: &mut impl Iterator<Item = String>) -> C
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
 

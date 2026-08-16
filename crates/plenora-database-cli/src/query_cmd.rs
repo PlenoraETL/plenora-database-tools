@@ -29,7 +29,7 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
     let operation: QueryOperation =
         serde_json::from_slice(&contents).map_err(|e| format!("QUERY.json non parsabile: {e}"))?;
 
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?;
     let cancel = CancellationToken::new();
 
@@ -117,7 +117,7 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
         .map_err(|e| format!("PORTABLE.json non parsabile: {e}"))?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let cancel = CancellationToken::new();
     let budget = pfm_budget()?;
 

@@ -101,7 +101,7 @@ pub(crate) async fn drop_ephemeral_schema(dsn_env: &str, name: &str) {
 }
 
 async fn run_admin_stmt(secret: &SecretString, sql: &str) -> CliResult<()> {
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
     let mut tx = provider

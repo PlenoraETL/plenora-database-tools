@@ -44,21 +44,25 @@ pub(crate) struct PostgresCommandContext {
 }
 
 impl PostgresCommandContext {
-    /// Contesto per comandi PFM: TLS `Require` + `WebPKI` trust store
-    /// (secure-by-default). ADR-011.
+    /// Contesto per comandi PFM: TLS `Require`, con radice di fiducia `WebPKI`
+    /// oppure la CA privata indicata dalle variabili di
+    /// [`crate::pfm::postgres_provider_for_pfm`]. ADR-011.
     ///
-    /// Per test/dev locali contro Docker senza TLS usare
-    /// [`Self::for_pfm_insecure_local`].
+    /// Il provider arriva da quel factory e non da un `default()` locale:
+    /// due sorgenti dello stesso provider divergono, e la divergenza si
+    /// manifesta come un sottocomando che non riesce a connettersi mentre un
+    /// altro ci riesce.
     ///
     /// # Errors
     ///
     /// - `secret_from_env` fallisce se `dsn_env` non è settata.
+    /// - il materiale TLS indicato dalle variabili e illeggibile o non valido.
     /// - `ResourceBudget::new` non fallisce per limiti default ma
     ///   propaghiamo l'errore per coerenza col trait.
     pub(crate) fn for_pfm(dsn_env: &str) -> CliResult<Self> {
         Ok(Self {
             secret: secret_from_env(dsn_env)?,
-            provider: PostgresProvider::default(),
+            provider: crate::pfm::postgres_provider_for_pfm()?,
             budget: ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?,
             cancel: CancellationToken::new(),
         })

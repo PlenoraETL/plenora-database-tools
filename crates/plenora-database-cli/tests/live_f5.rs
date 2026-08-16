@@ -20,13 +20,28 @@ use serde_json::Value;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_plenora-database");
-const DSN: &str =
-    "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test";
+/// DSN del riferimento su cui girano questi test.
+///
+/// Il default e il riferimento plaintext, lo stesso usato dalle fixture live
+/// di `plenora-db-postgres`. Il runner deve impostare
+/// `PLENORA_TLS_INSECURE_LOCAL=1`, l'interruttore dev/test che la CLI gia
+/// dichiara: e secure-by-default (ADR-011) e senza quella variabile rifiuta un
+/// server senza certificato verificabile.
+///
+/// Per esercitare la CLI contro il riferimento TLS bastano `PG_DSN` e le
+/// variabili `PLENORA_PG_CA_PATH` / `PLENORA_PG_CLIENT_*_PATH`.
+fn dsn() -> String {
+    std::env::var("PG_DSN").unwrap_or_else(|_| {
+        "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test"
+            .to_owned()
+    })
+}
 
 fn run_json(args: &[&str]) -> Value {
     let output = Command::new(BIN)
         .args(args)
-        .env("PG_DSN", DSN)
+        .env("PG_DSN", dsn())
+        .env("PLENORA_TLS_INSECURE_LOCAL", "1")
         .output()
         .expect("spawn CLI");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -43,7 +58,8 @@ fn run_json(args: &[&str]) -> Value {
 fn run_json_err(args: &[&str]) -> Value {
     let output = Command::new(BIN)
         .args(args)
-        .env("PG_DSN", DSN)
+        .env("PG_DSN", dsn())
+        .env("PLENORA_TLS_INSECURE_LOCAL", "1")
         .output()
         .expect("spawn CLI");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -332,7 +348,11 @@ fn f5_10_conditional_update_ok_and_not_found() {
     // Case NotFound: id non esistente. Il probe deve usare TUTTI i params
     // che gli passiamo (postgres non tollera unused params). Usiamo un
     // pattern-safe: `WHERE id=$1 AND (0=0 OR $2 IS NOT NULL)`.
-    let nf = run_json(&[
+    //
+    // `run_json_err`, non `run_json`: un update ottimistico che non trova la
+    // chiave esce con codice non-zero, ed e giusto cosi — uno script che
+    // incatena comandi deve fermarsi. L'helper lo pretende esplicitamente.
+    let nf = run_json_err(&[
         "conditional-update",
         "PG_DSN",
         "UPDATE _f5_condupd SET v = v + 1 WHERE id = $1 AND v = $2",
@@ -446,6 +466,159 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     assert_eq!(out["status"], "dry_run");
     assert!(out["input_schema"]["fields"].is_array());
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ============================================================================
+//  F5.15 — contratto Replace attraverso la CLI
+// ============================================================================
+
+/// Prepara una directory di lavoro con uno snapshot Arrow IPC di N righe.
+/// `execute-ddl`, non `execute-sql`: il secondo applica
+/// `NativeQueryPolicy::Deny` e rifiuta `DROP`, correttamente.
+fn drop_if_present(target: &str) {
+    let _ = run_json(&[
+        "execute-ddl",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{target}"),
+    ]);
+}
+
+fn replace_snapshot(tag: &str, limit: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir =
+        std::env::temp_dir().join(format!("plenora-cli-replace-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("in.arrow");
+    let _ = run_json(&[
+        "postgres-read-ipc",
+        "PG_DSN",
+        "public",
+        "spatial_ref_sys",
+        input.to_str().unwrap(),
+        "--limit",
+        limit,
+    ]);
+    (dir, input)
+}
+
+fn scalar_i64(sql: &str) -> i64 {
+    run_json(&["execute-scalar", "PG_DSN", sql, "--type=i64"])["value"]
+        .as_i64()
+        .expect("valore i64")
+}
+
+/// Replace attraverso la CLI sostituisce le righe di una tabella esistente e
+/// non la ricrea: l'`oid` resta lo stesso prima e dopo.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn f5_15_cli_replace_swaps_rows_without_recreating_the_target() {
+    let target = "_cli_replace_target";
+    drop_if_present(target);
+    let (dir, seed) = replace_snapshot("seed", "5");
+
+    // Il target nasce con Create, cosi la CLI copre entrambe le mode.
+    let created = run_json(&[
+        "postgres-write-ipc",
+        "PG_DSN",
+        "public",
+        target,
+        seed.to_str().unwrap(),
+        "--mode",
+        "create",
+    ]);
+    assert_eq!(created["status"], "committed");
+    assert_eq!(
+        scalar_i64(&format!("SELECT COUNT(*)::BIGINT FROM public.{target}")),
+        5
+    );
+    let identity_before = scalar_i64(&format!("SELECT 'public.{target}'::regclass::oid::BIGINT"));
+
+    // Replace con uno snapshot piu piccolo: le righe cambiano, la tabella no.
+    let (_dir2, smaller) = replace_snapshot("smaller", "2");
+    let replaced = run_json(&[
+        "postgres-write-ipc",
+        "PG_DSN",
+        "public",
+        target,
+        smaller.to_str().unwrap(),
+        "--mode",
+        "replace",
+    ]);
+    assert_eq!(replaced["status"], "committed");
+    assert_eq!(replaced["rows"]["confirmed"], 2);
+    assert_eq!(
+        scalar_i64(&format!("SELECT COUNT(*)::BIGINT FROM public.{target}")),
+        2
+    );
+    assert_eq!(
+        scalar_i64(&format!("SELECT 'public.{target}'::regclass::oid::BIGINT")),
+        identity_before,
+        "la CLI ha ricreato il target invece di svuotarlo"
+    );
+
+    drop_if_present(target);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Una mode rifiutata dal provider deve uscire con codice non-zero e un
+/// envelope di errore tipizzato, non con un successo silenzioso o un panico.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn f5_15_cli_replace_on_a_missing_target_exits_non_zero_with_a_typed_envelope() {
+    let (dir, input) = replace_snapshot("missing", "1");
+
+    let out = run_json_err(&[
+        "postgres-write-ipc",
+        "PG_DSN",
+        "public",
+        "_cli_replace_mai_creata",
+        input.to_str().unwrap(),
+        "--mode",
+        "replace",
+    ]);
+    assert_eq!(out["status"], "error");
+    assert_eq!(out["error"]["category"], "not_found");
+    assert_eq!(out["error"]["provider"], "postgres");
+    assert_eq!(out["error"]["phase"], "prepare");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Le chiavi non appartengono a Replace: la CLI le trasmette e il provider le
+/// rifiuta, quindi l'exit resta non-zero con categoria `invalid_plan`.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn f5_15_cli_replace_with_keys_exits_non_zero_as_invalid_plan() {
+    let target = "_cli_replace_keys";
+    drop_if_present(target);
+    let (dir, input) = replace_snapshot("keys", "2");
+
+    let created = run_json(&[
+        "postgres-write-ipc",
+        "PG_DSN",
+        "public",
+        target,
+        input.to_str().unwrap(),
+        "--mode",
+        "create",
+    ]);
+    assert_eq!(created["status"], "committed");
+
+    let out = run_json_err(&[
+        "postgres-write-ipc",
+        "PG_DSN",
+        "public",
+        target,
+        input.to_str().unwrap(),
+        "--mode",
+        "replace",
+        "--keys",
+        "srid",
+    ]);
+    assert_eq!(out["status"], "error");
+    assert_eq!(out["error"]["category"], "invalid_plan");
+
+    drop_if_present(target);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

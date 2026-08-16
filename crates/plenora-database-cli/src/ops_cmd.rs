@@ -252,7 +252,7 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
     let full_sql = prefix + &sql;
 
     let secret = secret_from_env(&dsn_env)?;
-    let provider = postgres_provider_for_pfm();
+    let provider = postgres_provider_for_pfm()?;
     let budget = pfm_budget()?;
     let cancel = CancellationToken::new();
     let opts = TransactionOptions {
