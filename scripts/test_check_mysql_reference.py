@@ -293,7 +293,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         nella `cargo test` nuda veniva letta come rumore.
         """
 
-        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 32)
+        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 33)
         self.assertIn(
             "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,
@@ -354,7 +354,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for name in gate.EXPECTED_UNIT_TESTS
             if name.startswith("write::tests::")
         }
-        self.assertEqual(len(write_tests), 36)
+        self.assertEqual(len(write_tests), 37)
         self.assertIn(
             "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
             write_tests,
@@ -379,7 +379,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
             gate.EXPECTED_UNIT_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), 123)
+        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), 124)
 
     def test_gate_pins_the_read_batching_and_diagnostics_inventory(self) -> None:
         """I test offline di batching e diagnostica sono fissati per nome.
@@ -469,7 +469,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "eseguiti 105, attesi 123"):
+            with self.assertRaisesRegex(RuntimeError, "eseguiti 105, attesi 124"):
                 gate.main()
 
         self.assertFalse(

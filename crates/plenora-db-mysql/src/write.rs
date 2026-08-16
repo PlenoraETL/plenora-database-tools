@@ -185,7 +185,10 @@ impl MysqlWritePlan {
         // Per Upsert/DeleteByKeys: verifica ogni key nello schema Arrow.
         // Per DeleteByKeys: solo le colonne key devono essere nello schema
         // (nessuna colonna extra — solo keys per il filter DELETE).
-        if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys) {
+        if matches!(
+            operation.mode,
+            WriteMode::Upsert | WriteMode::DeleteByKeys | WriteMode::Create
+        ) {
             for key in &operation.keys {
                 if !columns.iter().any(|c| c.name == *key) {
                     return Err(prepare_error(
@@ -1255,7 +1258,18 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.allow_partial {
         return Err(unsupported("write MySQL parziale non qualificata"));
     }
-    // Upsert, DeleteByKeys e Update richiedono keys; le altre mode le rifiutano.
+    // `Create` accetta keys opzionali e le rende PRIMARY KEY della tabella che
+    // costruisce, come su PostgreSQL. Non le richiede: una tabella senza
+    // chiave primaria e legittima.
+    if operation.mode == WriteMode::Create && !operation.update_columns.is_empty() {
+        return Err(prepare_error(
+            ErrorCategory::InvalidPlan,
+            "Create MySQL non ha colonne da aggiornare: update_columns non e \
+             applicabile",
+        ));
+    }
+    // Upsert, DeleteByKeys e Update richiedono keys; Append e Replace le
+    // rifiutano.
     if matches!(
         operation.mode,
         WriteMode::Upsert | WriteMode::DeleteByKeys | WriteMode::Update
@@ -1279,12 +1293,13 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
                  Upsert aggiorna tutte le non-key, DeleteByKeys non usa update_columns",
             ));
         }
-    } else if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
-        // Il ramo copre Append, Create e Replace: nessuna delle tre ha
-        // semantica di chiave. Il messaggio nomina la mode effettiva invece
-        // di dire sempre "Append", e la categoria e `InvalidPlan` — il piano
-        // descrive qualcosa che la mode non significa, non una funzione che
-        // il provider non implementa.
+    } else if operation.mode != WriteMode::Create
+        && (!operation.keys.is_empty() || !operation.update_columns.is_empty())
+    {
+        // Restano Append e Replace: nessuna delle due ha semantica di chiave.
+        // Il messaggio nomina la mode effettiva, e la categoria e
+        // `InvalidPlan` — il piano descrive qualcosa che la mode non
+        // significa, non una funzione che il provider non implementa.
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
             format!(
@@ -1744,9 +1759,61 @@ mod tests {
     /// Le mode senza semantica di chiave rifiutano keys e update_columns, e
     /// il messaggio nomina la mode vera: prima diceva sempre "Append" anche
     /// per Create e Replace.
+    /// `Create` accetta keys opzionali e le rende PRIMARY KEY, come su
+    /// PostgreSQL. Prima le rifiutava, il che rendeva irraggiungibile il ramo
+    /// `PRIMARY KEY` di `build_create_table_sql`: codice che non poteva
+    /// essere eseguito da nessun piano valido.
+    #[test]
+    fn create_accepts_keys_and_renders_them_as_a_primary_key() {
+        let fields = vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("tenant", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
+        ];
+        let mut operation = append_operation();
+        operation.mode = WriteMode::Create;
+        operation.keys = vec!["id".to_owned(), "tenant".to_owned()];
+        let input = schema(fields);
+
+        MysqlWritePlan::compile(&input, &operation, "warehouse").expect("Create con keys");
+        let ddl = build_create_table_sql(&input, &operation, "warehouse").expect("DDL");
+        assert!(
+            ddl.contains("PRIMARY KEY (`id`, `tenant`)"),
+            "PRIMARY KEY assente dalla DDL: {ddl}"
+        );
+
+        // Senza keys la tabella nasce senza chiave primaria: legittimo.
+        let mut without = append_operation();
+        without.mode = WriteMode::Create;
+        let plain = build_create_table_sql(&input, &without, "warehouse").expect("DDL");
+        assert!(!plain.contains("PRIMARY KEY"), "{plain}");
+
+        // Una key che non e nello schema Arrow non puo diventare PRIMARY KEY.
+        let mut absent = append_operation();
+        absent.mode = WriteMode::Create;
+        absent.keys = vec!["mai_dichiarata".to_owned()];
+        assert_eq!(
+            MysqlWritePlan::compile(&input, &absent, "warehouse")
+                .expect_err("key assente accettata")
+                .category,
+            ErrorCategory::InvalidPlan
+        );
+
+        // `update_columns` non ha senso su Create: non aggiorna nulla.
+        let mut updating = append_operation();
+        updating.mode = WriteMode::Create;
+        updating.update_columns = vec!["label".to_owned()];
+        assert_eq!(
+            MysqlWritePlan::compile(&input, &updating, "warehouse")
+                .expect_err("update_columns accettate")
+                .category,
+            ErrorCategory::InvalidPlan
+        );
+    }
+
     #[test]
     fn modes_without_key_semantics_reject_keys_and_update_columns() {
-        for mode in [WriteMode::Append, WriteMode::Create, WriteMode::Replace] {
+        for mode in [WriteMode::Append, WriteMode::Replace] {
             let mut operation = append_operation();
             operation.mode = mode;
             operation.keys = vec!["id".to_owned()];

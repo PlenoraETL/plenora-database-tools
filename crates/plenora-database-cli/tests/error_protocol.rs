@@ -1,7 +1,9 @@
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,6 +24,10 @@ fn run_with_secret(arguments: &[&str], secret: &str) -> Output {
         .expect("run plenora-database with isolated secret")
 }
 
+// I due helper e `fs` servono solo ai test delle rotte multi-provider, che
+// sono gia sotto questo `cfg`: senza, con le sole feature di default
+// risultano codice morto e clippy lo rifiuta.
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 fn run_without_secret(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_plenora-database"))
         .args(arguments)
@@ -30,6 +36,7 @@ fn run_without_secret(arguments: &[&str]) -> Output {
         .expect("run plenora-database without secret")
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 fn run_without_secret_with_tls_path(
     arguments: &[&str],
     tls_environment: &str,
@@ -183,6 +190,7 @@ fn bounded_ca_validation_precedes_secret_resolution_for_every_probe_route() {
     std::fs::remove_file(&fixture).expect("remove CA fixture");
 }
 
+#[cfg(all(feature = "mysql", feature = "sqlserver"))]
 fn assert_ca_error_before_secret(path: &Path, expected_message: &str) {
     for arguments in [
         vec![

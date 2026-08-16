@@ -6146,3 +6146,66 @@ async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
         "0"
     );
 }
+
+/// `Create` con keys costruisce la tabella con la PRIMARY KEY dichiarata.
+///
+/// Prima `MySQL` rifiutava le keys su Create, quindi il ramo `PRIMARY KEY` di
+/// `build_create_table_sql` non era raggiungibile da nessun piano valido:
+/// codice presente e mai eseguito, e una tabella creata dal provider non
+/// poteva avere una chiave primaria.
+#[tokio::test]
+async fn live_v12_write_create_with_keys_declares_the_primary_key() {
+    let table = "_v12_create_pk";
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, batch) = scalar_batch(&[1, 2], &["prima", "seconda"]);
+    let mut operation = write_op_scalar(
+        "dataflow_test",
+        table,
+        plenora_database_core::plan::WriteMode::Create,
+    );
+    operation.keys = vec!["id".to_owned()];
+
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare create con keys");
+    let outcome = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(BatchesStream {
+                schema,
+                batches: std::collections::VecDeque::from(vec![batch]),
+                declared: 2,
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("write create con keys");
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
+
+    assert_eq!(
+        replace_fixture_scalar(&format!(
+            "SELECT IFNULL(GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX), '-')              FROM information_schema.STATISTICS              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'                AND INDEX_NAME = 'PRIMARY'"
+        ))
+        .await,
+        "id",
+        "la tabella creata non ha la PRIMARY KEY dichiarata"
+    );
+
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+}

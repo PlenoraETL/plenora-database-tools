@@ -95,7 +95,7 @@ e osservabile:
 
 | Mode | Semantica | Postgres | MySQL | SQL Server |
 |---|---|---|---|---|
-| `Create` | CREATE TABLE se non esiste | ✅ | ✅ | ✅ |
+| `Create` | CREATE TABLE se non esiste; `keys` opzionali diventano PRIMARY KEY | ✅ | ✅ | ✅ |
 | `Append` | INSERT o COPY bulk | ✅ COPY binario | ✅ Prepared | ✅ Prepared/TdsBulk |
 | `Replace` | vedi nota sopra: semantica diversa per provider | ✅ `DELETE FROM` + INSERT, target conservato | ✅ `DELETE FROM` + INSERT, target conservato | ⚠️ staging + publish: il target viene ricreato |
 | `TruncateInsert` | TRUNCATE + INSERT | ✅ TRUNCATE transazionale | ❌ fail-closed (DDL con commit implicito) | ✅ |
