@@ -252,13 +252,22 @@ impl MysqlSession {
     /// - `statement_timeout_ms`: MAX_EXECUTION_TIME session-scoped
     ///
     /// Nota: MySQL non ha `deferrable` — parametro non esposto qui.
-    #[pyo3(signature = (isolation=None, read_only=None, statement_timeout_ms=None))]
+    #[pyo3(signature = (
+        isolation=None,
+        read_only=None,
+        statement_timeout_ms=None,
+        context=None,
+        native_query_policy=None,
+    ))]
+    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
     fn begin(
         &self,
         py: Python<'_>,
         isolation: Option<&str>,
         read_only: Option<bool>,
         statement_timeout_ms: Option<u64>,
+        context: Option<crate::session_context_py::PySessionContext>,
+        native_query_policy: Option<&str>,
     ) -> PyResult<Transaction> {
         self.ensure_open()?;
         let mut opts = TransactionOptions::default();
@@ -274,6 +283,17 @@ impl MysqlSession {
         }
         if let Some(ms) = statement_timeout_ms {
             opts.statement_timeout_ms = Some(ms);
+        }
+        // Fix P1 review MySQL 2026-08-15 — parity con Session (Postgres):
+        // - `context`: SessionContext applicato via `SET
+        //   @plenora_ctx_*` (session-scoped MySQL).
+        // - `native_query_policy`: "allow" (default) | "deny".
+        if let Some(ctx) = context {
+            opts.context = ctx.inner;
+        }
+        if let Some(policy) = native_query_policy {
+            opts.native_query_policy =
+                crate::transaction::parse_native_query_policy(policy)?;
         }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();

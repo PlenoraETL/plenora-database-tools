@@ -4847,3 +4847,180 @@ async fn live_v12_write_upsert_without_keys_rejected() {
         Some(ErrorCategory::InvalidPlan)
     ), "upsert senza keys deve fallire con InvalidPlan");
 }
+
+// ============================================================================
+//  PFM CHG-003 — NativeQueryPolicy MySQL parity
+// ============================================================================
+//
+// I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (già
+// coperto client-side da unit test in `plenora-database-core`) sia
+// effettivamente cablato dentro `MysqlTransaction::{execute, query,
+// execute_conditional_update}`. Non serve un data-plane elaborato: basta
+// aprire una tx con `pfm_defaults()` (Deny) e verificare che DDL / session
+// control ricevano `InvalidPlan` prima di toccare il server.
+
+#[tokio::test]
+async fn live_native_query_policy_deny_rejects_ddl() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::pfm_defaults(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin pfm_defaults");
+    let result = tx
+        .execute(&Statement::new("CREATE TABLE _nqp_deny_ddl (x INT)"), &cancellation)
+        .await;
+    let _ = tx.rollback(&cancellation).await;
+    assert!(
+        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        "DDL sotto pfm_defaults deve fallire con InvalidPlan"
+    );
+}
+
+#[tokio::test]
+async fn live_native_query_policy_deny_rejects_session_control() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::pfm_defaults(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin pfm_defaults");
+    let result = tx
+        .execute(
+            &Statement::new("SET SESSION time_zone = '+00:00'"),
+            &cancellation,
+        )
+        .await;
+    let _ = tx.rollback(&cancellation).await;
+    assert!(
+        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        "SET SESSION sotto pfm_defaults deve fallire con InvalidPlan"
+    );
+}
+
+#[tokio::test]
+async fn live_native_query_policy_allow_permits_ddl() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    // Cleanup pregresso via DDL diretto (fuori dalla tx sotto test).
+    provider
+        .execute_ddl(
+            &live_secret(),
+            "DROP TABLE IF EXISTS _nqp_allow_ddl",
+            &cancellation,
+        )
+        .await
+        .expect("cleanup pregresso");
+
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(), // Allow (baseline non-PFM)
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin default");
+    // Con Allow il policy non blocca; MySQL fa autocommit implicito su DDL,
+    // quindi va a buon fine oltre l'enforcement.
+    tx.execute(
+        &Statement::new(
+            "CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB",
+        ),
+        &cancellation,
+    )
+    .await
+    .expect("DDL permesso da NativeQueryPolicy::Allow");
+    let _ = tx.rollback(&cancellation).await;
+
+    provider
+        .execute_ddl(
+            &live_secret(),
+            "DROP TABLE IF EXISTS _nqp_allow_ddl",
+            &cancellation,
+        )
+        .await
+        .expect("cleanup finale");
+}
+
+#[tokio::test]
+async fn live_native_query_policy_deny_rejects_ddl_via_query() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    // Assicura enforcement anche sul path `query` (non solo `execute`).
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::pfm_defaults(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin pfm_defaults");
+    let result = tx
+        .query(&Statement::new("CREATE TABLE _nqp_deny_q (x INT)"), &cancellation)
+        .await;
+    let _ = tx.rollback(&cancellation).await;
+    assert!(
+        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        "DDL via query() sotto pfm_defaults deve fallire con InvalidPlan"
+    );
+}
+
+#[tokio::test]
+async fn live_native_query_policy_deny_rejects_conditional_update_ddl() {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+
+    // Assicura enforcement anche sul path `execute_conditional_update`.
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::pfm_defaults(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin pfm_defaults");
+    let update = Statement::new("CREATE TABLE _nqp_deny_cu (x INT)");
+    let request = ConditionalUpdate {
+        update: &update,
+        key_probe: None,
+        expected_affected_rows: 0,
+    };
+    let result = tx.execute_conditional_update(request, &cancellation).await;
+    let _ = tx.rollback(&cancellation).await;
+    assert!(
+        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        "conditional_update con SQL non-CRUD sotto pfm_defaults deve fallire con InvalidPlan"
+    );
+}

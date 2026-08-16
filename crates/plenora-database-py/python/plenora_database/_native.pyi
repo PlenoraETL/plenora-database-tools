@@ -76,6 +76,8 @@ class MysqlSession:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,  # PFM CHG-002
+        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
     ) -> Transaction: ...
 
 # ============================ AsyncMysqlSession (v0.8+) ==================
@@ -102,6 +104,8 @@ class AsyncMysqlSession:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,  # PFM CHG-002
+        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
     ) -> Any: ...  # awaitable → AsyncTransaction
     def aread(
         self,

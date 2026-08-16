@@ -193,13 +193,22 @@ pub async fn mysql_inspect_tables(args: &mut impl Iterator<Item = String>) -> Cl
     )
 }
 
-/// `mysql-execute-sql <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] <sql>`
+/// `mysql-execute-sql <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] [--allow-raw] <sql>`
 ///
 /// Statement DML raw (INSERT/UPDATE/DELETE). Nessun parametro. Uso una
 /// transazione applicativa dedicata (BEGIN/COMMIT via `begin_transaction`)
 /// per garantire outcome deterministico.
+///
+/// PFM CHG-003: default `native_query_policy: Deny` — solo SELECT/INSERT/
+/// UPDATE/DELETE/WITH/VALUES/TABLE/MERGE. Per DDL o session commands
+/// serve `--allow-raw` esplicito (parity con `execute-sql` Postgres).
 pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let (provider, secret, remaining) = mysql_provider_from_args(args)?;
+    let (provider, secret, mut remaining) = mysql_provider_from_args(args)?;
+    let allow_raw = remaining
+        .iter()
+        .position(|arg| arg == "--allow-raw")
+        .inspect(|&idx| { remaining.remove(idx); })
+        .is_some();
     let mut it = remaining.into_iter();
     let sql = it.next().ok_or_else(|| "manca lo statement SQL".to_owned())?;
     if it.next().is_some() {
@@ -207,13 +216,13 @@ pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRe
     }
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let opts = if allow_raw {
+        plenora_database_core::transaction::TransactionOptions::default()
+    } else {
+        plenora_database_core::transaction::TransactionOptions::pfm_defaults()
+    };
     let mut tx = provider
-        .begin_transaction(
-            &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
-            &budget,
-            &cancellation,
-        )
+        .begin_transaction(&secret, &opts, &budget, &cancellation)
         .await?;
     let stmt = plenora_database_core::transaction::Statement {
         sql,
@@ -262,7 +271,7 @@ pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cl
     let mut tx = provider
         .begin_transaction(
             &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
+            &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
             &budget,
             &cancellation,
         )
@@ -310,7 +319,7 @@ pub async fn mysql_conditional_update(
     let mut tx = provider
         .begin_transaction(
             &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
+            &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
             &budget,
             &cancellation,
         )
@@ -464,12 +473,12 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
             &cancellation,
         )
         .await?;
-    // TX scenario
+    // TX scenario — pfm_defaults (Deny DDL/session cmds, permette INSERT).
     let budget = ResourceBudget::new(ResourceLimits::default())?;
     let mut tx = provider
         .begin_transaction(
             &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
+            &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
             &budget,
             &cancellation,
         )
@@ -488,11 +497,11 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
     tx.rollback_to_savepoint("sp1", &cancellation).await?;
     tx.release_savepoint("sp1", &cancellation).await?;
     let commit = tx.commit(&cancellation).await?;
-    // Verify
+    // Verify — SELECT permesso in Deny, quindi pfm_defaults ok.
     let mut verify_tx = provider
         .begin_transaction(
             &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
+            &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
             &budget,
             &cancellation,
         )

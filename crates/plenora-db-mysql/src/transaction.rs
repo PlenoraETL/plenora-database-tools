@@ -42,6 +42,10 @@ use std::sync::Arc;
 pub struct MysqlTransaction {
     session: MysqlSession,
     open: bool,
+    /// Policy di ammissione statement (Allow default, Deny per PFM).
+    /// Persistito da `TransactionOptions::native_query_policy`; parity
+    /// con `PostgresTransaction`. Fix P1 review MySQL 2026-08-15.
+    native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
 impl MysqlTransaction {
@@ -113,9 +117,12 @@ impl MysqlTransaction {
             raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
         }
 
-        Ok(Self { session, open: true })
+        Ok(Self {
+            session,
+            open: true,
+            native_query_policy: options.native_query_policy,
+        })
     }
-
 }
 
 fn is_safe_context_name(name: &str) -> bool {
@@ -241,6 +248,14 @@ impl TransactionScope for MysqlTransaction {
             if !self.open {
                 return Err(closed_error(ErrorPhase::Write));
             }
+            // Fix P1 review MySQL: enforcement condiviso del core
+            // (parity con `PostgresTransaction::execute`). Se
+            // `native_query_policy = Deny`, blocca DDL/session/multi-
+            // statement prima del round-trip al server.
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &statement.sql,
+            )?;
             let params = bind_positional_params(&statement.params)?;
             let result = self
                 .session
@@ -274,6 +289,11 @@ impl TransactionScope for MysqlTransaction {
             if !self.open {
                 return Err(closed_error(ErrorPhase::Read));
             }
+            // Fix P1 review MySQL: enforcement condiviso (parity Postgres).
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &statement.sql,
+            )?;
             let params = bind_positional_params(&statement.params)?;
             // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
             let timeout = self.session.operation_timeout();
@@ -470,6 +490,18 @@ impl TransactionScope for MysqlTransaction {
         Box::pin(async move {
             if !self.open {
                 return Err(closed_error(ErrorPhase::Write));
+            }
+            // Fix P1 review MySQL: enforcement condiviso su UPDATE
+            // (+ probe se presente). Parity con `PostgresTransaction`.
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &request.update.sql,
+            )?;
+            if let Some(probe) = request.key_probe {
+                plenora_database_core::native_query_policy::enforce_policy(
+                    self.native_query_policy,
+                    &probe.sql,
+                )?;
             }
             // Pattern:
             //   1. SAVEPOINT __plenora_cu

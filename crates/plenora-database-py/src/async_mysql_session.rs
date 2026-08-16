@@ -250,13 +250,22 @@ impl AsyncMysqlSession {
 
     /// Apre una tx async. Ritorna awaitable → `AsyncTransaction`
     /// (provider-agnostic, riusato dal path Postgres).
-    #[pyo3(signature = (isolation=None, read_only=None, statement_timeout_ms=None))]
+    #[pyo3(signature = (
+        isolation=None,
+        read_only=None,
+        statement_timeout_ms=None,
+        context=None,
+        native_query_policy=None,
+    ))]
+    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
     fn begin<'py>(
         &self,
         py: Python<'py>,
         isolation: Option<&str>,
         read_only: Option<bool>,
         statement_timeout_ms: Option<u64>,
+        context: Option<crate::session_context_py::PySessionContext>,
+        native_query_policy: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let mut opts = TransactionOptions::default();
@@ -272,6 +281,14 @@ impl AsyncMysqlSession {
         }
         if let Some(ms) = statement_timeout_ms {
             opts.statement_timeout_ms = Some(ms);
+        }
+        // Fix P1 review MySQL — parity con AsyncSession Postgres.
+        if let Some(ctx) = context {
+            opts.context = ctx.inner;
+        }
+        if let Some(policy) = native_query_policy {
+            opts.native_query_policy =
+                crate::transaction::parse_native_query_policy(policy)?;
         }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();

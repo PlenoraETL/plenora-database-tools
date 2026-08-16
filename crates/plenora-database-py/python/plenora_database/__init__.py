@@ -195,8 +195,24 @@ class _MysqlSessionWrapper:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: "SessionContext | None" = None,  # noqa: F821
+        native_query_policy: str | None = None,
     ):
-        return self._native.begin(isolation, read_only, statement_timeout_ms)
+        """Apre una tx MySQL user-managed.
+
+        Options aggiuntive (PFM, parity con Postgres SDK 0.9.0):
+        - `context` (CHG-002): `SessionContext` applicato via
+          `SET @plenora_ctx_*` MySQL (session-scoped).
+        - `native_query_policy` (CHG-003): "allow" (default) o "deny"
+          — restringe agli statement CRUD OLTP.
+        """
+        return self._native.begin(
+            isolation,
+            read_only,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
+        )
 
     def read(
         self,
@@ -382,8 +398,18 @@ class _AsyncMysqlSessionWrapper:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: "SessionContext | None" = None,  # noqa: F821
+        native_query_policy: str | None = None,
     ):
-        return await self._native.begin(isolation, read_only, statement_timeout_ms)
+        """Come `_MysqlSessionWrapper.begin` sync — vedi docstring per
+        `context` / `native_query_policy`."""
+        return await self._native.begin(
+            isolation,
+            read_only,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
+        )
 
     async def aread(
         self,
