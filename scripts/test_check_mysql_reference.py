@@ -367,7 +367,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             write_tests,
         )
         self.assertIn(
-            "write::tests::a_created_table_survives_the_rollback_and_the_error_says_so",
+            "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
             write_tests,
         )
         self.assertIn(

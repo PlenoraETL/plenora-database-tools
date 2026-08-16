@@ -462,7 +462,7 @@ async fn execute_mysql_write(
     provider: &MysqlProvider,
     secret: &SecretString,
     prepared: PreparedWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
@@ -525,15 +525,52 @@ async fn execute_mysql_write(
             .exec_control(&ddl, ErrorPhase::Prepare, token)
             .await?;
         // Da qui in poi la tabella esiste sul server e nessun ROLLBACK la
-        // rimuove: il DDL MySQL fa commit implicito. Ogni fallimento
-        // successivo deve dichiararlo invece di affermare `RolledBack`.
+        // rimuove: il DDL MySQL fa commit implicito.
         crate::write::DdlResidue::CreatedTable
     } else {
         crate::write::DdlResidue::None
     };
 
-    let target =
-        describe_object(&mut session, target_schema, &operation.target.object, token).await?;
+    // Il resto della scrittura ha molte uscite — describe, preflight, apertura
+    // transazione, scrittura, commit — e ciascuna, dopo la DDL, direbbe il
+    // falso da sola. Passano tutte da qui, e il residuo si stampa una volta
+    // sul risultato.
+    let result = execute_mysql_write_after_ddl(
+        provider,
+        &mut session,
+        input,
+        &operation,
+        &schema,
+        &plan,
+        prepared_loss,
+        target_schema,
+        budget,
+        token,
+    )
+    .await;
+    drop(session);
+    crate::write::stamp_ddl_residue(result, ddl_residue)
+}
+
+/// Il corpo della scrittura dopo l'eventuale DDL di preparazione.
+///
+/// Separato da `execute_mysql_write` per una ragione sola: dare alle sue
+/// uscite un unico punto di ritorno su cui il chiamante possa dichiarare cosa
+/// e rimasto sul server.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn execute_mysql_write_after_ddl(
+    provider: &MysqlProvider,
+    session: &mut crate::MysqlSession,
+    mut input: Box<dyn BatchStream>,
+    operation: &plenora_database_core::plan::WriteOperation,
+    schema: &SchemaRef,
+    plan: &crate::write::MysqlWritePlan,
+    prepared_loss: plenora_database_core::loss::LossReport,
+    target_schema: &str,
+    budget: &ResourceBudget,
+    token: &CancellationToken,
+) -> Result<WriteOutcome> {
+    let target = describe_object(session, target_schema, &operation.target.object, token).await?;
     // Skip preflight compare per Create (target appena creato dallo schema)
     // e DeleteByKeys (schema keys-only, preflight standard non applicabile).
     // Il target deve comunque esistere ed essere BASE TABLE InnoDB — questo
@@ -564,7 +601,7 @@ async fn execute_mysql_write(
         );
         let staging_name = plan.staging_temp_name(&seed);
         let staging_ddl = crate::write::build_temp_staging_sql(
-            &schema,
+            schema,
             &staging_name,
             provider.config.database(),
         )?;
@@ -583,7 +620,7 @@ async fn execute_mysql_write(
     // valido.
     let replace_delete_sql = if operation.mode == plenora_database_core::plan::WriteMode::Replace {
         Some(crate::write::build_delete_all_sql(
-            &operation,
+            operation,
             provider.config.database(),
         )?)
     } else {
@@ -602,12 +639,12 @@ async fn execute_mysql_write(
     let diagnostic_input = if operation.mode == plenora_database_core::plan::WriteMode::Append {
         input
             .declared_input_rows()
-            .map(|rows| validate_diagnostic_input(&schema, rows, input.row_diagnostics_policy()))
+            .map(|rows| validate_diagnostic_input(schema, rows, input.row_diagnostics_policy()))
             .transpose()?
     } else {
         None
     };
-    let execution_id = start_write_transaction(&mut session, token).await?;
+    let execution_id = start_write_transaction(session, token).await?;
     // Replace: svuota il target dentro la stessa transazione del bulk insert.
     // Nessun DDL, quindi identita dell'oggetto, indici, FK, trigger, check,
     // default, grant e AUTO_INCREMENT restano quelli del target — e un
@@ -622,21 +659,15 @@ async fn execute_mysql_write(
             )
             .await
         {
-            return Err(rollback_after_failure_with_residue(
-                &mut session,
-                error,
-                &execution_id,
-                ddl_residue,
-            )
-            .await);
+            return Err(rollback_after_failure(session, error, &execution_id).await);
         }
     }
     if let Some((declared_rows, policy)) = diagnostic_input {
         let result = diagnostic_mysql_write(
-            &mut session,
+            session,
             input.as_mut(),
-            &schema,
-            &plan,
+            schema,
+            plan,
             budget,
             token,
             policy,
@@ -644,15 +675,14 @@ async fn execute_mysql_write(
             &execution_id,
         )
         .await;
-        drop(session);
         return result;
     }
     let effective_staging = update_staging_quoted.as_deref();
     let progress = match write_input_batches(
-        &mut session,
+        session,
         input.as_mut(),
-        &schema,
-        &plan,
+        schema,
+        plan,
         operation.mode,
         effective_staging,
         budget,
@@ -662,13 +692,7 @@ async fn execute_mysql_write(
     {
         Ok(progress) => progress,
         Err(error) => {
-            return Err(rollback_after_failure_with_residue(
-                &mut session,
-                error,
-                &execution_id,
-                ddl_residue,
-            )
-            .await);
+            return Err(rollback_after_failure(session, error, &execution_id).await);
         }
     };
 
@@ -693,13 +717,7 @@ async fn execute_mysql_write(
                     final_affected = updated;
                 }
                 Err(error) => {
-                    return Err(rollback_after_failure_with_residue(
-                        &mut session,
-                        error,
-                        &execution_id,
-                        ddl_residue,
-                    )
-                    .await);
+                    return Err(rollback_after_failure(session, error, &execution_id).await);
                 }
             }
         }
@@ -724,7 +742,6 @@ async fn execute_mysql_write(
             crate::write::commit_failure(error, execution_id, progress.received)
         }
     };
-    drop(session);
     result
 }
 
@@ -957,29 +974,16 @@ async fn write_batch_chunks_for_mode(
     Ok(affected_total)
 }
 
-/// Rollback del percorso diagnostico, che e Append-only e non emette DDL:
-/// per costruzione non ha residui da dichiarare.
+/// Annulla la transazione e costruisce l'errore del fallimento pre-commit.
+///
+/// Non dichiara i residui di DDL: quelli li stampa
+/// `crate::write::stamp_ddl_residue` sul valore di ritorno di
+/// `execute_mysql_write_after_ddl`, che e l'unico punto attraversato da tutte
+/// le uscite.
 async fn rollback_after_failure(
     session: &mut crate::MysqlSession,
     error: DatabaseError,
     execution_id: &str,
-) -> DatabaseError {
-    rollback_after_failure_with_residue(
-        session,
-        error,
-        execution_id,
-        crate::write::DdlResidue::None,
-    )
-    .await
-}
-
-/// Annulla la transazione e costruisce l'errore dichiarando cio che il
-/// rollback non ha potuto annullare.
-async fn rollback_after_failure_with_residue(
-    session: &mut crate::MysqlSession,
-    error: DatabaseError,
-    execution_id: &str,
-    residue: crate::write::DdlResidue,
 ) -> DatabaseError {
     let cleanup_cancellation = CancellationToken::new();
     let confirmed = session
@@ -993,7 +997,7 @@ async fn rollback_after_failure_with_residue(
     if !confirmed {
         session.discard().await;
     }
-    crate::write::rolled_back_error_with_residue(error, confirmed, execution_id, residue)
+    crate::write::rolled_back_error(error, confirmed, execution_id)
 }
 
 fn unsupported(message: impl Into<String>) -> DatabaseError {
