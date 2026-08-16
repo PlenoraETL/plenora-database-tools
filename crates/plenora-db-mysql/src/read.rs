@@ -207,8 +207,43 @@ where
         _operation_lease: operation_lease,
         _columns_lease: columns_lease,
         state: MysqlStreamState::Active,
+        pending: None,
         read_diagnostics: ReadDiagnosticsTracker::new(ReadDiagnosticsPolicy::default())?,
     }))
+}
+
+/// Riga gia letta dal worker e gia misurata, non ancora accodata ai buffer.
+struct MeasuredRow {
+    row: Row,
+    bytes: u64,
+}
+
+/// Riga che non e entrata nel batch precedente e apre quello successivo.
+///
+/// Il carry-over vale al massimo una riga: il worker resta a domanda, quindi
+/// nessun prefetch cresce oltre la riga gia letta. Finche la riga attende, la
+/// sua stima conservativa resta prenotata sul budget memoria: non esiste
+/// memoria trattenuta dallo stream e non contabilizzata.
+struct PendingRow {
+    row: MeasuredRow,
+    lease: ResourceLease,
+}
+
+impl PendingRow {
+    /// Restituisce la quota al budget prima che la riserva del batch
+    /// successivo prenoti di nuovo l'intero residuo.
+    fn release(self) -> Result<MeasuredRow> {
+        self.lease.release()?;
+        Ok(self.row)
+    }
+}
+
+/// Esito del riempimento di un batch: buffer, righe accodate e la riga
+/// eventualmente rinviata al batch successivo.
+struct BatchFill {
+    buffers: Vec<MysqlColumnBuffer>,
+    rows: usize,
+    deferred: Option<MeasuredRow>,
 }
 
 pub struct MysqlBatchStream {
@@ -224,6 +259,9 @@ pub struct MysqlBatchStream {
     _operation_lease: ResourceLease,
     _columns_lease: ResourceLease,
     state: MysqlStreamState,
+    /// Riga letta dal worker e non entrata nel batch precedente: apre il
+    /// prossimo batch nella posizione sorgente che le spetta.
+    pending: Option<PendingRow>,
     /// Cursore delle righe già consegnate, base dell'indice sorgente
     /// pubblicato dalla diagnostica row-scoped di lettura.
     read_diagnostics: ReadDiagnosticsTracker,
@@ -297,21 +335,13 @@ impl MysqlBatchStream {
         result
     }
 
-    /// Accoda una riga ai buffer del batch in costruzione.
+    /// Misura la riga con la stima conservativa del percorso.
     ///
     /// Ogni difetto di conversione osservato qui è ancora attribuibile: la
     /// riga non ha raggiunto il consumatore, quindi porta con sé l'indice
-    /// sorgente assoluto e la colonna del piano. Restituisce la stima di byte
-    /// aggiornata.
-    fn append_row(
-        &self,
-        row: &Row,
-        buffers: &mut [MysqlColumnBuffer],
-        row_count: usize,
-        estimated_bytes: u64,
-        byte_limit: u64,
-    ) -> Result<u64> {
-        let row_bytes = conservative_row_bytes(row, self.columns.len()).map_err(|error| {
+    /// sorgente assoluto.
+    fn measure_row(&self, row: &Row, row_count: usize) -> Result<u64> {
+        conservative_row_bytes(row, self.columns.len()).map_err(|error| {
             attribute_conversion_defect(
                 &self.read_diagnostics,
                 &self.columns,
@@ -319,17 +349,16 @@ impl MysqlBatchStream {
                 Some(row_count),
                 None,
             )
-        })?;
-        let next_estimate = estimated_bytes
-            .checked_add(row_bytes)
-            .ok_or_else(|| DatabaseError::resource_limit("stima batch MySQL in overflow"))?;
-        if next_estimate > byte_limit {
-            return Err(DatabaseError::resource_limit(if row_count == 0 {
-                "riga MySQL oltre il budget memoria del batch"
-            } else {
-                "riga MySQL cresciuta oltre il residuo memoria del batch"
-            }));
-        }
+        })
+    }
+
+    /// Accoda una riga già misurata ai buffer del batch in costruzione.
+    fn append_row(
+        &self,
+        row: &Row,
+        buffers: &mut [MysqlColumnBuffer],
+        row_count: usize,
+    ) -> Result<()> {
         for (index, buffer) in buffers.iter_mut().enumerate() {
             buffer
                 .append(row, index, self.budget.limits().cell_bytes)
@@ -343,7 +372,98 @@ impl MysqlBatchStream {
                     )
                 })?;
         }
-        Ok(next_estimate)
+        Ok(())
+    }
+
+    /// Riempie i buffer finché il residuo di righe o di byte lo consente.
+    ///
+    /// La decisione guarda la riga effettivamente letta, non un massimo
+    /// teorico: una riga che non entra nel residuo corrente viene rinviata
+    /// intera al batch successivo, mai scartata e mai spezzata. La prima riga
+    /// del batch non ha un successivo dove essere rinviata, quindi oltre il
+    /// budget è un errore dichiarato e non un batch vuoto.
+    async fn fill_batch(
+        &mut self,
+        reservation: &BatchReservation,
+        carried: Option<MeasuredRow>,
+    ) -> Result<BatchFill> {
+        let capacity = bounded_buffer_capacity(
+            reservation.row_limit,
+            reservation.byte_limit,
+            self.columns.len(),
+        )?;
+        let mut buffers = self
+            .columns
+            .iter()
+            .map(|column| MysqlColumnBuffer::new(column, capacity))
+            .collect::<Vec<_>>();
+        let mut carried = carried;
+        let mut rows = 0_usize;
+        let mut estimated_bytes = 0_u64;
+        let mut deferred = None;
+        while rows < reservation.row_limit {
+            let measured = if let Some(measured) = carried.take() {
+                measured
+            } else {
+                // Una sola domanda per riga: il worker non produce nulla che
+                // il batch non abbia chiesto, quindi il prefetch resta nullo.
+                let _ = self.demand_sender.send(()).await;
+                let received = tokio::select! {
+                    _ = self.cancellation.cancelled() => {
+                        return Err(interruption_error(
+                            &self.cancellation,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    row = self.receiver.recv() => row,
+                };
+                match received {
+                    Some(Ok(row)) => MeasuredRow {
+                        bytes: self.measure_row(&row, rows)?,
+                        row,
+                    },
+                    Some(Err(error)) => return Err(error),
+                    None => break,
+                }
+            };
+            let next_estimate = estimated_bytes
+                .checked_add(measured.bytes)
+                .ok_or_else(|| DatabaseError::resource_limit("stima batch MySQL in overflow"))?;
+            if next_estimate > reservation.byte_limit {
+                if rows == 0 {
+                    return Err(DatabaseError::resource_limit(
+                        "riga MySQL oltre il budget memoria del batch",
+                    ));
+                }
+                deferred = Some(measured);
+                break;
+            }
+            self.append_row(&measured.row, &mut buffers, rows)?;
+            estimated_bytes = next_estimate;
+            rows = rows.saturating_add(1);
+        }
+        Ok(BatchFill {
+            buffers,
+            rows,
+            deferred,
+        })
+    }
+
+    /// Trattiene la riga rinviata prenotandone la stima sul budget memoria.
+    ///
+    /// La prenotazione avviene dopo il commit della riserva, che ha appena
+    /// restituito il residuo non consumato: la riga in attesa resta quindi
+    /// visibile al budget per tutto il tempo in cui occupa memoria.
+    fn park(&mut self, deferred: Option<MeasuredRow>) -> Result<()> {
+        let Some(row) = deferred else {
+            return Ok(());
+        };
+        let lease = self
+            .budget
+            .try_lease(ResourceKind::MemoryBytes, row.bytes)?;
+        self.pending = Some(PendingRow { row, lease });
+        Ok(())
     }
 
     async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
@@ -355,60 +475,17 @@ impl MysqlBatchStream {
             ));
         }
         ensure_active_read_budget(&self.budget)?;
+        // Il carry-over restituisce la sua quota prima della riserva: la
+        // riserva prenota tutto il residuo, quindi la stessa riga risulterebbe
+        // altrimenti contabilizzata due volte.
+        let carried = self.pending.take().map(PendingRow::release).transpose()?;
         let reservation = BatchReservation::new(&self.budget, self.batch_rows, &self.columns)?;
-        let capacity = bounded_buffer_capacity(
-            reservation.row_limit,
-            reservation.byte_limit,
-            self.columns.len(),
-        )?;
-        let mut buffers = self
-            .columns
-            .iter()
-            .map(|column| MysqlColumnBuffer::new(column, capacity))
-            .collect::<Vec<_>>();
-        let mut row_count = 0_usize;
-        let mut estimated_bytes = 0_u64;
-        let maximum_valid_row_bytes =
-            maximum_valid_row_bytes(self.columns.len(), self.budget.limits().cell_bytes)?;
-        while row_count < reservation.row_limit {
-            let residual = reservation.byte_limit.saturating_sub(estimated_bytes);
-            if row_count > 0 && residual < maximum_valid_row_bytes {
-                break;
-            }
-            let _ = self.demand_sender.send(()).await;
-            let received = tokio::select! {
-                _ = self.cancellation.cancelled() => {
-                    return Err(interruption_error(
-                        &self.cancellation,
-                        ErrorPhase::Read,
-                        RemoteEffect::None,
-                    ));
-                }
-                row = self.receiver.recv() => row,
-            };
-            match received {
-                Some(Ok(row)) => {
-                    estimated_bytes = self.append_row(
-                        &row,
-                        &mut buffers,
-                        row_count,
-                        estimated_bytes,
-                        reservation.byte_limit,
-                    )?;
-                    row_count = row_count.saturating_add(1);
-                }
-                Some(Err(error)) => {
-                    return Err(error);
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-        if row_count == 0 {
+        let mut fill = self.fill_batch(&reservation, carried).await?;
+        if fill.rows == 0 {
             return Ok(None);
         }
-        let arrays = buffers
+        let arrays = fill
+            .buffers
             .iter_mut()
             .map(MysqlColumnBuffer::finish)
             .collect::<Vec<_>>();
@@ -433,6 +510,7 @@ impl MysqlBatchStream {
         let rows = u64::try_from(batch.num_rows())
             .map_err(|_| DatabaseError::resource_limit("righe MySQL non rappresentabili"))?;
         reservation.commit(rows, actual_bytes, components)?;
+        self.park(fill.deferred)?;
         // Il cursore avanza solo su un batch che sta per essere consegnato:
         // un batch fallito non ha righe pubblicate da contare.
         self.read_diagnostics.publish_batch(rows)?;
@@ -441,6 +519,9 @@ impl MysqlBatchStream {
 
     fn fail(&mut self, error: DatabaseError) {
         self.cancellation.cancel();
+        // Nessuna riga sopravvive a uno stream fallito: la quota del
+        // carry-over torna al budget subito, non al drop dello stream.
+        self.pending = None;
         self.state = MysqlStreamState::Failed(error);
     }
 }
@@ -466,19 +547,6 @@ fn bounded_buffer_capacity(
     }
     let rows_by_bytes = usize::try_from(rows_by_bytes).unwrap_or(usize::MAX);
     Ok(row_limit.min(rows_by_bytes).min(1_024))
-}
-
-fn maximum_valid_row_bytes(column_count: usize, cell_limit: u64) -> Result<u64> {
-    let columns = u64::try_from(column_count)
-        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
-    let bytes_value = cell_limit
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(CONSERVATIVE_CELL_BYTES))
-        .ok_or_else(|| DatabaseError::resource_limit("bound riga MySQL in overflow"))?;
-    let maximum_cell = bytes_value.max(128);
-    maximum_cell
-        .checked_mul(columns)
-        .ok_or_else(|| DatabaseError::resource_limit("bound riga MySQL in overflow"))
 }
 
 fn conservative_row_bytes(row: &Row, column_count: usize) -> Result<u64> {
@@ -793,7 +861,290 @@ fn read_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mysql_async::consts::ColumnType;
+    use plenora_database_core::arrow::array::Int64Array;
+    use plenora_database_core::arrow::Schema;
     use plenora_database_core::resource::ResourceLimits;
+
+    /// Stima conservativa di una riga di sole colonne intere: per ciascuna
+    /// `CONSERVATIVE_CELL_BYTES` piu i 32 byte di payload numerico.
+    const INTEGER_ROW_BYTES: u64 = 4 * (CONSERVATIVE_CELL_BYTES + 32);
+
+    fn integer_column(name: &str) -> crate::MysqlColumnSpec {
+        crate::MysqlColumnSpec {
+            name: name.to_owned(),
+            native_type: "bigint".to_owned(),
+            native_declaration: "bigint".to_owned(),
+            nullable: false,
+            collation: None,
+            kind: MysqlColumnKind::I64,
+            spatial_srid: None,
+        }
+    }
+
+    fn binary_column(name: &str) -> crate::MysqlColumnSpec {
+        crate::MysqlColumnSpec {
+            name: name.to_owned(),
+            native_type: "varbinary".to_owned(),
+            native_declaration: "varbinary(65535)".to_owned(),
+            nullable: false,
+            collation: None,
+            kind: MysqlColumnKind::Binary,
+            spatial_srid: None,
+        }
+    }
+
+    fn wire_columns(columns: &[crate::MysqlColumnSpec]) -> Arc<[mysql_async::Column]> {
+        columns
+            .iter()
+            .map(|column| {
+                let column_type = if column.kind == MysqlColumnKind::Binary {
+                    ColumnType::MYSQL_TYPE_BLOB
+                } else {
+                    ColumnType::MYSQL_TYPE_LONGLONG
+                };
+                mysql_async::Column::new(column_type).with_name(column.name.as_bytes())
+            })
+            .collect()
+    }
+
+    /// Righe di sole colonne intere, con l'identificatore replicato su ogni
+    /// colonna: l'ordine sorgente resta leggibile in qualunque batch.
+    fn integer_rows(columns: &[crate::MysqlColumnSpec], count: i64) -> Vec<Row> {
+        let wire = wire_columns(columns);
+        (1..=count)
+            .map(|id| {
+                let values = columns.iter().map(|_| Value::Int(id)).collect::<Vec<_>>();
+                mysql_common::row::new_row(values, Arc::clone(&wire))
+            })
+            .collect()
+    }
+
+    fn test_schema(columns: &[crate::MysqlColumnSpec]) -> SchemaRef {
+        Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(crate::MysqlColumnSpec::arrow_field)
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Costruisce lo stream sopra un worker sintetico che rispetta lo stesso
+    /// protocollo a domanda del worker `MySQL`: una riga per ogni richiesta.
+    fn spawn_stream(
+        columns: Vec<crate::MysqlColumnSpec>,
+        rows: Vec<Row>,
+        budget: &ResourceBudget,
+    ) -> MysqlBatchStream {
+        let (sender, receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
+        let (demand_sender, mut demand_receiver) = mpsc::channel(ROW_CHANNEL_CAPACITY);
+        let worker_task = tokio::spawn(async move {
+            for row in rows {
+                if demand_receiver.recv().await.is_none() {
+                    return;
+                }
+                if sender.send(Ok(row)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let schema = test_schema(&columns);
+        let column_count = u64::try_from(columns.len()).expect("colonne rappresentabili");
+        MysqlBatchStream {
+            receiver,
+            demand_sender,
+            columns,
+            schema,
+            batch_rows: DEFAULT_BATCH_ROWS,
+            budget: budget.clone(),
+            cancellation: CancellationToken::new(),
+            deadline_task: tokio::spawn(async {}),
+            worker_task: Some(worker_task),
+            _operation_lease: budget
+                .try_lease(ResourceKind::ConcurrentOperations, 1)
+                .expect("lease operazione"),
+            _columns_lease: budget
+                .try_lease(ResourceKind::Columns, column_count)
+                .expect("lease colonne"),
+            state: MysqlStreamState::Active,
+            pending: None,
+            read_diagnostics: ReadDiagnosticsTracker::new(ReadDiagnosticsPolicy::default())
+                .expect("tracker"),
+        }
+    }
+
+    async fn collect_batches(
+        stream: &mut MysqlBatchStream,
+        cancellation: &CancellationToken,
+    ) -> Vec<Vec<i64>> {
+        let mut batches = Vec::new();
+        while let Some(batch) = stream
+            .next_batch(cancellation)
+            .await
+            .expect("batch consegnato")
+        {
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("prima colonna intera");
+            batches.push((0..column.len()).map(|row| column.value(row)).collect());
+        }
+        batches
+    }
+
+    fn bounded_budget(memory_bytes: u64) -> ResourceBudget {
+        ResourceBudget::new(ResourceLimits {
+            memory_bytes,
+            output_bytes: memory_bytes,
+            cell_bytes: memory_bytes.min(65_536),
+            ..ResourceLimits::default()
+        })
+        .expect("budget di prova")
+    }
+
+    /// Con i limiti di default e quattro colonne il batch raccoglie tutte le
+    /// righe disponibili. Il residuo non viene piu confrontato con il massimo
+    /// teorico `cell_bytes × colonne`, che da solo bastava a chiudere il batch
+    /// dopo una riga sola.
+    #[tokio::test]
+    async fn default_limits_batch_many_rows_over_four_columns() {
+        let columns = vec![
+            integer_column("a"),
+            integer_column("b"),
+            integer_column("c"),
+            integer_column("d"),
+        ];
+        let rows = integer_rows(&columns, 64);
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget default");
+        let mut stream = spawn_stream(columns, rows, &budget);
+        let cancellation = CancellationToken::new();
+        assert_eq!(
+            collect_batches(&mut stream, &cancellation).await,
+            vec![(1..=64).collect::<Vec<i64>>()]
+        );
+    }
+
+    /// La riga che non entra nel residuo corrente apre il batch successivo
+    /// nella sua posizione sorgente, senza perdite ne duplicazioni.
+    #[tokio::test]
+    async fn a_row_that_does_not_fit_opens_the_next_batch() {
+        let columns = vec![
+            integer_column("a"),
+            integer_column("b"),
+            integer_column("c"),
+            integer_column("d"),
+        ];
+        let rows = integer_rows(&columns, 270);
+        // 100 000 / 384 = 260 righe intere nel primo batch; la 261esima
+        // eccede il residuo ed e rinviata.
+        let admitted = i64::try_from(100_000 / INTEGER_ROW_BYTES).expect("righe ammesse");
+        let budget = bounded_budget(100_000);
+        let mut stream = spawn_stream(columns, rows, &budget);
+        let cancellation = CancellationToken::new();
+        assert_eq!(
+            collect_batches(&mut stream, &cancellation).await,
+            vec![
+                (1..=admitted).collect::<Vec<i64>>(),
+                (admitted + 1..=270).collect::<Vec<i64>>(),
+            ]
+        );
+    }
+
+    /// Una riga sola oltre il budget del batch non ha un batch successivo dove
+    /// essere rinviata: fallisce `ResourceLimit` invece di produrre un batch
+    /// vuoto o un ciclo che la ripropone.
+    #[tokio::test]
+    async fn a_single_row_over_the_batch_budget_fails_with_resource_limit() {
+        let columns = vec![
+            integer_column("id"),
+            binary_column("payload"),
+            integer_column("a"),
+            integer_column("b"),
+        ];
+        let wire = wire_columns(&columns);
+        let row = mysql_common::row::new_row(
+            vec![
+                Value::Int(1),
+                Value::Bytes(vec![0x41; 60_000]),
+                Value::Int(1),
+                Value::Int(1),
+            ],
+            wire,
+        );
+        let budget = bounded_budget(100_000);
+        let mut stream = spawn_stream(columns, vec![row], &budget);
+        let cancellation = CancellationToken::new();
+        for _ in 0..2 {
+            assert_eq!(
+                stream
+                    .next_batch(&cancellation)
+                    .await
+                    .expect_err("riga oltre il budget del batch")
+                    .category,
+                ErrorCategory::ResourceLimit
+            );
+        }
+    }
+
+    /// Il carry-over non altera ne l'ordine ne il conteggio delle righe
+    /// consegnate, qualunque sia il punto in cui cade il confine del batch.
+    #[tokio::test]
+    async fn rows_keep_their_order_and_count_across_batch_boundaries() {
+        let columns = vec![
+            integer_column("a"),
+            integer_column("b"),
+            integer_column("c"),
+            integer_column("d"),
+        ];
+        let rows = integer_rows(&columns, 250);
+        let budget = bounded_budget(40_000);
+        let mut stream = spawn_stream(columns, rows, &budget);
+        let cancellation = CancellationToken::new();
+        let batches = collect_batches(&mut stream, &cancellation).await;
+        assert!(batches.len() > 1, "confine di batch non attraversato");
+        assert!(batches.iter().all(|batch| !batch.is_empty()));
+        assert_eq!(batches.concat(), (1..=250).collect::<Vec<i64>>());
+    }
+
+    /// La cancellazione con una riga trattenuta restituisce al budget memoria
+    /// esattamente la quota che la riga aveva prenotato.
+    #[tokio::test]
+    async fn cancellation_with_a_pending_row_returns_its_memory_lease() {
+        let columns = vec![
+            integer_column("a"),
+            integer_column("b"),
+            integer_column("c"),
+            integer_column("d"),
+        ];
+        let rows = integer_rows(&columns, 270);
+        let budget = bounded_budget(100_000);
+        let mut stream = spawn_stream(columns, rows, &budget);
+        let cancellation = CancellationToken::new();
+        let first = stream
+            .next_batch(&cancellation)
+            .await
+            .expect("primo batch")
+            .expect("batch non vuoto");
+        assert_eq!(
+            u64::try_from(first.num_rows()).expect("righe rappresentabili"),
+            100_000 / INTEGER_ROW_BYTES
+        );
+        let parked = budget.remaining(ResourceKind::MemoryBytes);
+        cancellation.cancel();
+        assert_eq!(
+            stream
+                .next_batch(&cancellation)
+                .await
+                .expect_err("cancellazione con riga trattenuta")
+                .category,
+            ErrorCategory::Cancelled
+        );
+        assert_eq!(
+            budget.remaining(ResourceKind::MemoryBytes),
+            parked + INTEGER_ROW_BYTES
+        );
+    }
 
     #[test]
     fn invalid_batch_size_is_rejected_before_io() {
@@ -857,12 +1208,6 @@ mod tests {
                 .category,
             ErrorCategory::ResourceLimit
         );
-    }
-
-    #[test]
-    fn valid_row_bound_reserves_cell_payload_and_buffer_growth() {
-        assert_eq!(maximum_valid_row_bytes(2, 4_096).expect("bound"), 16_512);
-        assert!(maximum_valid_row_bytes(usize::MAX, u64::MAX).is_err());
     }
 
     fn spatial_column(name: &str) -> crate::MysqlColumnSpec {

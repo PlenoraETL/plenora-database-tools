@@ -527,9 +527,16 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
         .expect("provider utilizzabile dopo drop anticipato");
 }
 
+/// La riga che non entra nel residuo del batch corrente diventa il carry-over
+/// del batch successivo: nessuna riga persa, nessuna duplicata, ordine
+/// invariato.
+///
+/// La fixture e dimensionata sulla stima conservativa del percorso (`64` byte
+/// per cella piu il doppio del payload): la prima riga sta nel budget, la
+/// somma delle due lo supera.
 #[tokio::test]
 #[ignore = "richiede MySQL 8.4 live esplicito per righe variabili multi-batch"]
-async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
+async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
     use mysql_async::prelude::Queryable;
     use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::plan::{OrderBy, ReadOperation, SortDirection};
@@ -547,13 +554,13 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
         .expect("drop fixture precedente");
     connection
         .query_drop(
-            "CREATE TABLE variable_stream_probe (id BIGINT NOT NULL PRIMARY KEY, payload VARBINARY(4096) NOT NULL)",
+            "CREATE TABLE variable_stream_probe (id BIGINT NOT NULL PRIMARY KEY, payload VARBINARY(40000) NOT NULL)",
         )
         .await
         .expect("crea fixture righe variabili");
     connection
         .query_drop(
-            "INSERT INTO variable_stream_probe VALUES (1, REPEAT(X'41', 1000)), (2, REPEAT(X'42', 4000))",
+            "INSERT INTO variable_stream_probe VALUES (1, REPEAT(X'41', 29000)), (2, REPEAT(X'42', 34920))",
         )
         .await
         .expect("popola fixture righe variabili");
@@ -576,10 +583,12 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
         row_limit: None,
         filter: None,
     };
+    // Stima conservativa: riga 1 = 58 160 byte, riga 2 = 70 000 byte. La
+    // prima entra nei 120 000 byte di budget, le due insieme no.
     let budget = ResourceBudget::new(ResourceLimits {
-        memory_bytes: 16_000,
-        output_bytes: 16_000,
-        cell_bytes: 4_096,
+        memory_bytes: 120_000,
+        output_bytes: 120_000,
+        cell_bytes: 65_536,
         ..ResourceLimits::default()
     })
     .expect("budget righe variabili");
@@ -595,9 +604,13 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
         .await
         .expect("stream righe variabili");
     let mut ids = Vec::new();
-    let mut batches = 0_usize;
-    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch righe variabili") {
-        batches = batches.saturating_add(1);
+    let mut batches = Vec::new();
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch righe variabili")
+    {
+        batches.push(batch.num_rows());
         let values = batch
             .column_by_name("id")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
@@ -605,7 +618,100 @@ async fn live_variable_rows_are_not_consumed_past_the_current_batch_budget() {
         ids.extend((0..values.len()).map(|index| values.value(index)));
     }
     assert_eq!(ids, vec![1, 2]);
-    assert_eq!(batches, 2, "una riga valida per ciascun budget residuo");
+    assert_eq!(
+        batches,
+        vec![1, 1],
+        "la seconda riga apre il batch successivo"
+    );
+}
+
+/// Con i limiti di default e quattro colonne il percorso consegna tutte le
+/// righe in un batch solo. Prima del carry-over il confronto con il massimo
+/// teorico `cell_bytes × colonne` chiudeva il batch dopo una riga.
+#[tokio::test]
+#[ignore = "richiede MySQL 8.4 live esplicito per batching a limiti default"]
+async fn live_default_limits_batch_many_rows_over_four_columns() {
+    use mysql_async::prelude::Queryable;
+    use plenora_database_core::arrow::array::Int64Array;
+    use plenora_database_core::plan::{OrderBy, ReadOperation, SortDirection};
+
+    let config = live_config();
+    let setup = mysql_async::Pool::new(config.pooled_driver_opts(1).expect("pool setup batching"));
+    let mut connection = setup.get_conn().await.expect("checkout setup");
+    connection
+        .query_drop("DROP TABLE IF EXISTS wide_stream_probe")
+        .await
+        .expect("drop fixture precedente");
+    connection
+        .query_drop(
+            "CREATE TABLE wide_stream_probe (\
+             id BIGINT NOT NULL PRIMARY KEY, \
+             alpha_value BIGINT NOT NULL, \
+             beta_value BIGINT NOT NULL, \
+             label VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL)",
+        )
+        .await
+        .expect("crea fixture quattro colonne");
+    connection
+        .query_drop("SET SESSION cte_max_recursion_depth = 4096")
+        .await
+        .expect("profondita ricorsione fixture");
+    connection
+        .query_drop(
+            "INSERT INTO wide_stream_probe (id, alpha_value, beta_value, label) \
+             WITH RECURSIVE sequence (id) AS (\
+             SELECT 1 UNION ALL SELECT id + 1 FROM sequence WHERE id < 512) \
+             SELECT id, id * 2, id * 3, CONCAT('row-', id) FROM sequence",
+        )
+        .await
+        .expect("popola fixture quattro colonne");
+    drop(connection);
+    setup.disconnect().await.expect("disconnect setup");
+
+    let provider = MysqlProvider::new(config, 1).expect("provider batching");
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: "wide_stream_probe".to_owned(),
+            layer_id: None,
+        },
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        filter: None,
+    };
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget default");
+    let cancellation = CancellationToken::new();
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream quattro colonne");
+    let mut ids = Vec::new();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch quattro colonne")
+    {
+        batches.push(batch.num_rows());
+        let values = batch
+            .column_by_name("id")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .expect("id int64");
+        ids.extend((0..values.len()).map(|index| values.value(index)));
+    }
+    assert_eq!(batches, vec![512], "un solo batch a limiti default");
+    assert_eq!(ids, (1..=512).collect::<Vec<i64>>());
 }
 
 #[tokio::test]
@@ -4223,7 +4329,7 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
         .query_drop("DROP TABLE _v12_create_conflict").await.ok();
 }
 
-/// Fail-closed: `TruncateInsert` è stato rimosso su MySQL (TRUNCATE è DDL
+/// Fail-closed: `TruncateInsert` è stato rimosso su `MySQL` (TRUNCATE è DDL
 /// con commit implicito → non rollback-safe se l'INSERT successivo
 /// fallisce). `prepare_write` deve rifiutarlo come `Unsupported`.
 #[tokio::test]
@@ -4744,7 +4850,7 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         .query_drop("DROP TABLE _v12_spatial_pred").await.ok();
 }
 
-/// Fail-closed: `Replace` è stato rimosso su MySQL (staging + RENAME perde
+/// Fail-closed: `Replace` è stato rimosso su `MySQL` (staging + RENAME perde
 /// vincoli/indici/FK/trigger/permessi non ricostruibili). `prepare_write`
 /// deve rifiutarlo come `Unsupported`.
 #[tokio::test]

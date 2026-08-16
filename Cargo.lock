@@ -1255,6 +1255,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "mysql_async",
+ "mysql_common",
  "plenora-database-core",
  "plenora-database-sql",
  "plenora-database-testkit",
