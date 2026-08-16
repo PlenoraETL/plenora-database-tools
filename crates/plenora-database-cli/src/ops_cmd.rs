@@ -229,7 +229,7 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
             "--analyze" => analyze = true,
             "--verbose" => verbose = true,
             s if s.starts_with("--format=") => {
-                s.trim_start_matches("--format=").clone_into(&mut fmt)
+                s.trim_start_matches("--format=").clone_into(&mut fmt);
             }
             other => return Err(format!("opzione explain sconosciuta: {other}").into()),
         }

@@ -4894,6 +4894,7 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_functions_render_and_execute() {
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::ParameterBag;
@@ -5021,6 +5022,7 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::{ParameterBag, ParameterValue};
