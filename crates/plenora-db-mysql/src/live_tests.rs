@@ -5974,7 +5974,7 @@ async fn live_v12_write_create_failure_leaves_the_table_and_reports_partial() {
     // lo schema no.
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
         ))
         .await,
         "1",
@@ -6022,7 +6022,7 @@ async fn live_v12_execute_ddl_accepts_statements_the_prepared_protocol_refuses()
 
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
         ))
         .await,
         "1"
@@ -6140,7 +6140,7 @@ async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
     );
     assert_eq!(
         replace_fixture_scalar(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '_v12_ddl_mai_creata'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '_v12_ddl_mai_creata'"
         )
         .await,
         "0"

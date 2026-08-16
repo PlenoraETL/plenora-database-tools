@@ -402,27 +402,44 @@ async fn pg_replace_on_a_missing_target_is_not_found() {
     drop_fixture().await;
 }
 
-/// Replace conserva gli indici del target: chiederne uno nuovo e una
-/// contraddizione, e viene rifiutata prima di toccare il server.
+/// `create_spatial_index` appartiene alla sola mode che costruisce la
+/// tabella. Le altre scrivono in un target che ha gia i propri indici, e
+/// `CREATE INDEX` viene emesso senza `IF NOT EXISTS`: onorare il flag
+/// fallirebbe alla seconda esecuzione, ignorarlo in silenzio e peggio.
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
-async fn pg_replace_rejects_a_request_to_create_an_index() {
+async fn pg_create_spatial_index_is_rejected_for_every_mode_but_create() {
     reset_fixture().await;
     let before = rows_digest(TARGET).await;
-
     let provider = provider();
     let cancel = CancellationToken::new();
-    let mut operation = write_op(TARGET, WriteMode::Replace);
-    operation.create_spatial_index = true;
-    let Err(error) = provider
-        .prepare_write(&secret(), &operation, target_schema(), &budget(), &cancel)
-        .await
-    else {
-        panic!("create_spatial_index accettato su Replace");
-    };
-    assert_eq!(error.category, ErrorCategory::InvalidPlan);
-    assert_eq!(rows_digest(TARGET).await, before);
 
+    for mode in [
+        WriteMode::Replace,
+        WriteMode::Append,
+        WriteMode::TruncateInsert,
+        WriteMode::Update,
+        WriteMode::Upsert,
+        WriteMode::DeleteByKeys,
+    ] {
+        let mut operation = write_op(TARGET, mode);
+        operation.create_spatial_index = true;
+        if matches!(
+            mode,
+            WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+        ) {
+            operation.keys = vec!["id".to_owned()];
+        }
+        let Err(error) = provider
+            .prepare_write(&secret(), &operation, target_schema(), &budget(), &cancel)
+            .await
+        else {
+            panic!("create_spatial_index accettato su {mode:?}");
+        };
+        assert_eq!(error.category, ErrorCategory::InvalidPlan, "{mode:?}");
+    }
+
+    assert_eq!(rows_digest(TARGET).await, before);
     drop_fixture().await;
 }
 

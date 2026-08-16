@@ -1288,7 +1288,8 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
             format!(
-                "mode '{:?}' MySQL non ha semantica di chiave: keys e                  update_columns non sono applicabili",
+                "mode '{:?}' MySQL non ha semantica di chiave: keys e \
+                 update_columns non sono applicabili",
                 operation.mode
             ),
         ));

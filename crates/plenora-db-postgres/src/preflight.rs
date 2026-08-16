@@ -50,25 +50,34 @@ pub async fn write(
             "target PostgreSQL non esistente",
         ));
     }
+    // `create_spatial_index` appartiene alla sola mode che costruisce la
+    // tabella. Per le altre il target esiste gia con i suoi indici, e
+    // `create_spatial_indexes` emette `CREATE INDEX` senza `IF NOT EXISTS`:
+    // onorare il flag su un Append fallirebbe "already exists" alla seconda
+    // esecuzione, ignorarlo in silenzio e peggio. Il piano viene rifiutato.
+    if operation.create_spatial_index && operation.mode != WriteMode::Create {
+        return Err(public_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Prepare,
+            false,
+            "create_spatial_index PostgreSQL e applicabile solo a WriteMode::Create: \
+             le altre mode scrivono in un target che ha gia i propri indici",
+        ));
+    }
     if operation.mode == WriteMode::Replace {
-        // Replace conserva la definizione del target: chiedere un indice
-        // nuovo o dichiarare chiavi significa descrivere una tabella che
-        // Replace non costruisce. Accettarli e ignorarli lascerebbe credere
-        // che il target venga creato o riconciliato con quelle chiavi.
-        if operation.create_spatial_index {
-            return Err(public_error(
-                ErrorCategory::InvalidPlan,
-                ErrorPhase::Prepare,
-                false,
-                "Replace PostgreSQL conserva gli indici del target:                  create_spatial_index non e applicabile",
-            ));
-        }
+        // Replace conserva la definizione del target: dichiarare chiavi
+        // significa descrivere una tabella che Replace non costruisce.
+        // Accettarle e ignorarle lascerebbe credere che il target venga
+        // creato o riconciliato con quelle chiavi.
         if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
             return Err(public_error(
                 ErrorCategory::InvalidPlan,
                 ErrorPhase::Prepare,
                 false,
-                "Replace PostgreSQL non ha semantica di chiave: svuota e riempie                  il target esistente, quindi keys e update_columns non sono                  applicabili (per creare la tabella con una PRIMARY KEY usare                  WriteMode::Create)",
+                "Replace PostgreSQL non ha semantica di chiave: svuota e riempie il \
+                 target esistente, quindi keys e update_columns non sono \
+                 applicabili (per creare la tabella con una PRIMARY KEY \
+                 usare WriteMode::Create)",
             ));
         }
     }
