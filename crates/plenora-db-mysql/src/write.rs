@@ -1238,8 +1238,17 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
             ));
         }
     } else if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
-        return Err(unsupported(
-            "keys e update_columns non appartengono ad Append MySQL",
+        // Il ramo copre Append, Create e Replace: nessuna delle tre ha
+        // semantica di chiave. Il messaggio nomina la mode effettiva invece
+        // di dire sempre "Append", e la categoria e `InvalidPlan` — il piano
+        // descrive qualcosa che la mode non significa, non una funzione che
+        // il provider non implementa.
+        return Err(prepare_error(
+            ErrorCategory::InvalidPlan,
+            format!(
+                "mode '{:?}' MySQL non ha semantica di chiave: keys e                  update_columns non sono applicabili",
+                operation.mode
+            ),
         ));
     }
     if operation.create_spatial_index {
@@ -1650,41 +1659,80 @@ mod tests {
         let input = schema(vec![Field::new("id", DataType::Int64, false)]);
         let mut cases = Vec::new();
 
-        // v1.2: tutti i 7 WriteMode ora qualified. Rimango unqualified:
-        // - transaction_profile != SingleTransaction
-        // - allow_partial
-        // - keys/update_columns per mode senza semantica keys
-        // - create_spatial_index
-        // - mapping_policy != Strict
+        // Ogni forma porta con se la categoria che le spetta, invece di
+        // essere schiacciata su una sola: `Unsupported` significa "il
+        // provider non lo fa", `InvalidPlan` significa "il piano descrive
+        // qualcosa che la mode non significa". Sono risposte diverse e il
+        // consumer le tratta diversamente.
         let mut operation = append_operation();
         operation.transaction_profile = TransactionProfile::ChunkCommitted;
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::Unsupported));
 
         let mut operation = append_operation();
         operation.allow_partial = true;
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::Unsupported));
 
+        // Append non ha semantica di chiave: keys e update_columns non sono
+        // una funzione mancante, sono un piano incoerente.
         let mut operation = append_operation();
         operation.keys.push("id".to_owned());
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::InvalidPlan));
 
         let mut operation = append_operation();
         operation.update_columns.push("label".to_owned());
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::InvalidPlan));
 
         let mut operation = append_operation();
         operation.create_spatial_index = true;
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::Unsupported));
 
         let mut operation = append_operation();
         operation.mapping_policy = MappingPolicy::Lossy;
-        cases.push(operation);
+        cases.push((operation, ErrorCategory::Unsupported));
 
-        for operation in cases {
+        for (operation, expected) in cases {
             let error = MysqlWritePlan::compile(&input, &operation, "warehouse")
                 .expect_err("forma write non qualificata");
-            assert_eq!(error.category, ErrorCategory::Unsupported);
+            assert_eq!(error.category, expected, "{operation:?}");
             assert_eq!(error.phase, ErrorPhase::Prepare);
+        }
+    }
+
+    /// Le mode senza semantica di chiave rifiutano keys e update_columns, e
+    /// il messaggio nomina la mode vera: prima diceva sempre "Append" anche
+    /// per Create e Replace.
+    #[test]
+    fn modes_without_key_semantics_reject_keys_and_update_columns() {
+        for mode in [WriteMode::Append, WriteMode::Create, WriteMode::Replace] {
+            let mut operation = append_operation();
+            operation.mode = mode;
+            operation.keys = vec!["id".to_owned()];
+            let error = MysqlWritePlan::compile(
+                &schema(vec![Field::new("id", DataType::Int64, false)]),
+                &operation,
+                "warehouse",
+            )
+            .expect_err("keys accettate");
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert!(
+                error.message.contains(&format!("{mode:?}")),
+                "il messaggio deve nominare la mode: {}",
+                error.message
+            );
+
+            let mut operation = append_operation();
+            operation.mode = mode;
+            operation.update_columns = vec!["id".to_owned()];
+            assert_eq!(
+                MysqlWritePlan::compile(
+                    &schema(vec![Field::new("id", DataType::Int64, false)]),
+                    &operation,
+                    "warehouse",
+                )
+                .expect_err("update_columns accettate")
+                .category,
+                ErrorCategory::InvalidPlan
+            );
         }
     }
 

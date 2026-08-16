@@ -426,6 +426,46 @@ async fn pg_replace_rejects_a_request_to_create_an_index() {
     drop_fixture().await;
 }
 
+/// Replace non ha semantica di chiave: dichiararne una descrive una tabella
+/// che Replace non costruisce. Accettarla e ignorarla lascerebbe credere che
+/// il target venga creato o riconciliato su quelle chiavi.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[tokio::test]
+async fn pg_replace_rejects_keys_and_update_columns() {
+    reset_fixture().await;
+    let before = rows_digest(TARGET).await;
+    let provider = provider();
+    let cancel = CancellationToken::new();
+
+    for (label, mutate) in [
+        (
+            "keys",
+            Box::new(|operation: &mut WriteOperation| {
+                operation.keys = vec!["id".to_owned()];
+            }) as Box<dyn Fn(&mut WriteOperation)>,
+        ),
+        (
+            "update_columns",
+            Box::new(|operation: &mut WriteOperation| {
+                operation.update_columns = vec!["label".to_owned()];
+            }),
+        ),
+    ] {
+        let mut operation = write_op(TARGET, WriteMode::Replace);
+        mutate(&mut operation);
+        let Err(error) = provider
+            .prepare_write(&secret(), &operation, target_schema(), &budget(), &cancel)
+            .await
+        else {
+            panic!("Replace ha accettato {label}");
+        };
+        assert_eq!(error.category, ErrorCategory::InvalidPlan, "{label}");
+    }
+
+    assert_eq!(rows_digest(TARGET).await, before);
+    drop_fixture().await;
+}
+
 // ============================================================================
 //  Rollback: errore e cancellazione dopo il DELETE
 // ============================================================================

@@ -50,13 +50,27 @@ pub async fn write(
             "target PostgreSQL non esistente",
         ));
     }
-    if operation.mode == WriteMode::Replace && operation.create_spatial_index {
-        return Err(public_error(
-            ErrorCategory::InvalidPlan,
-            ErrorPhase::Prepare,
-            false,
-            "Replace PostgreSQL conserva gli indici del target:              create_spatial_index non e applicabile",
-        ));
+    if operation.mode == WriteMode::Replace {
+        // Replace conserva la definizione del target: chiedere un indice
+        // nuovo o dichiarare chiavi significa descrivere una tabella che
+        // Replace non costruisce. Accettarli e ignorarli lascerebbe credere
+        // che il target venga creato o riconciliato con quelle chiavi.
+        if operation.create_spatial_index {
+            return Err(public_error(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Prepare,
+                false,
+                "Replace PostgreSQL conserva gli indici del target:                  create_spatial_index non e applicabile",
+            ));
+        }
+        if !operation.keys.is_empty() || !operation.update_columns.is_empty() {
+            return Err(public_error(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Prepare,
+                false,
+                "Replace PostgreSQL non ha semantica di chiave: svuota e riempie                  il target esistente, quindi keys e update_columns non sono                  applicabili (per creare la tabella con una PRIMARY KEY usare                  WriteMode::Create)",
+            ));
+        }
     }
     let mut losses = Vec::new();
     if exists && operation.mode != WriteMode::Create {

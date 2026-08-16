@@ -160,6 +160,7 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::insert_requires_at_least_one_row",
     "write::tests::insert_row_count_overflow_is_checked",
     "write::tests::insert_stops_at_the_placeholder_ceiling_before_the_network",
+    "write::tests::modes_without_key_semantics_reject_keys_and_update_columns",
     "write::tests::null_cells_in_non_nullable_columns_fail_before_the_network",
     "write::tests::pre_commit_errors_claim_rollback_only_when_it_is_confirmed",
     "write::tests::server_preflight_keeps_unqualified_write_targets_closed",
