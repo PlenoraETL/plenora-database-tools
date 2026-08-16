@@ -261,7 +261,14 @@ def test_spatial_predicate_chains_with_other_where(session) -> None:
 
 
 def test_spatial_reference_repr_hides_ewkb_bytes() -> None:
-    ref = p.spatial.geometry(ewkb=b"\x00" * 25, srid=4326)
+    # POINT(0 0) con SRID: 1 byte di endianness + 4 di tipo + 4 di SRID + due
+    # double = 25 byte esatti, quanti ne serve l'assert sulla lunghezza.
+    # Prima erano 25 byte nulli: il costruttore non li validava, e quando la
+    # validazione EWKB e diventata reale li ha rifiutati. Il test prova la
+    # redazione del repr, non l'assenza di controlli.
+    point = bytes.fromhex("0101000020e610000000000000000000000000000000000000")
+    assert len(point) == 25
+    ref = p.spatial.geometry(ewkb=point, srid=4326)
     r = repr(ref)
     assert "ewkb=<25B>" in r
     assert "srid=4326" in r
