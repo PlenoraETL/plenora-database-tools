@@ -38,7 +38,11 @@ pub async fn write(
             "target PostgreSQL già esistente",
         ));
     }
-    if !matches!(operation.mode, WriteMode::Create | WriteMode::Replace) && !exists {
+    // Solo Create crea la tabella: ogni altra mode — Replace inclusa —
+    // scrive dentro un target che deve gia esistere. Replace svuota e
+    // riempie, non ricrea, quindi un target assente e NotFound e non un
+    // invito a fabbricarne uno con lo schema parziale del piano.
+    if operation.mode != WriteMode::Create && !exists {
         return Err(public_error(
             ErrorCategory::NotFound,
             ErrorPhase::Prepare,
@@ -46,8 +50,16 @@ pub async fn write(
             "target PostgreSQL non esistente",
         ));
     }
+    if operation.mode == WriteMode::Replace && operation.create_spatial_index {
+        return Err(public_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Prepare,
+            false,
+            "Replace PostgreSQL conserva gli indici del target:              create_spatial_index non e applicabile",
+        ));
+    }
     let mut losses = Vec::new();
-    if exists && !matches!(operation.mode, WriteMode::Create | WriteMode::Replace) {
+    if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
             provider.cached_columns(&client, &operation.target).await?;
         for (field_id, source) in input_schema.fields().iter().enumerate() {
@@ -241,6 +253,10 @@ fn mapping_loss(
 const fn supports_additive_evolution(mode: WriteMode) -> bool {
     matches!(
         mode,
-        WriteMode::Append | WriteMode::TruncateInsert | WriteMode::Update | WriteMode::Upsert
+        WriteMode::Append
+            | WriteMode::Replace
+            | WriteMode::TruncateInsert
+            | WriteMode::Update
+            | WriteMode::Upsert
     )
 }

@@ -124,7 +124,7 @@ fn compile_schema_plan(
 }
 
 // The orchestration is intentionally kept in one place so transaction boundaries,
-// replacement publication and uncertain-commit reporting remain easy to audit.
+// target preparation and uncertain-commit reporting remain easy to audit.
 #[allow(clippy::too_many_lines)]
 pub async fn execute(
     secret: &SecretString,
@@ -278,27 +278,18 @@ pub async fn execute(
     } else {
         return Err(recovery.rollback_cancellation(transaction).await);
     }
-    let (write_target, replace_original) = if let Some(result) = select_with_cancellation(
-        prepare_target(
-            &transaction,
-            operation,
-            &schema,
-            &column_plans,
-            &execution_id,
-        ),
+    if let Some(result) = select_with_cancellation(
+        prepare_target(&transaction, operation, &schema, &column_plans),
         cancellation,
     )
     .await
     {
-        match result {
-            Ok(target) => target,
-            Err(error) => {
-                return Err(recovery.rollback_error(transaction, error).await);
-            }
+        if let Err(error) = result {
+            return Err(recovery.rollback_error(transaction, error).await);
         }
     } else {
         return Err(recovery.rollback_cancellation(transaction).await);
-    };
+    }
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
     loop {
@@ -337,7 +328,7 @@ pub async fn execute(
             write_batch(
                 &transaction,
                 operation,
-                &write_target,
+                &operation.target,
                 &batch,
                 &column_plans,
                 runtime.insert_mode,
@@ -368,21 +359,10 @@ pub async fn execute(
             return Err(recovery.rollback_resource_error(transaction, &error).await);
         }
     }
-    if let Some(original) = replace_original {
-        if let Some(result) = select_with_cancellation(
-            publish_replacement(&transaction, &write_target, &original),
-            cancellation,
-        )
-        .await
-        {
-            if let Err(error) = result {
-                return Err(recovery.rollback_error(transaction, error).await);
-            }
-        } else {
-            return Err(recovery.rollback_cancellation(transaction).await);
-        }
-    }
-    if operation.create_spatial_index {
+    // Solo Create fabbrica la tabella, quindi solo Create puo aggiungerle un
+    // indice: per ogni altra mode gli indici del target sono quelli che il
+    // target aveva, e la scrittura non li tocca.
+    if operation.create_spatial_index && operation.mode == WriteMode::Create {
         if let Some(result) = select_with_cancellation(
             create_spatial_indexes(&transaction, &operation.target, &schema, &column_plans),
             cancellation,
@@ -489,7 +469,11 @@ async fn evolve_target_schema(
     if policy != PostgresSchemaEvolution::AddNullableColumns
         || !matches!(
             operation.mode,
-            WriteMode::Append | WriteMode::TruncateInsert | WriteMode::Update | WriteMode::Upsert
+            WriteMode::Append
+                | WriteMode::Replace
+                | WriteMode::TruncateInsert
+                | WriteMode::Update
+                | WriteMode::Upsert
         )
     {
         return Ok(());
@@ -574,13 +558,23 @@ fn enforce_input_limits(
     Ok(geometry_components)
 }
 
+/// Porta il target nello stato che la mode richiede prima del bulk insert.
+///
+/// Ogni mode scrive nel target dichiarato dal piano: non esiste piu una
+/// tabella di staging pubblicata al posto dell'originale. Replace svuota il
+/// target con `DELETE FROM` dentro la stessa transazione del bulk insert,
+/// quindi identita dell'oggetto, indici, foreign key, trigger, check, default,
+/// grant e sequence restano quelli di prima — e un fallimento dopo il DELETE
+/// riporta indietro anche le righe cancellate.
+///
+/// `TruncateInsert` conserva `TRUNCATE`: su `PostgreSQL` e transazionale, quindi
+/// rollback-safe quanto il `DELETE` di Replace ma piu economico.
 async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
     schema: &SchemaRef,
     plans: &[WriteColumnPlan],
-    execution_id: &str,
-) -> Result<(ObjectRef, Option<ObjectRef>)> {
+) -> Result<()> {
     match operation.mode {
         WriteMode::Create => {
             create_table(
@@ -590,30 +584,24 @@ async fn prepare_target(
                 plans,
                 &operation.keys,
             )
-            .await?;
-            Ok((operation.target.clone(), None))
+            .await
         }
-        WriteMode::Replace => {
-            let mut staging = operation.target.clone();
-            staging.object = format!(
-                "__pln_{}_{}",
-                operation.target.object.chars().take(36).collect::<String>(),
-                execution_id.replace('-', "_")
-            );
-            create_table(transaction, &staging, schema, plans, &operation.keys).await?;
-            Ok((staging, Some(operation.target.clone())))
-        }
-        WriteMode::TruncateInsert => {
-            execute_sql(
-                transaction,
-                &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
-                &[],
-            )
-            .await?;
-            Ok((operation.target.clone(), None))
-        }
+        WriteMode::Replace => execute_sql(
+            transaction,
+            &format!("DELETE FROM {}", quote_object(&operation.target)?),
+            &[],
+        )
+        .await
+        .map(|_| ()),
+        WriteMode::TruncateInsert => execute_sql(
+            transaction,
+            &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
+            &[],
+        )
+        .await
+        .map(|_| ()),
         WriteMode::Append | WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys => {
-            Ok((operation.target.clone(), None))
+            Ok(())
         }
     }
 }
@@ -809,31 +797,6 @@ async fn copy_batch(
         .finish()
         .await
         .map_err(|e| classify_error(ErrorPhase::Write, &e))
-}
-
-async fn publish_replacement(
-    transaction: &Transaction<'_>,
-    staging: &ObjectRef,
-    original: &ObjectRef,
-) -> Result<()> {
-    execute_sql(
-        transaction,
-        &format!("DROP TABLE IF EXISTS {}", quote_object(original)?),
-        &[],
-    )
-    .await?;
-    let renderer = renderer();
-    let target_name = renderer.quote_identifier(&Identifier::new(original.object.clone())?)?;
-    execute_sql(
-        transaction,
-        &format!(
-            "ALTER TABLE {} RENAME TO {target_name}",
-            quote_object(staging)?
-        ),
-        &[],
-    )
-    .await?;
-    Ok(())
 }
 
 async fn create_spatial_indexes(

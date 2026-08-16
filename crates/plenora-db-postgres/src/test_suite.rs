@@ -2356,7 +2356,7 @@ mod tests {
                 Vec::new()
             },
             srid_policy: Some(SridPolicy::RequireMatch),
-            create_spatial_index: matches!(mode, WriteMode::Create | WriteMode::Replace),
+            create_spatial_index: matches!(mode, WriteMode::Create),
             allow_partial: false,
         }
     }
