@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 import importlib.util
 import sys
@@ -21,6 +22,7 @@ GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
 GENERATOR_TEST = ROOT / "docker" / "mysql" / "tls" / "test_generate.sh"
 REFERENCES = ROOT / "docker" / "mysql" / "references.json"
 STATIC_WORKFLOW = ROOT / ".github" / "workflows" / "mysql-static-gate.yml"
+ASSURANCE_WORKFLOW = ROOT / ".github" / "workflows" / "mysql-assurance.yml"
 LIVE_TESTS = ROOT / "crates" / "plenora-db-mysql" / "src" / "live_tests.rs"
 GATE = ROOT / "scripts" / "check_mysql_reference.py"
 SPEC = importlib.util.spec_from_file_location("mysql_gate", GATE)
@@ -693,6 +695,71 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         for forbidden in ("cargo ", "docker ", "openssl", "mysql -"):
             self.assertNotIn(forbidden, workflow)
+
+    # --- campagna schedulata --------------------------------------------------
+
+    def test_the_assurance_workflow_only_invokes_the_two_gates(self) -> None:
+        """La campagna e due invocazioni: nessuna logica ricopiata nello YAML.
+
+        Una matrice riscritta in YAML e la forma piu comune di divergenza: il
+        workflow avvia una versione, lo script ne dichiara un'altra, e nessuno
+        dei due sa di essere in disaccordo.
+        """
+
+        workflow = ASSURANCE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/check_mysql_reference.py |", workflow)
+        self.assertIn("python3 scripts/check_mysql_matrix.py |", workflow)
+        for forbidden in (
+            "cargo ",
+            "docker run",
+            "docker compose",
+            "openssl",
+            "--ignored",
+            "mysql@sha256:",
+        ):
+            self.assertNotIn(forbidden, workflow)
+
+    def test_the_assurance_workflow_is_scheduled_and_manual_only(self) -> None:
+        workflow = ASSURANCE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("schedule:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("permissions: write-all", workflow)
+
+    def test_no_tls_material_is_versioned_for_the_runner_to_reuse(self) -> None:
+        """La CA e l'identita del server nascono sul runner, a ogni run.
+
+        Un certificato versionato sarebbe una chiave privata pubblicata e una
+        prova TLS che smette di provare l'emissione: il repository contiene
+        solo lo script generatore e le estensioni.
+        """
+
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.split()
+        for entry in tracked:
+            self.assertFalse(
+                entry.endswith((".pem", ".key", ".crt", ".p12", ".pfx", ".jks")),
+                f"materiale TLS versionato: {entry}",
+            )
+        self.assertEqual(
+            sorted(
+                entry
+                for entry in tracked
+                if entry.startswith("docker/mysql/tls/")
+            ),
+            [
+                "docker/mysql/tls/generate.sh",
+                "docker/mysql/tls/server.ext",
+                "docker/mysql/tls/test_generate.sh",
+            ],
+        )
 
     def test_the_reference_matrix_document_is_the_only_place_with_digests(
         self,

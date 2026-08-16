@@ -1,0 +1,76 @@
+name: mysql-assurance
+
+# Campagna MySQL completa: gate del riferimento baseline e matrice delle tre
+# versioni qualificate. Non gira su PR — richiede Docker, avvia server reali e
+# dura decine di minuti — ma su schedule settimanale e su richiesta esplicita.
+# Il gate veloce che presidia le PR e `mysql-static-gate.yml`.
+#
+# Questo file non contiene logica di qualifica: due invocazioni, niente altro.
+# Versioni, digest, inventario dei test, indurimento del server e pulizia
+# delle risorse vivono negli script, che sono anche il modo in cui la campagna
+# si riproduce in locale con lo stesso comando.
+#
+# Materiale TLS: nessuno e versionato. La CA privata e l'identita del server
+# vengono generate dal runner a ogni esecuzione — `docker/mysql/tls/generate.sh`
+# nel servizio certgen del compose per la baseline, e `generate_tls()` per
+# ciascun riferimento della matrice — dentro volumi Docker effimeri. Il
+# repository contiene solo lo script e le estensioni del certificato.
+
+on:
+  schedule:
+    # Lunedi 03:17 UTC: fuori dai minuti di punta, dove la coda dei runner
+    # condivisi e piu corta.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+# Sola lettura: la campagna non scrive sul repository. Gli artifact non
+# richiedono permessi aggiuntivi sul token.
+permissions:
+  contents: read
+
+concurrency:
+  group: mysql-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  reference:
+    name: gate riferimento baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: check_mysql_reference.py
+        run: python3 scripts/check_mysql_reference.py | tee mysql-reference.log
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-reference
+          path: mysql-reference.log
+          if-no-files-found: error
+
+  matrix:
+    name: matrice versioni qualificate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: check_mysql_matrix.py
+        run: python3 scripts/check_mysql_matrix.py | tee mysql-version-matrix.log
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-version-matrix
+          path: mysql-version-matrix.log
+          if-no-files-found: error
