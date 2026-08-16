@@ -64,6 +64,41 @@ pub async fn write(
              le altre mode scrivono in un target che ha gia i propri indici",
         ));
     }
+    // Le chiavi di `Create` diventano la PRIMARY KEY della tabella costruita:
+    // devono esistere nello schema Arrow, non ripetersi, e non essere
+    // nullable. PostgreSQL accetterebbe una chiave nullable coercendo la
+    // colonna a NOT NULL, quindi creando una tabella che diverge in silenzio
+    // dallo schema dichiarato; MySQL la rifiuterebbe al server, tardi.
+    if operation.mode == WriteMode::Create {
+        let mut seen = std::collections::BTreeSet::new();
+        for key in &operation.keys {
+            let Ok(field) = input_schema.field_with_name(key) else {
+                return Err(public_error(
+                    ErrorCategory::InvalidPlan,
+                    ErrorPhase::Prepare,
+                    false,
+                    "chiave primaria PostgreSQL assente dallo schema Arrow",
+                ));
+            };
+            if field.is_nullable() {
+                return Err(public_error(
+                    ErrorCategory::InvalidPlan,
+                    ErrorPhase::Prepare,
+                    false,
+                    "chiave primaria PostgreSQL nullable nello schema Arrow: \
+                     una PRIMARY KEY non ammette NULL",
+                ));
+            }
+            if !seen.insert(key.as_str()) {
+                return Err(public_error(
+                    ErrorCategory::InvalidPlan,
+                    ErrorPhase::Prepare,
+                    false,
+                    "chiave primaria PostgreSQL ripetuta",
+                ));
+            }
+        }
+    }
     if operation.mode == WriteMode::Replace {
         // Replace conserva la definizione del target: dichiarare chiavi
         // significa descrivere una tabella che Replace non costruisce.

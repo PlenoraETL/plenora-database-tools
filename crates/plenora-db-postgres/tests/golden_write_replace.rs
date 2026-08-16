@@ -584,3 +584,80 @@ async fn pg_truncate_insert_replaces_the_rows_and_keeps_the_metadata() {
 
     drop_fixture().await;
 }
+
+/// Le chiavi di `Create` diventano la PRIMARY KEY: devono essere non-nullable
+/// e non ripetute, e il rifiuto arriva prima di toccare il server.
+///
+/// Senza questo controllo PostgreSQL accetterebbe una chiave nullable
+/// coercendo la colonna a `NOT NULL`: la tabella creata divergerebbe in
+/// silenzio dallo schema Arrow dichiarato, e il consumer scoprirebbe la
+/// differenza solo rileggendo. MySQL invece la rifiuta con l'errore 1171, ma
+/// al server, a scrittura gia avviata.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[tokio::test]
+async fn pg_create_rejects_a_nullable_or_repeated_primary_key() {
+    let target = "_create_pk_target";
+    execute_sql(&[format!("DROP TABLE IF EXISTS public.{target}")]).await;
+    let provider = provider();
+    let cancel = CancellationToken::new();
+
+    let nullable_schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("parent_id", DataType::Int64, false),
+    ]));
+    let mut operation = write_op(target, WriteMode::Create);
+    operation.keys = vec!["id".to_owned()];
+    let Err(error) = provider
+        .prepare_write(&secret(), &operation, nullable_schema, &budget(), &cancel)
+        .await
+    else {
+        panic!("PRIMARY KEY nullable accettata");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+
+    let mut repeated = write_op(target, WriteMode::Create);
+    repeated.keys = vec!["id".to_owned(), "id".to_owned()];
+    let Err(error) = provider
+        .prepare_write(&secret(), &repeated, target_schema(), &budget(), &cancel)
+        .await
+    else {
+        panic!("chiave ripetuta accettata");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+
+    let mut absent = write_op(target, WriteMode::Create);
+    absent.keys = vec!["mai_dichiarata".to_owned()];
+    let Err(error) = provider
+        .prepare_write(&secret(), &absent, target_schema(), &budget(), &cancel)
+        .await
+    else {
+        panic!("chiave assente accettata");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+
+    // Nessuno dei tre rifiuti ha creato la tabella.
+    assert_eq!(
+        scalar_text(&format!(
+            "SELECT count(*)::text FROM information_schema.tables              WHERE table_schema = 'public' AND table_name = '{target}'"
+        ))
+        .await,
+        "0"
+    );
+
+    // Il caso valido, per controprova: chiavi non-nullable diventano la PK.
+    let mut valid = write_op(target, WriteMode::Create);
+    valid.keys = vec!["id".to_owned(), "label".to_owned()];
+    let prepared = provider
+        .prepare_write(&secret(), &valid, target_schema(), &budget(), &cancel)
+        .await
+        .expect("prepare create con PK valida");
+    let resources = budget();
+    let _ = provider
+        .prepare_write(&secret(), &valid, target_schema(), &resources, &cancel)
+        .await
+        .expect("prepare ripetuta");
+    drop(prepared);
+
+    execute_sql(&[format!("DROP TABLE IF EXISTS public.{target}")]).await;
+}

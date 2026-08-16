@@ -190,7 +190,7 @@ impl MysqlWritePlan {
             WriteMode::Upsert | WriteMode::DeleteByKeys | WriteMode::Create
         ) {
             for key in &operation.keys {
-                if !columns.iter().any(|c| c.name == *key) {
+                let Some(column) = columns.iter().find(|c| c.name == *key) else {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
@@ -198,6 +198,33 @@ impl MysqlWritePlan {
                             operation.mode
                         ),
                     ));
+                };
+                // Una PRIMARY KEY nullable non esiste: MySQL la rifiuta con
+                // l'errore 1171, ma lo farebbe al server, dopo che la
+                // scrittura e partita. Rifiutarla qui la ferma prima di
+                // qualsiasi contatto di rete, e con lo stesso messaggio su
+                // entrambi i provider — PostgreSQL invece la accetterebbe
+                // coercendo la colonna a NOT NULL, quindi creando una tabella
+                // che diverge in silenzio dallo schema dichiarato.
+                if operation.mode == WriteMode::Create && column.nullable {
+                    return Err(prepare_error(
+                        ErrorCategory::InvalidPlan,
+                        format!(
+                            "chiave primaria MySQL '{key}' e nullable nello schema \
+                             Arrow: una PRIMARY KEY non ammette NULL"
+                        ),
+                    ));
+                }
+            }
+            if operation.mode == WriteMode::Create {
+                let mut seen = std::collections::BTreeSet::new();
+                for key in &operation.keys {
+                    if !seen.insert(key.as_str()) {
+                        return Err(prepare_error(
+                            ErrorCategory::InvalidPlan,
+                            format!("chiave primaria MySQL '{key}' ripetuta"),
+                        ));
+                    }
                 }
             }
         }
@@ -1821,6 +1848,32 @@ mod tests {
         assert_eq!(
             MysqlWritePlan::compile(&input, &absent, "warehouse")
                 .expect_err("key assente accettata")
+                .category,
+            ErrorCategory::InvalidPlan
+        );
+
+        // Una PRIMARY KEY nullable non esiste. MySQL la rifiuterebbe con
+        // l'errore 1171, ma al server: il piano va fermato prima della rete.
+        let nullable = schema(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("label", DataType::Utf8, true),
+        ]);
+        let mut on_nullable = append_operation();
+        on_nullable.mode = WriteMode::Create;
+        on_nullable.keys = vec!["id".to_owned()];
+        let error = MysqlWritePlan::compile(&nullable, &on_nullable, "warehouse")
+            .expect_err("PRIMARY KEY nullable accettata");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert!(error.message.contains("nullable"), "{}", error.message);
+
+        // Una chiave ripetuta produrrebbe `PRIMARY KEY (id, id)`.
+        let mut repeated = append_operation();
+        repeated.mode = WriteMode::Create;
+        repeated.keys = vec!["id".to_owned(), "id".to_owned()];
+        assert_eq!(
+            MysqlWritePlan::compile(&input, &repeated, "warehouse")
+                .expect_err("chiave ripetuta accettata")
                 .category,
             ErrorCategory::InvalidPlan
         );
