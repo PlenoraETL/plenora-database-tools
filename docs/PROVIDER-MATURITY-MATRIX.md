@@ -39,7 +39,7 @@ MySQL.
 | Projection/filter/order/limit bind-safe | live | live | live |
 | Query relazionale pubblica | live | live | live; lifecycle prepare/query e drain completo |
 | Scrittura bulk (Append) | live | live | live; SingleTransaction, rollback o quarantine |
-| Scrittura bulk (Create, Replace, TruncateInsert) | live: Replace = `DELETE FROM` + insert in transazione, `TruncateInsert` = `TRUNCATE` transazionale | live | live: Create e Replace (`DELETE FROM` + insert nella stessa transazione InnoDB). `TruncateInsert` fail-closed: `TRUNCATE` è DDL con commit implicito |
+| Scrittura bulk (Create, Replace, TruncateInsert) | live: Replace = `DELETE FROM` + insert in transazione (target conservato), `TruncateInsert` = `TRUNCATE` transazionale | live: Replace usa ancora staging + publish con backup, quindi **il target viene ricreato** — non riallineato al contratto | live: Create e Replace (`DELETE FROM` + insert nella stessa transazione InnoDB, target conservato). `TruncateInsert` fail-closed: `TRUNCATE` è DDL con commit implicito |
 | Scrittura bulk (Upsert, Update, DeleteByKeys) | live | live | live: tutti e 3 (v1.2); Upsert via `ON DUPLICATE KEY UPDATE`, Update via staging TEMPORARY, DeleteByKeys via `WHERE (keys) IN` |
 | Transazioni OLTP (`begin_transaction` + savepoints + `execute_ddl`) | live | fail-closed (aperto) | live (v1.2); `MysqlTransaction` con START/COMMIT/ROLLBACK/SAVEPOINT/ROLLBACK TO/RELEASE + conditional_update |
 | Tipi scalari di riferimento | live, profilo esteso | live, profilo esteso | live: integer, decimal, bool, UTF-8, binary, date, datetime, JSON |

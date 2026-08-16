@@ -811,6 +811,24 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ],
         )
 
+    def test_the_replace_contract_is_not_generalised_to_sql_server(self) -> None:
+        """Il contratto Replace vale per PostgreSQL e MySQL, non per SQL Server.
+
+        SQL Server usa ancora staging + publish con tabella di backup: il
+        target viene ricreato. Una frase che assegna la stessa semantica ai
+        tre provider farebbe pianificare su una garanzia che uno dei tre non
+        offre.
+        """
+
+        interfaces = (ROOT / "docs" / "interfaces.md").read_text(encoding="utf-8")
+        self.assertIn("non ha la stessa semantica su tutti i provider", interfaces)
+        self.assertIn("staging + `RENAME`/publish", interfaces)
+        # La riga della tabella deve differenziare la colonna SQL Server.
+        row = next(
+            line for line in interfaces.splitlines() if line.startswith("| `Replace` |")
+        )
+        self.assertIn("staging + publish", row)
+
     def test_the_documented_test_counts_match_the_inventory(self) -> None:
         """I conteggi in `docs/mysql/README.md` seguono la sorgente.
 
