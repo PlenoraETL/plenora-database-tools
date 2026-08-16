@@ -443,9 +443,10 @@ class _AsyncMysqlSessionWrapper:
     ) -> dict:
         """Bulk write async MySQL.
 
-        Come `_MysqlSessionWrapper.copy_from` sync — vedi docstring per
-        WriteMode disponibili (5, non 7) e `mapping_policy` obbligatorio
-        `"strict"` su MySQL.
+        Come `_MysqlSessionWrapper.copy_from` sync — vedi quella docstring
+        per i 6 WriteMode disponibili su 7 (`truncate_insert` resta
+        fail-closed) e per `mapping_policy` obbligatorio `"strict"` su
+        MySQL.
 
         `source` accetta pyarrow/pandas/list-of-dict/bytes.
         """

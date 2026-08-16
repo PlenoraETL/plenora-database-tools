@@ -507,13 +507,13 @@ Gerarchico (child_token cancellato dal parent), deadline-aware, deregistrazione 
 | Bulk write Upsert | ✅ ON CONFLICT | ✅ ON DUPLICATE KEY | ❌ (design) |
 | Bulk write DeleteByKeys | ✅ | ✅ | ⚠️ parziale |
 | Geometrie 4D (XY/XYZ/XYM/XYZM) | ✅ PostGIS | XY only (Z/M rifiutati) | ✅ geog / ⚠️ geom |
-| `begin_transaction` + savepoint | ✅ | ❌ (non implementato) | ❌ (non implementato) |
-| `execute_conditional_update` | ✅ | ❌ | ❌ |
-| `query_stream` (cursor) | ✅ | ❌ | ❌ |
+| `begin_transaction` + savepoint | ✅ | ✅ (v1.2) | ❌ (non implementato) |
+| `execute_conditional_update` | ✅ | ✅ (v1.2) | ❌ |
+| `query_stream` (cursor) | ✅ | ❌ `Unsupported` | ❌ |
 | SessionContext | ✅ | ❌ | ❌ |
-| Facade OLTP (query_one, scalar) | ✅ | ❌ | ❌ |
-| NativeQueryPolicy | ✅ | ❌ | ❌ |
-| Spatial predicate builder | ✅ (PostGIS) | ❌ | ❌ |
+| Facade OLTP (query_one, scalar) | ✅ | ✅ via `query` tipizzata | ❌ |
+| NativeQueryPolicy | ✅ | ✅ (v1.2) | ❌ |
+| Spatial predicate builder | ✅ (PostGIS) | ✅ (26 funzioni verified) | ❌ |
 | APPLICATION_OLTP_V1 profile | ✅ Pass | ❌ | ❌ |
 
 **Stato attuale**: solo PostgreSQL è provider di riferimento per **entrambi** i piani. MySQL/SqlServer supportano il solo data plane bulk (con restrizioni note).

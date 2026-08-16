@@ -48,13 +48,14 @@ MySQL.
 | Dimensioni spatial | XY/XYZ/XYM/XYZM secondo gate | geometry/geography secondo gate | XY; Z/M/ZM non pubblicate |
 | Contratto schema canonico | offline/live | offline/live | offline/live tramite `validate_schema_contract` |
 | Gate fmt + Clippy `-D warnings` | sì | sì | sì |
-| Gate live corrente | suite reference | 44 test live attesi | 37 test live attesi (23 v1.1 + 14 v1.2: OLTP + write modes + spatial verified) su 8.0.46 e 8.4.11 |
+| Gate live corrente | suite reference | 44 test live attesi | 32 live default + 25 live reference attesi, su 9.7.2 (baseline), 8.4.11 e 8.0.46 |
 
 ## Esito di parità
 
 MySQL ha raggiunto disciplina di assurance e parità per le capability pubblicate:
 connessione TLS, introspezione, query relazionale, lettura streaming bounded,
-scrittura bulk (Append/Create/TruncateInsert/Upsert/DeleteByKeys/Update),
+scrittura bulk (Append/Create/Replace/Upsert/DeleteByKeys/Update;
+`TruncateInsert` fail-closed),
 transazioni OLTP con savepoints + conditional_update, DDL raw via
 `execute_ddl`, tipi dichiarati, spatial XY/SRID, reset, timeout, cancellazione,
 rollback e quarantena.
@@ -130,7 +131,8 @@ Dopo Blocchi B/A/C + upgrade 9.7:
   read streaming, portable AST builders, spatial predicates, async
   variant. Sufficiente per script batch, integrazione, migrazione.
 
-Test live totali dopo v1.2: **129 unit + integration** (110 v1.1 + 19 nuovi
-v1.2: 6 OLTP + 3 Create/TruncateInsert + 2 Upsert + 2 DeleteByKeys + 2 Update
-+ 1 Replace + 3 spatial: capabilities publish + query spatial + WHERE
-spatial predicate).
+Inventario corrente del provider MySQL, verificato contro la sorgente da
+`scripts/mysql_inventory.py` a ogni esecuzione del gate: **123 unit**,
+**32 live default** (test live senza `#[ignore]`) e
+**25 live reference** (test live `#[ignore]`). I conteggi
+non vanno aggiornati a mano: il gate fallisce se divergono.

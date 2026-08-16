@@ -810,6 +810,70 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ],
         )
 
+    def test_the_documented_test_counts_match_the_inventory(self) -> None:
+        """I conteggi in `docs/mysql/README.md` seguono la sorgente.
+
+        Una tabella di numeri scritti a mano invecchia al primo test aggiunto,
+        e il lettore non ha modo di accorgersene: e la stessa classe di deriva
+        che il gate previene sull'inventario, applicata alla documentazione.
+        """
+
+        observed = collect()
+        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
+        for runner, family in (
+            ("`cargo test -- --skip live_`", "unit"),
+            ("`cargo test live_`", "live_default"),
+            ("`cargo test live_ -- --ignored`", "live_reference"),
+        ):
+            row = next(
+                (line for line in readme.splitlines() if runner in line),
+                None,
+            )
+            self.assertIsNotNone(row, f"riga assente per {runner}")
+            documented = row.rsplit("|", 2)[1].strip()
+            self.assertEqual(
+                documented,
+                str(len(observed[family])),
+                f"conteggio {family} in docs/mysql/README.md non allineato",
+            )
+
+    def test_no_document_still_claims_mysql_supports_truncate_insert(self) -> None:
+        """`TruncateInsert` non deve comparire fra le mode MySQL disponibili.
+
+        L'elenco delle mode viene ricopiato in piu documenti: basta che uno
+        resti indietro perche un consumer pianifichi su una modalita che il
+        provider rifiuta in prepare.
+        """
+
+        # Solo elenchi di mode: sono affermazioni di supporto e non possono
+        # comparire dentro una negazione. Frasi come "non esistono piu staging
+        # persistenti" descrivono legittimamente cio che e stato rimosso, e un
+        # match sul solo sostantivo le colpirebbe.
+        stale = (
+            "Append/Create/TruncateInsert/Upsert/DeleteByKeys/Update",
+            "Append + Create + TruncateInsert",
+            "tutti 7 WriteMode",
+            "Tutti 7 WriteMode",
+            "tutti 7 modi qualificati",
+        )
+        documents = [ROOT / "README.md"]
+        documents += sorted((ROOT / "docs").rglob("*.md"))
+        documents += sorted(
+            (ROOT / "crates" / "plenora-database-py" / "python").rglob("*.py")
+        )
+        for document in documents:
+            # La cronologia registra cio che era vero allora: non e una
+            # dichiarazione sullo stato corrente.
+            if "docs/history" in document.as_posix():
+                continue
+            text = document.read_text(encoding="utf-8")
+            for claim in stale:
+                self.assertNotIn(
+                    claim,
+                    text,
+                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
+                )
+
     def test_every_compose_declares_its_own_project(self) -> None:
         """Un progetto Compose per file, altrimenti si cancellano a vicenda.
 
