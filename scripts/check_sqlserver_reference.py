@@ -352,6 +352,11 @@ def run_live_cli_probe() -> None:
             "test",
             "-p",
             "plenora-database-cli",
+            # L'adapter SQL Server della CLI e opt-in: senza la feature il
+            # binario risponde `unsupported` e il probe proverebbe soltanto
+            # che il provider non e stato compilato.
+            "--features",
+            "sqlserver",
             "--test",
             "live_probe",
             test_name,
