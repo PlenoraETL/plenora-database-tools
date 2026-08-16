@@ -24,7 +24,7 @@ MySQL.
 
 ## Capability e assurance
 
-| Area | PostgreSQL/PostGIS | SQL Server | MySQL 8.4 LTS |
+| Area | PostgreSQL/PostGIS | SQL Server | MySQL 9.7 (8.4/8.0 compat) |
 | --- | --- | --- | --- |
 | Connessione e identità server | live | live | live |
 | TLS sul data path | live | live, inclusa CA privata/hostname/rotazione | live; CA privata, hostname positivo/negativo e `require-secure-transport=ON` |

@@ -1,9 +1,13 @@
 # Provider MySQL
 
-Baseline di riferimento: **MySQL 9.7 LTS** (rilasciato 21 aprile 2026, primo
-LTS dopo 8.4). La matrice versionata qualifica anche MySQL 8.4.11 e 8.0.46
-su immagini fissate per digest, per retrocompatibilità con installazioni
-legacy. Tutti i 129 test live passano identici su 8.4/9.7 — la superficie
+Baseline di riferimento: **MySQL 9.7.2**. La matrice versionata qualifica
+anche **MySQL 8.4.11 LTS** e **MySQL 8.0.46** come riferimenti di
+compatibilità, per installazioni legacy. Versione esatta e digest immutabile
+di ciascun riferimento sono dichiarati una volta sola in
+[`docker/mysql/references.json`](../../docker/mysql/references.json): il
+compose della baseline, i due gate e i test live leggono quel documento, così
+nessuno può affermare una versione diversa da quella effettivamente avviata.
+I 50 test live passano identici su 9.7, 8.4 e 8.0 — la superficie
 `plenora-db-mysql` è dialect-invariante tra 8.x e 9.x. Il provider usa protocollo
 nativo asincrono e TLS rustls; MariaDB resta fuori scope fino a una qualifica
 indipendente.
@@ -60,13 +64,29 @@ indipendente.
   `ST_DWithin`, `ST_Transform`, ecc.) restano `Unsupported`.
 
 Il gate riproducibile è `python scripts/check_mysql_reference.py`. Esegue fmt,
-Clippy con warning negati, test della fixture, ~110 test offline e ~32 test live
-identificati per nome sul riferimento fissato per digest (v1.2: 22 live baseline
-+ 10 live v1.2). Il gate prestazionale `python scripts/check_mysql_performance.py`
+Clippy con warning negati, i test della fixture e tre famiglie di test
+identificate per nome sulla baseline fissata per digest:
+
+| Famiglia | Runner | Test |
+| --- | --- | --- |
+| unit | `cargo test -- --skip live_` | 121 |
+| live default | `cargo test live_` | 25 |
+| live reference | `cargo test live_ -- --ignored` | 25 |
+
+`live default` sono i test live **non** `#[ignore]`: una `cargo test` nuda li
+esegue, quindi richiedono comunque il riferimento acceso e hanno un runner
+proprio invece di comparire come rumore. Prima di avviare qualunque container
+il gate confronta i tre inventari con la sorgente Rust
+(`scripts/mysql_inventory.py`): un test aggiunto e mai eseguito, o rimosso e
+mai notato, fa fallire il gate invece di restare invisibile.
+
+Il gate prestazionale `python scripts/check_mysql_performance.py`
 applica un budget assoluto a read e Append/SingleTransaction, richiede
 differenziale zero e un solo commit osservato; non dichiara una baseline
-misurata finché non ne esiste una comparabile. La matrice 8.0/8.4 è
-`python scripts/check_mysql_matrix.py`. La matrice comparativa dei provider è
+misurata finché non ne esiste una comparabile. La matrice completa
+(baseline 9.7 più compatibilità 8.4 e 8.0) è
+`python scripts/check_mysql_matrix.py`, che per ogni riferimento riesegue
+entrambe le famiglie live senza esclusioni. La matrice comparativa dei provider è
 in [`docs/PROVIDER-MATURITY-MATRIX.md`](../PROVIDER-MATURITY-MATRIX.md).
 
 Il DDL atomico MySQL non viene equiparato a DDL transazionale (autocommit

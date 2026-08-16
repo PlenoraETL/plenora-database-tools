@@ -2,9 +2,16 @@
 
 ## Stato
 
-Accettata per l'implementazione iniziale. La baseline di riferimento e MySQL
-8.4 LTS; MySQL 8.0 e la seconda riga della matrice. MariaDB non viene dedotta
-come compatibile e richiedera una campagna separata.
+Accettata per l'implementazione iniziale. La baseline di riferimento era
+MySQL 8.4 LTS; MySQL 8.0 e la seconda riga della matrice. MariaDB non viene
+dedotta come compatibile e richiedera una campagna separata.
+
+**Aggiornamento (2026-08-16).** La baseline e MySQL 9.7; 8.4 LTS e 8.0 restano
+qualificate come riferimenti di compatibilita, con lo stesso inventario live e
+senza esclusioni. La decisione di questa ADR non cambia: cambia la riga di
+testa della matrice. Versione esatta e digest immutabile di ogni riferimento
+vivono in `docker/mysql/references.json`, che e la sola fonte letta da compose,
+gate e test.
 
 ## Decisione
 

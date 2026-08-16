@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "comment": "Fonte di verita unica della matrice MySQL: versione esatta e digest immutabile di ogni riferimento qualificato. Consumata da scripts/mysql_references.py (gate reference e matrice), da docker-compose.mysql.yml tramite validazione del gate e da crates/plenora-db-mysql/src/live_tests.rs tramite include_str!. Un digest e il manifest index OCI risolto da docker.io/library/mysql:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata.",
+  "references": [
+    {
+      "role": "baseline",
+      "label": "MySQL 9.7",
+      "exact_version": "9.7.2",
+      "digest": "sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e"
+    },
+    {
+      "role": "compatibility",
+      "label": "MySQL 8.4 LTS",
+      "exact_version": "8.4.11",
+      "digest": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
+    },
+    {
+      "role": "compatibility",
+      "label": "MySQL 8.0",
+      "exact_version": "8.0.46",
+      "digest": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+    }
+  ]
+}

@@ -494,7 +494,7 @@ Gerarchico (child_token cancellato dal parent), deadline-aware, deregistrazione 
 
 ## 12. Provider coverage matrix
 
-| Capability | Postgres | MySQL 8.4 | SQL Server |
+| Capability | Postgres | MySQL | SQL Server |
 |---|---|---|---|
 | `test_connection` / `inspect` / `read` streaming | ✅ | ✅ | ✅ |
 | Bulk write Append | ✅ COPY BIN | ✅ Prepared | ✅ Prep/TdsBulk |

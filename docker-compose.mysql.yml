@@ -1,3 +1,9 @@
+# Riferimento baseline della matrice MySQL: MySQL 9.7.2, fissato per digest
+# immutabile. Versione e digest sono dichiarati in docker/mysql/references.json
+# ed e quel documento a comandare: `scripts/mysql_references.py` verifica che i
+# due servizi qui sotto fissino esattamente l'immagine della baseline e nessun
+# digest di compatibilita. I riferimenti 8.4 LTS e 8.0 non si avviano da qui ma
+# da `scripts/check_mysql_matrix.py`, con la stessa fixture TLS e init.
 services:
   mysql-certgen:
     image: mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e

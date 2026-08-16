@@ -19,11 +19,35 @@ fn live_secret() -> SecretString {
     SecretString::new(environment("PLENORA_MYSQL_PASSWORD", DEFAULT_PASSWORD))
 }
 
-/// Il prefisso di versione che il riferimento in prova deve pubblicare. La
-/// matrice lo fissa esplicitamente per ciascuna immagine; senza variabile
-/// l'atteso resta il riferimento 8.4 LTS.
+/// La matrice dei riferimenti qualificati, unica fonte di verita di versione
+/// e digest. I test la leggono per non ricopiare una versione che il compose
+/// potrebbe nel frattempo aver cambiato.
+const REFERENCE_MATRIX: &str = include_str!("../../../docker/mysql/references.json");
+
+/// Il prefisso `major.minor.` della baseline dichiarata dalla matrice.
+fn baseline_version_prefix() -> String {
+    let document: serde_json::Value =
+        serde_json::from_str(REFERENCE_MATRIX).expect("matrice MySQL leggibile");
+    let baseline = document["references"]
+        .as_array()
+        .expect("matrice MySQL con elenco riferimenti")
+        .iter()
+        .find(|entry| entry["role"] == "baseline")
+        .expect("matrice MySQL con una baseline");
+    let exact = baseline["exact_version"]
+        .as_str()
+        .expect("versione esatta della baseline");
+    let (major_minor, _patch) = exact.rsplit_once('.').expect("versione major.minor.patch");
+    format!("{major_minor}.")
+}
+
+/// Il prefisso di versione che il riferimento in prova deve pubblicare.
+///
+/// Senza variabile l'atteso e la baseline della matrice. La matrice di
+/// compatibilita sovrascrive la variabile per ciascuna immagine, quindi un
+/// riferimento 8.4 o 8.0 non viene mai confrontato con la baseline.
 fn expected_version_prefix() -> String {
-    environment("PLENORA_MYSQL_EXPECTED_VERSION", "8.4.")
+    std::env::var("PLENORA_MYSQL_EXPECTED_VERSION").unwrap_or_else(|_| baseline_version_prefix())
 }
 
 fn live_config() -> MysqlConfig {
@@ -122,7 +146,7 @@ async fn await_single_statement_execution(audit: &mut mysql_async::Conn, baselin
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito"]
+#[ignore = "richiede MySQL live esplicito"]
 async fn live_reference_probe_catalog_and_spatial_metadata() {
     let cancellation = CancellationToken::new();
     let config = live_config();
@@ -199,7 +223,7 @@ async fn live_reference_probe_catalog_and_spatial_metadata() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito con CA privata"]
+#[ignore = "richiede MySQL live esplicito con CA privata"]
 async fn live_verified_tls_rejects_a_hostname_mismatch() {
     let cancellation = CancellationToken::new();
     let ca_path = std::env::var("PLENORA_MYSQL_CA").expect("CA privata richiesta dal gate live");
@@ -213,7 +237,7 @@ async fn live_verified_tls_rejects_a_hostname_mismatch() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito con CA privata"]
+#[ignore = "richiede MySQL live esplicito con CA privata"]
 async fn live_provider_read_rejects_a_hostname_mismatch() {
     let cancellation = CancellationToken::new();
     let ca_path = std::env::var("PLENORA_MYSQL_CA").expect("CA privata richiesta dal gate live");
@@ -250,7 +274,7 @@ async fn live_provider_read_rejects_a_hostname_mismatch() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per reset pool"]
+#[ignore = "richiede MySQL live esplicito per reset pool"]
 async fn live_pool_reset_reapplies_deterministic_session_bootstrap() {
     use mysql_async::prelude::Queryable;
 
@@ -286,7 +310,7 @@ async fn live_pool_reset_reapplies_deterministic_session_bootstrap() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per cancellazione"]
+#[ignore = "richiede MySQL live esplicito per cancellazione"]
 async fn live_inflight_cancellation_quarantines_the_session() {
     let cancellation = CancellationToken::new();
     let mut session = MysqlSession::open(&live_config(), &cancellation)
@@ -316,7 +340,7 @@ async fn live_inflight_cancellation_quarantines_the_session() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per deadline"]
+#[ignore = "richiede MySQL live esplicito per deadline"]
 async fn live_deadline_reports_timeout_and_quarantines_the_session() {
     let cancellation = CancellationToken::new();
     let mut session = MysqlSession::open(&live_config(), &cancellation)
@@ -346,7 +370,7 @@ async fn live_deadline_reports_timeout_and_quarantines_the_session() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per acquire pool"]
+#[ignore = "richiede MySQL live esplicito per acquire pool"]
 async fn live_pool_acquire_timeout_is_independent_from_connect_timeout() {
     let config = live_config().with_timeouts(
         std::time::Duration::from_secs(5),
@@ -376,7 +400,7 @@ async fn live_pool_acquire_timeout_is_independent_from_connect_timeout() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per timeout"]
+#[ignore = "richiede MySQL live esplicito per timeout"]
 async fn live_operation_timeout_quarantines_the_session() {
     let cancellation = CancellationToken::new();
     let config = live_config().with_timeouts(
@@ -406,7 +430,7 @@ async fn live_operation_timeout_quarantines_the_session() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito"]
+#[ignore = "richiede MySQL live esplicito"]
 async fn live_provider_connection_capabilities_and_inspect() {
     let cancellation = CancellationToken::new();
     let provider = MysqlProvider::new(live_config(), 2).expect("provider MySQL live");
@@ -472,7 +496,7 @@ async fn live_provider_connection_capabilities_and_inspect() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per drop stream"]
+#[ignore = "richiede MySQL live esplicito per drop stream"]
 async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
     use plenora_database_core::plan::{OrderBy, ReadOperation, SortDirection};
 
@@ -535,7 +559,7 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
 /// per cella piu il doppio del payload): la prima riga sta nel budget, la
 /// somma delle due lo supera.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per righe variabili multi-batch"]
+#[ignore = "richiede MySQL live esplicito per righe variabili multi-batch"]
 async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
     use mysql_async::prelude::Queryable;
     use plenora_database_core::arrow::array::Int64Array;
@@ -629,7 +653,7 @@ async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
 /// righe in un batch solo. Prima del carry-over il confronto con il massimo
 /// teorico `cell_bytes × colonne` chiudeva il batch dopo una riga.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per batching a limiti default"]
+#[ignore = "richiede MySQL live esplicito per batching a limiti default"]
 async fn live_default_limits_batch_many_rows_over_four_columns() {
     use mysql_async::prelude::Queryable;
     use plenora_database_core::arrow::array::Int64Array;
@@ -715,7 +739,7 @@ async fn live_default_limits_batch_many_rows_over_four_columns() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per filtri prepared"]
+#[ignore = "richiede MySQL live esplicito per filtri prepared"]
 async fn live_read_projection_filter_order_and_default_schema() {
     use plenora_database_core::arrow::array::{Int64Array, StringArray};
     use plenora_database_core::plan::{FilterExpression, OrderBy, SortDirection};
@@ -791,7 +815,7 @@ async fn live_read_projection_filter_order_and_default_schema() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per lettura Arrow"]
+#[ignore = "richiede MySQL live esplicito per lettura Arrow"]
 #[allow(clippy::too_many_lines)]
 async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
     use plenora_database_core::arrow::array::{
@@ -992,7 +1016,7 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
 /// un metadato non fedele. I valori sono poi confrontati uno per uno, cosi il
 /// mapping dei tipi e quello dei valori restano provati insieme.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per QueryOperation"]
+#[ignore = "richiede MySQL live esplicito per QueryOperation"]
 #[allow(clippy::too_many_lines)]
 async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
     use plenora_database_core::arrow::array::{
@@ -1082,7 +1106,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
         ("set_value", "", DataType::Utf8, "set", false),
         ("char_value", "", DataType::Utf8, "char", false),
         ("binary_value", "", DataType::Binary, "binary", false),
-        // MySQL 8.4 descrive TINYTEXT, TEXT, MEDIUMTEXT e LONGTEXT, come i
+        // MySQL descrive TINYTEXT, TEXT, MEDIUMTEXT e LONGTEXT, come i
         // quattro BLOB corrispondenti, con un unico tipo wire
         // `MYSQL_TYPE_BLOB`: la classe di lunghezza resta nella dichiarazione
         // e non viaggia nei metadati del result set. Il provider pubblica
@@ -1318,7 +1342,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
         .is_none());
 }
 
-/// Aggregazione raggruppata, bind di HAVING e DISTINCT su `MySQL` 8.4 con TLS.
+/// Aggregazione raggruppata, bind di HAVING e DISTINCT su `MySQL` con TLS.
 ///
 /// Il `sql_mode` deterministico del provider non include `ONLY_FULL_GROUP_BY`:
 /// il server accetterebbe in silenzio un gruppo non determinato. La prova che
@@ -1326,7 +1350,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
 /// dichiarati dai metadati di `COM_STMT_PREPARE`, con il parametro di HAVING
 /// passato come bind e mai come letterale.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per aggregazione e DISTINCT"]
+#[ignore = "richiede MySQL live esplicito per aggregazione e DISTINCT"]
 #[allow(clippy::too_many_lines)]
 async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
     use plenora_database_core::arrow::array::{
@@ -1606,7 +1630,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
     assert_eq!(error.category, ErrorCategory::Unsupported);
 }
 
-/// Join fisici INNER, LEFT, RIGHT e CROSS su `MySQL` 8.4 con TLS verificato.
+/// Join fisici INNER, LEFT, RIGHT e CROSS su `MySQL` con TLS verificato.
 ///
 /// La prova che conta e la nullabilita del lato esterno:
 /// `stream_probe`.`payload` e dichiarata `VARBINARY(1024) NOT NULL`, ma dal
@@ -1620,7 +1644,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
 /// altrimenti due colonne `id` omonime, che il path query rifiuta come nomi
 /// di output duplicati.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per i join fisici"]
+#[ignore = "richiede MySQL live esplicito per i join fisici"]
 #[allow(clippy::too_many_lines)]
 async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
     use plenora_database_core::arrow::array::{Array, BinaryArray, Int64Array, StringArray};
@@ -2036,7 +2060,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
         .is_none());
 }
 
-/// Window function scalari su `MySQL` 8.4 con TLS verificato.
+/// Window function scalari su `MySQL` con TLS verificato.
 ///
 /// La finestra e valutata dal server dopo WHERE e prima di LIMIT: la prova che
 /// conta e che lo schema Arrow arrivi dai metadati di `COM_STMT_PREPARE` e che
@@ -2049,7 +2073,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
 /// `ROW_NUMBER`, `LAG`, `LEAD` e il frame ROWS non compaiono: il provider li
 /// chiude prima della rete.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per le window scalari"]
+#[ignore = "richiede MySQL live esplicito per le window scalari"]
 #[allow(clippy::too_many_lines)]
 async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates() {
     use plenora_database_core::arrow::array::{Array, Int64Array, UInt64Array};
@@ -2283,7 +2307,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per execution count QueryOperation"]
+#[ignore = "richiede MySQL live esplicito per execution count QueryOperation"]
 #[allow(clippy::too_many_lines)]
 async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded() {
     use plenora_database_core::plan::SortDirection;
@@ -2480,7 +2504,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per lifecycle QueryOperation"]
+#[ignore = "richiede MySQL live esplicito per lifecycle QueryOperation"]
 #[allow(clippy::too_many_lines)]
 async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() {
     use plenora_database_core::plan::SortDirection;
@@ -3084,7 +3108,7 @@ fn write_budget() -> ResourceBudget {
 /// server, INSERT dentro una sola transazione, COMMIT e rilettura esatta dal
 /// path di lettura qualificato.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per append transazionale"]
+#[ignore = "richiede MySQL live esplicito per append transazionale"]
 #[allow(clippy::too_many_lines)]
 async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
     use plenora_database_core::arrow::array::{
@@ -3288,7 +3312,7 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
 /// Il path spatial scrive esclusivamente WKB XY bind-safe; lo SRID viene
 /// applicato dalla funzione `MySQL` qualificata e verificato sul valore salvato.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per append spatial XY"]
+#[ignore = "richiede MySQL live esplicito per append spatial XY"]
 async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
     use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int64Array};
     use plenora_database_core::arrow::RecordBatch;
@@ -3389,7 +3413,7 @@ async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
 /// Il fallimento di un batch annulla l'intera transazione: nessuna riga del
 /// batch precedente resta visibile e l'errore dichiara `RolledBack`.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per rollback transazionale"]
+#[ignore = "richiede MySQL live esplicito per rollback transazionale"]
 async fn live_append_batch_failure_rolls_back_without_partial_rows() {
     let table = "write_rollback_probe";
     let config = live_config();
@@ -3456,7 +3480,7 @@ async fn live_append_batch_failure_rolls_back_without_partial_rows() {
 }
 
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live per l'oracolo row diagnostics"]
+#[ignore = "richiede MySQL live per l'oracolo row diagnostics"]
 #[allow(clippy::too_many_lines)]
 async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
     const INPUT_TOTAL: u64 = 5_200;
@@ -3593,7 +3617,7 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
 /// connessione e la fa sostituire nel pool: la scrittura successiva riparte
 /// su una sessione nuova e committa.
 #[tokio::test]
-#[ignore = "richiede MySQL 8.4 live esplicito per quarantena write"]
+#[ignore = "richiede MySQL live esplicito per quarantena write"]
 #[allow(clippy::too_many_lines)]
 async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
     use plenora_database_core::outcome::WriteStatus;

@@ -6,7 +6,7 @@ tabellari e geospaziali.
 Target v1:
 
 - PostgreSQL/PostGIS;
-- MySQL 8.0 e 8.4 LTS; MariaDB richiede una qualifica indipendente;
+- MySQL 9.7 come baseline, 8.4 LTS e 8.0 come compatibilità; MariaDB richiede una qualifica indipendente;
 - SQL Server geometry/geography;
 - Oracle/Oracle Spatial;
 - Db2/Db2 Spatial;
