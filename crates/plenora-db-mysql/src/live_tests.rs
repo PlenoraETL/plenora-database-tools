@@ -3900,7 +3900,7 @@ async fn live_v12_transaction_execute_and_commit() {
 /// Il `SessionContext` raggiunge il server, con la chiave che il core produce.
 ///
 /// Il core impone `namespace.name`, quindi un punto; le variabili utente
-/// MySQL non ammettono un punto se non quotate. Finche non lo erano, le due
+/// `MySQL` non ammettono un punto se non quotate. Finche non lo erano, le due
 /// validazioni erano mutuamente esclusive e `begin_transaction` con un
 /// context non vuoto falliva sempre in `Prepare` — una capability pubblicata
 /// che nessuna chiave valida poteva esercitare.

@@ -183,15 +183,43 @@ impl MysqlWritePlan {
             .map(|field| compile_write_column(field, &renderer))
             .collect::<Result<Vec<_>>>()?;
         validate_spatial_policy(operation, &columns)?;
-        // Per Upsert/DeleteByKeys: verifica ogni key nello schema Arrow.
-        // Per DeleteByKeys: solo le colonne key devono essere nello schema
-        // (nessuna colonna extra — solo keys per il filter DELETE).
-        if matches!(
-            operation.mode,
-            WriteMode::Upsert | WriteMode::DeleteByKeys | WriteMode::Create
-        ) {
+        if operation.mode == WriteMode::Create {
+            // Le chiavi di `Create` diventano la PRIMARY KEY. Presenza,
+            // nullability e ripetizioni sono strutturali e valgono su ogni
+            // provider: le verifica il core, una volta sola. Prima la
+            // presenza veniva controllata anche qui, con un secondo
+            // messaggio per lo stesso difetto: quale dei due arrivasse al
+            // chiamante dipendeva dall'ordine dei controlli, non dal piano.
+            if let Err(violation) = validate_create_primary_key(schema, &operation.keys) {
+                return Err(prepare_error(
+                    ErrorCategory::InvalidPlan,
+                    violation.message("MySQL"),
+                ));
+            }
+            validate_primary_key_parts(&operation.keys)?;
             for key in &operation.keys {
                 let Some(column) = columns.iter().find(|c| c.name == *key) else {
+                    // Irraggiungibile: `columns` deriva 1:1 dai campi dello
+                    // stesso schema su cui il core ha appena provato la
+                    // presenza. Se accadesse sarebbe un difetto nostro, non
+                    // un piano invalido, e la categoria lo dice.
+                    return Err(prepare_error(
+                        ErrorCategory::Internal,
+                        format!(
+                            "colonna '{key}' presente nello schema Arrow ma \
+                             assente dalle colonne compilate"
+                        ),
+                    ));
+                };
+                validate_primary_key_column(key, column)?;
+            }
+        } else if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys) {
+            // Qui le chiavi non costruiscono una PRIMARY KEY: servono a
+            // identificare le righe, e l'unico requisito e che esistano.
+            // Per DeleteByKeys lo schema porta solo le colonne chiave, che
+            // formano il filtro del DELETE.
+            for key in &operation.keys {
+                if !columns.iter().any(|column| column.name == *key) {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
@@ -199,23 +227,7 @@ impl MysqlWritePlan {
                             operation.mode
                         ),
                     ));
-                };
-                if operation.mode == WriteMode::Create {
-                    validate_primary_key_column(key, column)?;
                 }
-            }
-            if operation.mode == WriteMode::Create {
-                // Presenza, nullability e ripetizioni valgono su ogni
-                // provider e stanno nel core; qui resta cio che e del
-                // motore: il numero massimo di parti, e i tipi verificati
-                // sopra colonna per colonna.
-                if let Err(violation) = validate_create_primary_key(schema, &operation.keys) {
-                    return Err(prepare_error(
-                        ErrorCategory::InvalidPlan,
-                        violation.message("MySQL"),
-                    ));
-                }
-                validate_primary_key_parts(&operation.keys)?;
             }
         }
         if operation.mode == WriteMode::DeleteByKeys {
