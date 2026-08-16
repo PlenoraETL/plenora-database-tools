@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import compose_network_arguments  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
 
@@ -57,35 +61,11 @@ def docker_value(arguments: list[str]) -> str:
     return completed.stdout.strip()
 
 
-def postgres_network() -> str:
-    observed_project: str | None = None
-    observed_network: str | None = None
-    for container in ("dataflow-postgres", "dataflow-postgres-tls"):
-        labels = json.loads(
-            docker_value(["inspect", "--format", "{{json .Config.Labels}}", container])
-        )
-        project = (
-            labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
-        )
-        if not isinstance(project, str) or not project:
-            raise RuntimeError("progetto Compose PostgreSQL assente")
-        if observed_project is not None and project != observed_project:
-            raise RuntimeError("fixture PostgreSQL appartengono a progetti Compose diversi")
-        observed_project = project
-        expected = f"{project}_default"
-        networks = json.loads(
-            docker_value(
-                ["inspect", "--format", "{{json .NetworkSettings.Networks}}", container]
-            )
-        )
-        network = networks.get(expected) if isinstance(networks, dict) else None
-        aliases = network.get("Aliases") if isinstance(network, dict) else None
-        if not isinstance(aliases, list) or container not in aliases:
-            raise RuntimeError("rete Compose PostgreSQL assente o senza alias")
-        observed_network = expected
-    if observed_network is None:
-        raise RuntimeError("rete Compose PostgreSQL non osservata")
-    return observed_network
+# I due riferimenti PostgreSQL — plaintext e TLS — vivono in progetti Compose
+# distinti, quindi su reti distinte. Il gate li interroga entrambi nella stessa
+# esecuzione e si attacca a entrambe le reti: prima pretendeva che
+# condividessero il progetto, e la separazione dei progetti lo ha rotto.
+POSTGRES_CONTAINERS = ("dataflow-postgres", "dataflow-postgres-tls")
 
 
 def cargo(
@@ -105,7 +85,7 @@ def cargo(
         "/workspace",
     ]
     if dsn is not None or tls_dsn is not None:
-        command += ["--network", postgres_network()]
+        command += compose_network_arguments(*POSTGRES_CONTAINERS)
     if dsn is not None:
         command += [
             "-e",

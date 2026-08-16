@@ -68,6 +68,34 @@ def compose_network(container: str, *, required_alias: str | None = None) -> str
     return expected
 
 
+def compose_network_arguments(*containers: str) -> list[str]:
+    """Argomenti `--network` per raggiungere **tutti** i container indicati.
+
+    Riferimenti in progetti Compose distinti stanno su reti distinte, e un
+    gate che ne interroga due — il caso dell'hardening PostgreSQL, che
+    confronta il riferimento plaintext con quello TLS — deve attaccarsi a
+    entrambe. `docker run` accetta piu `--network`, quindi la risposta e una
+    lista, non un nome.
+
+    Le reti si deduplicano: due container dello stesso progetto restituiscono
+    un solo `--network`, e passarlo due volte sarebbe un errore di Docker.
+
+    # Raises
+
+    `RuntimeError` per gli stessi motivi di [`compose_network`].
+    """
+
+    arguments: list[str] = []
+    seen: set[str] = set()
+    for container in containers:
+        network = compose_network(container, required_alias=container)
+        if network in seen:
+            continue
+        seen.add(network)
+        arguments += ["--network", network]
+    return arguments
+
+
 if __name__ == "__main__":
     import sys
 

@@ -923,6 +923,39 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             f"progetti Compose non distinti: {declared}",
         )
 
+    def test_the_migration_note_never_tells_anyone_to_delete_volumes(self) -> None:
+        """La migrazione dei progetti Compose non tocca i volumi.
+
+        A collidere sono i `container_name`, che sono fissi; i volumi sono
+        prefissati dal progetto e convivono. Una procedura che include
+        `docker volume rm` distrugge dati per un problema che non esiste, e
+        non e reversibile.
+        """
+
+        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
+        migration = readme.split("**Migrazione (una tantum).**", 1)
+        self.assertEqual(len(migration), 2, "nota di migrazione assente")
+        body = migration[1].split("## ", 1)[0]
+        for line in body.splitlines():
+            if line.strip().startswith("docker volume rm"):
+                self.fail(f"la migrazione cancella volumi: {line.strip()}")
+        self.assertIn("Non** cancellare i volumi", body)
+
+    def test_the_hardening_gate_reaches_both_postgres_references(self) -> None:
+        """Il gate hardening interroga due riferimenti in progetti distinti.
+
+        Prima pretendeva che condividessero il progetto Compose, e la
+        separazione dei progetti lo ha rotto: ora si attacca a entrambe le
+        reti tramite l'helper condiviso.
+        """
+
+        source = (ROOT / "scripts" / "check_postgres_hardening.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("compose_network_arguments", source)
+        self.assertNotIn("appartengono a progetti Compose diversi", source)
+        self.assertIn('"dataflow-postgres", "dataflow-postgres-tls"', source)
+
     def test_no_runner_hardcodes_a_compose_network(self) -> None:
         """La rete Compose si scopre, non si scrive.
 

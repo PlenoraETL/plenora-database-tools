@@ -129,17 +129,27 @@ degli altri. I gate non contengono il nome della rete — lo chiedono a Docker
 con `scripts/compose_network.py`, leggendo le label del container — e un test
 impedisce che qualcuno lo riscriva a mano.
 
-**Migrazione (una tantum).** I `container_name` sono fissi, quindi i container
-del vecchio progetto `database-tools` collidono con i nuovi. Prima del primo
-`up`:
+**Migrazione (una tantum).** A collidere sono soltanto i **container**: i
+`container_name` sono fissi, quindi quelli del vecchio progetto `database-tools`
+occupano i nomi che i nuovi progetti vogliono usare. I volumi no — sono
+prefissati dal progetto, quindi `database-tools_mysql_data` e
+`plenora-mysql_mysql_data` convivono senza conflitto.
+
+Rimuovere i soli container, prima del primo `up`:
 
 ```bash
-docker rm -f dataflow-mysql dataflow-mysql-certgen dataflow-postgres dataflow-sqlserver
-docker volume rm -f database-tools_mysql_data database-tools_mysql_tls                     database-tools_mysql_ca_private database-tools_postgres_data
-docker network rm database-tools_default
+docker rm -f dataflow-mysql dataflow-mysql-certgen \
+             dataflow-postgres dataflow-postgres-tls dataflow-postgres-tls-certgen \
+             dataflow-sqlserver
 ```
 
-Nessuna perdita: entrambe le fixture nascono dagli script in
+**Non** cancellare i volumi del vecchio progetto: non e necessario e non e
+reversibile. Restano orfani e inerti; chi vuole recuperare lo spazio puo
+elencarli con `docker volume ls | grep database-tools` e rimuoverli quando ha
+verificato che i nuovi riferimenti funzionano — ma e una decisione sua, non un
+passo della migrazione.
+
+I nuovi progetti ripartono da volumi vuoti e le fixture nascono dagli script in
 `docker/*/init`, che il primo avvio riesegue.
 
 ## Consumer surface
