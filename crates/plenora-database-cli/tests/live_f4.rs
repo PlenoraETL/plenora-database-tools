@@ -1,13 +1,13 @@
 //! Live test end-to-end dei nuovi sottocomandi Fase 4 invocati come binario.
 //!
 //! Richiedono un Postgres raggiungibile all'hostname `dataflow-postgres`
-//! (compose network `database-tools_default`) e la variabile ambiente `PG_DSN`
+//! (compose network `plenora-postgres_default`) e la variabile ambiente `PG_DSN`
 //! popolata con il DSN completo.
 //!
 //! Sono `#[ignore]` per default; esegui con:
 //!
 //! ```text
-//! docker run --rm --network database-tools_default -v ... rust:1.92 \
+//! docker run --rm --network plenora-postgres_default -v ... rust:1.92 \
 //!   cargo test --test live_f4 -- --ignored --nocapture
 //! ```
 

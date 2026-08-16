@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import unittest
 import importlib.util
@@ -903,6 +904,48 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             len(declared),
             f"progetti Compose non distinti: {declared}",
         )
+
+    def test_no_runner_hardcodes_a_compose_network(self) -> None:
+        """La rete Compose si scopre, non si scrive.
+
+        I compose dichiarano progetti distinti, quindi `<progetto>_default`
+        cambia con il progetto. Un runner che lo scrive a mano si rompe in
+        silenzio: il container c'e, la rete c'e, ma il gate finisce altrove e
+        fallisce con un errore di trasporto che non nomina la causa.
+
+        Le reti private create dal gate stesso — le matrici — sono esentate:
+        non appartengono a nessun progetto Compose, e il loro nome non finisce
+        in `_default`.
+        """
+
+        # Solo i runner: i `test_*.py` contengono nomi di rete come dati di
+        # prova, ed e proprio la scoperta che verificano.
+        for source in sorted((ROOT / "scripts").glob("*.py")):
+            if source.name.startswith("test_"):
+                continue
+            for line in source.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                # Il nome di una rete Compose e `<progetto>_default` come
+                # stringa intera; un identificatore che finisce per
+                # `_default` dentro un nome di test non lo e.
+                for token in re.findall(r'"([^"]*)"', stripped):
+                    # Un nome di rete Compose e `<progetto>_default` con un
+                    # progetto davanti: `live_default` e una famiglia di test,
+                    # non una rete.
+                    if not token.endswith("-tools_default") and not re.fullmatch(
+                        r"[a-z0-9][a-z0-9._-]*-[a-z0-9._-]*_default", token
+                    ):
+                        continue
+                    # `f"{project}_default"` **e** la scoperta: costruisce il
+                    # nome dal progetto letto dalle label. E il letterale
+                    # senza interpolazione a essere un nome scritto a mano.
+                    self.assertIn(
+                        "{",
+                        token,
+                        f"{source.name} scrive a mano una rete Compose: {token}",
+                    )
 
     def test_no_runner_removes_orphan_containers(self) -> None:
         """Nessun gate passa `--remove-orphans`.

@@ -1,7 +1,7 @@
 //! Unit + live test del transaction scope `PostgreSQL`.
 //!
 //! I test live richiedono un `PostgreSQL` raggiungibile all'hostname
-//! `dataflow-postgres` (compose network `database-tools_default`).
+//! `dataflow-postgres` (compose network `plenora-postgres_default`).
 #![allow(clippy::float_cmp)] // matches!() con parametri f64 letterali
 
 // Import "wide" — replica ciò che era `use super::*;` quando i test erano

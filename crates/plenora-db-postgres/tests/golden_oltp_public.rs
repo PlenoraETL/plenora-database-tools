@@ -7,11 +7,11 @@
 //! scalari, execute_portable + returning + returning_one.
 //!
 //! Bootstrap: richiedono un Postgres raggiungibile all'hostname
-//! `dataflow-postgres` (compose network `database-tools_default`); i test
+//! `dataflow-postgres` (compose network `plenora-postgres_default`); i test
 //! sono `#[ignore]` per default, esegui con:
 //!
 //! ```text
-//! docker run --rm --network database-tools_default -v ... rust:1.92 \
+//! docker run --rm --network plenora-postgres_default -v ... rust:1.92 \
 //!   cargo test --test golden_oltp_public -- --ignored --nocapture
 //! ```
 

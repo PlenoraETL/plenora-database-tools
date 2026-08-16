@@ -16,9 +16,16 @@ from pathlib import Path
 from typing import Any
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import compose_network  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
+# La rete Compose si scopre dalle label del container: i compose
+# dichiarano progetti distinti, quindi un nome scritto a mano si rompe
+# in silenzio al primo rename.
+REFERENCE_CONTAINER = "dataflow-postgres"
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
@@ -152,7 +159,7 @@ def cargo_command(env: dict[str, str]) -> list[str]:
         "-w",
         "/workspace",
         "--network",
-        NETWORK,
+        compose_network(REFERENCE_CONTAINER),
     ]
     for key, value in env.items():
         command.extend(["-e", f"{key}={value}"])

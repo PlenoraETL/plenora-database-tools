@@ -16,9 +16,16 @@ from pathlib import Path
 from typing import Any
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import compose_network  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
+# La rete Compose si scopre dalle label del container: i compose
+# dichiarano progetti distinti, quindi un nome scritto a mano si rompe
+# in silenzio al primo rename.
+REFERENCE_CONTAINER = "dataflow-sqlserver"
 RESULT_PREFIX = "PLENORA_SQLSERVER_PERF_RESULT="
 DEFAULT_MANIFEST = ROOT / "benchmarks/manifests/sqlserver-performance-reference.json"
 DEFAULT_BUDGET = ROOT / "benchmarks/baseline/sqlserver-performance-budget.json"
@@ -145,7 +152,7 @@ def execute(manifest: dict[str, Any]) -> dict[str, Any]:
         "run",
         "--rm",
         "--network",
-        NETWORK,
+        compose_network(REFERENCE_CONTAINER),
         "-v",
         f"{ROOT}:/workspace",
         "-v",

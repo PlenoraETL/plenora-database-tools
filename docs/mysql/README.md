@@ -111,6 +111,37 @@ più staging persistenti, `RENAME TABLE` o tabelle di backup da ripulire —
 e con loro sono spariti gli stati intermedi che il vecchio pattern poteva
 lasciare se il processo moriva tra il `CREATE` e lo swap.
 
+## Progetti Compose e migrazione
+
+Ogni `docker-compose.*.yml` dichiara il proprio progetto, quindi ciascun
+riferimento vive in una rete separata:
+
+| Compose | Progetto | Rete |
+| --- | --- | --- |
+| `docker-compose.mysql.yml` | `plenora-mysql` | `plenora-mysql_default` |
+| `docker-compose.postgres.yml` | `plenora-postgres` | `plenora-postgres_default` |
+| `docker-compose.postgres-tls.yml` | `plenora-postgres-tls` | `plenora-postgres-tls_default` |
+| `docker-compose.sqlserver.yml` | `plenora-sqlserver` | `plenora-sqlserver_default` |
+
+Senza `name:` Compose derivava il progetto dalla directory e i quattro file
+finivano nello stesso: `down --remove-orphans` su uno cancellava i container
+degli altri. I gate non contengono il nome della rete — lo chiedono a Docker
+con `scripts/compose_network.py`, leggendo le label del container — e un test
+impedisce che qualcuno lo riscriva a mano.
+
+**Migrazione (una tantum).** I `container_name` sono fissi, quindi i container
+del vecchio progetto `database-tools` collidono con i nuovi. Prima del primo
+`up`:
+
+```bash
+docker rm -f dataflow-mysql dataflow-mysql-certgen dataflow-postgres dataflow-sqlserver
+docker volume rm -f database-tools_mysql_data database-tools_mysql_tls                     database-tools_mysql_ca_private database-tools_postgres_data
+docker network rm database-tools_default
+```
+
+Nessuna perdita: entrambe le fixture nascono dagli script in
+`docker/*/init`, che il primo avvio riesegue.
+
 ## Consumer surface
 
 Post-Blocchi B/A/C, il driver MySQL è accessibile dai consumer:

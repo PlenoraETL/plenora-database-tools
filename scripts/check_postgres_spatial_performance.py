@@ -12,9 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import compose_network  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
-NETWORK = "plenora-database-tools_default"
+# La rete Compose si scopre dalle label del container: i compose
+# dichiarano progetti distinti, quindi un nome scritto a mano si rompe
+# in silenzio al primo rename.
+REFERENCE_CONTAINER = "dataflow-postgres"
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
@@ -46,7 +53,7 @@ def main() -> int:
         "run",
         "--rm",
         "--network",
-        NETWORK,
+        compose_network(REFERENCE_CONTAINER),
         "-e",
         f"PLENORA_TEST_POSTGRES_DSN={dsn}",
         "-v",
