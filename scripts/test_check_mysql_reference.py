@@ -1392,6 +1392,90 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                     f"'{match.group(0)}', gate {expected}",
                 )
 
+            # Forma `N/M sul riferimento 2022`: e lo stesso conteggio scritto
+            # come rapporto, e sfuggiva a tutte le regole precedenti —
+            # `44/44` e sopravvissuto al passaggio a 45 proprio cosi.
+            for match in re.finditer(r"(\d+)/(\d+) sul riferimento 2022", text):
+                passed, total = int(match.group(1)), int(match.group(2))
+                where = document.relative_to(ROOT).as_posix()
+                self.assertEqual(
+                    passed, total, f"{where}: rapporto '{match.group(0)}' non pieno"
+                )
+                self.assertEqual(
+                    total,
+                    expected,
+                    f"{where} dichiara '{match.group(0)}', gate {expected}",
+                )
+
+    def test_no_surface_denies_a_mysql_capability_that_is_proven_live(self) -> None:
+        """Nessuna tabella puo segnare come assente cio che un test prova.
+
+        La matrice di `docs/interfaces.md` dava `SessionContext` per non
+        supportato su MySQL mentre il binding lo esponeva — e, peggio, mentre
+        non poteva funzionare. Sistemato il provider, la riga sarebbe rimasta
+        rossa senza che nulla lo segnalasse: le capability si dichiarano in
+        piu documenti, e presidiarne uno solo lascia gli altri liberi di
+        contraddirlo.
+        """
+
+        # Riga della matrice -> nome del test live che la dimostra.
+        proven = {
+            "SessionContext": (
+                "live_v12_transaction_session_context_reaches_the_server"
+            ),
+            "`begin_transaction` + savepoint": "live_v12_transaction_execute_and_commit",
+            "NativeQueryPolicy": "live_v12_transaction_execute_and_commit",
+        }
+        live = LIVE_TESTS.read_text(encoding="utf-8")
+        interfaces = (ROOT / "docs" / "interfaces.md").read_text(encoding="utf-8")
+
+        for capability, test in proven.items():
+            self.assertIn(
+                f"async fn {test}(",
+                live,
+                f"capability '{capability}': test live '{test}' assente",
+            )
+            row = next(
+                (
+                    line
+                    for line in interfaces.splitlines()
+                    if line.startswith(f"| {capability} |")
+                ),
+                None,
+            )
+            self.assertIsNotNone(
+                row, f"capability '{capability}' assente dalla matrice interfaces.md"
+            )
+            # Colonne: | Capability | Postgres | MySQL | SQL Server |
+            mysql_cell = row.split("|")[3].strip()
+            self.assertNotIn(
+                "\u274c",
+                mysql_cell,
+                f"interfaces.md nega '{capability}' su MySQL, ma "
+                f"'{test}' la prova",
+            )
+
+    def test_no_surface_still_calls_mysql_bulk_only(self) -> None:
+        """MySQL non e piu "solo data plane bulk".
+
+        Ha transazioni OLTP con savepoint, conditional update, policy sugli
+        statement nativi e `SessionContext`. La frase sopravviveva in fondo a
+        una tabella che gia diceva il contrario, riga per riga.
+        """
+
+        stale = (
+            "MySQL/SqlServer supportano il solo data plane bulk",
+            "MySQL / SQL Server supportano il solo data plane bulk",
+        )
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for claim in stale:
+                self.assertNotIn(
+                    claim,
+                    text,
+                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
+                )
+
     def test_every_compose_declares_its_own_project(self) -> None:
         """Un progetto Compose per file, altrimenti si cancellano a vicenda.
 

@@ -521,13 +521,13 @@ Gerarchico (child_token cancellato dal parent), deadline-aware, deregistrazione 
 | `begin_transaction` + savepoint | ✅ | ✅ (v1.2) | ❌ (non implementato) |
 | `execute_conditional_update` | ✅ | ✅ (v1.2) | ❌ |
 | `query_stream` (cursor) | ✅ | ❌ `Unsupported` | ❌ |
-| SessionContext | ✅ | ❌ | ❌ |
+| SessionContext | ✅ | ✅ (chiavi `namespace.name`, max 52 caratteri) | ❌ |
 | Facade OLTP (query_one, scalar) | ✅ | ✅ via `query` tipizzata | ❌ |
 | NativeQueryPolicy | ✅ | ✅ (v1.2) | ❌ |
 | Spatial predicate builder | ✅ (PostGIS) | ✅ (26 funzioni verified) | ❌ |
 | APPLICATION_OLTP_V1 profile | ✅ Pass | ❌ | ❌ |
 
-**Stato attuale**: solo PostgreSQL è provider di riferimento per **entrambi** i piani. MySQL/SqlServer supportano il solo data plane bulk (con restrizioni note).
+**Stato attuale**: PostgreSQL resta il provider di riferimento. MySQL copre entrambi i piani con le restrizioni in tabella — niente `TruncateInsert`, `query_stream`, geometrie Z/M — mentre SQL Server e ancora limitato al data plane bulk.
 
 ---
 

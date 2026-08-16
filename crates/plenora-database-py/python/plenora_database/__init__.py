@@ -114,7 +114,12 @@ def connect_mysql(
     - `execute_ddl(sql) → None`
     - `begin(isolation, read_only, statement_timeout_ms, context,
       native_query_policy) → Transaction` — `context` accetta un
-      `SessionContext`, `native_query_policy` vale `"allow"` o `"deny"`
+      `SessionContext`, `native_query_policy` vale `"allow"` o `"deny"`.
+      Le chiavi del context sono `namespace.name` e su MySQL non possono
+      superare **52 caratteri**: diventano variabili utente con prefisso
+      `plenora_ctx_`, e il server ne ammette 64 in tutto. Oltre quella
+      soglia il piano fallisce `InvalidPlan` prima di aprire la
+      transazione
     - `read(schema, object, projection, order_by, limit) → BatchReader`
       — streaming Arrow IPC bounded
     - `copy_from(schema, table, source, mode, transaction_profile,

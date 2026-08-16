@@ -1,7 +1,7 @@
 # plenora-database
 
 Python SDK per `plenora-database-tools` — bindings PyO3 sopra al core
-Rust del progetto. Espone Postgres/PostGIS con API sync + async
+Rust del progetto. Espone Postgres/PostGIS e MySQL con API sync + async
 Pythonic, portable AST builder, error hierarchy tipizzata, spatial
 predicates e context manager per transazioni.
 
