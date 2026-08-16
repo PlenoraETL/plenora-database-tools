@@ -96,6 +96,29 @@ def compose_network_arguments(*containers: str) -> list[str]:
     return arguments
 
 
+def compose_volume(container: str, destination: str) -> str:
+    """Nome del volume montato dal container in `destination`.
+
+    Come per la rete, il nome porta il prefisso del progetto Compose e cambia
+    quando il progetto cambia: scriverlo a mano lo rende stale al primo
+    rename, e l'errore che ne segue e un mount vuoto — il gate vede una
+    directory senza certificati invece di un nome sbagliato.
+
+    # Raises
+
+    `RuntimeError` quando il container non e ispezionabile o non monta un
+    volume **nominato** in quella destinazione.
+    """
+
+    mounts = json.loads(_inspect(container, "{{json .Mounts}}"))
+    for mount in mounts if isinstance(mounts, list) else []:
+        if mount.get("Destination") == destination and mount.get("Name"):
+            return str(mount["Name"])
+    raise RuntimeError(
+        f"container {container} non monta un volume nominato in {destination}"
+    )
+
+
 if __name__ == "__main__":
     import sys
 

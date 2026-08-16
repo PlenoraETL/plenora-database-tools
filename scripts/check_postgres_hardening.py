@@ -14,7 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.compose_network import compose_network_arguments  # noqa: E402
+from scripts.compose_network import (  # noqa: E402
+    compose_network_arguments,
+    compose_volume,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
@@ -27,7 +30,11 @@ DEFAULT_TLS_DSN = (
     "host=dataflow-postgres-tls port=5432 user=dataflow_tls "
     "password=dataflow_tls_test_2026 dbname=dataflow_tls_test"
 )
-TLS_VOLUME = "plenora-database-tools_postgres_tls_certs"
+# Il volume dei certificati porta il prefisso del progetto Compose: si scopre
+# dai mount del container, come la rete. Scritto a mano diventava stale al
+# rename del progetto, e il sintomo sarebbe stato un mount vuoto — il gate
+# avrebbe visto una directory senza certificati, non un nome sbagliato.
+TLS_CERTS_DESTINATION = "/tls"
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -94,7 +101,7 @@ def cargo(
     if tls_dsn is not None:
         command += [
             "-v",
-            f"{TLS_VOLUME}:/tls:ro",
+            f"{compose_volume(POSTGRES_CONTAINERS[1], TLS_CERTS_DESTINATION)}:/tls:ro",
             "-e",
             f"PLENORA_TEST_POSTGRES_TLS_DSN={tls_dsn}",
             "-e",

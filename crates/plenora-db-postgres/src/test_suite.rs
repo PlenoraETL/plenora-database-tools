@@ -2349,7 +2349,19 @@ mod tests {
             mode,
             mapping_policy: MappingPolicy::Strict,
             transaction_profile: TransactionProfile::SingleTransaction,
-            keys: vec!["event_id".to_owned()],
+            // Le chiavi appartengono alle mode che ne hanno una semantica:
+            // `Create` le rende PRIMARY KEY, `Update`/`Upsert`/`DeleteByKeys`
+            // le usano per il match. Append, Replace e TruncateInsert le
+            // rifiutano — la fixture le dichiarava per tutte, e il preflight
+            // si limitava a ignorarle.
+            keys: if matches!(
+                mode,
+                WriteMode::Create | WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+            ) {
+                vec!["event_id".to_owned()]
+            } else {
+                Vec::new()
+            },
             update_columns: if mode == WriteMode::Update {
                 vec!["name".to_owned(), "amount".to_owned()]
             } else {
