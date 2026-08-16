@@ -92,11 +92,21 @@ mod live {
     use plenora_database_core::provider::{Provider, SecretString};
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 
-    const LIVE_DSN: &str =
+    /// DSN del riferimento plaintext, usato quando il runner non ne impone
+    /// uno.
+    const REFERENCE_DSN: &str =
         "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test";
 
+    /// Il DSN su cui girano questi test live.
+    ///
+    /// `PLENORA_TEST_POSTGRES_DSN` ha la precedenza: la matrice delle versioni
+    /// indirizza cosi la suite verso il `PostgreSQL` che sta qualificando.
+    fn live_dsn() -> String {
+        std::env::var("PLENORA_TEST_POSTGRES_DSN").unwrap_or_else(|_| REFERENCE_DSN.to_owned())
+    }
+
     fn secret() -> SecretString {
-        SecretString::new(LIVE_DSN)
+        SecretString::new(live_dsn())
     }
 
     fn budget() -> ResourceBudget {
@@ -122,7 +132,7 @@ mod live {
 
     async fn count(provider: &PostgresProvider, sql: &str) -> i64 {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect out-of-band");
         tokio::spawn(async move {
@@ -135,7 +145,7 @@ mod live {
 
     async fn scratch_table(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect setup");
         tokio::spawn(async move {
@@ -152,7 +162,7 @@ mod live {
 
     async fn drop_table(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect drop");
         tokio::spawn(async move {
@@ -406,7 +416,7 @@ mod live {
 
     async fn fetch_ewkb(sql_returning_geom: &str) -> Vec<u8> {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -421,7 +431,7 @@ mod live {
 
     async fn setup_spatial_scratch(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -757,7 +767,7 @@ mod live {
 
     async fn setup_enum_domain_scratch(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -783,7 +793,7 @@ mod live {
 
     async fn teardown_enum_domain_scratch(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -2259,7 +2269,7 @@ mod live {
 
     async fn read_session_setting(name: &str) -> String {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -2462,7 +2472,7 @@ mod live {
 
     async fn versioned_scratch(name: &str) {
         use tokio_postgres::NoTls;
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connect setup");
         tokio::spawn(async move {

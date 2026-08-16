@@ -609,11 +609,25 @@ mod live {
     use super::*;
     use tokio_postgres::{Client, NoTls};
 
-    const LIVE_DSN: &str =
+    /// DSN del riferimento plaintext, usato quando il runner non ne impone
+    /// uno.
+    const REFERENCE_DSN: &str =
         "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test";
 
+    /// Il DSN su cui girano questi test live.
+    ///
+    /// `PLENORA_TEST_POSTGRES_DSN` ha la precedenza: e cosi che la matrice
+    /// delle versioni indirizza la suite verso il `PostgreSQL` che sta
+    /// qualificando. Senza questa lettura i test puntavano sempre al
+    /// riferimento, quindi la matrice affermava di averli superati su 14, 15
+    /// e 17 mentre giravano su 16 — e funzionavano solo perche la rete
+    /// privata della matrice condivideva il nome con quella del compose.
+    fn live_dsn() -> String {
+        std::env::var("PLENORA_TEST_POSTGRES_DSN").unwrap_or_else(|_| REFERENCE_DSN.to_owned())
+    }
+
     async fn connect() -> Client {
-        let (client, connection) = tokio_postgres::connect(LIVE_DSN, NoTls)
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
             .await
             .expect("connessione al PostgreSQL live");
         tokio::spawn(async move {
