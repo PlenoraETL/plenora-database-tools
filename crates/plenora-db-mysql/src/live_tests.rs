@@ -3897,6 +3897,60 @@ async fn live_v12_transaction_execute_and_commit() {
         .ok();
 }
 
+/// Il `SessionContext` raggiunge il server, con la chiave che il core produce.
+///
+/// Il core impone `namespace.name`, quindi un punto; le variabili utente
+/// MySQL non ammettono un punto se non quotate. Finche non lo erano, le due
+/// validazioni erano mutuamente esclusive e `begin_transaction` con un
+/// context non vuoto falliva sempre in `Prepare` — una capability pubblicata
+/// che nessuna chiave valida poteva esercitare.
+#[tokio::test]
+async fn live_v12_transaction_session_context_reaches_the_server() {
+    use plenora_database_core::session_context::{SessionEntry, SessionValue};
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut options = plenora_database_core::transaction::TransactionOptions::default();
+    options
+        .context
+        .insert(
+            "app.tenant",
+            SessionEntry::public(SessionValue::Text("acme".to_owned())),
+        )
+        .expect("chiave valida per il core");
+    options
+        .context
+        .insert(
+            "app.request_id",
+            SessionEntry::internal(SessionValue::Integer(42)),
+        )
+        .expect("chiave valida per il core");
+
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin con session context");
+
+    // La riga esiste solo se **entrambe** le variabili hanno il valore
+    // atteso: un context non arrivato le lascia NULL, il confronto e falso e
+    // il result set e vuoto. Cosi l'assert dipende dai valori, non dal fatto
+    // che la query giri.
+    let statement = plenora_database_core::transaction::Statement {
+        sql: "SELECT 1 WHERE @`plenora_ctx_app.tenant` = 'acme'               AND @`plenora_ctx_app.request_id` = '42'"
+            .to_owned(),
+        params: Vec::new(),
+    };
+    let rows = tx
+        .query(&statement, &cancellation)
+        .await
+        .expect("lettura del context");
+    assert_eq!(rows.len(), 1, "il session context non e arrivato al server");
+
+    tx.rollback(&cancellation).await.expect("rollback");
+}
+
 #[tokio::test]
 async fn live_v12_transaction_rollback_drops_all_writes() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");

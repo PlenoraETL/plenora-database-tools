@@ -1,16 +1,15 @@
-"""v0.4-alpha — Scaffold SDK MySQL (Session sync).
+"""Sessione MySQL sincrona del SDK: esecuzione SQL e ciclo di vita.
 
-Testa il subset iniziale:
-  - connect_mysql(host, database, user, password[, port][, tls_ca_pem])
-  - MysqlSession.execute / execute_scalar / execute_returning_rows / execute_ddl
-  - context manager
+Copre la parte relazionale della superficie:
+  - `connect_mysql(host, database, user, password[, port][, tls_ca_pem])`
+  - `execute` / `execute_scalar` / `execute_returning_rows` / `execute_ddl`
+  - parametri tipizzati (uuid, decimal, NULL)
+  - context manager, e l'autocommit del DDL visibile subito
 
-Non testato in questo scaffold (roadmap SDK MySQL):
-  - begin() / Transaction
-  - copy_from bulk write
-  - read Arrow stream
-  - portable AST builders
-  - async variant
+Il resto della superficie MySQL vive in moduli propri: `copy_from` e il
+contratto Replace/TruncateInsert in `test_mysql_copy_from.py`, le capability
+condivise con Postgres — `begin` con `SessionContext`, `read`, builder AST —
+in `test_mysql_capabilities.py`.
 """
 from __future__ import annotations
 
@@ -20,43 +19,11 @@ import pytest
 
 import plenora_database as p
 
-MYSQL_HOST_ENV = "PLENORA_TEST_MYSQL_HOST"
-MYSQL_DB_ENV = "PLENORA_TEST_MYSQL_DATABASE"
-MYSQL_USER_ENV = "PLENORA_TEST_MYSQL_USER"
-MYSQL_PWD_ENV = "PLENORA_TEST_MYSQL_PASSWORD"
-
-
-MYSQL_CA_ENV = "PLENORA_TEST_MYSQL_CA"
-
-
-def _config_or_skip():
-    """Ritorna (host, database, user, password, ca_pem) o skippa il test.
-
-    Il riferimento impone TLS con una CA privata: senza `ca_pem` la
-    connessione fallisce con un errore I/O redatto, che non dice al lettore
-    che manca il materiale TLS. Il percorso arriva da `PLENORA_TEST_MYSQL_CA`,
-    come nei gate.
-    """
-    host = os.environ.get(MYSQL_HOST_ENV)
-    database = os.environ.get(MYSQL_DB_ENV, "dataflow_test")
-    user = os.environ.get(MYSQL_USER_ENV, "dataflow")
-    password = os.environ.get(MYSQL_PWD_ENV)
-    if not host or not password:
-        pytest.skip(
-            f"live test MySQL: mancano env {MYSQL_HOST_ENV} e/o {MYSQL_PWD_ENV}"
-        )
-    ca_pem = None
-    ca_path = os.environ.get(MYSQL_CA_ENV)
-    if ca_path:
-        with open(ca_path, "rb") as handle:
-            ca_pem = handle.read()
-    return host, database, user, password, ca_pem
-
+from ._harness import connect_mysql_reference, mysql_config_or_skip
 
 @pytest.fixture(name="session")
 def _mysql_session():
-    host, database, user, password, ca_pem = _config_or_skip()
-    s = p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+    s = connect_mysql_reference()
     s.execute_ddl("DROP TABLE IF EXISTS _v04_sdk_test")
     s.execute_ddl(
         "CREATE TABLE _v04_sdk_test ("
@@ -113,7 +80,7 @@ def test_execute_scalar_null_returns_none(session) -> None:
 
 
 def test_context_manager_closes_session() -> None:
-    host, database, user, password, ca_pem = _config_or_skip()
+    host, database, user, password, ca_pem = mysql_config_or_skip()
     with p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem) as s:
         assert s.is_closed is False
         result = s.execute_scalar("SELECT 42")

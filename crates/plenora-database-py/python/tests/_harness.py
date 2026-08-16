@@ -56,3 +56,57 @@ async def aconnect_postgres(dsn: str | None = None):
     """
 
     return await p.aconnect(dsn or postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+
+
+# ================================== MySQL ===================================
+#
+# Il riferimento MySQL, al contrario di quello Postgres, **impone** TLS con
+# una CA privata: qui non si deroga a nulla, si fornisce il materiale.
+
+MYSQL_HOST_ENV = "PLENORA_TEST_MYSQL_HOST"
+MYSQL_DB_ENV = "PLENORA_TEST_MYSQL_DATABASE"
+MYSQL_USER_ENV = "PLENORA_TEST_MYSQL_USER"
+MYSQL_PWD_ENV = "PLENORA_TEST_MYSQL_PASSWORD"
+MYSQL_CA_ENV = "PLENORA_TEST_MYSQL_CA"
+
+
+def mysql_config_or_skip() -> tuple:
+    """`(host, database, user, password, ca_pem)`, o salta il test.
+
+    Senza `ca_pem` la connessione fallirebbe con un errore I/O redatto, che
+    non dice al lettore che manca il materiale TLS: il percorso arriva da
+    `PLENORA_TEST_MYSQL_CA`, come nei gate.
+    """
+
+    host = os.environ.get(MYSQL_HOST_ENV)
+    password = os.environ.get(MYSQL_PWD_ENV)
+    if not host or not password:
+        pytest.skip(
+            f"live test MySQL: mancano env {MYSQL_HOST_ENV} e/o {MYSQL_PWD_ENV}"
+        )
+    ca_pem = None
+    ca_path = os.environ.get(MYSQL_CA_ENV)
+    if ca_path:
+        with open(ca_path, "rb") as handle:
+            ca_pem = handle.read()
+    return (
+        host,
+        os.environ.get(MYSQL_DB_ENV, "dataflow_test"),
+        os.environ.get(MYSQL_USER_ENV, "dataflow"),
+        password,
+        ca_pem,
+    )
+
+
+def connect_mysql_reference():
+    """Sessione `MySQL` sync verso il riferimento, con la CA privata."""
+
+    host, database, user, password, ca_pem = mysql_config_or_skip()
+    return p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+async def aconnect_mysql_reference():
+    """Sessione `MySQL` async verso il riferimento, con la CA privata."""
+
+    host, database, user, password, ca_pem = mysql_config_or_skip()
+    return await p.aconnect_mysql(host, database, user, password, tls_ca_pem=ca_pem)

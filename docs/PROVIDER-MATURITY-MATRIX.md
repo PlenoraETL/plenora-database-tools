@@ -48,7 +48,7 @@ MySQL.
 | Dimensioni spatial | XY/XYZ/XYM/XYZM secondo gate | geometry/geography secondo gate | XY; Z/M/ZM non pubblicate |
 | Contratto schema canonico | offline/live | offline/live | offline/live tramite `validate_schema_contract` |
 | Gate fmt + Clippy `-D warnings` | sì | sì | sì |
-| Gate live corrente | suite reference | 44 test live attesi | 32 live default + 25 live reference attesi, su 9.7.2 (baseline), 8.4.11 e 8.0.46 |
+| Gate live corrente | suite reference | 45 test live attesi | 35 live default + 25 live reference attesi, su 9.7.2 (baseline), 8.4.11 e 8.0.46 |
 
 ## Esito di parità
 
@@ -110,7 +110,7 @@ Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
 
 Post-Blocchi B/A/C, il gate `docker-compose.mysql.yml` usa MySQL 9.7 LTS
 (primo LTS dopo 8.4, rilasciato 21 aprile 2026 — 5 anni premier + 3
-estesi). Tutti i 59 test live — 34 default piu 25 reference — passano
+estesi). Tutti i 60 test live — 35 default piu 25 reference — passano
 identici su 9.7, 8.4 e 8.0: il protocollo binario MySQL è retrocompat sul
 subset OLTP + Arrow bulk. La matrice 8.0.46/8.4.11/9.7 resta qualificata via
 `check_mysql_matrix.py`.
@@ -135,6 +135,6 @@ Dopo Blocchi B/A/C + upgrade 9.7:
 
 Inventario corrente del provider MySQL, verificato contro la sorgente da
 `scripts/mysql_inventory.py` a ogni esecuzione del gate: **126 unit**,
-**34 live default** (test live senza `#[ignore]`) e
+**35 live default** (test live senza `#[ignore]`) e
 **25 live reference** (test live `#[ignore]`). I conteggi
 non vanno aggiornati a mano: il gate fallisce se divergono.

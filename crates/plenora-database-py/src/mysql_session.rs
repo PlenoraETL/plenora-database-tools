@@ -1,25 +1,32 @@
-//! MysqlSession — scaffold Python SDK per MySQL (v0.4-alpha).
+//! `MysqlSession` — sessione `MySQL` sincrona del SDK Python.
 //!
-//! Prima esposizione MySQL nel SDK. **Scope limitato** (scaffold, non
-//! feature parity):
-//! - `connect_mysql(host, database, user, password, port=None, tls_ca_pem=None)`
-//! - `MysqlSession.execute(sql, params) → affected_rows`
-//! - `MysqlSession.execute_scalar(sql, params) → value`
-//! - `MysqlSession.execute_returning_rows(sql, params) → list[dict]`
-//! - `MysqlSession.execute_ddl(sql) → None`
-//! - `MysqlSession.close()`, `__enter__/__exit__`, `__repr__`
+//! Non e piu uno scaffold: la superficie e quella di `Session` su Postgres,
+//! meno spatial.
 //!
-//! **Non incluso** (roadmap SDK MySQL):
-//! - `begin()` + `Transaction` context manager
-//! - `copy_from` bulk write (6 WriteMode attivi via Arrow IPC;
-//!   `TruncateInsert` resta fail-closed)
-//! - `read()` streaming Arrow
-//! - Portable AST builders (`select/insert/update/delete/upsert`)
-//! - Spatial predicates + typed params (uuid/decimal/etc.)
-//! - Async variant `AsyncMysqlSession`
+//! * `connect_mysql(host, database, user, password, port=None,
+//!   tls_ca_pem=None, tls_mode="require")`
+//! * `execute(sql, params)` -> `affected_rows`
+//! * `execute_scalar(sql, params)` -> valore
+//! * `execute_returning_rows(sql, params)` -> `list[dict]`
+//! * `execute_ddl(sql)` -> `None`
+//! * `begin(isolation, read_only, statement_timeout_ms, context,
+//!   native_query_policy)` -> `Transaction` con savepoint. `context` accetta
+//!   un `SessionContext`; `native_query_policy` vale `allow` o `deny`
+//! * `read(schema, object, projection, order_by, limit)` -> `BatchReader`,
+//!   streaming Arrow IPC bounded
+//! * `copy_from(...)` -> bulk write, sei `WriteMode` su sette:
+//!   `TruncateInsert` resta fail-closed perche `TRUNCATE` e DDL con commit
+//!   implicito
+//! * `execute_portable_rows` / `execute_portable_count`, su cui girano i
+//!   builder AST del wrapper Python
+//! * `close()`, `__enter__`/`__exit__`, `__repr__`
 //!
-//! Placeholder syntax MySQL: `?` (non `$1` come Postgres). Il consumer
-//! deve fornire SQL provider-compatibile.
+//! Non esposto: spatial predicates e `SpatialReference`.
+//!
+//! L'equivalente async e [`crate::async_mysql_session`].
+//!
+//! Placeholder `MySQL`: `?` (non `$1` come Postgres). Il consumer deve
+//! fornire SQL provider-compatibile.
 
 #![allow(
     clippy::doc_markdown,

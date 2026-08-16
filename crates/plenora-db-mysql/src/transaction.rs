@@ -99,10 +99,17 @@ impl MysqlTransaction {
         };
         raw_exec(&mut session, start_sql, ErrorPhase::Prepare, cancellation).await?;
 
-        // 4. Session context (SET @plenora_ctx_name = value).
+        // 4. Session context (SET @`plenora_ctx_namespace.name` = value).
         //    MySQL user variables sono session-scoped, resettati alla
         //    disconnessione; non participano al rollback ma è OK: sono
         //    context info, non state applicativo.
+        //
+        //    Il nome va fra backtick perche il core impone `namespace.name` e
+        //    un punto non e ammesso in un nome di variabile utente non
+        //    quotato. Finche non lo era, ogni chiave valida per il core
+        //    veniva rifiutata da MySQL: le due validazioni erano
+        //    mutuamente esclusive, e `begin(context=...)` non poteva
+        //    riuscire con un context non vuoto.
         for (name, entry) in options.context.iter() {
             if !is_safe_context_name(name.as_str()) {
                 return Err(DatabaseError::invalid_plan(format!(
@@ -110,7 +117,10 @@ impl MysqlTransaction {
                 )));
             }
             let value = entry.value.as_provider_string();
-            let sql = format!("SET @plenora_ctx_{name} = {}", mysql_string_literal(&value));
+            let sql = format!(
+                "SET @`plenora_ctx_{name}` = {}",
+                mysql_string_literal(&value)
+            );
             raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
         }
 
@@ -122,10 +132,16 @@ impl MysqlTransaction {
     }
 }
 
+/// La chiave di context che `MySQL` accetta di scrivere.
+///
+/// La regola e quella del core, non una seconda regola locale: il core
+/// impone `namespace.name`, quindi un punto, e una versione locale che
+/// vietava il punto rifiutava **ogni** chiave valida. Il controllo resta
+/// come difesa in profondita — un context puo arrivare da deserializzazione
+/// e non solo dai costruttori che gia validano — ma delega la definizione di
+/// "sicuro" a chi la possiede.
 fn is_safe_context_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 60
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    plenora_database_core::session_context::validate_context_key(name).is_ok()
 }
 
 fn mysql_string_literal(value: &str) -> String {

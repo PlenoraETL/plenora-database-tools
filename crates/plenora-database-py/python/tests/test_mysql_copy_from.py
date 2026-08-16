@@ -10,50 +10,24 @@ Copre sia il percorso sincrono (`copy_from`) sia quello async
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 import pytest_asyncio
 
 import plenora_database as p
 
-pyarrow = pytest.importorskip("pyarrow")
+from ._harness import (
+    aconnect_mysql_reference,
+    connect_mysql_reference,
+    mysql_config_or_skip,
+)
 
-MYSQL_HOST_ENV = "PLENORA_TEST_MYSQL_HOST"
-MYSQL_DB_ENV = "PLENORA_TEST_MYSQL_DATABASE"
-MYSQL_USER_ENV = "PLENORA_TEST_MYSQL_USER"
-MYSQL_PWD_ENV = "PLENORA_TEST_MYSQL_PASSWORD"
-MYSQL_CA_ENV = "PLENORA_TEST_MYSQL_CA"
+pyarrow = pytest.importorskip("pyarrow")
 
 TABLE = "_sdk_replace_target"
 
 
-def _config_or_skip():
-    host = os.environ.get(MYSQL_HOST_ENV)
-    password = os.environ.get(MYSQL_PWD_ENV)
-    if not host or not password:
-        pytest.skip(f"live test MySQL: mancano env {MYSQL_HOST_ENV} e/o {MYSQL_PWD_ENV}")
-    ca_pem = None
-    ca_path = os.environ.get(MYSQL_CA_ENV)
-    if ca_path:
-        with open(ca_path, "rb") as handle:
-            ca_pem = handle.read()
-    return (
-        host,
-        os.environ.get(MYSQL_DB_ENV, "dataflow_test"),
-        os.environ.get(MYSQL_USER_ENV, "dataflow"),
-        password,
-        ca_pem,
-    )
-
-
-def _connect():
-    host, database, user, password, ca_pem = _config_or_skip()
-    return p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
-
-
 def _database() -> str:
-    return _config_or_skip()[1]
+    return mysql_config_or_skip()[1]
 
 
 def _table(ids, labels):
@@ -110,7 +84,7 @@ def _index_names(session):
 
 @pytest.fixture(name="session")
 def _session():
-    session = _connect()
+    session = connect_mysql_reference()
     _reset(session)
     yield session
     session.execute_ddl(f"DROP TABLE IF EXISTS {TABLE}")
@@ -176,10 +150,9 @@ def test_copy_from_replace_on_a_missing_target_raises_not_found(session):
 
 @pytest_asyncio.fixture(name="async_session")
 async def _async_session():
-    host, database, user, password, ca_pem = _config_or_skip()
-    setup = p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+    setup = connect_mysql_reference()
     _reset(setup)
-    session = await p.aconnect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+    session = await aconnect_mysql_reference()
     yield session
     session.close()
     setup.execute_ddl(f"DROP TABLE IF EXISTS {TABLE}")

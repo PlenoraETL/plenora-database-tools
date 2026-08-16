@@ -198,6 +198,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_transaction_execute_and_commit",
     "live_tests::live_v12_transaction_query_returns_typed_rows",
     "live_tests::live_v12_transaction_rollback_drops_all_writes",
+    "live_tests::live_v12_transaction_session_context_reaches_the_server",
     "live_tests::live_v12_transaction_savepoint_rollback_to_partial",
     "live_tests::live_v12_write_create_failure_leaves_the_table_and_reports_partial",
     "live_tests::live_v12_write_create_mode_builds_table_and_inserts",

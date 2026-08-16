@@ -1,18 +1,23 @@
-//! AsyncMysqlSession + aconnect_mysql (v0.8).
+//! `AsyncMysqlSession` + `aconnect_mysql`.
 //!
-//! Bridge asyncio ↔ tokio per MySQL. Metodi ritornano awaitable Python.
-//! Ogni operazione (senza begin) apre una tx auto-commit.
+//! Bridge asyncio <-> tokio per `MySQL`: i metodi ritornano awaitable Python.
+//! Ogni operazione fuori da `begin` apre una transazione in autocommit.
 //!
-//! API subset:
-//! - `aconnect_mysql(host, database, user, password, port, tls_ca_pem)` async
-//! - `AsyncMysqlSession.execute / execute_scalar / execute_returning_rows / execute_ddl` async
-//! - `AsyncMysqlSession.begin(...)` → `AsyncTransaction` (provider-agnostic)
-//! - `AsyncMysqlSession.aread(...)` → `AsyncBatchReader`
-//! - `AsyncMysqlSession.acopy_from(...)` bulk write async
-//! - `__aenter__/__aexit__/close/is_closed/server_version`
+//! La superficie e quella di [`crate::mysql_session`], con `aread` e
+//! `acopy_from` al posto di `read` e `copy_from`:
 //!
-//! Non incluso: portable AST builders (blocca su cross-crate refactor),
-//! spatial predicates, typed params.
+//! * `aconnect_mysql(host, database, user, password, port, tls_ca_pem,
+//!   tls_mode)`
+//! * `execute` / `execute_scalar` / `execute_returning_rows` / `execute_ddl`
+//! * `begin(...)` -> `AsyncTransaction`, con `SessionContext` e
+//!   `native_query_policy`
+//! * `aread(...)` -> `AsyncBatchReader`
+//! * `acopy_from(...)` -> bulk write
+//! * `execute_portable_rows` / `execute_portable_count`, su cui girano i
+//!   builder AST del wrapper async
+//! * `__aenter__`/`__aexit__`/`close`/`is_closed`/`server_version`
+//!
+//! Non esposto: spatial predicates e `SpatialReference`.
 
 #![allow(
     clippy::doc_markdown,

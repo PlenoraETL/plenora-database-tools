@@ -1,10 +1,22 @@
 //! Bindings Python (`PyO3`) di `plenora-database-tools`.
 //!
-//! Milestone corrente: F3-2 (`Session` + `connect()` context manager, Postgres).
-//! Le API di query / spatial / transaction arrivano in F3-3..F3-8.
+//! Due provider esposti, ciascuno sync e async:
 //!
-//! Il modulo nativo è compilato come `plenora_database._native`; i
-//! wrapper Python idiomatici vivono in `python/plenora_database/__init__.py`.
+//! * `PostgreSQL`/`PostGIS` — `connect` / `aconnect`, con spatial predicates
+//!   e `SpatialReference`;
+//! * `MySQL` — `connect_mysql` / `aconnect_mysql`, senza spatial.
+//!
+//! Su entrambi: `execute` / `execute_scalar` / `execute_returning_rows` /
+//! `execute_ddl`, `begin` con isolamento, savepoint, `SessionContext` e
+//! `native_query_policy`, lettura Arrow IPC bounded (`read` / `aread`),
+//! bulk write (`copy_from` / `acopy_from`) e builder AST portabili
+//! (`select`/`insert`/`update`/`delete`/`upsert`).
+//!
+//! `SQL Server` resta raggiungibile solo dal driver Rust: nessun binding.
+//!
+//! Il modulo nativo e compilato come `plenora_database._native`; i wrapper
+//! Python idiomatici vivono in `python/plenora_database/__init__.py`, che e
+//! anche dove sta la conversione degli input di `copy_from` verso Arrow IPC.
 
 use pyo3::prelude::*;
 use std::sync::OnceLock;
