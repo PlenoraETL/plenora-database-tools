@@ -108,7 +108,13 @@ def test_begin_accepts_an_isolation_level(session) -> None:
 
 
 def test_begin_carries_a_session_context(session) -> None:
-    """`SessionContext` viaggia con la transazione, con le sue classificazioni."""
+    """I valori del context si rileggono **dal server**, non dall'oggetto.
+
+    Verificare che `begin(context=...)` non sollevi non prova nulla: il
+    context potrebbe non essere mai stato scritto. I valori si rileggono
+    dalle variabili utente che il provider imposta, con i tipi che il core
+    dichiara — testo e intero, il secondo serializzato come stringa.
+    """
 
     # I nomi sono qualificati (`namespace.name`): senza namespace due
     # componenti diversi scriverebbero la stessa chiave senza accorgersene.
@@ -119,14 +125,105 @@ def test_begin_carries_a_session_context(session) -> None:
     assert context.classification("app.operator") == "sensitive"
 
     with session.begin(context=context) as tx:
-        assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE}") == 2
+        assert tx.execute_scalar("SELECT @`plenora_ctx_app.tenant`") == "acme"
+        assert tx.execute_scalar("SELECT @`plenora_ctx_app.request`") == "42"
+        # Anche il valore classificato `sensitive` raggiunge il server: la
+        # classificazione governa il logging, non la trasmissione.
+        assert tx.execute_scalar("SELECT @`plenora_ctx_app.operator`") == "marco"
 
 
-def test_native_query_policy_deny_is_accepted(session) -> None:
-    """La policy e un parametro del binding MySQL, non solo di Postgres."""
+def test_a_context_key_too_long_for_mysql_is_refused(session) -> None:
+    """52 caratteri e il massimo: il prefisso occupa il resto dei 64."""
+
+    # 52 passa.
+    accepted = p.SessionContext()
+    accepted.insert_public("ns." + "a" * 49, "ok")
+    with session.begin(context=accepted) as tx:
+        assert tx.execute_scalar("SELECT 1") == 1
+
+    # 53 no, e il rifiuto arriva prima di aprire la transazione.
+    refused = p.SessionContext()
+    refused.insert_public("ns." + "a" * 50, "ko")
+    with pytest.raises(p.PlenoraError) as raised:
+        session.begin(context=refused)
+    assert "52" in str(raised.value), str(raised.value)
+
+
+def test_native_query_policy_deny_refuses_a_forbidden_statement(session) -> None:
+    """`deny` lascia passare l'OLTP e blocca il resto.
+
+    Accettare il parametro non e la capability: la capability e che uno
+    statement fuori dall'allowlist venga **rifiutato**. Con la sola prova
+    che `SELECT` funziona, una policy ignorata sarebbe indistinguibile da
+    una applicata.
+    """
 
     with session.begin(native_query_policy="deny") as tx:
         assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE}") == 2
+
+        # DDL: fuori dall'allowlist OLTP.
+        with pytest.raises(p.PlenoraError) as raised:
+            tx.execute(f"CREATE TABLE {TABLE}_vietata (id BIGINT)")
+        assert "deny" in str(raised.value).lower(), str(raised.value)
+
+        # Multi-statement: rifiutato anche se ogni pezzo sarebbe ammesso.
+        with pytest.raises(p.PlenoraError):
+            tx.execute(f"SELECT 1; SELECT 2 FROM {TABLE}")
+
+    # Con la policy di default lo stesso DDL passa: e la policy a fare la
+    # differenza, non lo statement.
+    with session.begin() as tx:
+        tx.execute(f"CREATE TABLE {TABLE}_ammessa (id BIGINT)")
+    session.execute_ddl(f"DROP TABLE IF EXISTS {TABLE}_ammessa")
+
+
+def test_repeatable_read_does_not_see_a_concurrent_commit(session) -> None:
+    """L'isolamento ha un effetto osservabile, non solo un parametro accettato.
+
+    In `repeatable_read` la seconda lettura nella stessa transazione deve
+    restituire il valore della prima, anche se un'altra connessione ha nel
+    frattempo committato. Con `read_committed` cambierebbe: e la differenza
+    che rende il test una prova.
+    """
+
+    other = connect_mysql_reference()
+    try:
+        with session.begin(isolation="repeatable_read") as tx:
+            first = tx.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1")
+            assert first == 10
+
+            other.execute(f"UPDATE {TABLE} SET amount = 777 WHERE id = 1")
+            assert (
+                other.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 777
+            ), "l'altra connessione non ha committato: il test non proverebbe nulla"
+
+            assert (
+                tx.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 10
+            ), "repeatable_read ha visto un commit concorrente"
+
+        # Chiusa la transazione, il nuovo valore e visibile.
+        assert session.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 777
+    finally:
+        other.close()
+
+
+def test_savepoint_rolls_back_only_what_follows_it(session) -> None:
+    """Savepoint con effetti verificabili riga per riga."""
+
+    with session.begin() as tx:
+        tx.execute(f"INSERT INTO {TABLE} (id, label, amount) VALUES (10, 'dieci', 100)")
+        tx.savepoint("sp1")
+        tx.execute(f"INSERT INTO {TABLE} (id, label, amount) VALUES (11, 'undici', 110)")
+        assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 10") == 2
+        tx.rollback_to_savepoint("sp1")
+        assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 10") == 1
+        tx.release_savepoint("sp1")
+
+    # Dopo il commit sopravvive solo cio che precedeva il savepoint.
+    rows = session.execute_returning_rows(
+        f"SELECT id FROM {TABLE} WHERE id >= 10 ORDER BY id"
+    )
+    assert [row["id"] for row in rows] == [10]
 
 
 # ================================ read Arrow =================================
@@ -191,12 +288,39 @@ def test_ast_builders_select_insert_update_delete(session) -> None:
 
 @pytest.mark.asyncio
 async def test_async_begin_with_context_and_policy(async_session) -> None:
+    """Sul percorso async valgono le stesse prove, non le stesse promesse."""
+
     context = p.SessionContext()
     context.insert_public("app.tenant", "acme")
+    context.insert_internal("app.request", 42)
     async with await async_session.begin(
         isolation="repeatable_read", context=context, native_query_policy="deny"
     ) as tx:
-        assert await tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE}") == 2
+        assert await tx.execute_scalar("SELECT @`plenora_ctx_app.tenant`") == "acme"
+        assert await tx.execute_scalar("SELECT @`plenora_ctx_app.request`") == "42"
+
+        with pytest.raises(p.PlenoraError) as raised:
+            await tx.execute(f"CREATE TABLE {TABLE}_vietata_async (id BIGINT)")
+        assert "deny" in str(raised.value).lower(), str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_async_savepoint_rolls_back_only_what_follows_it(async_session) -> None:
+    async with await async_session.begin() as tx:
+        await tx.execute(
+            f"INSERT INTO {TABLE} (id, label, amount) VALUES (20, 'venti', 200)"
+        )
+        await tx.savepoint("sp_async")
+        await tx.execute(
+            f"INSERT INTO {TABLE} (id, label, amount) VALUES (21, 'ventuno', 210)"
+        )
+        await tx.rollback_to_savepoint("sp_async")
+        assert await tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 20") == 1
+
+    rows = await async_session.execute_returning_rows(
+        f"SELECT id FROM {TABLE} WHERE id >= 20 ORDER BY id"
+    )
+    assert [row["id"] for row in rows] == [20]
 
 
 @pytest.mark.asyncio
