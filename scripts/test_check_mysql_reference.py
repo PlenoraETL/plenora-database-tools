@@ -90,6 +90,21 @@ def gate_run_cargo(
 
 
 
+# I runner citati nelle tabelle, e la famiglia di inventario che contano.
+# `RUNNER_FAMILIES` usa i nomi con cui l'inventario espone i totali nelle
+# guardie; `RUNNER_FAMILIES_INTERNAL` quelli di `collect()`.
+RUNNER_FAMILIES = (
+    ("`cargo test -- --skip live_`", "unit"),
+    ("`cargo test live_ -- --ignored`", "live reference"),
+    ("`cargo test live_`", "live default"),
+)
+RUNNER_FAMILIES_INTERNAL = (
+    ("`cargo test -- --skip live_`", "unit"),
+    ("`cargo test live_`", "live_default"),
+    ("`cargo test live_ -- --ignored`", "live_reference"),
+)
+
+
 def current_surfaces() -> list[Path]:
     """I documenti che affermano qualcosa sullo **stato corrente**.
 
@@ -110,6 +125,11 @@ def current_surfaces() -> list[Path]:
     python = ROOT / "crates" / "plenora-database-py" / "python"
     documents += sorted(python.rglob("*.py"))
     documents += sorted(python.rglob("*.pyi"))
+    # Le doc Rust sono documentazione a tutti gli effetti: `cargo doc` le
+    # pubblica e chi legge il crate le trova per prime. Tenerle fuori ha
+    # lasciato tre moduli a descrivere uno scaffold "v0.4-alpha" per una
+    # tranche intera, mentre i Markdown erano gia stati corretti.
+    documents += sorted((ROOT / "crates").rglob("src/**/*.rs"))
     return [
         document
         for document in documents
@@ -928,11 +948,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
         observed = collect()
         readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
-        for runner, family in (
-            ("`cargo test -- --skip live_`", "unit"),
-            ("`cargo test live_`", "live_default"),
-            ("`cargo test live_ -- --ignored`", "live_reference"),
-        ):
+        for runner, family in RUNNER_FAMILIES_INTERNAL:
             row = next(
                 (line for line in readme.splitlines() if runner in line),
                 None,
@@ -998,19 +1014,39 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             where = document.relative_to(ROOT).as_posix()
             text = document.read_text(encoding="utf-8")
 
+            # I nomi delle tre famiglie sono specifici di MySQL: dove
+            # compaiono, il numero accanto e un conteggio di questo
+            # inventario, in grassetto o dentro una cella di tabella.
             for match in re.finditer(
-                r"\*\*(\d+) (unit|live default|live reference)\*\*", text
+                r"\*{0,2}(\d+) (unit|live default|live reference)\b", text
             ):
                 self.assertEqual(
                     int(match.group(1)),
                     totals[match.group(2)],
-                    f"{where} dichiara '{match.group(0)}', inventario "
+                    f"{where} dichiara '{match.group(0).strip()}', inventario "
                     f"{totals[match.group(2)]}",
                 )
 
-            # "N test live" e ambiguo fra i provider: vale solo dove il
-            # contesto parla di MySQL.
+            # La tabella dei runner porta il numero nell'ultima cella.
+            for runner, family in RUNNER_FAMILIES:
+                for row in text.splitlines():
+                    if not row.startswith("|") or runner not in row:
+                        continue
+                    declared = row.rsplit("|", 2)[1].strip()
+                    self.assertEqual(
+                        declared,
+                        str(totals[family]),
+                        f"{where}: riga '{runner}' dichiara {declared}, "
+                        f"inventario {totals[family]}",
+                    )
+
+            # "N test live" e ambiguo fra i provider — in una tabella e
+            # addirittura la colonna di un altro — quindi vale solo fuori
+            # dalle tabelle e dove il contesto parla di MySQL.
             for match in re.finditer(r"(\d+) test live", text):
+                line_start = text.rfind("\n", 0, match.start()) + 1
+                if text[line_start:].startswith("|"):
+                    continue
                 window = text[max(0, match.start() - 400) : match.end() + 400]
                 if "ysql" not in window:
                     continue
@@ -1146,9 +1182,12 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         # progetto: e il punto della nota, e non e una deriva.
         legacy = {"database-tools_mysql_data"}
 
+        # Il suffisso deve essere un segmento intero, delimitato da `_`:
+        # senza quel vincolo `tokio_postgres_rustls` passava per un volume,
+        # perche finisce per "tls".
         pattern = re.compile(
             r"\b[a-z][a-z0-9-]*_(?:mysql|postgres|sqlserver)"
-            r"[a-z0-9_]*(?:data|tls|certs|private)\b"
+            r"[a-z0-9_]*_(?:data|tls|certs|private)\b"
         )
         for document in current_surfaces():
             text = document.read_text(encoding="utf-8")
@@ -1158,6 +1197,181 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                     legitimate | legacy,
                     f"{document.relative_to(ROOT).as_posix()} cita il volume "
                     f"'{name}', che nessun Compose dichiara",
+                )
+
+    # ------------------------------------------------------------------
+    # Capability del SDK MySQL: codice, documenti e test devono concordare.
+    #
+    # Ognuna di queste e stata dichiarata "non inclusa" da qualche documento
+    # mentre esisteva gia, o dichiarata presente mentre nessun test la
+    # esercitava. Il triangolo — binding Rust, superficie documentale,
+    # copertura live — e cio che impedisce a entrambe le derive di tornare.
+    MYSQL_SDK_CAPABILITIES = (
+        (
+            "SessionContext",
+            ("context: Option<crate::session_context_py::PySessionContext>",),
+            "SessionContext",
+            "test_begin_carries_a_session_context",
+        ),
+        (
+            "OLTP con begin",
+            ("fn begin",),
+            "begin",
+            "test_begin_commits_and_rolls_back",
+        ),
+        (
+            "read Arrow",
+            ("fn read", "fn aread"),
+            "read",
+            "test_read_streams_arrow_ipc",
+        ),
+        (
+            "copy_from bulk",
+            ("fn copy_from", "fn acopy_from"),
+            "copy_from",
+            "test_copy_from_appends_rows",
+        ),
+        (
+            "builder AST",
+            ("fn execute_portable_rows", "fn execute_portable_count"),
+            "AST",
+            "test_ast_builders_select_insert_update_delete",
+        ),
+    )
+
+    def test_the_mysql_sdk_capabilities_exist_are_documented_and_are_tested(
+        self,
+    ) -> None:
+        """Per ogni capability: binding, documento e test live.
+
+        La deriva e andata in entrambe le direzioni. `mysql-conditional-update`
+        esisteva e nessun documento lo nominava; `begin`, `copy_from`, `read`
+        e i builder AST erano elencati fra i "non inclusi" mentre erano gia
+        implementati; e `begin(context=...)` era documentato, esposto e
+        impossibile — il core impone un punto nella chiave, MySQL lo vietava.
+        """
+
+        sync = (
+            ROOT / "crates" / "plenora-database-py" / "src" / "mysql_session.rs"
+        ).read_text(encoding="utf-8")
+        asynchronous = (
+            ROOT / "crates" / "plenora-database-py" / "src" / "async_mysql_session.rs"
+        ).read_text(encoding="utf-8")
+        binding = sync + asynchronous
+        documented = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
+        tests = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "tests"
+            / "test_mysql_capabilities.py"
+        ).read_text(encoding="utf-8")
+
+        for name, symbols, mention, test in self.MYSQL_SDK_CAPABILITIES:
+            for symbol in symbols:
+                self.assertIn(
+                    symbol,
+                    binding,
+                    f"capability '{name}': '{symbol}' assente dal binding MySQL",
+                )
+            self.assertIn(
+                mention,
+                documented,
+                f"capability '{name}' non nominata in docs/mysql/README.md",
+            )
+            # Con la parentesi: `def x` combacia anche con `def x_altro`,
+            # quindi rinominare un test lo farebbe sparire senza rumore.
+            self.assertIn(
+                f"def {test}(",
+                tests,
+                f"capability '{name}' senza copertura live ({test})",
+            )
+
+    def test_the_mysql_sdk_is_exposed_both_sync_and_async(self) -> None:
+        """Le due varianti esistono, e i test le esercitano entrambe.
+
+        Un binding async che resta indietro rispetto al sync e invisibile a
+        chi legge la documentazione, che parla di "stessa superficie".
+        """
+
+        native = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "plenora_database"
+            / "__init__.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def connect_mysql(", native)
+        self.assertIn("async def aconnect_mysql(", native)
+
+        tests = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "tests"
+            / "test_mysql_capabilities.py"
+        ).read_text(encoding="utf-8")
+        for expected in (
+            "def test_async_begin_with_context_and_policy(",
+            "def test_aread_streams_arrow_ipc(",
+            "def test_acopy_from_appends_rows(",
+            "def test_async_ast_builders(",
+        ):
+            self.assertIn(expected, tests, f"variante async scoperta: {expected}")
+
+    def test_the_mysql_session_context_accepts_the_keys_the_core_produces(
+        self,
+    ) -> None:
+        """Le due validazioni della chiave di context non possono divergere.
+
+        Il core impone `namespace.name`; una regola locale che vietasse il
+        punto rifiuterebbe **ogni** chiave valida, e la capability
+        risulterebbe pubblicata e inutilizzabile. Il provider deve delegare.
+        """
+
+        transaction = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "transaction.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "session_context::validate_context_key",
+            transaction,
+            "MySQL non delega al core la validazione della chiave di context",
+        )
+        # Il nome finisce in una variabile utente: senza backtick il punto
+        # sarebbe un errore di sintassi al server.
+        self.assertIn("SET @`plenora_ctx_{name}`", transaction)
+
+    def test_the_sqlserver_live_count_matches_its_gate(self) -> None:
+        """Il conteggio live SQL Server nei documenti segue il suo gate.
+
+        Era rimasto a 44 dopo che il gate era passato a 45: lo stesso tipo di
+        deriva presidiata per MySQL, su un provider che nessuna guardia
+        guardava.
+        """
+
+        import importlib.util
+
+        path = ROOT / "scripts" / "check_sqlserver_reference.py"
+        spec = importlib.util.spec_from_file_location("sqlserver_gate", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        expected = module.EXPECTED_LIVE_TESTS
+
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for match in re.finditer(r"(\d+) (?:test live attesi|superati)", text):
+                window = text[max(0, match.start() - 300) : match.end() + 300]
+                if "QL Server" not in window and "sqlserver" not in window:
+                    continue
+                self.assertEqual(
+                    int(match.group(1)),
+                    expected,
+                    f"{document.relative_to(ROOT).as_posix()} dichiara "
+                    f"'{match.group(0)}', gate {expected}",
                 )
 
     def test_every_compose_declares_its_own_project(self) -> None:
