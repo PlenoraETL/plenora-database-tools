@@ -54,7 +54,7 @@ def aconnect_mysql(
 ) -> Any:  # awaitable → AsyncMysqlSession
     ...
 
-# ============================ MysqlSession (v0.4-alpha, scaffold) ============
+# ============================ MysqlSession ===================================
 
 class MysqlSession:
     @property
@@ -79,8 +79,29 @@ class MysqlSession:
         context: SessionContext | None = None,  # PFM CHG-002
         native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
     ) -> Transaction: ...
+    def execute_portable_rows(self, ast_json: str) -> list[dict]: ...
+    def execute_portable_count(self, ast_json: str) -> int: ...
+    def read(
+        self,
+        schema: str,
+        object: str,
+        projection: list[str] | None = None,
+        order_by: list[tuple[str, str]] | None = None,
+        limit: int | None = None,
+    ) -> BatchReader: ...
+    def copy_from(
+        self,
+        schema: str,
+        table: str,
+        ipc_bytes: bytes,
+        mode: str = "append",
+        transaction_profile: str = "single_transaction",
+        mapping_policy: str = "strict",
+        keys: list[str] | None = None,
+        update_columns: list[str] | None = None,
+    ) -> dict: ...
 
-# ============================ AsyncMysqlSession (v0.8+) ==================
+# ============================ AsyncMysqlSession ==============================
 
 class AsyncMysqlSession:
     @property
@@ -115,6 +136,8 @@ class AsyncMysqlSession:
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
     ) -> Any: ...  # awaitable → AsyncBatchReader
+    def execute_portable_rows(self, ast_json: str) -> Any: ...  # awaitable → list[dict]
+    def execute_portable_count(self, ast_json: str) -> Any: ...  # awaitable → int
     def acopy_from(
         self,
         schema: str,

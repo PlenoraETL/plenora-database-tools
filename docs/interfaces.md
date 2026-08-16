@@ -27,10 +27,10 @@ Entrambi i piani condividono la stessa infrastruttura: pool, TLS, timeout, cance
 | `plenora-database-engine` | Orchestrazione validate/prepare/execute. |
 | `plenora-database-testkit` | Fixture condivise, oracle differenziale per test cross-provider. |
 | `plenora-db-postgres` | Driver PostgreSQL 16 + PostGIS 3.4 (**provider di riferimento**). |
-| `plenora-db-mysql` | Driver MySQL 8.0/8.4 (read + append only). |
+| `plenora-db-mysql` | Driver MySQL 9.7 baseline, 8.4/8.0 di compatibilita: read, write bulk (sei modalita su sette), transazioni OLTP con savepoint, DDL raw. |
 | `plenora-db-sqlserver` | Driver SQL Server 2022 + Azure SQL (opt-in). |
 | `plenora-database-cli` | Entrypoint CLI (`probe`, `inspect-dataset`, gestione secret DSN). |
-| `plenora-database-py` | Bindings Python PyO3 (`abi3-py310`) — SDK sync + async per Postgres/PostGIS. Vedi [README dedicato](../crates/plenora-database-py/README.md). |
+| `plenora-database-py` | Bindings Python PyO3 (`abi3-py310`) — SDK sync + async per Postgres/PostGIS e MySQL. Vedi [README dedicato](../crates/plenora-database-py/README.md). |
 
 Confine dati pubblico: **Apache Arrow 59.1** con geometrie in **GeoArrow-WKB**.
 Toolchain: **Rust 1.92**, `#![forbid(unsafe_code)]` ovunque, `overflow-checks = true` anche in release.

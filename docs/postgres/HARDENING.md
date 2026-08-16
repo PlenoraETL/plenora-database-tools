@@ -190,7 +190,7 @@ docker compose -f docker-compose.postgres-tls.yml up -d
 ```
 
 Certificati e chiavi di test sono generati nel volume Docker
-`plenora-database-tools_postgres_tls_certs`, mai nel repository.
+`plenora-postgres-tls_postgres_tls_certs`, mai nel repository.
 
 ## Matrice versioni ancora necessaria
 

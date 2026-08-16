@@ -7,8 +7,12 @@ predicates e context manager per transazioni.
 
 - **Status**: Fase 3 completata (F3-1 → F3-8 + P0.7 + P0.8)
 - **Postgres**: OLTP + PostGIS coperti
-- **MySQL / SQL Server**: driver Rust presenti nel workspace ma
-  non ancora esposti al SDK Python (roadmap Fase 4)
+- **MySQL**: esposto sync e async (`connect_mysql` / `aconnect_mysql`)
+  con la stessa superficie di Postgres — execute*, `begin` con
+  `SessionContext`, `read`/`aread` streaming Arrow, `copy_from`/`acopy_from`
+  bulk e builder AST portabili. `TruncateInsert` resta fail-closed
+- **SQL Server**: driver Rust presente nel workspace ma non ancora
+  esposto al SDK Python
 - **Async**: `asyncio` bridge sopra al runtime tokio condiviso
 - **Performance**: ~13× più veloce del subprocess CLI (vedi bench)
 
@@ -334,8 +338,9 @@ versioni Python ≥ 3.10.
 
 ## Limitations (v0.1)
 
-- **Solo Postgres** — MySQL / SQL Server tramite il driver Rust del
-  workspace, non ancora esposti al SDK Python.
+- **SQL Server** — raggiungibile solo tramite il driver Rust del
+  workspace, non ancora esposto al SDK Python. Postgres e MySQL sono
+  entrambi esposti.
 - **No batch/bulk write** — insert massivi passano via SQL raw o
   builder multi-row (`.insert(...).rows([...])`). Il bulk COPY del
   driver è esposto solo via CLI oggi.

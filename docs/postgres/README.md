@@ -9,7 +9,7 @@ Il file `docker-compose.postgres.yml` crea:
 - container `dataflow-postgres`;
 - PostgreSQL 16 e PostGIS 3.4;
 - database e utente di test `dataflow`;
-- volume `plenora-database-tools_postgres_data`;
+- volume `plenora-postgres_postgres_data`;
 - schema `plenora_fixture`;
 - 10.000 eventi con decimal, date/time, JSON, binary, `geometry(PointZ,
   4326)` e `geography(Point, 4326)`;

@@ -110,29 +110,31 @@ Post-1.1.0 il driver MySQL è stato esteso in tre blocchi:
 
 Post-Blocchi B/A/C, il gate `docker-compose.mysql.yml` usa MySQL 9.7 LTS
 (primo LTS dopo 8.4, rilasciato 21 aprile 2026 — 5 anni premier + 3
-estesi). Tutti i 129 test live pass identici su 9.7 e 8.4: il protocollo
-binario MySQL è retrocompat sul subset OLTP + Arrow bulk. La matrice
-8.0.46/8.4.11/9.7 resta qualificata via `check_mysql_matrix.py`.
+estesi). Tutti i 59 test live — 34 default piu 25 reference — passano
+identici su 9.7, 8.4 e 8.0: il protocollo binario MySQL è retrocompat sul
+subset OLTP + Arrow bulk. La matrice 8.0.46/8.4.11/9.7 resta qualificata via
+`check_mysql_matrix.py`.
 
 ### Consumer surface (post-sessione)
 
 Dopo Blocchi B/A/C + upgrade 9.7:
 
-- **CLI MySQL**: 8 sub-comandi (`mysql-probe`, `mysql-describe`,
+- **CLI MySQL**: 9 sub-comandi (`mysql-probe`, `mysql-describe`,
   `mysql-inspect-schemas`, `mysql-inspect-tables`, `mysql-execute-sql`,
-  `mysql-execute-ddl`, `mysql-execute-scalar`, `mysql-transaction-test`)
-  — parity iniziale col path Postgres. Restano ~20 sub-comandi non
-  esposti (bulk-write, benchmark-*, diagnose, doctor, ecc.) — nuova
-  tranche futura.
-- **SDK Python MySQL v0.4-alpha scaffold**: `connect_mysql(host, database,
-  user, password, port=None, tls_ca_pem=None)` + `MysqlSession` con
-  execute / execute_scalar / execute_returning_rows / execute_ddl +
-  context manager. Non incluso (roadmap): Transaction, copy_from,
-  read streaming, portable AST builders, spatial predicates, async
-  variant. Sufficiente per script batch, integrazione, migrazione.
+  `mysql-execute-ddl`, `mysql-execute-scalar`, `mysql-transaction-test`,
+  `mysql-conditional-update`). Restano non esposti bulk-write,
+  benchmark-*, diagnose, doctor, explain, pool-status, portable-execute e
+  i test-* — nuova tranche futura.
+- **SDK Python MySQL**, sync e async: `connect_mysql` / `aconnect_mysql`
+  restituiscono una sessione con execute / execute_scalar /
+  execute_returning_rows / execute_ddl, `begin` con savepoint,
+  `SessionContext` e `native_query_policy`, `read`/`aread` streaming Arrow
+  IPC bounded, `copy_from`/`acopy_from` bulk e builder AST portabili
+  (`select/insert/update/delete/upsert`), piu context manager. Non
+  esposto: spatial predicates + `SpatialReference`.
 
 Inventario corrente del provider MySQL, verificato contro la sorgente da
-`scripts/mysql_inventory.py` a ogni esecuzione del gate: **123 unit**,
-**32 live default** (test live senza `#[ignore]`) e
+`scripts/mysql_inventory.py` a ogni esecuzione del gate: **126 unit**,
+**34 live default** (test live senza `#[ignore]`) e
 **25 live reference** (test live `#[ignore]`). I conteggi
 non vanno aggiornati a mano: il gate fallisce se divergono.

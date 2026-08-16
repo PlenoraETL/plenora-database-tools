@@ -7,7 +7,8 @@ di ciascun riferimento sono dichiarati una volta sola in
 [`docker/mysql/references.json`](../../docker/mysql/references.json): il
 compose della baseline, i due gate e i test live leggono quel documento, così
 nessuno può affermare una versione diversa da quella effettivamente avviata.
-I 50 test live passano identici su 9.7, 8.4 e 8.0 — la superficie
+I 59 test live — 34 default piu 25 reference — passano identici su 9.7,
+8.4 e 8.0: la superficie
 `plenora-db-mysql` è dialect-invariante tra 8.x e 9.x. Il provider usa protocollo
 nativo asincrono e TLS rustls; MariaDB resta fuori scope fino a una qualifica
 indipendente.
@@ -36,7 +37,11 @@ indipendente.
   fallimento successivo lascia la tabella vuota e lo dichiara con
   `remote_effect = partial` e `retry = requires_recovery`. È la combinazione
   `rollback_on_failure = true` + `transactional_ddl = false` descritta nel
-  contratto delle capability. Le altre cinque modalità non emettono DDL. **Sei modalità disponibili su sette**: Append + **Create** (CREATE
+  contratto delle capability. L'unica altra modalità che emette DDL è
+  **Update**, che crea una `TEMPORARY TABLE` di staging: è session-scoped,
+  non tocca l'identità del target e sparisce con la connessione, quindi non
+  lascia residui da ripulire. Le restanti quattro non emettono DDL affatto.
+  **Sei modalità disponibili su sette**: Append + **Create** (CREATE
   TABLE dallo schema Arrow; `keys` opzionali diventano la PRIMARY KEY, e
   devono essere colonne non-nullable e non ripetute) + **Replace** (`DELETE FROM` + INSERT bulk nella
   stessa transazione InnoDB) + **Upsert** (`INSERT ... ON DUPLICATE KEY
@@ -162,7 +167,7 @@ I nuovi progetti ripartono da volumi vuoti e le fixture nascono dagli script in
 
 Post-Blocchi B/A/C, il driver MySQL è accessibile dai consumer:
 
-**CLI** (8 sub-comandi, tutti behind `--features full`):
+**CLI** (9 sub-comandi, tutti behind `--features full`):
 
 ```
 plenora-database mysql-probe <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]
@@ -173,9 +178,10 @@ plenora-database mysql-execute-sql <args...> <sql>
 plenora-database mysql-execute-ddl <args...> <sql>
 plenora-database mysql-execute-scalar <args...> <sql>
 plenora-database mysql-transaction-test <args...>
+plenora-database mysql-conditional-update <args...> <UPDATE_SQL> <EXPECTED_AFFECTED>
 ```
 
-**SDK Python** (v0.4-alpha, scaffold):
+**SDK Python**, sync e async, con la stessa superficie:
 
 ```python
 import plenora_database as p
@@ -185,14 +191,21 @@ with p.connect_mysql("localhost", "mydb", "user", "pwd") as s:
     v = s.execute_scalar("SELECT COUNT(*) FROM t")
     rows = s.execute_returning_rows("SELECT id, label FROM t WHERE id > ?", [0])
     s.execute_ddl("CREATE INDEX idx_label ON t(label(64))")
+
+    with s.begin(isolation="repeatable_read") as tx:      # + SessionContext
+        tx.execute("UPDATE t SET label = ? WHERE id = ?", ["y", 1])
+
+    for chunk in s.read("mydb", "events", limit=10_000):  # Arrow IPC bounded
+        ...
+    outcome = s.copy_from("mydb", "events", table, mode="replace")
+    rows = s.select("t").where_eq("id", 1).all()          # builder AST
 ```
 
-Non incluso nel SDK MySQL v0.4 (roadmap): `begin()` + `Transaction`
-(savepoints), `copy_from` bulk write, `read()` streaming Arrow,
-portable AST builders (`select/insert/update/delete/upsert`), spatial
-predicates + `SpatialReference`, `AsyncMysqlSession`.
+`aconnect_mysql` e l'equivalente async: `aread` e `acopy_from` al posto
+di `read` e `copy_from`, il resto identico.
 
-Non incluso nel CLI MySQL v1.2 (roadmap): `bulk-write` (Arrow IPC),
-`benchmark-*`, `diagnose`, `doctor`, `explain`, `pool-status`,
-`conditional-update`, `test-cancellation/streaming/spatial/concurrency`,
-`portable-execute`.
+Non esposto al SDK MySQL: spatial predicates + `SpatialReference`.
+
+Non esposto al CLI MySQL: `bulk-write` (Arrow IPC), `benchmark-*`,
+`diagnose`, `doctor`, `explain`, `pool-status`,
+`test-cancellation/streaming/spatial/concurrency`, `portable-execute`.

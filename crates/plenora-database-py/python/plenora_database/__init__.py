@@ -112,10 +112,19 @@ def connect_mysql(
     - `execute_scalar(sql, params) → Any`
     - `execute_returning_rows(sql, params) → list[dict]`
     - `execute_ddl(sql) → None`
-    - `begin(isolation, read_only, statement_timeout_ms) → Transaction`
+    - `begin(isolation, read_only, statement_timeout_ms, context,
+      native_query_policy) → Transaction` — `context` accetta un
+      `SessionContext`, `native_query_policy` vale `"allow"` o `"deny"`
+    - `read(schema, object, projection, order_by, limit) → BatchReader`
+      — streaming Arrow IPC bounded
     - `copy_from(schema, table, source, mode, transaction_profile,
       mapping_policy, keys, update_columns) → dict`
+    - builder AST portabili: `select/insert/update/delete/upsert`, con gli
+      stessi terminali di Postgres
     - `close()`, `__enter__/__exit__`, `is_closed`, `server_version`
+
+    L'equivalente async e `aconnect_mysql`: stessa superficie, con
+    `aread` e `acopy_from` al posto di `read` e `copy_from`.
 
     Placeholder MySQL: `?` (non `$1` come Postgres).
 
