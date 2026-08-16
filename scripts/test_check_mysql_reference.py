@@ -88,6 +88,35 @@ def gate_run_cargo(
     return calls, run_cargo
 
 
+
+def current_surfaces() -> list[Path]:
+    """I documenti che affermano qualcosa sullo **stato corrente**.
+
+    Le guardie devono guardare tutto cio che un lettore prende per vero
+    oggi, non la sola tabella di `docs/mysql/README.md`: una superficie
+    lasciata fuori e esattamente il posto dove la deriva sopravvive.
+
+    Restano fuori due categorie, e solo quelle:
+
+    * `docs/history/`, che registra cio che era vero allora;
+    * i `CHANGELOG.md`, che sono per costruzione un elenco di stati
+      passati — riscriverli per allinearli al presente li distruggerebbe.
+    """
+
+    documents = [ROOT / "README.md"]
+    documents += sorted((ROOT / "docs").rglob("*.md"))
+    documents += sorted((ROOT / "crates").rglob("README.md"))
+    python = ROOT / "crates" / "plenora-database-py" / "python"
+    documents += sorted(python.rglob("*.py"))
+    documents += sorted(python.rglob("*.pyi"))
+    return [
+        document
+        for document in documents
+        if "/docs/history/" not in document.as_posix()
+        and document.name != "CHANGELOG.md"
+    ]
+
+
 class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_repository_enforces_lf_for_portable_source_and_fixture_files(self) -> None:
         attributes = GIT_ATTRIBUTES.read_text(encoding="utf-8").splitlines()
@@ -894,22 +923,200 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "Tutti 7 WriteMode",
             "tutti 7 modi qualificati",
         )
-        documents = [ROOT / "README.md"]
-        documents += sorted((ROOT / "docs").rglob("*.md"))
-        documents += sorted(
-            (ROOT / "crates" / "plenora-database-py" / "python").rglob("*.py")
-        )
-        for document in documents:
-            # La cronologia registra cio che era vero allora: non e una
-            # dichiarazione sullo stato corrente.
-            if "docs/history" in document.as_posix():
-                continue
+        for document in current_surfaces():
             text = document.read_text(encoding="utf-8")
             for claim in stale:
                 self.assertNotIn(
                     claim,
                     text,
                     f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
+                )
+
+    def test_no_surface_states_a_test_count_the_inventory_contradicts(
+        self,
+    ) -> None:
+        """Nessun documento corrente puo dichiarare conteggi diversi.
+
+        La tabella di `docs/mysql/README.md` era presidiata, ma gli stessi
+        numeri comparivano anche altrove — `PROVIDER-MATURITY-MATRIX.md`
+        affermava "129 test live" e "123 unit" — e nessuno se ne accorgeva.
+        Un conteggio scritto in un documento non presidiato invecchia al
+        primo test aggiunto, e il lettore non ha modo di distinguerlo da uno
+        aggiornato.
+        """
+
+        observed = collect()
+        totals = {
+            "unit": len(observed["unit"]),
+            "live default": len(observed["live_default"]),
+            "live reference": len(observed["live_reference"]),
+        }
+        live_total = totals["live default"] + totals["live reference"]
+
+        for document in current_surfaces():
+            where = document.relative_to(ROOT).as_posix()
+            text = document.read_text(encoding="utf-8")
+
+            for match in re.finditer(
+                r"\*\*(\d+) (unit|live default|live reference)\*\*", text
+            ):
+                self.assertEqual(
+                    int(match.group(1)),
+                    totals[match.group(2)],
+                    f"{where} dichiara '{match.group(0)}', inventario "
+                    f"{totals[match.group(2)]}",
+                )
+
+            # "N test live" e ambiguo fra i provider: vale solo dove il
+            # contesto parla di MySQL.
+            for match in re.finditer(r"(\d+) test live", text):
+                window = text[max(0, match.start() - 400) : match.end() + 400]
+                if "ysql" not in window:
+                    continue
+                self.assertEqual(
+                    int(match.group(1)),
+                    live_total,
+                    f"{where} dichiara '{match.group(0)}', inventario "
+                    f"{live_total} (default + reference)",
+                )
+
+    def test_every_mysql_cli_command_is_documented_and_every_documented_one_exists(
+        self,
+    ) -> None:
+        """I sub-comandi MySQL del CLI e quelli citati nei documenti coincidono.
+
+        La deriva va in due direzioni, e nessuna delle due e visibile a chi
+        legge: un comando aggiunto al CLI e mai documentato resta
+        introvabile — `mysql-conditional-update` lo e stato — e un comando
+        documentato ma inesistente manda il lettore contro un `usage()`.
+        """
+
+        main = (
+            ROOT / "crates" / "plenora-database-cli" / "src" / "main.rs"
+        ).read_text(encoding="utf-8")
+        implemented = set(re.findall(r'"(mysql-[a-z-]+)" =>', main))
+        self.assertGreaterEqual(len(implemented), 9, "dispatch CLI non trovato")
+
+        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
+        documented = set(re.findall(r"\bmysql-[a-z][a-z-]*\b", readme))
+        self.assertEqual(
+            implemented - documented,
+            set(),
+            "sub-comandi MySQL assenti da docs/mysql/README.md",
+        )
+
+        # Il numero dichiarato accanto all'elenco deve essere quello vero.
+        declared = re.search(r"\*\*CLI\*\* \((\d+) sub-comandi", readme)
+        self.assertIsNotNone(declared, "conteggio sub-comandi CLI assente")
+        self.assertEqual(
+            int(declared.group(1)),
+            len(implemented),
+            "conteggio sub-comandi CLI non allineato al dispatch",
+        )
+
+        # Nessuna superficie corrente puo citare un comando inesistente.
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for name in set(re.findall(r"\bmysql-[a-z][a-z-]*\b", text)):
+                if not name.startswith(
+                    (
+                        "mysql-probe",
+                        "mysql-describe",
+                        "mysql-inspect",
+                        "mysql-execute",
+                        "mysql-transaction",
+                        "mysql-conditional",
+                    )
+                ):
+                    continue
+                self.assertIn(
+                    name,
+                    implemented,
+                    f"{document.relative_to(ROOT).as_posix()} cita "
+                    f"'{name}', che il CLI non implementa",
+                )
+
+    def test_no_surface_still_says_mysql_is_absent_from_the_python_sdk(self) -> None:
+        """Il SDK Python espone MySQL: nessun documento puo negarlo.
+
+        `connect_mysql` / `aconnect_mysql` esistono, con `begin`, `read`,
+        `copy_from` e i builder AST. Chi leggeva "non ancora esposti al SDK
+        Python" concludeva di dover passare dal CLI o dal driver Rust, e la
+        conclusione era sbagliata.
+        """
+
+        native = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "plenora_database"
+            / "__init__.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def connect_mysql(", native)
+        self.assertIn("async def aconnect_mysql(", native)
+
+        stale = (
+            "MySQL / SQL Server: driver Rust presenti",
+            "non ancora esposti al SDK Python",
+            "v0.4-alpha, scaffold",
+            "SDK Python MySQL v0.4-alpha scaffold",
+            "Solo Postgres",
+        )
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for claim in stale:
+                self.assertNotIn(
+                    claim,
+                    text,
+                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
+                )
+
+    def test_every_documented_docker_volume_exists_in_a_compose(self) -> None:
+        """Un volume citato nei documenti deve essere quello vero.
+
+        I volumi sono prefissati dal progetto Compose: rinominato il
+        progetto, il vecchio nome resta scritto nei documenti e chi lo cerca
+        non lo trova — `plenora-database-tools_postgres_tls_certs` era
+        sopravvissuto cosi in `docs/postgres/HARDENING.md`.
+        """
+
+        legitimate = set()
+        for compose in sorted(ROOT.glob("docker-compose.*.yml")):
+            text = compose.read_text(encoding="utf-8")
+            project = next(
+                line.removeprefix("name:").strip()
+                for line in text.splitlines()
+                if line.startswith("name:")
+            )
+            in_volumes = False
+            for line in text.splitlines():
+                if line.startswith("volumes:"):
+                    in_volumes = True
+                    continue
+                if in_volumes:
+                    if line.startswith((" ", "\t")) and line.strip():
+                        legitimate.add(f"{project}_{line.strip().rstrip(':')}")
+                    elif line.strip():
+                        in_volumes = False
+        self.assertGreaterEqual(len(legitimate), 6, "volumi Compose non trovati")
+
+        # La nota di migrazione deve poter nominare il volume del **vecchio**
+        # progetto: e il punto della nota, e non e una deriva.
+        legacy = {"database-tools_mysql_data"}
+
+        pattern = re.compile(
+            r"\b[a-z][a-z0-9-]*_(?:mysql|postgres|sqlserver)"
+            r"[a-z0-9_]*(?:data|tls|certs|private)\b"
+        )
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for name in sorted(set(pattern.findall(text))):
+                self.assertIn(
+                    name,
+                    legitimate | legacy,
+                    f"{document.relative_to(ROOT).as_posix()} cita il volume "
+                    f"'{name}', che nessun Compose dichiara",
                 )
 
     def test_every_compose_declares_its_own_project(self) -> None:
