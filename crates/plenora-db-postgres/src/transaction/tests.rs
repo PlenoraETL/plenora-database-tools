@@ -103,8 +103,21 @@ mod live {
         ResourceBudget::new(ResourceLimits::default()).expect("budget")
     }
 
+    /// Provider dei test live: TLS disattivato, come ogni altra fixture live
+    /// del repository.
+    ///
+    /// `PostgresProvider::new` e secure-by-default da ADR-011 (`1.2.0`) e
+    /// pretende TLS, mentre `docker-compose.postgres.yml` serve plaintext:
+    /// il flip ha rotto tutti i 71 test di questo modulo, che fallivano al
+    /// `begin` con `Protocol`/`Connect`. Gli helper out-of-band dello stesso
+    /// file gia si connettono con `NoTls` allo stesso DSN — la fixture era
+    /// incoerente con se stessa.
+    ///
+    /// Nessuno di questi test riguarda TLS: provano transazioni, savepoint,
+    /// facade e policy. La superficie TLS ha il proprio compose
+    /// (`docker-compose.postgres-tls.yml`) e i propri test.
     fn provider() -> PostgresProvider {
-        PostgresProvider::new(1_024)
+        PostgresProvider::insecure_local_with_batch_rows(1_024)
     }
 
     async fn count(provider: &PostgresProvider, sql: &str) -> i64 {
