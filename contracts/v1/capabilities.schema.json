@@ -59,7 +59,10 @@
         "array_binding": {"type": "boolean"},
         "returning": {"type": "boolean"},
         "apply_edits": {"type": "boolean"},
-        "rollback_on_failure": {"type": "boolean"},
+        "rollback_on_failure": {
+          "type": "boolean",
+          "description": "Un fallimento prima del commit annulla le RIGHE scritte dall'operazione. Non riguarda lo schema: il DDL con cui una mode prepara il target (Create, su alcuni provider Replace) puo sopravvivere al rollback quando transactions.transactional_ddl e false. In quel caso l'esito dell'operazione lo dichiara con remote_effect=partial e retry=requires_recovery."
+        },
         "use_global_ids": {"type": "boolean"}
       }
     },

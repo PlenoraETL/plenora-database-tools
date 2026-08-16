@@ -30,8 +30,13 @@ indipendente.
   `GEOMETRYCOLLECTION -> exact`, validati contro il contratto canonico;
 - query relazionale qualificata con bind posizionale e lifecycle bounded;
 - write bulk qualificato dentro `SingleTransaction`, con rollback certo
-  prima del commit e outcome `Unknown` più quarantena quando il commit è
-  ambiguo. **Sei modalità disponibili su sette**: Append + **Create** (CREATE
+  **delle righe** prima del commit e outcome `Unknown` più quarantena quando
+  il commit è ambiguo. Il rollback non copre il DDL: `Create` prepara il
+  target con `CREATE TABLE`, che su MySQL fa commit implicito, quindi un
+  fallimento successivo lascia la tabella vuota e lo dichiara con
+  `remote_effect = partial` e `retry = requires_recovery`. È la combinazione
+  `rollback_on_failure = true` + `transactional_ddl = false` descritta nel
+  contratto delle capability. Le altre cinque modalità non emettono DDL. **Sei modalità disponibili su sette**: Append + **Create** (CREATE
   TABLE dallo schema Arrow) + **Replace** (`DELETE FROM` + INSERT bulk nella
   stessa transazione InnoDB) + **Upsert** (`INSERT ... ON DUPLICATE KEY
   UPDATE`) + **DeleteByKeys** (`DELETE ... WHERE (keys) IN (...)`) +

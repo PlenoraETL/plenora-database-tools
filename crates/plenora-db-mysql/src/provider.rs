@@ -215,14 +215,12 @@ impl Provider for MysqlProvider {
                 // consumer che la chiede riceve `Unsupported` in prepare, con
                 // il rinvio a `Replace` nel messaggio.
                 //
-                // `rollback_on_failure` e un flag unico per tutte le mode e
-                // descrive le righe, non lo schema: su `Create` la tabella
-                // nasce da una DDL con commit implicito e sopravvive al
-                // rollback. Il segnale di contratto per quel residuo e
-                // `transactions.transactional_ddl = false` qui sotto, e
-                // l'errore di un `Create` fallito lo dichiara riga per riga
-                // con `RemoteEffect::Partial`. Le altre cinque mode non
-                // emettono DDL, quindi per loro il flag e pieno.
+                // `rollback_on_failure = true` con `transactional_ddl =
+                // false` e la combinazione documentata in
+                // `WriteCapabilities::rollback_on_failure`: le righe tornano
+                // sempre indietro, la tabella creata da `Create` no. Le altre
+                // cinque mode non emettono DDL, quindi per loro il rollback e
+                // pieno in entrambi i sensi.
                 writes: WriteCapabilities {
                     create: true,
                     append: true,

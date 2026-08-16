@@ -34,6 +34,29 @@ pub struct WriteCapabilities {
     pub array_binding: bool,
     pub returning: bool,
     pub apply_edits: bool,
+    /// Un fallimento prima del commit annulla **le righe** scritte
+    /// dall'operazione.
+    ///
+    /// Il flag riguarda i dati, non lo schema. Una mode che prepara il target
+    /// con del DDL — `Create`, e su alcuni provider `Replace` — puo lasciarlo
+    /// dietro di se anche quando le righe tornano indietro, se il motore
+    /// esegue il DDL fuori dalla transazione. Quel comportamento e descritto
+    /// da [`TransactionCapabilities::transactional_ddl`]: `false` significa
+    /// che il DDL di preparazione sopravvive al rollback.
+    ///
+    /// Letti insieme, i due flag dicono cosa aspettarsi:
+    ///
+    /// | `rollback_on_failure` | `transactional_ddl` | esito di un `Create` fallito |
+    /// | --- | --- | --- |
+    /// | `true` | `true` | niente resta: righe e tabella annullate |
+    /// | `true` | `false` | la tabella resta vuota, le righe no |
+    /// | `false` | — | possono restare righe parziali |
+    ///
+    /// Il caso `true`/`false` non e ambiguo per il chiamante: l'esito
+    /// dell'operazione lo dichiara riga per riga con
+    /// [`crate::error::RemoteEffect::Partial`] e
+    /// [`crate::error::RetryDisposition::RequiresRecovery`], perche un retry
+    /// cieco troverebbe il target gia esistente.
     pub rollback_on_failure: bool,
     pub use_global_ids: bool,
 }
