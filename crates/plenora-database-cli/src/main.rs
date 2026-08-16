@@ -1077,21 +1077,49 @@ fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
     Ok(material)
 }
 
-/// Legge il materiale TLS il cui percorso e in `env_name`, oppure `None` se la
-/// variabile non e impostata.
+/// Percorso TLS **opzionale**: `None` quando la variabile non e impostata.
+///
+/// Diverso da [`tls_path_from_environment`], che serve `database-probe`: li il
+/// nome della variabile arriva da un argomento della riga di comando, quindi
+/// averlo indicato e non averla impostata e un errore del chiamante. Per i
+/// sottocomandi le variabili sono opzionali e la loro assenza e la
+/// configurazione di default, non un difetto.
+fn optional_tls_path(env_name: &str) -> Option<PathBuf> {
+    env::var_os(env_name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Materiale TLS opzionale, letto dal percorso in `env_name`.
 ///
 /// # Errors
 ///
 /// Fallisce quando la variabile e impostata ma il percorso non e leggibile o
 /// eccede il limite di dimensione del materiale TLS.
-pub(crate) fn tls_material_from_environment(env_name: &str) -> CliResult<Option<Vec<u8>>> {
-    let Some(path) = tls_path_from_environment(Some(env_name))? else {
+pub(crate) fn optional_tls_material(env_name: &str) -> CliResult<Option<Vec<u8>>> {
+    let Some(path) = optional_tls_path(env_name) else {
         return Ok(None);
     };
     Ok(Some(read_bounded_tls_material(&path)?))
 }
 
-pub(crate) fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
+/// CA privata opzionale, letta e validata dal percorso in `env_name`.
+///
+/// # Errors
+///
+/// Fallisce quando la variabile e impostata ma il materiale non e una CA
+/// valida.
+pub(crate) fn optional_private_ca_material(env_name: &str) -> CliResult<Option<Vec<u8>>> {
+    let Some(path) = optional_tls_path(env_name) else {
+        return Ok(None);
+    };
+    let material = read_bounded_tls_material(&path)?;
+    Ok(Some(validate_and_normalize_private_ca_material(
+        &path, &material,
+    )?))
+}
+
+fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
     let Some(path) = tls_path_from_environment(env_name)? else {
         return Ok(None);
     };

@@ -590,3 +590,116 @@ fn secrets_are_redacted_from_transport_errors_for_every_public_probe_route() {
         let _envelope = error_envelope(&output);
     }
 }
+
+// ============================================================================
+//  Configurazione TLS dei sottocomandi: nessuna variabile ignorata
+// ============================================================================
+
+/// Senza alcuna variabile TLS il provider e quello sicuro di default e arriva
+/// a tentare la connessione.
+///
+/// La regressione che questo test avrebbe colto: leggere le variabili con
+/// l'helper di `database-probe`, che tratta "nome indicato ma variabile
+/// assente" come errore del chiamante, faceva fallire ogni sottocomando in
+/// fase `validate` con "variabile path TLS assente" — cioe la configurazione
+/// di produzione, quella senza CA privata, era l'unica che non funzionava.
+#[test]
+fn the_plain_secure_default_reaches_the_connection_attempt() {
+    let output = Command::new(env!("CARGO_BIN_EXE_plenora-database"))
+        .args(["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"])
+        .env("PG_DSN", "host=127.0.0.1 port=1 user=nobody dbname=nothing")
+        .env_remove("PLENORA_PG_CA_PATH")
+        .env_remove("PLENORA_PG_CLIENT_CERT_PATH")
+        .env_remove("PLENORA_PG_CLIENT_KEY_PATH")
+        .env_remove("PLENORA_TLS_INSECURE_LOCAL")
+        .output()
+        .expect("run plenora-database");
+    let envelope = error_envelope(&output);
+    assert_eq!(
+        envelope["error"]["phase"], "connect",
+        "il default sicuro non deve fallire prima di provare a connettersi: {envelope}"
+    );
+}
+
+/// Una configurazione TLS che il provider non puo onorare deve fallire, non
+/// essere ignorata.
+///
+/// Il certificato client senza CA e il caso concreto: il provider userebbe i
+/// root pubblici e il certificato resterebbe inutilizzato, quindi il consumer
+/// crederebbe di avere mTLS senza averlo. Stessa logica per l'interruttore
+/// insicuro insieme a del materiale TLS: le due richieste si contraddicono.
+#[test]
+fn incoherent_tls_configuration_fails_instead_of_being_ignored() {
+    /// Un caso: cosa si imposta, e cosa il messaggio deve contenere.
+    struct Case {
+        label: &'static str,
+        paths: Vec<(&'static str, PathBuf)>,
+        flags: Vec<&'static str>,
+        expected: &'static str,
+    }
+
+    // CA reale: il caso "certificato senza chiave" si raggiunge solo dopo che
+    // la CA e stata validata, quindi un PEM fittizio verrebbe respinto prima.
+    const TEST_CA_DER: &[u8] = include_bytes!("fixtures/cli-test-ca.der");
+    let ca = unique_tls_path("coherence-ca.pem");
+    fs::write(&ca, pem_certificate(TEST_CA_DER)).expect("write ca");
+    let client = unique_tls_path("coherence-client.pem");
+    fs::write(&client, pem_certificate(TEST_CA_DER)).expect("write client");
+
+    let cases = [
+        Case {
+            label: "certificato client senza CA",
+            paths: vec![("PLENORA_PG_CLIENT_CERT_PATH", client.clone())],
+            flags: vec![],
+            expected: "richiede anche PLENORA_PG_CA_PATH",
+        },
+        Case {
+            label: "certificato senza chiave",
+            paths: vec![
+                ("PLENORA_PG_CA_PATH", ca.clone()),
+                ("PLENORA_PG_CLIENT_CERT_PATH", client.clone()),
+            ],
+            flags: vec![],
+            expected: "insieme",
+        },
+        Case {
+            label: "insicuro con materiale TLS",
+            paths: vec![("PLENORA_PG_CA_PATH", ca.clone())],
+            flags: vec!["PLENORA_TLS_INSECURE_LOCAL"],
+            expected: "non puo convivere con materiale TLS",
+        },
+    ];
+
+    for Case {
+        label,
+        paths,
+        flags,
+        expected,
+    } in cases
+    {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_plenora-database"));
+        command.args(["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"]);
+        command.env("PG_DSN", "host=127.0.0.1 user=nobody dbname=nothing");
+        for (name, value) in &paths {
+            command.env(name, value);
+        }
+        for name in &flags {
+            command.env(name, "1");
+        }
+        let output = command.output().expect("run plenora-database");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "{label}: uscita zero
+{stdout}"
+        );
+        assert!(
+            stdout.contains(expected),
+            "{label}: messaggio inatteso
+{stdout}"
+        );
+    }
+
+    let _ = fs::remove_file(&ca);
+    let _ = fs::remove_file(&client);
+}

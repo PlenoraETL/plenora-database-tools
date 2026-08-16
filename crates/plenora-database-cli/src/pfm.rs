@@ -39,7 +39,7 @@ pub(crate) const POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL
 /// alcuni comandi potevano parlare con un riferimento di test e altri no,
 /// nello stesso binario. Le sorgenti divergono; questa e l'unica.
 ///
-/// Tre configurazioni, in ordine di precedenza:
+/// Tre configurazioni:
 ///
 /// 1. `PLENORA_TLS_INSECURE_LOCAL` impostata — TLS disattivato. Interruttore
 ///    dev/test gia esistente, semantica invariata: il nome dice il rischio.
@@ -53,19 +53,49 @@ pub(crate) const POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL
 /// fiducia. Un riferimento con certificato privato e la norma nei test e negli
 /// ambienti interni.
 ///
+/// **Tutte** le variabili vengono lette prima di scegliere. Una configurazione
+/// che non puo essere onorata e un errore, non un silenzio: chi imposta il
+/// certificato client e dimentica la CA, o chiede l'insicuro e insieme
+/// fornisce materiale TLS, ha in mente qualcosa che il provider non farebbe, e
+/// scoprirlo da un fallimento di connessione e molto peggio che leggerlo qui.
+///
 /// # Errors
 ///
-/// Fallisce quando una variabile indica materiale illeggibile o non valido, e
-/// quando certificato e chiave client non sono forniti insieme.
+/// Fallisce quando una variabile indica materiale illeggibile o non valido,
+/// quando certificato e chiave client non sono forniti insieme, quando
+/// l'identita client e data senza CA, e quando l'interruttore insicuro
+/// convive con del materiale TLS.
 pub(crate) fn postgres_provider_for_pfm() -> CliResult<PostgresProvider> {
-    if std::env::var_os(POSTGRES_INSECURE_LOCAL_ENV).is_some() {
+    let insecure = std::env::var_os(POSTGRES_INSECURE_LOCAL_ENV).is_some();
+    let ca = crate::optional_private_ca_material(POSTGRES_CA_PATH_ENV)?;
+    let certificate = crate::optional_tls_material(POSTGRES_CLIENT_CERT_PATH_ENV)?;
+    let key = crate::optional_tls_material(POSTGRES_CLIENT_KEY_PATH_ENV)?;
+
+    if insecure {
+        if ca.is_some() || certificate.is_some() || key.is_some() {
+            return Err(format!(
+                "{POSTGRES_INSECURE_LOCAL_ENV} disattiva TLS, quindi non puo \
+                 convivere con materiale TLS: rimuovere l'interruttore oppure \
+                 le variabili {POSTGRES_CA_PATH_ENV} / \
+                 {POSTGRES_CLIENT_CERT_PATH_ENV} / {POSTGRES_CLIENT_KEY_PATH_ENV}"
+            )
+            .into());
+        }
         return Ok(PostgresProvider::insecure_local());
     }
-    let Some(ca) = crate::prepare_private_ca_material(Some(POSTGRES_CA_PATH_ENV))? else {
+
+    let Some(ca) = ca else {
+        if certificate.is_some() || key.is_some() {
+            return Err(format!(
+                "l'identita client TLS richiede anche {POSTGRES_CA_PATH_ENV}: \
+                 senza CA privata la verifica userebbe i root pubblici e il \
+                 certificato client resterebbe inutilizzato"
+            )
+            .into());
+        }
         return Ok(PostgresProvider::default());
     };
-    let certificate = crate::tls_material_from_environment(POSTGRES_CLIENT_CERT_PATH_ENV)?;
-    let key = crate::tls_material_from_environment(POSTGRES_CLIENT_KEY_PATH_ENV)?;
+
     let tls_config = match (certificate, key) {
         (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
         (Some(certificate), Some(key)) => {
