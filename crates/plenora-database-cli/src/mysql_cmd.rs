@@ -10,7 +10,12 @@
 //! - `mysql-inspect-tables`: list tables in schema
 //!
 //! Pattern argomenti standardizzato:
-//! `mysql-<cmd> <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] <cmd-args>`
+//! `mysql-<cmd> <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] [--tls-insecure-skip-verify] <cmd-args>`
+//!
+//! TLS fail-closed: senza flag il certificato del server è verificato contro
+//! le CA di sistema. Per una CA privata usare `--tls-ca-path-env <name>`; per
+//! saltare la verifica (solo dev/test) l'opt-in esplicito
+//! `--tls-insecure-skip-verify`. I due flag sono mutuamente esclusivi.
 //!
 //! Il pool è dimensionato piccolo (2 conn) — questi sono comandi one-shot
 //! diagnostici / operativi, non long-running.
@@ -33,7 +38,7 @@ use std::path::PathBuf;
 use crate::print_json;
 
 /// Costruisce un `MysqlProvider` parsando gli argomenti standard:
-/// `<PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]`.
+/// `<PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] [--tls-insecure-skip-verify]`.
 ///
 /// Restituisce `(provider, secret, remaining_args)` — il caller consuma
 /// gli argomenti successivi (SQL, schema/object, ecc.).
@@ -65,39 +70,68 @@ fn mysql_provider_from_args(
     } else {
         None
     };
-    // TLS CA path (opzionale)
-    let ca_pem: Option<Vec<u8>> = if remaining.first().map(String::as_str)
-        == Some("--tls-ca-path-env")
-    {
-        remaining.remove(0);
-        let ca_env = remaining
-            .first()
-            .ok_or_else(|| "--tls-ca-path-env richiede il nome della variabile".to_owned())?
-            .clone();
-        remaining.remove(0);
-        let path_str = std::env::var(&ca_env)
-            .map_err(|_| format!("variabile TLS CA env non trovata: {ca_env}"))?;
-        let path = PathBuf::from(path_str);
-        let pem = std::fs::read(&path)
-            .map_err(|e| format!("lettura CA MySQL fallita: {e}"))?;
-        if pem.len() > 1024 * 1024 {
-            return Err("CA PEM MySQL oltre 1 MiB".to_owned().into());
+    // Flag TLS (opzionali, order-independent):
+    //   --tls-ca-path-env <name>    → CA privata da file (verifica contro di essa)
+    //   --tls-insecure-skip-verify  → opt-in esplicito: nessuna verifica (solo dev)
+    let mut ca_pem: Option<Vec<u8>> = None;
+    let mut insecure_skip_verify = false;
+    while let Some(flag) = remaining.first().map(String::as_str) {
+        match flag {
+            "--tls-ca-path-env" => {
+                remaining.remove(0);
+                let ca_env = remaining
+                    .first()
+                    .ok_or_else(|| {
+                        "--tls-ca-path-env richiede il nome della variabile".to_owned()
+                    })?
+                    .clone();
+                remaining.remove(0);
+                let path_str = std::env::var(&ca_env)
+                    .map_err(|_| format!("variabile TLS CA env non trovata: {ca_env}"))?;
+                let path = PathBuf::from(path_str);
+                let pem = std::fs::read(&path)
+                    .map_err(|e| format!("lettura CA MySQL fallita: {e}"))?;
+                if pem.len() > 1024 * 1024 {
+                    return Err("CA PEM MySQL oltre 1 MiB".to_owned().into());
+                }
+                if ca_pem.is_some() {
+                    return Err("--tls-ca-path-env duplicato".to_owned().into());
+                }
+                ca_pem = Some(pem);
+            }
+            "--tls-insecure-skip-verify" => {
+                remaining.remove(0);
+                insecure_skip_verify = true;
+            }
+            _ => break,
         }
-        Some(pem)
-    } else {
-        None
-    };
+    }
     let secret = secret_from_env(&pwd_env)?;
     let mut config = MysqlConfig::new(host, database, username, secret.clone());
     if let Some(p) = port {
         config = config.with_port(p);
     }
-    if let Some(pem) = ca_pem {
-        config = config.with_private_ca_certificate_pem(pem);
-    } else {
-        // Default sviluppo: trust server certificate. Produzione dovrebbe
-        // sempre specificare una CA privata via --tls-ca-path-env.
-        config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+    // Default fail-closed: senza flag, `MysqlConfig::new` verifica il
+    // certificato contro le CA di sistema (policy `Verify`). Nessun downgrade
+    // silenzioso a TrustServerCertificate: contro un server con CA privata la
+    // connessione fallisce finché non si passa `--tls-ca-path-env`; per
+    // bypassare in dev/test serve l'opt-in esplicito `--tls-insecure-skip-verify`.
+    match (ca_pem, insecure_skip_verify) {
+        (Some(_), true) => {
+            return Err(
+                "--tls-ca-path-env e --tls-insecure-skip-verify sono mutuamente esclusivi"
+                    .to_owned()
+                    .into(),
+            );
+        }
+        (Some(pem), false) => {
+            config = config.with_private_ca_certificate_pem(pem);
+        }
+        (None, true) => {
+            config =
+                config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+        }
+        (None, false) => {}
     }
     let provider = MysqlProvider::new(config, 2)?;
     Ok((provider, secret, remaining))
