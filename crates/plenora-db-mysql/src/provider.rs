@@ -434,18 +434,25 @@ impl Provider for MysqlProvider {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
             let mut session = pool.checkout(cancellation).await?;
-            // DDL raw: use query_drop (nessun affected_rows semantic).
-            // Nota: MySQL fa autocommit su DDL (transactional_ddl=false nel
-            // capability probe), quindi non si può usare dentro una tx.
+            // Text protocol via `exec_control`, non prepared via `exec_write`,
+            // per due ragioni distinte:
+            //
+            // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
+            //    (errore 1295), quindi `exec_write` chiuderebbe statement che
+            //    il server accetta senza problemi in text protocol;
+            // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
+            //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
+            //    nulla" — mentre lo statement puo essersi gia committato.
+            //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
+            //    quando la connessione cade mentre un DDL autocommit e in
+            //    volo.
+            //
+            // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
+            // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
+            // senza effetto remoto possibile.
             session
-                .exec_write(
-                    sql,
-                    mysql_async::Params::Empty,
-                    ErrorPhase::Prepare,
-                    cancellation,
-                )
+                .exec_control(sql, ErrorPhase::Write, cancellation)
                 .await
-                .map(|_| ())
         })
     }
 }

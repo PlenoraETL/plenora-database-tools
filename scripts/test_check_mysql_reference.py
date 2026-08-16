@@ -292,7 +292,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         nella `cargo test` nuda veniva letta come rumore.
         """
 
-        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 29)
+        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 32)
         self.assertIn(
             "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,

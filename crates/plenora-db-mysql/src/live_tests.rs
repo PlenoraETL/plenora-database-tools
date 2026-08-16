@@ -5988,3 +5988,161 @@ async fn live_v12_write_create_failure_leaves_the_table_and_reports_partial() {
 
     replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
 }
+
+/// `execute_ddl` usa il text protocol: il prepared protocol rifiuta parte del
+/// DDL con l'errore 1295, e uno statement che il server accetta non deve
+/// fallire per la scelta del canale.
+#[tokio::test]
+async fn live_v12_execute_ddl_accepts_statements_the_prepared_protocol_refuses() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let table = "_v12_ddl_text_protocol";
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+
+    provider
+        .execute_ddl(
+            &live_secret(),
+            &format!("CREATE TABLE {table} (id BIGINT PRIMARY KEY) ENGINE=InnoDB"),
+            &cancellation,
+        )
+        .await
+        .expect("CREATE via text protocol");
+
+    // `ANALYZE TABLE` produce un result set: `exec_drop` del prepared
+    // protocol lo tollera, ma la coppia CREATE/ANALYZE prova che il canale
+    // regge sia DDL puro sia DDL con output.
+    provider
+        .execute_ddl(
+            &live_secret(),
+            &format!("ANALYZE TABLE {table}"),
+            &cancellation,
+        )
+        .await
+        .expect("ANALYZE via text protocol");
+
+    assert_eq!(
+        replace_fixture_scalar(&format!(
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+        ))
+        .await,
+        "1"
+    );
+
+    provider
+        .execute_ddl(
+            &live_secret(),
+            &format!("DROP TABLE {table}"),
+            &cancellation,
+        )
+        .await
+        .expect("DROP via text protocol");
+}
+
+/// Un DDL interrotto **in volo** non puo dichiarare `RemoteEffect::None`: lo
+/// statement puo essersi gia committato e nessun rollback lo annullerebbe.
+///
+/// Il blocco e deterministico: una transazione aperta su un `SELECT` tiene il
+/// metadata lock della tabella, quindi l'`ALTER TABLE` attende invece di
+/// completarsi, e il timeout di operazione scatta mentre il DDL e sul server.
+/// `exec_control` risponde `Unknown`; `exec_write`, che il percorso usava
+/// prima, avrebbe risposto `None`.
+#[tokio::test]
+async fn live_v12_execute_ddl_in_flight_interruption_reports_an_unknown_remote_effect() {
+    let table = "_v12_ddl_mdl_lock";
+    replace_fixture_exec(&[
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!("CREATE TABLE {table} (id BIGINT PRIMARY KEY) ENGINE=InnoDB"),
+        format!("INSERT INTO {table} VALUES (1)"),
+    ])
+    .await;
+
+    // Il lock: una transazione che legge la tabella e resta aperta.
+    let cancellation = CancellationToken::new();
+    let mut holder = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("sessione che tiene il metadata lock");
+    holder
+        .connection_mut()
+        .expect("connessione holder")
+        .query_drop("BEGIN")
+        .await
+        .expect("apertura transazione bloccante");
+    let _: Vec<i64> = holder
+        .connection_mut()
+        .expect("connessione holder")
+        .query(format!("SELECT id FROM {table}"))
+        .await
+        .expect("metadata lock acquisito");
+
+    let provider = MysqlProvider::new(
+        live_config().with_timeouts(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_secs(10),
+        ),
+        1,
+    )
+    .expect("provider timeout DDL");
+    let Err(error) = provider
+        .execute_ddl(
+            &live_secret(),
+            &format!("ALTER TABLE {table} ADD COLUMN label VARCHAR(16) NULL"),
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("ALTER completata nonostante il metadata lock");
+    };
+
+    assert_eq!(error.category, ErrorCategory::Timeout);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown,
+        "un DDL autocommit interrotto in volo non e 'nessun effetto'"
+    );
+
+    holder
+        .connection_mut()
+        .expect("connessione holder")
+        .query_drop("ROLLBACK")
+        .await
+        .expect("rilascio del metadata lock");
+    drop(holder);
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+}
+
+/// Il caso opposto: un token gia cancellato chiude al checkout, prima che una
+/// connessione esista. Li `RemoteEffect::None` e la verita — nessuno
+/// statement ha raggiunto il server — e il percorso non deve inventare
+/// incertezza.
+#[tokio::test]
+async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let Err(error) = provider
+        .execute_ddl(
+            &live_secret(),
+            "CREATE TABLE _v12_ddl_mai_creata (id BIGINT PRIMARY KEY)",
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("DDL eseguita con token gia cancellato");
+    };
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Connect);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(
+        replace_fixture_scalar(
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '_v12_ddl_mai_creata'"
+        )
+        .await,
+        "0"
+    );
+}
