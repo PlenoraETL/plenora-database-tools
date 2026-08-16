@@ -18,6 +18,7 @@ pub mod native_query_policy;
 pub mod outcome;
 pub mod plan;
 pub mod portable;
+pub mod primary_key;
 pub mod protocol;
 pub mod provider;
 pub mod query;

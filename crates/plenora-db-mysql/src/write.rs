@@ -26,6 +26,7 @@ use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
 };
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
+use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
@@ -204,7 +205,17 @@ impl MysqlWritePlan {
                 }
             }
             if operation.mode == WriteMode::Create {
-                validate_primary_key_shape(&operation.keys)?;
+                // Presenza, nullability e ripetizioni valgono su ogni
+                // provider e stanno nel core; qui resta cio che e del
+                // motore: il numero massimo di parti, e i tipi verificati
+                // sopra colonna per colonna.
+                if let Err(violation) = validate_create_primary_key(schema, &operation.keys) {
+                    return Err(prepare_error(
+                        ErrorCategory::InvalidPlan,
+                        violation.message("MySQL"),
+                    ));
+                }
+                validate_primary_key_parts(&operation.keys)?;
             }
         }
         if operation.mode == WriteMode::DeleteByKeys {
@@ -1410,13 +1421,15 @@ fn write_column_kind(field: &Field) -> Result<MysqlColumnKind> {
 /// allowed", ma solo dopo aver ricevuto la DDL: il piano si ferma prima.
 const MAX_PRIMARY_KEY_PARTS: usize = 16;
 
-/// Vincoli strutturali della PRIMARY KEY che `Create` costruisce.
+/// Numero di colonne che il motore accetta in una chiave.
+///
+/// E un vincolo del motore, non della nozione di chiave primaria: per questo
+/// resta qui invece di salire nel core insieme alle tre regole strutturali.
 ///
 /// # Errors
 ///
-/// `InvalidPlan` per chiavi ripetute o oltre il numero di parti che il motore
-/// accetta.
-fn validate_primary_key_shape(keys: &[String]) -> Result<()> {
+/// `InvalidPlan` oltre [`MAX_PRIMARY_KEY_PARTS`] colonne.
+fn validate_primary_key_parts(keys: &[String]) -> Result<()> {
     if keys.len() > MAX_PRIMARY_KEY_PARTS {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
@@ -1427,20 +1440,14 @@ fn validate_primary_key_shape(keys: &[String]) -> Result<()> {
             ),
         ));
     }
-    let mut seen = std::collections::BTreeSet::new();
-    for key in keys {
-        if !seen.insert(key.as_str()) {
-            return Err(prepare_error(
-                ErrorCategory::InvalidPlan,
-                format!("chiave primaria MySQL '{key}' ripetuta"),
-            ));
-        }
-    }
     Ok(())
 }
 
 /// Vincoli di **tipo** che una colonna deve rispettare per stare in una
 /// PRIMARY KEY `MySQL`.
+///
+/// La nullability non e qui: e strutturale, vale su ogni provider e la
+/// verifica `validate_create_primary_key` nel core.
 ///
 /// Sono provider-specifici: dipendono da come `mysql_column_ddl` traduce il
 /// tipo Arrow e da cosa il motore accetta come colonna di chiave. Ogni caso e
@@ -1464,15 +1471,6 @@ fn validate_primary_key_shape(keys: &[String]) -> Result<()> {
 ///
 /// `InvalidPlan` per un tipo che non puo essere chiave, con il motivo.
 fn validate_primary_key_column(key: &str, column: &MysqlWriteColumn) -> Result<()> {
-    if column.nullable {
-        return Err(prepare_error(
-            ErrorCategory::InvalidPlan,
-            format!(
-                "chiave primaria MySQL '{key}' e nullable nello schema Arrow: \
-                 una PRIMARY KEY non ammette NULL"
-            ),
-        ));
-    }
     let refusal = match column.kind {
         MysqlColumnKind::Utf8 => Some(
             "il tipo Arrow Utf8 diventa TEXT e MySQL rifiuta TEXT in chiave \
