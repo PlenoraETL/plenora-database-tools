@@ -74,9 +74,21 @@ class RequiredLiveTests(unittest.TestCase):
         with patch.object(gate, "run_cargo", return_value=output) as run_cargo:
             gate.run_live_cli_probe()
         arguments = run_cargo.call_args.args[0]
+        # `--features sqlserver` fa parte dell'invocazione, non e un dettaglio:
+        # senza, il binario risponde `unsupported` e il probe proverebbe
+        # soltanto che il provider non e stato compilato — un verde che non
+        # dice nulla sul server.
         self.assertEqual(
-            arguments[:5],
-            ["test", "-p", "plenora-database-cli", "--test", "live_probe"],
+            arguments[:7],
+            [
+                "test",
+                "-p",
+                "plenora-database-cli",
+                "--features",
+                "sqlserver",
+                "--test",
+                "live_probe",
+            ],
         )
         self.assertIn("live_database_probe_sqlserver_private_ca", arguments)
         self.assertIn("--exact", arguments)

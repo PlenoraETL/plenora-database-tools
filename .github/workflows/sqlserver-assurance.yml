@@ -1,0 +1,124 @@
+name: sqlserver-assurance
+
+# Campagna SQL Server: gate del riferimento 2022 e budget di performance.
+# Il workflow esisteva ed e stato rimosso insieme a tutti gli altri
+# (`dc0f402 chore: remove all CI workflows`), lasciando appeso il self-test
+# che ne presidia la superficie: `test_workflow_watches_the_public_cli_surface`
+# apriva un file inesistente e falliva a ogni esecuzione, cioe il gate
+# SQL Server segnalava rosso per una ragione che non riguardava SQL Server.
+#
+# Questo file non contiene logica di qualifica. Versioni, digest, inventario
+# dei test live, materiale TLS e verdetto vivono negli script, che sono anche
+# il modo in cui la campagna si riproduce in locale con lo stesso comando.
+#
+# Rispetto alla versione rimossa manca `--remove-orphans` nella pulizia: i
+# quattro compose dichiarano ciascuno il proprio progetto, e su una macchina
+# con piu riferimenti attivi quel flag cancellava i container degli altri
+# provider. In CI sarebbe innocuo, ma il comando viene copiato in locale.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/sqlserver-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/plenora-database-cli/**"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "crates/plenora-database-sql/**"
+      - "crates/plenora-database-testkit/**"
+      - "crates/plenora-db-sqlserver/**"
+      - "docker-compose.sqlserver.yml"
+      - "docker/sqlserver/init/**"
+      - "docker/sqlserver/tls/**"
+      - "scripts/check_sqlserver_reference.py"
+      - "scripts/test_check_sqlserver_reference.py"
+      - "scripts/check_sqlserver_performance.py"
+      - "scripts/compose_network.py"
+      - "benchmarks/manifests/sqlserver-performance-reference.json"
+      - "benchmarks/baseline/sqlserver-performance-budget.json"
+      - "benchmarks/baseline/sqlserver2022-performance-reference.json"
+  workflow_dispatch:
+
+# Sola lettura: la campagna non scrive sul repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlserver-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  sqlserver:
+    name: gate riferimento SQL Server 2022
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.92.0
+      PLENORA_SQLSERVER_GATE_HOST_CARGO: "1"
+      PLENORA_SQLSERVER_HOST: 127.0.0.1
+      PLENORA_SQLSERVER_DATABASE: dataflow_test
+      PLENORA_SQLSERVER_USER: dataflow
+      PLENORA_SQLSERVER_PASSWORD: DataFlow_Test_2026!
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: self-test del gate
+        run: python3 scripts/test_check_sqlserver_reference.py
+
+      - name: avvia il riferimento
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.sqlserver.yml config --quiet
+          docker compose -f docker-compose.sqlserver.yml up -d --wait
+          test "$(docker wait dataflow-sqlserver-init)" = "0"
+
+      - name: toolchain Rust pinned
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+
+      - name: check_sqlserver_reference.py
+        run: |
+          python3 scripts/check_sqlserver_reference.py 2>&1 \
+            | tee assurance-results/sqlserver-reference.log
+
+      - name: check_sqlserver_performance.py
+        run: |
+          python3 -m unittest tests.test_sqlserver_performance
+          python3 scripts/check_sqlserver_performance.py \
+            --baseline benchmarks/baseline/sqlserver2022-performance-reference.json \
+            --output assurance-results/sqlserver-performance.json 2>&1 \
+            | tee assurance-results/sqlserver-performance.log
+
+      - name: il candidato non e cambiato
+        run: git diff --exit-code -- .
+
+      - name: diagnostica
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/sqlserver-containers.txt
+          docker compose -f docker-compose.sqlserver.yml logs --no-color \
+            > assurance-results/sqlserver-compose.log 2>&1 || true
+
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlserver-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: ferma il riferimento
+        if: always()
+        run: docker compose -f docker-compose.sqlserver.yml down --volumes || true
