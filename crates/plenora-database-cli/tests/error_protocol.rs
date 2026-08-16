@@ -9,16 +9,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECRET_SENTINEL: &str = "HERMES_SENTINEL_DATABASE_SECRET_7F3C91";
 
+/// Variabili TLS che la CLI legge: azzerate prima di ogni invocazione.
+///
+/// Il figlio eredita l'ambiente del runner, quindi un test che ne dichiara
+/// solo alcune misura anche quelle che chi esegue ha esportato. Per i test di
+/// coerenza e fatale: "certificato client senza CA" troverebbe una CA
+/// ereditata e passerebbe per il motivo sbagliato.
+const TLS_ENVIRONMENT: [&str; 4] = [
+    "PLENORA_PG_CA_PATH",
+    "PLENORA_PG_CLIENT_CERT_PATH",
+    "PLENORA_PG_CLIENT_KEY_PATH",
+    "PLENORA_TLS_INSECURE_LOCAL",
+];
+
+/// Comando CLI con l'ambiente TLS azzerato: il test dichiara cio che vuole.
+fn cli(arguments: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_plenora-database"));
+    command.args(arguments);
+    for name in TLS_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn run(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_plenora-database"))
-        .args(arguments)
-        .output()
-        .expect("run plenora-database")
+    cli(arguments).output().expect("run plenora-database")
 }
 
 fn run_with_secret(arguments: &[&str], secret: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_plenora-database"))
-        .args(arguments)
+    cli(arguments)
         .env("PLENORA_TEST_DATABASE_SECRET", secret)
         .output()
         .expect("run plenora-database with isolated secret")
@@ -29,8 +48,7 @@ fn run_with_secret(arguments: &[&str], secret: &str) -> Output {
 // risultano codice morto e clippy lo rifiuta.
 #[cfg(all(feature = "mysql", feature = "sqlserver"))]
 fn run_without_secret(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_plenora-database"))
-        .args(arguments)
+    cli(arguments)
         .env_remove("PLENORA_TEST_MISSING_SECRET")
         .output()
         .expect("run plenora-database without secret")
@@ -42,8 +60,7 @@ fn run_without_secret_with_tls_path(
     tls_environment: &str,
     tls_path: &Path,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_plenora-database"))
-        .args(arguments)
+    cli(arguments)
         .env_remove("PLENORA_TEST_MISSING_SECRET")
         .env(tls_environment, tls_path)
         .output()
@@ -613,13 +630,8 @@ fn secrets_are_redacted_from_transport_errors_for_every_public_probe_route() {
 /// di produzione, quella senza CA privata, era l'unica che non funzionava.
 #[test]
 fn the_plain_secure_default_reaches_the_connection_attempt() {
-    let output = Command::new(env!("CARGO_BIN_EXE_plenora-database"))
-        .args(["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"])
+    let output = cli(&["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"])
         .env("PG_DSN", "host=127.0.0.1 port=1 user=nobody dbname=nothing")
-        .env_remove("PLENORA_PG_CA_PATH")
-        .env_remove("PLENORA_PG_CLIENT_CERT_PATH")
-        .env_remove("PLENORA_PG_CLIENT_KEY_PATH")
-        .env_remove("PLENORA_TLS_INSECURE_LOCAL")
         .output()
         .expect("run plenora-database");
     let envelope = error_envelope(&output);
@@ -685,8 +697,7 @@ fn incoherent_tls_configuration_fails_instead_of_being_ignored() {
         expected,
     } in cases
     {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_plenora-database"));
-        command.args(["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"]);
+        let mut command = cli(&["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"]);
         command.env("PG_DSN", "host=127.0.0.1 user=nobody dbname=nothing");
         for (name, value) in &paths {
             command.env(name, value);

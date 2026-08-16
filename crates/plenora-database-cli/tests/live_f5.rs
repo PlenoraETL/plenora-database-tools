@@ -37,13 +37,34 @@ fn dsn() -> String {
     })
 }
 
+/// Variabili TLS che la CLI legge: vanno azzerate prima di ogni invocazione.
+///
+/// Il processo figlio eredita l'ambiente del runner. Se chi esegue i test ha
+/// una di queste esportata — cosa normale per chi lavora sul riferimento TLS —
+/// la CLI la usa e il test misura una configurazione che non ha dichiarato.
+/// Con la regola di coerenza introdotta insieme a mTLS il danno e immediato:
+/// una CA ereditata insieme all'interruttore insicuro e un errore, e l'intera
+/// suite fallisce.
+const TLS_ENVIRONMENT: [&str; 4] = [
+    "PLENORA_PG_CA_PATH",
+    "PLENORA_PG_CLIENT_CERT_PATH",
+    "PLENORA_PG_CLIENT_KEY_PATH",
+    "PLENORA_TLS_INSECURE_LOCAL",
+];
+
+/// Comando CLI con l'ambiente TLS azzerato e poi dichiarato dal test.
+fn cli(args: &[&str]) -> Command {
+    let mut command = Command::new(BIN);
+    command.args(args).env("PG_DSN", dsn());
+    for name in TLS_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    command.env("PLENORA_TLS_INSECURE_LOCAL", "1");
+    command
+}
+
 fn run_json(args: &[&str]) -> Value {
-    let output = Command::new(BIN)
-        .args(args)
-        .env("PG_DSN", dsn())
-        .env("PLENORA_TLS_INSECURE_LOCAL", "1")
-        .output()
-        .expect("spawn CLI");
+    let output = cli(args).output().expect("spawn CLI");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -56,12 +77,7 @@ fn run_json(args: &[&str]) -> Value {
 }
 
 fn run_json_err(args: &[&str]) -> Value {
-    let output = Command::new(BIN)
-        .args(args)
-        .env("PG_DSN", dsn())
-        .env("PLENORA_TLS_INSECURE_LOCAL", "1")
-        .output()
-        .expect("spawn CLI");
+    let output = cli(args).output().expect("spawn CLI");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
