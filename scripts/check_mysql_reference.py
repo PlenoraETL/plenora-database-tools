@@ -586,6 +586,41 @@ def run_live_cli_probe() -> None:
         raise RuntimeError("risultato probe CLI live MySQL inatteso")
 
 
+def run_static_checks() -> int:
+    """I controlli del gate che non richiedono ne container ne toolchain Rust.
+
+    Sono tre: la matrice dichiarata deve coincidere con cio che il compose
+    avvia, l'inventario dichiarato con la sorgente Rust, e le due suite Python
+    che presidiano gate e matrice devono passare. Girano in secondi su ogni PR
+    perche intercettano subito la classe di errore che altrimenti si scopre
+    mezz'ora dopo, in mezzo a una campagna live.
+    """
+
+    validate_compose_pins_the_baseline()
+    validate_inventory()
+    run([sys.executable, str(ROOT / "scripts" / "test_check_mysql_reference.py")])
+    run([sys.executable, "-m", "unittest", "tests.test_mysql_matrix"])
+    print(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "passed",
+                "provider": "mysql",
+                "scope": "static",
+                "reference": BASELINE.label,
+                "reference_version": EXPECTED_VERSION,
+                "unit_tests": len(EXPECTED_UNIT_TESTS),
+                "live_default_tests": len(EXPECTED_LIVE_DEFAULT_TESTS),
+                "live_reference_tests": len(EXPECTED_LIVE_REFERENCE_TESTS),
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def main() -> int:
     validate_inventory()
     validate_fixture()
@@ -629,9 +664,25 @@ def main() -> int:
     return 0
 
 
+def selected_entry_point(arguments: list[str]):
+    """`--static` sceglie i soli controlli senza server; nient'altro e valido.
+
+    # Raises
+
+    `RuntimeError` per qualunque altro argomento: un flag scritto male non
+    deve degradare in silenzio al gate completo, ne viceversa.
+    """
+
+    if not arguments:
+        return main
+    if arguments == ["--static"]:
+        return run_static_checks
+    raise RuntimeError(f"argomenti non riconosciuti: {arguments}")
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(selected_entry_point(sys.argv[1:])())
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"MySQL reference gate FAILED: {error}", file=sys.stderr)
         raise SystemExit(1) from error

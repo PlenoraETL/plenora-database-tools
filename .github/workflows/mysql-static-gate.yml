@@ -1,0 +1,42 @@
+name: mysql-static-gate
+
+# Gate veloce su PR: i soli controlli del gate MySQL che non richiedono un
+# server ne la toolchain Rust — matrice dichiarata contro compose, inventario
+# dei test contro la sorgente, e le due suite Python che presidiano gate e
+# matrice. Dura secondi e intercetta subito la classe di errore che
+# altrimenti si scopre mezz'ora dopo, dentro la campagna live.
+#
+# La logica sta in `scripts/check_mysql_reference.py --static`: qui c'e solo
+# l'invocazione. Un controllo aggiunto allo script entra in CI senza toccare
+# questo file, e non esiste una seconda copia della verita da tenere allineata.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Sola lettura: il gate non scrive sul repository e non commenta le PR.
+permissions:
+  contents: read
+
+concurrency:
+  group: mysql-static-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  static:
+    name: references + inventario + self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: gate statico MySQL
+        run: python3 scripts/check_mysql_reference.py --static

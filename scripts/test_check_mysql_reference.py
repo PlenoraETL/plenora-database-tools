@@ -20,6 +20,7 @@ SERVER_EXT = ROOT / "docker" / "mysql" / "tls" / "server.ext"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
 GENERATOR_TEST = ROOT / "docker" / "mysql" / "tls" / "test_generate.sh"
 REFERENCES = ROOT / "docker" / "mysql" / "references.json"
+STATIC_WORKFLOW = ROOT / ".github" / "workflows" / "mysql-static-gate.yml"
 LIVE_TESTS = ROOT / "crates" / "plenora-db-mysql" / "src" / "live_tests.rs"
 GATE = ROOT / "scripts" / "check_mysql_reference.py"
 SPEC = importlib.util.spec_from_file_location("mysql_gate", GATE)
@@ -657,6 +658,41 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         self.assertIn(gate.EXPECTED_REFERENCE, commands[1])
         self.assertIn("/fixture/test_generate.sh", commands[1])
+
+    # --- gate veloce su PR --------------------------------------------------
+
+    def test_the_static_entry_point_runs_only_serverless_checks(self) -> None:
+        """`--static` non deve toccare docker, cargo o la rete."""
+
+        calls: list[list[str]] = []
+        with (
+            patch.object(gate, "run", side_effect=lambda command, **_: calls.append(command) or ""),
+            patch.object(gate, "run_cargo", side_effect=AssertionError("cargo nel gate statico")),
+            patch.object(gate, "docker_value", side_effect=AssertionError("docker nel gate statico")),
+        ):
+            self.assertEqual(gate.run_static_checks(), 0)
+
+        executed = [command[-1] for command in calls]
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(executed[0].endswith("test_check_mysql_reference.py"))
+        self.assertEqual(executed[1], "tests.test_mysql_matrix")
+
+    def test_an_unknown_flag_never_degrades_into_another_entry_point(self) -> None:
+        self.assertIs(gate.selected_entry_point([]), gate.main)
+        self.assertIs(gate.selected_entry_point(["--static"]), gate.run_static_checks)
+        for arguments in (["--statik"], ["--static", "--full"], ["--full"]):
+            with self.assertRaisesRegex(RuntimeError, "argomenti non riconosciuti"):
+                gate.selected_entry_point(arguments)
+
+    def test_the_pr_workflow_only_invokes_the_static_entry_point(self) -> None:
+        """Nessuna logica del gate duplicata nello YAML del gate veloce."""
+
+        workflow = STATIC_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/check_mysql_reference.py --static", workflow)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("contents: read", workflow)
+        for forbidden in ("cargo ", "docker ", "openssl", "mysql -"):
+            self.assertNotIn(forbidden, workflow)
 
     def test_the_reference_matrix_document_is_the_only_place_with_digests(
         self,
