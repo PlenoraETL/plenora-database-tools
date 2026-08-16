@@ -26,8 +26,17 @@ MYSQL_USER_ENV = "PLENORA_TEST_MYSQL_USER"
 MYSQL_PWD_ENV = "PLENORA_TEST_MYSQL_PASSWORD"
 
 
+MYSQL_CA_ENV = "PLENORA_TEST_MYSQL_CA"
+
+
 def _config_or_skip():
-    """Ritorna (host, database, user, password) o skippa il test."""
+    """Ritorna (host, database, user, password, ca_pem) o skippa il test.
+
+    Il riferimento impone TLS con una CA privata: senza `ca_pem` la
+    connessione fallisce con un errore I/O redatto, che non dice al lettore
+    che manca il materiale TLS. Il percorso arriva da `PLENORA_TEST_MYSQL_CA`,
+    come nei gate.
+    """
     host = os.environ.get(MYSQL_HOST_ENV)
     database = os.environ.get(MYSQL_DB_ENV, "dataflow_test")
     user = os.environ.get(MYSQL_USER_ENV, "dataflow")
@@ -36,13 +45,18 @@ def _config_or_skip():
         pytest.skip(
             f"live test MySQL: mancano env {MYSQL_HOST_ENV} e/o {MYSQL_PWD_ENV}"
         )
-    return host, database, user, password
+    ca_pem = None
+    ca_path = os.environ.get(MYSQL_CA_ENV)
+    if ca_path:
+        with open(ca_path, "rb") as handle:
+            ca_pem = handle.read()
+    return host, database, user, password, ca_pem
 
 
 @pytest.fixture(name="session")
 def _mysql_session():
-    host, database, user, password = _config_or_skip()
-    s = p.connect_mysql(host, database, user, password)
+    host, database, user, password, ca_pem = _config_or_skip()
+    s = p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
     s.execute_ddl("DROP TABLE IF EXISTS _v04_sdk_test")
     s.execute_ddl(
         "CREATE TABLE _v04_sdk_test ("
@@ -99,8 +113,8 @@ def test_execute_scalar_null_returns_none(session) -> None:
 
 
 def test_context_manager_closes_session() -> None:
-    host, database, user, password = _config_or_skip()
-    with p.connect_mysql(host, database, user, password) as s:
+    host, database, user, password, ca_pem = _config_or_skip()
+    with p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem) as s:
         assert s.is_closed is False
         result = s.execute_scalar("SELECT 42")
         assert result == 42
@@ -142,8 +156,12 @@ def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
 def test_null_typed_param(session) -> None:
     session.execute("INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?)",
                     [1, "x", 10])
+    # `<=>`, non `IS ?`: su MySQL `IS` accetta solo NULL/TRUE/FALSE/UNKNOWN e
+    # un placeholder produce un errore di sintassi (1064). L'operatore
+    # null-safe e quello che il test intende — confronto con un parametro che
+    # puo essere NULL.
     rows = session.execute_returning_rows(
-        "SELECT id FROM _v04_sdk_test WHERE label = ? OR label IS ?",
+        "SELECT id FROM _v04_sdk_test WHERE label = ? OR label <=> ?",
         ["x", p.null("text")],
     )
     assert len(rows) >= 1
