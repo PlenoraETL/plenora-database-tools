@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import check_postgres_reference as gate
+from scripts import compose_network as compose_network_module
 
 
 ROW_DIAGNOSTICS = (
@@ -76,33 +77,37 @@ class ComposeNetworkDiscovery(unittest.TestCase):
     )
 
     def test_the_observed_compose_network_of_the_running_fixture_is_used(self) -> None:
-        with patch.object(gate, "run", side_effect=[self.LABELS, self.NETWORKS]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[self.LABELS, self.NETWORKS]
+        ):
             self.assertEqual(
                 gate.postgres_network(),
                 "plenora-database-tools-row-diagnostics_default",
             )
 
     def test_a_container_outside_compose_fails_closed(self) -> None:
-        with patch.object(gate, "run", return_value="null"):
+        with patch.object(compose_network_module, "_inspect", return_value="null"):
             with self.assertRaisesRegex(
-                RuntimeError, "progetto Compose del riferimento PostgreSQL assente"
+                RuntimeError, "senza label di progetto Compose"
             ):
                 gate.postgres_network()
 
     def test_missing_network_metadata_fails_closed(self) -> None:
-        with patch.object(gate, "run", side_effect=[self.LABELS, "null"]):
-            with self.assertRaisesRegex(
-                RuntimeError, "rete Compose del riferimento PostgreSQL assente"
-            ):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[self.LABELS, "null"]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "non e sulla rete"):
                 gate.postgres_network()
 
     def test_a_network_without_the_container_alias_fails_closed(self) -> None:
         networks = (
             '{"plenora-database-tools-row-diagnostics_default":{"Aliases":["altro"]}}'
         )
-        with patch.object(gate, "run", side_effect=[self.LABELS, networks]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[self.LABELS, networks]
+        ):
             with self.assertRaisesRegex(
-                RuntimeError, "rete Compose del riferimento PostgreSQL assente"
+                RuntimeError, "alias dataflow-postgres assente"
             ):
                 gate.postgres_network()
 

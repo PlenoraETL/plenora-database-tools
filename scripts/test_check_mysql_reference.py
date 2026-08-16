@@ -32,6 +32,7 @@ if SPEC is None or SPEC.loader is None:
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
+from scripts import compose_network as compose_network_module  # noqa: E402
 from scripts.mysql_inventory import collect  # noqa: E402
 from scripts.mysql_references import (  # noqa: E402
     BASELINE,
@@ -594,13 +595,36 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertNotIn("MysqlCertificatePolicy::TrustServerCertificate", source)
         self.assertIn("PLENORA_MYSQL_CA", source)
 
+    # La scoperta della rete e ora `scripts/compose_network`, condivisa con gli
+    # altri due gate: i self-test intercettano l'ispezione li, dove avviene.
+    # Resta verificato qui cio che e specifico di MySQL — il secondo alias.
+
     def test_network_discovery_requires_the_hostname_mismatch_alias(self) -> None:
         labels = '{"com.docker.compose.project":"mysql-qualified"}'
         without_alias = (
             '{"mysql-qualified_default":{"Aliases":["dataflow-mysql","mysql"]}}'
         )
-        with patch.object(gate, "docker_value", side_effect=[labels, without_alias]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, without_alias]
+        ):
             with self.assertRaisesRegex(RuntimeError, "mysql-hostname-mismatch"):
+                gate.mysql_network()
+
+    def test_the_missing_alias_error_says_what_it_would_cost(self) -> None:
+        """Il motivo viaggia con l'errore, non resta nel gate.
+
+        Un alias mancante non e un dettaglio: senza di esso la prova TLS
+        negativa fallirebbe per DNS e passerebbe per un successo.
+        """
+
+        labels = '{"com.docker.compose.project":"mysql-qualified"}'
+        without_alias = (
+            '{"mysql-qualified_default":{"Aliases":["dataflow-mysql","mysql"]}}'
+        )
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, without_alias]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "errore DNS"):
                 gate.mysql_network()
 
     def test_cargo_uses_the_observed_compose_network_of_the_running_fixture(self) -> None:
@@ -609,23 +633,40 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             '{"mysql-qualified_default":'
             '{"Aliases":["dataflow-mysql","mysql","mysql-hostname-mismatch"]}}'
         )
-        with patch.object(gate, "docker_value", side_effect=[labels, networks]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, networks]
+        ):
             self.assertEqual(gate.mysql_network(), "mysql-qualified_default")
 
     def test_network_discovery_rejects_a_container_without_compose_labels(self) -> None:
-        with patch.object(gate, "docker_value", return_value="null"):
+        with patch.object(compose_network_module, "_inspect", return_value="null"):
             with self.assertRaisesRegex(
-                RuntimeError, "progetto Compose del riferimento MySQL assente"
+                RuntimeError, "senza label di progetto Compose"
             ):
                 gate.mysql_network()
 
     def test_network_discovery_rejects_missing_network_metadata(self) -> None:
         labels = '{"com.docker.compose.project":"mysql-qualified"}'
-        with patch.object(gate, "docker_value", side_effect=[labels, "null"]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, "null"]
+        ):
             with self.assertRaisesRegex(
-                RuntimeError, "rete Compose del riferimento MySQL assente"
+                RuntimeError, "non e sulla rete mysql-qualified_default"
             ):
                 gate.mysql_network()
+
+    def test_the_tls_volume_comes_from_the_shared_discovery(self) -> None:
+        """Anche il volume della CA si chiede a Docker, non si scrive."""
+
+        mounts = (
+            '[{"Destination":"/etc/mysql/tls","Name":"plenora-mysql_mysql_tls"}]'
+        )
+        with patch.object(compose_network_module, "_inspect", return_value=mounts):
+            self.assertEqual(gate.mysql_tls_volume(), "plenora-mysql_mysql_tls")
+
+        with patch.object(compose_network_module, "_inspect", return_value="[]"):
+            with self.assertRaisesRegex(RuntimeError, "/etc/mysql/tls"):
+                gate.mysql_tls_volume()
 
     def test_version_probe_never_exposes_a_root_password_in_docker_arguments(self) -> None:
         completed = SimpleNamespace(

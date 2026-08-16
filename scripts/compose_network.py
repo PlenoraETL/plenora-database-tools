@@ -33,8 +33,20 @@ def _inspect(container: str, template: str) -> str:
     return completed.stdout.strip()
 
 
-def compose_network(container: str, *, required_alias: str | None = None) -> str:
+def compose_network(
+    container: str,
+    *,
+    required_alias: str | None = None,
+    required_aliases: dict[str, str] | None = None,
+) -> str:
     """Nome della rete Compose a cui il container di riferimento e attaccato.
+
+    `required_aliases` mappa alias -> motivo per gli alias che servono oltre a
+    quello del container. Il motivo finisce nel messaggio di errore perche un
+    alias mancante non e mai un dettaglio di configurazione: nel riferimento
+    MySQL, senza `mysql-hostname-mismatch` la prova TLS negativa diventerebbe
+    un errore DNS invece di un rifiuto di identita, e passerebbe per un
+    successo del gate.
 
     # Raises
 
@@ -59,11 +71,16 @@ def compose_network(container: str, *, required_alias: str | None = None) -> str
         raise RuntimeError(
             f"container {container} non e sulla rete {expected} (trovate: {available})"
         )
+    aliases = network.get("Aliases")
     if required_alias is not None:
-        aliases = network.get("Aliases")
         if not isinstance(aliases, list) or required_alias not in aliases:
             raise RuntimeError(
                 f"alias {required_alias} assente dalla rete {expected} di {container}"
+            )
+    for alias, reason in (required_aliases or {}).items():
+        if not isinstance(aliases, list) or alias not in aliases:
+            raise RuntimeError(
+                f"alias {alias} assente dalla rete {expected} di {container}: {reason}"
             )
     return expected
 

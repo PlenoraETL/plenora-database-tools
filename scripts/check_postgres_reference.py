@@ -12,6 +12,12 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Il gate viene invocato sia come modulo del pacchetto sia come script: la
+# radice del repository deve restare importabile in entrambi i casi.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import compose_network  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
@@ -58,37 +64,7 @@ def postgres_network() -> str:
     senza l'alias del container il gate fallisce invece di indovinare.
     """
 
-    labels = json.loads(
-        run(
-            ["docker", "inspect", "--format", "{{json .Config.Labels}}", CONTAINER],
-            capture=True,
-        )
-    )
-    project = (
-        labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
-    )
-    if not isinstance(project, str) or not project:
-        raise RuntimeError("progetto Compose del riferimento PostgreSQL assente")
-    expected = f"{project}_default"
-    networks = json.loads(
-        run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{json .NetworkSettings.Networks}}",
-                CONTAINER,
-            ],
-            capture=True,
-        )
-    )
-    network = networks.get(expected) if isinstance(networks, dict) else None
-    aliases = network.get("Aliases") if isinstance(network, dict) else None
-    if not isinstance(aliases, list) or CONTAINER not in aliases:
-        raise RuntimeError(
-            "rete Compose del riferimento PostgreSQL assente o senza alias"
-        )
-    return expected
+    return compose_network(CONTAINER, required_alias=CONTAINER)
 
 
 def cargo(arguments: list[str], dsn: str | None = None) -> list[str]:

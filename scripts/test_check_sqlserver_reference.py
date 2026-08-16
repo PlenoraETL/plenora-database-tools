@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import check_sqlserver_reference as gate
+from scripts import compose_network as compose_network_module
 
 
 LIVE_ROW_DIAGNOSTICS = "live_provider_row_diagnostics_matches_confirmed_rollback_oracle"
@@ -97,33 +98,37 @@ class ComposeNetworkDiscovery(unittest.TestCase):
             '{"plenora-database-tools-row-diagnostics_default":'
             '{"Aliases":["dataflow-sqlserver","sqlserver-hostname-mismatch"]}}'
         )
-        with patch.object(gate, "docker_value", side_effect=[labels, networks]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, networks]
+        ):
             self.assertEqual(
                 gate.sqlserver_network(),
                 "plenora-database-tools-row-diagnostics_default",
             )
 
     def test_a_container_outside_compose_fails_closed(self) -> None:
-        with patch.object(gate, "docker_value", return_value="null"):
+        with patch.object(compose_network_module, "_inspect", return_value="null"):
             with self.assertRaisesRegex(
-                RuntimeError, "progetto Compose del riferimento SQL Server assente"
+                RuntimeError, "senza label di progetto Compose"
             ):
                 gate.sqlserver_network()
 
     def test_missing_network_metadata_fails_closed(self) -> None:
         labels = '{"com.docker.compose.project":"plenora-database-tools"}'
-        with patch.object(gate, "docker_value", side_effect=[labels, "null"]):
-            with self.assertRaisesRegex(
-                RuntimeError, "rete Compose del riferimento SQL Server assente"
-            ):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, "null"]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "non e sulla rete"):
                 gate.sqlserver_network()
 
     def test_a_network_without_the_container_alias_fails_closed(self) -> None:
         labels = '{"com.docker.compose.project":"plenora-database-tools"}'
         networks = '{"plenora-database-tools_default":{"Aliases":["altro"]}}'
-        with patch.object(gate, "docker_value", side_effect=[labels, networks]):
+        with patch.object(
+            compose_network_module, "_inspect", side_effect=[labels, networks]
+        ):
             with self.assertRaisesRegex(
-                RuntimeError, "rete Compose del riferimento SQL Server assente"
+                RuntimeError, "alias dataflow-sqlserver assente"
             ):
                 gate.sqlserver_network()
 

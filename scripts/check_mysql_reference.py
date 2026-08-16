@@ -22,6 +22,7 @@ from pathlib import Path
 # radice del repository deve restare importabile in entrambi i casi.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.compose_network import compose_network, compose_volume  # noqa: E402
 from scripts.mysql_inventory import (  # noqa: E402
     collect as collect_inventory,
     difference as inventory_difference,
@@ -327,38 +328,28 @@ def mysql_value(statement: str) -> str:
 
 
 def mysql_tls_volume() -> str:
-    mounts = json.loads(docker_value(["inspect", "--format", "{{json .Mounts}}", CONTAINER]))
-    for mount in mounts:
-        if mount.get("Destination") == "/etc/mysql/tls" and mount.get("Name"):
-            return str(mount["Name"])
-    raise RuntimeError("volume CA MySQL non montato nel container di riferimento")
+    """Volume con la CA privata, chiesto a Docker come la rete."""
+
+    return compose_volume(CONTAINER, "/etc/mysql/tls")
 
 
 def mysql_network() -> str:
-    labels = json.loads(
-        docker_value(["inspect", "--format", "{{json .Config.Labels}}", CONTAINER])
+    """Rete Compose del riferimento, con l'alias della prova TLS negativa.
+
+    La scoperta e condivisa con gli altri due gate; resta specifico di MySQL
+    il secondo alias, che nessun altro riferimento usa.
+    """
+
+    return compose_network(
+        CONTAINER,
+        required_alias=CONTAINER,
+        required_aliases={
+            "mysql-hostname-mismatch": (
+                "la prova TLS negativa diventerebbe un errore DNS invece di "
+                "un rifiuto di identita"
+            )
+        },
     )
-    project = (
-        labels.get("com.docker.compose.project") if isinstance(labels, dict) else None
-    )
-    if not isinstance(project, str) or not project:
-        raise RuntimeError("progetto Compose del riferimento MySQL assente")
-    expected = f"{project}_default"
-    networks = json.loads(
-        docker_value(
-            ["inspect", "--format", "{{json .NetworkSettings.Networks}}", CONTAINER]
-        )
-    )
-    network = networks.get(expected) if isinstance(networks, dict) else None
-    aliases = network.get("Aliases") if isinstance(network, dict) else None
-    if not isinstance(aliases, list) or CONTAINER not in aliases:
-        raise RuntimeError("rete Compose del riferimento MySQL assente o senza alias")
-    if "mysql-hostname-mismatch" not in aliases:
-        raise RuntimeError(
-            "alias mysql-hostname-mismatch assente dalla rete Compose: la prova "
-            "TLS negativa diventerebbe un errore DNS invece di un rifiuto di identita"
-        )
-    return expected
 
 
 def host_ca_path() -> str:
