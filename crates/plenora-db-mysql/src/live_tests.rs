@@ -5438,6 +5438,76 @@ async fn live_native_query_policy_deny_rejects_conditional_update_ddl() {
 // (identita della tabella, indici, FK, trigger, check, default,
 // AUTO_INCREMENT) e cosa succede quando la scrittura si rompe a meta.
 
+/// Una PRIMARY KEY su un tipo non indicizzabile si ferma prima della rete.
+///
+/// `Utf8` diventa `TEXT`, e `TEXT` in chiave senza lunghezza di prefisso e
+/// l'errore 1170 del server. Il piano lo rifiuta prima: il test verifica le
+/// due meta, che il provider non emetta nulla e che il motore — su ogni
+/// versione della matrice — rifiuti davvero la stessa DDL.
+#[tokio::test]
+async fn live_v12_write_create_primary_key_on_text_is_refused_before_the_network() {
+    let table = "_v12_create_pk_text";
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, _batch) = scalar_batch(&[1], &["prima"]);
+    let mut operation = write_op_scalar(
+        "dataflow_test",
+        table,
+        plenora_database_core::plan::WriteMode::Create,
+    );
+    operation.keys = vec!["label".to_owned()];
+
+    let Err(error) = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("chiave primaria su TEXT accettata");
+    };
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::InvalidPlan
+    );
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::Never,
+        "un piano invalido non migliora con un retry"
+    );
+
+    assert_eq!(
+        replace_fixture_scalar(&format!(
+            "SELECT IFNULL(MAX(TABLE_NAME), '-') FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+        ))
+        .await,
+        "-",
+        "il rifiuto ha comunque creato la tabella"
+    );
+
+    // Il vincolo non e nostro: e del motore, su questa versione.
+    let server = fixture_exec_error(&format!(
+        "CREATE TABLE dataflow_test.{table} (label TEXT NOT NULL, PRIMARY KEY (label))"
+    ))
+    .await;
+    assert!(
+        server.contains("1170"),
+        "atteso 1170 dal server, ricevuto: {server}"
+    );
+
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+}
+
 /// Esegue una lista di statement sulla connessione di servizio.
 async fn replace_fixture_exec(statements: &[String]) {
     let cancellation = CancellationToken::new();
@@ -5452,6 +5522,24 @@ async fn replace_fixture_exec(statements: &[String]) {
             .await
             .unwrap_or_else(|error| panic!("statement fixture fallito: {statement} -> {error}"));
     }
+}
+
+/// L'errore che il server restituisce per uno statement che deve fallire.
+///
+/// Serve a provare che un rifiuto del piano corrisponde a un rifiuto reale
+/// del motore, e non a un vincolo inventato dal provider.
+async fn fixture_exec_error(statement: &str) -> String {
+    let cancellation = CancellationToken::new();
+    let mut setup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("setup fixture errore");
+    let error = setup
+        .connection_mut()
+        .expect("connessione fixture")
+        .query_drop(statement)
+        .await
+        .expect_err("statement accettato dal server");
+    error.to_string()
 }
 
 /// Un singolo valore testuale letto dalla connessione di servizio.

@@ -199,33 +199,12 @@ impl MysqlWritePlan {
                         ),
                     ));
                 };
-                // Una PRIMARY KEY nullable non esiste: MySQL la rifiuta con
-                // l'errore 1171, ma lo farebbe al server, dopo che la
-                // scrittura e partita. Rifiutarla qui la ferma prima di
-                // qualsiasi contatto di rete, e con lo stesso messaggio su
-                // entrambi i provider — PostgreSQL invece la accetterebbe
-                // coercendo la colonna a NOT NULL, quindi creando una tabella
-                // che diverge in silenzio dallo schema dichiarato.
-                if operation.mode == WriteMode::Create && column.nullable {
-                    return Err(prepare_error(
-                        ErrorCategory::InvalidPlan,
-                        format!(
-                            "chiave primaria MySQL '{key}' e nullable nello schema \
-                             Arrow: una PRIMARY KEY non ammette NULL"
-                        ),
-                    ));
+                if operation.mode == WriteMode::Create {
+                    validate_primary_key_column(key, column)?;
                 }
             }
             if operation.mode == WriteMode::Create {
-                let mut seen = std::collections::BTreeSet::new();
-                for key in &operation.keys {
-                    if !seen.insert(key.as_str()) {
-                        return Err(prepare_error(
-                            ErrorCategory::InvalidPlan,
-                            format!("chiave primaria MySQL '{key}' ripetuta"),
-                        ));
-                    }
-                }
+                validate_primary_key_shape(&operation.keys)?;
             }
         }
         if operation.mode == WriteMode::DeleteByKeys {
@@ -1425,6 +1404,102 @@ fn write_column_kind(field: &Field) -> Result<MysqlColumnKind> {
     Ok(kind)
 }
 
+/// Numero massimo di colonne in una chiave `InnoDB`.
+///
+/// Il server risponde 1070 "Too many key parts specified; max 16 parts
+/// allowed", ma solo dopo aver ricevuto la DDL: il piano si ferma prima.
+const MAX_PRIMARY_KEY_PARTS: usize = 16;
+
+/// Vincoli strutturali della PRIMARY KEY che `Create` costruisce.
+///
+/// # Errors
+///
+/// `InvalidPlan` per chiavi ripetute o oltre il numero di parti che il motore
+/// accetta.
+fn validate_primary_key_shape(keys: &[String]) -> Result<()> {
+    if keys.len() > MAX_PRIMARY_KEY_PARTS {
+        return Err(prepare_error(
+            ErrorCategory::InvalidPlan,
+            format!(
+                "chiave primaria MySQL con {} colonne: il motore ne accetta al \
+                 massimo {MAX_PRIMARY_KEY_PARTS}",
+                keys.len()
+            ),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for key in keys {
+        if !seen.insert(key.as_str()) {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                format!("chiave primaria MySQL '{key}' ripetuta"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Vincoli di **tipo** che una colonna deve rispettare per stare in una
+/// PRIMARY KEY `MySQL`.
+///
+/// Sono provider-specifici: dipendono da come `mysql_column_ddl` traduce il
+/// tipo Arrow e da cosa il motore accetta come colonna di chiave. Ogni caso e
+/// stato verificato contro il riferimento, e ciascuno oggi fallirebbe **al
+/// server**, dopo che la scrittura e partita:
+///
+/// * `Utf8` -> `TEXT` e `Binary` -> `BLOB`: errore 1170, "BLOB/TEXT column
+///   used in key specification without a key length". Lo schema Arrow non
+///   porta una lunghezza massima, quindi il piano non puo generare il
+///   prefisso che li renderebbe indicizzabili: la mode non ha una semantica
+///   qualificata per queste colonne, e dirlo prima e meglio che scoprirlo
+///   dopo;
+/// * `Geometry`: errore 3728, "Spatial indexes can't be primary or unique
+///   indexes";
+/// * `F32`/`F64`: accettati dal motore, ma una chiave primaria su virgola
+///   mobile identifica righe per un valore la cui uguaglianza dipende
+///   dall'arrotondamento. Resta chiusa finche non esiste una semantica
+///   dichiarata.
+///
+/// # Errors
+///
+/// `InvalidPlan` per un tipo che non puo essere chiave, con il motivo.
+fn validate_primary_key_column(key: &str, column: &MysqlWriteColumn) -> Result<()> {
+    if column.nullable {
+        return Err(prepare_error(
+            ErrorCategory::InvalidPlan,
+            format!(
+                "chiave primaria MySQL '{key}' e nullable nello schema Arrow: \
+                 una PRIMARY KEY non ammette NULL"
+            ),
+        ));
+    }
+    let refusal = match column.kind {
+        MysqlColumnKind::Utf8 => Some(
+            "il tipo Arrow Utf8 diventa TEXT e MySQL rifiuta TEXT in chiave \
+             senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
+        ),
+        MysqlColumnKind::Binary => Some(
+            "il tipo Arrow Binary diventa BLOB e MySQL rifiuta BLOB in chiave \
+             senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
+        ),
+        MysqlColumnKind::Geometry => {
+            Some("MySQL non ammette colonne spatial come chiave primaria o unique")
+        }
+        MysqlColumnKind::F32 | MysqlColumnKind::F64 => Some(
+            "una chiave primaria in virgola mobile identifica le righe con un \
+             valore la cui uguaglianza dipende dall'arrotondamento",
+        ),
+        _ => None,
+    };
+    if let Some(reason) = refusal {
+        return Err(prepare_error(
+            ErrorCategory::InvalidPlan,
+            format!("chiave primaria MySQL '{key}' non qualificata: {reason}"),
+        ));
+    }
+    Ok(())
+}
+
 fn unsupported(message: impl Into<String>) -> DatabaseError {
     prepare_error(ErrorCategory::Unsupported, message)
 }
@@ -1888,6 +1963,88 @@ mod tests {
                 .category,
             ErrorCategory::InvalidPlan
         );
+    }
+
+    /// I tipi che non possono stare in una PRIMARY KEY `MySQL` sono rifiutati
+    /// dal piano, non dal server.
+    ///
+    /// Ciascuno di questi casi e stato verificato contro il riferimento e
+    /// produce un errore lato server: 1170 per TEXT/BLOB, 3728 per le colonne
+    /// spatial, 1070 oltre 16 parti. Arrivarci significa aver gia aperto la
+    /// sessione ed eseguito la DDL.
+    #[test]
+    fn primary_key_types_and_limits_are_refused_before_the_server() {
+        let cases: [(&str, DataType, &str); 4] = [
+            ("utf8", DataType::Utf8, "TEXT"),
+            ("binary", DataType::Binary, "BLOB"),
+            ("float32", DataType::Float32, "virgola mobile"),
+            ("float64", DataType::Float64, "virgola mobile"),
+        ];
+        for (name, data_type, expected) in cases {
+            let input = schema(vec![
+                Field::new(name, data_type, false),
+                Field::new("payload", DataType::Int64, false),
+            ]);
+            let mut operation = append_operation();
+            operation.mode = WriteMode::Create;
+            operation.keys = vec![name.to_owned()];
+            let Err(error) = MysqlWritePlan::compile(&input, &operation, "warehouse") else {
+                panic!("{name}: chiave accettata");
+            };
+            assert_eq!(error.category, ErrorCategory::InvalidPlan, "{name}");
+            assert_eq!(error.phase, ErrorPhase::Prepare, "{name}");
+            assert!(
+                error.message.contains(expected),
+                "{name}: messaggio senza la ragione: {}",
+                error.message
+            );
+        }
+
+        // Spatial: il motore la rifiuta con 3728.
+        // La fixture spatial e nullable, e il controllo sulla nullability
+        // scatterebbe per primo nascondendo quello sul tipo: qui serve una
+        // colonna spatial **non** nullable, cosi la sola ragione del rifiuto e
+        // che MySQL non ammette indici spatial come chiave.
+        let nullable_spatial = spatial_field("point", 4_326);
+        let spatial = schema(vec![
+            Field::new(
+                nullable_spatial.name(),
+                nullable_spatial.data_type().clone(),
+                false,
+            )
+            .with_metadata(nullable_spatial.metadata().clone()),
+            Field::new("payload", DataType::Int64, false),
+        ]);
+        let mut operation = spatial_operation();
+        operation.mode = WriteMode::Create;
+        operation.keys = vec!["geom".to_owned()];
+        let error = MysqlWritePlan::compile(&spatial, &operation, "warehouse")
+            .expect_err("chiave spatial accettata");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert!(error.message.contains("spatial"), "{}", error.message);
+
+        // Oltre 16 parti: il motore risponde 1070.
+        let wide_fields = (0..17)
+            .map(|index| Field::new(format!("k{index}"), DataType::Int64, false))
+            .collect::<Vec<_>>();
+        let wide = schema(wide_fields);
+        let mut too_many = append_operation();
+        too_many.mode = WriteMode::Create;
+        too_many.keys = (0..17).map(|index| format!("k{index}")).collect();
+        let error =
+            MysqlWritePlan::compile(&wide, &too_many, "warehouse").expect_err("17 parti accettate");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert!(error.message.contains("16"), "{}", error.message);
+
+        // 16 parti esatte restano ammesse: il limite e un confine, non un veto.
+        let bounded_fields = (0..16)
+            .map(|index| Field::new(format!("k{index}"), DataType::Int64, false))
+            .collect::<Vec<_>>();
+        let bounded = schema(bounded_fields);
+        let mut exact = append_operation();
+        exact.mode = WriteMode::Create;
+        exact.keys = (0..16).map(|index| format!("k{index}")).collect();
+        MysqlWritePlan::compile(&bounded, &exact, "warehouse").expect("16 parti rifiutate");
     }
 
     #[test]

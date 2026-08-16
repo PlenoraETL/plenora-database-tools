@@ -84,8 +84,8 @@ identificate per nome sulla baseline fissata per digest:
 
 | Famiglia | Runner | Test |
 | --- | --- | --- |
-| unit | `cargo test -- --skip live_` | 125 |
-| live default | `cargo test live_` | 33 |
+| unit | `cargo test -- --skip live_` | 126 |
+| live default | `cargo test live_` | 34 |
 | live reference | `cargo test live_ -- --ignored` | 25 |
 
 `live default` sono i test live **non** `#[ignore]`: una `cargo test` nuda li
