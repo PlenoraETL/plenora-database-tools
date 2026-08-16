@@ -919,6 +919,17 @@ pub fn committed_outcome_for_mode(
         error.phase = ErrorPhase::Write;
         error.provider = Some(plenora_database_core::plan::ProviderKind::Mysql);
         error.execution_id = Some(outcome.execution_id.clone());
+        // Il COMMIT e gia riuscito: a essere incoerente e la nostra
+        // contabilita, non lo stato del server. Dichiararlo `None` o lasciarlo
+        // degradare a `RolledBack` invita a un retry che raddoppierebbe le
+        // righe gia scritte.
+        error.remote_effect = RemoteEffect::Committed;
+        error.retry = RetryDisposition::Never;
+        error.message = format!(
+            "{} [le righe sono committed: l'incoerenza e nel conteggio \
+             pubblicato, non nello stato remoto]",
+            error.message
+        );
         error
     })?;
     Ok(outcome)
@@ -958,7 +969,15 @@ pub fn commit_failure(
             ),
         }),
     };
-    outcome.validate()?;
+    // Anche qui l'esito del server e ignoto: se la validazione del documento
+    // fallisce, l'errore che ne esce non deve suggerire che non sia successo
+    // nulla.
+    outcome.validate().map_err(|mut error| {
+        error.execution_id = Some(outcome.execution_id.clone());
+        error.remote_effect = RemoteEffect::Unknown;
+        error.retry = RetryDisposition::RequiresRecovery;
+        error
+    })?;
     Ok(outcome)
 }
 
@@ -1030,6 +1049,13 @@ pub fn stamp_ddl_residue(
     }
     match result {
         Err(mut error) => {
+            // Un errore che dichiara dati committed non ha residui da
+            // annunciare: la tabella c'e per forza, e declassarlo a `Partial`
+            // o chiedere recupero suggerirebbe un retry che raddoppia le
+            // righe.
+            if error.remote_effect == RemoteEffect::Committed {
+                return Err(error);
+            }
             if matches!(
                 error.remote_effect,
                 RemoteEffect::RolledBack | RemoteEffect::None
@@ -2426,6 +2452,36 @@ mod tests {
         let stamped = stamp_ddl_residue(Ok(committed.clone()), DdlResidue::CreatedTable)
             .expect("outcome propagato");
         assert_eq!(stamped, committed);
+    }
+
+    /// Dopo un COMMIT riuscito nessun errore puo dire che il server e come
+    /// prima.
+    ///
+    /// Se la validazione del documento fallisce, a essere incoerente e il
+    /// conteggio pubblicato, non lo stato remoto: le righe sono scritte. Un
+    /// esito `None`, `RolledBack` o `Partial` inviterebbe a un retry che le
+    /// raddoppierebbe.
+    #[test]
+    fn an_error_after_a_successful_commit_declares_the_rows_committed() {
+        // `confirmed > received` e incoerente per contratto: il documento non
+        // valida, ma il COMMIT e gia avvenuto.
+        let error = committed_outcome_for_mode("mysql-post-1".to_owned(), 1, 5, WriteMode::Append)
+            .expect_err("documento incoerente accettato");
+        assert_eq!(error.remote_effect, RemoteEffect::Committed);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        assert_eq!(error.category, ErrorCategory::Internal);
+        assert!(error.message.contains("committed"));
+
+        // Il residuo della DDL non lo tocca: la tabella c'e per forza, e
+        // chiedere recupero suggerirebbe il retry che va evitato.
+        let stamped = stamp_ddl_residue(Err(error.clone()), DdlResidue::CreatedTable)
+            .expect_err("errore propagato");
+        assert_eq!(stamped.remote_effect, RemoteEffect::Committed);
+        assert_eq!(stamped.retry, RetryDisposition::Never);
+        assert_eq!(
+            stamped.message, error.message,
+            "il residuo ha aggiunto rumore a un esito gia committed"
+        );
     }
 
     #[test]

@@ -143,6 +143,7 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",
+    "write::tests::an_error_after_a_successful_commit_declares_the_rows_committed",
     "write::tests::batch_schema_drift_is_rejected_before_binding",
     "write::tests::chunk_binding_is_positional_and_never_interpolates_values",
     "write::tests::chunk_bounds_are_checked_against_the_batch",
