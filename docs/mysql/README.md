@@ -37,7 +37,8 @@ indipendente.
   `remote_effect = partial` e `retry = requires_recovery`. È la combinazione
   `rollback_on_failure = true` + `transactional_ddl = false` descritta nel
   contratto delle capability. Le altre cinque modalità non emettono DDL. **Sei modalità disponibili su sette**: Append + **Create** (CREATE
-  TABLE dallo schema Arrow) + **Replace** (`DELETE FROM` + INSERT bulk nella
+  TABLE dallo schema Arrow; `keys` opzionali diventano la PRIMARY KEY, e
+  devono essere colonne non-nullable e non ripetute) + **Replace** (`DELETE FROM` + INSERT bulk nella
   stessa transazione InnoDB) + **Upsert** (`INSERT ... ON DUPLICATE KEY
   UPDATE`) + **DeleteByKeys** (`DELETE ... WHERE (keys) IN (...)`) +
   **Update** (staging TEMPORARY + `UPDATE JOIN`). **TruncateInsert** resta

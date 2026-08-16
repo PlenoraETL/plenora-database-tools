@@ -293,7 +293,9 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         nella `cargo test` nuda veniva letta come rumore.
         """
 
-        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 33)
+        self.assertEqual(
+            len(gate.EXPECTED_LIVE_DEFAULT_TESTS), len(collect()["live_default"])
+        )
         self.assertIn(
             "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,
@@ -354,7 +356,14 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for name in gate.EXPECTED_UNIT_TESTS
             if name.startswith("write::tests::")
         }
-        self.assertEqual(len(write_tests), 38)
+        self.assertEqual(
+            len(write_tests),
+            len([
+                name
+                for name in collect()["unit"]
+                if name.startswith("write::tests::")
+            ]),
+        )
         self.assertIn(
             "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
             write_tests,
@@ -379,7 +388,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
             gate.EXPECTED_UNIT_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), 125)
+        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), len(collect()["unit"]))
 
     def test_gate_pins_the_read_batching_and_diagnostics_inventory(self) -> None:
         """I test offline di batching e diagnostica sono fissati per nome.
@@ -469,7 +478,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "eseguiti 105, attesi 125"):
+            expected = len(collect()["unit"])
+            with self.assertRaisesRegex(
+                RuntimeError, f"eseguiti 105, attesi {expected}"
+            ):
                 gate.main()
 
         self.assertFalse(
@@ -828,6 +840,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             line for line in interfaces.splitlines() if line.startswith("| `Replace` |")
         )
         self.assertIn("staging + publish", row)
+
+    # I conteggi non compaiono piu come letterali in questo file: ogni test
+    # aggiunto ne avrebbe richiesti quattro aggiornamenti, e il valore che
+    # portavano era gia coperto dal confronto per nome con la sorgente. Dove
+    # serve un numero, lo si chiede all'inventario. L'unico posto dove i
+    # conteggi restano scritti a mano e la tabella di `docs/mysql/README.md`,
+    # perche un documento deve mostrarli — ed e presidiata dal test qui sotto.
 
     def test_the_documented_test_counts_match_the_inventory(self) -> None:
         """I conteggi in `docs/mysql/README.md` seguono la sorgente.

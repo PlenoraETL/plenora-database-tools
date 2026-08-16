@@ -409,7 +409,11 @@ impl MysqlSession {
     ///
     /// **WriteMode supportati** (6 su 7):
     /// - `append` (default)
-    /// - `create` (CREATE TABLE + INSERT)
+    /// - `create` (CREATE TABLE + INSERT). `keys` e opzionale e diventa la
+    ///   PRIMARY KEY della tabella creata: le colonne indicate devono
+    ///   esistere nello schema Arrow, essere **non-nullable** e non
+    ///   ripetersi, altrimenti il piano viene rifiutato prima di toccare il
+    ///   server
     /// - `replace` (DELETE FROM + INSERT nella stessa transazione: il
     ///   target deve gia esistere e non viene ricreato, quindi schema,
     ///   indici, FK, trigger, check, default, grant e `AUTO_INCREMENT`
