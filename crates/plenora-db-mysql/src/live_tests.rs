@@ -5908,3 +5908,83 @@ async fn live_v12_write_truncate_insert_rejected_without_remote_effects() {
         metadata_before
     );
 }
+
+/// Un `Create` che fallisce dopo la DDL lascia la tabella sul server: il DDL
+/// MySQL fa commit implicito e il `ROLLBACK` annulla solo le righe. L'errore
+/// deve dichiarare l'effetto parziale invece di affermare che nulla e
+/// successo — un retry cieco troverebbe `Conflict` su un target che il
+/// chiamante crede assente.
+#[tokio::test]
+async fn live_v12_write_create_failure_leaves_the_table_and_reports_partial() {
+    let table = "_v12_create_residue";
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let (schema, batch) = scalar_batch(&[1], &["prima"]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        table,
+        plenora_database_core::plan::WriteMode::Create,
+    );
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare create");
+    let Err(error) = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(FailingBatchesStream {
+                schema,
+                first: Some(batch),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+    else {
+        panic!("stream interrotto accettato come successo");
+    };
+
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Partial,
+        "un Create fallito non e RolledBack: la tabella resta"
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    assert!(
+        error.message.contains("commit implicito"),
+        "il messaggio deve nominare il residuo: {}",
+        error.message
+    );
+
+    // La tabella esiste davvero ed e vuota: le righe sono tornate indietro,
+    // lo schema no.
+    assert_eq!(
+        replace_fixture_scalar(&format!(
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+        ))
+        .await,
+        "1",
+        "la tabella creata dalla DDL doveva sopravvivere al rollback"
+    );
+    assert_eq!(
+        replace_fixture_scalar(&format!("SELECT CAST(COUNT(*) AS CHAR) FROM {table}")).await,
+        "0",
+        "le righe non sono state annullate"
+    );
+
+    replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+}

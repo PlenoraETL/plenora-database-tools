@@ -292,7 +292,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         nella `cargo test` nuda veniva letta come rumore.
         """
 
-        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 28)
+        self.assertEqual(len(gate.EXPECTED_LIVE_DEFAULT_TESTS), 29)
         self.assertIn(
             "live_tests::live_v12_write_upsert_rejects_conflicting_unique_index",
             gate.EXPECTED_LIVE_DEFAULT_TESTS,
@@ -317,6 +317,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_v12_write_replace_restores_the_previous_rows_when_the_stream_fails",
             "live_tests::live_v12_write_replace_restores_the_previous_rows_on_cancellation",
             "live_tests::live_v12_write_truncate_insert_rejected_without_remote_effects",
+            "live_tests::live_v12_write_create_failure_leaves_the_table_and_reports_partial",
         ):
             self.assertIn(name, gate.EXPECTED_LIVE_DEFAULT_TESTS)
         # I nomi del vecchio contratto — Replace rifiutata, TruncateInsert
@@ -352,7 +353,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             for name in gate.EXPECTED_UNIT_TESTS
             if name.startswith("write::tests::")
         }
-        self.assertEqual(len(write_tests), 34)
+        self.assertEqual(len(write_tests), 35)
         self.assertIn(
             "write::tests::compile_and_preflight_qualify_only_xy_wkb_with_matching_srid",
             write_tests,
@@ -366,6 +367,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             write_tests,
         )
         self.assertIn(
+            "write::tests::a_created_table_survives_the_rollback_and_the_error_says_so",
+            write_tests,
+        )
+        self.assertIn(
             "provider::tests::prepare_write_rejects_unqualified_operations_before_the_network",
             gate.EXPECTED_UNIT_TESTS,
         )
@@ -373,7 +378,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
             gate.EXPECTED_UNIT_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), 121)
+        self.assertEqual(len(gate.EXPECTED_UNIT_TESTS), 122)
 
     def test_gate_pins_the_read_batching_and_diagnostics_inventory(self) -> None:
         """I test offline di batching e diagnostica sono fissati per nome.
@@ -463,7 +468,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             patch.object(gate, "validate_reference", return_value={}),
             patch.object(gate, "run_cargo", side_effect=run_cargo),
         ):
-            with self.assertRaisesRegex(RuntimeError, "eseguiti 105, attesi 121"):
+            with self.assertRaisesRegex(RuntimeError, "eseguiti 105, attesi 122"):
                 gate.main()
 
         self.assertFalse(

@@ -959,10 +959,37 @@ pub fn commit_failure(
     Ok(outcome)
 }
 
-pub fn rolled_back_error(
+/// Cosa la scrittura ha lasciato sul server prima di aprire la transazione.
+///
+/// Su `MySQL` il DDL fa commit implicito: una `CREATE TABLE` eseguita nella
+/// fase di preparazione non appartiene alla transazione che segue e nessun
+/// `ROLLBACK` la annulla.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DdlResidue {
+    /// Nessun DDL eseguito: il rollback della transazione annulla tutto.
+    None,
+    /// Una tabella e stata creata e sopravvive al rollback delle righe.
+    CreatedTable,
+}
+
+/// Esito di un fallimento prima del commit, con il residuo che il rollback
+/// non puo annullare.
+///
+/// Senza il residuo l'errore direbbe `RolledBack`, cioe "il server e come
+/// prima". Con una `CREATE TABLE` gia committata implicitamente non lo e: la
+/// tabella resta, vuota, e un retry cieco della stessa operazione fallirebbe
+/// `Conflict` su "target gia esistente". L'esito corretto e `Partial` —
+/// righe annullate, schema persistito — con recupero richiesto.
+///
+/// # Errors
+///
+/// Non fallisce: trasforma l'errore in ingresso.
+#[must_use]
+pub fn rolled_back_error_with_residue(
     mut error: DatabaseError,
     rollback_confirmed: bool,
     execution_id: &str,
+    residue: DdlResidue,
 ) -> DatabaseError {
     error.execution_id = Some(execution_id.to_owned());
     if rollback_confirmed || error.remote_effect == RemoteEffect::RolledBack {
@@ -972,6 +999,22 @@ pub fn rolled_back_error(
         if error.retry != RetryDisposition::Quarantine {
             error.retry = RetryDisposition::RequiresRecovery;
         }
+    }
+    if residue == DdlResidue::CreatedTable {
+        // Il residuo vince su `RolledBack`: le righe sono tornate indietro, la
+        // tabella no. `Unknown` resta `Unknown` — non sapere se le righe siano
+        // sparite e piu grave che sapere che lo schema e rimasto.
+        if error.remote_effect == RemoteEffect::RolledBack {
+            error.remote_effect = RemoteEffect::Partial;
+        }
+        if error.retry != RetryDisposition::Quarantine {
+            error.retry = RetryDisposition::RequiresRecovery;
+        }
+        error.message = format!(
+            "{} [la tabella creata da mode='create' e rimasta: il DDL MySQL \
+             fa commit implicito e non e annullato dal rollback]",
+            error.message
+        );
     }
     error
 }
@@ -2100,7 +2143,8 @@ mod tests {
         assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
         assert_eq!(error.execution_id.as_deref(), Some("mysql-test-2"));
 
-        let shaped = rolled_back_error(deadlock, false, "mysql-test-2");
+        let shaped =
+            rolled_back_error_with_residue(deadlock, false, "mysql-test-2", DdlResidue::None);
         assert_eq!(shaped.remote_effect, RemoteEffect::RolledBack);
         assert_eq!(shaped.execution_id.as_deref(), Some("mysql-test-2"));
     }
@@ -2114,12 +2158,14 @@ mod tests {
             ErrorPhase::Write,
             RemoteEffect::None,
         );
-        let confirmed = rolled_back_error(failure.clone(), true, "mysql-test-3");
+        let confirmed =
+            rolled_back_error_with_residue(failure.clone(), true, "mysql-test-3", DdlResidue::None);
         assert_eq!(confirmed.category, ErrorCategory::Conflict);
         assert_eq!(confirmed.remote_effect, RemoteEffect::RolledBack);
         assert_eq!(confirmed.retry, RetryDisposition::Never);
 
-        let ambiguous = rolled_back_error(failure, false, "mysql-test-3");
+        let ambiguous =
+            rolled_back_error_with_residue(failure, false, "mysql-test-3", DdlResidue::None);
         assert_eq!(ambiguous.remote_effect, RemoteEffect::Unknown);
         assert_eq!(ambiguous.retry, RetryDisposition::RequiresRecovery);
     }
@@ -2137,7 +2183,12 @@ mod tests {
             diagnostics: None,
         };
 
-        let shaped = rolled_back_error(quarantined, false, "mysql-test-quarantine");
+        let shaped = rolled_back_error_with_residue(
+            quarantined,
+            false,
+            "mysql-test-quarantine",
+            DdlResidue::None,
+        );
         assert_eq!(shaped.remote_effect, RemoteEffect::Unknown);
         assert_eq!(shaped.retry, RetryDisposition::Quarantine);
         assert!(!shaped.is_retryable());
@@ -2149,6 +2200,61 @@ mod tests {
 
     /// Il conteggio pubblicato deve superare la validazione del contratto e
     /// non puo confermare piu righe di quante ne siano state ricevute.
+    /// Un `Create` fallito prima del commit non e "come prima": la tabella
+    /// creata dalla DDL sopravvive al rollback, perche su MySQL il DDL fa
+    /// commit implicito. L'errore deve dirlo, altrimenti un retry cieco
+    /// sbatte contro `Conflict` su un target che il chiamante crede assente.
+    #[test]
+    fn a_created_table_survives_the_rollback_and_the_error_says_so() {
+        let failure = write_error(ErrorCategory::Protocol, "insert fallita");
+
+        // Senza residuo il rollback confermato significa davvero "nulla e
+        // successo".
+        let clean = rolled_back_error_with_residue(
+            failure.clone(),
+            true,
+            "mysql-create-1",
+            DdlResidue::None,
+        );
+        assert_eq!(clean.remote_effect, RemoteEffect::RolledBack);
+        assert!(!clean.message.contains("tabella creata"));
+
+        // Con la tabella creata l'effetto e parziale, non annullato.
+        let residual = rolled_back_error_with_residue(
+            failure.clone(),
+            true,
+            "mysql-create-2",
+            DdlResidue::CreatedTable,
+        );
+        assert_eq!(residual.remote_effect, RemoteEffect::Partial);
+        assert_eq!(residual.retry, RetryDisposition::RequiresRecovery);
+        assert!(residual.message.contains("commit implicito"));
+        assert_eq!(residual.execution_id.as_deref(), Some("mysql-create-2"));
+
+        // Rollback non confermato: l'incertezza sulle righe e piu grave della
+        // certezza sullo schema, quindi `Unknown` resta.
+        let ambiguous = rolled_back_error_with_residue(
+            failure,
+            false,
+            "mysql-create-3",
+            DdlResidue::CreatedTable,
+        );
+        assert_eq!(ambiguous.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(ambiguous.retry, RetryDisposition::RequiresRecovery);
+
+        // Una sessione gia quarantinata non viene declassata a
+        // `RequiresRecovery`: la quarantena e la disposizione piu forte.
+        let mut quarantined = write_error(ErrorCategory::Timeout, "timeout");
+        quarantined.retry = RetryDisposition::Quarantine;
+        let shaped = rolled_back_error_with_residue(
+            quarantined,
+            false,
+            "mysql-create-4",
+            DdlResidue::CreatedTable,
+        );
+        assert_eq!(shaped.retry, RetryDisposition::Quarantine);
+    }
+
     #[test]
     fn committed_outcome_row_counts_are_contract_valid() {
         let outcome =

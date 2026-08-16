@@ -214,6 +214,15 @@ impl Provider for MysqlProvider {
                 // fail-closed e non ha un flag proprio nel contratto: il
                 // consumer che la chiede riceve `Unsupported` in prepare, con
                 // il rinvio a `Replace` nel messaggio.
+                //
+                // `rollback_on_failure` e un flag unico per tutte le mode e
+                // descrive le righe, non lo schema: su `Create` la tabella
+                // nasce da una DDL con commit implicito e sopravvive al
+                // rollback. Il segnale di contratto per quel residuo e
+                // `transactions.transactional_ddl = false` qui sotto, e
+                // l'errore di un `Create` fallito lo dichiara riga per riga
+                // con `RemoteEffect::Partial`. Le altre cinque mode non
+                // emettono DDL, quindi per loro il flag e pieno.
                 writes: WriteCapabilities {
                     create: true,
                     append: true,
@@ -486,11 +495,10 @@ async fn execute_mysql_write(
         .as_deref()
         .unwrap_or_else(|| provider.config.database());
 
-    // v1.2 — Prepare target step per Create / TruncateInsert.
-    // Create: verifica NON exists, poi esegue CREATE TABLE.
-    // TruncateInsert: verifica exists via describe (sotto), poi TRUNCATE.
-    // Append: no-op (path originale).
-    if operation.mode == plenora_database_core::plan::WriteMode::Create {
+    // Prepare target step per Create: verifica NON exists, poi CREATE TABLE.
+    // Le altre mode non emettono DDL — Replace usa DELETE, Update una
+    // TEMPORARY table che muore con la sessione.
+    let ddl_residue = if operation.mode == plenora_database_core::plan::WriteMode::Create {
         let pre_check =
             describe_object(&mut session, target_schema, &operation.target.object, token).await;
         match pre_check {
@@ -509,7 +517,13 @@ async fn execute_mysql_write(
         session
             .exec_control(&ddl, ErrorPhase::Prepare, token)
             .await?;
-    }
+        // Da qui in poi la tabella esiste sul server e nessun ROLLBACK la
+        // rimuove: il DDL MySQL fa commit implicito. Ogni fallimento
+        // successivo deve dichiararlo invece di affermare `RolledBack`.
+        crate::write::DdlResidue::CreatedTable
+    } else {
+        crate::write::DdlResidue::None
+    };
 
     let target =
         describe_object(&mut session, target_schema, &operation.target.object, token).await?;
@@ -601,7 +615,13 @@ async fn execute_mysql_write(
             )
             .await
         {
-            return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+            return Err(rollback_after_failure_with_residue(
+                &mut session,
+                error,
+                &execution_id,
+                ddl_residue,
+            )
+            .await);
         }
     }
     if let Some((declared_rows, policy)) = diagnostic_input {
@@ -635,7 +655,13 @@ async fn execute_mysql_write(
     {
         Ok(progress) => progress,
         Err(error) => {
-            return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+            return Err(rollback_after_failure_with_residue(
+                &mut session,
+                error,
+                &execution_id,
+                ddl_residue,
+            )
+            .await);
         }
     };
 
@@ -660,7 +686,13 @@ async fn execute_mysql_write(
                     final_affected = updated;
                 }
                 Err(error) => {
-                    return Err(rollback_after_failure(&mut session, error, &execution_id).await);
+                    return Err(rollback_after_failure_with_residue(
+                        &mut session,
+                        error,
+                        &execution_id,
+                        ddl_residue,
+                    )
+                    .await);
                 }
             }
         }
@@ -918,10 +950,29 @@ async fn write_batch_chunks_for_mode(
     Ok(affected_total)
 }
 
+/// Rollback del percorso diagnostico, che e Append-only e non emette DDL:
+/// per costruzione non ha residui da dichiarare.
 async fn rollback_after_failure(
     session: &mut crate::MysqlSession,
     error: DatabaseError,
     execution_id: &str,
+) -> DatabaseError {
+    rollback_after_failure_with_residue(
+        session,
+        error,
+        execution_id,
+        crate::write::DdlResidue::None,
+    )
+    .await
+}
+
+/// Annulla la transazione e costruisce l'errore dichiarando cio che il
+/// rollback non ha potuto annullare.
+async fn rollback_after_failure_with_residue(
+    session: &mut crate::MysqlSession,
+    error: DatabaseError,
+    execution_id: &str,
+    residue: crate::write::DdlResidue,
 ) -> DatabaseError {
     let cleanup_cancellation = CancellationToken::new();
     let confirmed = session
@@ -935,7 +986,7 @@ async fn rollback_after_failure(
     if !confirmed {
         session.discard().await;
     }
-    crate::write::rolled_back_error(error, confirmed, execution_id)
+    crate::write::rolled_back_error_with_residue(error, confirmed, execution_id, residue)
 }
 
 fn unsupported(message: impl Into<String>) -> DatabaseError {
