@@ -7,20 +7,13 @@ import pytest
 
 import plenora_database
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+from ._harness import connect_postgres, postgres_dsn_or_skip
 
 
 @pytest.fixture(name="session")
 def _session():
-    dsn = _dsn_or_skip()
-    s = plenora_database.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.execute("DROP TABLE IF EXISTS _pyf5_tx")
     s.execute(
         "CREATE TABLE _pyf5_tx (id INT PRIMARY KEY, val TEXT NOT NULL)"

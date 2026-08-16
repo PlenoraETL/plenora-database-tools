@@ -7,14 +7,14 @@ import pytest
 
 import plenora_database as p
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
+from ._harness import connect_postgres, postgres_dsn_or_skip
 
 
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+# POINT(0 0) con SRID 4326: 1 byte di endianness + 4 di tipo + 4 di SRID +
+# due double = 25 byte. Serve un EWKB **valido** perche il costruttore lo
+# verifica davvero: i byte nulli usati prima passavano solo finche nessuno
+# guardava, e questi test non parlano di validazione EWKB.
+VALID_POINT_EWKB = bytes.fromhex("0101000020e610000000000000000000000000000000000000")
 
 
 def _postgis_or_skip(session) -> None:
@@ -24,8 +24,8 @@ def _postgis_or_skip(session) -> None:
 
 @pytest.fixture(name="session")
 def _session():
-    dsn = _dsn_or_skip()
-    s = p.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     _postgis_or_skip(s)
     try:
         yield s
@@ -57,19 +57,19 @@ def test_spatial_reference_rejects_bad_semantics() -> None:
 
 
 def test_where_spatial_rejects_bad_predicate(session) -> None:
-    ref = p.spatial.geometry(ewkb=b"\x00", srid=4326)
+    ref = p.spatial.geometry(ewkb=VALID_POINT_EWKB, srid=4326)
     with pytest.raises(ValueError, match="predicato spaziale non valido"):
         session.select("t").where_spatial("g", "outside", ref)
 
 
 def test_where_spatial_dwithin_requires_distance(session) -> None:
-    ref = p.spatial.geometry(ewkb=b"\x00", srid=4326)
+    ref = p.spatial.geometry(ewkb=VALID_POINT_EWKB, srid=4326)
     with pytest.raises(ValueError, match="distance_meters"):
         session.select("t").where_spatial("g", "d_within", ref)
 
 
 def test_where_spatial_distance_only_for_dwithin(session) -> None:
-    ref = p.spatial.geometry(ewkb=b"\x00", srid=4326)
+    ref = p.spatial.geometry(ewkb=VALID_POINT_EWKB, srid=4326)
     with pytest.raises(ValueError, match="distance_meters non ammesso"):
         session.select("t").where_spatial("g", "intersects", ref, distance_meters=1.0)
 
@@ -261,14 +261,8 @@ def test_spatial_predicate_chains_with_other_where(session) -> None:
 
 
 def test_spatial_reference_repr_hides_ewkb_bytes() -> None:
-    # POINT(0 0) con SRID: 1 byte di endianness + 4 di tipo + 4 di SRID + due
-    # double = 25 byte esatti, quanti ne serve l'assert sulla lunghezza.
-    # Prima erano 25 byte nulli: il costruttore non li validava, e quando la
-    # validazione EWKB e diventata reale li ha rifiutati. Il test prova la
-    # redazione del repr, non l'assenza di controlli.
-    point = bytes.fromhex("0101000020e610000000000000000000000000000000000000")
-    assert len(point) == 25
-    ref = p.spatial.geometry(ewkb=point, srid=4326)
+    assert len(VALID_POINT_EWKB) == 25, "l'assert sulla lunghezza dipende da questo"
+    ref = p.spatial.geometry(ewkb=VALID_POINT_EWKB, srid=4326)
     r = repr(ref)
     assert "ewkb=<25B>" in r
     assert "srid=4326" in r

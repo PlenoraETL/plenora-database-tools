@@ -10,6 +10,75 @@ import io
 from typing import Any
 
 
+def _narrowed_type(field_type: Any, pa: Any) -> Any:
+    """L'equivalente a offset 32 bit di un tipo a offset larghi, se esiste.
+
+    I writer dei provider accettano `string`/`binary`/`list`; `pandas` non
+    lascia scegliere. Con pandas 3 e pyarrow 25 `Table.from_pandas` produce
+    `large_string` per ogni colonna di testo, e `copy_from` finiva su
+    "tipo Arrow non supportato dal writer PostgreSQL" per un DataFrame di tre
+    righe — un limite dell'adapter presentato come limite del provider.
+
+    La conversione e esplicita e puo fallire: oltre 2 GiB di offset il cast
+    solleva, invece di troncare. E il comportamento giusto — l'alternativa
+    sarebbe scrivere dati diversi da quelli passati.
+    """
+
+    if pa.types.is_large_string(field_type):
+        return pa.string()
+    if pa.types.is_large_binary(field_type):
+        return pa.binary()
+    # I tipi `view` esistono solo da pyarrow 16: chiederli a una versione
+    # precedente sarebbe un AttributeError, non un tipo assente.
+    for probe, replacement in (
+        ("is_string_view", pa.string()),
+        ("is_binary_view", pa.binary()),
+    ):
+        checker = getattr(pa.types, probe, None)
+        if checker is not None and checker(field_type):
+            return replacement
+    if pa.types.is_large_list(field_type):
+        return pa.list_(field_type.value_type)
+    return None
+
+
+def _narrow_batches(schema: Any, batches: list, pa: Any) -> tuple:
+    """Schema e batch con i tipi a offset larghi riportati a quelli stretti.
+
+    Restituisce gli originali quando non c'e nulla da convertire, cosi il
+    percorso comune non paga una copia.
+    """
+
+    replacements = {
+        index: narrowed
+        for index, field in enumerate(schema)
+        if (narrowed := _narrowed_type(field.type, pa)) is not None
+    }
+    if not replacements:
+        return schema, batches
+
+    narrowed_schema = schema
+    for index, replacement in replacements.items():
+        field = schema.field(index)
+        narrowed_schema = narrowed_schema.set(
+            index,
+            pa.field(field.name, replacement, field.nullable, field.metadata),
+        )
+    converted = [
+        pa.RecordBatch.from_arrays(
+            [
+                column.cast(narrowed_schema.field(index).type)
+                if index in replacements
+                else column
+                for index, column in enumerate(batch.columns)
+            ],
+            schema=narrowed_schema,
+        )
+        for batch in batches
+    ]
+    return narrowed_schema, converted
+
+
 def _to_ipc_bytes(source: Any) -> bytes:
     """Serializza `source` in bytes Arrow IPC stream self-contained.
 
@@ -73,6 +142,8 @@ def _to_ipc_bytes(source: Any) -> bytes:
             f"list di RecordBatch/dict o pandas.DataFrame — "
             f"trovato {type(source).__name__}"
         )
+
+    schema, batches = _narrow_batches(schema, list(batches), pa)
 
     buf = io.BytesIO()
     with ipc.new_stream(buf, schema) as writer:

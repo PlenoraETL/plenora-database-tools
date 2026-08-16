@@ -24,20 +24,13 @@ import pytest_asyncio
 
 import plenora_database as p
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+from ._harness import aconnect_postgres, connect_postgres, postgres_dsn_or_skip
 
 
 @pytest_asyncio.fixture(name="clean_schema")
 async def _clean_schema():
-    dsn = _dsn_or_skip()
-    async with await p.aconnect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    async with await aconnect_postgres(dsn) as s:
         await s.execute("DROP TABLE IF EXISTS _pyf8_building")
         await s.execute(
             "CREATE TABLE _pyf8_building ("
@@ -50,16 +43,16 @@ async def _clean_schema():
             " location geometry(Point, 4326))"
         )
     yield
-    async with await p.aconnect(dsn) as s:
+    async with await aconnect_postgres(dsn) as s:
         await s.execute("DROP TABLE IF EXISTS _pyf8_building")
 
 
 @pytest.mark.asyncio
 async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
-    dsn = _dsn_or_skip()
+    dsn = postgres_dsn_or_skip()
     b_uuid = "b1000000-0000-0000-0000-000000000001"
 
-    async with await p.aconnect(dsn) as s:
+    async with await aconnect_postgres(dsn) as s:
         # 1. Probe capabilities (metadata scoperti al connect)
         assert isinstance(s.server_version, str)
         assert any(c.isdigit() for c in s.server_version)
@@ -147,11 +140,11 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
 def test_e2e_pfm_building_lifecycle_sync(clean_schema) -> None:
     # Equivalente sync dell'e2e async — verifica che i pattern
     # documentati funzionino identicamente su entrambe le API.
-    dsn = _dsn_or_skip()
+    dsn = postgres_dsn_or_skip()
     # UUID valido (hex + dash, 36 char).
     b_uuid = "b2000000-0000-0000-0000-000000000002"
 
-    with p.connect(dsn) as s:
+    with connect_postgres(dsn) as s:
         if s.postgis_version is None:
             pytest.skip("scenario spaziale: PostGIS non installato")
 
@@ -206,8 +199,8 @@ def test_e2e_pfm_building_lifecycle_sync(clean_schema) -> None:
 def test_e2e_optimistic_conflict_pattern_sync() -> None:
     # Pattern PFM realistico: update ottimistico con expected_version.
     # Se il version è cambiato, riprova con la versione nuova.
-    dsn = _dsn_or_skip()
-    with p.connect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    with connect_postgres(dsn) as s:
         s.execute("DROP TABLE IF EXISTS _pyf8_opt")
         s.execute(
             "CREATE TABLE _pyf8_opt ("
@@ -256,8 +249,8 @@ def test_e2e_optimistic_conflict_pattern_sync() -> None:
 def test_e2e_error_taxonomy_reaches_python_correctly() -> None:
     # Smoke test: le 4 categorie più comuni (NotFound, Cancelled,
     # Schema per DDL, Protocol) restituiscono la sottoclasse corretta.
-    dsn = _dsn_or_skip()
-    with p.connect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    with connect_postgres(dsn) as s:
         # NotFound: tabella non esistente
         with pytest.raises(p.PlenoraNotFoundError):
             s.execute_scalar("SELECT * FROM _pyf8_missing_xyz")
@@ -279,8 +272,8 @@ async def test_e2e_concurrent_async_queries_share_runtime() -> None:
     # tokio senza bloccare l'event loop asyncio. Nessuna deve fallire.
     import asyncio
 
-    dsn = _dsn_or_skip()
-    async with await p.aconnect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    async with await aconnect_postgres(dsn) as s:
         results = await asyncio.gather(
             *(s.execute_scalar("SELECT $1::int", [i]) for i in range(20))
         )

@@ -8,17 +8,10 @@ import pytest
 
 import plenora_database as p
 
+from ._harness import connect_postgres, postgres_dsn_or_skip
+
 pyarrow = pytest.importorskip("pyarrow")
 pyarrow_ipc = pytest.importorskip("pyarrow.ipc")
-
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
 
 
 # ============================ P1.1 — upsert / update / delete_by_keys ==================
@@ -26,8 +19,8 @@ def _dsn_or_skip() -> str:
 
 @pytest.fixture(name="upsert_session")
 def _upsert_session():
-    dsn = _dsn_or_skip()
-    s = p.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.execute("DROP TABLE IF EXISTS _v030_upsert")
     s.execute(
         "CREATE TABLE _v030_upsert ("
@@ -106,8 +99,8 @@ def test_copy_from_keys_rejected_for_append_mode(upsert_session) -> None:
 
 @pytest.fixture(name="read_session")
 def _read_session():
-    dsn = _dsn_or_skip()
-    s = p.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.execute("DROP TABLE IF EXISTS _v030_read")
     s.execute(
         "CREATE TABLE _v030_read ("
@@ -184,8 +177,8 @@ def test_read_invalid_order_by_direction_raises(read_session) -> None:
 
 @pytest.fixture(name="pandas_session")
 def _pandas_session():
-    dsn = _dsn_or_skip()
-    s = p.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.execute("DROP TABLE IF EXISTS _v030_pandas")
     s.execute(
         "CREATE TABLE _v030_pandas ("

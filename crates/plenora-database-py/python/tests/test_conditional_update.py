@@ -8,20 +8,13 @@ import pytest_asyncio
 
 import plenora_database as p
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+from ._harness import aconnect_postgres, connect_postgres, postgres_dsn_or_skip
 
 
 @pytest.fixture(name="session")
 def _session():
-    dsn = _dsn_or_skip()
-    s = p.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.execute("DROP TABLE IF EXISTS _pyf42_opt")
     s.execute(
         "CREATE TABLE _pyf42_opt ("
@@ -126,8 +119,8 @@ def test_conditional_update_key_exists_but_stale_with_probe_raises_conflict(
 
 @pytest_asyncio.fixture(name="asession")
 async def _asession():
-    dsn = _dsn_or_skip()
-    s = await p.aconnect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = await aconnect_postgres(dsn)
     await s.execute("DROP TABLE IF EXISTS _pyf42_opt_async")
     await s.execute(
         "CREATE TABLE _pyf42_opt_async ("

@@ -7,20 +7,13 @@ import pytest
 
 import plenora_database
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+from ._harness import connect_postgres, postgres_dsn_or_skip
 
 
 @pytest.fixture(name="session")
 def _session():
-    dsn = _dsn_or_skip()
-    s = plenora_database.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     # Setup tabella condivisa: rimossa in teardown.
     s.execute("DROP TABLE IF EXISTS _pyf4_items")
     s.execute(
@@ -247,7 +240,7 @@ def test_session_wrapper_forwards_attributes(session) -> None:
 
 def test_session_wrapper_context_manager_closes(session) -> None:
     # session è già in context via fixture; qui apriamo un nuovo Session.
-    dsn = _dsn_or_skip()
-    with plenora_database.connect(dsn) as s2:
+    dsn = postgres_dsn_or_skip()
+    with connect_postgres(dsn) as s2:
         assert s2.is_closed is False
     assert s2.is_closed is True

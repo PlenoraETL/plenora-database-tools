@@ -28,7 +28,8 @@ import pytest
 
 import plenora_database as p
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
+from ._harness import POSTGRES_DSN_ENV, connect_postgres, postgres_dsn_or_skip
+
 BENCH_ENV = "PLENORA_BENCH_PARITY"
 DEFAULT_CLI_BIN = "/workspace/target/release/plenora-database"
 # Target ratio SDK / CLI (subprocess CLI overhead >= 3x).
@@ -36,13 +37,6 @@ MIN_SPEEDUP = 3.0
 # Numero iterazioni per campionamento. Sufficiente a smorzare rumore
 # senza rendere la CI troppo lenta (~10s con CLI subprocess).
 ITERATIONS = 20
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"bench: manca env {DSN_ENV}")
-    return dsn
 
 
 def _bench_enabled_or_skip() -> None:
@@ -65,12 +59,12 @@ def _cli_bin_or_skip() -> str:
 
 
 def _run_cli_scalar(bin_path: str, dsn: str) -> None:
-    env = {**os.environ, DSN_ENV: dsn}
+    env = {**os.environ, POSTGRES_DSN_ENV: dsn}
     subprocess.run(
         [
             bin_path,
             "execute-scalar",
-            DSN_ENV,
+            POSTGRES_DSN_ENV,
             "SELECT 42",
             "--type=i32",
         ],
@@ -92,19 +86,19 @@ def test_bench_execute_scalar_sdk_beats_subprocess_by_at_least_3x(
     capsys,
 ) -> None:
     _bench_enabled_or_skip()
-    dsn = _dsn_or_skip()
+    dsn = postgres_dsn_or_skip()
     cli_bin = _cli_bin_or_skip()
 
     # Warm-up: prima invocazione ha overhead JIT / caching / connect.
     _run_cli_scalar(cli_bin, dsn)
-    with p.connect(dsn) as warmup:
+    with connect_postgres(dsn) as warmup:
         warmup.execute_scalar("SELECT 42")
 
     # CLI subprocess
     cli_seconds = _bench(lambda: _run_cli_scalar(cli_bin, dsn), ITERATIONS)
 
     # SDK in-process (una sola Session riusata)
-    with p.connect(dsn) as s:
+    with connect_postgres(dsn) as s:
         sdk_seconds = _bench(lambda: s.execute_scalar("SELECT 42"), ITERATIONS)
 
     cli_ms = 1000.0 * cli_seconds / ITERATIONS
@@ -129,19 +123,19 @@ def test_bench_session_reuse_amortizes_connect_cost(capsys) -> None:
     misura il tempo per N=100 execute_scalar su una sola Session vs
     N=100 execute_scalar ognuna con Session dedicata (connect+close)."""
     _bench_enabled_or_skip()
-    dsn = _dsn_or_skip()
+    dsn = postgres_dsn_or_skip()
     n = 50
 
     # Warm-up
-    with p.connect(dsn) as w:
+    with connect_postgres(dsn) as w:
         w.execute_scalar("SELECT 1")
 
     # Reused session
-    with p.connect(dsn) as s:
+    with connect_postgres(dsn) as s:
         reused = _bench(lambda: s.execute_scalar("SELECT 1"), n)
 
     def one_shot() -> None:
-        with p.connect(dsn) as one:
+        with connect_postgres(dsn) as one:
             one.execute_scalar("SELECT 1")
 
     per_shot = _bench(one_shot, n)

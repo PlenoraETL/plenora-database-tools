@@ -14,14 +14,7 @@ import pytest
 
 import plenora_database
 
-DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
-
-
-def _dsn_or_skip() -> str:
-    dsn = os.environ.get(DSN_ENV)
-    if not dsn:
-        pytest.skip(f"live test: manca env {DSN_ENV}")
-    return dsn
+from ._harness import connect_postgres, postgres_dsn_or_skip
 
 
 def test_version_returns_semver_like_string() -> None:
@@ -33,8 +26,8 @@ def test_version_returns_semver_like_string() -> None:
 
 
 def test_connect_returns_session_with_populated_metadata() -> None:
-    dsn = _dsn_or_skip()
-    session = plenora_database.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    session = connect_postgres(dsn)
     try:
         # server_version deve essere non vuoto e contenere una cifra
         # (formato tipico "16.4" o "16.4 (Debian ...)").
@@ -52,8 +45,8 @@ def test_connect_returns_session_with_populated_metadata() -> None:
 
 
 def test_context_manager_marks_session_closed_on_exit() -> None:
-    dsn = _dsn_or_skip()
-    with plenora_database.connect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    with connect_postgres(dsn) as s:
         assert s.is_closed is False
         server = s.server_version
         assert server
@@ -62,8 +55,8 @@ def test_context_manager_marks_session_closed_on_exit() -> None:
 
 
 def test_close_is_idempotent() -> None:
-    dsn = _dsn_or_skip()
-    s = plenora_database.connect(dsn)
+    dsn = postgres_dsn_or_skip()
+    s = connect_postgres(dsn)
     s.close()
     assert s.is_closed is True
     # Seconda close non deve sollevare.
@@ -85,8 +78,8 @@ def test_invalid_dsn_raises_runtime_error_with_categorized_message() -> None:
 
 
 def test_repr_contains_key_metadata() -> None:
-    dsn = _dsn_or_skip()
-    with plenora_database.connect(dsn) as s:
+    dsn = postgres_dsn_or_skip()
+    with connect_postgres(dsn) as s:
         r = repr(s)
         assert "Session" in r
         assert "server_version" in r
