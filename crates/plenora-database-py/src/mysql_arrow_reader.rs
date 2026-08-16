@@ -23,7 +23,7 @@
     clippy::missing_const_for_fn,
     clippy::needless_pass_by_value,
     clippy::future_not_send,
-    clippy::redundant_pub_crate,
+    clippy::redundant_pub_crate
 )]
 
 use crate::arrow_reader::{default_budget, make_read_operation, BatchReader};

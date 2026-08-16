@@ -36,11 +36,9 @@ impl RowStream for PostgresRowStream<'_> {
             // `select_with_cancellation`. Sul cancel marcato exhausted
             // per bloccare successivi `next_batch` — il cursor viene
             // chiuso dal commit/rollback della tx.
-            let Some(fetch_result) = select_with_cancellation(
-                self.client.query(fetch_sql.as_str(), &[]),
-                cancellation,
-            )
-            .await
+            let Some(fetch_result) =
+                select_with_cancellation(self.client.query(fetch_sql.as_str(), &[]), cancellation)
+                    .await
             else {
                 self.exhausted = true;
                 return Err(public_error(
@@ -50,8 +48,7 @@ impl RowStream for PostgresRowStream<'_> {
                     "FETCH FORWARD cancellato durante l'esecuzione",
                 ));
             };
-            let rows =
-                fetch_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;
+            let rows = fetch_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;
             let n = u32::try_from(rows.len()).unwrap_or(u32::MAX);
             let out = decode_rows(&rows)?;
             if n < self.batch_size {

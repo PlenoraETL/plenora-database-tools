@@ -407,7 +407,9 @@ impl Provider for MysqlProvider {
             let transaction =
                 crate::transaction::MysqlTransaction::begin(session, options, cancellation).await?;
             Ok(Box::new(transaction)
-                as Box<dyn plenora_database_core::transaction::TransactionScope>)
+                as Box<
+                    dyn plenora_database_core::transaction::TransactionScope,
+                >)
         })
     }
 
@@ -424,7 +426,12 @@ impl Provider for MysqlProvider {
             // Nota: MySQL fa autocommit su DDL (transactional_ddl=false nel
             // capability probe), quindi non si può usare dentro una tx.
             session
-                .exec_write(sql, mysql_async::Params::Empty, ErrorPhase::Prepare, cancellation)
+                .exec_write(
+                    sql,
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Prepare,
+                    cancellation,
+                )
                 .await
                 .map(|_| ())
         })
@@ -494,11 +501,8 @@ async fn execute_mysql_write(
             Err(err) if err.category == ErrorCategory::NotFound => {}
             Err(other) => return Err(other),
         }
-        let ddl = crate::write::build_create_table_sql(
-            &schema,
-            &operation,
-            provider.config.database(),
-        )?;
+        let ddl =
+            crate::write::build_create_table_sql(&schema, &operation, provider.config.database())?;
         session
             .exec_control(&ddl, ErrorPhase::Prepare, token)
             .await?;
@@ -527,8 +531,7 @@ async fn execute_mysql_write(
 
     // v1.2 — TruncateInsert: TRUNCATE prima del bulk INSERT.
     if operation.mode == plenora_database_core::plan::WriteMode::TruncateInsert {
-        let truncate =
-            crate::write::build_truncate_sql(&operation, provider.config.database())?;
+        let truncate = crate::write::build_truncate_sql(&operation, provider.config.database())?;
         session
             .exec_control(&truncate, ErrorPhase::Prepare, token)
             .await?;
@@ -536,28 +539,28 @@ async fn execute_mysql_write(
 
     // v1.2 — Update: crea staging TEMPORARY TABLE. Il bulk INSERT
     // sotto scriverà in staging invece del target; dopo, UPDATE JOIN.
-    let update_staging_quoted: Option<String> =
-        if operation.mode == plenora_database_core::plan::WriteMode::Update {
-            let seed = format!(
-                "{}-{}",
-                std::process::id(),
-                WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            );
-            let staging_name = plan.staging_temp_name(&seed);
-            let staging_ddl = crate::write::build_temp_staging_sql(
-                &schema,
-                &staging_name,
-                provider.config.database(),
-            )?;
-            session
-                .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
-                .await?;
-            let quoted =
-                crate::write::quote_staging_name(&staging_name, provider.config.database())?;
-            Some(quoted)
-        } else {
-            None
-        };
+    let update_staging_quoted: Option<String> = if operation.mode
+        == plenora_database_core::plan::WriteMode::Update
+    {
+        let seed = format!(
+            "{}-{}",
+            std::process::id(),
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let staging_name = plan.staging_temp_name(&seed);
+        let staging_ddl = crate::write::build_temp_staging_sql(
+            &schema,
+            &staging_name,
+            provider.config.database(),
+        )?;
+        session
+            .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
+            .await?;
+        let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
+        Some(quoted)
+    } else {
+        None
+    };
 
     // v1.2 — Replace: crea staging PERSISTENT (RENAME atomico rifiuta
     // TEMPORARY). Bulk INSERT in staging, poi swap. Naming: staging con
@@ -566,29 +569,29 @@ async fn execute_mysql_write(
     // staging e RENAME, la staging resta orfana → DROP di cleanup nel
     // catch error. Se fallisce dopo RENAME (target è già lo staging),
     // il backup resta orfano → DROP successivo.
-    let replace_setup: Option<(String, String, String, String)> =
-        if operation.mode == plenora_database_core::plan::WriteMode::Replace {
-            let seed = format!(
-                "{}_{}",
-                std::process::id(),
-                WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            );
-            let staging_name = format!("__pln_repl_{seed}");
-            let backup_name = format!("__pln_bak_{seed}");
-            let staging_ddl = crate::write::build_persistent_staging_sql(
-                &schema,
-                &staging_name,
-                provider.config.database(),
-            )?;
-            session
-                .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
-                .await?;
-            let quoted =
-                crate::write::quote_staging_name(&staging_name, provider.config.database())?;
-            Some((staging_name, backup_name, quoted.clone(), quoted))
-        } else {
-            None
-        };
+    let replace_setup: Option<(String, String, String, String)> = if operation.mode
+        == plenora_database_core::plan::WriteMode::Replace
+    {
+        let seed = format!(
+            "{}_{}",
+            std::process::id(),
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let staging_name = format!("__pln_repl_{seed}");
+        let backup_name = format!("__pln_bak_{seed}");
+        let staging_ddl = crate::write::build_persistent_staging_sql(
+            &schema,
+            &staging_name,
+            provider.config.database(),
+        )?;
+        session
+            .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
+            .await?;
+        let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
+        Some((staging_name, backup_name, quoted.clone(), quoted))
+    } else {
+        None
+    };
     // Per il bulk INSERT: se Replace, l'INSERT va nella staging.
     let replace_staging_quoted = replace_setup.as_ref().map(|(_, _, _, q)| q.clone());
     // Quando la sorgente dichiara quante righe produrrà, la scrittura può
@@ -692,10 +695,8 @@ async fn execute_mysql_write(
             {
                 // Cleanup staging orfana (il RENAME non è avvenuto → staging
                 // esiste ancora col nome staging_name).
-                let cleanup_staging = crate::write::build_drop_backup_sql(
-                    staging_name,
-                    provider.config.database(),
-                );
+                let cleanup_staging =
+                    crate::write::build_drop_backup_sql(staging_name, provider.config.database());
                 if let Ok(cleanup_sql) = cleanup_staging {
                     let _ = session
                         .exec_control(&cleanup_sql, ErrorPhase::Write, token)
@@ -721,14 +722,12 @@ async fn execute_mysql_write(
         )
         .await
     {
-        Ok(()) => {
-            crate::write::committed_outcome_for_mode(
-                execution_id,
-                progress.received,
-                final_affected,
-                operation.mode,
-            )
-        }
+        Ok(()) => crate::write::committed_outcome_for_mode(
+            execution_id,
+            progress.received,
+            final_affected,
+            operation.mode,
+        ),
         Err(error) => {
             session.discard().await;
             crate::write::commit_failure(error, execution_id, progress.received)

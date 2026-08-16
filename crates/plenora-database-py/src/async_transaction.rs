@@ -154,7 +154,9 @@ impl AsyncTransaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
@@ -176,7 +178,9 @@ impl AsyncTransaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
@@ -208,8 +212,7 @@ impl AsyncTransaction {
         key_probe_params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let update_values = params_from_python(update_params.as_ref())?;
-        let update_stmt =
-            Statement::new(update_sql.to_owned()).with_params(update_values);
+        let update_stmt = Statement::new(update_sql.to_owned()).with_params(update_values);
         let probe_stmt = if let Some(sql) = key_probe_sql {
             let probe_values = params_from_python(key_probe_params.as_ref())?;
             Some(Statement::new(sql.to_owned()).with_params(probe_values))
@@ -252,21 +255,21 @@ impl AsyncTransaction {
             let mut guard = locked_tx(&inner).await?;
             let tx = guard.as_mut().expect("guard checked non-None");
             let cancel = CancellationToken::new();
-            tx.rollback_to_savepoint(&name, &cancel).await.map_err(to_py_err)
+            tx.rollback_to_savepoint(&name, &cancel)
+                .await
+                .map_err(to_py_err)
         })
     }
 
-    fn release_savepoint<'py>(
-        &self,
-        py: Python<'py>,
-        name: String,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn release_savepoint<'py>(&self, py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
             let tx = guard.as_mut().expect("guard checked non-None");
             let cancel = CancellationToken::new();
-            tx.release_savepoint(&name, &cancel).await.map_err(to_py_err)
+            tx.release_savepoint(&name, &cancel)
+                .await
+                .map_err(to_py_err)
         })
     }
 

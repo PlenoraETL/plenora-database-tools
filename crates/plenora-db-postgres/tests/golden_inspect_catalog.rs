@@ -25,7 +25,7 @@
     clippy::uninlined_format_args,
     clippy::match_same_arms,
     clippy::manual_let_else,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 
 use plenora_database_core::plan::{ObjectRef, Operation};
@@ -63,9 +63,7 @@ async fn h7c_list_catalogs_reports_current_database() {
         .await
         .expect("inspect");
     assert_eq!(out.operation, "database.list_catalogs");
-    let catalogs = out.document["catalogs"]
-        .as_array()
-        .expect("catalogs array");
+    let catalogs = out.document["catalogs"].as_array().expect("catalogs array");
     assert!(
         catalogs
             .iter()
@@ -96,9 +94,7 @@ async fn h7c_list_schemas_excludes_system_schemas() {
         .await
         .expect("inspect");
     assert_eq!(out.operation, "database.list_schemas");
-    let schemas = out.document["schemas"]
-        .as_array()
-        .expect("schemas array");
+    let schemas = out.document["schemas"].as_array().expect("schemas array");
     // public deve esserci (schema utente default).
     assert!(
         schemas
@@ -149,9 +145,7 @@ async fn h7c_list_objects_returns_relations_of_the_schema() {
         .expect("inspect");
     assert_eq!(out.operation, "database.list_objects");
     assert_eq!(out.document["schema"], "public");
-    let objects = out.document["objects"]
-        .as_array()
-        .expect("objects array");
+    let objects = out.document["objects"].as_array().expect("objects array");
     assert!(!objects.is_empty(), "public deve avere almeno un oggetto");
 }
 
@@ -176,13 +170,10 @@ async fn h7c_describe_object_returns_columns_and_schema_token() {
         .expect("inspect");
     assert_eq!(out.operation, "database.describe_object");
     assert!(
-        out.document["schema_token"].is_string()
-            || out.document["schema_token"].is_object(),
+        out.document["schema_token"].is_string() || out.document["schema_token"].is_object(),
         "schema_token mancante"
     );
-    let columns = out.document["columns"]
-        .as_array()
-        .expect("columns array");
+    let columns = out.document["columns"].as_array().expect("columns array");
     // spatial_ref_sys ha almeno: srid, auth_name, auth_srid, srtext, proj4text
     let names: Vec<String> = columns
         .iter()
@@ -230,7 +221,10 @@ async fn h7c_describe_object_handles_multiple_column_types() {
         )
         .await
         .expect("create");
-    Box::new(tx_setup).commit(&cancel).await.expect("commit setup");
+    Box::new(tx_setup)
+        .commit(&cancel)
+        .await
+        .expect("commit setup");
 
     let out = p
         .inspect(

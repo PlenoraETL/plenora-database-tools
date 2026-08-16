@@ -32,7 +32,7 @@
     clippy::single_match_else,
     clippy::match_same_arms,
     clippy::redundant_closure_for_method_calls,
-    clippy::unreadable_literal,
+    clippy::unreadable_literal
 )]
 
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
@@ -101,15 +101,18 @@ async fn extras_x1_enum_type_roundtrip_via_text() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
     // CREATE TYPE è transazionale su Postgres: rollback lo droppa.
     tx.execute(
-        &Statement::new(
-            "CREATE TYPE _pfm_extras_x1_status AS ENUM ('draft', 'active', 'closed')",
-        ),
+        &Statement::new("CREATE TYPE _pfm_extras_x1_status AS ENUM ('draft', 'active', 'closed')"),
         &cancel,
     )
     .await
@@ -162,9 +165,7 @@ async fn extras_x1_enum_type_roundtrip_via_text() {
     tx.savepoint("bad_enum", &cancel).await.expect("sp");
     let err = tx
         .execute(
-            &Statement::new(
-                "INSERT INTO _pfm_extras_x1 (id, st) VALUES (99, 'archived')",
-            ),
+            &Statement::new("INSERT INTO _pfm_extras_x1 (id, st) VALUES (99, 'archived')"),
             &cancel,
         )
         .await
@@ -180,7 +181,9 @@ async fn extras_x1_enum_type_roundtrip_via_text() {
     tx.rollback_to_savepoint("bad_enum", &cancel)
         .await
         .expect("rb sp");
-    tx.release_savepoint("bad_enum", &cancel).await.expect("rel sp");
+    tx.release_savepoint("bad_enum", &cancel)
+        .await
+        .expect("rel sp");
 
     Box::new(tx).rollback(&cancel).await.expect("rollback");
 }
@@ -201,7 +204,12 @@ async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -235,9 +243,7 @@ async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
 
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT id, full_name, total FROM _pfm_extras_x2 ORDER BY id",
-            ),
+            &Statement::new("SELECT id, full_name, total FROM _pfm_extras_x2 ORDER BY id"),
             &cancel,
         )
         .await
@@ -268,15 +274,15 @@ async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
     tx.rollback_to_savepoint("insert_gen", &cancel)
         .await
         .expect("rb");
-    tx.release_savepoint("insert_gen", &cancel).await.expect("rel");
+    tx.release_savepoint("insert_gen", &cancel)
+        .await
+        .expect("rel");
 
     // UPDATE del generated → errore.
     tx.savepoint("update_gen", &cancel).await.expect("sp");
     let err = tx
         .execute(
-            &Statement::new(
-                "UPDATE _pfm_extras_x2 SET full_name = 'override' WHERE id = 1",
-            ),
+            &Statement::new("UPDATE _pfm_extras_x2 SET full_name = 'override' WHERE id = 1"),
             &cancel,
         )
         .await
@@ -289,7 +295,9 @@ async fn extras_x2_generated_column_stored_computed_and_write_rejected() {
     tx.rollback_to_savepoint("update_gen", &cancel)
         .await
         .expect("rb");
-    tx.release_savepoint("update_gen", &cancel).await.expect("rel");
+    tx.release_savepoint("update_gen", &cancel)
+        .await
+        .expect("rel");
 
     Box::new(tx).rollback(&cancel).await.expect("rollback");
 }
@@ -308,7 +316,12 @@ async fn extras_x3_range_types_int4_and_tstz_via_text() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -352,7 +365,12 @@ async fn extras_x4_network_family_inet_cidr_macaddr_via_text() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -402,7 +420,12 @@ async fn extras_x5_fulltext_family_tsvector_tsquery_xml_via_text() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -426,10 +449,14 @@ async fn extras_x5_fulltext_family_tsvector_tsquery_xml_via_text() {
     let xml = text_of(row.get_index(3));
 
     // tsvector Postgres normalizza in "'brown':3 'fox':4 'quick':2".
-    assert!(tsv.contains("quick") && tsv.contains("fox"),
-        "tsvector text inatteso: {tsv}");
-    assert!(tsq.contains("quick") && tsq.contains("fox"),
-        "tsquery text inatteso: {tsq}");
+    assert!(
+        tsv.contains("quick") && tsv.contains("fox"),
+        "tsvector text inatteso: {tsv}"
+    );
+    assert!(
+        tsq.contains("quick") && tsq.contains("fox"),
+        "tsquery text inatteso: {tsq}"
+    );
     assert!(hit, "tsvector @@ tsquery deve matchare");
     // Postgres normalizza il nome elemento a lowercase in output text.
     assert!(
@@ -453,7 +480,12 @@ async fn extras_x6_money_via_numeric_and_text_cast() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -484,7 +516,9 @@ async fn extras_x6_money_via_numeric_and_text_cast() {
     // dal locale del server (es. "$1,234.56"). Verifichiamo solo che
     // contenga le cifre significative e un separatore.
     assert!(
-        as_money_text.contains('1') && as_money_text.contains("234") && as_money_text.contains("56"),
+        as_money_text.contains('1')
+            && as_money_text.contains("234")
+            && as_money_text.contains("56"),
         "money text non contiene le cifre attese: {as_money_text}"
     );
 
@@ -506,14 +540,17 @@ async fn extras_x7_composite_type_via_row_text_and_field_extract() {
     let provider = provider();
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
     tx.execute(
-        &Statement::new(
-            "CREATE TYPE _pfm_extras_x7_kv AS (label TEXT, amount BIGINT)",
-        ),
+        &Statement::new("CREATE TYPE _pfm_extras_x7_kv AS (label TEXT, amount BIGINT)"),
         &cancel,
     )
     .await
@@ -523,9 +560,7 @@ async fn extras_x7_composite_type_via_row_text_and_field_extract() {
     // "(label,amount)" secondo la sintassi Postgres.
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT ROW('ricavo', 1000)::_pfm_extras_x7_kv::TEXT",
-            ),
+            &Statement::new("SELECT ROW('ricavo', 1000)::_pfm_extras_x7_kv::TEXT"),
             &cancel,
         )
         .await

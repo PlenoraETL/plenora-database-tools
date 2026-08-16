@@ -456,7 +456,8 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
             &cancellation,
         )
         .await?;
-    let mut report = write_stream_to_ipc(Path::new(&output), stream.as_mut(), &cancellation).await?;
+    let mut report =
+        write_stream_to_ipc(Path::new(&output), stream.as_mut(), &cancellation).await?;
     // Un solo `as_object_mut`: le due `expect` che seguivano ripetevano un
     // controllo gia' fatto qui sopra, e ripeterlo con un panico invece che con
     // un errore era l'unico punto del binario che poteva abbattere il processo.
@@ -711,7 +712,11 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
     ))
 }
 
-async fn write_ipc_batches(file: &mut File, stream: &mut dyn BatchStream, cancellation: &CancellationToken) -> CliResult<(u64, u64)> {
+async fn write_ipc_batches(
+    file: &mut File,
+    stream: &mut dyn BatchStream,
+    cancellation: &CancellationToken,
+) -> CliResult<(u64, u64)> {
     let schema = stream.schema();
     let mut writer = FileWriter::try_new_buffered(&mut *file, &schema).map_err(|_| {
         local_artifact_error(
@@ -847,9 +852,7 @@ struct TlsPathEnvironments {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProviderArguments {
     #[cfg(feature = "postgres")]
-    Postgres {
-        tls: TlsPathEnvironments,
-    },
+    Postgres { tls: TlsPathEnvironments },
     #[cfg(feature = "mysql")]
     Mysql {
         host: String,
@@ -1044,7 +1047,10 @@ fn prepare_provider_arguments(
 #[allow(clippy::unnecessary_wraps)]
 fn build_provider_from_prepared_arguments(
     arguments: PreparedProviderArguments,
-    #[cfg_attr(not(any(feature = "mysql", feature = "sqlserver")), allow(unused_variables))]
+    #[cfg_attr(
+        not(any(feature = "mysql", feature = "sqlserver")),
+        allow(unused_variables)
+    )]
     secret: &SecretString,
 ) -> CliResult<Box<dyn Provider>> {
     match arguments {
@@ -1203,7 +1209,10 @@ fn legacy_postgres_probe_provider() -> PostgresProvider {
     postgres_provider_for_probe()
 }
 
-pub(crate) fn one_argument(args: &mut impl Iterator<Item = String>, missing: &str) -> CliResult<String> {
+pub(crate) fn one_argument(
+    args: &mut impl Iterator<Item = String>,
+    missing: &str,
+) -> CliResult<String> {
     let value = args.next().ok_or_else(|| missing.to_owned())?;
     ensure_end(args)?;
     Ok(value)
@@ -1338,10 +1347,10 @@ mod context;
 #[cfg(feature = "postgres")]
 mod diagnose;
 mod format;
-mod mysql_cmd;
 #[cfg(feature = "postgres")]
 mod inspect;
 mod inspect_dataset;
+mod mysql_cmd;
 #[cfg(feature = "postgres")]
 mod ops_cmd;
 #[cfg(feature = "postgres")]
@@ -1362,13 +1371,10 @@ mod write_cmd;
 use benchmark::{benchmark_oltp, benchmark_read, benchmark_spatial};
 #[cfg(feature = "postgres")]
 use pfm::{
-    doctor, execute_ddl_cmd, execute_sql_cmd, profile_check, session_context_test,
-    transaction_test,
+    doctor, execute_ddl_cmd, execute_sql_cmd, profile_check, session_context_test, transaction_test,
 };
 #[cfg(feature = "postgres")]
-use testing::{
-    profile_list, test_cancellation, test_concurrency, test_spatial, test_streaming,
-};
+use testing::{profile_list, test_cancellation, test_concurrency, test_spatial, test_streaming};
 
 #[cfg(test)]
 mod tests {
@@ -1394,7 +1400,10 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+        fn next_batch<'a>(
+            &'a mut self,
+            _cancellation: &'a plenora_database_core::CancellationToken,
+        ) -> ProviderFuture<'a, Option<RecordBatch>> {
             let outcome = self.outcomes.pop_front().unwrap_or(Ok(None));
             Box::pin(async move { outcome })
         }

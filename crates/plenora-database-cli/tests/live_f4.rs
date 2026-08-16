@@ -63,7 +63,10 @@ fn run_expect_error(args: &[&str]) -> Value {
 #[test]
 fn f4_inspect_database_returns_expected_metadata_shape() {
     let out = run(&["inspect-database", "PG_DSN"]);
-    assert!(out["database"].as_str().is_some(), "database mancante: {out}");
+    assert!(
+        out["database"].as_str().is_some(),
+        "database mancante: {out}"
+    );
     assert!(out["version"].as_str().is_some(), "version mancante: {out}");
     assert!(
         out["version_num"].as_str().is_some(),
@@ -179,17 +182,16 @@ fn f4_benchmark_write_reports_throughput_and_percentiles() {
     let p50 = out["latency_us"]["p50"].as_u64().unwrap_or(0);
     let p95 = out["latency_us"]["p95"].as_u64().unwrap_or(0);
     let p99 = out["latency_us"]["p99"].as_u64().unwrap_or(0);
-    assert!(p50 <= p95 && p95 <= p99, "percentili non monotoni: p50={p50} p95={p95} p99={p99}");
+    assert!(
+        p50 <= p95 && p95 <= p99,
+        "percentili non monotoni: p50={p50} p95={p95} p99={p99}"
+    );
 }
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f4_test_concurrency_reports_winner_and_loser_correctly() {
-    let out = run(&[
-        "--allow-write-tests",
-        "test-concurrency",
-        "PG_DSN",
-    ]);
+    let out = run(&["--allow-write-tests", "test-concurrency", "PG_DSN"]);
     assert_eq!(out["status"], "ok");
     assert_eq!(out["winner_committed"], true);
     assert_eq!(out["loser_error_category"], "ConcurrentModification");
@@ -199,7 +201,10 @@ fn f4_test_concurrency_reports_winner_and_loser_correctly() {
 #[test]
 fn f4_profile_check_returns_pass_for_application_oltp_v1() {
     let out = run(&["profile-check", "PG_DSN", "APPLICATION_OLTP_V1"]);
-    assert_eq!(out["status"], "pass", "APPLICATION_OLTP_V1 deve passare: {out}");
+    assert_eq!(
+        out["status"], "pass",
+        "APPLICATION_OLTP_V1 deve passare: {out}"
+    );
     assert!(out["evidence"].as_array().is_some());
     assert_eq!(out["missing"].as_array().map(Vec::len), Some(0));
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));

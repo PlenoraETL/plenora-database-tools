@@ -50,13 +50,16 @@ pub(crate) async fn profile_check(args: &mut impl Iterator<Item = String>) -> Cl
             probe_pfm_gis_v1(&provider, &secret, &cancel).await,
         ),
         _ => {
-            return Err("profilo sconosciuto (usa APPLICATION_OLTP_V1 | PFM_CORE_V1 | PFM_GIS_V1)"
-                .into())
+            return Err(
+                "profilo sconosciuto (usa APPLICATION_OLTP_V1 | PFM_CORE_V1 | PFM_GIS_V1)".into(),
+            )
         }
     };
     let report = check_profile(profile, &evidence);
     let is_pass = matches!(report.status, ProfileStatus::Pass);
-    print_json(&serde_json::to_value(&report).map_err(|_| "report non serializzabile".to_owned())?)?;
+    print_json(
+        &serde_json::to_value(&report).map_err(|_| "report non serializzabile".to_owned())?,
+    )?;
     // Fix review #10 residuo: profile-check ritornava sempre Ok, anche
     // per report Fail. Ora exit=1 se profilo non è Pass, così CI può
     // gate su risultato conformance.
@@ -147,7 +150,9 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     let allow_raw = rest_vec
         .iter()
         .position(|arg| arg == "--allow-raw")
-        .inspect(|&idx| { rest_vec.remove(idx); })
+        .inspect(|&idx| {
+            rest_vec.remove(idx);
+        })
         .is_some();
     let mut rest_iter = rest_vec.into_iter();
     let dsn_env = rest_iter.next().ok_or("manca variabile ambiente DSN")?;
@@ -341,4 +346,3 @@ fn extract_statement_head(sql: &str) -> String {
 // ============================================================================
 //  Fase 4: CLI arricchita — profile catalog, test avanzati, benchmark.
 // ============================================================================
-

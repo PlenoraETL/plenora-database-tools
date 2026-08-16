@@ -815,7 +815,9 @@ mod live {
     async fn live_in_failed_sql_transaction_25p02_is_protocol() {
         let client = connect().await;
         client.batch_execute("BEGIN;").await.expect("begin");
-        let _ = client.batch_execute("SELECT undefined_col FROM (VALUES (1)) t(x);").await;
+        let _ = client
+            .batch_execute("SELECT undefined_col FROM (VALUES (1)) t(x);")
+            .await;
         let raw = err_from(&client, "SELECT 1;").await;
         assert_eq!(state(&raw), Some("25P02"));
         assert_eq!(
@@ -996,4 +998,3 @@ mod live {
             .expect("cleanup");
     }
 }
-

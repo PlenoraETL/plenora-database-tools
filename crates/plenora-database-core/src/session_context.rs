@@ -139,11 +139,7 @@ impl SessionContext {
     /// `namespace.name` con caratteri ammessi `[a-z0-9_]`, se lunghezza
     /// eccede 63 caratteri (limite provider), o se il valore contiene
     /// caratteri di controllo.
-    pub fn insert(
-        &mut self,
-        name: impl Into<String>,
-        entry: SessionEntry,
-    ) -> crate::Result<()> {
+    pub fn insert(&mut self, name: impl Into<String>, entry: SessionEntry) -> crate::Result<()> {
         let name = name.into();
         validate_context_key(&name)?;
         validate_context_value(&entry.value)?;

@@ -135,7 +135,9 @@ fn f5_3_inspect_objects_lists_objects_of_schema() {
     let out = run_json(&["inspect-objects", "PG_DSN", "public"]);
     assert_eq!(out["operation"], "database.list_objects");
     assert_eq!(out["document"]["schema"], "public");
-    let objs = out["document"]["objects"].as_array().expect("objects array");
+    let objs = out["document"]["objects"]
+        .as_array()
+        .expect("objects array");
     assert!(!objs.is_empty());
 }
 
@@ -246,11 +248,7 @@ fn f5_6_portable_compile_produces_sql_and_param_count() {
         "limit": 1
     });
     std::fs::write(&pp, serde_json::to_vec_pretty(&portable_json).unwrap()).unwrap();
-    let out = run_json(&[
-        "portable-compile",
-        "postgres",
-        pp.to_str().unwrap(),
-    ]);
+    let out = run_json(&["portable-compile", "postgres", pp.to_str().unwrap()]);
     assert_eq!(out["status"], "ok");
     assert!(out["sql"].as_str().unwrap().contains("spatial_ref_sys"));
     assert_eq!(out["param_count"], 1);
@@ -277,12 +275,7 @@ fn f5_9_execute_scalar_i64_returns_count() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn f5_9_execute_scalar_bool_and_string_and_json() {
-    let ob = run_json(&[
-        "execute-scalar",
-        "PG_DSN",
-        "SELECT true",
-        "--type=bool",
-    ]);
+    let ob = run_json(&["execute-scalar", "PG_DSN", "SELECT true", "--type=bool"]);
     assert_eq!(ob["value"], true);
 
     let os = run_json(&[

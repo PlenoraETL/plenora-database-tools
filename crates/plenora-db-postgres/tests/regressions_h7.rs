@@ -54,7 +54,11 @@ async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let out = provider
-        .inspect(&secret(), &Operation::DatabaseListSchemas { source: None }, &cancel)
+        .inspect(
+            &secret(),
+            &Operation::DatabaseListSchemas { source: None },
+            &cancel,
+        )
         .await
         .expect("inspect");
     let schemas = out.document["schemas"].as_array().expect("array");
@@ -126,7 +130,11 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
         .expect("read");
 
     // Consuma il primo batch (esiste sempre — spatial_ref_sys ha >>0 righe).
-    let first = stream.next_batch(&cancel).await.expect("first").expect("some");
+    let first = stream
+        .next_batch(&cancel)
+        .await
+        .expect("first")
+        .expect("some");
     assert!(first.num_rows() > 0);
 
     // Cancella il token DOPO lo start del batch.

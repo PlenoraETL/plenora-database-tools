@@ -6,7 +6,7 @@
     clippy::doc_markdown,
     clippy::too_many_lines,
     clippy::option_if_let_else,
-    clippy::redundant_pub_crate,
+    clippy::redundant_pub_crate
 )]
 
 use crate::types::{mysql_identifier, mysql_renderer};
@@ -681,10 +681,7 @@ impl MysqlWritePlan {
     ///
     /// Senza (1) l'`ON DUPLICATE KEY UPDATE` non troverebbe mai un conflitto
     /// sulle keys e inserirebbe duplicati invece di aggiornare.
-    fn validate_upsert_target_indexes(
-        &self,
-        target: &MysqlObjectDescription,
-    ) -> Result<()> {
+    fn validate_upsert_target_indexes(&self, target: &MysqlObjectDescription) -> Result<()> {
         use std::collections::BTreeSet;
         let key_set: BTreeSet<&str> = self.upsert_keys.iter().map(String::as_str).collect();
         if key_set.is_empty() {
@@ -1502,17 +1499,17 @@ pub(crate) fn build_replace_swap_sql(
 /// # Errors
 ///
 /// Se backup_name non è identifier MySQL valido.
-pub(crate) fn build_drop_backup_sql(
-    backup_name: &str,
-    database: &str,
-) -> Result<String> {
+pub(crate) fn build_drop_backup_sql(backup_name: &str, database: &str) -> Result<String> {
     let renderer = mysql_renderer();
     let backup_obj = ObjectName {
         catalog: None,
         schema: Some(mysql_identifier(database)?),
         object: mysql_identifier(backup_name)?,
     };
-    Ok(format!("DROP TABLE {}", renderer.quote_object(&backup_obj)?))
+    Ok(format!(
+        "DROP TABLE {}",
+        renderer.quote_object(&backup_obj)?
+    ))
 }
 
 /// Genera nome quoted per staging table (usato dopo `build_temp_staging_sql`).
@@ -2508,10 +2505,8 @@ mod tests {
             ],
             vec!["id".to_owned()],
         );
-        let target = base_table_with_indexes(
-            identity_target(),
-            vec![unique_index("PRIMARY", &["id"])],
-        );
+        let target =
+            base_table_with_indexes(identity_target(), vec![unique_index("PRIMARY", &["id"])]);
         assert!(plan.preflight(&target).is_ok());
     }
 
@@ -2533,7 +2528,9 @@ mod tests {
                 unique_index("uq_label", &["label"]),
             ],
         );
-        let error = plan.preflight(&target).expect_err("unique index in conflitto");
+        let error = plan
+            .preflight(&target)
+            .expect_err("unique index in conflitto");
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
     }
@@ -2556,7 +2553,9 @@ mod tests {
             columns: vec!["id".to_owned()],
         };
         let target = base_table_with_indexes(identity_target(), vec![non_unique]);
-        let error = plan.preflight(&target).expect_err("nessun unique index sulle keys");
+        let error = plan
+            .preflight(&target)
+            .expect_err("nessun unique index sulle keys");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 
@@ -2581,7 +2580,9 @@ mod tests {
             identity_target(),
             vec![unique_index("PRIMARY", &["id"]), functional],
         );
-        let error = plan.preflight(&target).expect_err("unique index funzionale");
+        let error = plan
+            .preflight(&target)
+            .expect_err("unique index funzionale");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 

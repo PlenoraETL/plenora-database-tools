@@ -1,4 +1,8 @@
-#![allow(clippy::doc_markdown, clippy::items_after_statements, clippy::match_same_arms)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::items_after_statements,
+    clippy::match_same_arms
+)]
 //! Comandi CLI di ergonomia/debugging: `execute-scalar`, `conditional-update`,
 //! `pool-status`, `explain`.
 
@@ -34,13 +38,20 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
             return Err(format!("argomento execute-scalar inatteso: {arg}").into());
         }
     }
-    let ty = ty.ok_or("manca --type=TYPE (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)")?;
+    let ty = ty.ok_or(
+        "manca --type=TYPE (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)",
+    )?;
 
     // CHG-003: execute-scalar è path PFM → policy Deny.
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let mut tx = ctx
         .provider
-        .begin_transaction(&ctx.secret, &ctx.pfm_transaction_options(), &ctx.budget, &ctx.cancel)
+        .begin_transaction(
+            &ctx.secret,
+            &ctx.pfm_transaction_options(),
+            &ctx.budget,
+            &ctx.cancel,
+        )
         .await?;
     let stmt = Statement::new(sql).with_params(params.into_inner());
 
@@ -104,7 +115,12 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     let mut tx = ctx
         .provider
-        .begin_transaction(&ctx.secret, &ctx.pfm_transaction_options(), &ctx.budget, &ctx.cancel)
+        .begin_transaction(
+            &ctx.secret,
+            &ctx.pfm_transaction_options(),
+            &ctx.budget,
+            &ctx.cancel,
+        )
         .await?;
 
     let params_vec: Vec<ParameterValue> = params.into_inner();
@@ -212,7 +228,9 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
         match arg.as_str() {
             "--analyze" => analyze = true,
             "--verbose" => verbose = true,
-            s if s.starts_with("--format=") => s.trim_start_matches("--format=").clone_into(&mut fmt),
+            s if s.starts_with("--format=") => {
+                s.trim_start_matches("--format=").clone_into(&mut fmt)
+            }
             other => return Err(format!("opzione explain sconosciuta: {other}").into()),
         }
     }
@@ -264,9 +282,7 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
                     lines.push(Value::String(s.clone()));
                 }
             }
-            Some(other) => lines.push(
-                serde_json::to_value(other).unwrap_or(Value::Null),
-            ),
+            Some(other) => lines.push(serde_json::to_value(other).unwrap_or(Value::Null)),
             None => lines.push(Value::Null),
         }
     }

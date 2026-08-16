@@ -24,17 +24,23 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
     ensure_end(args)?;
 
     let secret = secret_from_env(&dsn_env)?;
-    let contents = fs::read(&query_path)
-        .map_err(|_| format!("QUERY.json non leggibile: {query_path}"))?;
-    let operation: QueryOperation = serde_json::from_slice(&contents)
-        .map_err(|e| format!("QUERY.json non parsabile: {e}"))?;
+    let contents =
+        fs::read(&query_path).map_err(|_| format!("QUERY.json non leggibile: {query_path}"))?;
+    let operation: QueryOperation =
+        serde_json::from_slice(&contents).map_err(|e| format!("QUERY.json non parsabile: {e}"))?;
 
     let provider = postgres_provider_for_pfm();
     let budget = ResourceBudget::new(ResourceLimits::default()).map_err(CliError::from)?;
     let cancel = CancellationToken::new();
 
     let mut stream = provider
-        .query(&secret, &operation, &ParameterBag::default(), &budget, &cancel)
+        .query(
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancel,
+        )
         .await?;
 
     let schema = stream.schema();
@@ -70,7 +76,9 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
 /// per il provider target (postgres/mysql/sqlserver) e stampa SQL + numero
 /// di parametri. Utile per debug pipeline PFM senza dover eseguire.
 pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider = args.next().ok_or("manca il provider (postgres|mysql|sqlserver)")?;
+    let provider = args
+        .next()
+        .ok_or("manca il provider (postgres|mysql|sqlserver)")?;
     let portable_path = args.next().ok_or("manca il percorso PORTABLE.json")?;
     ensure_end(args)?;
 
@@ -82,8 +90,8 @@ pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliRe
     };
     let contents = fs::read(&portable_path)
         .map_err(|_| format!("PORTABLE.json non leggibile: {portable_path}"))?;
-    let ast: PortableStatement =
-        serde_json::from_slice(&contents).map_err(|e| format!("PORTABLE.json non parsabile: {e}"))?;
+    let ast: PortableStatement = serde_json::from_slice(&contents)
+        .map_err(|e| format!("PORTABLE.json non parsabile: {e}"))?;
     let compiled = compile_portable(kind, &ast)?;
 
     print_json(&json!({
@@ -105,8 +113,8 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
 
     let contents = fs::read(&portable_path)
         .map_err(|_| format!("PORTABLE.json non leggibile: {portable_path}"))?;
-    let ast: PortableStatement =
-        serde_json::from_slice(&contents).map_err(|e| format!("PORTABLE.json non parsabile: {e}"))?;
+    let ast: PortableStatement = serde_json::from_slice(&contents)
+        .map_err(|e| format!("PORTABLE.json non parsabile: {e}"))?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm();

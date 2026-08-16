@@ -27,7 +27,9 @@ fn expect_at_most_one_row(rows: Vec<Row>) -> Result<Option<Row>> {
     if rows.len() > 1 {
         return Err(too_many_rows(rows.len()));
     }
-    Ok(Some(rows.into_iter().next().expect("controllato lunghezza")))
+    Ok(Some(
+        rows.into_iter().next().expect("controllato lunghezza"),
+    ))
 }
 
 fn expect_single_column(row: Row) -> Result<ParameterValue> {
@@ -37,7 +39,11 @@ fn expect_single_column(row: Row) -> Result<ParameterValue> {
             row.len()
         )));
     }
-    Ok(row.into_values().into_iter().next().expect("controllato lunghezza"))
+    Ok(row
+        .into_values()
+        .into_iter()
+        .next()
+        .expect("controllato lunghezza"))
 }
 
 fn not_found(message: &str) -> DatabaseError {

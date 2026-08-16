@@ -138,8 +138,7 @@ impl SpatialReference {
     /// - `InvalidPlan` se le `dimensions` dichiarate divergono da
     ///   quelle dell'EWKB. `Dimensions::Unknown` è wildcard.
     pub fn validate(&self) -> Result<()> {
-        let inspection: EwkbInspection =
-            inspect_ewkb_detailed(&self.ewkb, u64::MAX, u64::MAX)?;
+        let inspection: EwkbInspection = inspect_ewkb_detailed(&self.ewkb, u64::MAX, u64::MAX)?;
 
         if let Some(embedded_srid) = inspection.root.srid {
             if embedded_srid != self.srid {
@@ -220,7 +219,7 @@ mod tests {
     fn ewkb_point_xy(srid: u32, x: f64, y: f64) -> Vec<u8> {
         let mut b = Vec::with_capacity(25);
         b.push(0x01); // little-endian
-        // Type = 1 (Point) | 0x20000000 (SRID flag)
+                      // Type = 1 (Point) | 0x20000000 (SRID flag)
         b.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
         b.extend_from_slice(&srid.to_le_bytes());
         b.extend_from_slice(&x.to_le_bytes());
@@ -258,13 +257,9 @@ mod tests {
         let ewkb = ewkb_point_xy(4326, 9.19, 45.46);
         // Dichiaro 3857 ma l'EWKB è WGS84 → deve fallire (attacco
         // di aggiramento della policy DWithin+Geometry+geog_srid).
-        let err = SpatialReference::new_validated(
-            ewkb,
-            3857,
-            Dimensions::Xy,
-            SpatialSemantics::Geometry,
-        )
-        .unwrap_err();
+        let err =
+            SpatialReference::new_validated(ewkb, 3857, Dimensions::Xy, SpatialSemantics::Geometry)
+                .unwrap_err();
         assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
         assert!(err.message.contains("SRID"));
     }
@@ -273,13 +268,9 @@ mod tests {
     fn new_validated_rejects_dimensions_mismatch() {
         // EWKB Point Z (3D) ma dichiaro Xy → fail.
         let ewkb = ewkb_point_xyz(4326, 9.19, 45.46, 100.0);
-        let err = SpatialReference::new_validated(
-            ewkb,
-            4326,
-            Dimensions::Xy,
-            SpatialSemantics::Geometry,
-        )
-        .unwrap_err();
+        let err =
+            SpatialReference::new_validated(ewkb, 4326, Dimensions::Xy, SpatialSemantics::Geometry)
+                .unwrap_err();
         assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
         assert!(err.message.contains("dimensioni"));
     }

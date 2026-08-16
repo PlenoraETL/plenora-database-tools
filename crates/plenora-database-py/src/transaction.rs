@@ -16,7 +16,7 @@
 #![allow(
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
-    clippy::needless_pass_by_value,
+    clippy::needless_pass_by_value
 )]
 
 use crate::errors::to_py_err;
@@ -98,10 +98,11 @@ impl Transaction {
             return Ok(py.None().into_bound(py));
         }
         let first = rows.get_item(0)?.downcast_into::<PyDict>()?;
-        first.values().iter().next().map_or_else(
-            || Ok(py.None().into_bound(py)),
-            Ok,
-        )
+        first
+            .values()
+            .iter()
+            .next()
+            .map_or_else(|| Ok(py.None().into_bound(py)), Ok)
     }
 
     /// Esegue una query nella transazione e ritorna tutte le righe come
@@ -134,7 +135,9 @@ impl Transaction {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyList>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let tx = self.tx_mut()?;
         let rows: Vec<Row> = py
@@ -151,7 +154,9 @@ impl Transaction {
     /// Esegue un `PortableStatement` (senza RETURNING) nella transazione.
     fn execute_portable_count(&mut self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let tx = self.tx_mut()?;
         py.allow_threads(|| {
@@ -198,8 +203,7 @@ impl Transaction {
         key_probe_params: Option<Bound<'_, PyList>>,
     ) -> PyResult<()> {
         let update_values = params_from_python(update_params.as_ref())?;
-        let update_stmt =
-            Statement::new(update_sql.to_owned()).with_params(update_values);
+        let update_stmt = Statement::new(update_sql.to_owned()).with_params(update_values);
         let probe_stmt = if let Some(sql) = key_probe_sql {
             let probe_values = params_from_python(key_probe_params.as_ref())?;
             Some(Statement::new(sql.to_owned()).with_params(probe_values))
@@ -326,10 +330,7 @@ impl Transaction {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "<Transaction active={}>",
-            self.inner.is_some()
-        )
+        format!("<Transaction active={}>", self.inner.is_some())
     }
 }
 

@@ -32,7 +32,7 @@
     clippy::too_many_lines,
     clippy::items_after_statements,
     clippy::uninlined_format_args,
-    clippy::single_match_else,
+    clippy::single_match_else
 )]
 
 use plenora_database_core::provider::{Provider, SecretString};

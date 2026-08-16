@@ -457,11 +457,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 self.batch_start = end;
             }
             loop {
-                match self
-                    .input
-                    .next_batch(self.cancellation)
-                    .await
-                {
+                match self.input.next_batch(self.cancellation).await {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => {
                         return Err(diagnostic_error(

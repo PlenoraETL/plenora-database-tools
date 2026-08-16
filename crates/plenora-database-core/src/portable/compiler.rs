@@ -12,10 +12,10 @@ use super::{
     DeleteStatement, Direction, Expression, InsertStatement, Nulls, OrderBy, PortableStatement,
     Predicate, Projection, SelectStatement, TableRef, UpdateStatement, UpsertStatement,
 };
-use crate::plan::ProviderKind;
-use crate::provider::ParameterValue;
 use crate::geometry::SpatialSemantics;
 use crate::identifier::{self, IdentifierDialect};
+use crate::plan::ProviderKind;
+use crate::provider::ParameterValue;
 use crate::spatial_policy;
 use crate::spatial_predicate::{SpatialPredicate, SpatialReference};
 use crate::transaction::Statement;
@@ -29,10 +29,7 @@ use std::fmt::Write as _;
 /// - `Unsupported` se il provider non è supportato dal compilatore
 /// - `InvalidPlan` se lo statement viola un vincolo (columns vuoto,
 ///   values shape mismatch, identificatori non validi, ecc.)
-pub fn compile_portable(
-    kind: ProviderKind,
-    statement: &PortableStatement,
-) -> Result<Statement> {
+pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Result<Statement> {
     let dialect = match kind {
         ProviderKind::Postgres => DialectKind::Postgres,
         ProviderKind::Mysql => DialectKind::Mysql,
@@ -160,8 +157,7 @@ fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<Strin
                 return Err(DatabaseError::invalid_plan("IN richiede almeno un valore"));
             }
             let c = quote_identifier(column, ctx.dialect)?;
-            let items: Result<Vec<_>> =
-                values.iter().map(|e| compile_expression(e, ctx)).collect();
+            let items: Result<Vec<_>> = values.iter().map(|e| compile_expression(e, ctx)).collect();
             let joined = items?.join(", ");
             Ok(format!("{c} IN ({joined})"))
         }
@@ -186,7 +182,9 @@ fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<Strin
         }
         Predicate::And { predicates } => {
             if predicates.is_empty() {
-                return Err(DatabaseError::invalid_plan("AND richiede almeno un predicato"));
+                return Err(DatabaseError::invalid_plan(
+                    "AND richiede almeno un predicato",
+                ));
             }
             let parts: Result<Vec<_>> = predicates
                 .iter()
@@ -196,7 +194,9 @@ fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<Strin
         }
         Predicate::Or { predicates } => {
             if predicates.is_empty() {
-                return Err(DatabaseError::invalid_plan("OR richiede almeno un predicato"));
+                return Err(DatabaseError::invalid_plan(
+                    "OR richiede almeno un predicato",
+                ));
             }
             let parts: Result<Vec<_>> = predicates
                 .iter()
@@ -272,9 +272,8 @@ fn compile_spatial_postgres(
         ))
     })?;
     let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
-    let geom_expr = format!(
-        "ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}"
-    );
+    let geom_expr =
+        format!("ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}");
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col_cast}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col_cast}, {geom_expr})")),
@@ -340,7 +339,8 @@ fn compile_projection(projection: &Projection, dialect: DialectKind) -> Result<S
                     "projection esplicita non può essere vuota",
                 ));
             }
-            let quoted: Result<Vec<_>> = cols.iter().map(|c| quote_identifier(c, dialect)).collect();
+            let quoted: Result<Vec<_>> =
+                cols.iter().map(|c| quote_identifier(c, dialect)).collect();
             Ok(quoted?.join(", "))
         }
     }
@@ -381,7 +381,10 @@ fn compile_returning(returning: &[String], dialect: DialectKind) -> Result<Strin
     }
     match dialect {
         DialectKind::Postgres => {
-            let cols: Result<Vec<_>> = returning.iter().map(|c| quote_identifier(c, dialect)).collect();
+            let cols: Result<Vec<_>> = returning
+                .iter()
+                .map(|c| quote_identifier(c, dialect))
+                .collect();
             Ok(format!(" RETURNING {}", cols?.join(", ")))
         }
         DialectKind::Mysql => {
@@ -419,10 +422,14 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
 
 fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<String> {
     if s.columns.is_empty() {
-        return Err(DatabaseError::invalid_plan("INSERT richiede almeno una colonna"));
+        return Err(DatabaseError::invalid_plan(
+            "INSERT richiede almeno una colonna",
+        ));
     }
     if s.values.is_empty() {
-        return Err(DatabaseError::invalid_plan("INSERT richiede almeno una riga"));
+        return Err(DatabaseError::invalid_plan(
+            "INSERT richiede almeno una riga",
+        ));
     }
     for (i, row) in s.values.iter().enumerate() {
         if row.len() != s.columns.len() {
@@ -434,7 +441,11 @@ fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<Strin
         }
     }
     let table = qualify_table(&s.table, ctx.dialect)?;
-    let cols: Result<Vec<_>> = s.columns.iter().map(|c| quote_identifier(c, ctx.dialect)).collect();
+    let cols: Result<Vec<_>> = s
+        .columns
+        .iter()
+        .map(|c| quote_identifier(c, ctx.dialect))
+        .collect();
     let cols_sql = cols?.join(", ");
     let rows: Result<Vec<String>> = s
         .values
@@ -445,7 +456,10 @@ fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<Strin
             Ok(format!("({})", placeholders?.join(", ")))
         })
         .collect();
-    let mut sql = format!("INSERT INTO {table} ({cols_sql}) VALUES {}", rows?.join(", "));
+    let mut sql = format!(
+        "INSERT INTO {table} ({cols_sql}) VALUES {}",
+        rows?.join(", ")
+    );
     sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
     Ok(sql)
 }
@@ -507,7 +521,11 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         }
     }
     let table = qualify_table(&s.table, ctx.dialect)?;
-    let cols: Result<Vec<_>> = s.columns.iter().map(|c| quote_identifier(c, ctx.dialect)).collect();
+    let cols: Result<Vec<_>> = s
+        .columns
+        .iter()
+        .map(|c| quote_identifier(c, ctx.dialect))
+        .collect();
     let cols_sql = cols?.join(", ");
     let rows: Result<Vec<String>> = s
         .values
@@ -568,12 +586,10 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
                         Ok(format!("{c} = {e}"))
                     })
                     .collect();
-                write!(sql, " ON DUPLICATE KEY UPDATE {}", sets?.join(", "))
-                    .expect("write String");
+                write!(sql, " ON DUPLICATE KEY UPDATE {}", sets?.join(", ")).expect("write String");
             }
         }
     }
     sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
     Ok(sql)
 }
-

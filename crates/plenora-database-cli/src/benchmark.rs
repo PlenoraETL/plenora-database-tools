@@ -1,5 +1,9 @@
 //! Sottocomandi benchmark: benchmark-oltp, benchmark-read, benchmark-spatial.
-#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliResult};
@@ -20,7 +24,11 @@ pub(crate) fn percentile(sorted: &[u128], p: f64) -> u128 {
         return 0;
     }
     let n = sorted.len();
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let idx = ((n as f64 - 1.0) * p).round() as usize;
     sorted[idx.min(n - 1)]
 }
@@ -139,9 +147,7 @@ pub(crate) async fn benchmark_write(args: &mut impl Iterator<Item = String>) -> 
         .await?;
     if let Some(schema) = ephemeral.as_deref() {
         tx.execute(
-            &Statement::new(format!(
-                "SET LOCAL search_path = \"{schema}\", public"
-            )),
+            &Statement::new(format!("SET LOCAL search_path = \"{schema}\", public")),
             &cancel,
         )
         .await?;
@@ -269,4 +275,3 @@ pub(crate) async fn benchmark_spatial(args: &mut impl Iterator<Item = String>) -
         }
     }))
 }
-

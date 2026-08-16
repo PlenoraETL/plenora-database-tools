@@ -51,8 +51,8 @@ use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPoli
 use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name, CommitOutcome,
-    ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
+    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -341,8 +341,7 @@ impl TransactionScope for PostgresTransaction {
                     "operazione cancellata durante l'esecuzione",
                 ));
             };
-            let rows = query_result
-                .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
+            let rows = query_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;
             decode_rows(&rows)
         })
     }
@@ -478,8 +477,8 @@ impl TransactionScope for PostgresTransaction {
                         "key probe cancellato durante l'esecuzione",
                     ));
                 };
-                let rows = probe_result
-                    .map_err(|error| classify_error(ErrorPhase::Read, &error))?;
+                let rows =
+                    probe_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;
                 if rows.is_empty() {
                     return Err(public_error(
                         ErrorCategory::NotFound,
@@ -541,10 +540,7 @@ impl TransactionScope for PostgresTransaction {
         })
     }
 
-    fn rollback(
-        mut self: Box<Self>,
-        cancellation: &CancellationToken,
-    ) -> ProviderFuture<'_, ()> {
+    fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async move {
             // Un rollback esplicito non deve fallire sul cancellation: la
             // cancellazione è il motivo per cui stiamo rilasciando lo stato.
@@ -569,4 +565,3 @@ impl TransactionScope for PostgresTransaction {
 // documentazione della retry disposition applicata al ramo timeout.
 #[allow(dead_code)]
 const _: fn() -> RetryDisposition = || RetryDisposition::Never;
-

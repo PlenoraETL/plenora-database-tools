@@ -106,9 +106,7 @@ impl BatchReader {
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let cancel = CancellationToken::new();
         let batch_opt = py
-            .allow_threads(|| {
-                runtime().block_on(async { self.inner.next_batch(&cancel).await })
-            })
+            .allow_threads(|| runtime().block_on(async { self.inner.next_batch(&cancel).await }))
             .map_err(to_py_err)?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
@@ -122,12 +120,11 @@ impl BatchReader {
         let schema = self.inner.schema();
         let mut buf = Vec::with_capacity(512);
         {
-            let mut writer = StreamWriter::try_new(&mut buf, &schema).map_err(|e| {
-                PyRuntimeError::new_err(format!("arrow-ipc schema writer: {e}"))
-            })?;
-            writer.finish().map_err(|e| {
-                PyRuntimeError::new_err(format!("arrow-ipc schema finish: {e}"))
-            })?;
+            let mut writer = StreamWriter::try_new(&mut buf, &schema)
+                .map_err(|e| PyRuntimeError::new_err(format!("arrow-ipc schema writer: {e}")))?;
+            writer
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(format!("arrow-ipc schema finish: {e}")))?;
         }
         Ok(PyBytes::new(py, &buf))
     }
@@ -204,7 +201,13 @@ pub(crate) fn open_reader(
     let cancel = CancellationToken::new();
     let stream = runtime().block_on(async move {
         provider
-            .read(secret, &operation, &ParameterBag::default(), &default_budget(), &cancel)
+            .read(
+                secret,
+                &operation,
+                &ParameterBag::default(),
+                &default_budget(),
+                &cancel,
+            )
             .await
     })?;
     Ok(BatchReader::new(stream))
@@ -253,9 +256,7 @@ impl AsyncBatchReader {
             match batch_opt {
                 Some(batch) => {
                     let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
-                    Python::with_gil(|py| {
-                        Ok(PyBytes::new(py, &bytes).into_any().unbind())
-                    })
+                    Python::with_gil(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
                 }
                 None => Err(PyStopAsyncIteration::new_err(())),
             }
@@ -266,9 +267,9 @@ impl AsyncBatchReader {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let guard = inner.lock().await;
-            let stream = guard.as_ref().ok_or_else(|| {
-                PyRuntimeError::new_err("AsyncBatchReader chiuso")
-            })?;
+            let stream = guard
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("AsyncBatchReader chiuso"))?;
             let schema = stream.schema();
             let mut buf = Vec::with_capacity(512);
             {
@@ -301,7 +302,13 @@ pub(crate) async fn open_reader_async(
     let operation = make_read_operation(&schema, &object, projection, order_by, limit)?;
     let cancel = CancellationToken::new();
     let stream = provider
-        .read(&secret, &operation, &ParameterBag::default(), &default_budget(), &cancel)
+        .read(
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &default_budget(),
+            &cancel,
+        )
         .await?;
     Ok(AsyncBatchReader::new(stream))
 }

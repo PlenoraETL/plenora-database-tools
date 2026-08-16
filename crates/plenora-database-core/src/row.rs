@@ -84,7 +84,10 @@ impl Index<&str> for Row {
 
     fn index(&self, name: &str) -> &ParameterValue {
         self.get(name).unwrap_or_else(|| {
-            panic!("colonna `{name}` non presente in Row (colonne: {:?})", self.columns)
+            panic!(
+                "colonna `{name}` non presente in Row (colonne: {:?})",
+                self.columns
+            )
         })
     }
 }
@@ -132,10 +135,7 @@ mod tests {
     fn get_by_index_returns_the_value() {
         let row = sample_row();
         assert!(matches!(row.get_index(0), Some(ParameterValue::I32(42))));
-        assert!(matches!(
-            row.get_index(1),
-            Some(ParameterValue::String(_))
-        ));
+        assert!(matches!(row.get_index(1), Some(ParameterValue::String(_))));
         assert!(row.get_index(2).is_none());
     }
 
@@ -167,16 +167,15 @@ mod tests {
 
     #[test]
     fn shared_columns_avoid_per_row_allocations() {
-        let columns: Arc<[String]> =
-            Arc::from(vec!["a".to_owned(), "b".to_owned()]);
-        let row1 = Row::new(Arc::clone(&columns), vec![
-            ParameterValue::I32(1),
-            ParameterValue::I32(2),
-        ]);
-        let row2 = Row::new(Arc::clone(&columns), vec![
-            ParameterValue::I32(3),
-            ParameterValue::I32(4),
-        ]);
+        let columns: Arc<[String]> = Arc::from(vec!["a".to_owned(), "b".to_owned()]);
+        let row1 = Row::new(
+            Arc::clone(&columns),
+            vec![ParameterValue::I32(1), ParameterValue::I32(2)],
+        );
+        let row2 = Row::new(
+            Arc::clone(&columns),
+            vec![ParameterValue::I32(3), ParameterValue::I32(4)],
+        );
         assert!(Arc::ptr_eq(&row1.columns, &row2.columns));
     }
 

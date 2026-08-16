@@ -18,7 +18,7 @@
     clippy::uninlined_format_args,
     clippy::match_same_arms,
     clippy::manual_let_else,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
@@ -47,7 +47,8 @@ fn budget() -> ResourceBudget {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn h4_pool_backpressure_supports_50_concurrent_tx_on_pool_8() {
-    let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 5_000));
+    let provider =
+        Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 5_000));
     let cancel = CancellationToken::new();
 
     let n = 50_u32;
@@ -96,7 +97,12 @@ async fn h4_streaming_100k_rows_reaches_completion_without_oom() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -130,7 +136,12 @@ async fn h4_streaming_cancel_mid_flight_is_honored_promptly() {
     let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -213,7 +224,10 @@ async fn h4_transaction_drop_without_commit_does_not_leak_state_to_next_tx() {
         .await
         .expect("begin tx2");
     let rows = tx2
-        .query(&Statement::new("SELECT current_setting('application_name')"), &cancel)
+        .query(
+            &Statement::new("SELECT current_setting('application_name')"),
+            &cancel,
+        )
         .await
         .expect("query app_name");
     let app_name = match rows.first().and_then(|r| r.get_index(0)) {
@@ -259,6 +273,9 @@ async fn h4_transaction_drop_does_not_leave_pool_permanently_broken() {
             rows.first().and_then(|r| r.get_index(0)),
             Some(ParameterValue::I32(v)) if *v == i32::try_from(i).unwrap()
         ));
-        Box::new(tx).commit(&cancel).await.unwrap_or_else(|e| panic!("commit iter {i}: {e:?}"));
+        Box::new(tx)
+            .commit(&cancel)
+            .await
+            .unwrap_or_else(|e| panic!("commit iter {i}: {e:?}"));
     }
 }

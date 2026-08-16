@@ -9,9 +9,7 @@ use arrow_ipc::reader::FileReader;
 use plenora_database_core::arrow::array::RecordBatch;
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::loss::MappingPolicy;
-use plenora_database_core::plan::{
-    ObjectRef, TransactionProfile, WriteMode, WriteOperation,
-};
+use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture};
 use plenora_database_core::CancellationToken;
 use serde_json::json;
@@ -30,7 +28,8 @@ struct IpcFileBatchStream {
 
 impl IpcFileBatchStream {
     fn open(path: &str) -> CliResult<Self> {
-        let file = File::open(path).map_err(|_| format!("input Arrow IPC non leggibile: {path}"))?;
+        let file =
+            File::open(path).map_err(|_| format!("input Arrow IPC non leggibile: {path}"))?;
         let reader = FileReader::try_new(file, None)
             .map_err(|e| format!("input Arrow IPC malformato: {e}"))?;
         let schema = reader.schema();
@@ -47,7 +46,10 @@ impl BatchStream for IpcFileBatchStream {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         let next = self.batches.pop_front();
         Box::pin(std::future::ready(Ok(next)))
     }
@@ -90,21 +92,15 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--mode" => {
-                let value = args
-                    .next()
-                    .ok_or("--mode richiede un valore")?;
+                let value = args.next().ok_or("--mode richiede un valore")?;
                 mode = parse_write_mode(&value)?;
             }
             "--keys" => {
-                let value = args
-                    .next()
-                    .ok_or("--keys richiede una lista")?;
+                let value = args.next().ok_or("--keys richiede una lista")?;
                 keys = value.split(',').map(|s| s.trim().to_owned()).collect();
             }
             "--update-columns" => {
-                let value = args
-                    .next()
-                    .ok_or("--update-columns richiede una lista")?;
+                let value = args.next().ok_or("--update-columns richiede una lista")?;
                 update_columns = value.split(',').map(|s| s.trim().to_owned()).collect();
             }
             "--dry-run" => dry_run = true,
@@ -177,9 +173,10 @@ async fn execute_bulk_write(
         .write(&secret, prepared, stream, &budget, &cancel)
         .await?;
 
-    print_json(&serde_json::to_value(&outcome).map_err(|e| CliError::from(format!(
-        "outcome non serializzabile: {e}"
-    )))?)
+    print_json(
+        &serde_json::to_value(&outcome)
+            .map_err(|e| CliError::from(format!("outcome non serializzabile: {e}")))?,
+    )
 }
 
 fn parse_write_mode(value: &str) -> CliResult<WriteMode> {

@@ -14,7 +14,10 @@ use std::collections::BTreeSet;
 ///
 /// Propaga `parameter_value` errors (float non finiti, stringhe con NUL, ecc.).
 pub fn bind_positional_params(params: &[ParameterValue]) -> Result<Params> {
-    let values = params.iter().map(parameter_value).collect::<Result<Vec<_>>>()?;
+    let values = params
+        .iter()
+        .map(parameter_value)
+        .collect::<Result<Vec<_>>>()?;
     if values.is_empty() {
         Ok(Params::Empty)
     } else {

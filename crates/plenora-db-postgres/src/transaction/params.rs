@@ -7,8 +7,8 @@
 //! Postgres NUMERIC wire format), altrimenti fallback al text encoding
 //! del testo originale (utile per `SELECT $1::text::uuid` pattern).
 
-use crate::parameter_codec::{DecimalParameter, UuidParameter};
 use super::sql::unsupported_param;
+use crate::parameter_codec::{DecimalParameter, UuidParameter};
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use plenora_database_core::provider::ParameterValue;
@@ -16,7 +16,8 @@ use plenora_database_core::Result;
 use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 
 pub(super) enum SqlParam {
-    #[allow(dead_code)] // il Type documenta l'intenzione lato PostgreSQL anche se `to_sql` restituisce solo IsNull::Yes
+    #[allow(dead_code)]
+    // il Type documenta l'intenzione lato PostgreSQL anche se `to_sql` restituisce solo IsNull::Yes
     Null(Type),
     Bool(bool),
     I32(i32),
@@ -29,10 +30,16 @@ pub(super) enum SqlParam {
     TimestampTz(DateTime<Utc>),
     /// UUID: mantiene sia il testo originale (36 char con dash) sia i 16
     /// byte binari. In `to_sql` dispatcha in base al target type.
-    Uuid { text: String, binary: [u8; 16] },
+    Uuid {
+        text: String,
+        binary: [u8; 16],
+    },
     /// Decimal: text originale + rappresentazione binaria (i128 + scale).
     /// In `to_sql` dispatcha in base al target type.
-    Decimal { text: String, binary: DecimalParameter },
+    Decimal {
+        text: String,
+        binary: DecimalParameter,
+    },
     Json(serde_json::Value),
 }
 
@@ -117,9 +124,8 @@ fn encode_param(param: &ParameterValue) -> Result<SqlParam> {
                 return Err(unsupported_param("uuid non conforme a lunghezza 36"));
             }
             // Parsea a 16 byte per invio binario a Postgres UUID.
-            let binary = UuidParameter::parse(v).map_err(|_| {
-                unsupported_param("uuid non conforme (hex-digits + dash attesi)")
-            })?;
+            let binary = UuidParameter::parse(v)
+                .map_err(|_| unsupported_param("uuid non conforme (hex-digits + dash attesi)"))?;
             Ok(SqlParam::Uuid {
                 text: v.clone(),
                 binary: binary.0,
@@ -177,12 +183,30 @@ mod tests {
 
     #[test]
     fn scalar_variants_are_encoded_end_to_end() {
-        assert!(matches!(encode(&ParameterValue::Bool(true)).unwrap(), SqlParam::Bool(true)));
-        assert!(matches!(encode(&ParameterValue::I32(42)).unwrap(), SqlParam::I32(42)));
-        assert!(matches!(encode(&ParameterValue::I64(-42)).unwrap(), SqlParam::I64(-42)));
-        assert!(matches!(encode(&ParameterValue::F64(3.5)).unwrap(), SqlParam::F64(_)));
-        assert!(matches!(encode(&ParameterValue::String("s".into())).unwrap(), SqlParam::String(_)));
-        assert!(matches!(encode(&ParameterValue::Bytes(vec![1, 2])).unwrap(), SqlParam::Bytes(_)));
+        assert!(matches!(
+            encode(&ParameterValue::Bool(true)).unwrap(),
+            SqlParam::Bool(true)
+        ));
+        assert!(matches!(
+            encode(&ParameterValue::I32(42)).unwrap(),
+            SqlParam::I32(42)
+        ));
+        assert!(matches!(
+            encode(&ParameterValue::I64(-42)).unwrap(),
+            SqlParam::I64(-42)
+        ));
+        assert!(matches!(
+            encode(&ParameterValue::F64(3.5)).unwrap(),
+            SqlParam::F64(_)
+        ));
+        assert!(matches!(
+            encode(&ParameterValue::String("s".into())).unwrap(),
+            SqlParam::String(_)
+        ));
+        assert!(matches!(
+            encode(&ParameterValue::Bytes(vec![1, 2])).unwrap(),
+            SqlParam::Bytes(_)
+        ));
         assert!(matches!(
             encode(&ParameterValue::Json(serde_json::json!({"k": "v"}))).unwrap(),
             SqlParam::Json(_)
@@ -205,15 +229,21 @@ mod tests {
         ));
 
         assert_eq!(
-            encode(&ParameterValue::Date("12/08/2026".into())).unwrap_err().category,
+            encode(&ParameterValue::Date("12/08/2026".into()))
+                .unwrap_err()
+                .category,
             ErrorCategory::Unsupported
         );
         assert_eq!(
-            encode(&ParameterValue::Timestamp("nope".into())).unwrap_err().category,
+            encode(&ParameterValue::Timestamp("nope".into()))
+                .unwrap_err()
+                .category,
             ErrorCategory::Unsupported
         );
         assert_eq!(
-            encode(&ParameterValue::TimestampTz("2026-08-12 10:00:00".into())).unwrap_err().category,
+            encode(&ParameterValue::TimestampTz("2026-08-12 10:00:00".into()))
+                .unwrap_err()
+                .category,
             ErrorCategory::Unsupported
         );
     }
@@ -228,7 +258,9 @@ mod tests {
 
         let short = "not-a-uuid";
         assert_eq!(
-            encode(&ParameterValue::Uuid(short.into())).unwrap_err().category,
+            encode(&ParameterValue::Uuid(short.into()))
+                .unwrap_err()
+                .category,
             ErrorCategory::Unsupported
         );
     }
@@ -362,8 +394,14 @@ mod tests {
 
     #[test]
     fn debug_impl_redacts_the_value() {
-        let s = format!("{:?}", SqlParam::String("segreto-che-non-deve-comparire".into()));
-        assert!(!s.contains("segreto"), "Debug non deve rivelare i valori: {s}");
+        let s = format!(
+            "{:?}",
+            SqlParam::String("segreto-che-non-deve-comparire".into())
+        );
+        assert!(
+            !s.contains("segreto"),
+            "Debug non deve rivelare i valori: {s}"
+        );
         assert!(s.contains("REDACTED"));
     }
 }

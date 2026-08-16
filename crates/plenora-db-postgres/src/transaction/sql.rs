@@ -59,7 +59,12 @@ pub(super) fn phase_of(sql: &str) -> ErrorPhase {
 }
 
 pub(super) fn unsupported_param(message: &str) -> DatabaseError {
-    public_error(ErrorCategory::Unsupported, ErrorPhase::Write, false, message)
+    public_error(
+        ErrorCategory::Unsupported,
+        ErrorPhase::Write,
+        false,
+        message,
+    )
 }
 
 pub(super) fn unsupported_column_type(pg_type: &Type) -> DatabaseError {

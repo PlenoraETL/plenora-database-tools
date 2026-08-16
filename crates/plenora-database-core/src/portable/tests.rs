@@ -104,10 +104,7 @@ fn delete_with_where() {
         returning: Vec::new(),
     });
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
-    assert_eq!(
-        compiled.sql,
-        r#"DELETE FROM "session" WHERE "token" = $1"#
-    );
+    assert_eq!(compiled.sql, r#"DELETE FROM "session" WHERE "token" = $1"#);
 }
 
 #[test]
@@ -161,9 +158,7 @@ fn predicates_compose_and_or_not() {
                 ],
             },
             Predicate::Not {
-                predicate: Box::new(Predicate::IsNull {
-                    column: "c".into(),
-                }),
+                predicate: Box::new(Predicate::IsNull { column: "c".into() }),
             },
         ]))
         .into_statement();
@@ -344,7 +339,9 @@ fn spatial_bounding_box_uses_index_operator() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
-    assert!(compiled.sql.contains(r#""geom" && ST_SetSRID(ST_GeomFromEWKB"#));
+    assert!(compiled
+        .sql
+        .contains(r#""geom" && ST_SetSRID(ST_GeomFromEWKB"#));
 }
 
 #[test]
@@ -393,7 +390,9 @@ fn spatial_geography_uses_geography_cast_postgres() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Fix #4: cast della colonna + del riferimento a geography.
     assert!(
-        compiled.sql.contains(r#"ST_Intersects("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography)"#),
+        compiled.sql.contains(
+            r#"ST_Intersects("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography)"#
+        ),
         "sql inatteso: {}",
         compiled.sql
     );
@@ -418,9 +417,9 @@ fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Geography su 4326 → cast a geography, DWithin usa metri veri.
-    assert!(compiled
-        .sql
-        .contains(r#"ST_DWithin("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography, $3)"#));
+    assert!(compiled.sql.contains(
+        r#"ST_DWithin("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography, $3)"#
+    ));
     // params: [0]=ewkb, [1]=srid, [2]=distance.
     assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 500.0));
 }
@@ -529,7 +528,9 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
     let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
     // Nessun cast, solo ST_GeomFromWKB.
     // Post fix review #5 completo: MySQL usa ST_GeomFromWKB(wkb, srid).
-    assert!(compiled.sql.contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
+    assert!(compiled
+        .sql
+        .contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
 }

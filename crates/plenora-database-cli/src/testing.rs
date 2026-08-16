@@ -6,9 +6,7 @@ use crate::{ensure_end, print_json, secret_from_env, CliResult};
 use plenora_database_core::conformance::{APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1};
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::portable::{
-    compile_portable, select as p_select, spatial as p_spatial,
-};
+use plenora_database_core::portable::{compile_portable, select as p_select, spatial as p_spatial};
 use plenora_database_core::provider::{ParameterValue, Provider};
 use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory, SpatialPredicate, SpatialReference};
@@ -56,7 +54,9 @@ pub(crate) async fn test_cancellation(args: &mut impl Iterator<Item = String>) -
         .begin_transaction(&secret, &opts, &budget, &cancel)
         .await?;
     let start = std::time::Instant::now();
-    let outcome = tx.execute(&Statement::new("SELECT pg_sleep(2)"), &cancel).await;
+    let outcome = tx
+        .execute(&Statement::new("SELECT pg_sleep(2)"), &cancel)
+        .await;
     let elapsed_ms = start.elapsed().as_millis();
     let _ = tx.rollback(&cancel).await;
 
@@ -112,8 +112,9 @@ pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> C
     let mut tx = provider
         .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
         .await?;
-    let stmt =
-        Statement::new(format!("SELECT gs::BIGINT FROM generate_series(1, {row_count}) gs"));
+    let stmt = Statement::new(format!(
+        "SELECT gs::BIGINT FROM generate_series(1, {row_count}) gs"
+    ));
 
     let start = std::time::Instant::now();
     let mut stream = tx.query_stream(&stmt, batch_size, &cancel).await?;
@@ -167,9 +168,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     if let Some(schema) = ephemeral.as_deref() {
         tx_setup
             .execute(
-                &Statement::new(format!(
-                    "SET LOCAL search_path = \"{schema}\", public"
-                )),
+                &Statement::new(format!("SET LOCAL search_path = \"{schema}\", public")),
                 &cancel,
             )
             .await?;
@@ -195,10 +194,9 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     tx_setup.commit(&cancel).await?;
 
     // Winner: bump 1 → 2 con expected_version=1.
-    let update_stmt = Statement::new(
-        "UPDATE _plenora_test_concurrency SET v = v + 1 WHERE id = $1 AND v = $2",
-    )
-    .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(1)]);
+    let update_stmt =
+        Statement::new("UPDATE _plenora_test_concurrency SET v = v + 1 WHERE id = $1 AND v = $2")
+            .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(1)]);
     let probe_stmt = Statement::new("SELECT 1 FROM _plenora_test_concurrency WHERE id = $1")
         .with_params(vec![ParameterValue::I32(1)]);
 
@@ -208,9 +206,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     if let Some(schema) = ephemeral.as_deref() {
         tx_winner
             .execute(
-                &Statement::new(format!(
-                    "SET LOCAL search_path = \"{schema}\", public"
-                )),
+                &Statement::new(format!("SET LOCAL search_path = \"{schema}\", public")),
                 &cancel,
             )
             .await?;
@@ -239,9 +235,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     if let Some(schema) = ephemeral.as_deref() {
         tx_loser
             .execute(
-                &Statement::new(format!(
-                    "SET LOCAL search_path = \"{schema}\", public"
-                )),
+                &Statement::new(format!("SET LOCAL search_path = \"{schema}\", public")),
                 &cancel,
             )
             .await?;
@@ -265,9 +259,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     if let Some(schema) = ephemeral.as_deref() {
         let _ = tx_cleanup
             .execute(
-                &Statement::new(format!(
-                    "SET LOCAL search_path = \"{schema}\", public"
-                )),
+                &Statement::new(format!("SET LOCAL search_path = \"{schema}\", public")),
                 &cancel,
             )
             .await;

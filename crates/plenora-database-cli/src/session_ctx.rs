@@ -76,9 +76,7 @@ fn param_to_session_value(param: ParameterValue) -> CliResult<SessionValue> {
         ParameterValue::Bytes(_) => {
             Err("session context non supporta bytes: usa hex string come text".into())
         }
-        ParameterValue::Wkb { .. } => {
-            Err("session context non supporta geometry".into())
-        }
+        ParameterValue::Wkb { .. } => Err("session context non supporta geometry".into()),
         ParameterValue::Enum { label, .. } => Ok(SessionValue::Text(label)),
     }
 }
@@ -93,7 +91,9 @@ mod tests {
 
     #[test]
     fn strip_extracts_ordered_entries() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rest = strip_session_context(vec![
             "cmd".into(),
             "--session-context".into(),

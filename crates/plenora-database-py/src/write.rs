@@ -18,7 +18,7 @@
     clippy::future_not_send,
     clippy::significant_drop_tightening,
     clippy::redundant_pub_crate,
-    clippy::too_many_arguments,
+    clippy::too_many_arguments
 )]
 
 use crate::errors::to_py_err;
@@ -27,9 +27,7 @@ use arrow_ipc::reader::StreamReader;
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteOutcome;
-use plenora_database_core::plan::{
-    ObjectRef, TransactionProfile, WriteMode, WriteOperation,
-};
+use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::{CancellationToken, DatabaseError};
@@ -116,9 +114,8 @@ pub(crate) fn decode_ipc_stream(
     ipc_bytes: &[u8],
 ) -> Result<(SchemaRef, VecDeque<RecordBatch>, u64), DatabaseError> {
     let cursor = Cursor::new(ipc_bytes);
-    let reader = StreamReader::try_new(cursor, None).map_err(|e| {
-        DatabaseError::invalid_plan(format!("Arrow IPC stream non valido: {e}"))
-    })?;
+    let reader = StreamReader::try_new(cursor, None)
+        .map_err(|e| DatabaseError::invalid_plan(format!("Arrow IPC stream non valido: {e}")))?;
     let schema = reader.schema();
     let mut batches: VecDeque<RecordBatch> = VecDeque::new();
     let mut total_rows: u64 = 0;
@@ -172,16 +169,10 @@ fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<B
             "last_certain_phase",
             format!("{:?}", recovery.last_certain_phase).to_lowercase(),
         )?;
-        rd.set_item(
-            "automatic_retry_allowed",
-            recovery.automatic_retry_allowed,
-        )?;
+        rd.set_item("automatic_retry_allowed", recovery.automatic_retry_allowed)?;
         rd.set_item("idempotency_key", recovery.idempotency_key.clone())?;
         rd.set_item("staging_object", recovery.staging_object.clone())?;
-        rd.set_item(
-            "verification_action",
-            recovery.verification_action.clone(),
-        )?;
+        rd.set_item("verification_action", recovery.verification_action.clone())?;
         d.set_item("recovery", rd)?;
     } else {
         d.set_item("recovery", py.None())?;

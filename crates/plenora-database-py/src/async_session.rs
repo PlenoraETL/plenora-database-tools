@@ -11,7 +11,7 @@
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
     clippy::needless_pass_by_value,
-    clippy::too_many_lines,
+    clippy::too_many_lines
 )]
 
 use crate::arrow_reader::open_reader_async;
@@ -77,7 +77,12 @@ impl AsyncSession {
     ) -> plenora_database_core::Result<R> {
         let cancel = CancellationToken::new();
         let mut tx = provider
-            .begin_transaction(&secret, &TransactionOptions::default(), &default_budget(), &cancel)
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &default_budget(),
+                &cancel,
+            )
             .await?;
         let result = work(tx.as_mut(), &cancel).await;
         match result {
@@ -221,7 +226,9 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -406,7 +413,9 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -490,6 +499,5 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
 /// per gli awaitable async.
 pub fn init_async_runtime() {
     let rt = runtime();
-    pyo3_async_runtimes::tokio::init_with_runtime(rt)
-        .expect("pyo3-async-runtimes init");
+    pyo3_async_runtimes::tokio::init_with_runtime(rt).expect("pyo3-async-runtimes init");
 }

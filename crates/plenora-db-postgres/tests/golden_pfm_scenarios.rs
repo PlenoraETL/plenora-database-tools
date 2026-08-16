@@ -37,7 +37,7 @@
     clippy::manual_let_else,
     clippy::redundant_closure_for_method_calls,
     clippy::cast_precision_loss,
-    clippy::needless_continue,
+    clippy::needless_continue
 )]
 
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
@@ -48,9 +48,7 @@ use plenora_database_core::portable::{
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
-use plenora_database_core::transaction::{
-    ConditionalUpdate, Statement, TransactionOptions,
-};
+use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory, SpatialPredicate, SpatialReference};
 use plenora_db_postgres::PostgresProvider;
 use std::sync::Arc;
@@ -91,12 +89,18 @@ fn ctx_tenant(tenant_id: &str) -> SessionContext {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn pfm_h1_multi_tenant_isolated_via_session_context() {
-    let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 10_000));
+    let provider =
+        Arc::new(PostgresProvider::insecure_local_with_batch_rows(1_024).with_pool_size(8, 10_000));
     let cancel = CancellationToken::new();
 
     // Setup schema condiviso.
     let mut setup = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin setup");
     setup
@@ -154,13 +158,11 @@ async fn pfm_h1_multi_tenant_isolated_via_session_context() {
 
             // Insert dedicato al tenant.
             tx.execute(
-                &Statement::new(
-                    "INSERT INTO _pfm_h1 (tenant, payload) VALUES ($1, $2)",
-                )
-                .with_params(vec![
-                    ParameterValue::String(tenant_id.clone()),
-                    ParameterValue::String(format!("data-{i}")),
-                ]),
+                &Statement::new("INSERT INTO _pfm_h1 (tenant, payload) VALUES ($1, $2)")
+                    .with_params(vec![
+                        ParameterValue::String(tenant_id.clone()),
+                        ParameterValue::String(format!("data-{i}")),
+                    ]),
                 &c,
             )
             .await
@@ -179,7 +181,12 @@ async fn pfm_h1_multi_tenant_isolated_via_session_context() {
 
     // Verifica finale: contatore per tenant + no duplicati.
     let mut verify = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin verify");
     let rows = verify
@@ -524,9 +531,7 @@ async fn pfm_h4_spatial_portable_query_uses_index() {
     // BBox coprente la parte NW dell'area (5-10 lon, 45-50 lat).
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT ST_AsEWKB(ST_SetSRID(ST_MakeEnvelope(5, 45, 10, 50), 4326))",
-            ),
+            &Statement::new("SELECT ST_AsEWKB(ST_SetSRID(ST_MakeEnvelope(5, 45, 10, 50), 4326))"),
             &cancel,
         )
         .await

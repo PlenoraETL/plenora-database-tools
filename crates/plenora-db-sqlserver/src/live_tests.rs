@@ -654,7 +654,11 @@ async fn live_common_provider_contract_read_and_write() {
         .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
         .expect("bounded ids");
     assert_eq!(ids.values(), &[5, 4]);
-    assert!(bounded.next_batch(&cancellation).await.expect("bounded end").is_none());
+    assert!(bounded
+        .next_batch(&cancellation)
+        .await
+        .expect("bounded end")
+        .is_none());
 
     let read_operation = ReadOperation {
         source: ObjectRef {
@@ -719,7 +723,11 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("provider verify");
     let mut rows = 0_usize;
-    while let Some(batch) = verify.next_batch(&cancellation).await.expect("verify batch") {
+    while let Some(batch) = verify
+        .next_batch(&cancellation)
+        .await
+        .expect("verify batch")
+    {
         rows = rows.saturating_add(batch.num_rows());
     }
     assert_eq!(rows, 5);
@@ -3185,11 +3193,7 @@ async fn live_bounded_arrow_stream_maps_scalars_and_spatial() {
     let mut sizes = Vec::new();
     let mut rows = 0_usize;
     let mut first_checked = false;
-    while let Some(batch) = stream
-        .next_batch(&cancellation)
-        .await
-        .expect("next batch")
-    {
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("next batch") {
         sizes.push(batch.num_rows());
         rows = rows.saturating_add(batch.num_rows());
         if !first_checked {
@@ -3787,7 +3791,11 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     .await
     .expect("verify stream");
     let mut rows = 0_usize;
-    while let Some(batch) = verify.next_batch(&cancellation).await.expect("verify batch") {
+    while let Some(batch) = verify
+        .next_batch(&cancellation)
+        .await
+        .expect("verify batch")
+    {
         rows = rows.saturating_add(batch.num_rows());
     }
     assert_eq!(rows, 5);
@@ -6221,7 +6229,10 @@ impl BatchStream for VecBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move { Ok(self.batches.pop_front()) })
     }
 }
@@ -6239,7 +6250,10 @@ impl BatchStream for BarrierBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
             if self.emitted == 1 {
                 if let Some(barrier_reached) = self.barrier_reached.take() {
@@ -6275,7 +6289,10 @@ impl BatchStream for DiagnosticBatchStream {
         self.inner.schema()
     }
 
-    fn next_batch<'a>(&'a mut self, cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         self.inner.next_batch(cancellation)
     }
 

@@ -22,7 +22,7 @@
     clippy::future_not_send,
     clippy::significant_drop_tightening,
     clippy::redundant_pub_crate,
-    clippy::too_many_arguments,
+    clippy::too_many_arguments
 )]
 
 use crate::arrow_reader::{default_budget as reader_default_budget, make_read_operation};
@@ -78,7 +78,12 @@ impl AsyncMysqlSession {
     ) -> plenora_database_core::Result<R> {
         let cancel = CancellationToken::new();
         let mut tx = provider
-            .begin_transaction(&secret, &TransactionOptions::default(), &default_budget(), &cancel)
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &default_budget(),
+                &cancel,
+            )
             .await?;
         let result = work(tx.as_mut(), &cancel).await;
         match result {
@@ -215,15 +220,11 @@ impl AsyncMysqlSession {
                     let dict = PyDict::new(py);
                     let columns: Vec<String> = row.columns().to_vec();
                     for (idx, name) in columns.iter().enumerate() {
-                        let value = row
-                            .values()
-                            .get(idx)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                plenora_database_core::provider::ParameterValue::Null {
-                                    type_name: "unknown".to_owned(),
-                                }
-                            });
+                        let value = row.values().get(idx).cloned().unwrap_or_else(|| {
+                            plenora_database_core::provider::ParameterValue::Null {
+                                type_name: "unknown".to_owned(),
+                            }
+                        });
                         let py_val = param_to_python(py, &value)?;
                         dict.set_item(name.as_str(), py_val)?;
                     }
@@ -287,8 +288,7 @@ impl AsyncMysqlSession {
             opts.context = ctx.inner;
         }
         if let Some(policy) = native_query_policy {
-            opts.native_query_policy =
-                crate::transaction::parse_native_query_policy(policy)?;
+            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
         }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -381,9 +381,8 @@ impl AsyncMysqlSession {
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
         future_into_py(py, async move {
-            let operation =
-                make_read_operation(&schema, &object, projection, order_by, limit)
-                    .map_err(to_py_err)?;
+            let operation = make_read_operation(&schema, &object, projection, order_by, limit)
+                .map_err(to_py_err)?;
             let cancel = CancellationToken::new();
             let stream = provider
                 .read(
@@ -528,8 +527,8 @@ pub fn aconnect_mysql<'py>(
         match tls_mode_owned.as_str() {
             "require" => {}
             "insecure_trust_server" => {
-                config = config
-                    .with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+                config =
+                    config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
             }
             other => {
                 return Err(PyRuntimeError::new_err(format!(

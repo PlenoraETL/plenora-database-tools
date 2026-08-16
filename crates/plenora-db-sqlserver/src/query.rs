@@ -1356,9 +1356,10 @@ async fn profile_spatial_outputs(
                     "output spatial SQL Server non descritto come geometry/geography",
                 )
             })?;
-        let field = identifier_renderer.quote_identifier(&plenora_database_sql::Identifier::new(
-            format!("_plenora_spatial_profile_{}", candidate.projection_index),
-        )?)?;
+        let field =
+            identifier_renderer.quote_identifier(&plenora_database_sql::Identifier::new(
+                format!("_plenora_spatial_profile_{}", candidate.projection_index),
+            )?)?;
         let value = format!("{derived_alias}.{field}");
         let sql = format!(
             "{}SELECT \

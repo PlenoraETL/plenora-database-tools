@@ -42,17 +42,16 @@ use pyo3::IntoPyObjectExt;
 /// # Errors
 ///
 /// Ritorna `PyTypeError` se un elemento ha tipo non supportato.
-pub fn params_from_python(
-    params: Option<&Bound<'_, PyList>>,
-) -> PyResult<Vec<ParameterValue>> {
+pub fn params_from_python(params: Option<&Bound<'_, PyList>>) -> PyResult<Vec<ParameterValue>> {
     let Some(list) = params else {
         return Ok(Vec::new());
     };
     let mut out = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
-        out.push(python_to_param(&item).map_err(|e| {
-            PyTypeError::new_err(format!("parametro #{i}: {e}"))
-        })?);
+        out.push(
+            python_to_param(&item)
+                .map_err(|e| PyTypeError::new_err(format!("parametro #{i}: {e}")))?,
+        );
     }
     Ok(out)
 }
@@ -212,9 +211,9 @@ fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     if let Ok(dict) = value.downcast::<PyDict>() {
         let mut out = serde_json::Map::with_capacity(dict.len());
         for (key, val) in dict.iter() {
-            let key_str: String = key.extract().map_err(|_| {
-                PyTypeError::new_err("chiavi JSON devono essere stringhe")
-            })?;
+            let key_str: String = key
+                .extract()
+                .map_err(|_| PyTypeError::new_err("chiavi JSON devono essere stringhe"))?;
             out.insert(key_str, python_to_json(&val)?);
         }
         return Ok(serde_json::Value::Object(out));
@@ -225,10 +224,7 @@ fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     )))
 }
 
-fn json_to_python<'py>(
-    py: Python<'py>,
-    value: &serde_json::Value,
-) -> PyResult<Bound<'py, PyAny>> {
+fn json_to_python<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
         serde_json::Value::Null => Ok(py.None().into_bound(py)),
         serde_json::Value::Bool(b) => b.into_bound_py_any(py),

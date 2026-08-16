@@ -96,14 +96,9 @@ pub fn validate_predicate(
     }
 }
 
-fn validate_postgres(
-    predicate: &SpatialPredicate,
-    reference: &SpatialReference,
-) -> Result<()> {
+fn validate_postgres(predicate: &SpatialPredicate, reference: &SpatialReference) -> Result<()> {
     match predicate {
-        SpatialPredicate::BoundingBox
-            if reference.semantics == SpatialSemantics::Geography =>
-        {
+        SpatialPredicate::BoundingBox if reference.semantics == SpatialSemantics::Geography => {
             Err(DatabaseError::unsupported(
                 ProviderKind::Postgres,
                 crate::ErrorPhase::Prepare,
@@ -117,9 +112,7 @@ fn validate_postgres(
         // exist" a runtime.
         // Ref: https://postgis.net/docs/manual-dev/ST_Contains.html
         //      https://postgis.net/docs/manual-dev/en/ST_Within.html
-        SpatialPredicate::Contains
-            if reference.semantics == SpatialSemantics::Geography =>
-        {
+        SpatialPredicate::Contains if reference.semantics == SpatialSemantics::Geography => {
             Err(DatabaseError::unsupported(
                 ProviderKind::Postgres,
                 crate::ErrorPhase::Prepare,
@@ -128,9 +121,7 @@ fn validate_postgres(
                  Riproietta su geometry o usa ST_Covers/ST_Intersects.",
             ))
         }
-        SpatialPredicate::Within
-            if reference.semantics == SpatialSemantics::Geography =>
-        {
+        SpatialPredicate::Within if reference.semantics == SpatialSemantics::Geography => {
             Err(DatabaseError::unsupported(
                 ProviderKind::Postgres,
                 crate::ErrorPhase::Prepare,

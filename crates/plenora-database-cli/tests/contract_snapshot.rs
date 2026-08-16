@@ -151,7 +151,12 @@ fn snapshot_doctor_shape() {
     );
     assert_has_keys(
         &v["connection"],
-        &["status", "provider", "server_version", "connection_identity"],
+        &[
+            "status",
+            "provider",
+            "server_version",
+            "connection_identity",
+        ],
     );
 }
 
@@ -208,7 +213,11 @@ fn snapshot_execute_sql_affected_rows_shape() {
     // temporanea che non esiste è validato lato Postgres; useremo un DDL
     // no-op safe: CREATE EXTENSION IF NOT EXISTS plpgsql (già presente).
     let _ = run_json_env(
-        &["execute-ddl", "PG_DSN", "CREATE EXTENSION IF NOT EXISTS plpgsql"],
+        &[
+            "execute-ddl",
+            "PG_DSN",
+            "CREATE EXTENSION IF NOT EXISTS plpgsql",
+        ],
         &[("PG_DSN", DSN)],
     );
     // Ora execute-sql su una tabella temp per verificare shape affected_rows.

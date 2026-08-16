@@ -19,7 +19,7 @@
     clippy::missing_const_for_fn,
     clippy::option_if_let_else,
     clippy::future_not_send,
-    clippy::significant_drop_tightening,
+    clippy::significant_drop_tightening
 )]
 
 use crate::error::driver_error;
@@ -110,10 +110,7 @@ impl MysqlTransaction {
                 )));
             }
             let value = entry.value.as_provider_string();
-            let sql = format!(
-                "SET @plenora_ctx_{name} = {}",
-                mysql_string_literal(&value)
-            );
+            let sql = format!("SET @plenora_ctx_{name} = {}", mysql_string_literal(&value));
             raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
         }
 
@@ -128,9 +125,7 @@ impl MysqlTransaction {
 fn is_safe_context_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 60
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn mysql_string_literal(value: &str) -> String {
@@ -168,17 +163,15 @@ fn decode_row(mut row: MyRow, columns: &Arc<[String]>) -> Result<Row> {
     let mut values = Vec::with_capacity(columns.len());
     for idx in 0..columns.len() {
         let value = row.take_opt::<Value, _>(idx).unwrap_or(Ok(Value::NULL));
-        let raw = value.map_err(|error| {
-            DatabaseError {
-                category: ErrorCategory::DataMapping,
-                phase: ErrorPhase::Read,
-                remote_effect: RemoteEffect::None,
-                retry: RetryDisposition::Never,
-                provider: Some(ProviderKind::Mysql),
-                execution_id: None,
-                diagnostics: None,
-                message: format!("decode colonna MySQL idx={idx}: {error}"),
-            }
+        let raw = value.map_err(|error| DatabaseError {
+            category: ErrorCategory::DataMapping,
+            phase: ErrorPhase::Read,
+            remote_effect: RemoteEffect::None,
+            retry: RetryDisposition::Never,
+            provider: Some(ProviderKind::Mysql),
+            execution_id: None,
+            diagnostics: None,
+            message: format!("decode colonna MySQL idx={idx}: {error}"),
         })?;
         values.push(convert_value(raw, idx)?);
     }
@@ -194,16 +187,18 @@ fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
         Value::UInt(v) => {
             // MySQL UInt64 può eccedere I64 (>2^63); il decoder canonico non
             // ha un tipo unsigned. Falliamo esplicito piuttosto che overflow.
-            i64::try_from(v).map(ParameterValue::I64).map_err(|_| DatabaseError {
-                category: ErrorCategory::DataMapping,
-                phase: ErrorPhase::Read,
-                remote_effect: RemoteEffect::None,
-                retry: RetryDisposition::Never,
-                provider: Some(ProviderKind::Mysql),
-                execution_id: None,
-                diagnostics: None,
-                message: format!("colonna MySQL idx={idx} UInt eccede i64"),
-            })?
+            i64::try_from(v)
+                .map(ParameterValue::I64)
+                .map_err(|_| DatabaseError {
+                    category: ErrorCategory::DataMapping,
+                    phase: ErrorPhase::Read,
+                    remote_effect: RemoteEffect::None,
+                    retry: RetryDisposition::Never,
+                    provider: Some(ProviderKind::Mysql),
+                    execution_id: None,
+                    diagnostics: None,
+                    message: format!("colonna MySQL idx={idx} UInt eccede i64"),
+                })?
         }
         Value::Float(v) => ParameterValue::F64(f64::from(v)),
         Value::Double(v) => ParameterValue::F64(v),
@@ -225,9 +220,7 @@ fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
             // "[-]HHH:MM:SS.uuuuuu"
             let sign = if is_neg { "-" } else { "" };
             let total_hours = u32::from(h) + days * 24;
-            ParameterValue::String(format!(
-                "{sign}{total_hours:03}:{mi:02}:{s:02}.{us:06}"
-            ))
+            ParameterValue::String(format!("{sign}{total_hours:03}:{mi:02}:{s:02}.{us:06}"))
         }
     })
 }
@@ -388,7 +381,13 @@ impl TransactionScope for MysqlTransaction {
                 return Err(closed_error(ErrorPhase::Prepare));
             }
             let quoted = quote_savepoint_name(name)?;
-            raw_exec(&mut self.session, &format!("SAVEPOINT {quoted}"), ErrorPhase::Prepare, cancellation).await
+            raw_exec(
+                &mut self.session,
+                &format!("SAVEPOINT {quoted}"),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await
         })
     }
 
@@ -442,15 +441,21 @@ impl TransactionScope for MysqlTransaction {
             }
             let outcome = self
                 .session
-                .exec_transaction(MysqlTransactionCommand::Commit, ErrorPhase::Commit, cancellation)
+                .exec_transaction(
+                    MysqlTransactionCommand::Commit,
+                    ErrorPhase::Commit,
+                    cancellation,
+                )
                 .await;
             self.open = false;
             match outcome {
                 Ok(()) => Ok(CommitOutcome::Committed),
-                Err(err) if matches!(
-                    err.category,
-                    ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                ) => {
+                Err(err)
+                    if matches!(
+                        err.category,
+                        ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
+                    ) =>
+                {
                     // Canale compromesso durante commit: outcome ignoto.
                     Ok(CommitOutcome::OutcomeUnknown {
                         recovery: outcome_unknown_recovery(),
@@ -461,10 +466,7 @@ impl TransactionScope for MysqlTransaction {
         })
     }
 
-    fn rollback(
-        mut self: Box<Self>,
-        cancellation: &CancellationToken,
-    ) -> ProviderFuture<'_, ()> {
+    fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async move {
             if !self.open {
                 return Ok(());

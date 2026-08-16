@@ -5,9 +5,8 @@
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliResult};
 use plenora_database_core::conformance::{
-    check_profile, probe_application_oltp_v1, probe_pfm_core_v1, probe_pfm_gis_v1,
-    Capability, CapabilityEvidence, EvidenceKind, ProfileStatus, APPLICATION_OLTP_V1,
-    PFM_CORE_V1, PFM_GIS_V1,
+    check_profile, probe_application_oltp_v1, probe_pfm_core_v1, probe_pfm_gis_v1, Capability,
+    CapabilityEvidence, EvidenceKind, ProfileStatus, APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
 use plenora_database_core::provider::{ParameterValue, Provider};
 use plenora_database_core::transaction::{Statement, TransactionOptions};

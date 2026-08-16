@@ -22,16 +22,14 @@
     clippy::uninlined_format_args,
     clippy::match_same_arms,
     clippy::manual_let_else,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 
 use arrow_array::builder::{Int64Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
-use plenora_database_core::plan::{
-    ObjectRef, TransactionProfile, WriteMode, WriteOperation,
-};
+use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{
     BatchStream, ParameterValue, Provider, ProviderFuture, SecretString,
 };
@@ -84,7 +82,10 @@ impl BatchStream for MemoryStream {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         let next = self.batches.pop_front();
         Box::pin(std::future::ready(Ok(next)))
     }
@@ -130,11 +131,19 @@ async fn drop_target(table: &str) {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
     {
         let _ = tx
-            .execute(&Statement::new(format!("DROP TABLE IF EXISTS {table}")), &cancel)
+            .execute(
+                &Statement::new(format!("DROP TABLE IF EXISTS {table}")),
+                &cancel,
+            )
             .await;
         let _ = Box::new(tx).commit(&cancel).await;
     }
@@ -144,7 +153,12 @@ async fn count_rows(table: &str) -> i64 {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin count");
     let rows = tx
@@ -189,7 +203,10 @@ async fn h7d_write_create_builds_table_and_inserts_batch() {
         .await
         .expect("write");
 
-    assert_eq!(outcome.rows.confirmed, 100, "outcome rows.confirmed mismatch");
+    assert_eq!(
+        outcome.rows.confirmed, 100,
+        "outcome rows.confirmed mismatch"
+    );
     assert_eq!(count_rows(target).await, 100, "count DB post-write");
 
     drop_target(target).await;
@@ -350,8 +367,5 @@ async fn h7d_write_append_on_missing_table_returns_classified_error() {
     };
     // Non richiediamo una specifica category (dipende da implementazione):
     // basta che sia un errore classificato e informativo, non un panic.
-    assert!(
-        !err.message.is_empty(),
-        "errore senza message: {err:?}"
-    );
+    assert!(!err.message.is_empty(), "errore senza message: {err:?}");
 }

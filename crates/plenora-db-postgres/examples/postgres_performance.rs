@@ -41,7 +41,10 @@ impl BatchStream for MemoryBatchStream {
         self.schema.clone()
     }
 
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batches.pop_front())))
     }
 }
@@ -289,15 +292,10 @@ fn profiled_provider(batch_rows: usize, mode: PostgresInsertMode) -> PostgresPro
     // rimuovere `insecure_local_with_batch_rows` e usare `new(N)` che
     // ha TLS `Require` di default (ADR-011).
     match (batch_rows, mode) {
-        (1_024, PostgresInsertMode::CopyText) => {
-            PostgresProvider::insecure_local()
-        }
-        (8_192, PostgresInsertMode::CopyBinary) => {
-            PostgresProvider::insecure_local()
-                .with_performance_profile(PostgresPerformanceProfile::BalancedBulk)
-        }
-        _ => PostgresProvider::insecure_local_with_batch_rows(batch_rows)
-            .with_insert_mode(mode),
+        (1_024, PostgresInsertMode::CopyText) => PostgresProvider::insecure_local(),
+        (8_192, PostgresInsertMode::CopyBinary) => PostgresProvider::insecure_local()
+            .with_performance_profile(PostgresPerformanceProfile::BalancedBulk),
+        _ => PostgresProvider::insecure_local_with_batch_rows(batch_rows).with_insert_mode(mode),
     }
 }
 

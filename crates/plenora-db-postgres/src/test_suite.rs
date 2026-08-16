@@ -232,7 +232,10 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+        fn next_batch<'a>(
+            &'a mut self,
+            _cancellation: &'a plenora_database_core::CancellationToken,
+        ) -> ProviderFuture<'a, Option<RecordBatch>> {
             Box::pin(std::future::ready(Ok(None)))
         }
     }
@@ -242,7 +245,10 @@ mod tests {
             Arc::clone(&self.schema)
         }
 
-        fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+        fn next_batch<'a>(
+            &'a mut self,
+            _cancellation: &'a plenora_database_core::CancellationToken,
+        ) -> ProviderFuture<'a, Option<RecordBatch>> {
             Box::pin(std::future::ready(Ok(self.batches.pop_front())))
         }
 
@@ -631,7 +637,11 @@ mod tests {
         let mut rows = 0_usize;
         let mut batches = 0_usize;
         let mut max_rows = 0_usize;
-        while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("adaptive batch") {
+        while let Some(batch) = stream
+            .next_batch(&NeverCancelled)
+            .await
+            .expect("adaptive batch")
+        {
             assert!(batch_memory_bytes(&batch) <= 256 * 1024);
             rows += batch.num_rows();
             batches += 1;
@@ -2086,7 +2096,8 @@ mod tests {
             .is_none());
         drop(null_stream);
 
-        let limited_provider = PostgresProvider::insecure_local_with_batch_rows(10).with_byte_limits(1, 1);
+        let limited_provider =
+            PostgresProvider::insecure_local_with_batch_rows(10).with_byte_limits(1, 1);
         let mut limited_stream = limited_provider
             .read_with_test_budget(
                 &secret,
@@ -2102,7 +2113,10 @@ mod tests {
             )
             .await
             .expect("limited stream");
-        let limited_error = limited_stream.next_batch(&NeverCancelled).await.expect_err("byte budget");
+        let limited_error = limited_stream
+            .next_batch(&NeverCancelled)
+            .await
+            .expect_err("byte budget");
         assert_eq!(limited_error.category, ErrorCategory::ResourceLimit);
 
         let mut cancelled_stream = provider
@@ -2170,7 +2184,8 @@ mod tests {
         assert!(started.elapsed() < StdDuration::from_secs(2));
         wait_for_no_active_query(&client, "\"plenora_fixture\".\"slow_events\"").await;
 
-        let single_connection_provider = PostgresProvider::insecure_local_with_batch_rows(10).with_pool_size(1, 25);
+        let single_connection_provider =
+            PostgresProvider::insecure_local_with_batch_rows(10).with_pool_size(1, 25);
         let held_stream = single_connection_provider
             .read_with_test_budget(
                 &secret,
@@ -2371,7 +2386,8 @@ mod tests {
         let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
             return;
         };
-        let provider = PostgresProvider::insecure_local_with_batch_rows(7).with_insert_mode(PostgresInsertMode::CopyBinary);
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7)
+            .with_insert_mode(PostgresInsertMode::CopyBinary);
         let secret = SecretString::new(dsn);
         let cancellation = NeverCancelled;
         let client = PostgresProvider::connect(&secret).await.expect("client");
@@ -3260,8 +3276,8 @@ mod tests {
             .batch_execute("DROP TABLE IF EXISTS plenora_fixture.write_fault_reference")
             .await
             .expect("fault cleanup");
-        let rollback_provider =
-            PostgresProvider::insecure_local_with_batch_rows(7).with_fault_injection(PostgresFaultPoint::BeforeCommit);
+        let rollback_provider = PostgresProvider::insecure_local_with_batch_rows(7)
+            .with_fault_injection(PostgresFaultPoint::BeforeCommit);
         let rollback_stream =
             fixture_stream(&provider, &secret, &cancellation, Vec::new(), 2).await;
         let rollback_prepared = rollback_provider
@@ -3593,7 +3609,8 @@ mod tests {
             return;
         };
 
-        let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(13).with_pool_size(4, 5_000));
+        let provider =
+            Arc::new(PostgresProvider::insecure_local_with_batch_rows(13).with_pool_size(4, 5_000));
         let secret = Arc::new(SecretString::new(dsn));
         let operation = Arc::new(ReadOperation {
             source: ObjectRef {
@@ -3629,7 +3646,11 @@ mod tests {
                         )
                         .await
                         .expect("concurrent read");
-                    while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("concurrent batch") {
+                    while let Some(batch) = stream
+                        .next_batch(&NeverCancelled)
+                        .await
+                        .expect("concurrent batch")
+                    {
                         rows += u64::try_from(batch.num_rows()).expect("row count");
                     }
                 }
@@ -3688,7 +3709,9 @@ mod tests {
             .await
             .expect("slow hardening view");
 
-        let provider = Arc::new(PostgresProvider::insecure_local_with_batch_rows(100).with_pool_size(WORKERS, 5_000));
+        let provider = Arc::new(
+            PostgresProvider::insecure_local_with_batch_rows(100).with_pool_size(WORKERS, 5_000),
+        );
         let operation = Arc::new(ReadOperation {
             source: ObjectRef {
                 catalog: None,
@@ -3779,8 +3802,8 @@ mod tests {
 
         let mut copy_operation = write_operation(WriteMode::Create);
         copy_operation.target.object = "bench_copy".to_owned();
-        let copy_provider =
-            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::CopyText);
+        let copy_provider = PostgresProvider::insecure_local_with_batch_rows(1_000)
+            .with_insert_mode(PostgresInsertMode::CopyText);
         let copy_stream = fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let copy_prepared = copy_provider
             .prepare_write_with_test_budget(
@@ -3800,8 +3823,8 @@ mod tests {
 
         let mut binary_operation = write_operation(WriteMode::Create);
         binary_operation.target.object = "bench_binary".to_owned();
-        let binary_provider =
-            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::CopyBinary);
+        let binary_provider = PostgresProvider::insecure_local_with_batch_rows(1_000)
+            .with_insert_mode(PostgresInsertMode::CopyBinary);
         let binary_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let binary_prepared = binary_provider
@@ -3822,8 +3845,8 @@ mod tests {
 
         let mut prepared_operation = write_operation(WriteMode::Create);
         prepared_operation.target.object = "bench_prepared".to_owned();
-        let prepared_provider =
-            PostgresProvider::insecure_local_with_batch_rows(1_000).with_insert_mode(PostgresInsertMode::Prepared);
+        let prepared_provider = PostgresProvider::insecure_local_with_batch_rows(1_000)
+            .with_insert_mode(PostgresInsertMode::Prepared);
         let prepared_stream =
             fixture_stream(&reader, &secret, &cancellation, Vec::new(), 1_000).await;
         let prepared = prepared_provider

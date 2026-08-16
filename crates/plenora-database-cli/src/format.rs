@@ -74,10 +74,9 @@ pub(crate) fn strip_output_format(args: Vec<String>) -> CliResult<Vec<String>> {
                 "markdown" | "md" => OutputFormat::Markdown,
                 "junit" | "junit-xml" => OutputFormat::Junit,
                 other => {
-                    return Err(format!(
-                        "--format sconosciuto: {other} (json|markdown|junit)"
-                    )
-                    .into());
+                    return Err(
+                        format!("--format sconosciuto: {other} (json|markdown|junit)").into(),
+                    );
                 }
             };
             fmt.set_active();
@@ -100,7 +99,8 @@ pub(crate) fn print_active(value: &Value) -> CliResult<()> {
 pub(crate) fn print_result(command: &str, value: &Value) -> CliResult<()> {
     match OutputFormat::active() {
         OutputFormat::Json => {
-            let s = serde_json::to_string(value).map_err(|_| "output non serializzabile".to_owned())?;
+            let s =
+                serde_json::to_string(value).map_err(|_| "output non serializzabile".to_owned())?;
             println!("{s}");
         }
         OutputFormat::Markdown => {
@@ -292,8 +292,8 @@ mod tests {
 
     #[test]
     fn strip_format_rejects_unknown_value() {
-        let err = strip_output_format(vec!["--format".into(), "yaml".into()])
-            .expect_err("must fail");
+        let err =
+            strip_output_format(vec!["--format".into(), "yaml".into()]).expect_err("must fail");
         assert!(format!("{err:?}").contains("format"));
     }
 

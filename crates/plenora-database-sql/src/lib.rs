@@ -92,16 +92,10 @@ impl Dialect {
     /// da `plenora-database-core::identifier`. Oracle/Db2/Sqlite/Duckdb
     /// usano il quoting SQL standard (double-quote) come Postgres.
     #[must_use]
-    const fn to_identifier_dialect(
-        self,
-    ) -> plenora_database_core::identifier::IdentifierDialect {
+    const fn to_identifier_dialect(self) -> plenora_database_core::identifier::IdentifierDialect {
         use plenora_database_core::identifier::IdentifierDialect as D;
         match self {
-            Self::Postgres
-            | Self::Oracle
-            | Self::Db2
-            | Self::Sqlite
-            | Self::Duckdb => D::Postgres,
+            Self::Postgres | Self::Oracle | Self::Db2 | Self::Sqlite | Self::Duckdb => D::Postgres,
             Self::Mysql => D::Mysql,
             Self::SqlServer => D::SqlServer,
         }
@@ -1284,7 +1278,10 @@ impl Renderer {
             } => {
                 let lower = self.bind(lower_parameter, binds);
                 let upper = self.bind(upper_parameter, binds);
-                Ok(format!("{} BETWEEN {lower} AND {upper}", self.quote(field)?))
+                Ok(format!(
+                    "{} BETWEEN {lower} AND {upper}",
+                    self.quote(field)?
+                ))
             }
             Expression::Like {
                 field,

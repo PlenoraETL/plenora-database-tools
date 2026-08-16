@@ -30,26 +30,24 @@
     clippy::uninlined_format_args,
     clippy::match_same_arms,
     clippy::manual_let_else,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 
 use plenora_database_core::facade::{
+    execute_portable, execute_portable_returning, execute_portable_returning_one,
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_f64,
     execute_scalar_i32, execute_scalar_i64, execute_scalar_json, execute_scalar_string,
-    execute_scalar_timestamp, execute_scalar_timestamptz, execute_scalar_uuid,
-    execute_portable, execute_portable_returning, execute_portable_returning_one,
-    query_one, query_optional,
+    execute_scalar_timestamp, execute_scalar_timestamptz, execute_scalar_uuid, query_one,
+    query_optional,
 };
 use plenora_database_core::portable::{
-    eq as p_eq, select as p_select, DeleteStatement, Expression, InsertStatement, PortableStatement,
-    TableRef, UpdateStatement,
+    eq as p_eq, select as p_select, DeleteStatement, Expression, InsertStatement,
+    PortableStatement, TableRef, UpdateStatement,
 };
 use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
-use plenora_database_core::transaction::{
-    ConditionalUpdate, Statement, TransactionOptions,
-};
+use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 
@@ -78,7 +76,12 @@ async fn golden_begin_exec_query_commit_roundtrip() {
     let p = provider();
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -93,7 +96,10 @@ async fn golden_begin_exec_query_commit_roundtrip() {
         .await
         .expect("query");
     assert_eq!(rows.len(), 1);
-    assert!(matches!(rows[0].get_index(0), Some(ParameterValue::I32(42))));
+    assert!(matches!(
+        rows[0].get_index(0),
+        Some(ParameterValue::I32(42))
+    ));
 
     let outcome = Box::new(tx).commit(&cancel).await.expect("commit");
     assert!(matches!(
@@ -112,28 +118,37 @@ async fn golden_savepoints_nested_rollback_release_commit() {
     let p = provider();
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
     tx.execute(
-        &Statement::new(
-            "CREATE TEMP TABLE _golden_sp (id INT PRIMARY KEY) ON COMMIT DROP",
-        ),
+        &Statement::new("CREATE TEMP TABLE _golden_sp (id INT PRIMARY KEY) ON COMMIT DROP"),
         &cancel,
     )
     .await
     .expect("temp");
 
     tx.savepoint("outer", &cancel).await.expect("sp outer");
-    tx.execute(&Statement::new("INSERT INTO _golden_sp VALUES (1)"), &cancel)
-        .await
-        .expect("insert 1");
+    tx.execute(
+        &Statement::new("INSERT INTO _golden_sp VALUES (1)"),
+        &cancel,
+    )
+    .await
+    .expect("insert 1");
 
     tx.savepoint("inner", &cancel).await.expect("sp inner");
-    tx.execute(&Statement::new("INSERT INTO _golden_sp VALUES (2)"), &cancel)
-        .await
-        .expect("insert 2");
+    tx.execute(
+        &Statement::new("INSERT INTO _golden_sp VALUES (2)"),
+        &cancel,
+    )
+    .await
+    .expect("insert 2");
 
     tx.rollback_to_savepoint("inner", &cancel)
         .await
@@ -154,9 +169,15 @@ async fn golden_savepoints_nested_rollback_release_commit() {
             _ => None,
         })
         .collect();
-    assert_eq!(ids, vec![1], "rollback_to_savepoint(inner) deve preservare id=1");
+    assert_eq!(
+        ids,
+        vec![1],
+        "rollback_to_savepoint(inner) deve preservare id=1"
+    );
 
-    tx.release_savepoint("outer", &cancel).await.expect("release outer");
+    tx.release_savepoint("outer", &cancel)
+        .await
+        .expect("release outer");
     let outcome = Box::new(tx).commit(&cancel).await.expect("commit");
     assert!(matches!(
         outcome,
@@ -199,12 +220,13 @@ async fn golden_optimistic_conflict_cross_transactions() {
         )
         .await
         .expect("upsert");
-    Box::new(tx_setup).commit(&cancel).await.expect("commit setup");
+    Box::new(tx_setup)
+        .commit(&cancel)
+        .await
+        .expect("commit setup");
 
-    let update = Statement::new(
-        "UPDATE _golden_oc SET v = v + 1 WHERE id = $1 AND v = $2",
-    )
-    .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(1)]);
+    let update = Statement::new("UPDATE _golden_oc SET v = v + 1 WHERE id = $1 AND v = $2")
+        .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(1)]);
     let probe = Statement::new("SELECT 1 FROM _golden_oc WHERE id = $1")
         .with_params(vec![ParameterValue::I32(1)]);
 
@@ -224,7 +246,10 @@ async fn golden_optimistic_conflict_cross_transactions() {
         )
         .await
         .expect("winner apply");
-    Box::new(tx_win).commit(&cancel).await.expect("winner commit");
+    Box::new(tx_win)
+        .commit(&cancel)
+        .await
+        .expect("winner commit");
 
     // Loser: stessa expected_version=1, ma la riga ora è v=2.
     let mut tx_lose = p
@@ -328,7 +353,12 @@ async fn golden_scalar_facade_covers_every_supported_type() {
     let p = provider();
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -364,9 +394,13 @@ async fn golden_scalar_facade_covers_every_supported_type() {
     assert!((f - 3.14159265358979_f64).abs() < 1e-12);
 
     assert_eq!(
-        execute_scalar_string(tx.as_mut(), &Statement::new("SELECT 'hello'::TEXT"), &cancel)
-            .await
-            .expect("string"),
+        execute_scalar_string(
+            tx.as_mut(),
+            &Statement::new("SELECT 'hello'::TEXT"),
+            &cancel
+        )
+        .await
+        .expect("string"),
         "hello"
     );
     assert_eq!(
@@ -398,9 +432,13 @@ async fn golden_scalar_facade_covers_every_supported_type() {
     .expect("json");
     assert_eq!(js["k"], "v");
 
-    let d = execute_scalar_date(tx.as_mut(), &Statement::new("SELECT '2026-08-12'::DATE"), &cancel)
-        .await
-        .expect("date");
+    let d = execute_scalar_date(
+        tx.as_mut(),
+        &Statement::new("SELECT '2026-08-12'::DATE"),
+        &cancel,
+    )
+    .await
+    .expect("date");
     assert_eq!(d, "2026-08-12");
     let ts = execute_scalar_timestamp(
         tx.as_mut(),
@@ -432,7 +470,12 @@ async fn golden_portable_facade_full_dml_flow() {
     let p = provider();
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -529,7 +572,12 @@ async fn golden_query_one_and_optional_shape_errors() {
     let p = provider();
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 

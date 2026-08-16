@@ -249,7 +249,10 @@ impl PostgresProvider {
     /// perché `default()` era Disabled). Mantenuto per non rompere
     /// consumer intermedio che aveva già migrato al secure factory.
     #[must_use]
-    #[deprecated(since = "1.2.0", note = "usa Self::default() (ora secure-by-default) — ADR-011")]
+    #[deprecated(
+        since = "1.2.0",
+        note = "usa Self::default() (ora secure-by-default) — ADR-011"
+    )]
     pub fn default_secure() -> Self {
         Self::default()
     }
@@ -733,7 +736,10 @@ impl Provider for PostgresProvider {
             let client = self.connect_session(secret).await?;
             let transaction =
                 transaction::PostgresTransaction::begin(client, options, cancellation).await?;
-            Ok(Box::new(transaction) as Box<dyn plenora_database_core::transaction::TransactionScope>)
+            Ok(Box::new(transaction)
+                as Box<
+                    dyn plenora_database_core::transaction::TransactionScope,
+                >)
         })
     }
 

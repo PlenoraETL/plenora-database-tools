@@ -79,9 +79,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
     ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         use std::fmt::Write;
         if raw.len() < 8 {
-            return Err(
-                format!("NUMERIC payload troppo corto: {} byte < 8", raw.len()).into(),
-            );
+            return Err(format!("NUMERIC payload troppo corto: {} byte < 8", raw.len()).into());
         }
         let ndigits = i16::from_be_bytes([raw[0], raw[1]]);
         let weight = i16::from_be_bytes([raw[2], raw[3]]);
@@ -154,8 +152,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
             for chunk_i in 0..fraction_chunks {
                 let pos = -1_i32 - i32::try_from(chunk_i)?;
                 let digit_idx = i32::from(weight) - pos;
-                let value =
-                    usize::try_from(digit_idx).ok().and_then(|i| digits.get(i));
+                let value = usize::try_from(digit_idx).ok().and_then(|i| digits.get(i));
                 let chunk = value.copied().unwrap_or(0);
                 write!(fraction_part, "{chunk:04}").expect("String write");
             }
@@ -210,9 +207,8 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
         // cade nel match Type::* sotto senza handling speciale. Composite:
         // out-of-scope, produce Unsupported.
         if let Kind::Enum(_) = pg_type.kind() {
-            let raw: Option<EnumLabel> = row
-                .try_get(index)
-                .map_err(crate::error::row_decode_error)?;
+            let raw: Option<EnumLabel> =
+                row.try_get(index).map_err(crate::error::row_decode_error)?;
             values.push(match raw {
                 Some(EnumLabel(label)) => ParameterValue::Enum { type_name, label },
                 None => ParameterValue::Null { type_name },
@@ -268,15 +264,29 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
                 .map_err(crate::error::row_decode_error)?,
             Type::DATE => row
                 .try_get::<_, Option<NaiveDate>>(index)
-                .map(|v| optional_to_param(v.map(|d| d.to_string()), &type_name, ParameterValue::Date))
+                .map(|v| {
+                    optional_to_param(v.map(|d| d.to_string()), &type_name, ParameterValue::Date)
+                })
                 .map_err(crate::error::row_decode_error)?,
             Type::TIMESTAMP => row
                 .try_get::<_, Option<NaiveDateTime>>(index)
-                .map(|v| optional_to_param(v.map(|d| d.format("%Y-%m-%dT%H:%M:%S%.f").to_string()), &type_name, ParameterValue::Timestamp))
+                .map(|v| {
+                    optional_to_param(
+                        v.map(|d| d.format("%Y-%m-%dT%H:%M:%S%.f").to_string()),
+                        &type_name,
+                        ParameterValue::Timestamp,
+                    )
+                })
                 .map_err(crate::error::row_decode_error)?,
             Type::TIMESTAMPTZ => row
                 .try_get::<_, Option<DateTime<Utc>>>(index)
-                .map(|v| optional_to_param(v.map(|d| d.to_rfc3339()), &type_name, ParameterValue::TimestampTz))
+                .map(|v| {
+                    optional_to_param(
+                        v.map(|d| d.to_rfc3339()),
+                        &type_name,
+                        ParameterValue::TimestampTz,
+                    )
+                })
                 .map_err(crate::error::row_decode_error)?,
             Type::UUID => {
                 use tokio_postgres::types::FromSql;
@@ -285,7 +295,8 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
                     fn from_sql(
                         _ty: &Type,
                         raw: &'a [u8],
-                    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+                    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>>
+                    {
                         if raw.len() != 16 {
                             return Err("UUID payload deve essere 16 byte".into());
                         }
@@ -297,9 +308,8 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
                         matches!(*ty, Type::UUID)
                     }
                 }
-                let raw: Option<UuidBytes> = row
-                    .try_get(index)
-                    .map_err(crate::error::row_decode_error)?;
+                let raw: Option<UuidBytes> =
+                    row.try_get(index).map_err(crate::error::row_decode_error)?;
                 match raw {
                     Some(UuidBytes(b)) => {
                         let text = format!(
@@ -320,13 +330,7 @@ fn decode_row(row: &tokio_postgres::Row) -> Result<Vec<ParameterValue>> {
                 .map_err(crate::error::row_decode_error)?,
             Type::NUMERIC => row
                 .try_get::<_, Option<NumericDecoded>>(index)
-                .map(|v| {
-                    optional_to_param(
-                        v.map(|n| n.0),
-                        &type_name,
-                        ParameterValue::Decimal,
-                    )
-                })
+                .map(|v| optional_to_param(v.map(|n| n.0), &type_name, ParameterValue::Decimal))
                 .map_err(crate::error::row_decode_error)?,
             _ => return Err(unsupported_column_type(pg_type)),
         };
@@ -354,13 +358,7 @@ mod tests {
     use tokio_postgres::types::FromSql;
 
     /// Costruisce il payload NUMERIC binary Postgres per unit test.
-    fn build_numeric(
-        ndigits: i16,
-        weight: i16,
-        sign: u16,
-        dscale: i16,
-        digits: &[i16],
-    ) -> Vec<u8> {
+    fn build_numeric(ndigits: i16, weight: i16, sign: u16, dscale: i16, digits: &[i16]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(8 + digits.len() * 2);
         buf.extend_from_slice(&ndigits.to_be_bytes());
         buf.extend_from_slice(&weight.to_be_bytes());
@@ -391,10 +389,7 @@ mod tests {
     #[test]
     fn numeric_positive_integer() {
         // 999.99 → chunks: 999, 9900. weight=0, dscale=2.
-        assert_eq!(
-            decode(&build_numeric(2, 0, 0, 2, &[999, 9900])),
-            "999.99"
-        );
+        assert_eq!(decode(&build_numeric(2, 0, 0, 2, &[999, 9900])), "999.99");
     }
 
     #[test]
@@ -409,10 +404,7 @@ mod tests {
     #[test]
     fn numeric_negative_sign() {
         // -1.5 → chunks: 1, 5000. weight=0, dscale=1, sign=0x4000.
-        assert_eq!(
-            decode(&build_numeric(2, 0, 0x4000, 1, &[1, 5000])),
-            "-1.5"
-        );
+        assert_eq!(decode(&build_numeric(2, 0, 0x4000, 1, &[1, 5000])), "-1.5");
     }
 
     #[test]

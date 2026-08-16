@@ -25,7 +25,7 @@
     clippy::uninlined_format_args,
     clippy::match_same_arms,
     clippy::manual_let_else,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 
 use plenora_database_core::plan::{ObjectRef, ReadOperation};
@@ -69,7 +69,12 @@ async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &st
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin fixture");
     tx.execute(
@@ -96,11 +101,19 @@ async fn drop_fixture(table: &str) {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
     {
         let _ = tx
-            .execute(&Statement::new(format!("DROP TABLE IF EXISTS {table}")), &cancel)
+            .execute(
+                &Statement::new(format!("DROP TABLE IF EXISTS {table}")),
+                &cancel,
+            )
             .await;
         let _ = Box::new(tx).commit(&cancel).await;
     }
@@ -118,22 +131,12 @@ async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
     let cancel = CancellationToken::new();
     let op = empty_read(public_ref("spatial_ref_sys"));
     let mut stream = p
-        .read(
-            &secret(),
-            &op,
-            &ParameterBag::default(),
-            &budget(),
-            &cancel,
-        )
+        .read(&secret(), &op, &ParameterBag::default(), &budget(), &cancel)
         .await
         .expect("read");
 
     let schema = stream.schema();
-    let fields: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect();
+    let fields: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     for expected in ["srid", "auth_name", "srtext"] {
         assert!(
             fields.contains(&expected.to_owned()),
@@ -148,7 +151,10 @@ async fn h7b_read_spatial_ref_sys_produces_valid_arrow_stream() {
         rows += batch.num_rows() as u64;
     }
     assert!(batches >= 1, "almeno un batch atteso");
-    assert!(rows >= 100, "spatial_ref_sys ha >>100 righe; ottenute: {rows}");
+    assert!(
+        rows >= 100,
+        "spatial_ref_sys ha >>100 righe; ottenute: {rows}"
+    );
 }
 
 // ============================================================================
@@ -191,11 +197,7 @@ async fn h7b_read_heterogeneous_types_yields_expected_arrow_schema() {
         .await
         .expect("read");
     let schema = stream.schema();
-    let names: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect();
+    let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     for expected in ["id", "label", "amount", "flag", "ts", "payload"] {
         assert!(
             names.contains(&expected.to_owned()),

@@ -2455,11 +2455,14 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
         )
         .await
         .expect("stream QueryOperation da abbandonare");
-    let first = tokio::time::timeout(std::time::Duration::from_secs(2), early.next_batch(&cancellation))
-        .await
-        .expect("primo batch bounded QueryOperation")
-        .expect("primo batch prima del drop")
-        .expect("batch prima del drop");
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        early.next_batch(&cancellation),
+    )
+    .await
+    .expect("primo batch bounded QueryOperation")
+    .expect("primo batch prima del drop")
+    .expect("batch prima del drop");
     assert_eq!(first.num_rows(), 1);
     assert_eq!(crate::session::test_row_pulls(), 1);
     let owner_thread_id = observe_prepared_thread(&mut audit, "early_drop_inflight_marker").await;
@@ -3198,7 +3201,11 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
         .await
         .expect("rilettura append MySQL live");
     let mut read_batches = Vec::new();
-    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch di rilettura") {
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch di rilettura")
+    {
         read_batches.push(batch);
     }
     assert_eq!(
@@ -4005,7 +4012,11 @@ async fn live_v12_transaction_savepoint_rollback_to_partial() {
         .query::<u64, _>("SELECT id FROM _v12_tx_sp ORDER BY id")
         .await
         .expect("select");
-    assert_eq!(rows, vec![1], "solo l'insert fuori savepoint deve essere committato");
+    assert_eq!(
+        rows,
+        vec![1],
+        "solo l'insert fuori savepoint deve essere committato"
+    );
     check
         .connection_mut()
         .unwrap()
@@ -4202,8 +4213,7 @@ fn write_op_scalar(
         },
         mode,
         mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
-        transaction_profile:
-            plenora_database_core::plan::TransactionProfile::SingleTransaction,
+        transaction_profile: plenora_database_core::plan::TransactionProfile::SingleTransaction,
         keys: Vec::new(),
         update_columns: Vec::new(),
         srid_policy: None,
@@ -4283,12 +4293,20 @@ async fn live_v12_write_create_mode_builds_table_and_inserts() {
     }
 
     let (schema, batch) = scalar_batch(&[1, 2, 3], &["a", "b", "c"]);
-    let operation = write_op_scalar("dataflow_test", "_v12_create",
-        plenora_database_core::plan::WriteMode::Create);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_create",
+        plenora_database_core::plan::WriteMode::Create,
+    );
 
     let prepared = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("prepare_write create");
 
@@ -4298,26 +4316,49 @@ async fn live_v12_write_create_mode_builds_table_and_inserts() {
         declared: 3,
     };
     let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("write create");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
     assert_eq!(outcome.rows.received, 3);
     assert_eq!(outcome.rows.confirmed, 3);
 
     // Verifica DDL applicato
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let exists: Option<u64> = check.connection_mut().unwrap()
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let exists: Option<u64> = check
+        .connection_mut()
+        .unwrap()
         .query_first(
             "SELECT COUNT(*) FROM information_schema.tables \
-             WHERE table_schema='dataflow_test' AND table_name='_v12_create'"
-        ).await.expect("exists");
+             WHERE table_schema='dataflow_test' AND table_name='_v12_create'",
+        )
+        .await
+        .expect("exists");
     assert_eq!(exists, Some(1));
-    let count: Option<u64> = check.connection_mut().unwrap()
-        .query_first("SELECT COUNT(*) FROM _v12_create").await.expect("count");
+    let count: Option<u64> = check
+        .connection_mut()
+        .unwrap()
+        .query_first("SELECT COUNT(*) FROM _v12_create")
+        .await
+        .expect("count");
     assert_eq!(count, Some(3));
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_create").await.ok();
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_create")
+        .await
+        .ok();
 }
 
 #[tokio::test]
@@ -4328,21 +4369,38 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
 
     // Setup: crea la tabella prima
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_create_conflict").await.ok();
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_create_conflict")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop("CREATE TABLE _v12_create_conflict (id BIGINT PRIMARY KEY) ENGINE=InnoDB")
-            .await.expect("create");
+            .await
+            .expect("create");
     }
 
     let (schema, batch) = scalar_batch(&[1], &["x"]);
-    let operation = write_op_scalar("dataflow_test", "_v12_create_conflict",
-        plenora_database_core::plan::WriteMode::Create);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_create_conflict",
+        plenora_database_core::plan::WriteMode::Create,
+    );
 
     let prepared = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("prepare");
     let stream = BatchesStream {
@@ -4351,16 +4409,31 @@ async fn live_v12_write_create_mode_conflict_if_exists() {
         declared: 1,
     };
     let result = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await;
-    assert!(matches!(
-        result.err().map(|e| e.category),
-        Some(ErrorCategory::Conflict)
-    ), "mode=create su target esistente deve restituire Conflict");
+    assert!(
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::Conflict)
+        ),
+        "mode=create su target esistente deve restituire Conflict"
+    );
 
-    let mut cleanup = MysqlSession::open(&live_config(), &cancellation).await.expect("cleanup");
-    cleanup.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_create_conflict").await.ok();
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("cleanup");
+    cleanup
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_create_conflict")
+        .await
+        .ok();
 }
 
 /// Fail-closed: `TruncateInsert` è stato rimosso su `MySQL` (TRUNCATE è DDL
@@ -4373,12 +4446,20 @@ async fn live_v12_write_truncate_insert_rejected_fail_closed() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     let (schema, _batch) = scalar_batch(&[1, 2], &["new-a", "new-b"]);
-    let operation = write_op_scalar("dataflow_test", "_v12_trunc",
-        plenora_database_core::plan::WriteMode::TruncateInsert);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_trunc",
+        plenora_database_core::plan::WriteMode::TruncateInsert,
+    );
 
     let Err(error) = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
     else {
         panic!("TruncateInsert MySQL deve essere rifiutato fail-closed");
@@ -4404,15 +4485,24 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_upsert").await.ok();
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upsert")
+            .await
+            .ok();
         setup.connection_mut().unwrap()
             .query_drop("CREATE TABLE _v12_upsert (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
             .await.expect("create");
-        setup.connection_mut().unwrap()
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop("INSERT INTO _v12_upsert VALUES (1, 'old-1'), (2, 'old-2')")
-            .await.expect("seed");
+            .await
+            .expect("seed");
     }
 
     // Upsert: id=1 (esistente, sarà aggiornato); id=3 (nuovo, sarà inserito).
@@ -4425,8 +4515,13 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
     );
 
     let prepared = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("prepare upsert");
     let stream = BatchesStream {
@@ -4435,23 +4530,44 @@ async fn live_v12_write_upsert_updates_existing_and_inserts_new() {
         declared: 2,
     };
     let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("write upsert");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
 
     // Verifica: id=1 aggiornato (upd-1), id=2 invariato (old-2), id=3 nuovo (new-3)
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let rows: Vec<(i64, String)> = check.connection_mut().unwrap()
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let rows: Vec<(i64, String)> = check
+        .connection_mut()
+        .unwrap()
         .query::<(i64, String), _>("SELECT id, label FROM _v12_upsert ORDER BY id")
-        .await.expect("select");
-    assert_eq!(rows, vec![
-        (1, "upd-1".to_owned()),
-        (2, "old-2".to_owned()),
-        (3, "new-3".to_owned()),
-    ]);
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_upsert").await.ok();
+        .await
+        .expect("select");
+    assert_eq!(
+        rows,
+        vec![
+            (1, "upd-1".to_owned()),
+            (2, "old-2".to_owned()),
+            (3, "new-3".to_owned()),
+        ]
+    );
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_upsert")
+        .await
+        .ok();
 }
 
 /// Fail-closed: un Upsert su `keys=[id]` verso una tabella che ha un
@@ -4465,18 +4581,28 @@ async fn live_v12_write_upsert_rejects_conflicting_unique_index() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_upsert_unsafe").await.ok();
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upsert_unsafe")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop(
                 "CREATE TABLE _v12_upsert_unsafe (\
                  id BIGINT PRIMARY KEY, \
                  label TEXT NOT NULL, \
                  code BIGINT NOT NULL, \
                  UNIQUE KEY uq_code (code)\
-                 ) ENGINE=InnoDB")
-            .await.expect("create");
+                 ) ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
     }
 
     let (schema, _batch) = scalar_batch(&[1], &["x"]);
@@ -4487,17 +4613,28 @@ async fn live_v12_write_upsert_rejects_conflicting_unique_index() {
         vec!["id".to_owned()],
     );
     let Err(error) = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
     else {
         panic!("prepare upsert deve fallire fail-closed sull'indice in conflitto");
     };
     assert_eq!(error.category, ErrorCategory::Unsupported);
 
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_upsert_unsafe").await.ok();
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_upsert_unsafe")
+        .await
+        .ok();
 }
 
 fn keys_only_batch(
@@ -4511,9 +4648,8 @@ fn keys_only_batch(
     use plenora_database_core::arrow::RecordBatch;
     use std::sync::Arc;
 
-    let schema: plenora_database_core::arrow::SchemaRef = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-    ]));
+    let schema: plenora_database_core::arrow::SchemaRef =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
@@ -4529,15 +4665,29 @@ async fn live_v12_write_delete_by_keys_removes_matching_rows() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_del").await.ok();
-        setup.connection_mut().unwrap()
-            .query_drop("CREATE TABLE _v12_del (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
-            .await.expect("create");
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_del")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_del (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop("INSERT INTO _v12_del VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')")
-            .await.expect("seed");
+            .await
+            .expect("seed");
     }
 
     // Delete id=2 e id=4; id=99 non esiste (idempotent)
@@ -4550,8 +4700,13 @@ async fn live_v12_write_delete_by_keys_removes_matching_rows() {
     );
 
     let prepared = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("prepare delete");
     let stream = BatchesStream {
@@ -4560,23 +4715,41 @@ async fn live_v12_write_delete_by_keys_removes_matching_rows() {
         declared: 3,
     };
     let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("write delete");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
     // 3 keys ricevute, 2 effettivamente cancellate (id 2 e 4); id 99 skipped
     assert_eq!(outcome.rows.received, 3);
     assert_eq!(outcome.rows.confirmed, 2);
     assert_eq!(outcome.rows.deleted, Some(2));
     assert_eq!(outcome.rows.skipped, 1);
 
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let remaining: Vec<i64> = check.connection_mut().unwrap()
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let remaining: Vec<i64> = check
+        .connection_mut()
+        .unwrap()
         .query::<i64, _>("SELECT id FROM _v12_del ORDER BY id")
-        .await.expect("select");
+        .await
+        .expect("select");
     assert_eq!(remaining, vec![1, 3]);
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_del").await.ok();
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_del")
+        .await
+        .ok();
 }
 
 #[tokio::test]
@@ -4586,15 +4759,29 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_upd").await.ok();
-        setup.connection_mut().unwrap()
-            .query_drop("CREATE TABLE _v12_upd (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB")
-            .await.expect("create");
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_upd")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop(
+                "CREATE TABLE _v12_upd (id BIGINT PRIMARY KEY, label TEXT NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop("INSERT INTO _v12_upd VALUES (1, 'orig-1'), (2, 'orig-2'), (3, 'orig-3')")
-            .await.expect("seed");
+            .await
+            .expect("seed");
     }
 
     // Update: id=1 → new-1, id=2 → new-2, id=99 → no-op (non trovato)
@@ -4607,8 +4794,13 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
     );
 
     let prepared = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("prepare update");
     let stream = BatchesStream {
@@ -4617,26 +4809,53 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
         declared: 3,
     };
     let outcome = provider
-        .write(&live_secret(), prepared, Box::new(stream), &budget, &cancellation)
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await
         .expect("write update");
-    assert_eq!(outcome.status, plenora_database_core::outcome::WriteStatus::Committed);
+    assert_eq!(
+        outcome.status,
+        plenora_database_core::outcome::WriteStatus::Committed
+    );
     assert_eq!(outcome.rows.received, 3);
-    assert_eq!(outcome.rows.confirmed, 2, "2 righe target aggiornate (id 1 e 2)");
+    assert_eq!(
+        outcome.rows.confirmed, 2,
+        "2 righe target aggiornate (id 1 e 2)"
+    );
     assert_eq!(outcome.rows.updated, Some(2));
-    assert_eq!(outcome.rows.skipped, 1, "id 99 non trovato in target = skipped");
+    assert_eq!(
+        outcome.rows.skipped, 1,
+        "id 99 non trovato in target = skipped"
+    );
 
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    let rows: Vec<(i64, String)> = check.connection_mut().unwrap()
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    let rows: Vec<(i64, String)> = check
+        .connection_mut()
+        .unwrap()
         .query::<(i64, String), _>("SELECT id, label FROM _v12_upd ORDER BY id")
-        .await.expect("select");
-    assert_eq!(rows, vec![
-        (1, "new-1".to_owned()),
-        (2, "new-2".to_owned()),
-        (3, "orig-3".to_owned()),
-    ]);
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_upd").await.ok();
+        .await
+        .expect("select");
+    assert_eq!(
+        rows,
+        vec![
+            (1, "new-1".to_owned()),
+            (2, "new-2".to_owned()),
+            (3, "orig-3".to_owned()),
+        ]
+    );
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_upd")
+        .await
+        .ok();
 }
 
 // ============================ v1.2 — Blocco C: spatial verified ===========
@@ -4650,7 +4869,10 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
         .await
         .expect("probe caps");
     let functions = &caps.spatial.functions;
-    assert!(!functions.is_empty(), "v1.2 deve pubblicare funzioni spatial verified");
+    assert!(
+        !functions.is_empty(),
+        "v1.2 deve pubblicare funzioni spatial verified"
+    );
     // 20+ funzioni attese (metadata + predicati + metrics + constructors + set ops)
     assert!(
         functions.len() >= 20,
@@ -4674,11 +4896,11 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 #[tokio::test]
 async fn live_v12_query_spatial_functions_render_and_execute() {
     use plenora_database_core::plan::{ObjectRef, SortDirection};
+    use plenora_database_core::provider::ParameterBag;
     use plenora_database_core::query::{
         ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
         SpatialFunction,
     };
-    use plenora_database_core::provider::ParameterBag;
     use plenora_database_core::resource::ResourceBudget;
 
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -4687,24 +4909,36 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
 
     // Setup: crea tabella con GEOMETRY SRID 4326
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_spatial").await.ok();
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_spatial")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop(
                 "CREATE TABLE _v12_spatial (id BIGINT PRIMARY KEY, \
-                 shape GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB"
+                 shape GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB",
             )
-            .await.expect("create");
+            .await
+            .expect("create");
         // Insert 3 geometrie: 2 point + 1 linestring
-        setup.connection_mut().unwrap()
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop(
                 "INSERT INTO _v12_spatial VALUES \
                  (1, ST_GeomFromText('POINT(0 0)', 4326)), \
                  (2, ST_GeomFromText('POINT(1 1)', 4326)), \
-                 (3, ST_GeomFromText('LINESTRING(0 0, 5 5)', 4326))"
+                 (3, ST_GeomFromText('LINESTRING(0 0, 5 5)', 4326))",
             )
-            .await.expect("seed");
+            .await
+            .expect("seed");
     }
 
     // Query portable: SELECT id, ST_Area(shape) AS area FROM _v12_spatial ORDER BY id
@@ -4723,7 +4957,10 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         projection: vec![
             QueryProjection {
                 expression: QueryExpression::Column {
-                    column: ColumnRef { relation: None, field: "id".to_owned() },
+                    column: ColumnRef {
+                        relation: None,
+                        field: "id".to_owned(),
+                    },
                 },
                 alias: None,
             },
@@ -4731,7 +4968,10 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
                 expression: QueryExpression::Spatial {
                     function: SpatialFunction::Area,
                     arguments: vec![QueryExpression::Column {
-                        column: ColumnRef { relation: None, field: "shape".to_owned() },
+                        column: ColumnRef {
+                            relation: None,
+                            field: "shape".to_owned(),
+                        },
                     }],
                 },
                 alias: Some("area".to_owned()),
@@ -4743,7 +4983,10 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         having: None,
         order_by: vec![QueryOrdering {
             expression: QueryExpression::Column {
-                column: ColumnRef { relation: None, field: "id".to_owned() },
+                column: ColumnRef {
+                    relation: None,
+                    field: "id".to_owned(),
+                },
             },
             direction: SortDirection::Asc,
         }],
@@ -4766,9 +5009,15 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
     // qui che la query non fallisca).
     drop(stream);
 
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_spatial").await.ok();
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_spatial")
+        .await
+        .ok();
 }
 
 #[tokio::test]
@@ -4787,22 +5036,34 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     {
-        let mut setup = MysqlSession::open(&live_config(), &cancellation).await.expect("setup");
-        setup.connection_mut().unwrap()
-            .query_drop("DROP TABLE IF EXISTS _v12_spatial_pred").await.ok();
-        setup.connection_mut().unwrap()
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        setup
+            .connection_mut()
+            .unwrap()
+            .query_drop("DROP TABLE IF EXISTS _v12_spatial_pred")
+            .await
+            .ok();
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop(
                 "CREATE TABLE _v12_spatial_pred (id BIGINT PRIMARY KEY, \
-                 shape GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB"
+                 shape GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB",
             )
-            .await.expect("create");
-        setup.connection_mut().unwrap()
+            .await
+            .expect("create");
+        setup
+            .connection_mut()
+            .unwrap()
             .query_drop(
                 "INSERT INTO _v12_spatial_pred VALUES \
                  (1, ST_GeomFromText('POINT(1 1)', 4326)), \
-                 (2, ST_GeomFromText('POINT(10 10)', 4326))"
+                 (2, ST_GeomFromText('POINT(10 10)', 4326))",
             )
-            .await.expect("seed");
+            .await
+            .expect("seed");
     }
 
     // WKB per POINT(1 1) SRID 4326: 25 bytes standard WKB (little-endian).
@@ -4813,9 +5074,8 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     // usiamo ST_SRID nella query.
     // WKB POINT(1 1) little-endian: 01 01000000 000000000000F03F 000000000000F03F
     let wkb_point_1_1: Vec<u8> = vec![
-        0x01, 0x01, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
     ];
 
     let operation = QueryOperation {
@@ -4832,7 +5092,10 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         derived_source: None,
         projection: vec![QueryProjection {
             expression: QueryExpression::Column {
-                column: ColumnRef { relation: None, field: "id".to_owned() },
+                column: ColumnRef {
+                    relation: None,
+                    field: "id".to_owned(),
+                },
             },
             alias: None,
         }],
@@ -4842,16 +5105,24 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
             function: SpatialFunction::Intersects,
             arguments: vec![
                 QueryExpression::Column {
-                    column: ColumnRef { relation: None, field: "shape".to_owned() },
+                    column: ColumnRef {
+                        relation: None,
+                        field: "shape".to_owned(),
+                    },
                 },
-                QueryExpression::Parameter { name: "probe".to_owned() },
+                QueryExpression::Parameter {
+                    name: "probe".to_owned(),
+                },
             ],
         }),
         group_by: Vec::new(),
         having: None,
         order_by: vec![QueryOrdering {
             expression: QueryExpression::Column {
-                column: ColumnRef { relation: None, field: "id".to_owned() },
+                column: ColumnRef {
+                    relation: None,
+                    field: "id".to_owned(),
+                },
             },
             direction: SortDirection::Asc,
         }],
@@ -4879,9 +5150,15 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     }
     drop(result.unwrap());
 
-    let mut check = MysqlSession::open(&live_config(), &cancellation).await.expect("check");
-    check.connection_mut().unwrap()
-        .query_drop("DROP TABLE _v12_spatial_pred").await.ok();
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("check");
+    check
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _v12_spatial_pred")
+        .await
+        .ok();
 }
 
 /// Fail-closed: `Replace` è stato rimosso su `MySQL` (staging + RENAME perde
@@ -4894,12 +5171,20 @@ async fn live_v12_write_replace_rejected_fail_closed() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     let (schema, _batch) = scalar_batch(&[1, 2, 3], &["new-1", "new-2", "new-3"]);
-    let operation = write_op_scalar("dataflow_test", "_v12_rep",
-        plenora_database_core::plan::WriteMode::Replace);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_rep",
+        plenora_database_core::plan::WriteMode::Replace,
+    );
 
     let Err(error) = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await
     else {
         panic!("Replace MySQL deve essere rifiutato fail-closed");
@@ -4914,17 +5199,28 @@ async fn live_v12_write_update_without_keys_rejected() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     let (schema, _batch) = scalar_batch(&[1], &["x"]);
-    let operation = write_op_scalar("dataflow_test", "_v12_upd_no_keys",
-        plenora_database_core::plan::WriteMode::Update);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_upd_no_keys",
+        plenora_database_core::plan::WriteMode::Update,
+    );
 
     let result = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await;
-    assert!(matches!(
-        result.err().map(|e| e.category),
-        Some(ErrorCategory::InvalidPlan)
-    ), "update senza keys deve fallire InvalidPlan");
+    assert!(
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
+        "update senza keys deve fallire InvalidPlan"
+    );
 }
 
 #[tokio::test]
@@ -4934,17 +5230,28 @@ async fn live_v12_write_delete_by_keys_without_keys_rejected() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
 
     let (schema, _batch) = keys_only_batch(&[1]);
-    let operation = write_op_scalar("dataflow_test", "_v12_del_no_keys",
-        plenora_database_core::plan::WriteMode::DeleteByKeys);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_del_no_keys",
+        plenora_database_core::plan::WriteMode::DeleteByKeys,
+    );
 
     let result = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await;
-    assert!(matches!(
-        result.err().map(|e| e.category),
-        Some(ErrorCategory::InvalidPlan)
-    ), "delete_by_keys senza keys deve fallire InvalidPlan");
+    assert!(
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
+        "delete_by_keys senza keys deve fallire InvalidPlan"
+    );
 }
 
 #[tokio::test]
@@ -4955,17 +5262,28 @@ async fn live_v12_write_upsert_without_keys_rejected() {
 
     let (schema, _batch) = scalar_batch(&[1], &["x"]);
     // Upsert senza keys → InvalidPlan al prepare (validate_operation).
-    let operation = write_op_scalar("dataflow_test", "_v12_no_upsert",
-        plenora_database_core::plan::WriteMode::Upsert);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_no_upsert",
+        plenora_database_core::plan::WriteMode::Upsert,
+    );
 
     let result = provider
-        .prepare_write(&live_secret(), &operation,
-            std::sync::Arc::clone(&schema), &budget, &cancellation)
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
         .await;
-    assert!(matches!(
-        result.err().map(|e| e.category),
-        Some(ErrorCategory::InvalidPlan)
-    ), "upsert senza keys deve fallire con InvalidPlan");
+    assert!(
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
+        "upsert senza keys deve fallire con InvalidPlan"
+    );
 }
 
 // ============================================================================
@@ -4997,11 +5315,17 @@ async fn live_native_query_policy_deny_rejects_ddl() {
         .await
         .expect("begin pfm_defaults");
     let result = tx
-        .execute(&Statement::new("CREATE TABLE _nqp_deny_ddl (x INT)"), &cancellation)
+        .execute(
+            &Statement::new("CREATE TABLE _nqp_deny_ddl (x INT)"),
+            &cancellation,
+        )
         .await;
     let _ = tx.rollback(&cancellation).await;
     assert!(
-        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
         "DDL sotto pfm_defaults deve fallire con InvalidPlan"
     );
 }
@@ -5031,7 +5355,10 @@ async fn live_native_query_policy_deny_rejects_session_control() {
         .await;
     let _ = tx.rollback(&cancellation).await;
     assert!(
-        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
         "SET SESSION sotto pfm_defaults deve fallire con InvalidPlan"
     );
 }
@@ -5066,9 +5393,7 @@ async fn live_native_query_policy_allow_permits_ddl() {
     // Con Allow il policy non blocca; MySQL fa autocommit implicito su DDL,
     // quindi va a buon fine oltre l'enforcement.
     tx.execute(
-        &Statement::new(
-            "CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB",
-        ),
+        &Statement::new("CREATE TABLE _nqp_allow_ddl (x INT) ENGINE=InnoDB"),
         &cancellation,
     )
     .await
@@ -5104,11 +5429,17 @@ async fn live_native_query_policy_deny_rejects_ddl_via_query() {
         .await
         .expect("begin pfm_defaults");
     let result = tx
-        .query(&Statement::new("CREATE TABLE _nqp_deny_q (x INT)"), &cancellation)
+        .query(
+            &Statement::new("CREATE TABLE _nqp_deny_q (x INT)"),
+            &cancellation,
+        )
         .await;
     let _ = tx.rollback(&cancellation).await;
     assert!(
-        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
         "DDL via query() sotto pfm_defaults deve fallire con InvalidPlan"
     );
 }
@@ -5140,7 +5471,10 @@ async fn live_native_query_policy_deny_rejects_conditional_update_ddl() {
     let result = tx.execute_conditional_update(request, &cancellation).await;
     let _ = tx.rollback(&cancellation).await;
     assert!(
-        matches!(result.err().map(|e| e.category), Some(ErrorCategory::InvalidPlan)),
+        matches!(
+            result.err().map(|e| e.category),
+            Some(ErrorCategory::InvalidPlan)
+        ),
         "conditional_update con SQL non-CRUD sotto pfm_defaults deve fallire con InvalidPlan"
     );
 }

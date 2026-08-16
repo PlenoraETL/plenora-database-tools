@@ -30,7 +30,7 @@
 #![allow(
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
-    clippy::needless_pass_by_value,
+    clippy::needless_pass_by_value
 )]
 
 use crate::arrow_reader::{open_reader, BatchReader};
@@ -86,19 +86,13 @@ pub struct Session {
 impl Session {
     /// Chiama `Provider::inspect(op)` sul runtime tokio globale e ritorna
     /// il documento JSON come `serde_json::Value`.
-    fn run_inspect(
-        &self,
-        py: Python<'_>,
-        op: Operation,
-    ) -> PyResult<serde_json::Value> {
+    fn run_inspect(&self, py: Python<'_>, op: Operation) -> PyResult<serde_json::Value> {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let cancel = CancellationToken::new();
         let inspection = py
             .allow_threads(|| {
-                runtime().block_on(async move {
-                    provider.inspect(&secret, &op, &cancel).await
-                })
+                runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
             })
             .map_err(to_py_err)?;
         Ok(inspection.document)
@@ -130,7 +124,12 @@ impl Session {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 let mut tx = provider
-                    .begin_transaction(&secret, &TransactionOptions::default(), &default_budget(), &cancel)
+                    .begin_transaction(
+                        &secret,
+                        &TransactionOptions::default(),
+                        &default_budget(),
+                        &cancel,
+                    )
                     .await?;
                 let result = work(tx.as_mut(), &cancel).await;
                 match result {
@@ -217,10 +216,9 @@ impl Session {
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
-        rows.first().and_then(|r| r.get_index(0)).map_or_else(
-            || Ok(py.None().into_bound(py)),
-            |v| param_to_python(py, v),
-        )
+        rows.first()
+            .and_then(|r| r.get_index(0))
+            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
     }
 
     /// Esegue una query e ritorna tutte le righe come lista di dict
@@ -264,7 +262,9 @@ impl Session {
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
@@ -290,7 +290,9 @@ impl Session {
     fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!("AST portable non valida: {e}")))
+            to_py_err(DatabaseError::invalid_plan(format!(
+                "AST portable non valida: {e}"
+            )))
         })?;
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable(tx, &ast, cancel).await })
@@ -305,9 +307,8 @@ impl Session {
     /// Ritorna un dict con ~25 chiavi u64.
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.provider.metrics_snapshot();
-        let value = serde_json::to_value(snap).map_err(|e| {
-            PyRuntimeError::new_err(format!("metrics serialize: {e}"))
-        })?;
+        let value = serde_json::to_value(snap)
+            .map_err(|e| PyRuntimeError::new_err(format!("metrics serialize: {e}")))?;
         let json_str = value.to_string();
         let json_mod = py.import("json")?;
         let obj = json_mod.getattr("loads")?.call1((json_str,))?;
@@ -331,11 +332,7 @@ impl Session {
     /// Ritorna la lista degli oggetti (tabelle, viste, materialized views,
     /// foreign tables, partition parents) nello schema indicato. Ogni
     /// entry ha `{name, kind, is_partition}`.
-    fn inspect_tables<'py>(
-        &self,
-        py: Python<'py>,
-        schema: &str,
-    ) -> PyResult<Bound<'py, PyList>> {
+    fn inspect_tables<'py>(&self, py: Python<'py>, schema: &str) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
         let source = Some(ObjectRef {
             catalog: None,

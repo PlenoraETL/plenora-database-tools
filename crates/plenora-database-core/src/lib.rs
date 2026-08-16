@@ -36,7 +36,7 @@ pub use conformance::{
     CapabilityEvidence, ConformanceProfile, EvidenceKind, ProfileReport, ProfileStatus,
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
-pub use row::Row;
+pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
 pub use facade::{
     execute_portable, execute_portable_returning, execute_portable_returning_one,
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal,
@@ -54,22 +54,22 @@ pub use portable::{
     Expression, InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection,
     SelectStatement, TableRef, UpdateStatement, UpsertStatement,
 };
-pub use spatial_predicate::{SpatialFilter, SpatialPredicate, SpatialReference};
-pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};
-pub use session_context::{
-    validate_context_key, validate_context_value, SessionClassification, SessionContext,
-    SessionEntry, SessionValue,
-};
-pub use transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name, AccessMode,
-    CommitOutcome, ConditionalUpdate, IsolationLevel, RowStream, Statement, TransactionOptions,
-    TransactionScope,
-};
+pub use row::Row;
 pub use row_diagnostics::{
     diagnose_row_scoped_write, into_read_rejection, ReadDiagnosticsPolicy, ReadDiagnosticsTracker,
     RejectedRow, RollbackEvidence, RowApplication, RowDiagnostics, RowDiagnosticsPolicy,
     RowRejection, RowRejectionOutcome, RowScopedWriter, WriteDiagnosticsTracker,
+};
+pub use session_context::{
+    validate_context_key, validate_context_value, SessionClassification, SessionContext,
+    SessionEntry, SessionValue,
+};
+pub use spatial_predicate::{SpatialFilter, SpatialPredicate, SpatialReference};
+pub use transaction::{
+    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name, AccessMode,
+    CommitOutcome, ConditionalUpdate, IsolationLevel, RowStream, Statement, TransactionOptions,
+    TransactionScope,
 };
 
 /// Unico punto di versione Arrow del workspace.

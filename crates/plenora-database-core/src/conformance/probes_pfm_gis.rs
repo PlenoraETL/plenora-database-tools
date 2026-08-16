@@ -57,16 +57,44 @@ pub async fn probe_pfm_gis_v1(
         probe_spatial_srid(provider, secret, &budget, cancellation).await,
     );
     for (cap, function_call, expected) in [
-        (Capability::SpatialBbox, "ST_MakeEnvelope(6.0, 40.0, 14.0, 46.0, 4326) && geom", 2_i64),
-        (Capability::SpatialIntersects, "ST_Intersects(geom, ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326))", 1),
-        (Capability::SpatialContains, "ST_Contains(ST_SetSRID(ST_MakeEnvelope(0, 0, 20, 50), 4326), geom)", 3),
-        (Capability::SpatialWithin, "ST_Within(geom, ST_SetSRID(ST_MakeEnvelope(9.0, 45.0, 9.5, 46.0), 4326))", 1),
-        (Capability::SpatialDWithin, "ST_DWithin(geom, ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326), 0.01)", 1),
+        (
+            Capability::SpatialBbox,
+            "ST_MakeEnvelope(6.0, 40.0, 14.0, 46.0, 4326) && geom",
+            2_i64,
+        ),
+        (
+            Capability::SpatialIntersects,
+            "ST_Intersects(geom, ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326))",
+            1,
+        ),
+        (
+            Capability::SpatialContains,
+            "ST_Contains(ST_SetSRID(ST_MakeEnvelope(0, 0, 20, 50), 4326), geom)",
+            3,
+        ),
+        (
+            Capability::SpatialWithin,
+            "ST_Within(geom, ST_SetSRID(ST_MakeEnvelope(9.0, 45.0, 9.5, 46.0), 4326))",
+            1,
+        ),
+        (
+            Capability::SpatialDWithin,
+            "ST_DWithin(geom, ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326), 0.01)",
+            1,
+        ),
     ] {
         push_probe(
             &mut evidence,
             cap,
-            probe_spatial_count_where(provider, secret, &budget, cancellation, function_call, expected).await,
+            probe_spatial_count_where(
+                provider,
+                secret,
+                &budget,
+                cancellation,
+                function_call,
+                expected,
+            )
+            .await,
         );
     }
     push_probe(
@@ -77,14 +105,28 @@ pub async fn probe_pfm_gis_v1(
     push_probe(
         &mut evidence,
         Capability::SpatialCentroid,
-        probe_spatial_scalar_op(provider, secret, &budget, cancellation,
-            "SELECT COUNT(*)::BIGINT FROM _probe_gis WHERE ST_Centroid(geom) IS NOT NULL", 3).await,
+        probe_spatial_scalar_op(
+            provider,
+            secret,
+            &budget,
+            cancellation,
+            "SELECT COUNT(*)::BIGINT FROM _probe_gis WHERE ST_Centroid(geom) IS NOT NULL",
+            3,
+        )
+        .await,
     );
     push_probe(
         &mut evidence,
         Capability::SpatialEnvelope,
-        probe_spatial_scalar_op(provider, secret, &budget, cancellation,
-            "SELECT COUNT(*)::BIGINT FROM _probe_gis WHERE ST_Envelope(geom) IS NOT NULL", 3).await,
+        probe_spatial_scalar_op(
+            provider,
+            secret,
+            &budget,
+            cancellation,
+            "SELECT COUNT(*)::BIGINT FROM _probe_gis WHERE ST_Envelope(geom) IS NOT NULL",
+            3,
+        )
+        .await,
     );
     push_probe(
         &mut evidence,
@@ -137,9 +179,7 @@ async fn spatial_setup(
         .await
         .map_err(|e| format!("drop: {}", e.message))?;
     tx.execute(
-        &Statement::new(
-            "CREATE TABLE _probe_gis (id INT PRIMARY KEY, geom geometry(Point, 4326))",
-        ),
+        &Statement::new("CREATE TABLE _probe_gis (id INT PRIMARY KEY, geom geometry(Point, 4326))"),
         cancel,
     )
     .await
@@ -244,9 +284,7 @@ async fn probe_spatial_wkb_roundtrip(
         .map_err(|e| format!("begin: {}", e.message))?;
     let row = crate::facade::query_one(
         tx.as_mut(),
-        &Statement::new(
-            "SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326))",
-        ),
+        &Statement::new("SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.19, 45.46), 4326))"),
         cancel,
     )
     .await
@@ -296,13 +334,9 @@ async fn probe_spatial_count_where(
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
     let sql = format!("SELECT COUNT(*)::BIGINT FROM _probe_gis WHERE {predicate_sql}");
-    let n = crate::facade::execute_scalar_i64(
-        tx.as_mut(),
-        &Statement::new(sql),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("count: {}", e.message))?;
+    let n = crate::facade::execute_scalar_i64(tx.as_mut(), &Statement::new(sql), cancel)
+        .await
+        .map_err(|e| format!("count: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
     if n == expected {
         Ok(())
@@ -487,9 +521,7 @@ async fn probe_spatial_large_streaming(
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
     // Streaming di 200 punti generati al volo con cursor batch 50.
-    let stmt = Statement::new(
-        "SELECT gs::INT FROM generate_series(1, 200) gs",
-    );
+    let stmt = Statement::new("SELECT gs::INT FROM generate_series(1, 200) gs");
     let mut stream = tx
         .query_stream(&stmt, 50, cancel)
         .await
@@ -542,4 +574,3 @@ async fn probe_spatial_cross_srid(
         Err("cross-SRID non rifiutato — attesa transformation policy fail-closed".into())
     }
 }
-

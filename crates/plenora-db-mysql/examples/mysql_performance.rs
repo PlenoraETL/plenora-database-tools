@@ -60,7 +60,10 @@ impl BatchStream for MemoryBatchStream {
         Arc::clone(&self.schema)
     }
 
-    fn next_batch<'a>(&'a mut self, _cancellation: &'a plenora_database_core::CancellationToken) -> ProviderFuture<'a, Option<RecordBatch>> {
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a plenora_database_core::CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batches.pop_front())))
     }
 }
@@ -389,7 +392,8 @@ async fn measure_reads(
             ),
             None => (0_u64, 0_usize, 0_u64),
         };
-        let (remaining_rows, remaining_batches, remaining_bytes, _) = drain(stream, cancellation).await?;
+        let (remaining_rows, remaining_batches, remaining_bytes, _) =
+            drain(stream, cancellation).await?;
         measured_rows = measured_rows.saturating_add(remaining_rows);
         measured_batches = measured_batches.saturating_add(remaining_batches);
         measured_bytes = measured_bytes.saturating_add(remaining_bytes);

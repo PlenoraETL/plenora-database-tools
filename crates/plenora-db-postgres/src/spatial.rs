@@ -11,9 +11,7 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::spatial_policy;
 use plenora_database_core::transaction::Statement;
-use plenora_database_core::{
-    DatabaseError, SpatialFilter, SpatialPredicate, SpatialReference,
-};
+use plenora_database_core::{DatabaseError, SpatialFilter, SpatialPredicate, SpatialReference};
 
 /// Delega a `plenora-database-core::identifier` (Fase A2). Prima
 /// duplicava le stesse regole di validazione + quoting di
@@ -68,7 +66,11 @@ pub fn build_spatial_select(
     // `spatial_policy`. Copre distanza finita+positiva, DWithin+
     // Geometry+SRID_geografico fail-closed, BoundingBox+Geography
     // Unsupported. Prima erano inline duplicati con `compiler.rs`.
-    spatial_policy::validate_predicate(ProviderKind::Postgres, &filter.predicate, &filter.reference)?;
+    spatial_policy::validate_predicate(
+        ProviderKind::Postgres,
+        &filter.predicate,
+        &filter.reference,
+    )?;
 
     // Fase A2: quote_identifier centralizzato — valida + quota in
     // un'unica funzione, ritorna errore uniforme.
@@ -196,8 +198,7 @@ mod tests {
             },
             reference,
         };
-        let stmt =
-            build_spatial_select(None, "poi", &["id"], &filter, None).expect("build");
+        let stmt = build_spatial_select(None, "poi", &["id"], &filter, None).expect("build");
         assert_eq!(
             stmt.sql,
             "SELECT \"id\" FROM \"poi\" \
@@ -214,8 +215,7 @@ mod tests {
             predicate: SpatialPredicate::BoundingBox,
             reference: dummy_reference(),
         };
-        let stmt =
-            build_spatial_select(None, "buildings", &["id"], &filter, None).expect("build");
+        let stmt = build_spatial_select(None, "buildings", &["id"], &filter, None).expect("build");
         assert!(stmt.sql.contains("\"geom\" && ST_GeomFromEWKB"));
     }
 

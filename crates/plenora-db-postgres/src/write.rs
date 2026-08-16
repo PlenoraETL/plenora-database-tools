@@ -860,8 +860,7 @@ async fn create_spatial_indexes(
         // Ora: byte-safe truncation + suffix hash-8 basato sul nome
         // originale intero per garantire unicità.
         let index_name_str = truncate_index_name_63_bytes(&index_raw);
-        let index_name =
-            renderer.quote_identifier(&Identifier::new(index_name_str)?)?;
+        let index_name = renderer.quote_identifier(&Identifier::new(index_name_str)?)?;
         execute_sql(
             transaction,
             &format!(
@@ -972,7 +971,9 @@ mod truncate_index_name_tests {
         let out = truncate_index_name_63_bytes(&s);
         assert!(out.len() <= 63);
         // Valid UTF-8 automatico: se String::push_str è stato ok, ok.
-        assert!(out.chars().all(|c| c == 'é' || c == '_' || c.is_ascii_hexdigit()));
+        assert!(out
+            .chars()
+            .all(|c| c == 'é' || c == '_' || c.is_ascii_hexdigit()));
     }
 
     #[test]

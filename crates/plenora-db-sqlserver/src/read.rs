@@ -1019,7 +1019,11 @@ mod tests {
         // saltando il batch fallito.
         drop(sender);
         assert!(
-            stream.next_batch(&cancellation).await.expect("stream chiuso").is_none(),
+            stream
+                .next_batch(&cancellation)
+                .await
+                .expect("stream chiuso")
+                .is_none(),
             "una next_batch successiva non deve riprendere dopo un batch fallito"
         );
     }

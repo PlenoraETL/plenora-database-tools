@@ -28,7 +28,7 @@
     clippy::future_not_send,
     clippy::significant_drop_tightening,
     clippy::redundant_pub_crate,
-    clippy::unused_self,
+    clippy::unused_self
 )]
 
 use crate::arrow_reader::BatchReader;
@@ -39,8 +39,8 @@ use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::portable::PortableStatement;
-use plenora_database_core::Row;
 use plenora_database_core::provider::{Provider, SecretString};
+use plenora_database_core::Row;
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::transaction::{
     AccessMode, Statement, TransactionOptions, TransactionScope,
@@ -165,7 +165,12 @@ impl MysqlSession {
     ///
     /// SQL usa placeholder `?` (convenzione MySQL). Params in ordine posizionale.
     #[pyo3(signature = (sql, params=None))]
-    fn execute(&self, py: Python<'_>, sql: &str, params: Option<Bound<'_, PyList>>) -> PyResult<u64> {
+    fn execute(
+        &self,
+        py: Python<'_>,
+        sql: &str,
+        params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<u64> {
         self.ensure_open()?;
         let params = params_from_python(params.as_ref())?;
         let sql = sql.to_owned();
@@ -292,8 +297,7 @@ impl MysqlSession {
             opts.context = ctx.inner;
         }
         if let Some(policy) = native_query_policy {
-            opts.native_query_policy =
-                crate::transaction::parse_native_query_policy(policy)?;
+            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
         }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -528,8 +532,7 @@ pub fn connect_mysql(
             // override necessario.
         }
         "insecure_trust_server" => {
-            config = config
-                .with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+            config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
         }
         other => {
             return Err(PyRuntimeError::new_err(format!(
@@ -544,7 +547,9 @@ pub fn connect_mysql(
     let (connection, _capabilities) = runtime()
         .block_on(async move {
             let cancel = CancellationToken::new();
-            let conn = provider_probe.test_connection(&secret_probe, &cancel).await?;
+            let conn = provider_probe
+                .test_connection(&secret_probe, &cancel)
+                .await?;
             let caps = provider_probe
                 .probe_capabilities(&secret_probe, &cancel)
                 .await?;

@@ -59,12 +59,7 @@ fn from_session_value(py: Python<'_>, value: &SessionValue) -> PyObject {
         SessionValue::Text(s) => s.clone().into_pyobject(py).unwrap().into_any().unbind(),
         SessionValue::Integer(i) => i.into_pyobject(py).unwrap().into_any().unbind(),
         // PyBool ha lifetime GIL: clone del Bound prima di unbind.
-        SessionValue::Boolean(b) => b
-            .into_pyobject(py)
-            .unwrap()
-            .to_owned()
-            .into_any()
-            .unbind(),
+        SessionValue::Boolean(b) => b.into_pyobject(py).unwrap().to_owned().into_any().unbind(),
     }
 }
 

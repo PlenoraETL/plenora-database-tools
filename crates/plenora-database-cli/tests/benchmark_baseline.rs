@@ -22,9 +22,8 @@ const DSN: &str =
 const BASELINE_PATH: &str = "tests/fixtures/benchmark_baseline.json";
 
 fn load_baseline() -> Value {
-    let content = std::fs::read(BASELINE_PATH).unwrap_or_else(|_| {
-        panic!("baseline file mancante: {BASELINE_PATH}")
-    });
+    let content = std::fs::read(BASELINE_PATH)
+        .unwrap_or_else(|_| panic!("baseline file mancante: {BASELINE_PATH}"));
     serde_json::from_slice(&content).expect("baseline JSON non parsabile")
 }
 

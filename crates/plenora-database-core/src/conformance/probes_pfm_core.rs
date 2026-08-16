@@ -5,9 +5,9 @@ use super::probes_oltp::probe_application_oltp_v1;
 use super::{push_probe, Capability, CapabilityEvidence};
 use crate::provider::{ParameterValue, Provider, SecretString};
 use crate::resource::{ResourceBudget, ResourceLimits};
+use crate::session_context::{SessionEntry, SessionValue};
 use crate::transaction::{IsolationLevel, Statement, TransactionOptions};
 use crate::CancellationToken;
-use crate::session_context::{SessionEntry, SessionValue};
 
 pub async fn probe_pfm_core_v1(
     provider: &dyn Provider,
@@ -153,20 +153,14 @@ async fn probe_facade_query_optional(
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
-    let none = crate::facade::query_optional(
-        tx.as_mut(),
-        &Statement::new("SELECT 1 WHERE FALSE"),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("query_optional none: {}", e.message))?;
-    let some = crate::facade::query_optional(
-        tx.as_mut(),
-        &Statement::new("SELECT 'x'::TEXT"),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("query_optional some: {}", e.message))?;
+    let none =
+        crate::facade::query_optional(tx.as_mut(), &Statement::new("SELECT 1 WHERE FALSE"), cancel)
+            .await
+            .map_err(|e| format!("query_optional none: {}", e.message))?;
+    let some =
+        crate::facade::query_optional(tx.as_mut(), &Statement::new("SELECT 'x'::TEXT"), cancel)
+            .await
+            .map_err(|e| format!("query_optional some: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
     if none.is_some() {
         return Err("optional atteso None su empty set".into());
@@ -336,12 +330,9 @@ async fn probe_unique_constraint(
     )
     .await
     .map_err(|e| format!("temp: {}", e.message))?;
-    tx.execute(
-        &Statement::new("INSERT INTO _probe_uq VALUES (1)"),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("insert 1: {}", e.message))?;
+    tx.execute(&Statement::new("INSERT INTO _probe_uq VALUES (1)"), cancel)
+        .await
+        .map_err(|e| format!("insert 1: {}", e.message))?;
     let outcome = tx
         .execute(&Statement::new("INSERT INTO _probe_uq VALUES (1)"), cancel)
         .await;
@@ -397,7 +388,11 @@ async fn probe_foreign_key_constraint(
 /// live richiederebbe due connessioni concorrenti e un runtime async (tokio),
 /// non disponibile nel core runtime-agnostic. Il mapping è comunque coperto
 /// live dai unit test del driver (vedi `plenora-db-postgres::error`).
-#[allow(clippy::unused_async, clippy::needless_pass_by_ref_mut, clippy::needless_pass_by_value)]
+#[allow(
+    clippy::unused_async,
+    clippy::needless_pass_by_ref_mut,
+    clippy::needless_pass_by_value
+)]
 async fn probe_deadlock(
     _provider: &dyn Provider,
     _secret: &SecretString,
@@ -421,7 +416,10 @@ async fn probe_serialization(
         .await
         .map_err(|e| format!("begin setup: {}", e.message))?;
     setup
-        .execute(&Statement::new("DROP TABLE IF EXISTS _probe_serial"), cancel)
+        .execute(
+            &Statement::new("DROP TABLE IF EXISTS _probe_serial"),
+            cancel,
+        )
         .await
         .map_err(|e| format!("drop: {}", e.message))?;
     setup

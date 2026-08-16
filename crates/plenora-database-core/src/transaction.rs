@@ -266,10 +266,7 @@ pub trait TransactionScope: Send {
         cancellation: &CancellationToken,
     ) -> ProviderFuture<'_, CommitOutcome>;
 
-    fn rollback(
-        self: Box<Self>,
-        cancellation: &CancellationToken,
-    ) -> ProviderFuture<'_, ()>;
+    fn rollback(self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()>;
 }
 
 /// Valida che il nome di un savepoint sia un identificatore SQL semplice
@@ -329,7 +326,14 @@ mod tests {
 
     #[test]
     fn invalid_savepoint_names_are_rejected() {
-        for name in ["", "1abc", "with space", "drop;", "quote\"", &"x".repeat(64)] {
+        for name in [
+            "",
+            "1abc",
+            "with space",
+            "drop;",
+            "quote\"",
+            &"x".repeat(64),
+        ] {
             assert!(
                 validate_savepoint_name(name).is_err(),
                 "atteso rifiuto: {name:?}"

@@ -45,7 +45,8 @@ pub(crate) fn strip_safety_flags(args: Vec<String>) -> CliResult<Vec<String>> {
                     .ok_or("--ephemeral-schema richiede un nome schema")?;
                 if !is_valid_identifier(&name) {
                     return Err(
-                        "nome schema ephemeral non valido (usare [A-Za-z_][A-Za-z0-9_]{0,62})".into(),
+                        "nome schema ephemeral non valido (usare [A-Za-z_][A-Za-z0-9_]{0,62})"
+                            .into(),
                     );
                 }
                 flags.ephemeral_schema = Some(name);
@@ -85,18 +86,17 @@ pub(crate) async fn ensure_ephemeral_schema(dsn_env: &str) -> CliResult<Option<S
         return Ok(None);
     };
     let secret = secret_from_env(dsn_env)?;
-    run_admin_stmt(
-        &secret,
-        &format!("CREATE SCHEMA IF NOT EXISTS \"{name}\""),
-    )
-    .await?;
+    run_admin_stmt(&secret, &format!("CREATE SCHEMA IF NOT EXISTS \"{name}\"")).await?;
     Ok(Some(name))
 }
 
 pub(crate) async fn drop_ephemeral_schema(dsn_env: &str, name: &str) {
     if let Ok(secret) = secret_from_env(dsn_env) {
-        let _ = run_admin_stmt(&secret, &format!("DROP SCHEMA IF EXISTS \"{name}\" CASCADE"))
-            .await;
+        let _ = run_admin_stmt(
+            &secret,
+            &format!("DROP SCHEMA IF EXISTS \"{name}\" CASCADE"),
+        )
+        .await;
     }
 }
 
@@ -135,7 +135,9 @@ mod tests {
 
     #[test]
     fn strip_extracts_allow_write_tests_flag() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rest = strip_safety_flags(vec![
             "dsn".into(),
             "--allow-write-tests".into(),
@@ -149,7 +151,9 @@ mod tests {
 
     #[test]
     fn strip_extracts_ephemeral_schema_name() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rest = strip_safety_flags(vec![
             "--ephemeral-schema".into(),
             "probe_schema".into(),
@@ -163,23 +167,21 @@ mod tests {
 
     #[test]
     fn ephemeral_schema_requires_valid_identifier() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(strip_safety_flags(vec![
-            "--ephemeral-schema".into(),
-            "1invalid".into(),
-        ])
-        .is_err());
-        assert!(strip_safety_flags(vec![
-            "--ephemeral-schema".into(),
-            "has space".into(),
-        ])
-        .is_err());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(strip_safety_flags(vec!["--ephemeral-schema".into(), "1invalid".into(),]).is_err());
+        assert!(
+            strip_safety_flags(vec!["--ephemeral-schema".into(), "has space".into(),]).is_err()
+        );
         let _ = strip_safety_flags(vec![]);
     }
 
     #[test]
     fn require_write_tests_gates_correctly() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = strip_safety_flags(vec![]);
         assert!(require_write_tests("cmd").is_err());
         let _ = strip_safety_flags(vec!["--allow-write-tests".into()]);

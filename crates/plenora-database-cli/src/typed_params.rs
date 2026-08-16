@@ -1,4 +1,8 @@
-#![allow(clippy::doc_markdown, clippy::manual_is_multiple_of, clippy::match_same_arms)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::manual_is_multiple_of,
+    clippy::match_same_arms
+)]
 //! Parser per parametri tipizzati passati via CLI: `NAME=VALUE:TYPE` o
 //! `VALUE:TYPE` (per parametri posizionali senza nome).
 //!
@@ -189,9 +193,9 @@ pub(crate) fn strip_bind_params(args: Vec<String>) -> CliResult<(Vec<String>, Ty
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         if arg == "--param" || arg == "-p" {
-            let spec = iter
-                .next()
-                .ok_or_else(|| format!("{arg} richiede un argomento NAME=VALUE:TYPE o VALUE:TYPE"))?;
+            let spec = iter.next().ok_or_else(|| {
+                format!("{arg} richiede un argomento NAME=VALUE:TYPE o VALUE:TYPE")
+            })?;
             // NAME opzionale per bind position: se manca '=', trattiamo tutto come VALUE:TYPE.
             let value = if spec.contains('=') && !spec.starts_with('{') {
                 // '=' presente, potrebbe essere un JSON (evita quel falso positivo).
@@ -215,13 +219,33 @@ mod tests {
 
     #[test]
     fn parse_value_type_covers_all_scalars() {
-        assert!(matches!(parse_value_type("42:int").unwrap(), ParameterValue::I32(42)));
-        assert!(matches!(parse_value_type("9999999999:bigint").unwrap(), ParameterValue::I64(9_999_999_999)));
-        assert!(matches!(parse_value_type("3.14:float").unwrap(), ParameterValue::F64(_)));
-        assert!(matches!(parse_value_type("true:bool").unwrap(), ParameterValue::Bool(true)));
-        assert!(matches!(parse_value_type("false:bool").unwrap(), ParameterValue::Bool(false)));
-        assert!(matches!(parse_value_type("hello:string").unwrap(), ParameterValue::String(s) if s == "hello"));
-        assert!(matches!(parse_value_type("hello:text").unwrap(), ParameterValue::String(_)));
+        assert!(matches!(
+            parse_value_type("42:int").unwrap(),
+            ParameterValue::I32(42)
+        ));
+        assert!(matches!(
+            parse_value_type("9999999999:bigint").unwrap(),
+            ParameterValue::I64(9_999_999_999)
+        ));
+        assert!(matches!(
+            parse_value_type("3.14:float").unwrap(),
+            ParameterValue::F64(_)
+        ));
+        assert!(matches!(
+            parse_value_type("true:bool").unwrap(),
+            ParameterValue::Bool(true)
+        ));
+        assert!(matches!(
+            parse_value_type("false:bool").unwrap(),
+            ParameterValue::Bool(false)
+        ));
+        assert!(
+            matches!(parse_value_type("hello:string").unwrap(), ParameterValue::String(s) if s == "hello")
+        );
+        assert!(matches!(
+            parse_value_type("hello:text").unwrap(),
+            ParameterValue::String(_)
+        ));
         assert!(matches!(
             parse_value_type("11111111-2222-3333-4444-555555555555:uuid").unwrap(),
             ParameterValue::Uuid(_)
@@ -243,7 +267,9 @@ mod tests {
             ParameterValue::TimestampTz(_)
         ));
         let bytes = parse_value_type("deadbeef:bytes-hex").unwrap();
-        assert!(matches!(bytes, ParameterValue::Bytes(ref b) if b == &vec![0xde, 0xad, 0xbe, 0xef]));
+        assert!(
+            matches!(bytes, ParameterValue::Bytes(ref b) if b == &vec![0xde, 0xad, 0xbe, 0xef])
+        );
     }
 
     #[test]

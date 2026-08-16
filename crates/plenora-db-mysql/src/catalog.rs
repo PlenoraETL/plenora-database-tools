@@ -379,7 +379,11 @@ fn build_indexes(rows: &[Row]) -> Result<Vec<MysqlIndex>> {
             // Parte funzionale (EXPRESSION non-NULL, COLUMN_NAME NULL):
             // l'indice non è più confrontabile per colonne.
             None if expression.is_some() => current.column_backed = false,
-            None => return Err(mapping_error("parte di indice MySQL senza colonna né espressione")),
+            None => {
+                return Err(mapping_error(
+                    "parte di indice MySQL senza colonna né espressione",
+                ))
+            }
         }
     }
     Ok(indexes)

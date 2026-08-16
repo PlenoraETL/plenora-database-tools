@@ -103,20 +103,58 @@ pub enum Nulls {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Predicate {
-    Eq { column: String, value: Expression },
-    Ne { column: String, value: Expression },
-    Lt { column: String, value: Expression },
-    Lte { column: String, value: Expression },
-    Gt { column: String, value: Expression },
-    Gte { column: String, value: Expression },
-    In { column: String, values: Vec<Expression> },
-    Between { column: String, low: Expression, high: Expression },
-    Like { column: String, pattern: Expression },
-    IsNull { column: String },
-    IsNotNull { column: String },
-    And { predicates: Vec<Self> },
-    Or { predicates: Vec<Self> },
-    Not { predicate: Box<Self> },
+    Eq {
+        column: String,
+        value: Expression,
+    },
+    Ne {
+        column: String,
+        value: Expression,
+    },
+    Lt {
+        column: String,
+        value: Expression,
+    },
+    Lte {
+        column: String,
+        value: Expression,
+    },
+    Gt {
+        column: String,
+        value: Expression,
+    },
+    Gte {
+        column: String,
+        value: Expression,
+    },
+    In {
+        column: String,
+        values: Vec<Expression>,
+    },
+    Between {
+        column: String,
+        low: Expression,
+        high: Expression,
+    },
+    Like {
+        column: String,
+        pattern: Expression,
+    },
+    IsNull {
+        column: String,
+    },
+    IsNotNull {
+        column: String,
+    },
+    And {
+        predicates: Vec<Self>,
+    },
+    Or {
+        predicates: Vec<Self>,
+    },
+    Not {
+        predicate: Box<Self>,
+    },
     /// Predicato spaziale su una colonna geometry. La geometria di
     /// riferimento viene bindata come `bytea` (EWKB) e rehydratata
     /// server-side (`ST_GeomFromEWKB($n)::geometry` su `PostGIS`).

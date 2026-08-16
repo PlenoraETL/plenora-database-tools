@@ -21,10 +21,7 @@
 //! diagnostici / operativi, non long-running.
 
 #![cfg(feature = "mysql")]
-#![allow(
-    clippy::doc_markdown,
-    clippy::option_if_let_else,
-)]
+#![allow(clippy::doc_markdown, clippy::option_if_let_else)]
 
 use crate::{secret_from_env, CliResult};
 use plenora_database_core::plan::{Operation, ProviderKind};
@@ -81,16 +78,14 @@ fn mysql_provider_from_args(
                 remaining.remove(0);
                 let ca_env = remaining
                     .first()
-                    .ok_or_else(|| {
-                        "--tls-ca-path-env richiede il nome della variabile".to_owned()
-                    })?
+                    .ok_or_else(|| "--tls-ca-path-env richiede il nome della variabile".to_owned())?
                     .clone();
                 remaining.remove(0);
                 let path_str = std::env::var(&ca_env)
                     .map_err(|_| format!("variabile TLS CA env non trovata: {ca_env}"))?;
                 let path = PathBuf::from(path_str);
-                let pem = std::fs::read(&path)
-                    .map_err(|e| format!("lettura CA MySQL fallita: {e}"))?;
+                let pem =
+                    std::fs::read(&path).map_err(|e| format!("lettura CA MySQL fallita: {e}"))?;
                 if pem.len() > 1024 * 1024 {
                     return Err("CA PEM MySQL oltre 1 MiB".to_owned().into());
                 }
@@ -128,8 +123,7 @@ fn mysql_provider_from_args(
             config = config.with_private_ca_certificate_pem(pem);
         }
         (None, true) => {
-            config =
-                config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+            config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
         }
         (None, false) => {}
     }
@@ -241,10 +235,14 @@ pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRe
     let allow_raw = remaining
         .iter()
         .position(|arg| arg == "--allow-raw")
-        .inspect(|&idx| { remaining.remove(idx); })
+        .inspect(|&idx| {
+            remaining.remove(idx);
+        })
         .is_some();
     let mut it = remaining.into_iter();
-    let sql = it.next().ok_or_else(|| "manca lo statement SQL".to_owned())?;
+    let sql = it
+        .next()
+        .ok_or_else(|| "manca lo statement SQL".to_owned())?;
     if it.next().is_some() {
         return Err("argomenti extra dopo <sql>".to_owned().into());
     }
@@ -277,7 +275,9 @@ pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRe
 pub async fn mysql_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     let mut it = remaining.into_iter();
-    let sql = it.next().ok_or_else(|| "manca lo statement DDL".to_owned())?;
+    let sql = it
+        .next()
+        .ok_or_else(|| "manca lo statement DDL".to_owned())?;
     if it.next().is_some() {
         return Err("argomenti extra dopo <sql>".to_owned().into());
     }
@@ -296,7 +296,9 @@ pub async fn mysql_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliRe
 pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     let mut it = remaining.into_iter();
-    let sql = it.next().ok_or_else(|| "manca lo statement SQL".to_owned())?;
+    let sql = it
+        .next()
+        .ok_or_else(|| "manca lo statement SQL".to_owned())?;
     if it.next().is_some() {
         return Err("argomenti extra dopo <sql>".to_owned().into());
     }
@@ -316,10 +318,10 @@ pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cl
     };
     let rows = tx.query(&stmt, &cancellation).await?;
     let _ = tx.rollback(&cancellation).await;
-    let value = rows.first().and_then(|row| row.values().first()).map_or_else(
-        || "null".to_owned(),
-        |param| format!("{param:?}"),
-    );
+    let value = rows
+        .first()
+        .and_then(|row| row.values().first())
+        .map_or_else(|| "null".to_owned(), |param| format!("{param:?}"));
     print_json(&json!({
         "provider": "mysql",
         "value": value,
@@ -331,14 +333,10 @@ pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cl
 ///
 /// Pattern optimistic-lock: esegue UPDATE in una tx dedicata, verifica
 /// affected_rows == expected. Se mismatch → `ConcurrentModification`.
-pub async fn mysql_conditional_update(
-    args: &mut impl Iterator<Item = String>,
-) -> CliResult<()> {
+pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     let mut it = remaining.into_iter();
-    let update_sql = it
-        .next()
-        .ok_or_else(|| "manca UPDATE_SQL".to_owned())?;
+    let update_sql = it.next().ok_or_else(|| "manca UPDATE_SQL".to_owned())?;
     let expected_str = it
         .next()
         .ok_or_else(|| "manca EXPECTED_AFFECTED (numero intero)".to_owned())?;
@@ -401,9 +399,7 @@ pub async fn mysql_conditional_update(
 /// facade + un dispatcher `compile_portable_for_provider(provider_kind)`
 /// non ancora implementato. Deferito a giro futuro.
 #[allow(dead_code)]
-async fn mysql_portable_execute_unused(
-    args: &mut impl Iterator<Item = String>,
-) -> CliResult<()> {
+async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     let mut it = remaining.into_iter();
     let path = it
@@ -412,8 +408,8 @@ async fn mysql_portable_execute_unused(
     if it.next().is_some() {
         return Err("argomenti extra dopo PORTABLE.json".to_owned().into());
     }
-    let json_str = std::fs::read_to_string(&path)
-        .map_err(|e| format!("lettura {path} fallita: {e}"))?;
+    let json_str =
+        std::fs::read_to_string(&path).map_err(|e| format!("lettura {path} fallita: {e}"))?;
     let portable: plenora_database_core::portable::PortableStatement =
         serde_json::from_str(&json_str)
             .map_err(|e| format!("parse PortableStatement JSON fallito: {e}"))?;
@@ -467,12 +463,9 @@ async fn mysql_portable_execute_unused(
             "commit": format!("{commit:?}").to_lowercase(),
         })
     } else {
-        let affected = plenora_database_core::facade::execute_portable(
-            tx.as_mut(),
-            &portable,
-            &cancellation,
-        )
-        .await?;
+        let affected =
+            plenora_database_core::facade::execute_portable(tx.as_mut(), &portable, &cancellation)
+                .await?;
         let commit = tx.commit(&cancellation).await?;
         json!({
             "provider": "mysql",
@@ -498,7 +491,11 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
     let table = format!("_cli_txtest_{}", std::process::id());
     // Setup
     provider
-        .execute_ddl(&secret, &format!("DROP TABLE IF EXISTS {table}"), &cancellation)
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE IF EXISTS {table}"),
+            &cancellation,
+        )
         .await?;
     provider
         .execute_ddl(
@@ -546,10 +543,10 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
     };
     let rows = verify_tx.query(&count_stmt, &cancellation).await?;
     let _ = verify_tx.rollback(&cancellation).await;
-    let count_str = rows.first().and_then(|row| row.values().first()).map_or_else(
-        || "?".to_owned(),
-        |v| format!("{v:?}"),
-    );
+    let count_str = rows
+        .first()
+        .and_then(|row| row.values().first())
+        .map_or_else(|| "?".to_owned(), |v| format!("{v:?}"));
     // Cleanup
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table}"), &cancellation)

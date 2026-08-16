@@ -27,7 +27,7 @@
     clippy::too_many_lines,
     clippy::items_after_statements,
     clippy::uninlined_format_args,
-    clippy::unreadable_literal,
+    clippy::unreadable_literal
 )]
 
 use plenora_database_core::plan::{ObjectRef, ReadOperation};
@@ -82,7 +82,12 @@ async fn create_persistent_fixture(table: &str, create_body: &str, seed_sql: &st
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut tx = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget_default(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget_default(),
+            &cancel,
+        )
         .await
         .expect("begin fixture");
     tx.execute(
@@ -109,11 +114,19 @@ async fn drop_fixture(table: &str) {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     if let Ok(mut tx) = p
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget_default(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget_default(),
+            &cancel,
+        )
         .await
     {
         let _ = tx
-            .execute(&Statement::new(format!("DROP TABLE IF EXISTS {table}")), &cancel)
+            .execute(
+                &Statement::new(format!("DROP TABLE IF EXISTS {table}")),
+                &cancel,
+            )
             .await;
         let _ = Box::new(tx).commit(&cancel).await;
     }
@@ -247,7 +260,13 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
     let mut stream = p
-        .read(&secret(), &op, &ParameterBag::default(), &budget_default(), &cancel)
+        .read(
+            &secret(),
+            &op,
+            &ParameterBag::default(),
+            &budget_default(),
+            &cancel,
+        )
         .await
         .expect("read");
 
@@ -331,10 +350,7 @@ async fn edge_e3_tight_memory_with_huge_row_fails_cleanly_or_streams() {
             }
             // Se completa senza errore, il total può essere 1 (driver alloca
             // per-row) o 0 (short-circuit prima di emettere).
-            assert!(
-                total <= 1,
-                "atteso 0..=1 righe, ottenuto {total}"
-            );
+            assert!(total <= 1, "atteso 0..=1 righe, ottenuto {total}");
         }
         Err(e) => {
             // Errore all'apertura è OK se categoria appropriata.

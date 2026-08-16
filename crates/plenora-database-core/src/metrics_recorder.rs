@@ -270,10 +270,7 @@ mod tests {
     #[test]
     fn noop_recorder_does_not_panic() {
         let recorder = NoopRecorder;
-        recorder.record(MetricEvent::new(
-            MetricName::DbRetry,
-            MetricValue::Count(1),
-        ));
+        recorder.record(MetricEvent::new(MetricName::DbRetry, MetricValue::Count(1)));
     }
 
     #[test]

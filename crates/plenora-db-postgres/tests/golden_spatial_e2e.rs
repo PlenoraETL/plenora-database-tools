@@ -33,7 +33,7 @@
     clippy::float_cmp,
     clippy::approx_constant,
     clippy::unreadable_literal,
-    clippy::similar_names,
+    clippy::similar_names
 )]
 
 use plenora_database_core::facade::execute_portable_returning;
@@ -120,7 +120,12 @@ async fn spatial_s1_wkb_roundtrip_without_srid() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -136,9 +141,7 @@ async fn spatial_s1_wkb_roundtrip_without_srid() {
     .expect("create");
 
     tx.execute(
-        &Statement::new(
-            "INSERT INTO _sp_s1 (id, g) VALUES (1, ST_GeomFromText('POINT(5 45)'))",
-        ),
+        &Statement::new("INSERT INTO _sp_s1 (id, g) VALUES (1, ST_GeomFromText('POINT(5 45)'))"),
         &cancel,
     )
     .await
@@ -185,8 +188,10 @@ async fn spatial_s1_wkb_roundtrip_without_srid() {
         )
         .await
         .expect("st_equals");
-    assert!(bool_of(rows.first().and_then(|r| r.get_index(0))),
-        "roundtrip WKB non ST_Equals");
+    assert!(
+        bool_of(rows.first().and_then(|r| r.get_index(0))),
+        "roundtrip WKB non ST_Equals"
+    );
 
     // WKB non porta SRID: entrambe le righe devono avere SRID 0.
     let rows = tx
@@ -221,7 +226,12 @@ async fn spatial_s2_ewkb_roundtrip_byte_consistent() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -272,10 +282,8 @@ async fn spatial_s2_ewkb_roundtrip_byte_consistent() {
 
     // Reinserisci via ST_GeomFromEWKB e verifica byte-perfect equivalence del roundtrip.
     tx.execute(
-        &Statement::new(
-            "INSERT INTO _sp_s2 (id, g) VALUES (2, ST_GeomFromEWKB($1))",
-        )
-        .with_params(vec![ParameterValue::Bytes(ewkb_seed.clone())]),
+        &Statement::new("INSERT INTO _sp_s2 (id, g) VALUES (2, ST_GeomFromEWKB($1))")
+            .with_params(vec![ParameterValue::Bytes(ewkb_seed.clone())]),
         &cancel,
     )
     .await
@@ -325,7 +333,12 @@ async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -362,7 +375,9 @@ async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
     assert_eq!(i32_of(rows.first().and_then(|r| r.get_index(0))), 4326);
 
     // Savepoint per contenere il fallimento dell'insert con SRID sbagliato.
-    tx.savepoint("sp_mismatch", &cancel).await.expect("savepoint");
+    tx.savepoint("sp_mismatch", &cancel)
+        .await
+        .expect("savepoint");
 
     let mismatch_err = tx
         .execute(
@@ -436,7 +451,12 @@ async fn spatial_s4_geography_distance_in_meters() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -540,7 +560,12 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -599,10 +624,7 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
     let rows = execute_portable_returning(tx.as_mut(), &ast_contains, &cancel)
         .await
         .expect("contains");
-    let names_contains: Vec<String> = rows
-        .iter()
-        .map(|r| text_of(r.get_index(1)))
-        .collect();
+    let names_contains: Vec<String> = rows.iter().map(|r| text_of(r.get_index(1))).collect();
     assert_eq!(
         names_contains,
         vec!["R1_big".to_string(), "R2_mid".to_string()],
@@ -612,11 +634,7 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
     // Portable Within — ref è più grande di nulla in tabella (nessun polygon
     // interamente contenuto in REF).
     let ast_within = p_select("_sp_s5", vec!["id", "name"])
-        .where_(p_spatial(
-            "g",
-            SpatialPredicate::Within,
-            reference.clone(),
-        ))
+        .where_(p_spatial("g", SpatialPredicate::Within, reference.clone()))
         .into_statement();
     let rows = execute_portable_returning(tx.as_mut(), &ast_within, &cancel)
         .await
@@ -677,7 +695,12 @@ async fn spatial_s6_3d_zm_roundtrip() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -724,9 +747,7 @@ async fn spatial_s6_3d_zm_roundtrip() {
     // Verifica Z e M su riga 2.
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT ST_Z(g), ST_M(g), ST_NDims(g) FROM _sp_s6 WHERE id = 2",
-            ),
+            &Statement::new("SELECT ST_Z(g), ST_M(g), ST_NDims(g) FROM _sp_s6 WHERE id = 2"),
             &cancel,
         )
         .await
@@ -741,9 +762,7 @@ async fn spatial_s6_3d_zm_roundtrip() {
     // POINT ZM: type = 0xC0000001 (bit 31=Z, bit 30=M) — LE encoding: [01, 00, 00, C0]
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT id, ST_AsEWKB(g) FROM _sp_s6 ORDER BY id",
-            ),
+            &Statement::new("SELECT id, ST_AsEWKB(g) FROM _sp_s6 ORDER BY id"),
             &cancel,
         )
         .await
@@ -796,7 +815,12 @@ async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
     let cancel = CancellationToken::new();
 
     let mut tx = provider
-        .begin_transaction(&secret(), &TransactionOptions::default(), &budget(), &cancel)
+        .begin_transaction(
+            &secret(),
+            &TransactionOptions::default(),
+            &budget(),
+            &cancel,
+        )
         .await
         .expect("begin");
 
@@ -831,9 +855,7 @@ async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
     // EWKB del reference (Duomo).
     let rows = tx
         .query(
-            &Statement::new(
-                "SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.190, 45.464), 4326))",
-            ),
+            &Statement::new("SELECT ST_AsEWKB(ST_SetSRID(ST_MakePoint(9.190, 45.464), 4326))"),
             &cancel,
         )
         .await
@@ -852,7 +874,9 @@ async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
     let ast_1km = p_select("_sp_s7", vec!["id", "name"])
         .where_(p_spatial(
             "g",
-            SpatialPredicate::DWithin { distance_meters: 1_000.0 },
+            SpatialPredicate::DWithin {
+                distance_meters: 1_000.0,
+            },
             reference.clone(),
         ))
         .order_by("id", Direction::Asc)
@@ -871,7 +895,9 @@ async fn spatial_s7_portable_dwithin_over_geography_uses_meters() {
     let ast_10km = p_select("_sp_s7", vec!["id", "name"])
         .where_(p_spatial(
             "g",
-            SpatialPredicate::DWithin { distance_meters: 10_000.0 },
+            SpatialPredicate::DWithin {
+                distance_meters: 10_000.0,
+            },
             reference.clone(),
         ))
         .order_by("id", Direction::Asc)

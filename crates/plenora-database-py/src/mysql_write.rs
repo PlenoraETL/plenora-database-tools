@@ -13,7 +13,7 @@
     clippy::future_not_send,
     clippy::significant_drop_tightening,
     clippy::redundant_pub_crate,
-    clippy::too_many_arguments,
+    clippy::too_many_arguments
 )]
 
 use crate::runtime;

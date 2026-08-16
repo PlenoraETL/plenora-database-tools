@@ -28,16 +28,28 @@ use pyo3::prelude::*;
 // Base + sottoclassi. Il modulo dichiarato deve essere `plenora_database._native`
 // per corrispondere al pymodule di lib.rs.
 create_exception!(plenora_database._native, PlenoraError, PyRuntimeError);
-create_exception!(plenora_database._native, PlenoraInvalidPlanError, PlenoraError);
+create_exception!(
+    plenora_database._native,
+    PlenoraInvalidPlanError,
+    PlenoraError
+);
 create_exception!(
     plenora_database._native,
     PlenoraInvalidConfigurationError,
     PlenoraError
 );
 create_exception!(plenora_database._native, PlenoraSchemaError, PlenoraError);
-create_exception!(plenora_database._native, PlenoraDataMappingError, PlenoraError);
+create_exception!(
+    plenora_database._native,
+    PlenoraDataMappingError,
+    PlenoraError
+);
 create_exception!(plenora_database._native, PlenoraCrsError, PlenoraError);
-create_exception!(plenora_database._native, PlenoraUnsupportedError, PlenoraError);
+create_exception!(
+    plenora_database._native,
+    PlenoraUnsupportedError,
+    PlenoraError
+);
 create_exception!(plenora_database._native, PlenoraNotFoundError, PlenoraError);
 create_exception!(plenora_database._native, PlenoraConflictError, PlenoraError);
 create_exception!(
@@ -56,7 +68,11 @@ create_exception!(
     PlenoraError
 );
 create_exception!(plenora_database._native, PlenoraTimeoutError, PlenoraError);
-create_exception!(plenora_database._native, PlenoraCancelledError, PlenoraError);
+create_exception!(
+    plenora_database._native,
+    PlenoraCancelledError,
+    PlenoraError
+);
 create_exception!(
     plenora_database._native,
     PlenoraResourceLimitError,
@@ -64,8 +80,16 @@ create_exception!(
 );
 create_exception!(plenora_database._native, PlenoraIoError, PlenoraError);
 create_exception!(plenora_database._native, PlenoraProtocolError, PlenoraError);
-create_exception!(plenora_database._native, PlenoraTransientError, PlenoraError);
-create_exception!(plenora_database._native, PlenoraExecutionError, PlenoraError);
+create_exception!(
+    plenora_database._native,
+    PlenoraTransientError,
+    PlenoraError
+);
+create_exception!(
+    plenora_database._native,
+    PlenoraExecutionError,
+    PlenoraError
+);
 create_exception!(plenora_database._native, PlenoraInternalError, PlenoraError);
 // PFM CHG-004: eccezione dedicata per commit con esito incerto.
 // Il consumer che vuole discriminare recovery/quarantine dalla generica
@@ -79,17 +103,35 @@ create_exception!(
 /// Registra tutte le classi di eccezione nel pymodule.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PlenoraError", m.py().get_type::<PlenoraError>())?;
-    m.add("PlenoraInvalidPlanError", m.py().get_type::<PlenoraInvalidPlanError>())?;
+    m.add(
+        "PlenoraInvalidPlanError",
+        m.py().get_type::<PlenoraInvalidPlanError>(),
+    )?;
     m.add(
         "PlenoraInvalidConfigurationError",
         m.py().get_type::<PlenoraInvalidConfigurationError>(),
     )?;
-    m.add("PlenoraSchemaError", m.py().get_type::<PlenoraSchemaError>())?;
-    m.add("PlenoraDataMappingError", m.py().get_type::<PlenoraDataMappingError>())?;
+    m.add(
+        "PlenoraSchemaError",
+        m.py().get_type::<PlenoraSchemaError>(),
+    )?;
+    m.add(
+        "PlenoraDataMappingError",
+        m.py().get_type::<PlenoraDataMappingError>(),
+    )?;
     m.add("PlenoraCrsError", m.py().get_type::<PlenoraCrsError>())?;
-    m.add("PlenoraUnsupportedError", m.py().get_type::<PlenoraUnsupportedError>())?;
-    m.add("PlenoraNotFoundError", m.py().get_type::<PlenoraNotFoundError>())?;
-    m.add("PlenoraConflictError", m.py().get_type::<PlenoraConflictError>())?;
+    m.add(
+        "PlenoraUnsupportedError",
+        m.py().get_type::<PlenoraUnsupportedError>(),
+    )?;
+    m.add(
+        "PlenoraNotFoundError",
+        m.py().get_type::<PlenoraNotFoundError>(),
+    )?;
+    m.add(
+        "PlenoraConflictError",
+        m.py().get_type::<PlenoraConflictError>(),
+    )?;
     m.add(
         "PlenoraConcurrentModificationError",
         m.py().get_type::<PlenoraConcurrentModificationError>(),
@@ -102,14 +144,35 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "PlenoraAuthorizationError",
         m.py().get_type::<PlenoraAuthorizationError>(),
     )?;
-    m.add("PlenoraTimeoutError", m.py().get_type::<PlenoraTimeoutError>())?;
-    m.add("PlenoraCancelledError", m.py().get_type::<PlenoraCancelledError>())?;
-    m.add("PlenoraResourceLimitError", m.py().get_type::<PlenoraResourceLimitError>())?;
+    m.add(
+        "PlenoraTimeoutError",
+        m.py().get_type::<PlenoraTimeoutError>(),
+    )?;
+    m.add(
+        "PlenoraCancelledError",
+        m.py().get_type::<PlenoraCancelledError>(),
+    )?;
+    m.add(
+        "PlenoraResourceLimitError",
+        m.py().get_type::<PlenoraResourceLimitError>(),
+    )?;
     m.add("PlenoraIoError", m.py().get_type::<PlenoraIoError>())?;
-    m.add("PlenoraProtocolError", m.py().get_type::<PlenoraProtocolError>())?;
-    m.add("PlenoraTransientError", m.py().get_type::<PlenoraTransientError>())?;
-    m.add("PlenoraExecutionError", m.py().get_type::<PlenoraExecutionError>())?;
-    m.add("PlenoraInternalError", m.py().get_type::<PlenoraInternalError>())?;
+    m.add(
+        "PlenoraProtocolError",
+        m.py().get_type::<PlenoraProtocolError>(),
+    )?;
+    m.add(
+        "PlenoraTransientError",
+        m.py().get_type::<PlenoraTransientError>(),
+    )?;
+    m.add(
+        "PlenoraExecutionError",
+        m.py().get_type::<PlenoraExecutionError>(),
+    )?;
+    m.add(
+        "PlenoraInternalError",
+        m.py().get_type::<PlenoraInternalError>(),
+    )?;
     m.add(
         "PlenoraCommitOutcomeUnknownError",
         m.py().get_type::<PlenoraCommitOutcomeUnknownError>(),

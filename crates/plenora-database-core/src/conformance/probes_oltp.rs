@@ -4,9 +4,9 @@
 use super::{Capability, CapabilityEvidence, APPLICATION_OLTP_V1};
 use crate::provider::{ParameterValue, Provider, SecretString};
 use crate::resource::{ResourceBudget, ResourceLimits};
+use crate::session_context::{SessionEntry, SessionValue};
 use crate::transaction::{IsolationLevel, Statement, TransactionOptions};
 use crate::CancellationToken;
-use crate::session_context::{SessionEntry, SessionValue};
 
 pub async fn probe_application_oltp_v1(
     provider: &dyn Provider,
@@ -48,7 +48,10 @@ pub async fn probe_application_oltp_v1(
     // --- OltpFacadeQueryOne
     match probe_facade_query_one(provider, secret, &budget, cancellation).await {
         Ok(()) => evidence.push(CapabilityEvidence::verified(Capability::OltpFacadeQueryOne)),
-        Err(e) => evidence.push(CapabilityEvidence::failed(Capability::OltpFacadeQueryOne, e)),
+        Err(e) => evidence.push(CapabilityEvidence::failed(
+            Capability::OltpFacadeQueryOne,
+            e,
+        )),
     }
 
     // --- Savepoints
@@ -59,8 +62,13 @@ pub async fn probe_application_oltp_v1(
 
     // --- OptimisticConcurrency (assertion: no-op UPDATE non deve applicare)
     match probe_optimistic(provider, secret, &budget, cancellation).await {
-        Ok(()) => evidence.push(CapabilityEvidence::verified(Capability::OptimisticConcurrency)),
-        Err(e) => evidence.push(CapabilityEvidence::failed(Capability::OptimisticConcurrency, e)),
+        Ok(()) => evidence.push(CapabilityEvidence::verified(
+            Capability::OptimisticConcurrency,
+        )),
+        Err(e) => evidence.push(CapabilityEvidence::failed(
+            Capability::OptimisticConcurrency,
+            e,
+        )),
     }
 
     // --- SessionContext
@@ -83,9 +91,18 @@ pub async fn probe_application_oltp_v1(
 
     // --- Isolation levels
     for (cap, level) in [
-        (Capability::IsolationReadCommitted, IsolationLevel::ReadCommitted),
-        (Capability::IsolationRepeatableRead, IsolationLevel::RepeatableRead),
-        (Capability::IsolationSerializable, IsolationLevel::Serializable),
+        (
+            Capability::IsolationReadCommitted,
+            IsolationLevel::ReadCommitted,
+        ),
+        (
+            Capability::IsolationRepeatableRead,
+            IsolationLevel::RepeatableRead,
+        ),
+        (
+            Capability::IsolationSerializable,
+            IsolationLevel::Serializable,
+        ),
     ] {
         match probe_isolation(provider, secret, &budget, cancellation, level).await {
             Ok(()) => evidence.push(CapabilityEvidence::verified(cap)),
@@ -154,13 +171,10 @@ async fn probe_facade_scalar(
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
-    let v = crate::facade::execute_scalar_i64(
-        tx.as_mut(),
-        &Statement::new("SELECT 7::BIGINT"),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("scalar: {}", e.message))?;
+    let v =
+        crate::facade::execute_scalar_i64(tx.as_mut(), &Statement::new("SELECT 7::BIGINT"), cancel)
+            .await
+            .map_err(|e| format!("scalar: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
     if v == 7 {
         Ok(())
@@ -179,13 +193,9 @@ async fn probe_facade_query_one(
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
-    let row = crate::facade::query_one(
-        tx.as_mut(),
-        &Statement::new("SELECT 'ok'::TEXT"),
-        cancel,
-    )
-    .await
-    .map_err(|e| format!("query_one: {}", e.message))?;
+    let row = crate::facade::query_one(tx.as_mut(), &Statement::new("SELECT 'ok'::TEXT"), cancel)
+        .await
+        .map_err(|e| format!("query_one: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
     if row.len() == 1 {
         Ok(())
@@ -229,22 +239,21 @@ async fn probe_optimistic(
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
     tx.execute(
-        &Statement::new(
-            "CREATE TEMP TABLE _probe_oc (id INT PRIMARY KEY, v INT) ON COMMIT DROP",
-        ),
+        &Statement::new("CREATE TEMP TABLE _probe_oc (id INT PRIMARY KEY, v INT) ON COMMIT DROP"),
         cancel,
     )
     .await
     .map_err(|e| format!("temp: {}", e.message))?;
-    tx.execute(&Statement::new("INSERT INTO _probe_oc VALUES (1, 100)"), cancel)
-        .await
-        .map_err(|e| format!("insert: {}", e.message))?;
+    tx.execute(
+        &Statement::new("INSERT INTO _probe_oc VALUES (1, 100)"),
+        cancel,
+    )
+    .await
+    .map_err(|e| format!("insert: {}", e.message))?;
 
     // Update con expected_version errata: attendo ConcurrentModification.
-    let update = Statement::new(
-        "UPDATE _probe_oc SET v = v + 1 WHERE id = $1 AND v = $2",
-    )
-    .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(999)]);
+    let update = Statement::new("UPDATE _probe_oc SET v = v + 1 WHERE id = $1 AND v = $2")
+        .with_params(vec![ParameterValue::I32(1), ParameterValue::I32(999)]);
     let probe = Statement::new("SELECT 1 FROM _probe_oc WHERE id = $1")
         .with_params(vec![ParameterValue::I32(1)]);
     let request = ConditionalUpdate {
@@ -256,7 +265,10 @@ async fn probe_optimistic(
     let _ = tx.rollback(cancel).await;
     match outcome {
         Err(err) if err.category == crate::ErrorCategory::ConcurrentModification => Ok(()),
-        Err(other) => Err(format!("atteso ConcurrentModification, ottenuto {:?}", other.category)),
+        Err(other) => Err(format!(
+            "atteso ConcurrentModification, ottenuto {:?}",
+            other.category
+        )),
         Ok(()) => Err("update no-op non ha prodotto errore".to_owned()),
     }
 }

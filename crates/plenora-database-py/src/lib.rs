@@ -86,11 +86,7 @@ pub fn geographic_srids() -> Vec<u32> {
 /// `PyValueError` se `dimensions` non è una stringa valida oppure se
 /// l'EWKB non è consistente col SRID / dimensioni dichiarate.
 #[pyfunction]
-pub fn validate_ewkb_reference(
-    ewkb: &[u8],
-    srid: u32,
-    dimensions: &str,
-) -> PyResult<()> {
+pub fn validate_ewkb_reference(ewkb: &[u8], srid: u32, dimensions: &str) -> PyResult<()> {
     use plenora_database_core::geometry::Dimensions;
     use pyo3::exceptions::PyValueError;
 
