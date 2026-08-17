@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scoperta della rete Compose di un container di riferimento.
+"""Cio che un container di riferimento sa di se: rete, volumi, ambiente.
 
 I compose del repository dichiarano ciascuno il proprio progetto
 (`docker-compose.*.yml`, campo `name:`), quindi la rete si chiama
@@ -8,7 +8,14 @@ nome a mano si rompe in silenzio al primo rename: il container esiste, la rete
 esiste, ma il contenitore del gate finisce su un'altra rete e ogni connessione
 fallisce con un errore di trasporto che non nomina la causa.
 
-La rete si chiede a Docker, come gia fanno i due gate di riferimento.
+Lo stesso vale per le credenziali della fixture. Ricopiarle nel runner crea
+due fonti per un dato che ne ha una — il compose — e le due divergono senza
+rumore: al primo cambio di password il gate fallisce in autenticazione, cioe
+con l'errore di un server configurato male invece che di un runner stale. E
+mette una password in chiaro in un file in piu, per ogni runner che la
+ricopia.
+
+Rete, volumi e ambiente si chiedono a Docker, con la stessa `docker inspect`.
 """
 
 from __future__ import annotations
@@ -134,6 +141,46 @@ def compose_volume(container: str, destination: str) -> str:
     raise RuntimeError(
         f"container {container} non monta un volume nominato in {destination}"
     )
+
+
+def container_environment(container: str) -> dict[str, str]:
+    """Le variabili d'ambiente con cui il container e stato avviato.
+
+    Sono quelle del compose: e da li che arrivano utente, database e password
+    della fixture.
+    """
+
+    entries = json.loads(_inspect(container, "{{json .Config.Env}}"))
+    environment: dict[str, str] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        name, separator, value = str(entry).partition("=")
+        if separator:
+            environment[name] = value
+    return environment
+
+
+def container_variable(container: str, variable: str) -> str:
+    """Il valore di `variable` nel container **in esecuzione**.
+
+    E l'unico modo di ottenere una credenziale della fixture senza scriverne
+    una seconda copia: il compose la dichiara, il container la porta, il
+    runner la legge. Se il compose cambia, il gate cambia con lui.
+
+    # Raises
+
+    `RuntimeError` quando la variabile manca o e vuota. Vuota e il caso
+    insidioso: proseguire produrrebbe un tentativo di autenticazione senza
+    password, e l'errore parlerebbe di credenziali sbagliate invece che di
+    una fixture avviata in modo diverso da come il gate la assume.
+    """
+
+    value = container_environment(container).get(variable)
+    if not value:
+        raise RuntimeError(
+            f"variabile {variable} assente o vuota nel container {container}: "
+            "la fixture non e quella che il gate assume"
+        )
+    return value
 
 
 if __name__ == "__main__":

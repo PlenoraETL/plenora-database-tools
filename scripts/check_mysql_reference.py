@@ -22,7 +22,11 @@ from pathlib import Path
 # radice del repository deve restare importabile in entrambi i casi.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.compose_network import compose_network, compose_volume  # noqa: E402
+from scripts.compose_network import (  # noqa: E402
+    compose_network,
+    compose_volume,
+    container_variable,
+)
 from scripts.mysql_inventory import (  # noqa: E402
     collect as collect_inventory,
     difference as inventory_difference,
@@ -293,16 +297,13 @@ def docker_value(arguments: list[str]) -> str:
 
 
 def fixture_password() -> str:
-    environment = json.loads(
-        docker_value(["inspect", "--format", "{{json .Config.Env}}", CONTAINER])
-    )
-    prefix = "MYSQL_PASSWORD="
-    for entry in environment:
-        if entry.startswith(prefix):
-            password = entry.removeprefix(prefix)
-            if password:
-                return password
-    raise RuntimeError("password utente fixture MySQL assente")
+    """La password della fixture, letta dal container che la porta.
+
+    Una copia nel sorgente sarebbe una seconda fonte per un dato che ne ha
+    una sola — il compose — e le due divergerebbero in silenzio.
+    """
+
+    return container_variable(CONTAINER, "MYSQL_PASSWORD")
 
 
 def mysql_value(statement: str) -> str:

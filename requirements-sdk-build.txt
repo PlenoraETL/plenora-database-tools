@@ -1,0 +1,13 @@
+# Toolchain di build del wheel del SDK Python (`scripts/check_sdk_tests.py`).
+#
+# La versione e fissata, non risolta: `pip install maturin` prende l'ultima
+# pubblicata, quindi due esecuzioni dello stesso commit possono costruire con
+# due maturin diverse e produrre due wheel diversi. Un verdetto che dichiara
+# l'artefatto e poi non sa dire con cosa e stato prodotto documenta meta' dei
+# fatti.
+#
+# Il pin deve stare dentro `requires = ["maturin>=1.7,<2.0"]` di
+# `crates/plenora-database-py/pyproject.toml`: il runner lo verifica prima di
+# avviare il container, perche una build con una maturin fuori dal vincolo
+# dichiarato non e la build che il pacchetto descrive.
+maturin==1.14.1

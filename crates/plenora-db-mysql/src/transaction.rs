@@ -120,10 +120,19 @@ impl MysqlTransaction {
         //    vuoto. A sbloccarlo e stata la delega al core, non il quoting.
         //
         //    I backtick restano perche un nome di variabile utente accetta
-        //    piu caratteri di quanti il core ne ammetta oggi (`$`, per dire):
-        //    quotare rende la resa indipendente da come quella regola
-        //    evolvera. Verificato che senza backtick il server accetta
-        //    ugualmente `@plenora_ctx_app.tenant`.
+        //    piu caratteri di quanti il core ne ammetta oggi (`$`, per dire).
+        //    Ma non rendono la resa indipendente da quella regola, ed e
+        //    l'affermazione da correggere: qui il backtick nel nome non
+        //    viene raddoppiato, quindi una chiave che ne contenesse uno
+        //    chiuderebbe la quotatura invece di finirci dentro. A impedirlo
+        //    e `validate_context_keys`, che delega al core: oggi il core
+        //    ammette `namespace.name` con soli `[a-z0-9_]`, e nessuna chiave
+        //    valida contiene un backtick. La sicurezza di questa `format!`
+        //    dipende da quella validazione: se il core allargasse la regola,
+        //    qui servirebbe il raddoppio.
+        //
+        //    Verificato che senza backtick il server accetta ugualmente
+        //    `@plenora_ctx_app.tenant`.
         for (name, entry) in options.context.iter() {
             let value = entry.value.as_provider_string();
             let sql = format!(
@@ -167,6 +176,10 @@ fn is_safe_context_name(name: &str) -> bool {
 }
 
 /// Verifica ogni chiave di context prima che parta un solo statement.
+///
+/// E anche cio che rende sana la quotatura del nome in `begin`: quel
+/// `format!` non raddoppia i backtick, quindi e questa validazione — non la
+/// quotatura — a garantire che nessuna chiave possa chiudere la resa.
 ///
 /// # Errors
 ///

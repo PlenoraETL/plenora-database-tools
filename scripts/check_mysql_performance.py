@@ -24,6 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.compose_network import container_variable  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
@@ -187,21 +190,13 @@ def mysql_network() -> str:
 
 
 def fixture_password() -> str:
-    completed = subprocess.run(
-        ["docker", "inspect", "--format", "{{json .Config.Env}}", CONTAINER],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
-    if completed.returncode:
-        raise RuntimeError("interrogazione ambiente container MySQL fallita")
-    prefix = "MYSQL_PASSWORD="
-    for entry in json.loads(completed.stdout):
-        if entry.startswith(prefix) and entry.removeprefix(prefix):
-            return entry.removeprefix(prefix)
-    raise RuntimeError("password utente fixture MySQL assente")
+    """La password della fixture, letta dal container che la porta.
+
+    Stessa fonte del gate di riferimento: il compose. Ricopiarla qui
+    creerebbe una terza copia da tenere allineata a mano.
+    """
+
+    return container_variable(CONTAINER, "MYSQL_PASSWORD")
 
 
 def mysql_tls_volume() -> str:

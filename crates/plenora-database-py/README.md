@@ -350,8 +350,9 @@ versioni Python ≥ 3.10.
 ### Test
 
 ```bash
-python scripts/check_sdk_tests.py             # Postgres + MySQL live
-python scripts/check_sdk_tests.py --offline   # solo i test senza server
+python scripts/check_sdk_tests.py                  # Postgres + MySQL live
+python scripts/check_sdk_tests.py --offline        # solo i test senza server
+python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
 ```
 
 Il runner ricostruisce **sempre** il modulo nativo con `maturin` prima di
@@ -363,15 +364,32 @@ prima e risponde su codice che non e quello scritto — rosso su codice
 corretto, o verde su codice rotto. E successo due volte in una sola
 sessione, e le due correzioni sembravano entrambe sbagliate.
 
-Reti Compose e volume della CA MySQL vengono chiesti a Docker dal runner,
-non scritti a mano: valgono anche in un worktree con un altro progetto
-Compose.
+Reti Compose, volume della CA MySQL e **credenziali** dei riferimenti
+vengono chiesti a Docker dal runner, non scritti a mano: valgono anche in
+un worktree con un altro progetto Compose, e non esiste una seconda copia
+della password da tenere allineata al compose.
+
+L'ambiente e fissato: `requirements-sdk-build.txt` per `maturin` — dentro
+il vincolo dichiarato da `pyproject.toml`, che il runner verifica — e
+`requirements-sdk-tests.txt` per la chiusura completa delle dipendenze di
+test. Il runner confronta i pin con il `pip freeze` del container e
+fallisce se divergono.
+
+Il verdetto JSON identifica cio che ha girato: commit, SHA-256 del wheel e
+del modulo nativo estratto, versioni effettive di Python, maturin, pyarrow,
+pandas e pytest. Il nome del wheel da solo non identifica un artefatto — e
+lo stesso a ogni build. Il runner verifica inoltre che ne' la build ne' i
+test abbiano modificato un file tracciato.
 
 ### Benchmark opt-in
 
 I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
-e gia impostato). Per lanciarli da soli serve comunque un'estensione
-appena costruita: usare il runner e filtrare con `-k benchmark`.
+e gia impostato). Per lanciarli da soli, sempre su un'estensione appena
+costruita, c'e l'opzione dedicata:
+
+```bash
+python scripts/check_sdk_tests.py --benchmark-only
+```
 
 ### Struttura
 

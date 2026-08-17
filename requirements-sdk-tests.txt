@@ -1,0 +1,26 @@
+# Ambiente della suite SDK Python (`scripts/check_sdk_tests.py`).
+#
+# Chiusura completa, non solo le quattro dipendenze dirette: `numpy` e
+# `python-dateutil` arrivano con `pandas`, e lasciarle risolvere significa
+# che la stessa suite gira su versioni diverse a distanza di un giorno. La
+# normalizzazione Arrow dipende proprio da quelle versioni — e stato un
+# `large_string` prodotto da `pandas` 3 con `pyarrow` 25 a far fallire
+# `copy_from` — quindi il verdetto deve poter nominare cio che ha girato.
+#
+# Il runner confronta questi pin con il `pip freeze` del container e fallisce
+# se divergono: un pin che nessuno installa e una dichiarazione, non un
+# vincolo.
+#
+# Aggiornamento: cambiare la versione qui, rieseguire il runner live e
+# offline, e registrare il nuovo verdetto.
+iniconfig==2.3.0
+numpy==2.5.2
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+pyarrow==25.0.1
+Pygments==2.20.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dateutil==2.9.0.post0
+six==1.17.0

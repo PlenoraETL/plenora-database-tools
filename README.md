@@ -153,9 +153,10 @@ Il comando valida la versione del contratto e i metadati canonici nel core,
 ispeziona ogni cella WKB/EWKB con limiti hard e produce un singolo JSON su
 stdout. Un conflitto fra rappresentazioni CRS termina con codice non zero.
 
-Le dipendenze del solo tooling Python sono congelate in
-`requirements-phase0.txt`. Non sono dipendenze runtime della futura libreria
-Rust.
+Le dipendenze del solo tooling Python sono congelate: `requirements-phase0.txt`
+per l'harness di fase 0, `requirements-sdk-build.txt` (maturin) e
+`requirements-sdk-tests.txt` (chiusura completa della suite) per il runner del
+SDK Python. Non sono dipendenze runtime della libreria Rust.
 
 ## Regola sui segreti
 

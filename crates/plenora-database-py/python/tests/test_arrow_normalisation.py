@@ -148,19 +148,33 @@ def test_struct_of_large_utf8_is_narrowed() -> None:
 def test_a_range_shaped_struct_keeps_its_field_names_and_nullability() -> None:
     """La forma dei `range` PostgreSQL attraversa l'adapter intatta.
 
-    `lower`/`upper` sono testuali e nullable, i flag booleani e non nullable:
-    se la conversione ricostruisse i campi con i default, il writer
-    riceverebbe una struct diversa da quella che sa leggere.
+    Sono **sette** campi, quelli che `range_fields()` costruisce nel lettore
+    PostgreSQL: `lower`/`upper` testuali e nullable, e cinque flag booleani
+    non nullable. I due `*_unbounded` distinguono un estremo aperto da un
+    estremo nullo, che nella struct si presentano identici — `lower` a
+    `None` — e senza di loro il test fissava una forma che il writer non
+    riceve mai.
+
+    Il campo esterno porta la propria nullability e i propri metadata: e
+    dalla dichiarazione nativa nei metadata che il writer sa quale tipo
+    `range` sta scrivendo, e ricostruire il campo con i default la
+    perderebbe in silenzio.
     """
 
+    declaration = {b"plenora.postgres.native_declaration": b"tstzrange"}
     fields = [
         pyarrow.field("lower", pyarrow.large_string(), nullable=True),
         pyarrow.field("upper", pyarrow.large_string(), nullable=True),
         pyarrow.field("lower_inclusive", pyarrow.bool_(), nullable=False),
         pyarrow.field("upper_inclusive", pyarrow.bool_(), nullable=False),
+        pyarrow.field("lower_unbounded", pyarrow.bool_(), nullable=False),
+        pyarrow.field("upper_unbounded", pyarrow.bool_(), nullable=False),
         pyarrow.field("empty", pyarrow.bool_(), nullable=False),
     ]
     struct_type = pyarrow.struct(fields)
+    column = pyarrow.field(
+        "periodo", struct_type, nullable=False, metadata=declaration
+    )
     table = pyarrow.table(
         {
             "periodo": pyarrow.array(
@@ -170,29 +184,56 @@ def test_a_range_shaped_struct_keeps_its_field_names_and_nullability() -> None:
                         "upper": "2026-12-31",
                         "lower_inclusive": True,
                         "upper_inclusive": False,
+                        "lower_unbounded": False,
+                        "upper_unbounded": False,
                         "empty": False,
-                    }
+                    },
+                    {
+                        # Estremo superiore aperto: `upper` e nullo **e**
+                        # `upper_unbounded` e vero. Solo il flag distingue
+                        # questo caso da un valore mancante.
+                        "lower": "2026-01-01",
+                        "upper": None,
+                        "lower_inclusive": True,
+                        "upper_inclusive": False,
+                        "lower_unbounded": False,
+                        "upper_unbounded": True,
+                        "empty": False,
+                    },
                 ],
                 struct_type,
             )
         },
-        schema=pyarrow.schema([pyarrow.field("periodo", struct_type)]),
+        schema=pyarrow.schema([column]),
     )
 
     narrowed, data = roundtrip(table)
-    converted = narrowed.field("periodo").type
+    outer = narrowed.field("periodo")
+    assert outer.nullable is False
+    assert outer.metadata == declaration
+
+    converted = outer.type
     assert [converted.field(i).name for i in range(converted.num_fields)] == [
         "lower",
         "upper",
         "lower_inclusive",
         "upper_inclusive",
+        "lower_unbounded",
+        "upper_unbounded",
         "empty",
     ]
-    assert converted.field(0).type == pyarrow.string()
-    assert converted.field(0).nullable is True
-    assert converted.field(2).type == pyarrow.bool_()
-    assert converted.field(2).nullable is False
-    assert data.column("periodo").to_pylist()[0]["lower"] == "2026-01-01"
+    for index in (0, 1):
+        assert converted.field(index).type == pyarrow.string()
+        assert converted.field(index).nullable is True
+    for index in range(2, converted.num_fields):
+        assert converted.field(index).type == pyarrow.bool_()
+        assert converted.field(index).nullable is False
+
+    rows = data.column("periodo").to_pylist()
+    assert rows[0]["lower"] == "2026-01-01"
+    assert rows[0]["upper_unbounded"] is False
+    assert rows[1]["upper"] is None
+    assert rows[1]["upper_unbounded"] is True
 
 
 def test_a_composite_struct_keeps_the_native_declaration_metadata() -> None:

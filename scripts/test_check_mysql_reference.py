@@ -32,6 +32,13 @@ if SPEC is None or SPEC.loader is None:
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
+SDK_RUNNER = ROOT / "scripts" / "check_sdk_tests.py"
+SDK_SPEC = importlib.util.spec_from_file_location("sdk_gate", SDK_RUNNER)
+if SDK_SPEC is None or SDK_SPEC.loader is None:
+    raise RuntimeError("runner della suite SDK non importabile")
+sdk = importlib.util.module_from_spec(SDK_SPEC)
+SDK_SPEC.loader.exec_module(sdk)
+
 from scripts import compose_network as compose_network_module  # noqa: E402
 from scripts.mysql_inventory import collect  # noqa: E402
 from scripts.mysql_references import (  # noqa: E402
@@ -1784,6 +1791,249 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         for entry in MATRIX:
             self.assertIn(entry.digest, document)
             self.assertIn(entry.exact_version, document)
+
+
+# Le credenziali che i compose dichiarano per i due riferimenti che la suite
+# SDK interroga. Sono esattamente quelle che il runner deve **chiedere ai
+# container**, e quelle che non deve contenere.
+SDK_FIXTURE_VARIABLES = {
+    "dataflow-postgres": ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"),
+    "dataflow-mysql": ("MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"),
+}
+
+
+def compose_declarations(pattern: str) -> list[str]:
+    """I valori dichiarati dai compose per le chiavi che `pattern` nomina."""
+
+    values: list[str] = []
+    for compose in sorted(ROOT.glob("docker-compose.*.yml")):
+        for line in compose.read_text(encoding="utf-8").splitlines():
+            match = re.match(rf"^\s*({pattern}):\s*(\S.*)$", line)
+            if match:
+                values.append(match.group(2).strip().strip('"').strip("'"))
+    return values
+
+
+class PythonSdkRunnerTests(unittest.TestCase):
+    """`scripts/check_sdk_tests.py`: cosa costruisce, con cosa, e cosa dichiara.
+
+    Il runner e l'unico modo supportato di eseguire la suite SDK, quindi
+    quello che promette deve essere verificabile: l'ambiente riproducibile,
+    l'artefatto identificato, e nessuna credenziale ricopiata dentro.
+    """
+
+    def test_the_runner_copies_no_fixture_credential(self) -> None:
+        """Nessun literal della fixture nel sorgente del runner.
+
+        Una password ricopiata e una seconda fonte per un dato che ne ha una
+        sola: al primo cambio del compose il gate fallisce in autenticazione,
+        cioe con l'errore di un server configurato male invece che di un
+        runner stale. Vale anche per utente e database, che identificano la
+        fixture tanto quanto la password.
+        """
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        # I nomi dei container **sono** nel runner, per costruzione: sono
+        # l'indirizzo a cui chiedere il resto. Vanno tolti prima di cercare
+        # i valori, perche li contengono come sottostringa.
+        for name in compose_declarations("container_name"):
+            source = source.replace(name, "<container>")
+        values = compose_declarations(
+            "POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB"
+            "|MYSQL_USER|MYSQL_PASSWORD|MYSQL_DATABASE"
+        )
+        # Senza questa riga la guardia passerebbe anche a mani vuote: un
+        # compose rinominato, e il ciclo sotto non gira nemmeno una volta.
+        self.assertGreaterEqual(
+            len(values), 6, "i compose non dichiarano piu le credenziali attese"
+        )
+        for value in values:
+            self.assertNotIn(
+                value,
+                source,
+                "il runner ricopia una credenziale della fixture invece di "
+                "chiederla al container",
+            )
+
+    def test_the_runner_reads_both_references_from_their_containers(self) -> None:
+        asked: list[tuple[str, str]] = []
+
+        def observed(container: str, variable: str) -> str:
+            asked.append((container, variable))
+            return f"<{variable}>"
+
+        with patch.object(sdk, "container_variable", side_effect=observed):
+            environment = sdk.live_environment()
+
+        expected = {
+            (container, variable)
+            for container, variables in SDK_FIXTURE_VARIABLES.items()
+            for variable in variables
+        }
+        self.assertEqual(set(asked), expected)
+        joined = " ".join(environment)
+        self.assertIn("password=<POSTGRES_PASSWORD>", joined)
+        self.assertIn("dbname=<POSTGRES_DB>", joined)
+        self.assertIn("PLENORA_TEST_MYSQL_PASSWORD=<MYSQL_PASSWORD>", joined)
+        self.assertIn("PLENORA_TEST_MYSQL_DATABASE=<MYSQL_DATABASE>", joined)
+
+    def test_the_offline_scope_asks_the_references_nothing(self) -> None:
+        """Senza server non si chiedono ne reti ne credenziali."""
+
+        def refuse(*_args: object, **_kwargs: object) -> str:
+            raise AssertionError("scope offline: nessuna domanda ai riferimenti")
+
+        with (
+            patch.object(sdk, "container_variable", side_effect=refuse),
+            patch.object(sdk, "compose_network_arguments", side_effect=refuse),
+            patch.object(sdk, "compose_volume", side_effect=refuse),
+        ):
+            command = sdk.pytest_command(scope="offline")
+
+        self.assertNotIn("--network", command)
+        self.assertNotIn("-e", command)
+
+    def test_the_build_is_locked_and_pins_a_maturin_the_package_declares(
+        self,
+    ) -> None:
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertIn("maturin build --release --locked", source)
+
+        pyproject = (
+            ROOT / "crates" / "plenora-database-py" / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+        requirements = (ROOT / "requirements-sdk-build.txt").read_text(
+            encoding="utf-8"
+        )
+        pinned = sdk.validate_maturin_pin(pyproject, requirements)
+        self.assertEqual(sdk.pinned_versions(requirements)["maturin"], pinned)
+
+        # E il vincolo del pacchetto a comandare, in entrambe le direzioni.
+        for outside in ("maturin==1.6.0", "maturin==2.0.0"):
+            with self.assertRaises(RuntimeError):
+                sdk.validate_maturin_pin(pyproject, outside)
+
+    def test_the_suite_environment_is_pinned_and_checked_against_the_container(
+        self,
+    ) -> None:
+        """I pin dichiarati devono essere quelli installati, tutti e soli.
+
+        Un pin che nessuno installa e una dichiarazione, non un vincolo: il
+        file resterebbe fermo mentre il container risolve tutt'altro, e il
+        verdetto registrerebbe versioni che nessuno ha imposto.
+        """
+
+        requirements = ROOT / "requirements-sdk-tests.txt"
+        self.assertIn(
+            f"pip install -q -r /workspace/{requirements.name}",
+            sdk.pytest_command(scope="offline")[-1],
+            "il container di test non installa dai pin versionati",
+        )
+
+        pins = sdk.pinned_versions(requirements.read_text(encoding="utf-8"))
+        for package in ("pytest", "pytest-asyncio", "pyarrow", "pandas"):
+            self.assertIn(package, pins)
+        sdk.validate_installed_pins(dict(pins))
+
+        with self.assertRaises(RuntimeError):
+            sdk.validate_installed_pins({**pins, "pyarrow": "1.0.0"})
+        with self.assertRaises(RuntimeError):
+            sdk.validate_installed_pins(
+                {name: version for name, version in pins.items() if name != "pandas"}
+            )
+        with self.assertRaises(RuntimeError):
+            sdk.validate_installed_pins({**pins, "requests": "2.32.0"})
+        with self.assertRaises(RuntimeError):
+            sdk.pinned_versions("pytest>=8.0")
+
+    def test_the_verdict_identifies_the_artifact_and_the_environment(self) -> None:
+        """Il nome del wheel non identifica nulla: e lo stesso a ogni build."""
+
+        artifact = {
+            "wheel": "plenora_database-0.9.2-cp310-abi3-linux_x86_64.whl",
+            "wheel_sha256": "a" * 64,
+            "native_sha256": "b" * 64,
+            "maturin": "1.14.1",
+        }
+        versions = {
+            "pandas": "3.0.5",
+            "pyarrow": "25.0.1",
+            "pytest": "9.1.1",
+            "pytest-asyncio": "1.4.0",
+            "python": "3.13.9",
+        }
+        recorded = sdk.verdict(
+            scope="live",
+            commit="c" * 40,
+            artifact=artifact,
+            versions=versions,
+            summary=" 231 passed, 4 skipped ",
+        )
+
+        self.assertEqual(recorded["git_commit"], "c" * 40)
+        self.assertEqual(recorded["artifact"]["wheel_sha256"], "a" * 64)
+        self.assertEqual(recorded["artifact"]["native_sha256"], "b" * 64)
+        self.assertEqual(recorded["pytest"], "231 passed, 4 skipped")
+        self.assertEqual(
+            set(recorded["versions"]),
+            {"maturin", "pandas", "pyarrow", "pytest", "pytest_asyncio", "python"},
+        )
+        self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
+
+    def test_a_tracked_file_touched_during_the_run_fails_the_gate(self) -> None:
+        """Build e test non riscrivono il repository che stanno verificando."""
+
+        before = {"crates/plenora-database-py/src/lib.rs": "M "}
+        with patch.object(sdk, "tracked_state", return_value=dict(before)):
+            sdk.assert_tracked_unchanged(before, "la build del wheel")
+
+        with patch.object(
+            sdk, "tracked_state", return_value={**before, "Cargo.lock": "M "}
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.assert_tracked_unchanged(before, "la build del wheel")
+        self.assertIn("Cargo.lock", str(raised.exception))
+        self.assertIn("la build del wheel", str(raised.exception))
+
+        # Entrambe le fasi vanno confrontate: una sola lascerebbe scoperta
+        # l'altra, ed e la corsa dei test quella che scrive file.
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertEqual(source.count("assert_tracked_unchanged(before,"), 2)
+
+    def test_the_benchmarks_have_an_option_instead_of_an_impossible_filter(
+        self,
+    ) -> None:
+        """Il runner non inoltra argomenti: il filtro deve essere suo.
+
+        La documentazione diceva di "usare il runner e filtrare con
+        `-k benchmark`", che non era eseguibile: il runner accetta le sue
+        opzioni e nient'altro.
+        """
+
+        with (
+            patch.object(sdk, "container_variable", return_value="x"),
+            patch.object(sdk, "compose_network_arguments", return_value=["--network", "n"]),
+            patch.object(sdk, "compose_volume", return_value="tls"),
+        ):
+            command = sdk.pytest_command(scope="benchmark")
+
+        self.assertIn("python/tests -k benchmark", command[-1])
+        self.assertIn("--network", command)
+        self.assertIn("-e", command)
+        self.assertTrue(
+            any("PLENORA_BENCH_PARITY=1" in argument for argument in command),
+            "i bench di parita sono opt-in: senza la variabile si saltano",
+        )
+
+        readme = (ROOT / "crates" / "plenora-database-py" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--benchmark-only", readme)
+        self.assertNotIn(
+            "-k benchmark",
+            readme,
+            "il README indica un filtro che il runner non accetta",
+        )
 
 
 if __name__ == "__main__":
