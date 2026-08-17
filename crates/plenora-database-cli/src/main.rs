@@ -1,14 +1,24 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use plenora_database_core::plan::{
-    ObjectRef, Operation, OrderBy, ProviderKind, ReadOperation, SortDirection,
-};
-use plenora_database_core::provider::{BatchStream, ParameterBag, Provider, SecretString};
+use plenora_database_core::plan::ProviderKind;
+#[cfg(feature = "postgres")]
+use plenora_database_core::plan::{ObjectRef, OrderBy, SortDirection};
+// Il percorso `postgres-read-ipc` e l'unico che pianifica una lettura e ne
+// misura il budget: fuori dalla feature questi nomi non hanno un chiamante.
+#[cfg(feature = "postgres")]
+use plenora_database_core::plan::{Operation, ReadOperation};
+use plenora_database_core::provider::{Provider, SecretString};
+// Lo streaming a batch esce solo dal percorso IPC.
+#[cfg(feature = "postgres")]
+use plenora_database_core::provider::BatchStream;
+#[cfg(feature = "postgres")]
+use plenora_database_core::provider::ParameterBag;
+#[cfg(feature = "postgres")]
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
+#[cfg(feature = "postgres")]
+use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
 use plenora_database_engine::parse_and_validate;
 #[cfg(feature = "mysql")]
 use plenora_db_mysql::{MysqlConfig, MysqlProvider};
@@ -19,12 +29,16 @@ use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
 use rustls::{pki_types::CertificateDer, RootCertStore};
 use serde_json::json;
 use std::env;
-use std::fs::{self, File, OpenOptions};
+#[cfg(feature = "postgres")]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+#[cfg(feature = "postgres")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "postgres")]
 use arrow_ipc::writer::FileWriter;
 
 #[tokio::main]
@@ -64,18 +78,27 @@ pub(crate) enum CliError {
     /// Fallimento logico già stampato dal sottocomando (es. doctor →
     /// `status: unhealthy`). Main emette solo exit=1 senza duplicare
     /// output. Fix review #10.
+    // Costruita da `diagnose`, che vive dietro la feature `postgres`. La
+    // variante resta nell'enum perche i suoi rami di `match` sono neutri:
+    // spostarla dietro la feature significherebbe cfg-are anche quelli.
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     Silent,
 }
 
 pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
+#[cfg(feature = "postgres")]
 static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(feature = "postgres")]
 const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
+#[cfg(feature = "postgres")]
 const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+#[cfg(feature = "postgres")]
 const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const TLS_MATERIAL_MAX_BYTES: u64 = 1024 * 1024;
 
+#[cfg(feature = "postgres")]
 struct IpcOptions {
     limits: ResourceLimits,
     order_by: Vec<OrderBy>,
@@ -97,6 +120,9 @@ impl CliError {
     }
 
     /// Accesso mutabile al `DatabaseError` sottostante. Panica per `Silent`.
+    // Serve al solo percorso IPC, che riscrive `remote_effect` dopo un
+    // fallimento di pubblicazione dell'artefatto locale.
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     fn database_error_mut(&mut self) -> &mut DatabaseError {
         match self {
             Self::Fatal(db_err) => db_err,
@@ -446,6 +472,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
     print_json(&report)
 }
 
+#[cfg(feature = "postgres")]
 fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOptions> {
     let mut limits = ResourceLimits {
         rows: IPC_DEFAULT_MAX_ROWS,
@@ -524,6 +551,7 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
     })
 }
 
+#[cfg(feature = "postgres")]
 fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
     let parsed = value
         .parse::<u64>()
@@ -534,6 +562,7 @@ fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
     Ok(parsed)
 }
 
+#[cfg(feature = "postgres")]
 async fn write_stream_to_ipc(
     output: &Path,
     stream: &mut dyn BatchStream,
@@ -634,6 +663,7 @@ async fn write_stream_to_ipc(
     }))
 }
 
+#[cfg(feature = "postgres")]
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> bool {
     File::open(parent)
@@ -641,6 +671,7 @@ fn sync_parent_directory(parent: &Path) -> bool {
         .is_ok()
 }
 
+#[cfg(feature = "postgres")]
 #[cfg(windows)]
 fn sync_parent_directory(parent: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
@@ -654,6 +685,7 @@ fn sync_parent_directory(parent: &Path) -> bool {
         .is_ok()
 }
 
+#[cfg(feature = "postgres")]
 fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)> {
     for _ in 0..100 {
         let sequence = IPC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -688,6 +720,7 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
     ))
 }
 
+#[cfg(feature = "postgres")]
 async fn write_ipc_batches(
     file: &mut File,
     stream: &mut dyn BatchStream,
@@ -766,6 +799,7 @@ async fn write_ipc_batches(
     Ok((batches, rows))
 }
 
+#[cfg(feature = "postgres")]
 fn local_artifact_error(
     category: ErrorCategory,
     phase: ErrorPhase,
@@ -785,6 +819,7 @@ fn local_artifact_error(
     })
 }
 
+#[cfg(feature = "postgres")]
 const fn object_ref(schema: String, object: String) -> ObjectRef {
     ObjectRef {
         catalog: None,
@@ -1084,6 +1119,7 @@ fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
 /// averlo indicato e non averla impostata e un errore del chiamante. Per i
 /// sottocomandi le variabili sono opzionali e la loro assenza e la
 /// configurazione di default, non un difetto.
+#[cfg(feature = "postgres")]
 fn optional_tls_path(env_name: &str) -> Option<PathBuf> {
     env::var_os(env_name)
         .filter(|value| !value.is_empty())
@@ -1096,6 +1132,7 @@ fn optional_tls_path(env_name: &str) -> Option<PathBuf> {
 ///
 /// Fallisce quando la variabile e impostata ma il percorso non e leggibile o
 /// eccede il limite di dimensione del materiale TLS.
+#[cfg(feature = "postgres")]
 pub(crate) fn optional_tls_material(env_name: &str) -> CliResult<Option<Vec<u8>>> {
     let Some(path) = optional_tls_path(env_name) else {
         return Ok(None);
@@ -1109,6 +1146,7 @@ pub(crate) fn optional_tls_material(env_name: &str) -> CliResult<Option<Vec<u8>>
 ///
 /// Fallisce quando la variabile e impostata ma il materiale non e una CA
 /// valida.
+#[cfg(feature = "postgres")]
 pub(crate) fn optional_private_ca_material(env_name: &str) -> CliResult<Option<Vec<u8>>> {
     let Some(path) = optional_tls_path(env_name) else {
         return Ok(None);
@@ -1223,6 +1261,7 @@ fn postgres_provider_for_probe() -> PostgresProvider {
 }
 
 #[cfg(test)]
+#[cfg(feature = "postgres")]
 fn legacy_postgres_probe_provider() -> PostgresProvider {
     postgres_provider_for_probe()
 }
@@ -1364,6 +1403,10 @@ mod benchmark;
 mod context;
 #[cfg(feature = "postgres")]
 mod diagnose;
+// Emette SQL PostgreSQL attraverso il provider PFM: sta dietro la feature,
+// mentre il parsing dei flag che lo governano resta in `safety`, neutro.
+#[cfg(feature = "postgres")]
+mod ephemeral_schema;
 mod format;
 #[cfg(feature = "postgres")]
 mod inspect;
@@ -1380,7 +1423,10 @@ mod safety;
 mod session_ctx;
 #[cfg(feature = "postgres")]
 mod testing;
-#[cfg(feature = "postgres")]
+// Provider-neutral: legge `NAME=VALUE:TYPE` e produce `ParameterValue` del
+// core. Non conosce nessun provider, e infatti `postgres-read-ipc` non era
+// l'unico a usarlo — dietro la feature `postgres` rendeva il binario
+// MySQL-only non compilabile.
 mod typed_params;
 #[cfg(feature = "postgres")]
 mod write_cmd;
@@ -1397,22 +1443,35 @@ use testing::{profile_list, test_cancellation, test_concurrency, test_spatial, t
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Rileggono l'artefatto IPC: servono ai soli test del percorso
+    // PostgreSQL che lo producono.
+    #[cfg(feature = "postgres")]
     use arrow_ipc::reader::FileReader;
+    #[cfg(feature = "postgres")]
     use plenora_database_core::arrow::array::{ArrayRef, BinaryArray};
+    #[cfg(feature = "postgres")]
     use plenora_database_core::arrow::schema::{Field, Schema};
+    #[cfg(feature = "postgres")]
     use plenora_database_core::arrow::{RecordBatch, SchemaRef};
+    #[cfg(feature = "postgres")]
     use plenora_database_core::provider::{BatchStream, ProviderFuture};
     use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
+    #[cfg(feature = "postgres")]
     use std::collections::{HashMap, VecDeque};
+    #[cfg(feature = "postgres")]
     use std::fs::File;
+    #[cfg(feature = "postgres")]
     use std::path::PathBuf;
+    #[cfg(feature = "postgres")]
     use std::sync::Arc;
 
+    #[cfg(feature = "postgres")]
     struct TestStream {
         schema: SchemaRef,
         outcomes: VecDeque<plenora_database_core::Result<Option<RecordBatch>>>,
     }
 
+    #[cfg(feature = "postgres")]
     impl BatchStream for TestStream {
         fn schema(&self) -> SchemaRef {
             Arc::clone(&self.schema)
@@ -1427,8 +1486,12 @@ mod tests {
         }
     }
 
+    // Nomina le directory temporanee con la sequenza del percorso IPC:
+    // esiste per i test di materializzazione, che sono PostgreSQL.
+    #[cfg(feature = "postgres")]
     struct TestDirectory(PathBuf);
 
+    #[cfg(feature = "postgres")]
     impl TestDirectory {
         fn new(name: &str) -> Self {
             let sequence = IPC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1445,12 +1508,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "postgres")]
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
 
+    #[cfg(feature = "postgres")]
     fn partial_artifacts(output: &Path) -> Vec<PathBuf> {
         let prefix = format!(
             ".{}.partial-",
@@ -1466,6 +1531,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(feature = "postgres")]
     fn stream_with_outcomes(
         outcomes: VecDeque<plenora_database_core::Result<Option<RecordBatch>>>,
     ) -> TestStream {
@@ -1493,6 +1559,7 @@ mod tests {
         TestStream { schema, outcomes }
     }
 
+    #[cfg(feature = "postgres")]
     fn test_batch(schema: SchemaRef) -> RecordBatch {
         let values: ArrayRef = Arc::new(BinaryArray::from(vec![
             Some(
@@ -1569,6 +1636,7 @@ mod tests {
         assert_eq!(value["error"]["retry"]["kind"], "never");
     }
 
+    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn ipc_materialization_preserves_schema_metadata_and_rows() {
         let directory = TestDirectory::new("success");
@@ -1609,6 +1677,7 @@ mod tests {
         assert!(partial_artifacts(&output).is_empty());
     }
 
+    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn ipc_materialization_never_publishes_partial_output() {
         let directory = TestDirectory::new("failure");
@@ -1633,6 +1702,7 @@ mod tests {
         assert!(partial_artifacts(&output).is_empty());
     }
 
+    #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn ipc_materialization_never_overwrites_existing_output() {
         let directory = TestDirectory::new("conflict");
@@ -1654,6 +1724,7 @@ mod tests {
         assert!(partial_artifacts(&output).is_empty());
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn ipc_options_are_bounded_and_caller_configurable() {
         let defaults = parse_ipc_options(&mut std::iter::empty()).expect("default IPC options");
@@ -1683,6 +1754,7 @@ mod tests {
         assert_eq!(configured.order_by[0].field, "event_id");
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn ipc_options_reject_zero_invalid_and_unknown_values() {
         for arguments in [
@@ -1696,6 +1768,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn postgres_probe_parser_accepts_private_ca_and_complete_client_identity_env_names() {
         let mut args = [
@@ -1808,6 +1881,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn legacy_postgres_probe_requires_the_same_verified_tls_policy() {
         let provider = legacy_postgres_probe_provider();
@@ -1817,6 +1891,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn provider_neutral_postgres_probe_requires_verified_tls() {
         let provider = postgres_provider_for_probe();

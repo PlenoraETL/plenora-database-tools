@@ -80,6 +80,39 @@ jobs:
       - name: cargo clippy (pedantic + nursery)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # Ogni adapter deve costruirsi da solo. La combinazione mysql-only non
+  # compilava affatto — `typed_params` e le funzioni dello schema effimero
+  # stavano dietro la feature `postgres` pur non avendone bisogno — e nessun
+  # job se ne accorgeva: la CI costruiva solo i default e `--all-features`,
+  # cioe le due configurazioni in cui PostgreSQL c'e sempre.
+  cli-feature-matrix:
+    name: CLI ${{ matrix.features }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - --no-default-features --features postgres
+          - --no-default-features --features mysql
+          - --no-default-features --features sqlserver
+          - --all-features
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0 + clippy
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+      # `--all-targets` include i test: senza, un modulo di test che assume
+      # PostgreSQL resterebbe rotto in tre combinazioni su quattro senza
+      # che nulla lo dica.
+      - name: cargo clippy ${{ matrix.features }}
+        run: >-
+          cargo clippy --locked -p plenora-database-cli --all-targets
+          ${{ matrix.features }} -- -D warnings
+
   test-unit:
     name: cargo test (unit + non-live)
     runs-on: ubuntu-latest

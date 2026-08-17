@@ -1,5 +1,13 @@
 //! Safety flags globali: `--allow-write-tests`, `--ephemeral-schema NAME`.
 //!
+//! **Provider-neutral.** Qui si leggono e si conservano flag della riga di
+//! comando: nessuna riga parla a un database. Le funzioni che *creano* e
+//! *distruggono* lo schema effimero vivono in `ephemeral_schema`, dietro la
+//! feature `postgres`, perche emettono SQL `PostgreSQL` — `CREATE SCHEMA` e
+//! `DROP SCHEMA ... CASCADE` — attraverso il provider PFM. Tenerle qui
+//! rendeva il parsing dei flag impossibile da compilare senza `PostgreSQL`: il
+//! binario con il solo adapter `MySQL` non si costruiva affatto.
+//!
 //! Sono opt-in per proteggere DB di produzione dai comandi che creano oggetti
 //! temp o ordinari. Il flag `--allow-write-tests` è richiesto per:
 //!   - `test-concurrency` (crea `_plenora_test_concurrency`)
@@ -11,11 +19,7 @@
 //! droppato. Non è necessario per i test che usano solo `TEMP TABLE`
 //! `ON COMMIT DROP`, ma è utile per audit.
 
-use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
-use crate::{secret_from_env, CliResult};
-use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::transaction::{Statement, TransactionOptions};
-use plenora_database_core::CancellationToken;
+use crate::CliResult;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Default)]
@@ -58,6 +62,7 @@ pub(crate) fn strip_safety_flags(args: Vec<String>) -> CliResult<Vec<String>> {
     Ok(out)
 }
 
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
 pub(crate) fn active() -> SafetyFlags {
     store()
         .lock()
@@ -66,6 +71,7 @@ pub(crate) fn active() -> SafetyFlags {
 
 /// Gate esplicito per comandi che creano oggetti persistenti sul DB target.
 /// Restituisce errore se `--allow-write-tests` non è attivo.
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
 pub(crate) fn require_write_tests(command: &str) -> CliResult<()> {
     if active().allow_write_tests {
         Ok(())
@@ -76,40 +82,6 @@ pub(crate) fn require_write_tests(command: &str) -> CliResult<()> {
         )
         .into())
     }
-}
-
-/// Crea lo schema effimero se richiesto. È no-op quando `--ephemeral-schema`
-/// non è impostato. Il chiamante deve poi chiamare `drop_ephemeral_schema`
-/// al termine (best-effort).
-pub(crate) async fn ensure_ephemeral_schema(dsn_env: &str) -> CliResult<Option<String>> {
-    let Some(name) = active().ephemeral_schema else {
-        return Ok(None);
-    };
-    let secret = secret_from_env(dsn_env)?;
-    run_admin_stmt(&secret, &format!("CREATE SCHEMA IF NOT EXISTS \"{name}\"")).await?;
-    Ok(Some(name))
-}
-
-pub(crate) async fn drop_ephemeral_schema(dsn_env: &str, name: &str) {
-    if let Ok(secret) = secret_from_env(dsn_env) {
-        let _ = run_admin_stmt(
-            &secret,
-            &format!("DROP SCHEMA IF EXISTS \"{name}\" CASCADE"),
-        )
-        .await;
-    }
-}
-
-async fn run_admin_stmt(secret: &SecretString, sql: &str) -> CliResult<()> {
-    let provider = postgres_provider_for_pfm()?;
-    let budget = pfm_budget()?;
-    let cancel = CancellationToken::new();
-    let mut tx = provider
-        .begin_transaction(secret, &TransactionOptions::default(), &budget, &cancel)
-        .await?;
-    tx.execute(&Statement::new(sql.to_owned()), &cancel).await?;
-    tx.commit(&cancel).await?;
-    Ok(())
 }
 
 fn is_valid_identifier(name: &str) -> bool {

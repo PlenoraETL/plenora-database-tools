@@ -150,7 +150,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     let dsn_env = args.next().ok_or("manca variabile ambiente DSN")?;
     ensure_end(args)?;
     crate::safety::require_write_tests("test-concurrency")?;
-    let ephemeral = crate::safety::ensure_ephemeral_schema(&dsn_env).await?;
+    let ephemeral = crate::ephemeral_schema::ensure_ephemeral_schema(&dsn_env).await?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm()?;
@@ -272,7 +272,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
         .await;
     let _ = tx_cleanup.commit(&cancel).await;
     if let Some(schema) = ephemeral.as_deref() {
-        crate::safety::drop_ephemeral_schema(&dsn_env, schema).await;
+        crate::ephemeral_schema::drop_ephemeral_schema(&dsn_env, schema).await;
     }
 
     let (status, category, message) = match &loser_outcome {

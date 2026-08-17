@@ -3,6 +3,14 @@
     clippy::manual_is_multiple_of,
     clippy::match_same_arms
 )]
+// Il modulo e provider-neutral e non conosce nessun adapter: legge
+// `NAME=VALUE:TYPE` e produce `ParameterValue` del core. Oggi lo chiamano
+// solo i comandi PostgreSQL, quindi senza quella feature il compilatore lo
+// vede inutilizzato. La risposta **non** e metterlo dietro `postgres`: e
+// esattamente l'accoppiamento che rendeva impossibile costruire il binario
+// con il solo adapter MySQL. Il giorno che un comando MySQL bindera
+// parametri tipizzati, questa riga sparisce da sola.
+#![cfg_attr(not(feature = "postgres"), allow(dead_code))]
 //! Parser per parametri tipizzati passati via CLI: `NAME=VALUE:TYPE` o
 //! `VALUE:TYPE` (per parametri posizionali senza nome).
 //!

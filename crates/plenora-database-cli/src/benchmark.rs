@@ -135,7 +135,7 @@ pub(crate) async fn benchmark_write(args: &mut impl Iterator<Item = String>) -> 
         .transpose()?
         .unwrap_or(10);
     ensure_end(args)?;
-    let ephemeral = crate::safety::ensure_ephemeral_schema(&dsn_env).await?;
+    let ephemeral = crate::ephemeral_schema::ensure_ephemeral_schema(&dsn_env).await?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm()?;
@@ -180,7 +180,7 @@ pub(crate) async fn benchmark_write(args: &mut impl Iterator<Item = String>) -> 
     let overall_ms = overall_start.elapsed().as_millis();
     let _ = tx.rollback(&cancel).await;
     if let Some(schema) = ephemeral.as_deref() {
-        crate::safety::drop_ephemeral_schema(&dsn_env, schema).await;
+        crate::ephemeral_schema::drop_ephemeral_schema(&dsn_env, schema).await;
     }
     samples.sort_unstable();
 
