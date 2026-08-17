@@ -201,6 +201,40 @@ class CiWorkflowTests(unittest.TestCase):
                             "sovrascrive la revisione dell'evento",
                         )
 
+    def test_every_adapter_is_checked_in_isolation(self) -> None:
+        """Le quattro combinazioni di feature del CLI restano verificate.
+
+        Due di esse non compilavano affatto, e nessuno se ne accorgeva perche
+        la CI costruiva solo i default e `--all-features` — le due dove
+        PostgreSQL c'e sempre. Girano in un job solo: la prima stesura le
+        aveva messe in `strategy.matrix` e sei job in parallelo hanno fatto
+        rifiutare da `codeload` il download dell'action di cache, con un 429.
+        Un job che verifica quattro cose non deve moltiplicare per quattro le
+        sue dipendenze di rete.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        for features in (
+            "--no-default-features --features postgres",
+            "--no-default-features --features mysql",
+            "--no-default-features --features sqlserver",
+            "--all-features",
+        ):
+            self.assertIn(
+                features, workflow, f"combinazione non piu verificata: {features}"
+            )
+        # `--all-targets` porta dentro i test, che assumevano PostgreSQL.
+        self.assertIn("--all-targets $features -- -D warnings", workflow)
+        # Il ciclo prova tutte le combinazioni prima di uscire: fermarsi alla
+        # prima nasconderebbe le altre tre dietro un errore solo.
+        self.assertIn("status=1", workflow)
+        self.assertIn("exit $status", workflow)
+        self.assertNotIn(
+            "strategy:",
+            jobs(workflow).get("cli-feature-matrix", ""),
+            "la matrice moltiplica i job, e con essi i download della cache",
+        )
+
     def test_fuzz_lock_uses_the_workspace_core_version(self) -> None:
         """Il lock del fuzz segue la versione del workspace.
 

@@ -85,17 +85,17 @@ jobs:
   # stavano dietro la feature `postgres` pur non avendone bisogno — e nessun
   # job se ne accorgeva: la CI costruiva solo i default e `--all-features`,
   # cioe le due configurazioni in cui PostgreSQL c'e sempre.
+  #
+  # Le quattro combinazioni girano in **un** job, non in una matrice di
+  # quattro. La prima stesura usava `strategy.matrix` e ha fatto fallire la
+  # CI a valle di se stessa: sei job in parallelo scaricavano la stessa
+  # action di cache nello stesso istante, e `codeload.github.com` ne ha
+  # rifiutato uno con 429. Un job solo scarica l'action una volta, riusa la
+  # stessa cache per tutte e quattro le configurazioni, e non moltiplica una
+  # dipendenza di rete per il numero di cose che vuole verificare.
   cli-feature-matrix:
-    name: CLI ${{ matrix.features }}
+    name: CLI feature matrix
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        features:
-          - --no-default-features --features postgres
-          - --no-default-features --features mysql
-          - --no-default-features --features sqlserver
-          - --all-features
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust 1.92.0 + clippy
@@ -106,12 +106,24 @@ jobs:
         with:
           workspaces: '. -> target'
       # `--all-targets` include i test: senza, un modulo di test che assume
-      # PostgreSQL resterebbe rotto in tre combinazioni su quattro senza
-      # che nulla lo dica.
-      - name: cargo clippy ${{ matrix.features }}
-        run: >-
-          cargo clippy --locked -p plenora-database-cli --all-targets
-          ${{ matrix.features }} -- -D warnings
+      # PostgreSQL resterebbe rotto in tre combinazioni su quattro senza che
+      # nulla lo dica. Il ciclo le prova tutte prima di fallire, cosi una
+      # combinazione rotta non nasconde la successiva.
+      - name: cargo clippy su ogni adapter isolato
+        run: |
+          status=0
+          for features in "--no-default-features --features postgres" "--no-default-features --features mysql" "--no-default-features --features sqlserver" "--all-features"; do
+            echo "::group::clippy $features"
+            # shellcheck disable=SC2086  # le feature sono argomenti multipli
+            if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings; then
+              echo "OK   $features"
+            else
+              echo "FAIL $features"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
 
   test-unit:
     name: cargo test (unit + non-live)
