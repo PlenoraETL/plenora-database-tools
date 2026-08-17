@@ -245,5 +245,95 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         self.assertIn(MISMATCH_ALIAS, compose)
 
 
+class MariadbDivergenceMatrixTests(unittest.TestCase):
+    """Il documento dell'evidenza segue il catalogo che la produce.
+
+    Una matrice trascritta a mano invecchia alla prima sonda aggiunta, e chi
+    la legge non ha modo di distinguere una riga misurata da una rimasta
+    indietro. Qui il catalogo e il documento si confrontano per nome.
+    """
+
+    HARNESS = ROOT / "scripts" / "check_mariadb_divergence.py"
+    DOCUMENT = ROOT / "docs" / "mariadb" / "EVIDENCE.md"
+
+    def probe_identifiers(self) -> set[str]:
+        source = self.HARNESS.read_text(encoding="utf-8")
+        # Il primo campo di ogni `Probe(...)` e l'identificatore, e sta
+        # sulla riga successiva alla parentesi.
+        pattern = "".join([r"Probe\(", r"\s+", r'"([a-z_]+\.[a-z_]+)"'])
+        return set(re.findall(pattern, source))
+
+    def test_every_probe_is_recorded_in_the_document(self) -> None:
+        probes = self.probe_identifiers()
+        self.assertGreaterEqual(len(probes), 15, "catalogo non riconosciuto")
+        document = self.DOCUMENT.read_text(encoding="utf-8")
+        documented = set(re.findall(r"`([a-z_]+\.[a-z_]+)`", document))
+        self.assertEqual(
+            probes - documented,
+            set(),
+            "sonde misurate ma non registrate nel documento",
+        )
+        # Il documento nomina anche tabelle di sistema — `information_schema.
+        # statistics`, `performance_schema.prepared_statements_instances` —
+        # che hanno la stessa forma di un identificatore di sonda. Si
+        # confronta solo cio che porta un prefisso del catalogo, altrimenti
+        # la guardia chiederebbe di registrare come sonda ogni tabella
+        # citata.
+        surfaces = {name.split(".", 1)[0] for name in probes}
+        self.assertEqual(
+            {name for name in documented if name.split(".", 1)[0] in surfaces}
+            - probes,
+            set(),
+            "il documento riporta sonde che il catalogo non contiene piu",
+        )
+
+    def test_the_document_says_how_to_reproduce_the_measure(self) -> None:
+        """Una misura senza il comando che la rifa e un'affermazione."""
+
+        document = self.DOCUMENT.read_text(encoding="utf-8")
+        self.assertIn("python scripts/check_mariadb_divergence.py", document)
+        self.assertIn("docker-compose.mariadb.yml", document)
+        self.assertIn("docker-compose.mysql.yml", document)
+
+    def test_the_document_does_not_turn_evidence_into_a_decision(self) -> None:
+        """Misurare non e decidere, e il documento deve dirlo.
+
+        E la riga che impedisce alla matrice di essere letta come un via
+        libera: tre divergenze dichiarate si sono rivelate false, e da li a
+        concludere "allora si puo qualificare" il passo e corto — mentre due
+        divergenze nuove, che nessuno aveva nominato, romperebbero il provider
+        in produzione.
+        """
+
+        document = self.DOCUMENT.read_text(encoding="utf-8")
+        self.assertIn("Non e una decisione", document)
+        self.assertIn("il fail-close resta", document.lower())
+        self.assertIn("Cosa resta aperto", document)
+
+    def test_the_harness_measures_the_surfaces_the_provider_uses(self) -> None:
+        """Le sonde devono nominare cio che il provider emette davvero.
+
+        Una matrice di curiosita sul motore non serve a decidere: le due
+        divergenze che contano — `MAX_EXECUTION_TIME` e la colonna
+        `EXPRESSION` — si sono viste solo perche il catalogo parte da cio che
+        il provider esegue, non da cio che i due motori hanno di diverso.
+        """
+
+        harness = self.HARNESS.read_text(encoding="utf-8")
+        transaction = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "transaction.rs"
+        ).read_text(encoding="utf-8")
+        catalog = CATALOG.read_text(encoding="utf-8")
+
+        self.assertIn("MAX_EXECUTION_TIME", harness)
+        self.assertIn("MAX_EXECUTION_TIME", transaction)
+        self.assertIn("EXPRESSION", harness)
+        self.assertIn("expression", catalog)
+        self.assertIn("SET SESSION TRANSACTION ISOLATION LEVEL", harness)
+        self.assertIn("SET SESSION TRANSACTION ISOLATION LEVEL", transaction)
+        self.assertIn("plenora_ctx_", harness)
+        self.assertIn("plenora_ctx_", transaction)
+
+
 if __name__ == "__main__":
     unittest.main()
