@@ -1824,7 +1824,15 @@ def compose_declarations(pattern: str) -> list[str]:
 
 # Il wheel esce dalla build in una directory temporanea e vi resta: il
 # comando dei test lo nomina, quindi i doppi lo nominano allo stesso modo.
-SDK_WHEEL_NAME = "plenora_database-0.10.0-cp310-abi3-linux_x86_64.whl"
+#
+# La versione non e ripetuta qui: e maturin a comporre il nome del wheel da
+# `pyproject.toml`, quindi i doppi la leggono dalla stessa fonte. Scritta a
+# mano sarebbe rimasta indietro al primo bump, e un doppio che nomina una
+# versione che non esiste piu somiglia troppo a uno che nomina quella giusta.
+SDK_VERSION = sdk.toml_version(
+    sdk.PYPROJECT.read_text(encoding="utf-8"), "project"
+)
+SDK_WHEEL_NAME = f"plenora_database-{SDK_VERSION}-cp310-abi3-linux_x86_64.whl"
 SDK_ARTIFACT = {
     "wheel": SDK_WHEEL_NAME,
     "wheel_sha256": "a" * 64,
@@ -1865,6 +1873,43 @@ SDK_IMAGES = {
         "digests": ["python@sha256:ffb752e139c0"],
     },
 }
+
+
+# Le quattro fonti della versione, come le legge il runner. I test le
+# perturbano una alla volta: e il caso reale — un bump dimenticato tocca una
+# dichiarazione sola.
+SDK_VERSION_SOURCES = {
+    "pyproject": sdk.PYPROJECT.read_text(encoding="utf-8"),
+    "cargo_toml": sdk.CARGO_MANIFEST.read_text(encoding="utf-8"),
+    "cargo_lock": sdk.CARGO_LOCK.read_text(encoding="utf-8"),
+    "changelog": sdk.CHANGELOG.read_text(encoding="utf-8"),
+}
+SDK_STALE_VERSION = "99.99.99"
+
+
+def sdk_bumped_source(source: str, document: str) -> str:
+    """Il documento con la **sola** versione del SDK cambiata.
+
+    Ogni fonte la dichiara in una forma sua, e la sostituzione deve colpire
+    quella e nient'altro: `Cargo.lock` porta una `version` per ogni package
+    del workspace, e una replace ingenua le riscriverebbe tutte — un test che
+    passa perche ha rotto tutto non prova niente.
+    """
+
+    if source == "cargo_lock":
+        target = f'name = "{sdk.CARGO_PACKAGE}"\nversion = "{SDK_VERSION}"'
+        replacement = f'name = "{sdk.CARGO_PACKAGE}"\nversion = "{SDK_STALE_VERSION}"'
+    elif source == "changelog":
+        target = f"## [{SDK_VERSION}] —"
+        replacement = f"## [{SDK_STALE_VERSION}] —"
+    else:
+        target = f'version = "{SDK_VERSION}"'
+        replacement = f'version = "{SDK_STALE_VERSION}"'
+    if document.count(target) != 1:
+        raise AssertionError(
+            f"{source}: la versione non compare una volta sola come '{target}'"
+        )
+    return document.replace(target, replacement)
 
 
 def sdk_pytest_command(scope: str) -> list[str]:
@@ -2354,8 +2399,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         python = f"{sdk.PYTHON_MARKER}3.13.9"
 
         for artifact in (
-            "plenora-database==0.10.0",
-            "plenora_database @ file:///artifacts/plenora_database-0.10.0.whl",
+            f"plenora-database=={SDK_VERSION}",
+            f"plenora_database @ file:///artifacts/"
+            f"plenora_database-{SDK_VERSION}.whl",
         ):
             output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
             versions = sdk.installed_versions(output)
@@ -2551,6 +2597,96 @@ class PythonSdkRunnerTests(unittest.TestCase):
         sdk.assert_artifacts_outside_repository(Path(tempfile.gettempdir()))
         with self.assertRaisesRegex(RuntimeError, "TMPDIR"):
             sdk.assert_artifacts_outside_repository(ROOT / "target" / "staging")
+
+    def test_the_release_version_is_the_same_in_every_source(self) -> None:
+        """Quattro fonti, una versione — e ognuna decide una cosa diversa.
+
+        `pyproject.toml` compone il nome del wheel, il `Cargo.toml` del crate
+        decide cosa risponde `p.version()`, `Cargo.lock` e cio che le build
+        `--locked` pretendono di ritrovare, e il CHANGELOG e quello che legge
+        chi aggiorna. Due che divergono producono un artefatto che mente su se
+        stesso: un wheel `0.10.0` che dichiara `0.9.2` a chi lo interroga. E
+        gia successo — il commento accanto alla versione del crate ricorda il
+        bug della v0.1.0 — e fino a ora a impedirlo c'era solo quel commento.
+        """
+
+        self.assertEqual(sdk.declared_version(), SDK_VERSION)
+        sdk.validate_declared_versions(**SDK_VERSION_SOURCES)
+
+    def test_a_single_stale_source_fails_the_version_check(self) -> None:
+        """Ogni fonte, modificata da sola, deve far fallire.
+
+        Da sola e la parte che conta: un bump dimenticato tocca **una**
+        dichiarazione, non tutte, ed e esattamente il caso che una guardia
+        scritta male lascia passare.
+        """
+
+        for source, document in SDK_VERSION_SOURCES.items():
+            perturbed = dict(SDK_VERSION_SOURCES)
+            perturbed[source] = sdk_bumped_source(source, document)
+            self.assertNotEqual(
+                perturbed[source], document, f"{source}: perturbazione inefficace"
+            )
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.validate_declared_versions(**perturbed)
+            message = str(raised.exception)
+            self.assertIn("divergono", message)
+            # Il messaggio deve dire quale fonte dice cosa: sapere che
+            # divergono senza sapere quale sia indietro non basta a
+            # correggerle.
+            self.assertIn(SDK_STALE_VERSION, message)
+            self.assertIn(SDK_VERSION, message)
+
+    def test_each_version_source_is_read_where_it_is_declared(self) -> None:
+        """I tre parser, sulle forme che le fonti possono davvero avere."""
+
+        self.assertEqual(
+            sdk.toml_version('[project]\nversion = "1.2.3"\n', "project"), "1.2.3"
+        )
+        # `version.workspace = true` non e una versione: il crate del binding
+        # ha per contratto un ciclo di release proprio, separato dal
+        # workspace Rust, e ereditarla lo romperebbe in silenzio.
+        with self.assertRaises(RuntimeError):
+            sdk.toml_version("[package]\nversion.workspace = true\n", "package")
+        with self.assertRaises(RuntimeError):
+            sdk.toml_version("[package]\nname = 'x'\n", "package")
+
+        lock = '[[package]]\nname = "altro"\nversion = "9.9.9"\n'
+        with self.assertRaisesRegex(RuntimeError, "non compare"):
+            sdk.locked_version(lock)
+        self.assertEqual(
+            sdk.locked_version(
+                f'{lock}\n[[package]]\nname = "{sdk.CARGO_PACKAGE}"\n'
+                'version = "1.2.3"\n'
+            ),
+            "1.2.3",
+        )
+
+        # Una sezione `[Unreleased]` non e una release e viene saltata: e il
+        # modo normale di lavorare fra un rilascio e l'altro, e farla fallire
+        # costringerebbe a rilasciare per poter eseguire il gate.
+        self.assertEqual(
+            sdk.changelog_version(
+                "## [Unreleased] — 1.3.0\n\ntesto\n\n## [1.2.3] — 2026-08-17\n"
+            ),
+            "1.2.3",
+        )
+        with self.assertRaisesRegex(RuntimeError, "nessuna release"):
+            sdk.changelog_version("## [Unreleased] — 1.3.0\n")
+
+    def test_the_version_is_checked_before_anything_is_built(self) -> None:
+        """Un bump incoerente si scopre prima della build, non dopo.
+
+        Costruire wheel e CLI per poi accorgersi che il wheel dichiara una
+        versione e il modulo nativo un'altra significa buttare la corsa —
+        e, se nessuno guarda, pubblicarli.
+        """
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("declared_version()\n        validate_maturin_pin("),
+            source.index("artifact = build_artifacts("),
+        )
 
     def test_every_scope_declares_what_a_correct_run_looks_like(self) -> None:
         """I tre contratti stanno in una struttura sola, e sono coerenti.

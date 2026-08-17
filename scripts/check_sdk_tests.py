@@ -67,6 +67,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,11 @@ from scripts.sdk_wheel_probe import ORIGIN_MARKER  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "crates" / "plenora-database-py"
 PYPROJECT = CRATE / "pyproject.toml"
+CARGO_MANIFEST = CRATE / "Cargo.toml"
+CARGO_LOCK = ROOT / "Cargo.lock"
+CHANGELOG = CRATE / "CHANGELOG.md"
+# Il nome con cui il crate del binding compare nel lock del workspace.
+CARGO_PACKAGE = "plenora-database-py"
 NATIVE = CRATE / "python" / "plenora_database" / "_native.abi3.so"
 PROBE = Path(__file__).resolve().parent / "sdk_wheel_probe.py"
 BUILD_REQUIREMENTS = ROOT / "requirements-sdk-build.txt"
@@ -345,6 +351,117 @@ def validate_maturin_pin(pyproject: str, requirements: str) -> str:
             f"maturin {pinned} raggiunge il limite {upper} del pyproject"
         )
     return pinned
+
+
+# --------------------------------------------------------------------------
+# La versione della release, dichiarata in quattro posti
+# --------------------------------------------------------------------------
+
+
+def toml_version(document: str, table: str) -> str:
+    """Il campo `version` della tabella `table` di un documento TOML.
+
+    # Raises
+
+    `RuntimeError` se manca o non e una stringa. Il caso non-stringa non e
+    teorico: `version.workspace = true` produce una tabella, e il crate del
+    binding ha per contratto una versione **propria** — il ciclo di release
+    del SDK non e quello del workspace Rust.
+    """
+
+    version = tomllib.loads(document).get(table, {}).get("version")
+    if not isinstance(version, str):
+        raise RuntimeError(
+            f"la tabella [{table}] non dichiara una versione testuale: {version!r}"
+        )
+    return version
+
+
+def locked_version(document: str) -> str:
+    """La versione con cui `Cargo.lock` registra il crate del binding.
+
+    # Raises
+
+    `RuntimeError` se il package non compare: senza la sua riga il lock non
+    descrive questo workspace, e ogni build `--locked` fallirebbe piu tardi
+    con un errore che parla di risoluzione invece che di versione.
+    """
+
+    for package in tomllib.loads(document).get("package", []):
+        if package.get("name") == CARGO_PACKAGE:
+            version = package.get("version")
+            if not isinstance(version, str):
+                raise RuntimeError(f"{CARGO_PACKAGE} nel lock senza versione")
+            return version
+    raise RuntimeError(f"{CARGO_PACKAGE} non compare in {CARGO_LOCK.name}")
+
+
+def changelog_version(document: str) -> str:
+    """La versione della prima release del CHANGELOG.
+
+    Una sezione `[Unreleased]` non e una release e viene saltata: e il modo
+    normale di lavorare fra un rilascio e l'altro, e farla fallire
+    costringerebbe a rilasciare per poter eseguire il gate.
+
+    # Raises
+
+    `RuntimeError` se nessuna intestazione dichiara una versione.
+    """
+
+    for line in document.splitlines():
+        match = re.match(r"^## \[(\d[^\]]*)\]", line)
+        if match:
+            return match.group(1)
+    raise RuntimeError("il CHANGELOG non dichiara nessuna release")
+
+
+def validate_declared_versions(
+    *, pyproject: str, cargo_toml: str, cargo_lock: str, changelog: str
+) -> str:
+    """La versione della release, che le quattro fonti devono dire uguale.
+
+    Non e una ripetizione ridondante: ognuna decide una cosa diversa.
+    `pyproject.toml` compone il nome del wheel, `Cargo.toml` del crate decide
+    cosa risponde `p.version()`, `Cargo.lock` e cio che le build `--locked`
+    pretendono di ritrovare, e il CHANGELOG e quello che legge chi aggiorna.
+    Due che divergono producono un artefatto che mente su se stesso — un
+    wheel `0.10.0` che dichiara `0.9.2` a chi lo interroga — ed e gia
+    successo: il commento accanto alla versione del crate ricorda il bug
+    della v0.1.0.
+
+    # Returns
+
+    La versione, una volta che tutte e quattro concordano.
+
+    # Raises
+
+    `RuntimeError` elencando fonte per fonte cosa dichiara: sapere *che*
+    divergono senza sapere quale sia indietro non basta a correggerle.
+    """
+
+    versions = {
+        PYPROJECT.name: toml_version(pyproject, "project"),
+        f"{CRATE.name}/{CARGO_MANIFEST.name}": toml_version(cargo_toml, "package"),
+        CARGO_LOCK.name: locked_version(cargo_lock),
+        CHANGELOG.name: changelog_version(changelog),
+    }
+    distinct = set(versions.values())
+    if len(distinct) != 1:
+        raise RuntimeError(
+            f"le fonti della versione divergono: {dict(sorted(versions.items()))}"
+        )
+    return distinct.pop()
+
+
+def declared_version() -> str:
+    """La versione dichiarata, letta dalle quattro fonti sul disco."""
+
+    return validate_declared_versions(
+        pyproject=PYPROJECT.read_text(encoding="utf-8"),
+        cargo_toml=CARGO_MANIFEST.read_text(encoding="utf-8"),
+        cargo_lock=CARGO_LOCK.read_text(encoding="utf-8"),
+        changelog=CHANGELOG.read_text(encoding="utf-8"),
+    )
 
 
 def validate_installed_pins(installed: dict[str, str]) -> None:
@@ -1027,6 +1144,7 @@ def main() -> int:
         selected = "live"
 
     try:
+        declared_version()
         validate_maturin_pin(
             PYPROJECT.read_text(encoding="utf-8"),
             BUILD_REQUIREMENTS.read_text(encoding="utf-8"),

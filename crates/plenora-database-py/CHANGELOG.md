@@ -49,7 +49,7 @@ Ora `Replace` è ciò che il contratto dice: **target già esistente,
 - `truncate_insert` resta su `TRUNCATE`, che su PostgreSQL è transazionale:
   la differenza fra le due modalità non è più la sicurezza, è il costo.
 
-Sette test live in `crates/plenora-db-postgres/tests/golden_write_replace.rs`
+I test live di `crates/plenora-db-postgres/tests/golden_write_replace.rs`
 fissano il contratto su una fixture con identity PK, default, CHECK, unique
 index, foreign key, trigger e grant, confrontando l'impronta di `pg_class.oid`,
 `pg_constraint`, `pg_indexes`, `pg_trigger`, `relacl`, `reloptions` e
