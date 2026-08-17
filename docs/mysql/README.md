@@ -205,9 +205,11 @@ with p.connect_mysql("localhost", "mydb", "user", "pwd") as s:
 di `read` e `copy_from`, il resto identico.
 
 La suite del SDK si esegue con `python scripts/check_sdk_tests.py`, che
-ricostruisce il modulo nativo con `maturin` prima di `pytest`: il `.so` e
-gitignorato, e un `pytest` diretto dopo un cambio al Rust risponde sul
-binario precedente.
+costruisce il wheel con `maturin` e lo installa nel container prima di
+`pytest`: il `.so` e gitignorato, e un `pytest` diretto dopo un cambio al
+Rust risponde sul binario precedente. Il runner pretende un albero di lavoro
+pulito — il verdetto nomina un commit — e verifica che il package importato
+arrivi da `site-packages`, non dal source tree accanto ai test.
 
 Non esposto al SDK MySQL: spatial predicates + `SpatialReference`.
 

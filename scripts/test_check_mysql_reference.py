@@ -40,6 +40,7 @@ sdk = importlib.util.module_from_spec(SDK_SPEC)
 SDK_SPEC.loader.exec_module(sdk)
 
 from scripts import compose_network as compose_network_module  # noqa: E402
+from scripts import sdk_wheel_probe as probe  # noqa: E402
 from scripts.mysql_inventory import collect  # noqa: E402
 from scripts.mysql_references import (  # noqa: E402
     BASELINE,
@@ -1814,12 +1815,56 @@ def compose_declarations(pattern: str) -> list[str]:
     return values
 
 
+# Il wheel esce dalla build in una directory temporanea e vi resta: il
+# comando dei test lo nomina, quindi i doppi lo nominano allo stesso modo.
+SDK_WHEEL_NAME = "plenora_database-0.9.2-cp310-abi3-linux_x86_64.whl"
+SDK_ARTIFACT = {
+    "wheel": SDK_WHEEL_NAME,
+    "wheel_sha256": "a" * 64,
+    "native_sha256": "b" * 64,
+    "package_path": "/usr/local/lib/python3.13/site-packages/plenora_database",
+    "native_path": (
+        "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
+    ),
+    "maturin": "1.14.1",
+    "rustc": "1.92.0",
+}
+SDK_VERSIONS = {
+    "pandas": "3.0.5",
+    "pyarrow": "25.0.1",
+    "pytest": "9.1.1",
+    "pytest-asyncio": "1.4.0",
+    "python": "3.13.9",
+}
+SDK_IMAGES = {
+    "build": {
+        "reference": "rust:1.92",
+        "id": "sha256:f58923369ba2",
+        "digests": ["rust@sha256:f58923369ba2"],
+    },
+    "test": {
+        "reference": "python:3.13-slim",
+        "id": "sha256:ffb752e139c0",
+        "digests": ["python@sha256:ffb752e139c0"],
+    },
+}
+
+
+def sdk_pytest_command(scope: str) -> list[str]:
+    """Il comando della suite, con la directory temporanea gia risolta."""
+
+    return sdk.pytest_command(
+        scope=scope, wheels=Path("/tmp/plenora-wheels"), wheel=SDK_WHEEL_NAME
+    )
+
+
 class PythonSdkRunnerTests(unittest.TestCase):
     """`scripts/check_sdk_tests.py`: cosa costruisce, con cosa, e cosa dichiara.
 
     Il runner e l'unico modo supportato di eseguire la suite SDK, quindi
-    quello che promette deve essere verificabile: l'ambiente riproducibile,
-    l'artefatto identificato, e nessuna credenziale ricopiata dentro.
+    quello che promette deve essere verificabile: l'albero pulito prima di
+    partire, l'ambiente tracciato, l'artefatto identificato — e importato da
+    dove e stato installato — e nessuna credenziale ricopiata dentro.
     """
 
     def test_the_runner_copies_no_fixture_credential(self) -> None:
@@ -1888,7 +1933,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             patch.object(sdk, "compose_network_arguments", side_effect=refuse),
             patch.object(sdk, "compose_volume", side_effect=refuse),
         ):
-            command = sdk.pytest_command(scope="offline")
+            command = sdk_pytest_command("offline")
 
         self.assertNotIn("--network", command)
         self.assertNotIn("-e", command)
@@ -1925,8 +1970,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         requirements = ROOT / "requirements-sdk-tests.txt"
         self.assertIn(
-            f"pip install -q -r /workspace/{requirements.name}",
-            sdk.pytest_command(scope="offline")[-1],
+            f"pip install -q -r /repo/{requirements.name}",
+            sdk_pytest_command("offline")[-1],
             "il container di test non installa dai pin versionati",
         )
 
@@ -1949,24 +1994,13 @@ class PythonSdkRunnerTests(unittest.TestCase):
     def test_the_verdict_identifies_the_artifact_and_the_environment(self) -> None:
         """Il nome del wheel non identifica nulla: e lo stesso a ogni build."""
 
-        artifact = {
-            "wheel": "plenora_database-0.9.2-cp310-abi3-linux_x86_64.whl",
-            "wheel_sha256": "a" * 64,
-            "native_sha256": "b" * 64,
-            "maturin": "1.14.1",
-        }
-        versions = {
-            "pandas": "3.0.5",
-            "pyarrow": "25.0.1",
-            "pytest": "9.1.1",
-            "pytest-asyncio": "1.4.0",
-            "python": "3.13.9",
-        }
         recorded = sdk.verdict(
             scope="live",
             commit="c" * 40,
-            artifact=artifact,
-            versions=versions,
+            dirty=[],
+            artifact=SDK_ARTIFACT,
+            images=SDK_IMAGES,
+            versions=SDK_VERSIONS,
             summary=" 231 passed, 4 skipped ",
         )
 
@@ -1976,29 +2010,323 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertEqual(recorded["pytest"], "231 passed, 4 skipped")
         self.assertEqual(
             set(recorded["versions"]),
-            {"maturin", "pandas", "pyarrow", "pytest", "pytest_asyncio", "python"},
+            {
+                "maturin",
+                "pandas",
+                "pyarrow",
+                "pytest",
+                "pytest_asyncio",
+                "python",
+                "rustc",
+            },
         )
         self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
+        self.assertEqual(recorded["versions"]["rustc"], "1.92.0")
 
-    def test_a_tracked_file_touched_during_the_run_fails_the_gate(self) -> None:
+        # Un tag e mutabile: senza id e digest il verdetto direbbe "rust:1.92"
+        # e non quale rust:1.92.
+        self.assertEqual(recorded["images"]["build"]["reference"], "rust:1.92")
+        self.assertTrue(recorded["images"]["build"]["id"].startswith("sha256:"))
+        self.assertTrue(recorded["images"]["test"]["digests"])
+
+    def test_the_verdict_of_a_clean_tree_is_the_only_authoritative_one(self) -> None:
+        """`authoritative` segue l'albero, non la buona volonta di chi esegue.
+
+        Associare il risultato a HEAD non basta: se l'albero non coincide con
+        HEAD, quel nome descrive altro codice. Il verdetto deve dirlo nel
+        campo che si legge per primo.
+        """
+
+        def recorded(dirty: list[str]) -> dict[str, object]:
+            return sdk.verdict(
+                scope="live",
+                commit="c" * 40,
+                dirty=dirty,
+                artifact=SDK_ARTIFACT,
+                images=SDK_IMAGES,
+                versions=SDK_VERSIONS,
+                summary="231 passed",
+            )
+
+        clean = recorded([])
+        self.assertIs(clean["authoritative"], True)
+        self.assertIs(clean["worktree_dirty"], False)
+        self.assertEqual(clean["worktree_changes"], [])
+
+        dirty = recorded([" M crates/plenora-database-py/src/lib.rs", "?? nuovo.rs"])
+        self.assertIs(dirty["authoritative"], False)
+        self.assertIs(dirty["worktree_dirty"], True)
+        self.assertEqual(
+            dirty["worktree_changes"],
+            [" M crates/plenora-database-py/src/lib.rs", "?? nuovo.rs"],
+        )
+        # Il commit resta scritto: e vero che quello era HEAD. Non e vero che
+        # descrive cio che ha girato, ed e per questo che i due campi
+        # convivono.
+        self.assertEqual(dirty["git_commit"], "c" * 40)
+
+    def test_a_clean_worktree_is_the_precondition_of_the_run(self) -> None:
+        """Albero pulito: nessuna riga di `git status --porcelain -uall`."""
+
+        sdk.assert_clean_worktree([])
+
+        with patch.object(sdk, "git", return_value="") as observed:
+            self.assertEqual(sdk.porcelain_entries(), [])
+        self.assertEqual(observed.call_args.args[0], ["status", "--porcelain", "-uall"])
+
+    def test_staged_unstaged_and_untracked_changes_each_refuse_the_run(self) -> None:
+        """Le tre forme di divergenza sono rifiutate, e nominate.
+
+        Nessuna delle tre e piu innocua delle altre: il wheel si costruisce
+        dai file su disco, e un sorgente mai tracciato e esattamente cio che
+        nessun commit puo descrivere.
+        """
+
+        for entry, kind in (
+            ("M  crates/plenora-database-py/src/lib.rs", "staged"),
+            (" M crates/plenora-database-py/src/lib.rs", "non staged"),
+            ("?? crates/plenora-database-py/src/nuovo.rs", "untracked"),
+        ):
+            with patch.object(sdk, "git", return_value=f"{entry}\n"):
+                entries = sdk.porcelain_entries()
+            self.assertEqual(entries, [entry], kind)
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.assert_clean_worktree(entries)
+            self.assertIn(entry.split()[-1], str(raised.exception), kind)
+            self.assertIn("--allow-dirty", str(raised.exception), kind)
+
+    def test_only_allow_dirty_lets_a_dirty_tree_through(self) -> None:
+        """Il default rifiuta; l'opzione esiste e non e implicita."""
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertIn('"--allow-dirty"', source)
+        self.assertIn("if not arguments.allow_dirty:", source)
+        self.assertIn("assert_clean_worktree(dirty)", source)
+
+    def test_a_file_touched_during_the_run_fails_the_gate(self) -> None:
         """Build e test non riscrivono il repository che stanno verificando."""
 
         before = {"crates/plenora-database-py/src/lib.rs": "M "}
-        with patch.object(sdk, "tracked_state", return_value=dict(before)):
-            sdk.assert_tracked_unchanged(before, "la build del wheel")
+        with patch.object(sdk, "worktree_state", return_value=dict(before)):
+            sdk.assert_worktree_unchanged(before, "la build del wheel")
 
+        # Un file tracciato riscritto dalla build.
         with patch.object(
-            sdk, "tracked_state", return_value={**before, "Cargo.lock": "M "}
+            sdk, "worktree_state", return_value={**before, "Cargo.lock": "M "}
         ):
             with self.assertRaises(RuntimeError) as raised:
-                sdk.assert_tracked_unchanged(before, "la build del wheel")
+                sdk.assert_worktree_unchanged(before, "la build del wheel")
         self.assertIn("Cargo.lock", str(raised.exception))
         self.assertIn("la build del wheel", str(raised.exception))
+
+        # E un file **nuovo** lasciato dalla suite: senza `-uall` non
+        # comparirebbe, e una fixture dimenticata sul disco passerebbe per
+        # albero fermo.
+        with patch.object(
+            sdk, "worktree_state", return_value={**before, "fixture.csv": "??"}
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.assert_worktree_unchanged(before, "l'esecuzione della suite")
+        self.assertIn("fixture.csv", str(raised.exception))
+        self.assertIn("l'esecuzione della suite", str(raised.exception))
 
         # Entrambe le fasi vanno confrontate: una sola lascerebbe scoperta
         # l'altra, ed e la corsa dei test quella che scrive file.
         source = SDK_RUNNER.read_text(encoding="utf-8")
-        self.assertEqual(source.count("assert_tracked_unchanged(before,"), 2)
+        self.assertEqual(source.count("assert_worktree_unchanged(before,"), 2)
+
+    def test_the_worktree_state_reads_untracked_files_too(self) -> None:
+        """Lo stato confrontato durante la corsa include gli untracked."""
+
+        def observed(arguments: list[str]) -> str:
+            if arguments[0] == "status":
+                self.assertEqual(arguments, ["status", "--porcelain", "-uall"])
+                return "?? nuovo.rs\n M lib.rs\n"
+            return "3\t1\tlib.rs\n"
+
+        with patch.object(sdk, "git", side_effect=observed):
+            state = sdk.worktree_state()
+
+        self.assertIn("nuovo.rs", state)
+        self.assertEqual(state["nuovo.rs"], "??")
+        self.assertEqual(state["lib.rs"], " M+3-1")
+
+    def test_the_suite_imports_the_package_only_from_the_installed_wheel(
+        self,
+    ) -> None:
+        """Il wheel costruito deve essere quello che risponde ai test.
+
+        Tre strade portano alla copia sorgente e nessuna e visibile nel
+        risultato — i test sono gli stessi e passano uguale: un `PYTHONPATH`
+        verso `python/`, una `cwd` dentro il source tree, e l'inserimento di
+        `sys.path` che pytest fa risalire fino al padre di `tests/`, che e un
+        package. Il comando le chiude tutte e tre.
+        """
+
+        with (
+            patch.object(sdk, "container_variable", return_value="x"),
+            patch.object(sdk, "compose_network_arguments", return_value=[]),
+            patch.object(sdk, "compose_volume", return_value="tls"),
+        ):
+            command = sdk_pytest_command("live")
+
+        script = command[-1]
+        self.assertIn(f"pip install -q --no-deps /wheels/{SDK_WHEEL_NAME}", script)
+        self.assertNotIn("PYTHONPATH", script)
+        # La suite gira in una directory che non contiene il package.
+        self.assertIn("-w", command)
+        self.assertEqual(command[command.index("-w") + 1], "/suite")
+        self.assertIn(
+            "cp -r /repo/crates/plenora-database-py/python/tests /suite/tests",
+            script,
+        )
+        self.assertIn("python -m pytest tests -q -rs", script)
+        # Il repository entra in sola lettura: nemmeno un test distratto puo
+        # reinstallare il `.so` accanto ai sorgenti.
+        self.assertIn(f"{ROOT}:/repo:ro", command)
+        self.assertIn("/wheels:ro", " ".join(command))
+        # E prima di pytest si verifica da dove verrebbe l'import.
+        self.assertIn("python /repo/scripts/sdk_wheel_probe.py", script)
+        self.assertLess(
+            script.index("sdk_wheel_probe.py"),
+            script.index("python -m pytest"),
+            "il probe deve girare prima della suite, non dopo",
+        )
+
+    def test_the_runner_installs_nothing_into_the_source_tree(self) -> None:
+        """Il modulo nativo non torna piu accanto ai sorgenti.
+
+        Copiarlo li rendeva possibile un `pytest` a mano che sembrava
+        funzionare, ed era la copia di una corsa precedente. Ora la build
+        esporta il wheel in una directory temporanea e il source tree resta
+        senza `.so`: chi salta il runner ottiene un errore di import, non un
+        risultato sbagliato.
+        """
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertIn("NATIVE.unlink()", source)
+        self.assertNotIn("cp /tmp/extracted", source)
+        self.assertIn("tempfile.TemporaryDirectory", source)
+        self.assertIn("maturin build --release --locked --out", source)
+        self.assertEqual(sdk.WHEEL_MOUNT, "/wheels")
+
+    def test_the_probe_refuses_an_origin_outside_site_packages(self) -> None:
+        """La guardia sta dentro l'interprete che eseguira i test.
+
+        E l'unico punto in cui la domanda "da dove verrebbe l'import" ha una
+        risposta certa: `sysconfig` la da per quell'interprete, mentre un
+        controllo sul comando poteva solo escludere le strade note.
+        """
+
+        site = Path("/usr/local/lib/python3.13/site-packages")
+        probe.assert_installed(
+            "plenora_database", site / "plenora_database" / "__init__.py", [site]
+        )
+
+        source_tree = Path("/repo/crates/plenora-database-py/python")
+        with self.assertRaises(RuntimeError) as raised:
+            probe.assert_installed(
+                "plenora_database",
+                source_tree / "plenora_database" / "__init__.py",
+                [site],
+            )
+        # Il messaggio deve dire **quale** copia avrebbe vinto: senza il
+        # percorso non si distingue un source tree in sys.path da un wheel
+        # mai installato.
+        self.assertIn(str(source_tree), str(raised.exception))
+
+        with self.assertRaises(RuntimeError):
+            probe.module_origin("plenora_database_che_non_esiste")
+
+        # Le directory di installazione si chiedono a sysconfig, non si
+        # scrivono: sono due, e in un venv non sono quelle di sistema.
+        self.assertTrue(probe.site_directories())
+
+    def test_the_runner_rejects_a_verdict_built_on_a_source_import(self) -> None:
+        """Il runner ricontrolla l'origine invece di fidarsi del probe.
+
+        Chi rilegge il verdetto non ha visto girare il probe: i percorsi
+        stanno nel JSON perche siano verificabili, e il runner li rifiuta
+        alla stessa regola.
+        """
+
+        installed = (
+            "/usr/local/lib/python3.13/site-packages/plenora_database "
+            "/usr/local/lib/python3.13/site-packages/plenora_database/"
+            "_native.abi3.so "
+            f"{'b' * 64}"
+        )
+        origin = sdk.installed_origin(f"{sdk.ORIGIN_MARKER}{installed}\n")
+        self.assertEqual(origin["native_sha256"], "b" * 64)
+        self.assertIn("site-packages", origin["package_path"])
+
+        source = (
+            "/repo/crates/plenora-database-py/python/plenora_database "
+            "/repo/crates/plenora-database-py/python/plenora_database/"
+            "_native.abi3.so "
+            f"{'b' * 64}"
+        )
+        with self.assertRaisesRegex(RuntimeError, "site-packages"):
+            sdk.installed_origin(f"{sdk.ORIGIN_MARKER}{source}\n")
+
+        with self.assertRaisesRegex(RuntimeError, "non interpretabile"):
+            sdk.installed_origin(f"{sdk.ORIGIN_MARKER}solo-un-campo\n")
+        with self.assertRaisesRegex(RuntimeError, "output senza la riga"):
+            sdk.installed_origin("nessun marcatore qui\n")
+
+    def test_the_environment_must_contain_the_wheel_under_test(self) -> None:
+        """Il pacchetto sotto esame deve comparire nel `pip freeze`.
+
+        Compare in due forme — `nome==versione` e `nome @ file://…` — e
+        leggerne una sola lo renderebbe invisibile nell'altra: un
+        `pip install` fallito in modo non fatale lascerebbe un ambiente
+        utilizzabile, e la suite girerebbe su una copia che nessuno ha
+        costruito qui.
+        """
+
+        pins = sdk.pinned_versions(
+            (ROOT / "requirements-sdk-tests.txt").read_text(encoding="utf-8")
+        )
+        declared = " ".join(f"{name}=={version}" for name, version in pins.items())
+        python = f"{sdk.PYTHON_MARKER}3.13.9"
+
+        for artifact in (
+            "plenora-database==0.9.2",
+            "plenora_database @ file:///wheels/plenora_database-0.9.2.whl",
+        ):
+            output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
+            versions = sdk.installed_versions(output)
+            self.assertEqual(versions["pyarrow"], pins["pyarrow"])
+            self.assertEqual(versions["python"], "3.13.9")
+            self.assertNotIn("plenora-database", versions)
+
+        without = f"{sdk.PACKAGES_MARKER}{declared}\n{python}\n"
+        with self.assertRaisesRegex(RuntimeError, "non risulta installato"):
+            sdk.installed_versions(without)
+
+    def test_the_images_are_tracked_because_a_tag_is_not_a_pin(self) -> None:
+        """La promessa e "tracciato", e il verdetto porta di cosa.
+
+        `rust:1.92` e un tag mutabile e l'`apt-get` della build non e fissato:
+        chiamare l'ambiente riproducibile prometterebbe che una seconda corsa
+        lo ricostruisce identico, che nessuna misura del runner garantisce.
+        """
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertIn("Tracciato, non riproducibile", source)
+
+        with patch.object(sdk, "run", return_value="sha256:abc []\n") as observed:
+            identity = sdk.image_identity("rust:1.92")
+        self.assertEqual(observed.call_args.args[0][:3], ["docker", "image", "inspect"])
+        self.assertEqual(identity["reference"], "rust:1.92")
+        self.assertEqual(identity["id"], "sha256:abc")
+
+        with patch.object(
+            sdk, "run", return_value='sha256:abc ["rust@sha256:def"]\n'
+        ):
+            self.assertEqual(
+                sdk.image_identity("rust:1.92")["digests"], ["rust@sha256:def"]
+            )
 
     def test_the_benchmarks_have_an_option_instead_of_an_impossible_filter(
         self,
@@ -2015,9 +2343,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
             patch.object(sdk, "compose_network_arguments", return_value=["--network", "n"]),
             patch.object(sdk, "compose_volume", return_value="tls"),
         ):
-            command = sdk.pytest_command(scope="benchmark")
+            command = sdk_pytest_command("benchmark")
 
-        self.assertIn("python/tests -k benchmark", command[-1])
+        self.assertIn("pytest tests -k benchmark", command[-1])
         self.assertIn("--network", command)
         self.assertIn("-e", command)
         self.assertTrue(

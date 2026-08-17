@@ -353,10 +353,21 @@ versioni Python ≥ 3.10.
 python scripts/check_sdk_tests.py                  # Postgres + MySQL live
 python scripts/check_sdk_tests.py --offline        # solo i test senza server
 python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
+python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 ```
 
-Il runner ricostruisce **sempre** il modulo nativo con `maturin` prima di
-`pytest`, e cancella il precedente prima di installare il nuovo.
+**Albero pulito.** Il runner rifiuta di partire se `git status --porcelain
+-uall` non e vuoto: modifiche staged, non staged e file mai tracciati sono
+tutti e tre un motivo di rifiuto. Il verdetto nomina un commit, e il wheel
+si costruisce dai file su disco: se i due non coincidono, quel nome descrive
+altro codice. `--allow-dirty` esiste per le corse esplorative e non fa
+finta di niente — il verdetto esce con `authoritative: false`,
+`worktree_dirty: true` e le righe di `git status` che lo hanno reso tale.
+
+Il runner costruisce **sempre** il wheel con `maturin` prima di `pytest`, e
+lo esporta in una directory temporanea fuori dal repository: nel source tree
+non installa niente, e un `.so` rimasto da una corsa precedente viene
+rimosso.
 
 Non lanciare `pytest` a mano: `_native.abi3.so` e gitignorato e nessuno lo
 rigenera. Dopo un cambio al Rust, un `pytest` diretto esegue il binario di
@@ -364,22 +375,40 @@ prima e risponde su codice che non e quello scritto — rosso su codice
 corretto, o verde su codice rotto. E successo due volte in una sola
 sessione, e le due correzioni sembravano entrambe sbagliate.
 
+**La suite verifica il wheel, non i sorgenti accanto.** Il container di test
+installa l'artefatto con `pip install --no-deps`, monta il repository in sola
+lettura, copia `python/tests` fuori dal source tree e gira da li senza
+`PYTHONPATH` verso il package locale. Prima di pytest,
+`scripts/sdk_wheel_probe.py` chiede a `importlib` da dove verrebbero
+`plenora_database` e `_native`, e fallisce se la risposta non e
+`site-packages`: le tre strade che riportano alla copia sorgente —
+`PYTHONPATH`, `cwd`, e l'inserimento di `sys.path` che pytest fa risalire al
+padre di `tests/`, che e un package — non si vedono nel risultato, perche i
+test sono gli stessi e passano uguale.
+
 Reti Compose, volume della CA MySQL e **credenziali** dei riferimenti
 vengono chiesti a Docker dal runner, non scritti a mano: valgono anche in
 un worktree con un altro progetto Compose, e non esiste una seconda copia
 della password da tenere allineata al compose.
 
-L'ambiente e fissato: `requirements-sdk-build.txt` per `maturin` — dentro
-il vincolo dichiarato da `pyproject.toml`, che il runner verifica — e
+I pin di pip sono fissati: `requirements-sdk-build.txt` per `maturin` —
+dentro il vincolo dichiarato da `pyproject.toml`, che il runner verifica — e
 `requirements-sdk-tests.txt` per la chiusura completa delle dipendenze di
 test. Il runner confronta i pin con il `pip freeze` del container e
 fallisce se divergono.
 
+**Tracciato, non riproducibile.** `rust:1.92` e `python:3.13-slim` sono tag
+mutabili e l'`apt-get` della build prende cio che il mirror pubblica oggi:
+una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
+che il runner garantisce e di dire con cosa ha girato — id e digest delle due
+immagini, versione di rustc e di Python effettive.
+
 Il verdetto JSON identifica cio che ha girato: commit, SHA-256 del wheel e
-del modulo nativo estratto, versioni effettive di Python, maturin, pyarrow,
-pandas e pytest. Il nome del wheel da solo non identifica un artefatto — e
-lo stesso a ogni build. Il runner verifica inoltre che ne' la build ne' i
-test abbiano modificato un file tracciato.
+del modulo nativo **caricato da site-packages**, percorsi da cui e stato
+importato, identita delle immagini e versioni effettive di Python, rustc,
+maturin, pyarrow, pandas e pytest. Il nome del wheel da solo non identifica
+un artefatto — e lo stesso a ogni build. Il runner verifica inoltre che ne'
+la build ne' i test abbiano cambiato l'albero di lavoro, untracked inclusi.
 
 ### Benchmark opt-in
 

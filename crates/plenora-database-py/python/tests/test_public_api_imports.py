@@ -20,7 +20,24 @@ from pathlib import Path
 import pytest
 
 
-PACKAGE_DIR = Path(__file__).resolve().parent.parent / "plenora_database"
+def _package_dir() -> Path:
+    """La directory del package **che verrebbe importato**.
+
+    Non quella accanto ai test: il runner del SDK installa il wheel e gira
+    la suite fuori dal source tree, quindi un percorso relativo a
+    `__file__` puntava a una directory inesistente — e, prima ancora, in un
+    albero di sviluppo avrebbe fatto leggere i sorgenti mentre `import`
+    caricava il pacchetto installato. Sono proprio le due copie che questo
+    modulo esiste per non confondere.
+    """
+
+    specification = importlib.util.find_spec("plenora_database")
+    if specification is None or not specification.origin:
+        pytest.skip("plenora_database non installato", allow_module_level=True)
+    return Path(specification.origin).resolve().parent
+
+
+PACKAGE_DIR = _package_dir()
 
 
 def _module_all(path: Path) -> set[str]:
