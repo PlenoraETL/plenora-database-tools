@@ -27,6 +27,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Self-test dei workflow CI: nessuna toolchain, nessuna cache, nessun
+  # container. Sta qui perche `rust-ci` e l'unico workflow che gira su ogni
+  # push e su ogni PR, ed e la ragione per cui il file che questa suite
+  # sostituisce e rimasto rosso per mesi senza che nessuno lo vedesse:
+  # nessun job lo eseguiva.
+  ci-workflows:
+    name: self-test workflow CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: scripts/test_ci_workflows.py
+        run: python3 scripts/test_ci_workflows.py
+
   fmt:
     name: cargo fmt
     runs-on: ubuntu-latest
