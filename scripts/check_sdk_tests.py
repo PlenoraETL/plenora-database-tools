@@ -89,6 +89,12 @@ SUITE_DIRECTORY = "/suite"
 # accanto a `PYTHON_IMAGE` perche e da quella scelta che dipende.
 SITE_PACKAGES = "/site-packages/"
 
+# Il bench di parita confronta il SDK con il CLI in subprocess, quindi gli
+# serve un binario Linux. Il percorso lo passa il runner, che e l'unico a
+# sapere dove ha montato il repository: scritto dentro il test era il punto
+# di mount di allora, e al primo cambio il bench si e saltato da solo.
+CLI_BINARY = Path("target/release/plenora-database")
+
 POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
 POSTGRES_PORT = 5432
@@ -518,7 +524,31 @@ def live_environment() -> list[str]:
         f"{container_variable(MYSQL_CONTAINER, 'MYSQL_PASSWORD')}",
         "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
         "-e", "PLENORA_BENCH_PARITY=1",
+        "-e", f"PLENORA_CLI_BIN={REPOSITORY_MOUNT}/{CLI_BINARY.as_posix()}",
     ]
+
+
+def assert_benchmark_prerequisites() -> None:
+    """`--benchmark-only` senza binario CLI non misurerebbe niente.
+
+    Nella corsa completa l'assenza del binario e uno skip visibile in mezzo a
+    duecento test che hanno risposto. Qui sarebbe l'intero scope: il bench di
+    parita si salta, l'altro bench gira, e il verdetto dice "passed" per una
+    corsa che non ha confrontato nulla.
+
+    # Raises
+
+    `RuntimeError` nominando il percorso atteso e come costruirlo.
+    """
+
+    if (ROOT / CLI_BINARY).exists():
+        return
+    raise RuntimeError(
+        f"--benchmark-only senza il binario CLI in {CLI_BINARY.as_posix()}: "
+        "il bench di parita si salterebbe e lo scope non misurerebbe nulla. "
+        "Costruiscilo per Linux (e il container a eseguirlo) con "
+        "`cargo build --release -p plenora-database-cli`."
+    )
 
 
 def pytest_command(*, scope: str, wheels: Path, wheel: str) -> list[str]:
@@ -732,6 +762,8 @@ def main() -> int:
             PYPROJECT.read_text(encoding="utf-8"),
             BUILD_REQUIREMENTS.read_text(encoding="utf-8"),
         )
+        if selected == "benchmark":
+            assert_benchmark_prerequisites()
         dirty = porcelain_entries()
         if not arguments.allow_dirty:
             assert_clean_worktree(dirty)

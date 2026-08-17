@@ -15,8 +15,12 @@ Il default `pytest` lo salta per non appesantire CI/dev loop.
 Prerequisiti:
   - env `PLENORA_TEST_POSTGRES_DSN` valorizzato
   - env `PLENORA_BENCH_PARITY=1`
-  - binario CLI compilato in `target/release/plenora-database`
-    (o path override via env `PLENORA_CLI_BIN`)
+  - env `PLENORA_CLI_BIN` sul binario CLI compilato: il runner lo passa,
+    perche e lui a sapere dove ha montato il repository. Il default
+    scritto qui era il punto di mount di allora; quando il runner ha
+    cambiato mount, il bench ha smesso di trovare il binario e si e
+    saltato da solo — che e il modo in cui un confronto sparisce senza
+    che nessuno lo veda fallire.
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ import plenora_database as p
 from ._harness import POSTGRES_DSN_ENV, connect_postgres, postgres_dsn_or_skip
 
 BENCH_ENV = "PLENORA_BENCH_PARITY"
-DEFAULT_CLI_BIN = "/workspace/target/release/plenora-database"
+CLI_BIN_ENV = "PLENORA_CLI_BIN"
 # Target ratio SDK / CLI (subprocess CLI overhead >= 3x).
 MIN_SPEEDUP = 3.0
 # Numero iterazioni per campionamento. Sufficiente a smorzare rumore
@@ -48,12 +52,18 @@ def _bench_enabled_or_skip() -> None:
 
 
 def _cli_bin_or_skip() -> str:
-    candidate = os.environ.get("PLENORA_CLI_BIN", DEFAULT_CLI_BIN)
+    candidate = os.environ.get(CLI_BIN_ENV)
+    if not candidate:
+        pytest.skip(
+            f"bench: {CLI_BIN_ENV} non impostata. Il runner la passa; a mano, "
+            "indicarla sul binario compilato con "
+            "`cargo build --release -p plenora-database-cli`."
+        )
     if not os.path.exists(candidate):
         pytest.skip(
             f"bench: CLI binary non trovato in {candidate}. "
             "Build con `cargo build --release -p plenora-database-cli` "
-            "o setta PLENORA_CLI_BIN al path corretto."
+            f"o setta {CLI_BIN_ENV} al path corretto."
         )
     return candidate
 

@@ -413,8 +413,15 @@ la build ne' i test abbiano cambiato l'albero di lavoro, untracked inclusi.
 ### Benchmark opt-in
 
 I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
-e gia impostato). Per lanciarli da soli, sempre su un'estensione appena
-costruita, c'e l'opzione dedicata:
+e gia impostato). Il confronto SDK / CLI ha bisogno del binario Linux in
+`target/release/plenora-database` — e il container a eseguirlo — e il runner
+gli passa il percorso con `PLENORA_CLI_BIN`: scriverlo dentro il test lo
+legava al punto di mount di allora, e al primo cambio il bench si e saltato
+da solo. In `--benchmark-only` il binario assente e un rifiuto, non uno
+skip: senza, lo scope direbbe "passed" per un confronto mai avvenuto.
+
+Per lanciarli da soli, sempre su un wheel appena costruito, c'e l'opzione
+dedicata:
 
 ```bash
 python scripts/check_sdk_tests.py --benchmark-only

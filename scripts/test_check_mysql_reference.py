@@ -2363,6 +2363,68 @@ class PythonSdkRunnerTests(unittest.TestCase):
             "il README indica un filtro che il runner non accetta",
         )
 
+    def test_the_parity_bench_gets_the_cli_path_from_who_mounted_the_repository(
+        self,
+    ) -> None:
+        """Il percorso del binario CLI lo passa il runner, non il test.
+
+        Il test lo aveva scritto dentro — `/workspace/target/release/...`,
+        cioe il punto di mount di allora. Quando il runner e passato a
+        montare il repository in `/repo`, il bench non lo ha piu trovato e si
+        e saltato da solo: nessun fallimento, un test in meno, e un verdetto
+        che continuava a dire "passed".
+        """
+
+        bench = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "tests"
+            / "test_benchmark_parity.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn(
+            "/workspace/target/release",
+            bench,
+            "il bench conosce un punto di mount che il runner non usa piu",
+        )
+        self.assertIn('CLI_BIN_ENV = "PLENORA_CLI_BIN"', bench)
+
+        with (
+            patch.object(sdk, "container_variable", return_value="x"),
+            patch.object(sdk, "compose_network_arguments", return_value=[]),
+            patch.object(sdk, "compose_volume", return_value="tls"),
+        ):
+            command = sdk_pytest_command("benchmark")
+        self.assertIn(
+            "PLENORA_CLI_BIN=/repo/target/release/plenora-database", command
+        )
+
+    def test_a_benchmark_only_run_without_the_cli_binary_is_refused(self) -> None:
+        """Lo scope del bench non puo passare senza aver misurato.
+
+        Nella corsa completa il binario assente e uno skip visibile fra
+        duecento test che hanno risposto. In `--benchmark-only` sarebbe
+        l'intero scope, e il verdetto direbbe "passed" per un confronto che
+        non e avvenuto.
+        """
+
+        with patch.object(sdk.Path, "exists", return_value=True):
+            sdk.assert_benchmark_prerequisites()
+
+        with patch.object(sdk.Path, "exists", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "target/release"):
+                sdk.assert_benchmark_prerequisites()
+
+        # E il controllo deve stare prima della build, non dopo: costruire un
+        # wheel per poi scoprire che non c'e niente da misurare e mezz'ora
+        # buttata.
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("assert_benchmark_prerequisites()\n        dirty"),
+            source.index("artifact = build_wheel("),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
