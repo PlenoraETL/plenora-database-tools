@@ -24,13 +24,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.mariadb_references import (  # noqa: E402
+    COMPATIBILITY,
     COMPOSE_FILE,
-    CONTAINER,
     EVIDENCE,
     EVIDENCE_ROLE,
     MISMATCH_ALIAS,
+    REFERENCES,
     REFERENCES_FILE,
-    validate_compose_pins_the_reference,
+    validate_compose_pins_the_references,
 )
 
 ADR = ROOT / "docs" / "adr" / "0014-mariadb-evidence-first.md"
@@ -50,27 +51,48 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         di fidarsi.
         """
 
-        validate_compose_pins_the_reference()
+        validate_compose_pins_the_references()
         compose = COMPOSE_FILE.read_text(encoding="utf-8")
-        self.assertEqual(compose.count(EVIDENCE.digest), 2, "certgen e server")
-        self.assertNotIn(f"mariadb:{EVIDENCE.exact_version}", compose)
+        for reference in REFERENCES:
+            self.assertEqual(
+                compose.count(reference.digest), 2, f"{reference.label}: certgen e server"
+            )
+            self.assertNotIn(f"mariadb:{reference.exact_version}", compose)
 
         for script in sorted((ROOT / "scripts").glob("*.py")):
             if script.name in {"mariadb_references.py", Path(__file__).name}:
                 continue
             source = script.read_text(encoding="utf-8")
-            self.assertNotIn(
-                EVIDENCE.digest,
-                source,
-                f"{script.name} ricopia il digest invece di chiederlo",
-            )
+            for reference in REFERENCES:
+                self.assertNotIn(
+                    reference.digest,
+                    source,
+                    f"{script.name} ricopia il digest invece di chiederlo",
+                )
 
-    def test_the_reference_is_pinned_by_an_immutable_digest(self) -> None:
+    def test_every_reference_is_pinned_by_an_immutable_digest(self) -> None:
         document = REFERENCES_FILE.read_text(encoding="utf-8")
-        self.assertIn(EVIDENCE.digest, document)
-        self.assertTrue(EVIDENCE.digest.startswith("sha256:"))
-        self.assertEqual(len(EVIDENCE.digest), 71)
-        self.assertEqual(EVIDENCE.exact_version.count("."), 2)
+        self.assertGreaterEqual(len(REFERENCES), 2, "evidence piu la LTS precedente")
+        for reference in REFERENCES:
+            self.assertIn(reference.digest, document)
+            self.assertTrue(reference.digest.startswith("sha256:"))
+            self.assertEqual(len(reference.digest), 71)
+            self.assertEqual(reference.exact_version.count("."), 2)
+
+    def test_the_previous_lts_is_kept_as_a_compatibility_row(self) -> None:
+        """L'evidenza gia raccolta non si butta quando esce una versione.
+
+        Per un fork il confronto fra due versioni **e** evidenza: dice se una
+        divergenza dal comportamento MySQL appartiene a MariaDB o a una sua
+        release. Toglierla lascerebbe una sola osservazione e nessun modo di
+        attribuirla.
+        """
+
+        self.assertEqual(len(COMPATIBILITY), 1)
+        previous = COMPATIBILITY[0]
+        self.assertEqual(previous.exact_version, "11.8.8")
+        self.assertLess(previous.major, EVIDENCE.major)
+        self.assertNotEqual(previous.tls_volume, EVIDENCE.tls_volume)
 
     def test_the_fixture_declares_itself_evidence_and_not_a_baseline(self) -> None:
         """Il ruolo e `evidence`, e non e una sfumatura lessicale.
@@ -85,10 +107,9 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
 
         self.assertEqual(EVIDENCE.role, EVIDENCE_ROLE)
         self.assertEqual(EVIDENCE_ROLE, "evidence")
-        for role in ("baseline", "compatibility"):
-            self.assertNotIn(
-                f'"role": "{role}"', REFERENCES_FILE.read_text(encoding="utf-8")
-            )
+        self.assertNotIn(
+            '"role": "baseline"', REFERENCES_FILE.read_text(encoding="utf-8")
+        )
 
     def test_the_provider_still_fails_closed_on_mariadb(self) -> None:
         """Il fail-close resta finche una capability non ha una prova.
@@ -109,8 +130,9 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
 
         adr = ADR.read_text(encoding="utf-8")
         self.assertIn("Il **fail-close resta**", adr)
-        self.assertIn(EVIDENCE.exact_version, adr)
-        self.assertIn(EVIDENCE.digest, adr)
+        for reference in REFERENCES:
+            self.assertIn(reference.exact_version, adr)
+            self.assertIn(reference.digest, adr)
 
     def test_no_surface_declares_mariadb_qualified(self) -> None:
         """Nessun documento corrente puo dire che MariaDB e supportata.
@@ -140,12 +162,13 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
                     f"'{claim}' mentre il provider la rifiuta",
                 )
 
-    def test_the_two_fixtures_can_run_side_by_side(self) -> None:
-        """L'evidenza e un confronto, quindi le due fixture devono convivere.
+    def test_every_fixture_can_run_beside_the_others(self) -> None:
+        """L'evidenza e un confronto, quindi le fixture devono convivere.
 
-        Progetti Compose distinti — altrimenti un `down` su una cancella i
-        container dell'altra — e porte distinte sul loopback, altrimenti la
-        seconda non parte e il confronto si riduce a una descrizione.
+        Tre server insieme: le due MariaDB e MySQL. Progetti Compose distinti
+        — altrimenti un `down` su uno cancella i container degli altri — e
+        porte distinte sul loopback, altrimenti il secondo non parte e il
+        confronto si riduce a una descrizione.
         """
 
         mariadb = COMPOSE_FILE.read_text(encoding="utf-8")
@@ -156,46 +179,69 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         def published(compose: str) -> set[str]:
             return set(re.findall(r'"127\.0\.0\.1:(\d+):\d+"', compose))
 
-        self.assertTrue(published(mariadb))
-        self.assertFalse(
-            published(mariadb) & published(mysql),
-            "le due fixture pubblicano la stessa porta sul loopback",
+        mariadb_ports = published(mariadb)
+        self.assertEqual(
+            mariadb_ports,
+            {str(reference.port) for reference in REFERENCES},
+            "le porte pubblicate non sono quelle dichiarate",
         )
-        self.assertIn(f"container_name: {CONTAINER}", mariadb)
+        self.assertFalse(
+            mariadb_ports & published(mysql),
+            "una fixture MariaDB pubblica la porta della fixture MySQL",
+        )
+
+        containers = set(re.findall(r"container_name: (\S+)", mariadb))
+        for reference in REFERENCES:
+            self.assertIn(reference.container, containers)
+            # Ogni server ha il proprio volume TLS: condividerlo darebbe a uno
+            # il certificato emesso per l'altro, e il client lo rifiuterebbe
+            # per hostname mismatch — un errore che somiglia a un difetto del
+            # provider e non lo e.
+            self.assertIn(f"{reference.tls_volume}:/etc/mysql/tls:ro", mariadb)
 
     def test_the_tls_generator_is_shared_and_takes_the_host_as_an_argument(
         self,
     ) -> None:
-        """Un generatore solo, parametrizzato — non due copie.
+        """Un generatore solo, parametrizzato — non una copia per fixture.
 
         Due copie della stessa fixture TLS divergono alla prima correzione
         applicata a una sola, e la seconda continua a emettere certificati
         con il difetto che la prima ha gia risolto. Il nome host e
-        obbligatorio: un default silenzioso emetterebbe per MariaDB un
-        certificato valido per l'altro riferimento, e il client lo
-        rifiuterebbe per hostname mismatch — un errore che non dice quale
-        nome ci si aspettava.
+        obbligatorio: un default silenzioso emetterebbe per un riferimento il
+        certificato di un altro, e il client lo rifiuterebbe per hostname
+        mismatch — un errore che non dice quale nome ci si aspettava.
         """
 
         generator = GENERATOR.read_text(encoding="utf-8")
         self.assertIn("SERVER_HOST=${4:?", generator)
         self.assertNotIn("dataflow-mysql", generator)
         self.assertNotIn("dataflow-mariadb", generator)
-
-        compose = COMPOSE_FILE.read_text(encoding="utf-8")
-        self.assertIn("./docker/mysql/tls:/fixture:ro", compose)
-        self.assertIn(f'"/fixture-host/server.ext", "{CONTAINER}"', compose)
         self.assertFalse(
             (ROOT / "docker" / "mariadb" / "tls" / "generate.sh").exists(),
             "una seconda copia del generatore",
         )
 
-        extension = SERVER_EXT.read_text(encoding="utf-8")
-        self.assertIn(f"DNS.1 = {CONTAINER}", extension)
-        self.assertIn("IP.1 = 127.0.0.1", extension)
-        # L'alias della prova TLS negativa non deve stare nei SAN, altrimenti
-        # il rifiuto per identita diventerebbe un successo.
-        self.assertNotIn(MISMATCH_ALIAS, extension)
+        compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        self.assertIn("./docker/mysql/tls:/fixture:ro", compose)
+        for reference in REFERENCES:
+            extensions = sorted(
+                (ROOT / "docker" / "mariadb" / "tls").glob("*.ext")
+            )
+            wanted = f"DNS.1 = {reference.container}"
+            extension = next(
+                path
+                for path in extensions
+                if wanted in path.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertIn(
+                f'"/fixture-host/{extension.name}", "{reference.container}"',
+                compose,
+                f"{reference.label}: certificato emesso per un altro nome",
+            )
+            self.assertIn("IP.1 = 127.0.0.1", extension.read_text(encoding="utf-8"))
+            # L'alias della prova TLS negativa non deve stare nei SAN,
+            # altrimenti il rifiuto per identita diventerebbe un successo.
+            self.assertNotIn(MISMATCH_ALIAS, extension.read_text(encoding="utf-8"))
         self.assertIn(MISMATCH_ALIAS, compose)
 
 

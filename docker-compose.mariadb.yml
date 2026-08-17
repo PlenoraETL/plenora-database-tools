@@ -1,11 +1,17 @@
-# Fixture di **evidenza** MariaDB 11.8.8 LTS, fissata per digest immutabile.
-# Versione e digest sono dichiarati in docker/mariadb/references.json ed e quel
-# documento a comandare: `scripts/mariadb_references.py` verifica che i due
-# servizi qui sotto fissino esattamente quell'immagine.
+# Fixture di **evidenza** MariaDB, due righe fissate per digest immutabile:
+# 12.3.2 come riferimento principale del ciclo e 11.8.8, la LTS precedente,
+# come riga di compatibilita. Versioni, digest, container e porte sono
+# dichiarati in docker/mariadb/references.json ed e quel documento a
+# comandare: `scripts/mariadb_references.py` verifica che i quattro servizi
+# qui sotto fissino esattamente quelle immagini.
 #
-# Non e un riferimento qualificato. Il provider `mysql` fa fail-close alla
+# Non sono riferimenti qualificati. Il provider `mysql` fa fail-close alla
 # probe quando riconosce MariaDB, e questa fixture serve a produrre l'evidenza
 # che ADR 0014 chiede prima di decidere se qualificarla — non a farla passare.
+#
+# I due server salgono insieme perche l'evidenza e un confronto: fra le due
+# versioni di MariaDB, e fra MariaDB e la fixture MySQL, che resta su un
+# progetto e una porta suoi.
 #
 # Progetto Compose esplicito. Senza questa riga Compose deriva il nome dalla
 # directory, quindi tutti i compose del repository finirebbero nello stesso
@@ -16,15 +22,14 @@ name: plenora-mariadb
 services:
   # Il generatore e quello di MySQL, non una copia: due copie della stessa
   # fixture TLS divergono alla prima correzione di una sola. Prende il nome
-  # host come argomento, quindi il certificato copre `dataflow-mariadb` e non
-  # quello dell'altro riferimento.
+  # host come argomento, quindi ogni server ha il certificato del proprio.
   mariadb-certgen:
-    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    image: mariadb@sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d
     container_name: dataflow-mariadb-certgen
     user: "0:0"
     volumes:
       - mariadb_ca_private:/ca
-      - mariadb_tls:/tls
+      - mariadb_12_tls:/tls
       - ./docker/mysql/tls:/fixture:ro
       - ./docker/mariadb/tls:/fixture-host:ro
     entrypoint: ["/bin/bash", "/fixture/generate.sh"]
@@ -32,7 +37,7 @@ services:
     restart: "no"
 
   mariadb:
-    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    image: mariadb@sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d
     container_name: dataflow-mariadb
     environment:
       MARIADB_RANDOM_ROOT_PASSWORD: "yes"
@@ -40,8 +45,6 @@ services:
       MARIADB_USER: dataflow
       MARIADB_PASSWORD: "DataFlow_Test_2026!"
     ports:
-      # Porta diversa da quella di MySQL: le due fixture devono poter stare
-      # su in contemporanea, perche l'evidenza e un confronto fra le due.
       - "127.0.0.1:3307:3306"
     command:
       - --require-secure-transport=ON
@@ -53,13 +56,12 @@ services:
     volumes:
       - mariadb_data:/var/lib/mysql
       - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
-      - mariadb_tls:/etc/mysql/tls:ro
+      - mariadb_12_tls:/etc/mysql/tls:ro
     networks:
       default:
         aliases:
-          # Lo stesso alias scoperto della fixture MySQL: un nome che il
-          # certificato **non** copre, per poter provare che il rifiuto TLS
-          # sia un rifiuto di identita e non un errore DNS.
+          # Un nome che nessun certificato copre, per poter provare che il
+          # rifiuto TLS sia un rifiuto di identita e non un errore DNS.
           - mariadb-hostname-mismatch
     depends_on:
       mariadb-certgen:
@@ -76,7 +78,58 @@ services:
       start_period: 30s
     restart: "no"
 
+  # --- LTS precedente ------------------------------------------------------
+  # Resta accesa accanto alla principale: l'evidenza raccolta su 11.8.8 non si
+  # butta quando esce una versione nuova, e il confronto fra le due e cio che
+  # dice se una divergenza dipende dalla versione o dal fork.
+  mariadb-11-certgen:
+    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    container_name: dataflow-mariadb-11-certgen
+    user: "0:0"
+    volumes:
+      - mariadb_ca_private:/ca
+      - mariadb_11_tls:/tls
+      - ./docker/mysql/tls:/fixture:ro
+      - ./docker/mariadb/tls:/fixture-host:ro
+    entrypoint: ["/bin/bash", "/fixture/generate.sh"]
+    command: ["/ca", "/tls", "/fixture-host/server-11.ext", "dataflow-mariadb-11"]
+    restart: "no"
+
+  mariadb-11:
+    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    container_name: dataflow-mariadb-11
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_DATABASE: dataflow_test
+      MARIADB_USER: dataflow
+      MARIADB_PASSWORD: "DataFlow_Test_2026!"
+    ports:
+      - "127.0.0.1:3308:3306"
+    command:
+      - --require-secure-transport=ON
+      - --local-infile=OFF
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      - --ssl-ca=/etc/mysql/tls/ca.pem
+      - --ssl-cert=/etc/mysql/tls/server.pem
+      - --ssl-key=/etc/mysql/tls/server.key
+    volumes:
+      - mariadb_11_data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - mariadb_11_tls:/etc/mysql/tls:ro
+    depends_on:
+      mariadb-11-certgen:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: "no"
+
 volumes:
   mariadb_data:
+  mariadb_11_data:
   mariadb_ca_private:
-  mariadb_tls:
+  mariadb_12_tls:
+  mariadb_11_tls:

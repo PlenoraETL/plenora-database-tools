@@ -1,12 +1,22 @@
 {
   "schema_version": 1,
-  "comment": "Fonte di verita unica del riferimento MariaDB: versione esatta e digest immutabile. Consumata da scripts/mariadb_references.py e, tramite la sua validazione, da docker-compose.mariadb.yml. Il digest e il manifest index OCI risolto da docker.io/library/mariadb:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata. Il ruolo e `evidence`, non `baseline`: MariaDB non e un riferimento qualificato — il provider MySQL fa fail-close alla probe — e questa fixture esiste per produrre l'evidenza che ADR 0014 chiede prima di decidere se qualificarla.",
+  "comment": "Fonte di verita unica dei riferimenti MariaDB del ciclo di evidenza: versione esatta, digest immutabile, container e porta di ognuno. Consumata da scripts/mariadb_references.py e, tramite la sua validazione, da docker-compose.mariadb.yml. Un digest e il manifest index OCI risolto da docker.io/library/mariadb:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata. Nessuno di questi e un riferimento qualificato — il provider MySQL fa fail-close alla probe — e i ruoli lo dicono: `evidence` e la riga principale del ciclo, `compatibility` la LTS precedente, che resta perche l'evidenza gia raccolta su di essa non va buttata.",
   "references": [
     {
       "role": "evidence",
+      "label": "MariaDB 12.3",
+      "exact_version": "12.3.2",
+      "digest": "sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d",
+      "container": "dataflow-mariadb",
+      "port": 3307
+    },
+    {
+      "role": "compatibility",
       "label": "MariaDB 11.8 LTS",
       "exact_version": "11.8.8",
-      "digest": "sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf"
+      "digest": "sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf",
+      "container": "dataflow-mariadb-11",
+      "port": 3308
     }
   ]
 }

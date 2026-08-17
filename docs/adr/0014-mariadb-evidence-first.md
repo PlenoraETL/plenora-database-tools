@@ -41,38 +41,47 @@ provider usa, altre potrebbero essere piu profonde di come suonano.
 fissa per SQL Server: capability atomiche dopo evidenza riproducibile.
 
 1. Il ciclo apre con una **fixture di evidenza**, non con un riferimento
-   qualificato: `docker-compose.mariadb.yml`, MariaDB 11.8.8 LTS fissata per
-   digest immutabile in `docker/mariadb/references.json`, con la stessa
-   fixture TLS a CA privata del riferimento MySQL. Il ruolo dichiarato e
-   `evidence`: chiamarlo `baseline` la farebbe leggere come piattaforma
-   supportata, che e l'equivoco che il fail-close esiste per impedire.
+   qualificato: `docker-compose.mariadb.yml`, con le versioni fissate per
+   digest immutabile in `docker/mariadb/references.json` e la stessa fixture
+   TLS a CA privata del riferimento MySQL. I ruoli dichiarati sono `evidence`
+   e `compatibility`, mai `baseline`: `baseline` la farebbe leggere come
+   piattaforma supportata, che e l'equivoco che il fail-close esiste per
+   impedire.
 2. Il **fail-close resta**. Non viene rimosso, allentato o reso opzionale
    finche una capability non ha una prova che la sostiene. Un provider che
    accetta e poi diverge in silenzio e peggio di uno che rifiuta.
-3. La fixture MariaDB e quella MySQL devono poter **stare su insieme** —
-   progetti Compose distinti, porte distinte — perche l'evidenza e un
-   confronto fra le due, non una descrizione di una sola.
+3. Le fixture devono poter **stare su tutte insieme** — progetti Compose
+   distinti, container e porte distinti — perche l'evidenza e un confronto:
+   fra le due versioni di MariaDB, e fra MariaDB e MySQL. Una descrizione di
+   una sola non dice se una divergenza dipende dal fork o dalla versione.
 4. Il generatore TLS e **condiviso**, parametrizzato per nome host. Due copie
    della stessa fixture divergono alla prima correzione applicata a una sola.
 5. Quando l'evidenza sara raccolta, la scelta fra provider dedicato e
    qualificazione sara registrata in una ADR successiva, con i risultati
    allegati. Questa ADR non la anticipa.
 
-## Riferimento
+## Riferimenti
 
-MariaDB 11.8 LTS, versione esatta 11.8.8, digest
-`sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf`.
+| ruolo | versione | digest |
+|---|---|---|
+| `evidence` | MariaDB 12.3.2 | `sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d` |
+| `compatibility` | MariaDB 11.8.8 LTS | `sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf` |
 
-E l'ultima LTS, coerente con la scelta fatta per MySQL, dove la baseline e la
-piu recente qualificata e le LTS precedenti sono righe di compatibilita. Se
-il ciclo mostrera che la versione conta — e per un fork e plausibile — le
-righe si aggiungono al documento, che e gia la sola fonte letta da compose e
-script.
+**Correzione (2026-08-17).** La prima stesura di questa ADR dichiarava 11.8.8
+"l'ultima LTS". Non lo e: il tag `lts` di Docker Hub risolve 12.3.2, cioe lo
+stesso digest della riga `evidence`. La riga principale del ciclo e ora
+12.3.2, e 11.8.8 resta come `compatibility`.
+
+Resta perche l'evidenza gia raccolta su una versione non si butta quando ne
+esce un'altra — anzi, per un fork il confronto fra due versioni e esso stesso
+evidenza: dice se una divergenza dal comportamento MySQL appartiene a MariaDB
+o a una sua release. Se il ciclo mostrera che servono altre righe, si
+aggiungono al documento, che e gia la sola fonte letta da compose e script.
 
 ## Conseguenze
 
-* Il repository guadagna una fixture MariaDB avviabile e fissata, e un
-  documento che dice cosa e: evidenza, non supporto.
+* Il repository guadagna due fixture MariaDB avviabili e fissate, e un
+  documento che dice cosa sono: evidenza, non supporto.
 * Nessuna promessa cambia. `docs/PROVIDER-MATURITY-MATRIX.md`,
   `docs/mysql/README.md` e il messaggio di fail-close continuano a dire che
   MariaDB non e qualificata, e restano veri.
