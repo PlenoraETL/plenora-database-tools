@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 import unittest
 import importlib.util
 import sys
@@ -1822,6 +1823,15 @@ SDK_ARTIFACT = {
     "wheel": SDK_WHEEL_NAME,
     "wheel_sha256": "a" * 64,
     "native_sha256": "b" * 64,
+    "cli": {
+        "binary": "plenora-database",
+        "sha256": "c" * 64,
+        "features": ["postgres"],
+        "build_command": (
+            "cargo build --release --locked -p plenora-database-cli "
+            "--no-default-features --features postgres"
+        ),
+    },
     "package_path": "/usr/local/lib/python3.13/site-packages/plenora_database",
     "native_path": (
         "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
@@ -1854,7 +1864,7 @@ def sdk_pytest_command(scope: str) -> list[str]:
     """Il comando della suite, con la directory temporanea gia risolta."""
 
     return sdk.pytest_command(
-        scope=scope, wheels=Path("/tmp/plenora-wheels"), wheel=SDK_WHEEL_NAME
+        scope=scope, artifacts=Path("/tmp/plenora-artifacts"), wheel=SDK_WHEEL_NAME
     )
 
 
@@ -1908,7 +1918,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             return f"<{variable}>"
 
         with patch.object(sdk, "container_variable", side_effect=observed):
-            environment = sdk.live_environment()
+            environment = sdk.live_environment(cli="/artifacts/plenora-database")
 
         expected = {
             (container, variable)
@@ -2022,6 +2032,16 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
         self.assertEqual(recorded["versions"]["rustc"], "1.92.0")
+
+        # Il bench confronta due artefatti, quindi il verdetto ne identifica
+        # due: del CLI servono anche le feature — decidono quali provider
+        # sono dentro il binario — e il comando che le ha chieste.
+        cli = recorded["artifact"]["cli"]
+        self.assertEqual(cli["binary"], "plenora-database")
+        self.assertEqual(cli["sha256"], "c" * 64)
+        self.assertEqual(cli["features"], ["postgres"])
+        self.assertIn("--no-default-features", cli["build_command"])
+        self.assertIn("--locked", cli["build_command"])
 
         # Un tag e mutabile: senza id e digest il verdetto direbbe "rust:1.92"
         # e non quale rust:1.92.
@@ -2171,7 +2191,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             command = sdk_pytest_command("live")
 
         script = command[-1]
-        self.assertIn(f"pip install -q --no-deps /wheels/{SDK_WHEEL_NAME}", script)
+        self.assertIn(f"pip install -q --no-deps /artifacts/{SDK_WHEEL_NAME}", script)
         self.assertNotIn("PYTHONPATH", script)
         # La suite gira in una directory che non contiene il package.
         self.assertIn("-w", command)
@@ -2184,7 +2204,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         # Il repository entra in sola lettura: nemmeno un test distratto puo
         # reinstallare il `.so` accanto ai sorgenti.
         self.assertIn(f"{ROOT}:/repo:ro", command)
-        self.assertIn("/wheels:ro", " ".join(command))
+        self.assertIn("/artifacts:ro", " ".join(command))
         # E prima di pytest si verifica da dove verrebbe l'import.
         self.assertIn("python /repo/scripts/sdk_wheel_probe.py", script)
         self.assertLess(
@@ -2208,7 +2228,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertNotIn("cp /tmp/extracted", source)
         self.assertIn("tempfile.TemporaryDirectory", source)
         self.assertIn("maturin build --release --locked --out", source)
-        self.assertEqual(sdk.WHEEL_MOUNT, "/wheels")
+        self.assertEqual(sdk.ARTIFACT_MOUNT, "/artifacts")
 
     def test_the_probe_refuses_an_origin_outside_site_packages(self) -> None:
         """La guardia sta dentro l'interprete che eseguira i test.
@@ -2292,7 +2312,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         for artifact in (
             "plenora-database==0.9.2",
-            "plenora_database @ file:///wheels/plenora_database-0.9.2.whl",
+            "plenora_database @ file:///artifacts/plenora_database-0.9.2.whl",
         ):
             output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
             versions = sdk.installed_versions(output)
@@ -2363,16 +2383,16 @@ class PythonSdkRunnerTests(unittest.TestCase):
             "il README indica un filtro che il runner non accetta",
         )
 
-    def test_the_parity_bench_gets_the_cli_path_from_who_mounted_the_repository(
-        self,
-    ) -> None:
-        """Il percorso del binario CLI lo passa il runner, non il test.
+    def test_the_parity_bench_runs_the_cli_this_build_produced(self) -> None:
+        """Il binario del bench nasce nella corsa, e il runner ne dice il path.
 
-        Il test lo aveva scritto dentro — `/workspace/target/release/...`,
-        cioe il punto di mount di allora. Quando il runner e passato a
-        montare il repository in `/repo`, il bench non lo ha piu trovato e si
-        e saltato da solo: nessun fallimento, un test in meno, e un verdetto
-        che continuava a dire "passed".
+        Il confronto SDK / CLI e un rapporto fra due tempi: finche il binario
+        arrivava da `target/release` del repository, quel rapporto metteva
+        insieme un wheel appena costruito e un eseguibile di provenienza
+        ignota — nel caso osservato di tre giorni prima, di un commit che
+        nessuno sapeva dire. E il percorso, scritto dentro il test, era il
+        punto di mount di allora: cambiato il mount, il bench non ha piu
+        trovato niente e si e saltato da solo.
         """
 
         bench = (
@@ -2383,12 +2403,16 @@ class PythonSdkRunnerTests(unittest.TestCase):
             / "tests"
             / "test_benchmark_parity.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn(
-            "/workspace/target/release",
-            bench,
-            "il bench conosce un punto di mount che il runner non usa piu",
-        )
         self.assertIn('CLI_BIN_ENV = "PLENORA_CLI_BIN"', bench)
+
+        # Nessuna delle due superfici puo tornare a nominare l'albero.
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        for surface, text in (("bench", bench), ("runner", source)):
+            self.assertNotIn(
+                "target/release/plenora-database",
+                text,
+                f"il {surface} torna a prendere il CLI dal repository",
+            )
 
         with (
             patch.object(sdk, "container_variable", return_value="x"),
@@ -2396,34 +2420,136 @@ class PythonSdkRunnerTests(unittest.TestCase):
             patch.object(sdk, "compose_volume", return_value="tls"),
         ):
             command = sdk_pytest_command("benchmark")
-        self.assertIn(
-            "PLENORA_CLI_BIN=/repo/target/release/plenora-database", command
-        )
+        self.assertIn("PLENORA_CLI_BIN=/artifacts/plenora-database", command)
+        self.assertIn("/artifacts:ro", " ".join(command))
 
-    def test_a_benchmark_only_run_without_the_cli_binary_is_refused(self) -> None:
-        """Lo scope del bench non puo passare senza aver misurato.
+    def test_both_sides_of_the_parity_bench_speak_the_same_transport(self) -> None:
+        """Il CLI del bench si collega come ci si collega il SDK.
 
-        Nella corsa completa il binario assente e uno skip visibile fra
-        duecento test che hanno risposto. In `--benchmark-only` sarebbe
-        l'intero scope, e il verdetto direbbe "passed" per un confronto che
-        non e avvenuto.
+        Il riferimento di sviluppo e plaintext per costruzione: il lato SDK
+        passa da `_harness` con `insecure_local`, e il CLI ha il proprio
+        interruttore. Senza, dopo ADR-011 fallisce in `connect` — ed e cosi
+        che si e scoperto che il binario misurato fino a ieri era
+        **precedente** al default fail-closed. Due lati che parlano trasporti
+        diversi non sono un confronto.
         """
 
-        with patch.object(sdk.Path, "exists", return_value=True):
-            sdk.assert_benchmark_prerequisites()
+        tests = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
+        bench = (tests / "test_benchmark_parity.py").read_text(encoding="utf-8")
+        harness = (tests / "_harness.py").read_text(encoding="utf-8")
 
-        with patch.object(sdk.Path, "exists", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "target/release"):
-                sdk.assert_benchmark_prerequisites()
+        self.assertIn('CLI_INSECURE_TLS_ENV = "PLENORA_TLS_INSECURE_LOCAL"', bench)
+        self.assertIn("CLI_INSECURE_TLS_ENV: \"1\"", bench)
+        self.assertIn('LOCAL_TLS_MODE = "insecure_local"', harness)
 
-        # E il controllo deve stare prima della build, non dopo: costruire un
-        # wheel per poi scoprire che non c'e niente da misurare e mezz'ora
-        # buttata.
-        source = SDK_RUNNER.read_text(encoding="utf-8")
-        self.assertLess(
-            source.index("assert_benchmark_prerequisites()\n        dirty"),
-            source.index("artifact = build_wheel("),
+        # Il nome della variabile e quello che il CLI legge davvero.
+        pfm = (
+            ROOT / "crates" / "plenora-database-cli" / "src" / "pfm.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL"', pfm
         )
+
+    def test_the_cli_is_built_beside_the_wheel_with_declared_features(self) -> None:
+        """Stesso container, stessa toolchain, stesso `Cargo.lock`.
+
+        E feature esplicite in entrambe le direzioni: `--no-default-features`
+        fa si che il verdetto dichiari cosa c'e dentro il binario invece di
+        ereditare un default che puo cambiare senza che nessuno se ne accorga.
+        """
+
+        self.assertEqual(sdk.CLI_FEATURES, ("postgres",))
+        self.assertEqual(
+            sdk.CLI_BUILD_COMMAND,
+            "cargo build --release --locked -p plenora-database-cli "
+            "--no-default-features --features postgres",
+        )
+
+        source = SDK_RUNNER.read_text(encoding="utf-8")
+        # Il comando del verdetto e quello eseguito: una seconda stringa
+        # sarebbe una dichiarazione, non un fatto.
+        self.assertIn('f"{CLI_BUILD_COMMAND}; "', source)
+        self.assertIn('"build_command": CLI_BUILD_COMMAND,', source)
+        # Il default del pacchetto deve restare quello che il gate chiede:
+        # se cambia, il confronto misura un binario diverso da quello atteso.
+        manifest = (
+            ROOT / "crates" / "plenora-database-cli" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('default = ["postgres"]', manifest)
+
+    def test_the_cli_path_may_never_fall_back_into_the_repository(self) -> None:
+        """La guardia sul percorso, in entrambi i lati.
+
+        Dentro il container: un percorso sotto il mount del repository e un
+        artefatto che il gate non ha costruito, e non ha un digest nel
+        verdetto. Sull'host: `TMPDIR` e una variabile d'ambiente, e se
+        puntasse nell'albero il gate scriverebbe gli artefatti nel repository
+        che sta verificando.
+        """
+
+        sdk.assert_cli_outside_repository("/artifacts/plenora-database")
+        self.assertEqual(sdk.cli_binary_path(), "/artifacts/plenora-database")
+
+        for refused in (
+            "/repo/target/release/plenora-database",
+            "/repo",
+            "/usr/local/bin/plenora-database",
+        ):
+            with self.assertRaises(RuntimeError):
+                sdk.assert_cli_outside_repository(refused)
+
+        # E il percorso composto dalle costanti deve restare fuori: se
+        # qualcuno spostasse la directory degli artefatti dentro il mount del
+        # repository, il gate deve fermarsi invece di misurare.
+        with patch.object(sdk, "ARTIFACT_MOUNT", "/repo/artifacts"):
+            with self.assertRaisesRegex(RuntimeError, "dentro il repository"):
+                sdk.cli_binary_path()
+
+        sdk.assert_artifacts_outside_repository(Path(tempfile.gettempdir()))
+        with self.assertRaisesRegex(RuntimeError, "TMPDIR"):
+            sdk.assert_artifacts_outside_repository(ROOT / "target" / "staging")
+
+    def test_a_live_or_benchmark_skip_fails_the_gate(self) -> None:
+        """Uno skip sui riferimenti vivi e un test che non ha risposto.
+
+        E salta per motivi che somigliano a un errore di configurazione — un
+        binario spostato, una variabile che nessuno passa piu — quindi resta
+        verde proprio quando il gate ha smesso di misurare. Il bench di
+        parita l'ha fatto: 218 passed, 1 skipped, e un confronto sparito.
+        """
+
+        output = (
+            "SKIPPED [1] tests/test_benchmark_parity.py:53: bench: CLI non trovato\n"
+            "218 passed, 1 skipped in 10.93s\n"
+        )
+        summary = sdk.pytest_summary(output)
+        self.assertEqual(summary, "218 passed, 1 skipped in 10.93s")
+
+        for scope in ("live", "benchmark"):
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.assert_no_unexpected_skips(
+                    scope=scope, output=output, summary=summary
+                )
+            # Il messaggio deve dire **quali**: un conteggio da solo non
+            # basta a decidere se lo skip era previsto.
+            self.assertIn("CLI non trovato", str(raised.exception))
+            self.assertIn(scope, str(raised.exception))
+
+        # Offline gli skip li ha per costruzione: i test live si saltano da
+        # soli quando i riferimenti non ci sono, ed e il suo scopo.
+        sdk.assert_no_unexpected_skips(
+            scope="offline", output=output, summary=summary
+        )
+        # E una corsa senza skip passa in tutti gli scope.
+        for scope in ("live", "benchmark", "offline"):
+            sdk.assert_no_unexpected_skips(
+                scope=scope,
+                output="219 passed in 7.15s\n",
+                summary="219 passed in 7.15s",
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "riga di riepilogo"):
+            sdk.pytest_summary("nessun riepilogo qui\n")
 
 
 if __name__ == "__main__":

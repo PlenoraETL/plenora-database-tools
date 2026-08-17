@@ -36,6 +36,13 @@ from ._harness import POSTGRES_DSN_ENV, connect_postgres, postgres_dsn_or_skip
 
 BENCH_ENV = "PLENORA_BENCH_PARITY"
 CLI_BIN_ENV = "PLENORA_CLI_BIN"
+# Il riferimento di sviluppo e plaintext per costruzione, e il lato SDK ci si
+# collega con `insecure_local` attraverso `_harness`. Il CLI ha il proprio
+# interruttore e senza fallisce in `connect`, perche dopo ADR-011 il default
+# e TLS verificato: e cosi che il bench si e accorto di aver misurato per
+# giorni un binario **precedente** a quel default. Due lati che parlano
+# trasporti diversi non sono un confronto.
+CLI_INSECURE_TLS_ENV = "PLENORA_TLS_INSECURE_LOCAL"
 # Target ratio SDK / CLI (subprocess CLI overhead >= 3x).
 MIN_SPEEDUP = 3.0
 # Numero iterazioni per campionamento. Sufficiente a smorzare rumore
@@ -69,7 +76,7 @@ def _cli_bin_or_skip() -> str:
 
 
 def _run_cli_scalar(bin_path: str, dsn: str) -> None:
-    env = {**os.environ, POSTGRES_DSN_ENV: dsn}
+    env = {**os.environ, POSTGRES_DSN_ENV: dsn, CLI_INSECURE_TLS_ENV: "1"}
     subprocess.run(
         [
             bin_path,

@@ -364,10 +364,10 @@ altro codice. `--allow-dirty` esiste per le corse esplorative e non fa
 finta di niente — il verdetto esce con `authoritative: false`,
 `worktree_dirty: true` e le righe di `git status` che lo hanno reso tale.
 
-Il runner costruisce **sempre** il wheel con `maturin` prima di `pytest`, e
-lo esporta in una directory temporanea fuori dal repository: nel source tree
-non installa niente, e un `.so` rimasto da una corsa precedente viene
-rimosso.
+Il runner costruisce **sempre** wheel e CLI prima di `pytest` — stesso
+container, stessa toolchain, stesso `Cargo.lock` — e li esporta in una
+directory temporanea fuori dal repository: nel source tree non installa
+niente, e un `.so` rimasto da una corsa precedente viene rimosso.
 
 Non lanciare `pytest` a mano: `_native.abi3.so` e gitignorato e nessuno lo
 rigenera. Dopo un cambio al Rust, un `pytest` diretto esegue il binario di
@@ -403,24 +403,35 @@ una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
 che il runner garantisce e di dire con cosa ha girato — id e digest delle due
 immagini, versione di rustc e di Python effettive.
 
+**Uno skip sui riferimenti vivi e un fallimento.** In `live` e
+`--benchmark-only` il gate rifiuta anche un solo test saltato: uno skip e un
+test che non ha risposto, e salta per motivi che somigliano a un errore di
+configurazione — un binario spostato, una variabile che nessuno passa piu —
+cioe resta verde proprio quando il gate ha smesso di misurare. In `offline`
+gli skip sono il funzionamento: i test live si saltano da soli.
+
 Il verdetto JSON identifica cio che ha girato: commit, SHA-256 del wheel e
 del modulo nativo **caricato da site-packages**, percorsi da cui e stato
-importato, identita delle immagini e versioni effettive di Python, rustc,
-maturin, pyarrow, pandas e pytest. Il nome del wheel da solo non identifica
-un artefatto — e lo stesso a ogni build. Il runner verifica inoltre che ne'
-la build ne' i test abbiano cambiato l'albero di lavoro, untracked inclusi.
+importato, SHA-256 del CLI con feature e comando di build, identita delle
+immagini e versioni effettive di Python, rustc, maturin, pyarrow, pandas e
+pytest. Il nome del wheel da solo non identifica un artefatto — e lo stesso a
+ogni build. Il runner verifica inoltre che ne' la build ne' i test abbiano
+cambiato l'albero di lavoro, untracked inclusi.
 
 ### Benchmark opt-in
 
 I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
-e gia impostato). Il confronto SDK / CLI ha bisogno del binario Linux in
-`target/release/plenora-database` — e il container a eseguirlo — e il runner
-gli passa il percorso con `PLENORA_CLI_BIN`: scriverlo dentro il test lo
-legava al punto di mount di allora, e al primo cambio il bench si e saltato
-da solo. In `--benchmark-only` il binario assente e un rifiuto, non uno
-skip: senza, lo scope direbbe "passed" per un confronto mai avvenuto.
+e gia impostato). Il confronto SDK / CLI e un rapporto fra due tempi, quindi
+i due lati devono essere lo stesso codice: il CLI viene costruito dalla
+stessa corsa che costruisce il wheel — `cargo build --release --locked -p
+plenora-database-cli --no-default-features --features postgres` — esportato
+accanto ad esso e montato in sola lettura, e il runner ne passa il percorso
+con `PLENORA_CLI_BIN`. Un binario preso da `target/release` del repository
+sopravvive alle sessioni e nessuno ne sa il commit: il rapporto misurava due
+codici diversi. Il verdetto ne porta digest, feature e comando di build, e
+una guardia rifiuta qualunque percorso che ricada dentro il repository.
 
-Per lanciarli da soli, sempre su un wheel appena costruito, c'e l'opzione
+Per lanciarli da soli, sempre su artefatti appena costruiti, c'e l'opzione
 dedicata:
 
 ```bash

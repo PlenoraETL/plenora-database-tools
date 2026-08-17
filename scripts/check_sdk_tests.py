@@ -14,15 +14,26 @@ Questo runner toglie il caso dalla mano di chi esegue:
 1. rifiuta di partire se l'albero di lavoro non e pulito — il verdetto
    nomina un commit, e cio che non e in quel commit non e descritto da
    quel nome;
-2. costruisce il wheel con `maturin --locked` dentro l'immagine Rust, e lo
-   esporta in una directory temporanea **fuori** dal repository;
-3. lo installa nel container di test con `pip install --no-deps`, senza
-   scrivere nulla nel source tree;
+2. costruisce **entrambi** gli artefatti nello stesso container e con la
+   stessa toolchain — il wheel con `maturin --locked` e il CLI con
+   `cargo build --release --locked` — e li esporta in una directory
+   temporanea **fuori** dal repository;
+3. installa il wheel nel container di test con `pip install --no-deps` e
+   monta il CLI in sola lettura, senza scrivere nulla nel source tree;
 4. esegue `pytest` fuori dal source tree, senza `PYTHONPATH` verso il
    package locale, e verifica prima di partire che `plenora_database` e il
    suo modulo nativo arrivino da `site-packages`;
-5. verifica che ne' la build ne' i test abbiano cambiato l'albero, e
-   registra nel verdetto di cosa e fatto l'artefatto che ha girato.
+5. sui riferimenti vivi rifiuta anche un solo test saltato: uno skip e un
+   test che non ha risposto, e in un verdetto conta come i falliti;
+6. verifica che ne' la build ne' i test abbiano cambiato l'albero, e
+   registra nel verdetto di cosa sono fatti gli artefatti che hanno girato.
+
+Il CLI e nel giro perche il bench di parita lo esegue in subprocess e ne
+confronta i tempi con il SDK. Finche il binario arrivava da `target/release`
+del repository, quel confronto metteva insieme un wheel appena costruito e un
+eseguibile di provenienza ignota — nel caso osservato, di tre giorni prima e
+di un commit che nessuno sapeva dire. Un rapporto fra due codici diversi non
+e un rapporto.
 
 Uso:
 
@@ -50,6 +61,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -80,7 +92,9 @@ PYTHON_IMAGE = "python:3.13-slim"
 # `sys.path` la sua directory padre — cioe `python/`, dove vive la copia
 # sorgente di `plenora_database`, che vincerebbe sul wheel installato.
 REPOSITORY_MOUNT = "/repo"
-WHEEL_MOUNT = "/wheels"
+# Wheel e CLI escono dalla stessa build e vivono nella stessa directory
+# temporanea, montata in sola lettura dove serve.
+ARTIFACT_MOUNT = "/artifacts"
 SUITE_DIRECTORY = "/suite"
 
 # Il percorso che l'installazione di un wheel produce nell'immagine Python
@@ -89,11 +103,27 @@ SUITE_DIRECTORY = "/suite"
 # accanto a `PYTHON_IMAGE` perche e da quella scelta che dipende.
 SITE_PACKAGES = "/site-packages/"
 
-# Il bench di parita confronta il SDK con il CLI in subprocess, quindi gli
-# serve un binario Linux. Il percorso lo passa il runner, che e l'unico a
-# sapere dove ha montato il repository: scritto dentro il test era il punto
-# di mount di allora, e al primo cambio il bench si e saltato da solo.
-CLI_BINARY = Path("target/release/plenora-database")
+# Il bench di parita esegue il CLI in subprocess e confronta i suoi tempi con
+# quelli del SDK. Il binario si costruisce qui, nello stesso container e con
+# la stessa toolchain del wheel: preso da `target/release` del repository era
+# un eseguibile di provenienza ignota — sopravvive alle sessioni e nessuno ne
+# sa il commit — e il rapporto fra i due tempi metteva insieme due codici
+# diversi.
+#
+# Le feature sono esplicite in entrambe le direzioni: il bench chiama solo
+# `execute-scalar` su Postgres, e `--no-default-features` fa si che il
+# verdetto dichiari cio che c'e dentro invece di ereditare un default che puo
+# cambiare senza che nessuno se ne accorga.
+CLI_PACKAGE = "plenora-database-cli"
+CLI_BINARY_NAME = "plenora-database"
+CLI_FEATURES = ("postgres",)
+CLI_BUILD_COMMAND = " ".join(
+    [
+        "cargo", "build", "--release", "--locked",
+        "-p", CLI_PACKAGE,
+        "--no-default-features", "--features", ",".join(CLI_FEATURES),
+    ]
+)
 
 POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
@@ -114,7 +144,7 @@ TOOLING_PACKAGES = frozenset({"pip", "setuptools", "wheel"})
 # Il pacchetto sotto esame non e un pin dell'ambiente: e cio che il gate ha
 # costruito, e la sua identita sta nei digest del verdetto. Nel `pip freeze`
 # compare come `plenora-database==...` o, se pip preferisce la provenienza,
-# come `plenora_database @ file:///wheels/...`.
+# come `plenora_database @ file:///artifacts/...`.
 ARTIFACT_PACKAGE = "plenora-database"
 
 
@@ -413,8 +443,14 @@ def image_identity(reference: str) -> dict[str, object]:
 # --------------------------------------------------------------------------
 
 
-def build_wheel(destination: Path) -> dict[str, str]:
-    """Costruisce il wheel con maturin e lo lascia in `destination`.
+def build_artifacts(destination: Path) -> dict[str, object]:
+    """Costruisce wheel e CLI e li lascia in `destination`.
+
+    I due artefatti escono dallo stesso container, dalla stessa toolchain e
+    dallo stesso `Cargo.lock`: il bench di parita confronta i loro tempi, e
+    un rapporto fra un wheel di oggi e un eseguibile di provenienza ignota
+    non misura la differenza fra due modi di chiamare la libreria — misura la
+    differenza fra due codici.
 
     Il source tree non riceve niente: il modulo nativo che vi si trovasse e
     per costruzione quello di una corsa precedente, e va tolto di mezzo —
@@ -422,13 +458,15 @@ def build_wheel(destination: Path) -> dict[str, str]:
 
     # Returns
 
-    Nome e SHA-256 del wheel, versioni di maturin e di rustc. Il solo nome non
-    identifica l'artefatto: due wheel con lo stesso nome escono da qualunque
+    Nome e SHA-256 dei due artefatti, feature e comando con cui il CLI e
+    stato costruito, versioni di maturin e di rustc. Il solo nome non
+    identifica un artefatto: due wheel con lo stesso nome escono da qualunque
     coppia di build, e il verdetto serve proprio a dire *quale* ha girato.
 
     # Raises
 
-    `RuntimeError` se la build fallisce o non produce esattamente un wheel.
+    `RuntimeError` se la build fallisce, non produce esattamente un wheel, o
+    non lascia il binario del CLI.
     """
 
     if NATIVE.exists():
@@ -436,12 +474,15 @@ def build_wheel(destination: Path) -> dict[str, str]:
 
     script = (
         "set -e; "
+        f"{CLI_BUILD_COMMAND}; "
+        f"cp /workspace/target-docker/release/{CLI_BINARY_NAME} "
+        f"{ARTIFACT_MOUNT}/; "
         "apt-get update -qq >/dev/null 2>&1; "
         "apt-get install -y -qq python3 python3-venv >/dev/null 2>&1; "
         "python3 -m venv /tmp/v; "
         f"/tmp/v/bin/pip install -q -r /workspace/{BUILD_REQUIREMENTS.name}; "
         "cd /workspace/crates/plenora-database-py; "
-        f"/tmp/v/bin/maturin build --release --locked --out {WHEEL_MOUNT}; "
+        f"/tmp/v/bin/maturin build --release --locked --out {ARTIFACT_MOUNT}; "
         f'echo "{BUILD_MARKER}'
         "$(/tmp/v/bin/maturin --version | cut -d' ' -f2) "
         "$(rustc --version | cut -d' ' -f2)\""
@@ -450,7 +491,7 @@ def build_wheel(destination: Path) -> dict[str, str]:
         [
             "docker", "run", "--rm",
             "-v", f"{ROOT}:/workspace",
-            "-v", f"{destination}:{WHEEL_MOUNT}",
+            "-v", f"{destination}:{ARTIFACT_MOUNT}",
             "-v", "plenora_cargo_registry:/usr/local/cargo/registry",
             "-v", "plenora_cargo_git:/usr/local/cargo/git",
             "-v", "pln_target_docker:/workspace/target-docker",
@@ -466,6 +507,9 @@ def build_wheel(destination: Path) -> dict[str, str]:
             f"la build ha lasciato {len(wheels)} wheel invece di uno: "
             f"{[wheel.name for wheel in wheels]}"
         )
+    cli = destination / CLI_BINARY_NAME
+    if not cli.exists():
+        raise RuntimeError(f"la build non ha esportato il CLI {CLI_BINARY_NAME}")
     marker = marker_line(output, BUILD_MARKER)
     fields = marker.split()
     if len(fields) != 2:
@@ -474,6 +518,12 @@ def build_wheel(destination: Path) -> dict[str, str]:
     return {
         "wheel": wheels[0].name,
         "wheel_sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest(),
+        "cli": {
+            "binary": CLI_BINARY_NAME,
+            "sha256": hashlib.sha256(cli.read_bytes()).hexdigest(),
+            "features": list(CLI_FEATURES),
+            "build_command": CLI_BUILD_COMMAND,
+        },
         "maturin": maturin,
         "rustc": rustc,
     }
@@ -500,8 +550,14 @@ def marker_line(output: str, marker: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def live_environment() -> list[str]:
-    """Le variabili dei riferimenti, lette dai container in esecuzione."""
+def live_environment(*, cli: str) -> list[str]:
+    """Le variabili dei riferimenti, lette dai container in esecuzione.
+
+    `cli` e il percorso del binario che il bench di parita esegue: lo passa il
+    runner, che e l'unico a sapere dove ha montato cosa. Scritto dentro il
+    test era il punto di mount di allora, e al primo cambio il bench non lo ha
+    piu trovato e si e saltato da solo.
+    """
 
     postgres_user = container_variable(POSTGRES_CONTAINER, "POSTGRES_USER")
     postgres_password = container_variable(POSTGRES_CONTAINER, "POSTGRES_PASSWORD")
@@ -524,40 +580,77 @@ def live_environment() -> list[str]:
         f"{container_variable(MYSQL_CONTAINER, 'MYSQL_PASSWORD')}",
         "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
         "-e", "PLENORA_BENCH_PARITY=1",
-        "-e", f"PLENORA_CLI_BIN={REPOSITORY_MOUNT}/{CLI_BINARY.as_posix()}",
+        "-e", f"PLENORA_CLI_BIN={cli}",
     ]
 
 
-def assert_benchmark_prerequisites() -> None:
-    """`--benchmark-only` senza binario CLI non misurerebbe niente.
+def assert_artifacts_outside_repository(staging: Path) -> None:
+    """La directory degli artefatti non puo stare dentro il repository.
 
-    Nella corsa completa l'assenza del binario e uno skip visibile in mezzo a
-    duecento test che hanno risposto. Qui sarebbe l'intero scope: il bench di
-    parita si salta, l'altro bench gira, e il verdetto dice "passed" per una
-    corsa che non ha confrontato nulla.
+    E il lato host della stessa regola di [`cli_binary_path`]: `TMPDIR` e una
+    variabile d'ambiente, e se puntasse dentro l'albero il gate scriverebbe
+    wheel e CLI nel repository che sta verificando — cioe esattamente la
+    condizione da cui il source tree e stato liberato.
 
     # Raises
 
-    `RuntimeError` nominando il percorso atteso e come costruirlo.
+    `RuntimeError` nominando la directory.
     """
 
-    if (ROOT / CLI_BINARY).exists():
-        return
-    raise RuntimeError(
-        f"--benchmark-only senza il binario CLI in {CLI_BINARY.as_posix()}: "
-        "il bench di parita si salterebbe e lo scope non misurerebbe nulla. "
-        "Costruiscilo per Linux (e il container a eseguirlo) con "
-        "`cargo build --release -p plenora-database-cli`."
-    )
+    if staging.resolve().is_relative_to(ROOT):
+        raise RuntimeError(
+            f"la directory degli artefatti {staging} sta dentro il "
+            "repository: wheel e CLI devono nascere fuori dall'albero che il "
+            "gate verifica (controlla TMPDIR)"
+        )
 
 
-def pytest_command(*, scope: str, wheels: Path, wheel: str) -> list[str]:
+def assert_cli_outside_repository(path: str) -> None:
+    """Il binario del bench non puo venire dal repository montato.
+
+    Il bench misura un eseguibile: se quell'eseguibile viene dall'albero
+    invece che dalla build, il rapporto confronta il wheel di adesso con un
+    binario di provenienza ignota — `target/release/` sopravvive alle
+    sessioni, e nessuno sa dire di quale commit sia. La regola sta in una
+    funzione perche il percorso e una stringa, e una stringa si riscrive
+    senza accorgersene: qui il ritorno all'albero e un errore, non una
+    riga da rivedere.
+
+    # Raises
+
+    `RuntimeError` nominando il percorso rifiutato.
+    """
+
+    if path == REPOSITORY_MOUNT or path.startswith(f"{REPOSITORY_MOUNT}/"):
+        raise RuntimeError(
+            f"il CLI del bench verrebbe da {path}, dentro il repository "
+            "montato: e un artefatto che il gate non ha costruito"
+        )
+    if not path.startswith(f"{ARTIFACT_MOUNT}/"):
+        raise RuntimeError(
+            f"il CLI del bench verrebbe da {path}, fuori dalla directory "
+            f"degli artefatti {ARTIFACT_MOUNT}: solo cio che questa corsa ha "
+            "costruito ha un digest nel verdetto"
+        )
+
+
+def cli_binary_path() -> str:
+    """Il percorso del CLI **dentro il container dei test**, verificato."""
+
+    path = f"{ARTIFACT_MOUNT}/{CLI_BINARY_NAME}"
+    assert_cli_outside_repository(path)
+    return path
+
+
+def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     """Il `docker run` che esegue la suite nello scope richiesto.
 
-    Il wheel arriva dalla directory temporanea dove la build lo ha lasciato e
-    viene installato con `--no-deps`: le dipendenze sono gia quelle dei pin,
-    e lasciare che il wheel ne risolva altre significherebbe girare su un
-    ambiente diverso da quello dichiarato.
+    Gli artefatti arrivano dalla directory temporanea dove la build li ha
+    lasciati, montata in sola lettura: il wheel viene installato con
+    `--no-deps` — le dipendenze sono gia quelle dei pin, e lasciare che il
+    wheel ne risolva altre significherebbe girare su un ambiente diverso da
+    quello dichiarato — e il CLI resta li, dove il bench di parita lo esegue
+    senza copiarlo da nessuna parte.
 
     La suite viene copiata in `/suite` e girata da li. Non e una comodita:
     `python/tests` e un package, quindi pytest inserirebbe in `sys.path` la
@@ -580,7 +673,7 @@ def pytest_command(*, scope: str, wheels: Path, wheel: str) -> list[str]:
         command += compose_network_arguments(POSTGRES_CONTAINER, MYSQL_CONTAINER)
         tls_volume = compose_volume(MYSQL_CONTAINER, "/etc/mysql/tls")
         command += ["-v", f"{tls_volume}:/mysql-tls:ro"]
-        environment = live_environment()
+        environment = live_environment(cli=cli_binary_path())
     if scope == "benchmark":
         selection += ["-k", "benchmark"]
 
@@ -588,7 +681,7 @@ def pytest_command(*, scope: str, wheels: Path, wheel: str) -> list[str]:
     script = (
         "set -e; "
         f"pip install -q -r {REPOSITORY_MOUNT}/{TEST_REQUIREMENTS.name}; "
-        f"pip install -q --no-deps {WHEEL_MOUNT}/{wheel}; "
+        f"pip install -q --no-deps {ARTIFACT_MOUNT}/{wheel}; "
         f"cp -r {suite} {SUITE_DIRECTORY}/tests; "
         f"rm -rf {SUITE_DIRECTORY}/tests/__pycache__; "
         f'echo "{PYTHON_MARKER}$(python -V 2>&1 | cut -d\' \' -f2)"; '
@@ -598,7 +691,7 @@ def pytest_command(*, scope: str, wheels: Path, wheel: str) -> list[str]:
     )
     command += [
         "-v", f"{ROOT}:{REPOSITORY_MOUNT}:ro",
-        "-v", f"{wheels}:{WHEEL_MOUNT}:ro",
+        "-v", f"{artifacts}:{ARTIFACT_MOUNT}:ro",
         "-w", SUITE_DIRECTORY,
         *environment,
         PYTHON_IMAGE, "sh", "-c", script,
@@ -671,12 +764,59 @@ def installed_origin(output: str) -> dict[str, str]:
     }
 
 
+def pytest_summary(output: str) -> str:
+    """La riga di riepilogo di pytest.
+
+    # Raises
+
+    `RuntimeError` se non c'e: il verdetto la riporta, e senza riporterebbe
+    una stringa vuota — cioe direbbe "passed" senza dire quanti test.
+    """
+
+    for line in reversed(output.splitlines()):
+        if " passed" in line:
+            return line.strip()
+    raise RuntimeError("output senza la riga di riepilogo di pytest")
+
+
+def assert_no_unexpected_skips(*, scope: str, output: str, summary: str) -> None:
+    """Sui riferimenti vivi uno skip e un test che non ha risposto.
+
+    Un test saltato non e un test passato: nel verdetto conta come un
+    fallito, perche di cio che doveva verificare non si sa niente. E salta
+    per motivi che somigliano a un errore di configurazione — un binario
+    spostato, una variabile che nessuno passa piu — quindi resta verde
+    proprio quando il gate ha smesso di misurare. E successo con il bench di
+    parita: mount cambiato, binario non trovato, 218 passed e un confronto
+    sparito.
+
+    Lo scope `offline` gli skip li ha per costruzione: i test live si
+    saltano da soli quando i riferimenti non ci sono, ed e il suo scopo.
+
+    # Raises
+
+    `RuntimeError` con le righe `SKIPPED` che `-rs` ha stampato, che dicono
+    quali test e per quale motivo.
+    """
+
+    if scope == "offline":
+        return
+    skipped = re.search(r"(\d+) skipped", summary)
+    if skipped is None:
+        return
+    reasons = [line for line in output.splitlines() if line.startswith("SKIPPED")]
+    raise RuntimeError(
+        f"scope {scope}: {skipped.group(1)} test saltati, e uno skip qui e un "
+        f"test che non ha risposto: {reasons}"
+    )
+
+
 def verdict(
     *,
     scope: str,
     commit: str,
     dirty: list[str],
-    artifact: dict[str, str],
+    artifact: dict[str, object],
     images: dict[str, object],
     versions: dict[str, str],
     summary: str,
@@ -688,6 +828,12 @@ def verdict(
     *un* wheel e stato costruito. Servono il commit, il digest dell'artefatto
     — quello del wheel e quello del modulo che l'interprete ha caricato da
     `site-packages` — e le versioni con cui la suite ha girato.
+
+    Gli artefatti sono due, perche il bench di parita ne confronta due: il
+    CLI porta digest, feature e il comando con cui e stato costruito. Le
+    feature non sono un dettaglio di build — decidono quali provider sono
+    dentro il binario — e il comando dice che sono state chieste, non
+    ereditate da un default.
 
     `authoritative` e falso quando l'albero non coincideva con HEAD: il
     commit resta scritto, ma non descrive cio che e stato costruito, e le
@@ -712,6 +858,7 @@ def verdict(
             "native_sha256": artifact["native_sha256"],
             "package_path": artifact["package_path"],
             "native_path": artifact["native_path"],
+            "cli": artifact["cli"],
         },
         "images": images,
         "versions": {
@@ -762,8 +909,6 @@ def main() -> int:
             PYPROJECT.read_text(encoding="utf-8"),
             BUILD_REQUIREMENTS.read_text(encoding="utf-8"),
         )
-        if selected == "benchmark":
-            assert_benchmark_prerequisites()
         dirty = porcelain_entries()
         if not arguments.allow_dirty:
             assert_clean_worktree(dirty)
@@ -775,17 +920,20 @@ def main() -> int:
             )
         commit = git(["rev-parse", "HEAD"]).strip()
         before = worktree_state()
-        with tempfile.TemporaryDirectory(prefix="plenora-sdk-wheel-") as staging:
-            wheels = Path(staging)
-            artifact = build_wheel(wheels)
-            assert_worktree_unchanged(before, "la build del wheel")
+        with tempfile.TemporaryDirectory(prefix="plenora-sdk-artifacts-") as staging:
+            artifacts = Path(staging)
+            assert_artifacts_outside_repository(artifacts)
+            artifact = build_artifacts(artifacts)
+            assert_worktree_unchanged(before, "la build degli artefatti")
             output = run(
                 pytest_command(
-                    scope=selected, wheels=wheels, wheel=artifact["wheel"]
+                    scope=selected, artifacts=artifacts, wheel=artifact["wheel"]
                 ),
                 capture=True,
             )
             assert_worktree_unchanged(before, "l'esecuzione della suite")
+        summary = pytest_summary(output)
+        assert_no_unexpected_skips(scope=selected, output=output, summary=summary)
         artifact.update(installed_origin(output))
         versions = installed_versions(output)
         images = {
@@ -797,10 +945,6 @@ def main() -> int:
         return 1
 
     print(output)
-    summary = next(
-        (line for line in reversed(output.splitlines()) if " passed" in line),
-        "",
-    )
     print(
         json.dumps(
             verdict(
