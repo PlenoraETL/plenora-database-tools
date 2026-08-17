@@ -1,14 +1,21 @@
 name: python-wheel
 
-# Builda wheel abi3-py310 per Linux (manylinux_2_34), macOS (arm64 +
-# x86_64) e Windows (x86_64). Un unico wheel per platform copre
-# Python >= 3.10.
+# Builda wheel abi3-py310 per Linux (manylinux_2_34), macOS (arm64) e
+# Windows (x86_64). Un unico wheel per platform copre Python >= 3.10.
+# macOS produce **solo** ARM: il runner Intel e stato rimosso, e la nota
+# sul job `macos` dice perche.
+#
+# Ogni job di build installa e verifica il proprio wheel **prima**
+# dell'upload: un artefatto rotto non deve nemmeno diventare scaricabile,
+# e il caricamento del modulo nativo si prova solo sulla piattaforma che
+# lo ha compilato. Le tre verifiche stanno in
+# `.github/scripts/verify_wheel.py`, una sola volta.
 #
 # Triggers:
 #   - `workflow_dispatch` (manuale): produce artifact scaricabili
 #     dalla UI Actions. Se `publish_pypi=true`, uploada anche a PyPI.
 #   - `release` (published): produce artifact + li allega al release
-#     GitHub. Upload a PyPI opt-in via input separato del release.
+#     GitHub. Su questo evento il wheel deve corrispondere al tag.
 #
 # Secrets richiesti:
 #   PYPI_TOKEN  — API token PyPI (solo se publish_pypi abilitato)
@@ -23,6 +30,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   # ---------------- Linux (manylinux_2_34) ----------------
   linux:
@@ -36,10 +46,19 @@ jobs:
           command: build
           args: >-
             --release
+            --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           manylinux: 2_34
           rust-toolchain: '1.92.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify wheel
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python .github/scripts/verify_wheel.py
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-x86_64
@@ -61,10 +80,19 @@ jobs:
           command: build
           args: >-
             --release
+            --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
             --target aarch64-apple-darwin
           rust-toolchain: '1.92.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify wheel
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python .github/scripts/verify_wheel.py
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-macos-aarch64
@@ -82,23 +110,35 @@ jobs:
           command: build
           args: >-
             --release
+            --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           rust-toolchain: '1.92.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify wheel
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python .github/scripts/verify_wheel.py
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-windows-x86_64
           path: dist/*.whl
 
   # ---------------- Smoke test ----------------
-  # Scarica il wheel Linux, lo installa in una venv pulita e verifica
-  # che l'import e la version() funzionino. Blocca il release se
-  # qualcosa nel packaging è rotto.
+  # I tre job di build hanno gia verificato il proprio wheel prima di
+  # caricarlo. Questo job verifica l'artefatto **dopo** il giro di
+  # upload/download, che e la forma in cui arriva a chi lo scarica, e usa
+  # lo stesso script: una seconda definizione di "verificato" divergerebbe
+  # dalla prima al primo cambiamento.
   smoke-test:
     name: smoke-test linux wheel
     needs: [linux]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: wheel-linux-x86_64
@@ -106,13 +146,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install wheel
-        run: pip install dist/*.whl
-      - name: Verify import + version
+      - name: Install and verify wheel
+        shell: bash
         run: |
-          python -c "import plenora_database as p; print('version:', p.version())"
-          python -c "import plenora_database as p; s = p.Session; assert hasattr(s, 'execute'); print('Session OK')"
-          python -c "import plenora_database as p; print('errors:', p.PlenoraError.__name__)"
+          python -m pip install dist/*.whl
+          python .github/scripts/verify_wheel.py
 
   # ---------------- Attach to GitHub Release ----------------
   # Solo su release publish: scarica tutti i wheel e li allega alla
