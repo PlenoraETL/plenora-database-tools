@@ -333,6 +333,50 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "una verifica inline e una seconda definizione di verificato",
         )
 
+    def test_the_workflow_has_no_path_to_publish_anywhere(self) -> None:
+        """La distribuzione dei wheel e manuale, e qui non c'e come farla.
+
+        Il job `publish-pypi` era opt-in e disattivato per default, il che
+        sembra sicuro finche non lo si guarda dal lato dell'errore: un
+        percorso di pubblicazione che nessuno usa resta un percorso, basta un
+        input spuntato per sbaglio, e da PyPI una versione non si ritira —
+        si puo solo yankare, lasciandola visibile per sempre.
+
+        Restano i due trigger che servono: `workflow_dispatch` per il
+        preflight, `release` per costruire e allegare. Nessun secret, perche
+        nessun passo ne ha piu bisogno.
+        """
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        for forbidden in (
+            "publish_pypi",
+            "publish-pypi",
+            "PYPI_TOKEN",
+            "MATURIN_PYPI_TOKEN",
+            "environment: pypi",
+            "command: upload",
+            "twine",
+            "gh-action-pypi-publish",
+        ):
+            self.assertNotIn(
+                forbidden,
+                workflow,
+                f"'{forbidden}' rimette in piedi un percorso di pubblicazione",
+            )
+        self.assertNotIn(
+            "secrets.",
+            workflow,
+            "nessun passo del workflow deve avere bisogno di un secret",
+        )
+        self.assertIn("  workflow_dispatch:\n", workflow, "preflight rimosso")
+        self.assertIn(
+            "  release:\n    types: [published]\n",
+            workflow,
+            "il workflow non costruisce piu sulla release",
+        )
+        # E la consegna che resta e una sola: gli asset della release.
+        self.assertIn("softprops/action-gh-release@v2", workflow)
+
     def test_the_header_does_not_promise_an_intel_mac_wheel(self) -> None:
         """Il commento diceva "macOS (arm64 + x86_64)"; x86_64 non esiste.
 

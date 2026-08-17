@@ -11,22 +11,20 @@ name: python-wheel
 # lo ha compilato. Le tre verifiche stanno in
 # `.github/scripts/verify_wheel.py`, una sola volta.
 #
-# Triggers:
-#   - `workflow_dispatch` (manuale): produce artifact scaricabili
-#     dalla UI Actions. Se `publish_pypi=true`, uploada anche a PyPI.
-#   - `release` (published): produce artifact + li allega al release
-#     GitHub. Su questo evento il wheel deve corrispondere al tag.
+# Il workflow **non pubblica**: costruisce, verifica e consegna artifact. La
+# distribuzione dei wheel e manuale, quindi qui non esiste ne un passo di
+# upload ne un token per farlo — un percorso di pubblicazione che nessuno usa
+# resta comunque un percorso, e il giorno che qualcuno lo attiva per sbaglio
+# non c'e modo di ritirare una versione da PyPI.
 #
-# Secrets richiesti:
-#   PYPI_TOKEN  — API token PyPI (solo se publish_pypi abilitato)
+# Triggers:
+#   - `workflow_dispatch` (manuale): preflight. Produce artifact scaricabili
+#     dalla UI Actions, senza toccare release o tag.
+#   - `release` (published): produce gli stessi wheel e li allega alla
+#     release GitHub. Su questo evento il wheel deve corrispondere al tag.
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_pypi:
-        description: 'Upload dei wheel su PyPI (default false)'
-        type: boolean
-        default: false
   release:
     types: [published]
 
@@ -154,7 +152,8 @@ jobs:
 
   # ---------------- Attach to GitHub Release ----------------
   # Solo su release publish: scarica tutti i wheel e li allega alla
-  # release corrente. Non tocca PyPI.
+  # release corrente. E l'unica consegna che questo workflow fa: da li
+  # i wheel si distribuiscono a mano.
   attach-to-release:
     name: attach wheels to release
     needs: [linux, macos, windows, smoke-test]
@@ -173,25 +172,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.whl
-
-  # ---------------- Upload to PyPI (opt-in) ----------------
-  # Attivato solo con `workflow_dispatch` + input `publish_pypi=true`.
-  # Richiede il secret PYPI_TOKEN configurato nel repo.
-  publish-pypi:
-    name: publish to PyPI
-    needs: [linux, macos, windows, smoke-test]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true
-    runs-on: ubuntu-latest
-    environment: pypi
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish
-        uses: PyO3/maturin-action@v1
-        with:
-          command: upload
-          args: --skip-existing dist/*.whl
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
