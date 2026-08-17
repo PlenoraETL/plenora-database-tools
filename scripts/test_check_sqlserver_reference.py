@@ -151,13 +151,75 @@ class ComposeNetworkDiscovery(unittest.TestCase):
         )
 
     def test_cargo_runs_on_the_discovered_network(self) -> None:
-        with patch.object(
-            gate, "sqlserver_network", return_value="observed_default"
-        ) as discovery:
-            command, _environment = gate.cargo(["test"])
+        """Il ramo container: la rete si chiede, non si scrive.
+
+        `PLENORA_SQLSERVER_GATE_HOST_CARGO` va fissata, non ereditata. Senza,
+        il test descriveva l'ambiente di chi lo eseguiva invece del ramo che
+        voleva verificare: verde su qualunque macchina che non la esporta,
+        rosso dentro il proprio workflow, che la mette a `1` — cioe rosso
+        nell'unico posto dove nessuno puo correggerlo eseguendolo di nuovo.
+        """
+
+        with (
+            patch.dict(
+                gate.os.environ,
+                {"PLENORA_SQLSERVER_GATE_HOST_CARGO": "0"},
+                clear=False,
+            ),
+            patch.object(
+                gate, "sqlserver_network", return_value="observed_default"
+            ) as discovery,
+        ):
+            command, environment = gate.cargo(["test"])
+
         discovery.assert_called_once_with()
         self.assertIn("--network", command)
         self.assertEqual(command[command.index("--network") + 1], "observed_default")
+        self.assertIsNone(environment, "il ramo container non passa un ambiente")
+
+    def test_host_cargo_never_asks_for_a_network(self) -> None:
+        """Il ramo host: cargo locale, ambiente esplicito, nessuna rete.
+
+        E il ramo che il workflow esegue. Chiedere la rete Compose qui
+        fallirebbe — il container di riferimento e raggiunto su `127.0.0.1`,
+        non da dentro una rete Docker — quindi la scoperta non deve proprio
+        essere invocata.
+        """
+
+        with (
+            patch.dict(
+                gate.os.environ,
+                {"PLENORA_SQLSERVER_GATE_HOST_CARGO": "1"},
+                clear=False,
+            ),
+            patch.object(
+                gate,
+                "sqlserver_network",
+                side_effect=AssertionError("cargo sull'host non ha una rete Compose"),
+            ) as discovery,
+        ):
+            command, environment = gate.cargo(["test"])
+
+        discovery.assert_not_called()
+        self.assertEqual(command, ["cargo", "test"])
+        self.assertNotIn("--network", command)
+        self.assertIsNotNone(environment)
+        # L'ambiente e quello che i test live leggono: host, credenziali e
+        # CA privata. La CA non ha `setdefault` nel gate — la posizione la
+        # decide il gate, non chi lo invoca — e qui si verifica che sia
+        # proprio quella.
+        self.assertEqual(environment["PLENORA_SQLSERVER_HOST"], "127.0.0.1")
+        self.assertEqual(environment["PLENORA_SQLSERVER_DATABASE"], "dataflow_test")
+        self.assertEqual(environment["PLENORA_SQLSERVER_USER"], "dataflow")
+        self.assertEqual(
+            environment["PLENORA_SQLSERVER_PASSWORD"], gate.DEFAULT_PASSWORD
+        )
+        self.assertEqual(
+            environment["PLENORA_SQLSERVER_PRIVATE_CA"], str(gate.PRIVATE_CA)
+        )
+        self.assertEqual(
+            environment["PLENORA_SQLSERVER_MISMATCH_HOST"], "127.0.0.2"
+        )
 
 
 if __name__ == "__main__":
