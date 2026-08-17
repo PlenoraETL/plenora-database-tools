@@ -120,21 +120,145 @@ def test_a_list_of_narrow_types_is_left_untouched() -> None:
     assert data.column("values").to_pylist() == [[1, 2]]
 
 
-def test_struct_is_left_alone_because_no_writer_accepts_it() -> None:
-    """Il supporto e limitato ai tipi qualificati, e lo si vede.
+def test_struct_of_large_utf8_is_narrowed() -> None:
+    """Lo struct **e** un tipo qualificato: range e composite lo usano.
 
-    Convertire uno `struct` produrrebbe un tipo comunque rifiutato dal
-    writer, in piu con una copia: la scelta e non toccarlo.
+    Il test precedente fissava il contrario — "nessun writer accetta struct,
+    quindi non si tocca" — ed era falso: `PostgreSQL` scrive i `range` come
+    struct di `lower`/`upper` testuali piu i flag, e i `composite` come
+    struct di campi testuali. Uno `struct<large_string>` arrivava intatto al
+    writer, che lo rifiutava.
     """
 
-    inner = pyarrow.field("nome", pyarrow.large_string())
+    inner = pyarrow.field("nome", pyarrow.large_string(), nullable=False)
+    column = pyarrow.field("persona", pyarrow.struct([inner]), nullable=False)
     table = pyarrow.table(
-        {"persona": pyarrow.array([{"nome": "ada"}], pyarrow.struct([inner]))}
+        {"persona": pyarrow.array([{"nome": "ada"}], pyarrow.struct([inner]))},
+        schema=pyarrow.schema([column]),
+    )
+
+    narrowed, data = roundtrip(table)
+    field = narrowed.field("persona")
+    assert pyarrow.types.is_struct(field.type)
+    assert field.type.field(0).type == pyarrow.string()
+    assert field.nullable is False
+    assert data.column("persona").to_pylist() == [{"nome": "ada"}]
+
+
+def test_a_range_shaped_struct_keeps_its_field_names_and_nullability() -> None:
+    """La forma dei `range` PostgreSQL attraversa l'adapter intatta.
+
+    `lower`/`upper` sono testuali e nullable, i flag booleani e non nullable:
+    se la conversione ricostruisse i campi con i default, il writer
+    riceverebbe una struct diversa da quella che sa leggere.
+    """
+
+    fields = [
+        pyarrow.field("lower", pyarrow.large_string(), nullable=True),
+        pyarrow.field("upper", pyarrow.large_string(), nullable=True),
+        pyarrow.field("lower_inclusive", pyarrow.bool_(), nullable=False),
+        pyarrow.field("upper_inclusive", pyarrow.bool_(), nullable=False),
+        pyarrow.field("empty", pyarrow.bool_(), nullable=False),
+    ]
+    struct_type = pyarrow.struct(fields)
+    table = pyarrow.table(
+        {
+            "periodo": pyarrow.array(
+                [
+                    {
+                        "lower": "2026-01-01",
+                        "upper": "2026-12-31",
+                        "lower_inclusive": True,
+                        "upper_inclusive": False,
+                        "empty": False,
+                    }
+                ],
+                struct_type,
+            )
+        },
+        schema=pyarrow.schema([pyarrow.field("periodo", struct_type)]),
+    )
+
+    narrowed, data = roundtrip(table)
+    converted = narrowed.field("periodo").type
+    assert [converted.field(i).name for i in range(converted.num_fields)] == [
+        "lower",
+        "upper",
+        "lower_inclusive",
+        "upper_inclusive",
+        "empty",
+    ]
+    assert converted.field(0).type == pyarrow.string()
+    assert converted.field(0).nullable is True
+    assert converted.field(2).type == pyarrow.bool_()
+    assert converted.field(2).nullable is False
+    assert data.column("periodo").to_pylist()[0]["lower"] == "2026-01-01"
+
+
+def test_a_composite_struct_keeps_the_native_declaration_metadata() -> None:
+    """Per i `composite` il metadata del campo **e** il contratto.
+
+    Il writer rilegge `plenora.postgres.native_declaration` per sapere che
+    tipo nativo sta scrivendo. Ricostruire il campo con i default lo
+    perderebbe in silenzio, e la colonna arriverebbe come testo anonimo.
+    """
+
+    declaration = {b"plenora.postgres.native_declaration": b"public.indirizzo"}
+    fields = [
+        pyarrow.field("via", pyarrow.large_string(), metadata=declaration),
+        pyarrow.field("civico", pyarrow.large_string(), metadata=declaration),
+    ]
+    struct_type = pyarrow.struct(fields)
+    table = pyarrow.table(
+        {
+            "indirizzo": pyarrow.array(
+                [{"via": "Roma", "civico": "1"}], struct_type
+            )
+        },
+        schema=pyarrow.schema([pyarrow.field("indirizzo", struct_type)]),
     )
 
     narrowed, _ = roundtrip(table)
-    assert pyarrow.types.is_struct(narrowed.field("persona").type)
-    assert narrowed.field("persona").type.field(0).type == pyarrow.large_string()
+    converted = narrowed.field("indirizzo").type
+    for index in range(converted.num_fields):
+        assert converted.field(index).type == pyarrow.string()
+        assert converted.field(index).metadata == declaration
+
+
+def test_a_struct_of_narrow_types_is_left_untouched() -> None:
+    """Senza nulla da convertire, la struct non viene ricostruita."""
+
+    struct_type = pyarrow.struct(
+        [pyarrow.field("id", pyarrow.int64()), pyarrow.field("nome", pyarrow.string())]
+    )
+    table = pyarrow.table(
+        {"riga": pyarrow.array([{"id": 1, "nome": "ada"}], struct_type)},
+        schema=pyarrow.schema([pyarrow.field("riga", struct_type)]),
+    )
+
+    narrowed, _ = roundtrip(table)
+    assert narrowed.field("riga").type == struct_type
+
+
+def test_a_list_of_structs_of_large_utf8_is_narrowed_at_both_levels() -> None:
+    """La ricorsione attraversa i due tipi nested, non uno solo."""
+
+    inner = pyarrow.field("nome", pyarrow.large_string(), nullable=False)
+    element = pyarrow.field("item", pyarrow.struct([inner]), nullable=False)
+    list_type = pyarrow.large_list(element)
+    table = pyarrow.table(
+        {"persone": pyarrow.array([[{"nome": "ada"}]], list_type)},
+        schema=pyarrow.schema([pyarrow.field("persone", list_type)]),
+    )
+
+    narrowed, data = roundtrip(table)
+    field = narrowed.field("persone")
+    assert pyarrow.types.is_list(field.type)
+    inner_struct = field.type.value_field.type
+    assert pyarrow.types.is_struct(inner_struct)
+    assert inner_struct.field(0).type == pyarrow.string()
+    assert inner_struct.field(0).nullable is False
+    assert data.column("persone").to_pylist() == [[{"nome": "ada"}]]
 
 
 def test_mixed_columns_convert_only_what_needs_it() -> None:

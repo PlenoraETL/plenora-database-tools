@@ -1340,8 +1340,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             transaction,
             "MySQL non delega al core la validazione della chiave di context",
         )
-        # Il nome finisce in una variabile utente: senza backtick il punto
-        # sarebbe un errore di sintassi al server.
+        # Il quoting resta, ma non e cio che ha sbloccato il caso: il
+        # server accetta `@plenora_ctx_app.tenant` anche senza backtick. A
+        # rifiutare le chiavi era la regola locale del provider, e la
+        # delega al core sopra e la riga che conta. I backtick rendono la
+        # resa indipendente da come la regola del core evolvera.
         self.assertIn("SET @`{CONTEXT_VARIABLE_PREFIX}{name}`", transaction)
         # E deve starci: 64 caratteri meno il prefisso. Il core ne ammette
         # 63, quindi la fascia 53..63 e valida per il core e impossibile per
@@ -1475,6 +1478,129 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                     text,
                     f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
                 )
+
+    def test_no_surface_denies_the_bulk_write_the_sdk_exposes(self) -> None:
+        """Il SDK ha `copy_from`: nessun documento puo dirlo assente.
+
+        Il README lo elencava fra i limiti — "No batch/bulk write, il bulk
+        COPY del driver e esposto solo via CLI" — nella stessa pagina che
+        venti righe sopra ne documenta la firma. Chi legge i limiti per
+        decidere se il SDK basta, decide sul falso.
+        """
+
+        native = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "plenora_database"
+            / "__init__.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def copy_from(", native)
+        self.assertIn("async def acopy_from(", native)
+
+        stale = (
+            "No batch/bulk write",
+            "bulk COPY del\n  driver \u00e8 esposto solo via CLI",
+        )
+        for document in current_surfaces():
+            text = document.read_text(encoding="utf-8")
+            for claim in stale:
+                self.assertNotIn(
+                    claim,
+                    text,
+                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
+                )
+
+    def test_the_published_package_does_not_advertise_a_missing_binding(self) -> None:
+        """La descrizione del pacchetto elenca solo i provider esposti.
+
+        `pyproject.toml` prometteva SQL Server: e il testo che finisce
+        sull'indice del pacchetto, dove nessuno legge le note. Il binding non
+        esiste, quindi il nome non ci va.
+        """
+
+        native = (
+            ROOT
+            / "crates"
+            / "plenora-database-py"
+            / "python"
+            / "plenora_database"
+            / "__init__.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn(
+            "def connect_sqlserver(",
+            native,
+            "esiste un binding SQL Server: aggiornare questa guardia",
+        )
+
+        pyproject = (ROOT / "crates" / "plenora-database-py" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+        description = next(
+            line for line in pyproject.splitlines() if line.startswith("description =")
+        )
+        for absent in ("SQL Server", "SQLServer", "sqlserver"):
+            self.assertNotIn(absent, description, description)
+
+    def test_the_mysql_tls_default_is_documented_as_verifying(self) -> None:
+        """Nessuna doc puo dire che il default MySQL non verifica.
+
+        La doc Rust di `connect_mysql` diceva "se `None`, usa
+        `TrustServerCertificate`", cioe il comportamento precedente al fix di
+        parita: dieci righe piu sotto il commento raccontava gia il
+        contrario. Chi legge la firma legge la prima.
+        """
+
+        source = (
+            ROOT / "crates" / "plenora-database-py" / "src" / "mysql_session.rs"
+        ).read_text(encoding="utf-8")
+        # Il default resta `require`, nella firma pyo3.
+        self.assertIn('tls_mode="require"', source)
+        signature = source.index("pub fn connect_mysql(")
+        doc = source[max(0, signature - 1400) : signature]
+        self.assertNotIn(
+            "Se `None`, usa `TrustServerCertificate`",
+            doc,
+            "la doc di connect_mysql descrive un default che non verifica",
+        )
+
+    def test_the_documentation_sends_the_reader_to_the_sdk_runner(self) -> None:
+        """Chi documenta i test del SDK deve documentare il runner.
+
+        `_native.abi3.so` e gitignorato e nessuno lo rigenera: un `pytest`
+        diretto dopo un cambio al Rust risponde sul binario precedente. E
+        successo due volte in una sola sessione, e le due correzioni
+        sembravano entrambe sbagliate.
+        """
+
+        runner = ROOT / "scripts" / "check_sdk_tests.py"
+        self.assertTrue(runner.exists(), "runner della suite SDK assente")
+        source = runner.read_text(encoding="utf-8")
+        self.assertIn("maturin build", source, "il runner non costruisce con maturin")
+        self.assertIn(
+            "NATIVE.unlink()",
+            source,
+            "il runner non rimuove il modulo precedente prima di ricostruirlo",
+        )
+
+        readme = (ROOT / "crates" / "plenora-database-py" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("scripts/check_sdk_tests.py", readme)
+
+        # Nessuna superficie deve mostrare un `pytest` sui test del SDK come
+        # comando da eseguire: e la strada che porta al binario stale.
+        for document in current_surfaces():
+            if document.suffix != ".md":
+                continue
+            for line in document.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("pytest ", "$ pytest ")) and "python/tests" in stripped:
+                    self.fail(
+                        f"{document.relative_to(ROOT).as_posix()} invita a "
+                        f"lanciare pytest a mano: '{stripped}'"
+                    )
 
     def test_every_compose_declares_its_own_project(self) -> None:
         """Un progetto Compose per file, altrimenti si cancellano a vicenda.

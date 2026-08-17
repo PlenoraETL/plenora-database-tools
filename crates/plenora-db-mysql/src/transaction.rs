@@ -112,12 +112,18 @@ impl MysqlTransaction {
         //    disconnessione; non participano al rollback ma è OK: sono
         //    context info, non state applicativo.
         //
-        //    Il nome va fra backtick perche il core impone `namespace.name` e
-        //    un punto non e ammesso in un nome di variabile utente non
-        //    quotato. Finche non lo era, ogni chiave valida per il core
-        //    veniva rifiutata da MySQL: le due validazioni erano
-        //    mutuamente esclusive, e `begin(context=...)` non poteva
-        //    riuscire con un context non vuoto.
+        //    A rifiutare le chiavi con il punto eravamo noi, non il server:
+        //    `is_safe_context_name` teneva una regola locale che ammetteva
+        //    solo alfanumerici e `_`, mentre il core impone `namespace.name`.
+        //    Le due validazioni erano mutuamente esclusive, e
+        //    `begin(context=...)` non poteva riuscire con un context non
+        //    vuoto. A sbloccarlo e stata la delega al core, non il quoting.
+        //
+        //    I backtick restano perche un nome di variabile utente accetta
+        //    piu caratteri di quanti il core ne ammetta oggi (`$`, per dire):
+        //    quotare rende la resa indipendente da come quella regola
+        //    evolvera. Verificato che senza backtick il server accetta
+        //    ugualmente `@plenora_ctx_app.tenant`.
         for (name, entry) in options.context.iter() {
             let value = entry.value.as_provider_string();
             let sql = format!(

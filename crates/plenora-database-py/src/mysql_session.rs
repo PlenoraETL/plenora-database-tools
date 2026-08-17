@@ -504,8 +504,16 @@ impl MysqlSession {
 /// Parametri:
 /// - `host`, `database`, `user`, `password`
 /// - `port`: opzionale, default 3306
-/// - `tls_ca_pem`: opzionale, bytes del certificato CA privato PEM.
-///   Se `None`, usa `TrustServerCertificate` (solo per sviluppo).
+/// - `tls_ca_pem`: opzionale, bytes del certificato CA privato PEM. Se
+///   `None`, la verifica usa il trust store pubblico `WebPKI`
+/// - `tls_mode`: `require` (default) verifica il certificato del server;
+///   `insecure_trust_server` la disattiva ed e opt-in esplicito per
+///   test e sviluppo locale
+///
+/// Il default **verifica**. Questa doc diceva il contrario — "se `None`,
+/// usa `TrustServerCertificate`" — descrivendo il comportamento
+/// precedente al fix di parita con il SDK Postgres, mentre il commento
+/// dieci righe piu sotto raccontava gia la versione giusta.
 ///
 /// # Errors
 ///

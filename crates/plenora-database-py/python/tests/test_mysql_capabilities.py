@@ -305,6 +305,45 @@ async def test_async_begin_with_context_and_policy(async_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_repeatable_read_does_not_see_a_concurrent_commit(
+    async_session,
+) -> None:
+    """L'isolamento ha lo stesso effetto osservabile sul percorso async.
+
+    Analogo del test sync: la seconda lettura nella stessa transazione deve
+    restituire il valore della prima anche dopo un commit concorrente. Senza
+    questo, del percorso async si sapeva solo che accetta il parametro.
+    """
+
+    other = connect_mysql_reference()
+    try:
+        async with await async_session.begin(isolation="repeatable_read") as tx:
+            first = await tx.execute_scalar(
+                f"SELECT amount FROM {TABLE} WHERE id = 1"
+            )
+            assert first == 10
+
+            other.execute(f"UPDATE {TABLE} SET amount = 888 WHERE id = 1")
+            assert (
+                other.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 888
+            ), "l'altra connessione non ha committato: il test non proverebbe nulla"
+
+            assert (
+                await tx.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1")
+                == 10
+            ), "repeatable_read async ha visto un commit concorrente"
+
+        assert (
+            await async_session.execute_scalar(
+                f"SELECT amount FROM {TABLE} WHERE id = 1"
+            )
+            == 888
+        )
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
 async def test_async_savepoint_rolls_back_only_what_follows_it(async_session) -> None:
     async with await async_session.begin() as tx:
         await tx.execute(

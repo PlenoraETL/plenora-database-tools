@@ -204,6 +204,11 @@ with p.connect_mysql("localhost", "mydb", "user", "pwd") as s:
 `aconnect_mysql` e l'equivalente async: `aread` e `acopy_from` al posto
 di `read` e `copy_from`, il resto identico.
 
+La suite del SDK si esegue con `python scripts/check_sdk_tests.py`, che
+ricostruisce il modulo nativo con `maturin` prima di `pytest`: il `.so` e
+gitignorato, e un `pytest` diretto dopo un cambio al Rust risponde sul
+binario precedente.
+
 Non esposto al SDK MySQL: spatial predicates + `SpatialReference`.
 
 Non esposto al CLI MySQL: `bulk-write` (Arrow IPC), `benchmark-*`,

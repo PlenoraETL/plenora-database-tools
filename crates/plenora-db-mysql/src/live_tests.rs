@@ -4038,11 +4038,12 @@ async fn live_v12_session_context_does_not_reach_the_next_transaction() {
 
 /// Il `SessionContext` raggiunge il server, con la chiave che il core produce.
 ///
-/// Il core impone `namespace.name`, quindi un punto; le variabili utente
-/// `MySQL` non ammettono un punto se non quotate. Finche non lo erano, le due
-/// validazioni erano mutuamente esclusive e `begin_transaction` con un
+/// Il core impone `namespace.name`, quindi un punto, e il provider teneva
+/// una regola locale che ammetteva solo alfanumerici e `_`: le due
+/// validazioni erano mutuamente esclusive, e `begin_transaction` con un
 /// context non vuoto falliva sempre in `Prepare` — una capability pubblicata
-/// che nessuna chiave valida poteva esercitare.
+/// che nessuna chiave valida poteva esercitare. Il rifiuto era nostro: il
+/// server le variabili con il punto le accetta, quotate o no.
 #[tokio::test]
 async fn live_v12_transaction_session_context_reaches_the_server() {
     use plenora_database_core::session_context::{SessionEntry, SessionValue};

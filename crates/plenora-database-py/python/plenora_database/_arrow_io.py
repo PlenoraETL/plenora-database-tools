@@ -22,18 +22,23 @@ def _narrowed_type(field_type: Any, pa: Any) -> Any:
     per un DataFrame di tre righe — un limite dell'adapter presentato come
     limite del provider.
 
-    **La conversione e ricorsiva sulle liste**, che sono l'unico tipo nested
-    qualificato: `PostgreSQL` le scrive come array, con elementi boolean,
-    int32, int64, float32, float64 o testo. Fermarsi al primo livello
-    lasciava `large_list<large_string>` a diventare `list<large_string>`, che
-    il writer rifiuta esattamente come prima — la conversione sembrava fatta
-    e non lo era. Il campo elemento conserva nome, nullability e metadata:
-    sono parte del contratto della colonna, e ricostruirlo con i default li
-    perderebbe in silenzio.
+    **La conversione e ricorsiva sui tipi nested qualificati**, che sono due:
 
-    `struct` e `map` restano intoccati di proposito: nessun provider li
-    scrive, quindi convertirli produrrebbe un tipo comunque rifiutato, con
-    in piu una copia.
+    * `list` — `PostgreSQL` la scrive come array, con elementi boolean,
+      int32, int64, float32, float64 o testo;
+    * `struct` — e la forma dei `range` (`lower`/`upper` testuali piu i
+      flag di inclusione) e dei tipi `composite`, i cui campi portano nei
+      metadata la dichiarazione nativa che il writer rilegge.
+
+    Fermarsi al primo livello lasciava `large_list<large_string>` a
+    diventare `list<large_string>`, che il writer rifiuta esattamente come
+    prima: la conversione sembrava fatta e non lo era. Ogni campo figlio
+    conserva nome, nullability e metadata — per i `composite` il metadata
+    **e** il contratto, e ricostruire il campo con i default lo perderebbe
+    in silenzio, trasformando una colonna tipizzata in testo anonimo.
+
+    `map` resta intoccato: nessun provider lo scrive, quindi convertirlo
+    produrrebbe un tipo comunque rifiutato, con in piu una copia.
 
     La conversione puo fallire: oltre 2 GiB di offset il cast solleva invece
     di troncare. E il comportamento giusto — l'alternativa sarebbe scrivere
@@ -60,15 +65,37 @@ def _narrowed_type(field_type: Any, pa: Any) -> Any:
         narrowed_element = _narrowed_type(element.type, pa)
         if narrowed_element is None and not is_large_list:
             return None
-        return pa.list_(
-            pa.field(
-                element.name,
-                narrowed_element if narrowed_element is not None else element.type,
-                element.nullable,
-                element.metadata,
-            )
+        return pa.list_(_narrowed_field(element, narrowed_element, pa))
+
+    if pa.types.is_struct(field_type):
+        children = list(field_type)
+        narrowed_children = [_narrowed_type(child.type, pa) for child in children]
+        if all(narrowed is None for narrowed in narrowed_children):
+            return None
+        return pa.struct(
+            [
+                _narrowed_field(child, narrowed, pa)
+                for child, narrowed in zip(children, narrowed_children)
+            ]
         )
     return None
+
+
+def _narrowed_field(field: Any, narrowed_type: Any, pa: Any) -> Any:
+    """Il campo con il tipo convertito e tutto il resto identico.
+
+    Nome, nullability e metadata sopravvivono alla conversione. Per i campi
+    di un `composite` PostgreSQL il metadata porta la dichiarazione nativa
+    che il writer rilegge: perderlo qui renderebbe la colonna irriconoscibile
+    a valle, con un errore che parlerebbe del provider.
+    """
+
+    return pa.field(
+        field.name,
+        field.type if narrowed_type is None else narrowed_type,
+        field.nullable,
+        field.metadata,
+    )
 
 
 def _narrow_batches(schema: Any, batches: list, pa: Any) -> tuple:

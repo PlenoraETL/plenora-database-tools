@@ -341,9 +341,6 @@ versioni Python ≥ 3.10.
 - **SQL Server** — raggiungibile solo tramite il driver Rust del
   workspace, non ancora esposto al SDK Python. Postgres e MySQL sono
   entrambi esposti.
-- **No batch/bulk write** — insert massivi passano via SQL raw o
-  builder multi-row (`.insert(...).rows([...])`). Il bulk COPY del
-  driver è esposto solo via CLI oggi.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
@@ -353,21 +350,28 @@ versioni Python ≥ 3.10.
 ### Test
 
 ```bash
-# In un container rust:1.92 con Postgres raggiungibile su
-# dataflow-postgres:5432 (compose in root repo):
-maturin develop --release
-export PLENORA_TEST_POSTGRES_DSN="host=dataflow-postgres user=dataflow \
-  password=dataflow_test_2026 dbname=dataflow_test"
-pytest python/tests/ --asyncio-mode=auto
+python scripts/check_sdk_tests.py             # Postgres + MySQL live
+python scripts/check_sdk_tests.py --offline   # solo i test senza server
 ```
+
+Il runner ricostruisce **sempre** il modulo nativo con `maturin` prima di
+`pytest`, e cancella il precedente prima di installare il nuovo.
+
+Non lanciare `pytest` a mano: `_native.abi3.so` e gitignorato e nessuno lo
+rigenera. Dopo un cambio al Rust, un `pytest` diretto esegue il binario di
+prima e risponde su codice che non e quello scritto — rosso su codice
+corretto, o verde su codice rotto. E successo due volte in una sola
+sessione, e le due correzioni sembravano entrambe sbagliate.
+
+Reti Compose e volume della CA MySQL vengono chiesti a Docker dal runner,
+non scritti a mano: valgono anche in un worktree con un altro progetto
+Compose.
 
 ### Benchmark opt-in
 
-```bash
-export PLENORA_BENCH_PARITY=1
-cargo build --release -p plenora-database-cli
-pytest python/tests/test_benchmark_parity.py -s
-```
+I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
+e gia impostato). Per lanciarli da soli serve comunque un'estensione
+appena costruita: usare il runner e filtrare con `-k benchmark`.
 
 ### Struttura
 
