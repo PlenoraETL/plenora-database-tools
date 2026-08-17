@@ -27,13 +27,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Self-test dei workflow CI: nessuna toolchain, nessuna cache, nessun
-  # container. Sta qui perche `rust-ci` e l'unico workflow che gira su ogni
-  # push e su ogni PR, ed e la ragione per cui il file che questa suite
-  # sostituisce e rimasto rosso per mesi senza che nessuno lo vedesse:
-  # nessun job lo eseguiva.
-  ci-workflows:
-    name: self-test workflow CI
+  # Self-test statici: solo Python, nessuna toolchain, nessuna cache, nessun
+  # container, nessun server. Stanno qui perche `rust-ci` e l'unico workflow
+  # che gira su ogni push e su ogni PR, ed e la ragione per cui il file che
+  # la prima di queste suite sostituisce e rimasto rosso per mesi senza che
+  # nessuno lo vedesse: nessun job lo eseguiva. Una suite nuova si aggiunge
+  # a questo elenco, non a un file che nessuno esegue.
+  static-self-tests:
+    name: self-test statici
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +43,8 @@ jobs:
           python-version: '3.12'
       - name: scripts/test_ci_workflows.py
         run: python3 scripts/test_ci_workflows.py
+      - name: scripts/test_check_mariadb_reference.py
+        run: python3 scripts/test_check_mariadb_reference.py
 
   fmt:
     name: cargo fmt

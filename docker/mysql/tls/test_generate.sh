@@ -16,7 +16,7 @@ fingerprint() {
   openssl x509 -in "$ROOT/tls/server.pem" -noout -fingerprint -sha256
 }
 
-bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext
+bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext dataflow-mysql
 openssl verify -CAfile "$ROOT/tls/ca.pem" "$ROOT/tls/server.pem"
 first_fingerprint=$(fingerprint)
 test ! -e "$ROOT/tls/ca.key"
@@ -32,13 +32,13 @@ if openssl x509 -in "$ROOT/tls/server.pem" -noout -checkhost mysql-hostname-mism
   exit 1
 fi
 
-bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext
+bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext dataflow-mysql
 openssl verify -CAfile "$ROOT/tls/ca.pem" "$ROOT/tls/server.pem"
 test "$first_fingerprint" = "$(fingerprint)"
 test ! -e "$ROOT/tls/ca.key"
 
 rm -f "$ROOT/ca/ca.key"
-bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext
+bash /fixture/generate.sh "$ROOT/ca" "$ROOT/tls" /fixture/server.ext dataflow-mysql
 openssl verify -CAfile "$ROOT/tls/ca.pem" "$ROOT/tls/server.pem"
 second_fingerprint=$(fingerprint)
 test "$first_fingerprint" != "$second_fingerprint"

@@ -20,7 +20,7 @@ services:
       - mysql_tls:/tls
       - ./docker/mysql/tls:/fixture:ro
     entrypoint: ["/bin/bash", "/fixture/generate.sh"]
-    command: ["/ca", "/tls", "/fixture/server.ext"]
+    command: ["/ca", "/tls", "/fixture/server.ext", "dataflow-mysql"]
     restart: "no"
 
   mysql:

@@ -144,7 +144,9 @@ prefissati dal progetto, quindi `database-tools_mysql_data` e
 Rimuovere i soli container, prima del primo `up`:
 
 ```bash
-docker rm -f dataflow-mysql \
+docker rm -f dataflow-mariadb \
+             dataflow-mariadb-certgen \
+             dataflow-mysql \
              dataflow-mysql-certgen \
              dataflow-postgres \
              dataflow-postgres-tls \

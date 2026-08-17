@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "comment": "Fonte di verita unica del riferimento MariaDB: versione esatta e digest immutabile. Consumata da scripts/mariadb_references.py e, tramite la sua validazione, da docker-compose.mariadb.yml. Il digest e il manifest index OCI risolto da docker.io/library/mariadb:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata. Il ruolo e `evidence`, non `baseline`: MariaDB non e un riferimento qualificato — il provider MySQL fa fail-close alla probe — e questa fixture esiste per produrre l'evidenza che ADR 0014 chiede prima di decidere se qualificarla.",
+  "references": [
+    {
+      "role": "evidence",
+      "label": "MariaDB 11.8 LTS",
+      "exact_version": "11.8.8",
+      "digest": "sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf"
+    }
+  ]
+}

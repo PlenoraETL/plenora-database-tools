@@ -1,0 +1,82 @@
+# Fixture di **evidenza** MariaDB 11.8.8 LTS, fissata per digest immutabile.
+# Versione e digest sono dichiarati in docker/mariadb/references.json ed e quel
+# documento a comandare: `scripts/mariadb_references.py` verifica che i due
+# servizi qui sotto fissino esattamente quell'immagine.
+#
+# Non e un riferimento qualificato. Il provider `mysql` fa fail-close alla
+# probe quando riconosce MariaDB, e questa fixture serve a produrre l'evidenza
+# che ADR 0014 chiede prima di decidere se qualificarla — non a farla passare.
+#
+# Progetto Compose esplicito. Senza questa riga Compose deriva il nome dalla
+# directory, quindi tutti i compose del repository finirebbero nello stesso
+# progetto e `down --remove-orphans` su uno cancellerebbe i container degli
+# altri provider.
+name: plenora-mariadb
+
+services:
+  # Il generatore e quello di MySQL, non una copia: due copie della stessa
+  # fixture TLS divergono alla prima correzione di una sola. Prende il nome
+  # host come argomento, quindi il certificato copre `dataflow-mariadb` e non
+  # quello dell'altro riferimento.
+  mariadb-certgen:
+    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    container_name: dataflow-mariadb-certgen
+    user: "0:0"
+    volumes:
+      - mariadb_ca_private:/ca
+      - mariadb_tls:/tls
+      - ./docker/mysql/tls:/fixture:ro
+      - ./docker/mariadb/tls:/fixture-host:ro
+    entrypoint: ["/bin/bash", "/fixture/generate.sh"]
+    command: ["/ca", "/tls", "/fixture-host/server.ext", "dataflow-mariadb"]
+    restart: "no"
+
+  mariadb:
+    image: mariadb@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf
+    container_name: dataflow-mariadb
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_DATABASE: dataflow_test
+      MARIADB_USER: dataflow
+      MARIADB_PASSWORD: "DataFlow_Test_2026!"
+    ports:
+      # Porta diversa da quella di MySQL: le due fixture devono poter stare
+      # su in contemporanea, perche l'evidenza e un confronto fra le due.
+      - "127.0.0.1:3307:3306"
+    command:
+      - --require-secure-transport=ON
+      - --local-infile=OFF
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      - --ssl-ca=/etc/mysql/tls/ca.pem
+      - --ssl-cert=/etc/mysql/tls/server.pem
+      - --ssl-key=/etc/mysql/tls/server.key
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+      - mariadb_tls:/etc/mysql/tls:ro
+    networks:
+      default:
+        aliases:
+          # Lo stesso alias scoperto della fixture MySQL: un nome che il
+          # certificato **non** copre, per poter provare che il rifiuto TLS
+          # sia un rifiuto di identita e non un errore DNS.
+          - mariadb-hostname-mismatch
+    depends_on:
+      mariadb-certgen:
+        condition: service_completed_successfully
+    healthcheck:
+      # `healthcheck.sh` e lo strumento dell'immagine e passa dal socket
+      # locale: non attraversa `require-secure-transport`, quindi non ha
+      # bisogno della CA e non nasconde un errore TLS dietro un container
+      # dichiarato sano.
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: "no"
+
+volumes:
+  mariadb_data:
+  mariadb_ca_private:
+  mariadb_tls:
