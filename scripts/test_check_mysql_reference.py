@@ -1824,7 +1824,7 @@ def compose_declarations(pattern: str) -> list[str]:
 
 # Il wheel esce dalla build in una directory temporanea e vi resta: il
 # comando dei test lo nomina, quindi i doppi lo nominano allo stesso modo.
-SDK_WHEEL_NAME = "plenora_database-0.9.2-cp310-abi3-linux_x86_64.whl"
+SDK_WHEEL_NAME = "plenora_database-0.10.0-cp310-abi3-linux_x86_64.whl"
 SDK_ARTIFACT = {
     "wheel": SDK_WHEEL_NAME,
     "wheel_sha256": "a" * 64,
@@ -2354,8 +2354,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         python = f"{sdk.PYTHON_MARKER}3.13.9"
 
         for artifact in (
-            "plenora-database==0.9.2",
-            "plenora_database @ file:///artifacts/plenora_database-0.9.2.whl",
+            "plenora-database==0.10.0",
+            "plenora_database @ file:///artifacts/plenora_database-0.10.0.whl",
         ):
             output = f"{sdk.PACKAGES_MARKER}{declared} {artifact}\n{python}\n"
             versions = sdk.installed_versions(output)

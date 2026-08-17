@@ -11,11 +11,49 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
-## [Unreleased] — 0.9.3
+## [0.10.0] — 2026-08-17
 
-Blocco Upsert/metadata unique (MySQL) e contratto Replace/TruncateInsert.
-Include anche `NativeQueryPolicy` MySQL (commit successivo al tag
-`py-v0.9.2`, quindi non presente negli artifact 0.9.2).
+Contratto `Replace` su **entrambi** i provider, TLS fail-closed nei comandi
+legacy del CLI, e piani che vengono rifiutati invece che accettati e ignorati.
+La minor non è cosmetica: `Replace` fa una cosa diversa da prima su
+PostgreSQL e su MySQL, e tre superfici che accettavano piani senza onorarli
+ora li respingono. Le note di migrazione sono in fondo, divise per superficie.
+
+Include anche `NativeQueryPolicy` MySQL e il `SessionContext` MySQL
+funzionante — commit successivi al tag `py-v0.9.2`, quindi non presenti negli
+artifact 0.9.2.
+
+### 🚨 BREAKING — PostgreSQL: `Replace` scrive nel target esistente
+
+Prima `Replace` costruiva una tabella di staging con lo schema del piano, ci
+scriveva dentro, faceva `DROP TABLE` dell'originale e `ALTER TABLE ... RENAME`.
+Il risultato aveva le righe giuste e nient'altro: object identity nuova, e
+indici, foreign key, trigger, check, default, grant, sequence e opzioni della
+tabella spariti insieme all'originale. Il preflight lo sapeva e si toglieva di
+mezzo — `Replace` saltava sia il controllo di esistenza sia il confronto
+colonna per colonna — quindi un target inesistente non era un errore ma un
+invito a fabbricarne uno con lo schema parziale del piano.
+
+Ora `Replace` è ciò che il contratto dice: **target già esistente,
+`DELETE FROM`, bulk insert, tutto nella stessa transazione**.
+
+- il target **deve esistere**: un target assente è `PlenoraNotFoundError`.
+  Solo `create` può trovarlo assente;
+- il target **non viene ricreato**: identity, indici, unique, foreign key,
+  trigger, check, default, grant, sequence e `reloptions` sono quelli di
+  prima della scrittura, e i trigger vedono le righe nuove;
+- il target passa dal confronto colonna per colonna, come `append`;
+- un errore o una cancellazione **dopo il `DELETE`** ripristinano le righe
+  precedenti: è tutto nella stessa transazione, e su PostgreSQL non c'è
+  nessun commit implicito che sopravviva al rollback;
+- `truncate_insert` resta su `TRUNCATE`, che su PostgreSQL è transazionale:
+  la differenza fra le due modalità non è più la sicurezza, è il costo.
+
+Sette test live in `crates/plenora-db-postgres/tests/golden_write_replace.rs`
+fissano il contratto su una fixture con identity PK, default, CHECK, unique
+index, foreign key, trigger e grant, confrontando l'impronta di `pg_class.oid`,
+`pg_constraint`, `pg_indexes`, `pg_trigger`, `relacl`, `reloptions` e
+`last_value` della sequence prima e dopo.
 
 ### Contratto Replace/TruncateInsert — MySQL passa a 6 modalità su 7
 
@@ -83,6 +121,166 @@ Novità di supporto:
 Un Upsert con schema di sole colonne key non degrada più a un INSERT
 nudo (che erra sul primo duplicate key): rende
 `ON DUPLICATE KEY UPDATE k=k` (no-op) per semantica insert-or-ignore.
+
+### 🚨 BREAKING — CLI: TLS MySQL fail-closed nei comandi legacy `mysql-*`
+
+I comandi `mysql-*` degradavano silenziosamente a `TrustServerCertificate`
+quando non veniva passata una CA: TLS attivo, **nessuna verifica** del
+certificato del server. Il path moderno `database-probe mysql` era già
+fail-closed; ora lo è anche il parser legacy.
+
+Senza flag il certificato è verificato contro le CA di sistema. I due flag
+sono order-independent e mutuamente esclusivi:
+
+- `--tls-ca-path-env <name>` — CA privata, letta dal file indicato dalla
+  variabile;
+- `--tls-insecure-skip-verify` — opt-in esplicito, nessuna verifica, per
+  dev/test.
+
+### TLS — nessuna variabile del CLI viene più letta a metà
+
+`postgres_provider_for_pfm` usciva presto due volte: sull'interruttore
+insicuro prima di leggere qualsiasi cosa, e sull'assenza della CA prima di
+leggere certificato e chiave. Chi impostava l'identità client dimenticando la
+CA otteneva un provider **senza mTLS e senza avviso**: credeva di avere un
+canale autenticato e non l'aveva.
+
+Ora `PLENORA_PG_CA_PATH`, `PLENORA_PG_CLIENT_CERT_PATH`,
+`PLENORA_PG_CLIENT_KEY_PATH` e `PLENORA_TLS_INSECURE_LOCAL` vengono lette
+tutte prima di scegliere, e le combinazioni incoerenti sono errori:
+
+- identità client senza CA — il certificato resterebbe inutilizzato;
+- certificato senza chiave, o viceversa;
+- interruttore insicuro insieme a materiale TLS — le due richieste si
+  contraddicono, e indovinare quale vince sarebbe peggio che fermarsi.
+
+Nello stesso passaggio è caduta una regressione introdotta durante il ciclo:
+le variabili venivano lette con l'helper di `database-probe`, che tratta
+"nome indicato ma variabile assente" come errore del chiamante, quindi **ogni
+comando senza CA privata falliva** in `validate` — cioè proprio la
+configurazione di produzione, quella che verifica contro i root pubblici. Non
+la copriva nessun test, perché tutti impostavano o l'interruttore insicuro o
+la CA privata.
+
+### Piani rifiutati invece che accettati e ignorati
+
+Tre superfici accettavano un piano e non lo onoravano. Un piano ignorato è
+peggio di un piano rifiutato: il chiamante resta a credere che sia stato
+applicato.
+
+- **`keys` / `update_columns` su `Replace`** (PostgreSQL e MySQL):
+  `PlenoraInvalidPlanError` in preflight, prima di qualunque contatto con il
+  server. `Replace` non ha semantica di chiave; chi vuole una PRIMARY KEY usa
+  `create`. Su MySQL erano già rifiutate, ma come `Unsupported` ("il provider
+  non lo fa") invece di `InvalidPlan` ("la mode non significa questo, su
+  nessun provider"), e il messaggio nominava `Append` anche quando la mode era
+  un'altra.
+- **`create_spatial_index` fuori da `Create`** (PostgreSQL):
+  `PlenoraInvalidPlanError` per ogni mode diversa da `create`. Il flag emette
+  `CREATE INDEX` senza `IF NOT EXISTS`: su un target che l'indice ce l'ha già
+  — cioè qualunque target che non sia stato appena creato — funzionerebbe
+  solo la prima volta.
+- **PRIMARY KEY di `Create` con colonne nullable** (PostgreSQL e MySQL):
+  `PlenoraInvalidPlanError` in preflight su entrambi. PostgreSQL coercizzava
+  in silenzio — la tabella creata usciva con `NOT NULL` che lo schema Arrow
+  non dichiarava — e MySQL rifiutava tardi, con l'errore server 1171 durante
+  la scrittura, dentro il percorso che poi deve dichiarare cosa è rimasto sul
+  server.
+
+### SDK — Arrow: la normalizzazione scende nei tipi annidati
+
+La conversione dei tipi a offset largo si fermava al primo livello:
+`large_list<large_string>` diventava `list<large_string>`, che il writer
+rifiuta esattamente come prima — la conversione sembrava fatta e non lo era.
+Ora la ricorsione attraversa `list` **e** `struct`, e ogni campo figlio
+conserva nome, nullability e metadata.
+
+I metadata non sono un dettaglio: per i `composite` PostgreSQL **sono** il
+contratto della colonna, e per i `range` distinguono un estremo aperto da un
+estremo nullo. Ricostruire il campo con i default trasformerebbe una colonna
+tipizzata in testo anonimo. È il caso che ha fatto fallire `copy_from` con
+`pandas` 3 e `pyarrow` 25, che producono `large_string` dove le versioni
+precedenti producevano `string`.
+
+`acopy_from` non duplica più l'implementazione sincrona: due copie della
+stessa cosa divergono alla prima modifica di una sola.
+
+### SDK — MySQL: `SessionContext`, `NativeQueryPolicy`, indici
+
+- **`SessionContext` ora funziona.** Il core impone chiavi `namespace.name`,
+  quindi con un punto; MySQL scriveva `SET @plenora_ctx_{name}` e rifiutava
+  ogni nome non alfanumerico. Le due validazioni erano mutuamente esclusive:
+  una capability pubblicata che nessuna chiave valida poteva esercitare. La
+  validazione delega ora al core, e un test live lega l'assert ai valori — la
+  riga esiste solo se entrambe le variabili sono arrivate.
+- **`NativeQueryPolicy` su MySQL**, parity con PostgreSQL: `begin` di
+  `MysqlSession` e `AsyncMysqlSession` accetta `native_query_policy` e
+  `context`, e `TransactionOptions::pfm_defaults()` è finalmente fail-closed
+  su entrambi i provider.
+- **`MysqlObjectDescription.indexes`** espone name/unique/column_backed/
+  columns da `information_schema.statistics`, e lo `schema_token` li include:
+  una modifica agli indici fra `prepare` ed esecuzione cambia il token e non
+  passa inosservata.
+
+### SDK — diagnostica: cosa è rimasto sul server
+
+- un errore **dopo** un COMMIT riuscito non dichiara più che non è successo
+  niente: il residuo passa da un punto unico, caso ambiguo incluso;
+- un `Create` fallito dichiara la tabella rimasta invece di `RolledBack`;
+- `execute_ddl` MySQL usa il text protocol e dichiara l'incertezza in volo;
+- MySQL read batching: una riga che non entra nel batch apre il successivo
+  invece di essere persa nel carry-over.
+
+### Migrazione da 0.9.x
+
+**PostgreSQL — `Replace`.** Se lo usavi per *creare* il target, passa a
+`mode="create"`: ora un target assente è `PlenoraNotFoundError`. Se lo usavi
+per *sostituire* il contenuto, non devi fare niente e ci guadagni: indici,
+vincoli, trigger, grant e identity sopravvivono alla scrittura, e un errore a
+metà stream riporta le righe di prima. Se passavi `keys`, `update_columns` o
+`create_spatial_index` insieme a `Replace`, quei campi erano ignorati e ora
+sono `PlenoraInvalidPlanError`: toglili, oppure sposta la creazione su
+`create`. Se creavi tabelle con una PRIMARY KEY su colonne nullable nello
+schema Arrow, dichiarale `not null`: prima Postgres correggeva in silenzio.
+
+**MySQL — `Replace` e `TruncateInsert`.** `mode="replace"` torna disponibile
+dopo essere stato rimosso in 0.9.1, ma **non** è il vecchio pattern staging +
+`RENAME`: è `DELETE FROM` + insert nella stessa transazione, il target deve
+esistere e non viene ricreato. Chi aveva adottato il workaround `begin()` +
+`DELETE FROM` + `copy_from(mode="append")` può tornare a `mode="replace"`,
+che fa la stessa cosa in una transazione sola. `mode="truncate_insert"` resta
+`PlenoraUnsupportedError` su MySQL — `TRUNCATE` è DDL con commit implicito,
+quindi non è rollback-safe — e il messaggio rinvia a `"replace"`. Su
+PostgreSQL `truncate_insert` continua a funzionare. Se usavi `upsert` con più
+di un unique index sul target, ora è fail-closed: dichiara `keys` che
+coincidano con un solo indice, o passa da `update`.
+
+**TLS.** Nessun default del SDK cambia in questa release: `connect()` verifica
+il certificato del server dalla 0.9.0 (ADR-011) e `connect_mysql()` dalla
+0.9.1, e `tls_mode="insecure_trust_server"` resta l'unico opt-out esplicito
+sul lato MySQL. Cambia il
+CLI, e cambia in modo fail-closed: i comandi `mysql-*` senza CA contro un
+server con certificato non verificabile dalle CA di sistema ora **falliscono**
+invece di fidarsi. Usa `--tls-ca-path-env <name>` con la CA privata, o
+`--tls-insecure-skip-verify` solo in dev. Sul lato PostgreSQL del CLI, se
+impostavi `PLENORA_PG_CLIENT_CERT_PATH` / `PLENORA_PG_CLIENT_KEY_PATH` senza
+`PLENORA_PG_CA_PATH` non avevi mTLS pur credendo di averlo: ora è un errore
+esplicito, e vanno impostate tutte e tre.
+
+**CLI.** Oltre al TLS: i sottocomandi legacy accettano i flag in qualunque
+ordine, e le combinazioni contraddittorie (CA privata insieme
+all'interruttore insicuro) sono rifiutate invece di essere risolte a
+indovinare. Se una pipeline si appoggiava al comportamento "senza CA mi fido
+comunque", va aggiornata prima dell'upgrade.
+
+**SDK.** Nessuna firma Python cambia in modo incompatibile. `copy_from` e
+`acopy_from` accettano ora tabelle Arrow che prima venivano rifiutate —
+`large_string`, `large_binary`, `large_list` e `struct` annidati, cioè ciò che
+`pandas` 3 con `pyarrow` 25 produce di default — quindi un workaround di
+`cast()` a monte diventa superfluo ma resta innocuo. `MysqlSession.begin`
+accetta due parametri nuovi (`context`, `native_query_policy`), entrambi
+opzionali. `MysqlObjectDescription` porta un campo nuovo, `indexes`: chi
+serializza quella struttura con uno schema chiuso deve prevederlo.
 
 ---
 
