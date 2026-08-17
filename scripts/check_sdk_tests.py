@@ -23,8 +23,10 @@ Questo runner toglie il caso dalla mano di chi esegue:
 4. esegue `pytest` fuori dal source tree, senza `PYTHONPATH` verso il
    package locale, e verifica prima di partire che `plenora_database` e il
    suo modulo nativo arrivino da `site-packages`;
-5. sui riferimenti vivi rifiuta anche un solo test saltato: uno skip e un
-   test che non ha risposto, e in un verdetto conta come i falliti;
+5. confronta la corsa con il contratto dello scope — quanti passati, quanti
+   saltati **e per quale motivo**, quanti deselezionati — perche un test che
+   non ha risposto, comunque sia sparito, in un verdetto conta come un
+   fallito;
 6. verifica che ne' la build ne' i test abbiano cambiato l'albero, e
    registra nel verdetto di cosa sono fatti gli artefatti che hanno girato.
 
@@ -65,6 +67,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +131,55 @@ CLI_BUILD_COMMAND = " ".join(
 POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
 POSTGRES_PORT = 5432
+
+
+@dataclass(frozen=True)
+class ScopeContract:
+    """Quanti test deve aver eseguito uno scope, e quali puo aver saltato.
+
+    Un conteggio di soli `passed` non descrive una corsa: gli stessi 24
+    `passed` escono da una suite che ne salta 195 e da una che ne deseleziona
+    195, e le due dicono cose diverse. `skips` va oltre il totale — associa a
+    ogni motivo quante volte deve comparire — perche un totale coincidente e
+    esattamente cio che rende invisibile una sostituzione: uno skip nuovo che
+    ne rimpiazza uno atteso lascia il numero fermo.
+    """
+
+    passed: int
+    deselected: int
+    skips: dict[str, int]
+
+    @property
+    def skipped(self) -> int:
+        return sum(self.skips.values())
+
+
+# I motivi con cui la suite si salta da sola quando i riferimenti non ci
+# sono. Sono il funzionamento di `offline`, non un difetto: i test live
+# leggono le variabili d'ambiente dei riferimenti e senza quelle non hanno
+# nulla da interrogare.
+POSTGRES_SKIP = "live test: manca env PLENORA_TEST_POSTGRES_DSN"
+MYSQL_SKIP = (
+    "live test MySQL: mancano env PLENORA_TEST_MYSQL_HOST "
+    "e/o PLENORA_TEST_MYSQL_PASSWORD"
+)
+BENCH_SKIP = (
+    "bench opt-in: setta PLENORA_BENCH_PARITY=1 per lanciarlo "
+    "(atteso ~10s di walltime per la sessione)"
+)
+
+# Il contratto di ogni scope, in un posto solo. I numeri si aggiornano quando
+# la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
+# "passed" da solo cresce senza dire di cosa.
+SCOPE_CONTRACTS = {
+    "live": ScopeContract(passed=219, deselected=0, skips={}),
+    "offline": ScopeContract(
+        passed=24,
+        deselected=0,
+        skips={POSTGRES_SKIP: 164, MYSQL_SKIP: 29, BENCH_SKIP: 2},
+    ),
+    "benchmark": ScopeContract(passed=2, deselected=217, skips={}),
+}
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
 # riconoscibili dentro l'output di pytest senza dover eseguire un secondo
@@ -779,36 +831,101 @@ def pytest_summary(output: str) -> str:
     raise RuntimeError("output senza la riga di riepilogo di pytest")
 
 
-def assert_no_unexpected_skips(*, scope: str, output: str, summary: str) -> None:
-    """Sui riferimenti vivi uno skip e un test che non ha risposto.
+def pytest_counts(summary: str) -> dict[str, int]:
+    """I conteggi della riga di riepilogo, per esito.
 
-    Un test saltato non e un test passato: nel verdetto conta come un
-    fallito, perche di cio che doveva verificare non si sa niente. E salta
-    per motivi che somigliano a un errore di configurazione — un binario
-    spostato, una variabile che nessuno passa piu — quindi resta verde
-    proprio quando il gate ha smesso di misurare. E successo con il bench di
-    parita: mount cambiato, binario non trovato, 218 passed e un confronto
-    sparito.
+    `{"passed": 24, "skipped": 195}` da `24 passed, 195 skipped in 0.83s`. La
+    durata non viene letta come conteggio perche non ha uno spazio prima
+    dell'unita.
+    """
 
-    Lo scope `offline` gli skip li ha per costruzione: i test live si
-    saltano da soli quando i riferimenti non ci sono, ed e il suo scopo.
+    return {
+        outcome: int(count)
+        for count, outcome in re.findall(r"\b(\d+) ([a-z]+)\b", summary)
+    }
+
+
+def skip_reasons(output: str) -> dict[str, int]:
+    """Quante volte compare ogni motivo di skip, secondo `-rs`.
+
+    Le righe hanno la forma `SKIPPED [N] file:riga: motivo`, e `N` non e
+    sempre 1: pytest raggruppa i test parametrizzati che saltano nello stesso
+    punto. Contare le righe invece di sommare gli `N` darebbe un totale che
+    non torna con il riepilogo.
+    """
+
+    reasons: dict[str, int] = {}
+    for line in output.splitlines():
+        match = re.match(r"^SKIPPED \[(\d+)\] [^:]+:\d+: (.+)$", line)
+        if match:
+            reason = match.group(2).strip()
+            reasons[reason] = reasons.get(reason, 0) + int(match.group(1))
+    return reasons
+
+
+def assert_scope_contract(*, scope: str, output: str, summary: str) -> dict[str, int]:
+    """La corsa deve corrispondere al contratto dello scope, in ogni voce.
+
+    Un test saltato non e un test passato: di cio che doveva verificare non
+    si sa niente, e salta per motivi che somigliano a un errore di
+    configurazione — un binario spostato, una variabile che nessuno passa
+    piu — cioe resta verde proprio quando il gate ha smesso di misurare. Lo
+    stesso vale per una deselezione: `-k` che non seleziona piu niente
+    produce "0 passed" e nessun errore.
+
+    Il contratto va oltre "nessuno skip". Fissa i tre conteggi, perche gli
+    stessi 24 `passed` escono da una suite che ne salta 195 e da una che ne
+    deseleziona 195; e per gli skip previsti fissa **quali** e quanti,
+    perche un totale coincidente e proprio cio che rende invisibile una
+    sostituzione — uno skip nuovo al posto di uno atteso lascia il numero
+    fermo.
+
+    # Returns
+
+    I conteggi osservati, che finiscono nel verdetto.
 
     # Raises
 
-    `RuntimeError` con le righe `SKIPPED` che `-rs` ha stampato, che dicono
-    quali test e per quale motivo.
+    `RuntimeError` con tutte le divergenze trovate, il riepilogo di pytest e
+    i motivi degli skip osservati: una sola voce alla volta costringerebbe a
+    rieseguire la suite per vedere la successiva.
     """
 
-    if scope == "offline":
-        return
-    skipped = re.search(r"(\d+) skipped", summary)
-    if skipped is None:
-        return
-    reasons = [line for line in output.splitlines() if line.startswith("SKIPPED")]
-    raise RuntimeError(
-        f"scope {scope}: {skipped.group(1)} test saltati, e uno skip qui e un "
-        f"test che non ha risposto: {reasons}"
-    )
+    contract = SCOPE_CONTRACTS[scope]
+    counts = pytest_counts(summary)
+    observed = {
+        outcome: counts.get(outcome, 0)
+        for outcome in ("passed", "skipped", "deselected")
+    }
+    expected = {
+        "passed": contract.passed,
+        "skipped": contract.skipped,
+        "deselected": contract.deselected,
+    }
+    reasons = skip_reasons(output)
+
+    problems = [
+        f"{outcome}: {observed[outcome]}, attesi {expected[outcome]}"
+        for outcome in ("passed", "skipped", "deselected")
+        if observed[outcome] != expected[outcome]
+    ]
+    for reason, count in sorted(contract.skips.items()):
+        if reasons.get(reason, 0) != count:
+            problems.append(
+                f"skip previsto '{reason}': {reasons.get(reason, 0)} volte, "
+                f"attese {count}"
+            )
+    problems += [
+        f"skip inatteso '{reason}': {count} volte"
+        for reason, count in sorted(reasons.items())
+        if reason not in contract.skips
+    ]
+    if problems:
+        raise RuntimeError(
+            f"scope {scope} fuori contratto: {problems}; riepilogo di pytest: "
+            f"'{summary}'; motivi degli skip osservati: {reasons}"
+        )
+    return observed
 
 
 def verdict(
@@ -819,6 +936,7 @@ def verdict(
     artifact: dict[str, object],
     images: dict[str, object],
     versions: dict[str, str],
+    counts: dict[str, int],
     summary: str,
 ) -> dict[str, object]:
     """Il verdetto, che deve identificare cio che ha girato.
@@ -871,6 +989,10 @@ def verdict(
             "rustc": artifact["rustc"],
         },
         "pytest": summary.strip(),
+        # I conteggi accanto alla riga di riepilogo: la riga e per chi legge,
+        # questi sono cio che il contratto ha verificato, e si confrontano
+        # senza doverla interpretare.
+        "counts": counts,
         "verified_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -933,7 +1055,9 @@ def main() -> int:
             )
             assert_worktree_unchanged(before, "l'esecuzione della suite")
         summary = pytest_summary(output)
-        assert_no_unexpected_skips(scope=selected, output=output, summary=summary)
+        counts = assert_scope_contract(
+            scope=selected, output=output, summary=summary
+        )
         artifact.update(installed_origin(output))
         versions = installed_versions(output)
         images = {
@@ -954,6 +1078,7 @@ def main() -> int:
                 artifact=artifact,
                 images=images,
                 versions=versions,
+                counts=counts,
                 summary=summary,
             ),
             ensure_ascii=False,

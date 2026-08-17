@@ -403,18 +403,35 @@ una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
 che il runner garantisce e di dire con cosa ha girato — id e digest delle due
 immagini, versione di rustc e di Python effettive.
 
-**Uno skip sui riferimenti vivi e un fallimento.** In `live` e
-`--benchmark-only` il gate rifiuta anche un solo test saltato: uno skip e un
+**Ogni scope ha un contratto, e la corsa deve corrispondergli.**
+
+| scope | passed | skipped | deselected |
+|---|---|---|---|
+| `live` | 219 | 0 | 0 |
+| `--offline` | 24 | 195 | 0 |
+| `--benchmark-only` | 2 | 0 | 217 |
+
+Un conteggio di soli `passed` non descrive una corsa: gli stessi 24 escono da
+una suite che ne salta 195 e da una che ne deseleziona 195. Uno skip e un
 test che non ha risposto, e salta per motivi che somigliano a un errore di
 configurazione — un binario spostato, una variabile che nessuno passa piu —
-cioe resta verde proprio quando il gate ha smesso di misurare. In `offline`
-gli skip sono il funzionamento: i test live si saltano da soli.
+cioe resta verde proprio quando il gate ha smesso di misurare; una
+deselezione fa lo stesso da un'altra porta, perche un `-k` che non seleziona
+piu niente non e un errore per pytest.
+
+Per `offline` il contratto va oltre il totale e fissa **quali** skip, e
+quanti per motivo: le famiglie live sono Postgres (164), MySQL (29) e il
+bench opt-in (2). Un totale coincidente e proprio cio che rende invisibile
+una sostituzione — uno skip nuovo al posto di uno atteso lascia il numero
+fermo. I valori stanno tutti in `SCOPE_CONTRACTS`, dentro il runner: quando
+la suite cambia si aggiornano li, ed e il punto, perche un test aggiunto
+diventa visibile invece di far crescere un numero senza dire di cosa.
 
 Il verdetto JSON identifica cio che ha girato: commit, SHA-256 del wheel e
 del modulo nativo **caricato da site-packages**, percorsi da cui e stato
-importato, SHA-256 del CLI con feature e comando di build, identita delle
-immagini e versioni effettive di Python, rustc, maturin, pyarrow, pandas e
-pytest. Il nome del wheel da solo non identifica un artefatto — e lo stesso a
+importato, SHA-256 del CLI con feature e comando di build, i tre conteggi
+verificati dal contratto, identita delle immagini e versioni effettive di
+Python, rustc, maturin, pyarrow, pandas e pytest. Il nome del wheel da solo non identifica un artefatto — e lo stesso a
 ogni build. Il runner verifica inoltre che ne' la build ne' i test abbiano
 cambiato l'albero di lavoro, untracked inclusi.
 

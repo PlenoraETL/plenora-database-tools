@@ -31,6 +31,11 @@ SPEC = importlib.util.spec_from_file_location("mysql_gate", GATE)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("gate MySQL non importabile")
 gate = importlib.util.module_from_spec(SPEC)
+# Registrato prima di eseguirlo: `dataclasses` risolve le annotazioni
+# cercando il modulo in `sys.modules`, e un modulo caricato a mano non ci
+# finisce da solo — il decoratore fallirebbe con un `AttributeError` su
+# `None` che non nomina nessuna delle due cose.
+sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
 
 SDK_RUNNER = ROOT / "scripts" / "check_sdk_tests.py"
@@ -38,6 +43,7 @@ SDK_SPEC = importlib.util.spec_from_file_location("sdk_gate", SDK_RUNNER)
 if SDK_SPEC is None or SDK_SPEC.loader is None:
     raise RuntimeError("runner della suite SDK non importabile")
 sdk = importlib.util.module_from_spec(SDK_SPEC)
+sys.modules[SDK_SPEC.name] = sdk
 SDK_SPEC.loader.exec_module(sdk)
 
 from scripts import compose_network as compose_network_module  # noqa: E402
@@ -1846,6 +1852,7 @@ SDK_VERSIONS = {
     "pytest-asyncio": "1.4.0",
     "python": "3.13.9",
 }
+SDK_COUNTS = {"passed": 231, "skipped": 4, "deselected": 0}
 SDK_IMAGES = {
     "build": {
         "reference": "rust:1.92",
@@ -1866,6 +1873,37 @@ def sdk_pytest_command(scope: str) -> list[str]:
     return sdk.pytest_command(
         scope=scope, artifacts=Path("/tmp/plenora-artifacts"), wheel=SDK_WHEEL_NAME
     )
+
+
+def sdk_suite_output(
+    scope: str,
+    *,
+    passed: int | None = None,
+    deselected: int | None = None,
+    skips: dict[str, int] | None = None,
+) -> tuple[str, str]:
+    """Output e riepilogo di una corsa, per default a contratto rispettato.
+
+    Ogni parametro sovrascrive una voce del contratto: e il modo di scrivere
+    "questa corsa e come quella attesa, tranne che...".
+    """
+
+    contract = sdk.SCOPE_CONTRACTS[scope]
+    passed = contract.passed if passed is None else passed
+    deselected = contract.deselected if deselected is None else deselected
+    skips = dict(contract.skips) if skips is None else skips
+
+    lines = [
+        f"SKIPPED [{count}] tests/test_{index}.py:{10 + index}: {reason}"
+        for index, (reason, count) in enumerate(sorted(skips.items()))
+    ]
+    parts = [f"{passed} passed"]
+    if sum(skips.values()):
+        parts.append(f"{sum(skips.values())} skipped")
+    if deselected:
+        parts.append(f"{deselected} deselected")
+    summary = f"{', '.join(parts)} in 1.23s"
+    return "\n".join([*lines, summary, ""]), summary
 
 
 class PythonSdkRunnerTests(unittest.TestCase):
@@ -2011,6 +2049,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             artifact=SDK_ARTIFACT,
             images=SDK_IMAGES,
             versions=SDK_VERSIONS,
+            counts=SDK_COUNTS,
             summary=" 231 passed, 4 skipped ",
         )
 
@@ -2018,6 +2057,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertEqual(recorded["artifact"]["wheel_sha256"], "a" * 64)
         self.assertEqual(recorded["artifact"]["native_sha256"], "b" * 64)
         self.assertEqual(recorded["pytest"], "231 passed, 4 skipped")
+        # La riga di riepilogo e per chi legge; i conteggi sono cio che il
+        # contratto ha verificato, e si confrontano senza interpretarla.
+        self.assertEqual(recorded["counts"], SDK_COUNTS)
         self.assertEqual(
             set(recorded["versions"]),
             {
@@ -2065,6 +2107,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 artifact=SDK_ARTIFACT,
                 images=SDK_IMAGES,
                 versions=SDK_VERSIONS,
+                counts=SDK_COUNTS,
                 summary="231 passed",
             )
 
@@ -2509,44 +2552,216 @@ class PythonSdkRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "TMPDIR"):
             sdk.assert_artifacts_outside_repository(ROOT / "target" / "staging")
 
-    def test_a_live_or_benchmark_skip_fails_the_gate(self) -> None:
-        """Uno skip sui riferimenti vivi e un test che non ha risposto.
+    def test_every_scope_declares_what_a_correct_run_looks_like(self) -> None:
+        """I tre contratti stanno in una struttura sola, e sono coerenti.
 
-        E salta per motivi che somigliano a un errore di configurazione — un
-        binario spostato, una variabile che nessuno passa piu — quindi resta
-        verde proprio quando il gate ha smesso di misurare. Il bench di
-        parita l'ha fatto: 218 passed, 1 skipped, e un confronto sparito.
+        Un conteggio di soli `passed` non descrive una corsa: gli stessi 24
+        escono da una suite che ne salta 195 e da una che ne deseleziona 195.
         """
 
-        output = (
-            "SKIPPED [1] tests/test_benchmark_parity.py:53: bench: CLI non trovato\n"
-            "218 passed, 1 skipped in 10.93s\n"
+        self.assertEqual(
+            set(sdk.SCOPE_CONTRACTS), {"live", "offline", "benchmark"}
         )
-        summary = sdk.pytest_summary(output)
-        self.assertEqual(summary, "218 passed, 1 skipped in 10.93s")
+        live = sdk.SCOPE_CONTRACTS["live"]
+        offline = sdk.SCOPE_CONTRACTS["offline"]
+        benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        for scope in ("live", "benchmark"):
+        self.assertEqual((live.passed, live.skipped, live.deselected), (219, 0, 0))
+        self.assertEqual(
+            (offline.passed, offline.skipped, offline.deselected), (24, 195, 0)
+        )
+        self.assertEqual(
+            (benchmark.passed, benchmark.skipped, benchmark.deselected),
+            (2, 0, 217),
+        )
+        # I due scope che girano l'intera suite ne vedono lo stesso totale:
+        # offline salta cio che live esegue, e nessuno dei due deseleziona.
+        self.assertEqual(live.passed, offline.passed + offline.skipped)
+        # Il bench e un sottoinsieme della stessa suite.
+        self.assertEqual(live.passed, benchmark.passed + benchmark.deselected)
+
+        for scope, contract in sdk.SCOPE_CONTRACTS.items():
+            output, summary = sdk_suite_output(scope)
+            self.assertEqual(
+                sdk.assert_scope_contract(
+                    scope=scope, output=output, summary=summary
+                ),
+                {
+                    "passed": contract.passed,
+                    "skipped": contract.skipped,
+                    "deselected": contract.deselected,
+                },
+            )
+
+    def test_the_documented_contract_matches_the_one_the_gate_enforces(self) -> None:
+        """La tabella del README segue `SCOPE_CONTRACTS`.
+
+        Tre numeri per scope piu tre famiglie di skip, scritti a mano in un
+        documento, invecchiano al primo test aggiunto — e chi legge non ha
+        modo di distinguerli da quelli aggiornati.
+        """
+
+        readme = (ROOT / "crates" / "plenora-database-py" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        rows = {
+            row.split("|")[1].strip().strip("`"): [
+                cell.strip() for cell in row.split("|")[2:5]
+            ]
+            for row in readme.splitlines()
+            if row.startswith("| `") and row.count("|") == 5
+        }
+        # La riga porta l'opzione con cui si chiede lo scope, non il nome
+        # interno: e quello che il lettore digita.
+        invocations = {
+            "live": "live",
+            "offline": "--offline",
+            "benchmark": "--benchmark-only",
+        }
+        for scope, contract in sdk.SCOPE_CONTRACTS.items():
+            documented = rows.get(invocations[scope])
+            self.assertIsNotNone(documented, f"riga assente per {scope}")
+            self.assertEqual(
+                documented,
+                [
+                    str(contract.passed),
+                    str(contract.skipped),
+                    str(contract.deselected),
+                ],
+                f"il README dichiara per {scope} numeri che il gate non impone",
+            )
+
+        offline = sdk.SCOPE_CONTRACTS["offline"].skips
+        for family, count in (
+            ("Postgres", offline[sdk.POSTGRES_SKIP]),
+            ("MySQL", offline[sdk.MYSQL_SKIP]),
+            ("bench opt-in", offline[sdk.BENCH_SKIP]),
+        ):
+            self.assertIn(
+                f"{family} ({count})",
+                readme,
+                f"il README non documenta {count} skip della famiglia {family}",
+            )
+
+    def test_an_unexpected_skip_or_deselection_fails_every_scope(self) -> None:
+        """Ogni scope rifiuta uno skip in piu, e una deselezione in piu.
+
+        Uno skip e un test che non ha risposto: di cio che doveva verificare
+        non si sa niente, e salta per motivi che somigliano a un errore di
+        configurazione — un binario spostato, una variabile che nessuno passa
+        piu — cioe resta verde proprio quando il gate ha smesso di misurare.
+        Il bench di parita l'ha fatto: 218 passed, 1 skipped, un confronto
+        sparito. Una deselezione fa lo stesso da un'altra porta: un `-k` che
+        non seleziona piu niente non e un errore per pytest.
+        """
+
+        intruso = "bench: CLI binary non trovato in /artifacts/plenora-database"
+
+        for scope, contract in sdk.SCOPE_CONTRACTS.items():
+            # Uno skip in piu, con un motivo che nessun contratto prevede.
+            output, summary = sdk_suite_output(
+                scope,
+                passed=contract.passed - 1,
+                skips={**contract.skips, intruso: 1},
+            )
             with self.assertRaises(RuntimeError) as raised:
-                sdk.assert_no_unexpected_skips(
+                sdk.assert_scope_contract(
                     scope=scope, output=output, summary=summary
                 )
-            # Il messaggio deve dire **quali**: un conteggio da solo non
-            # basta a decidere se lo skip era previsto.
-            self.assertIn("CLI non trovato", str(raised.exception))
-            self.assertIn(scope, str(raised.exception))
+            message = str(raised.exception)
+            self.assertIn(scope, message)
+            # Riepilogo e motivi devono essere nel messaggio: senza, chi
+            # legge deve rieseguire la suite per sapere cosa e cambiato.
+            self.assertIn(summary, message)
+            self.assertIn(intruso, message)
+            self.assertIn(f"passed: {contract.passed - 1}", message)
 
-        # Offline gli skip li ha per costruzione: i test live si saltano da
-        # soli quando i riferimenti non ci sono, ed e il suo scopo.
-        sdk.assert_no_unexpected_skips(
-            scope="offline", output=output, summary=summary
-        )
-        # E una corsa senza skip passa in tutti gli scope.
-        for scope in ("live", "benchmark", "offline"):
-            sdk.assert_no_unexpected_skips(
-                scope=scope,
-                output="219 passed in 7.15s\n",
-                summary="219 passed in 7.15s",
+            # Una deselezione in piu.
+            output, summary = sdk_suite_output(
+                scope, passed=contract.passed - 1, deselected=contract.deselected + 1
             )
+            with self.assertRaises(RuntimeError) as raised:
+                sdk.assert_scope_contract(
+                    scope=scope, output=output, summary=summary
+                )
+            self.assertIn(
+                f"deselected: {contract.deselected + 1}", str(raised.exception)
+            )
+
+            # E un test in piu che passa: la suite e cambiata, e il contratto
+            # e il posto dove dirlo.
+            output, summary = sdk_suite_output(scope, passed=contract.passed + 1)
+            with self.assertRaisesRegex(RuntimeError, "passed"):
+                sdk.assert_scope_contract(
+                    scope=scope, output=output, summary=summary
+                )
+
+    def test_an_offline_skip_may_not_be_silently_substituted(self) -> None:
+        """Gli skip previsti sono fissati per motivo, non solo per totale.
+
+        Il totale e proprio cio che rende invisibile una sostituzione: uno
+        skip nuovo al posto di uno atteso lascia il numero fermo. Le famiglie
+        sono quelle live — Postgres, MySQL, bench opt-in — e sono il
+        funzionamento di `offline`, non un difetto.
+        """
+
+        contract = sdk.SCOPE_CONTRACTS["offline"]
+        self.assertEqual(
+            set(contract.skips), {sdk.POSTGRES_SKIP, sdk.MYSQL_SKIP, sdk.BENCH_SKIP}
+        )
+
+        substituted = dict(contract.skips)
+        substituted[sdk.POSTGRES_SKIP] -= 1
+        substituted["non implementato su questa piattaforma"] = 1
+        self.assertEqual(sum(substituted.values()), contract.skipped)
+
+        output, summary = sdk_suite_output("offline", skips=substituted)
+        with self.assertRaises(RuntimeError) as raised:
+            sdk.assert_scope_contract(
+                scope="offline", output=output, summary=summary
+            )
+        message = str(raised.exception)
+        self.assertNotIn("skipped:", message, "il totale coincide: non e quello")
+        self.assertIn("skip inatteso 'non implementato", message)
+        self.assertIn(f"skip previsto '{sdk.POSTGRES_SKIP}'", message)
+
+        # Una famiglia che sparisce del tutto e la stessa deriva.
+        without = {
+            reason: count
+            for reason, count in contract.skips.items()
+            if reason != sdk.MYSQL_SKIP
+        }
+        output, summary = sdk_suite_output(
+            "offline", passed=contract.passed + contract.skips[sdk.MYSQL_SKIP],
+            skips=without,
+        )
+        with self.assertRaisesRegex(RuntimeError, "skip previsto"):
+            sdk.assert_scope_contract(
+                scope="offline", output=output, summary=summary
+            )
+
+    def test_the_counts_are_read_from_the_summary_and_the_skip_lines(self) -> None:
+        """I due parser che il contratto usa, sulle forme che pytest produce."""
+
+        self.assertEqual(
+            sdk.pytest_counts("24 passed, 195 skipped in 0.83s"),
+            {"passed": 24, "skipped": 195},
+        )
+        self.assertEqual(
+            sdk.pytest_counts("2 passed, 217 deselected in 1.65s"),
+            {"passed": 2, "deselected": 217},
+        )
+        # La durata non e un conteggio.
+        self.assertEqual(sdk.pytest_counts("219 passed in 7.25s"), {"passed": 219})
+
+        # `-rs` raggruppa i parametrizzati che saltano nello stesso punto:
+        # contare le righe invece di sommare gli `[N]` darebbe 2 invece di 12.
+        output = (
+            "SKIPPED [11] tests/test_v030_p1.py:42: live test: manca env X\n"
+            "SKIPPED [1] tests/test_query.py:9: live test: manca env X\n"
+            "non una riga di skip\n"
+        )
+        self.assertEqual(sdk.skip_reasons(output), {"live test: manca env X": 12})
 
         with self.assertRaisesRegex(RuntimeError, "riga di riepilogo"):
             sdk.pytest_summary("nessun riepilogo qui\n")
