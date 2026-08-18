@@ -55,6 +55,20 @@ pub(crate) trait ProductProfile: Send + Sync {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError>;
+
+    /// Lo statement che impone il timeout di statement sulla sessione.
+    ///
+    /// Il contratto del core esprime il timeout in millisecondi; il server
+    /// no, necessariamente. Fra i due c'e una conversione, e il punto di
+    /// questo metodo e che la conversione stia dove sta anche il nome della
+    /// variabile: separarli e il modo in cui un timeout di cinque secondi
+    /// diventa uno di cinque millisecondi senza che nulla fallisca.
+    ///
+    /// ADR 0014 ha misurato che `MAX_EXECUTION_TIME` non esiste su `MariaDB`
+    /// (errore 1193), dove la variabile analoga si chiama diversamente **e**
+    /// si misura in secondi. Un secondo profilo cambiera entrambe le cose
+    /// insieme, in questo metodo, o non le cambiera in modo coerente.
+    fn statement_timeout_statement(&self, timeout_ms: u64) -> String;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -112,6 +126,13 @@ impl ProductProfile for MysqlProfile {
             diagnostics: None,
         })
     }
+
+    fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
+        // `MAX_EXECUTION_TIME` e session-scoped e si misura in millisecondi,
+        // la stessa unita del contratto: qui la conversione e l'identita, e
+        // dichiararlo serve a non farla sparire quando smettera di esserlo.
+        format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}")
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +162,31 @@ mod tests {
             assert!(rejection.message.contains("non qualificato per MariaDB"));
             assert!(rejection.message.contains(version));
         }
+    }
+
+    #[test]
+    fn the_statement_timeout_keeps_the_contract_unit() {
+        // Il contratto parla in millisecondi e MySQL li accetta tali quali:
+        // il numero che finisce nello statement e lo stesso che entra. Un
+        // profilo che convertisse in secondi produrrebbe `5`, e questa
+        // asserzione e cio che lo distingue.
+        assert_eq!(
+            MYSQL_PROFILE.statement_timeout_statement(5_000),
+            "SET SESSION MAX_EXECUTION_TIME = 5000"
+        );
+        assert_eq!(
+            MYSQL_PROFILE.statement_timeout_statement(1),
+            "SET SESSION MAX_EXECUTION_TIME = 1"
+        );
+    }
+
+    #[test]
+    fn no_other_module_writes_the_timeout_statement() {
+        // La transazione emette il timeout ma non lo compone piu. Se il nome
+        // della variabile tornasse a comparire li, un secondo profilo lo
+        // cambierebbe in un posto solo e l'altro resterebbe MySQL.
+        let variable = format!("MAX_EXECUTION{}TIME", "_");
+        assert!(!include_str!("transaction.rs").contains(variable.as_str()));
     }
 
     #[test]

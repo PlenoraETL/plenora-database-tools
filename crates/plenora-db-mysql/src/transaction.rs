@@ -58,6 +58,7 @@ impl MysqlTransaction {
     pub async fn begin(
         mut session: MysqlSession,
         options: &TransactionOptions,
+        profile: &dyn crate::profile::ProductProfile,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         // 0. Il context si valida **prima** di qualunque statement.
@@ -89,9 +90,11 @@ impl MysqlTransaction {
             raw_exec(&mut session, iso_sql, ErrorPhase::Prepare, cancellation).await?;
         }
 
-        // 2. Statement timeout MySQL: MAX_EXECUTION_TIME (session-scoped, ms).
+        // 2. Statement timeout: quale variabile, e in quale unita, lo decide
+        //    il profilo. Qui resta il quando — dopo l'isolamento e prima di
+        //    START TRANSACTION — che dipende dalla sequenza, non dal prodotto.
         if let Some(timeout_ms) = options.statement_timeout_ms {
-            let sql = format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}");
+            let sql = profile.statement_timeout_statement(timeout_ms);
             raw_exec(&mut session, &sql, ErrorPhase::Prepare, cancellation).await?;
         }
 

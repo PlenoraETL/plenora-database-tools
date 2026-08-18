@@ -445,8 +445,13 @@ impl Provider for MysqlProvider {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
             let session = pool.checkout(cancellation).await?;
-            let transaction =
-                crate::transaction::MysqlTransaction::begin(session, options, cancellation).await?;
+            let transaction = crate::transaction::MysqlTransaction::begin(
+                session,
+                options,
+                self.profile,
+                cancellation,
+            )
+            .await?;
             Ok(Box::new(transaction)
                 as Box<
                     dyn plenora_database_core::transaction::TransactionScope,
