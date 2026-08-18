@@ -640,7 +640,7 @@ impl MysqlWritePlan {
                 )
                 .map_err(|mut error| {
                     error.phase = ErrorPhase::Write;
-                    error.provider = Some(plenora_database_core::plan::ProviderKind::Mysql);
+                    error.provider = Some(crate::profile::PROVISIONAL_KIND);
                     error
                 })?;
                 if inspection.has_any_z || inspection.has_any_m {
@@ -942,7 +942,7 @@ pub fn committed_outcome_for_mode(
         schema_version: 1,
         status: WriteStatus::Committed,
         execution_id,
-        provider: plenora_database_core::plan::ProviderKind::Mysql,
+        provider: crate::profile::PROVISIONAL_KIND,
         rows,
         layer_outcomes: Vec::new(),
         recovery: None,
@@ -950,7 +950,7 @@ pub fn committed_outcome_for_mode(
     outcome.validate().map_err(|mut error| {
         error.category = ErrorCategory::Internal;
         error.phase = ErrorPhase::Write;
-        error.provider = Some(plenora_database_core::plan::ProviderKind::Mysql);
+        error.provider = Some(crate::profile::PROVISIONAL_KIND);
         error.execution_id = Some(outcome.execution_id.clone());
         // Il COMMIT e gia riuscito: a essere incoerente e la nostra
         // contabilita, non lo stato del server. Dichiararlo `None` o lasciarlo
@@ -981,7 +981,7 @@ pub fn commit_failure(
         schema_version: 1,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
-        provider: plenora_database_core::plan::ProviderKind::Mysql,
+        provider: crate::profile::PROVISIONAL_KIND,
         rows: RowCounts {
             received,
             confirmed: 0,
@@ -1698,7 +1698,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         phase: ErrorPhase::Prepare,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.into(),
         diagnostics: None,
@@ -2525,7 +2525,11 @@ mod tests {
     /// autorizza retry automatico.
     #[test]
     fn commit_interruption_produces_an_unknown_outcome_without_automatic_retry() {
-        let interrupted = crate::error::timeout_error(ErrorPhase::Commit, RemoteEffect::None);
+        let interrupted = crate::error::timeout_error(
+            ProviderKind::Mysql,
+            ErrorPhase::Commit,
+            RemoteEffect::None,
+        );
         let outcome = commit_failure(interrupted, "mysql-test-1".to_owned(), 7)
             .expect("esito ignoto pubblicabile");
         outcome.validate().expect("outcome valido");
@@ -2546,6 +2550,7 @@ mod tests {
     #[test]
     fn a_declared_deadlock_stays_rolled_back_instead_of_unknown() {
         let deadlock = crate::error::driver_error(
+            ProviderKind::Mysql,
             &server_error(1_213, "Deadlock found when trying to get lock"),
             ErrorPhase::Write,
             RemoteEffect::None,
@@ -2567,6 +2572,7 @@ mod tests {
     #[test]
     fn pre_commit_errors_claim_rollback_only_when_it_is_confirmed() {
         let failure = crate::error::driver_error(
+            ProviderKind::Mysql,
             &server_error(1_062, "Duplicate entry"),
             ErrorPhase::Write,
             RemoteEffect::None,

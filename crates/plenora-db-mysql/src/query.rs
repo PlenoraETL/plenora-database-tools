@@ -31,7 +31,6 @@ use crate::types::mysql_renderer;
 use crate::{MysqlColumnSpec, MAX_IDENTIFIER_CHARACTERS};
 use mysql_async::Column;
 use plenora_database_core::limits::Limits;
-use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::query::{
     validate_query_operation, JoinKind, QueryExpression, QueryOperation, QueryOrdering,
     QuerySource, ScalarFunction, SpatialFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -939,7 +938,11 @@ fn ensure_identifier(value: &str) -> Result<()> {
 
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn unsupported(message: impl Into<String>) -> DatabaseError {
-    DatabaseError::unsupported(ProviderKind::Mysql, ErrorPhase::Prepare, message)
+    DatabaseError::unsupported(
+        crate::profile::PROVISIONAL_KIND,
+        ErrorPhase::Prepare,
+        message,
+    )
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -949,7 +952,7 @@ pub(crate) fn prepare_error(category: ErrorCategory, message: impl Into<String>)
         phase: ErrorPhase::Prepare,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.into(),
         diagnostics: None,
@@ -962,6 +965,7 @@ mod tests {
     use crate::MysqlColumnKind;
     use mysql_async::consts::{ColumnFlags, ColumnType};
     use plenora_database_core::arrow::schema::DataType;
+    use plenora_database_core::plan::ProviderKind;
     use plenora_database_core::plan::{ComparisonOperator, ObjectRef, SortDirection};
     use plenora_database_core::protocol;
     use plenora_database_core::query::{

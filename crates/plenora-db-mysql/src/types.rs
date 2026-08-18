@@ -573,7 +573,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         phase: ErrorPhase::Prepare,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.into(),
         diagnostics: None,

@@ -59,7 +59,7 @@ pub(crate) async fn read_operation_with_profile(
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
-    ensure_active_read_budget(budget)?;
+    ensure_active_read_budget(budget, profile.kind())?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
@@ -167,6 +167,7 @@ pub(crate) async fn query_operation_with_profile(
     validate_batch_rows(batch_rows)?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
+            profile.kind(),
             cancellation,
             ErrorPhase::Prepare,
             RemoteEffect::None,
@@ -184,7 +185,7 @@ pub(crate) async fn query_operation_with_profile(
         ));
     }
     let bound = bind_parameters(&bind_names, parameters)?;
-    ensure_active_read_budget(budget)?;
+    ensure_active_read_budget(budget, profile.kind())?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
@@ -358,6 +359,21 @@ impl BatchStream for MysqlBatchStream {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
+            // Bordo dello stream: come per i metodi del provider, cio che
+            // esce porta l'attribuzione del profilo che lo ha aperto.
+            let profile = self.profile;
+            let outcome = self.next_batch_attributed(cancellation).await;
+            crate::profile::attributed(profile, outcome)
+        })
+    }
+}
+
+impl MysqlBatchStream {
+    async fn next_batch_attributed(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<RecordBatch>> {
+        {
             // Stream già terminato (Drained o Failed): risultato terminale
             // ha precedenza sulla cancellazione — cancel su stream chiuso
             // non è un errore, restituisce lo stato esistente.
@@ -365,7 +381,12 @@ impl BatchStream for MysqlBatchStream {
                 return result;
             }
             if cancellation.is_cancelled() {
-                let error = interruption_error(cancellation, ErrorPhase::Read, RemoteEffect::None);
+                let error = interruption_error(
+                    self.profile.kind(),
+                    cancellation,
+                    ErrorPhase::Read,
+                    RemoteEffect::None,
+                );
                 self.fail(error.clone());
                 return Err(error);
             }
@@ -378,11 +399,16 @@ impl BatchStream for MysqlBatchStream {
                 }
             };
             completed.unwrap_or_else(|| {
-                let error = interruption_error(cancellation, ErrorPhase::Read, RemoteEffect::None);
+                let error = interruption_error(
+                    self.profile.kind(),
+                    cancellation,
+                    ErrorPhase::Read,
+                    RemoteEffect::None,
+                );
                 self.fail(error.clone());
                 Err(error)
             })
-        })
+        }
     }
 }
 
@@ -475,7 +501,7 @@ impl MysqlBatchStream {
                 let _ = self.demand_sender.send(()).await;
                 let received = tokio::select! {
                     _ = self.cancellation.cancelled() => {
-                        return Err(interruption_error(
+                        return Err(interruption_error(self.profile.kind(),
                             &self.cancellation,
                             ErrorPhase::Read,
                             RemoteEffect::None,
@@ -534,12 +560,13 @@ impl MysqlBatchStream {
     async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
         if self.cancellation.is_cancelled() {
             return Err(interruption_error(
+                self.profile.kind(),
                 &self.cancellation,
                 ErrorPhase::Read,
                 RemoteEffect::None,
             ));
         }
-        ensure_active_read_budget(&self.budget)?;
+        ensure_active_read_budget(&self.budget, self.profile.kind())?;
         // Il carry-over restituisce la sua quota prima della riserva: la
         // riserva prenota tutto il residuo, quindi la stessa riga risulterebbe
         // altrimenti contabilizzata due volte.
@@ -855,10 +882,13 @@ fn validate_batch_rows(batch_rows: usize) -> Result<()> {
     Ok(())
 }
 
-fn ensure_active_read_budget(budget: &ResourceBudget) -> Result<()> {
+fn ensure_active_read_budget(
+    budget: &ResourceBudget,
+    kind: plenora_database_core::plan::ProviderKind,
+) -> Result<()> {
     budget.ensure_active().map_err(|error| {
         if budget.remaining_duration().is_none() {
-            timeout_error(ErrorPhase::Read, RemoteEffect::None)
+            timeout_error(kind, ErrorPhase::Read, RemoteEffect::None)
         } else {
             error
         }
@@ -922,7 +952,7 @@ fn read_error(
         phase,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.into(),
         diagnostics: None,
@@ -935,6 +965,7 @@ mod tests {
     use mysql_async::consts::ColumnType;
     use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::arrow::Schema;
+    use plenora_database_core::plan::ProviderKind;
     use plenora_database_core::resource::ResourceLimits;
 
     /// Stima conservativa di una riga di sole colonne intere: per ciascuna
@@ -1398,7 +1429,7 @@ mod tests {
         .expect("budget breve");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         assert_eq!(
-            ensure_active_read_budget(&budget)
+            ensure_active_read_budget(&budget, ProviderKind::Mysql)
                 .expect_err("deadline scaduta")
                 .category,
             ErrorCategory::Timeout

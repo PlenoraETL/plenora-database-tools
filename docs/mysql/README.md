@@ -89,7 +89,7 @@ identificate per nome sulla baseline fissata per digest:
 
 | Famiglia | Runner | Test |
 | --- | --- | --- |
-| unit | `cargo test -- --skip live_` | 143 |
+| unit | `cargo test -- --skip live_` | 145 |
 | live default | `cargo test live_` | 37 |
 | live reference | `cargo test live_ -- --ignored` | 25 |
 

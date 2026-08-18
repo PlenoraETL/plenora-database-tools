@@ -46,11 +46,14 @@ pub struct MysqlProvider {
     profile: &'static dyn ProductProfile,
 }
 
+// Il profilo non compare nel `Debug`: quell'output e superficie
+// osservata, e questa fase non ne cambia nemmeno una riga. Il
+// prodotto servito si legge dal provider, non da qui.
+#[allow(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for MysqlProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MysqlProvider")
-            .field("product", &self.profile.product())
             .field("config", &self.config)
             .field("max_connections", &self.max_connections)
             .field(
@@ -217,17 +220,26 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ConnectionInfo> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            let mut session = pool.checkout(cancellation).await?;
-            let probe =
-                crate::catalog::probe_server_with_profile(&mut session, self.profile, cancellation)
-                    .await?;
-            drop(session);
-            Ok(ConnectionInfo {
-                provider: self.profile.kind(),
-                server_version: probe.product_version,
-                connection_identity: Some(probe.database),
-            })
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                let mut session = pool.checkout(cancellation).await?;
+                let probe = crate::catalog::probe_server_with_profile(
+                    &mut session,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
+                drop(session);
+                Ok(ConnectionInfo {
+                    provider: self.profile.kind(),
+                    server_version: probe.product_version,
+                    connection_identity: Some(probe.database),
+                })
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -237,69 +249,78 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ProviderCapabilities> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            let mut session = pool.checkout(cancellation).await?;
-            let probe =
-                crate::catalog::probe_server_with_profile(&mut session, self.profile, cancellation)
-                    .await?;
-            drop(session);
-            Ok(ProviderCapabilities {
-                schema_version: 1,
-                provider: self.profile.kind(),
-                provider_version: probe.product_version,
-                extension_versions: BTreeMap::new(),
-                reads: ReadCapabilities {
-                    streaming: true,
-                    server_cursor: false,
-                    pagination: false,
-                    object_id_windows: false,
-                    projection: true,
-                    filter: true,
-                    ordering: true,
-                    resumable: false,
-                },
-                // Sei mode qualificate su sette. `TruncateInsert` resta
-                // fail-closed e non ha un flag proprio nel contratto: il
-                // consumer che la chiede riceve `Unsupported` in prepare, con
-                // il rinvio a `Replace` nel messaggio.
-                //
-                // `rollback_on_failure = true` con `transactional_ddl =
-                // false` e la combinazione documentata in
-                // `WriteCapabilities::rollback_on_failure`: le righe tornano
-                // sempre indietro, la tabella creata da `Create` no. Le altre
-                // cinque mode non emettono DDL, quindi per loro il rollback e
-                // pieno in entrambi i sensi.
-                writes: WriteCapabilities {
-                    create: true,
-                    append: true,
-                    update: true,
-                    upsert: true,
-                    replace: true,
-                    delete_by_keys: true,
-                    bulk: true,
-                    array_binding: false,
-                    returning: false,
-                    apply_edits: false,
-                    rollback_on_failure: true,
-                    use_global_ids: false,
-                },
-                transactions: TransactionCapabilities {
-                    single_transaction: true,
-                    savepoints: true,
-                    transactional_ddl: false,
-                    staged_swap: false,
-                    scope: TransactionScope::Transaction,
-                },
-                spatial: mysql_spatial_capabilities(),
-                limits: ProviderLimits {
-                    max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
-                    max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
-                    max_statement_bytes: None,
-                    max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
-                    max_payload_bytes: None,
-                    max_record_count: None,
-                },
-            })
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                let mut session = pool.checkout(cancellation).await?;
+                let probe = crate::catalog::probe_server_with_profile(
+                    &mut session,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
+                drop(session);
+                Ok(ProviderCapabilities {
+                    schema_version: 1,
+                    provider: self.profile.kind(),
+                    provider_version: probe.product_version,
+                    extension_versions: BTreeMap::new(),
+                    reads: ReadCapabilities {
+                        streaming: true,
+                        server_cursor: false,
+                        pagination: false,
+                        object_id_windows: false,
+                        projection: true,
+                        filter: true,
+                        ordering: true,
+                        resumable: false,
+                    },
+                    // Sei mode qualificate su sette. `TruncateInsert` resta
+                    // fail-closed e non ha un flag proprio nel contratto: il
+                    // consumer che la chiede riceve `Unsupported` in prepare, con
+                    // il rinvio a `Replace` nel messaggio.
+                    //
+                    // `rollback_on_failure = true` con `transactional_ddl =
+                    // false` e la combinazione documentata in
+                    // `WriteCapabilities::rollback_on_failure`: le righe tornano
+                    // sempre indietro, la tabella creata da `Create` no. Le altre
+                    // cinque mode non emettono DDL, quindi per loro il rollback e
+                    // pieno in entrambi i sensi.
+                    writes: WriteCapabilities {
+                        create: true,
+                        append: true,
+                        update: true,
+                        upsert: true,
+                        replace: true,
+                        delete_by_keys: true,
+                        bulk: true,
+                        array_binding: false,
+                        returning: false,
+                        apply_edits: false,
+                        rollback_on_failure: true,
+                        use_global_ids: false,
+                    },
+                    transactions: TransactionCapabilities {
+                        single_transaction: true,
+                        savepoints: true,
+                        transactional_ddl: false,
+                        staged_swap: false,
+                        scope: TransactionScope::Transaction,
+                    },
+                    spatial: mysql_spatial_capabilities(),
+                    limits: ProviderLimits {
+                        max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
+                        max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
+                        max_statement_bytes: None,
+                        max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
+                        max_payload_bytes: None,
+                        max_record_count: None,
+                    },
+                })
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -310,8 +331,14 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Inspection> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            self.inspect_operation(&pool, operation, cancellation).await
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                self.inspect_operation(&pool, operation, cancellation).await
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -324,23 +351,29 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            self.validate_source(&operation.source)?;
-            let pool = self.pool_for(secret)?;
-            let mut effective = operation.clone();
-            effective
-                .source
-                .schema
-                .get_or_insert_with(|| self.config.database().to_owned());
-            crate::read::read_operation_with_profile(
-                &pool,
-                &effective,
-                parameters,
-                crate::DEFAULT_BATCH_ROWS,
-                self.profile,
-                budget,
-                cancellation,
-            )
-            .await
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                self.validate_source(&operation.source)?;
+                let pool = self.pool_for(secret)?;
+                let mut effective = operation.clone();
+                effective
+                    .source
+                    .schema
+                    .get_or_insert_with(|| self.config.database().to_owned());
+                crate::read::read_operation_with_profile(
+                    &pool,
+                    &effective,
+                    parameters,
+                    crate::DEFAULT_BATCH_ROWS,
+                    self.profile,
+                    budget,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -353,18 +386,24 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            crate::read::query_operation_with_profile(
-                &pool,
-                self.config.database(),
-                operation,
-                parameters,
-                crate::DEFAULT_BATCH_ROWS,
-                self.profile,
-                budget,
-                cancellation,
-            )
-            .await
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                crate::read::query_operation_with_profile(
+                    &pool,
+                    self.config.database(),
+                    operation,
+                    parameters,
+                    crate::DEFAULT_BATCH_ROWS,
+                    self.profile,
+                    budget,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -377,67 +416,74 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
-            budget.ensure_active()?;
-            let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget);
-            let token = effective_cancellation.token();
-            let plan = crate::write::MysqlWritePlan::compile(
-                &input_schema,
-                operation,
-                self.config.database(),
-            )?;
-            let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-            let column_count = u64::try_from(input_schema.fields().len()).map_err(|_| {
-                provider_error(
-                    ErrorCategory::ResourceLimit,
-                    ErrorPhase::Prepare,
-                    "numero colonne MySQL non rappresentabile",
-                )
-            })?;
-            let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-            let loss_report = if matches!(
-                operation.mode,
-                plenora_database_core::plan::WriteMode::Create
-                    | plenora_database_core::plan::WriteMode::DeleteByKeys
-                    | plenora_database_core::plan::WriteMode::Update
-            ) {
-                // Create: target non esiste ancora — skip describe.
-                // DeleteByKeys: schema Arrow è keys-only; il preflight
-                // standard rifiuterebbe le colonne target non nello schema.
-                // In entrambi i casi LossReport vuoto (schema matcha per
-                // costruzione).
-                plenora_database_core::loss::LossReport {
-                    schema_version: 1,
-                    policy: operation.mapping_policy,
-                    losses: Vec::new(),
-                }
-            } else {
-                let pool = self.pool_for(secret)?;
-                let mut session = pool.checkout(token).await?;
-                let target_schema = operation
-                    .target
-                    .schema
-                    .as_deref()
-                    .unwrap_or_else(|| self.config.database());
-                let target = crate::catalog::describe_object_with_profile(
-                    &mut session,
-                    target_schema,
-                    &operation.target.object,
-                    self.profile,
-                    token,
-                )
-                .await?;
-                let report = plan.preflight(&target, self.profile)?;
-                drop(session);
-                report
-            };
-            Ok(PreparedWrite {
-                operation: operation.clone(),
-                input_schema,
-                loss_report,
-                budget: budget.clone(),
-                operation_lease,
-                columns_lease,
-            })
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                budget.ensure_active()?;
+                let effective_cancellation =
+                    crate::read::BudgetCancellation::new(cancellation, budget);
+                let token = effective_cancellation.token();
+                let plan = crate::write::MysqlWritePlan::compile(
+                    &input_schema,
+                    operation,
+                    self.config.database(),
+                )?;
+                let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+                let column_count = u64::try_from(input_schema.fields().len()).map_err(|_| {
+                    provider_error(
+                        ErrorCategory::ResourceLimit,
+                        ErrorPhase::Prepare,
+                        "numero colonne MySQL non rappresentabile",
+                    )
+                })?;
+                let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+                let loss_report = if matches!(
+                    operation.mode,
+                    plenora_database_core::plan::WriteMode::Create
+                        | plenora_database_core::plan::WriteMode::DeleteByKeys
+                        | plenora_database_core::plan::WriteMode::Update
+                ) {
+                    // Create: target non esiste ancora — skip describe.
+                    // DeleteByKeys: schema Arrow è keys-only; il preflight
+                    // standard rifiuterebbe le colonne target non nello schema.
+                    // In entrambi i casi LossReport vuoto (schema matcha per
+                    // costruzione).
+                    plenora_database_core::loss::LossReport {
+                        schema_version: 1,
+                        policy: operation.mapping_policy,
+                        losses: Vec::new(),
+                    }
+                } else {
+                    let pool = self.pool_for(secret)?;
+                    let mut session = pool.checkout(token).await?;
+                    let target_schema = operation
+                        .target
+                        .schema
+                        .as_deref()
+                        .unwrap_or_else(|| self.config.database());
+                    let target = crate::catalog::describe_object_with_profile(
+                        &mut session,
+                        target_schema,
+                        &operation.target.object,
+                        self.profile,
+                        token,
+                    )
+                    .await?;
+                    let report = plan.preflight(&target, self.profile)?;
+                    drop(session);
+                    report
+                };
+                Ok(PreparedWrite {
+                    operation: operation.clone(),
+                    input_schema,
+                    loss_report,
+                    budget: budget.clone(),
+                    operation_lease,
+                    columns_lease,
+                })
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -449,14 +495,18 @@ impl Provider for MysqlProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
-        Box::pin(execute_mysql_write(
-            self,
-            secret,
-            prepared,
-            input,
-            budget,
-            cancellation,
-        ))
+        Box::pin(async move {
+            // Bordo: l'esito della scrittura porta l'attribuzione del
+            // profilo, sia quando riesce sia quando fallisce. Un outcome
+            // committato che dichiarasse il prodotto sbagliato sarebbe una
+            // riga di contabilita falsa, non un dettaglio diagnostico.
+            let outcome =
+                execute_mysql_write(self, secret, prepared, input, budget, cancellation).await;
+            crate::profile::attributed(self.profile, outcome).map(|mut outcome| {
+                outcome.provider = self.profile.kind();
+                outcome
+            })
+        })
     }
 
     fn begin_transaction<'a>(
@@ -467,19 +517,25 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            let session = pool.checkout(cancellation).await?;
-            let transaction = crate::transaction::MysqlTransaction::begin(
-                session,
-                options,
-                self.profile,
-                cancellation,
-            )
-            .await?;
-            Ok(Box::new(transaction)
-                as Box<
-                    dyn plenora_database_core::transaction::TransactionScope,
-                >)
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                let session = pool.checkout(cancellation).await?;
+                let transaction = crate::transaction::MysqlTransaction::begin(
+                    session,
+                    options,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
+                Ok(Box::new(transaction)
+                    as Box<
+                        dyn plenora_database_core::transaction::TransactionScope,
+                    >)
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 
@@ -490,27 +546,33 @@ impl Provider for MysqlProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            let mut session = pool.checkout(cancellation).await?;
-            // Text protocol via `exec_control`, non prepared via `exec_write`,
-            // per due ragioni distinte:
-            //
-            // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
-            //    (errore 1295), quindi `exec_write` chiuderebbe statement che
-            //    il server accetta senza problemi in text protocol;
-            // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
-            //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
-            //    nulla" — mentre lo statement puo essersi gia committato.
-            //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
-            //    quando la connessione cade mentre un DDL autocommit e in
-            //    volo.
-            //
-            // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
-            // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
-            // senza effetto remoto possibile.
-            session
-                .exec_control(sql, ErrorPhase::Write, cancellation)
-                .await
+            // Bordo: da qui in poi l'attribuzione e quella del
+            // profilo, non il segnaposto con cui l'errore e nato.
+            let outcome = async move {
+                let pool = self.pool_for(secret)?;
+                let mut session = pool.checkout(cancellation).await?;
+                // Text protocol via `exec_control`, non prepared via `exec_write`,
+                // per due ragioni distinte:
+                //
+                // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
+                //    (errore 1295), quindi `exec_write` chiuderebbe statement che
+                //    il server accetta senza problemi in text protocol;
+                // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
+                //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
+                //    nulla" — mentre lo statement puo essersi gia committato.
+                //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
+                //    quando la connessione cade mentre un DDL autocommit e in
+                //    volo.
+                //
+                // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
+                // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
+                // senza effetto remoto possibile.
+                session
+                    .exec_control(sql, ErrorPhase::Write, cancellation)
+                    .await
+            }
+            .await;
+            crate::profile::attributed(self.profile, outcome)
         })
     }
 }
@@ -912,9 +974,10 @@ async fn diagnostic_mysql_write(
     match diagnosed {
         // Il seam ha già annullato la transazione: l'evidenza raccolta è
         // dentro il documento e non va rifatta qui.
-        Ok(Some(outcome)) => {
-            Err(outcome.into_error(Some(ProviderKind::Mysql), Some(execution_id.to_owned()))?)
-        }
+        Ok(Some(outcome)) => Err(outcome.into_error(
+            Some(crate::profile::PROVISIONAL_KIND),
+            Some(execution_id.to_owned()),
+        )?),
         Ok(None) => match session
             .exec_transaction(
                 crate::session::MysqlTransactionCommand::Commit,
@@ -959,7 +1022,7 @@ async fn write_input_batches(
             Ok(None) => break,
             Err(mut error) => {
                 error.phase = ErrorPhase::Write;
-                error.provider = Some(ProviderKind::Mysql);
+                error.provider = Some(crate::profile::PROVISIONAL_KIND);
                 return Err(error);
             }
         };
@@ -1101,7 +1164,7 @@ fn provider_error(
         phase,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.into(),
         diagnostics: None,

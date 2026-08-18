@@ -6,6 +6,7 @@ use plenora_database_core::{
 };
 
 pub fn driver_error(
+    kind: ProviderKind,
     error: &Error,
     phase: ErrorPhase,
     requested_effect: RemoteEffect,
@@ -103,7 +104,7 @@ pub fn driver_error(
         } else {
             retry
         },
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(kind),
         execution_id: None,
         message,
         diagnostics: None,
@@ -174,7 +175,7 @@ const fn has_ambiguous_effect(code: Option<u16>, phase: ErrorPhase) -> bool {
         )
 }
 
-pub fn timeout_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
+pub fn timeout_error(kind: ProviderKind, phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
     let ambiguous = matches!(
         phase,
         ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
@@ -192,7 +193,7 @@ pub fn timeout_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
         } else {
             RetryDisposition::Never
         },
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(kind),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
             "timeout connessione MySQL prima della creazione della sessione".to_owned()
@@ -203,7 +204,11 @@ pub fn timeout_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
     }
 }
 
-pub fn cancellation_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
+pub fn cancellation_error(
+    kind: ProviderKind,
+    phase: ErrorPhase,
+    effect: RemoteEffect,
+) -> DatabaseError {
     let ambiguous = matches!(
         phase,
         ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
@@ -221,7 +226,7 @@ pub fn cancellation_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseEr
         } else {
             RetryDisposition::Never
         },
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(kind),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
             "connessione MySQL cancellata prima della creazione della sessione".to_owned()
@@ -233,14 +238,15 @@ pub fn cancellation_error(phase: ErrorPhase, effect: RemoteEffect) -> DatabaseEr
 }
 
 pub fn interruption_error(
+    kind: ProviderKind,
     cancellation: &CancellationToken,
     phase: ErrorPhase,
     effect: RemoteEffect,
 ) -> DatabaseError {
     if cancellation.reason() == Some(CancellationReason::Deadline) {
-        timeout_error(phase, effect)
+        timeout_error(kind, phase, effect)
     } else {
-        cancellation_error(phase, effect)
+        cancellation_error(kind, phase, effect)
     }
 }
 
@@ -255,7 +261,12 @@ mod tests {
             io::ErrorKind::InvalidData,
             "invalid peer certificate: certificate not valid for name",
         )));
-        let mapped = driver_error(&tls, ErrorPhase::Connect, RemoteEffect::None);
+        let mapped = driver_error(
+            ProviderKind::Mysql,
+            &tls,
+            ErrorPhase::Connect,
+            RemoteEffect::None,
+        );
         assert_eq!(mapped.category, ErrorCategory::Protocol);
         assert_eq!(mapped.message, "verifica identita TLS MySQL rifiutata");
 
@@ -263,7 +274,12 @@ mod tests {
             io::ErrorKind::NotFound,
             "host resolution failed",
         )));
-        let mapped = driver_error(&dns, ErrorPhase::Connect, RemoteEffect::None);
+        let mapped = driver_error(
+            ProviderKind::Mysql,
+            &dns,
+            ErrorPhase::Connect,
+            RemoteEffect::None,
+        );
         assert_eq!(mapped.category, ErrorCategory::Io);
     }
 
@@ -297,7 +313,12 @@ mod tests {
                 message: message.to_owned(),
                 state: "HY000".to_owned(),
             });
-            let mapped = driver_error(&error, ErrorPhase::Read, RemoteEffect::None);
+            let mapped = driver_error(
+                ProviderKind::Mysql,
+                &error,
+                ErrorPhase::Read,
+                RemoteEffect::None,
+            );
             assert_eq!(
                 mapped.category, expected,
                 "server code {code} must keep its mapping"
@@ -311,14 +332,19 @@ mod tests {
             io::ErrorKind::BrokenPipe,
             "connection lost while exporting certificate_name column values",
         )));
-        let mapped = driver_error(&error, ErrorPhase::Read, RemoteEffect::None);
+        let mapped = driver_error(
+            ProviderKind::Mysql,
+            &error,
+            ErrorPhase::Read,
+            RemoteEffect::None,
+        );
         assert_eq!(mapped.category, ErrorCategory::Io);
         assert_eq!(mapped.message, "errore I/O protocollo MySQL redatto");
     }
 
     #[test]
     fn pre_session_timeout_and_cancellation_do_not_claim_quarantine() {
-        let timeout = timeout_error(ErrorPhase::Connect, RemoteEffect::None);
+        let timeout = timeout_error(ProviderKind::Mysql, ErrorPhase::Connect, RemoteEffect::None);
         assert_eq!(timeout.category, ErrorCategory::Timeout);
         assert!(
             !timeout.message.contains("quarantin"),
@@ -326,7 +352,8 @@ mod tests {
             timeout.message
         );
 
-        let cancelled = cancellation_error(ErrorPhase::Connect, RemoteEffect::None);
+        let cancelled =
+            cancellation_error(ProviderKind::Mysql, ErrorPhase::Connect, RemoteEffect::None);
         assert_eq!(cancelled.category, ErrorCategory::Cancelled);
         assert!(
             !cancelled.message.contains("quarantin"),
@@ -337,7 +364,7 @@ mod tests {
 
     #[test]
     fn in_flight_timeout_still_reports_quarantine() {
-        let error = timeout_error(ErrorPhase::Read, RemoteEffect::None);
+        let error = timeout_error(ProviderKind::Mysql, ErrorPhase::Read, RemoteEffect::None);
         assert!(error.message.contains("quarantinata"));
     }
 
@@ -346,28 +373,40 @@ mod tests {
         let deadline = CancellationToken::new();
         deadline.cancel_due_to_deadline();
         assert_eq!(
-            interruption_error(&deadline, ErrorPhase::Read, RemoteEffect::None).category,
+            interruption_error(
+                ProviderKind::Mysql,
+                &deadline,
+                ErrorPhase::Read,
+                RemoteEffect::None
+            )
+            .category,
             ErrorCategory::Timeout
         );
 
         let requested = CancellationToken::new();
         requested.cancel();
         assert_eq!(
-            interruption_error(&requested, ErrorPhase::Read, RemoteEffect::None).category,
+            interruption_error(
+                ProviderKind::Mysql,
+                &requested,
+                ErrorPhase::Read,
+                RemoteEffect::None
+            )
+            .category,
             ErrorCategory::Cancelled
         );
     }
 
     #[test]
     fn write_timeout_never_claims_rollback() {
-        let error = timeout_error(ErrorPhase::Commit, RemoteEffect::None);
+        let error = timeout_error(ProviderKind::Mysql, ErrorPhase::Commit, RemoteEffect::None);
         assert_eq!(error.remote_effect, RemoteEffect::Unknown);
         assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
     }
 
     #[test]
     fn read_cancellation_is_non_retryable_and_effect_free() {
-        let error = cancellation_error(ErrorPhase::Read, RemoteEffect::None);
+        let error = cancellation_error(ProviderKind::Mysql, ErrorPhase::Read, RemoteEffect::None);
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(error.retry, RetryDisposition::Never);
     }

@@ -241,7 +241,7 @@ async fn raw_exec(
 ///
 /// I tipi non nativi (Date/Time/Decimal) sono estratti come stringhe UTF-8
 /// (formato server-side); il consumer riconverte con `p.date(str)` etc.
-fn decode_row(mut row: MyRow, columns: &Arc<[String]>) -> Result<Row> {
+fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Result<Row> {
     let mut values = Vec::with_capacity(columns.len());
     for idx in 0..columns.len() {
         let value = row.take_opt::<Value, _>(idx).unwrap_or(Ok(Value::NULL));
@@ -250,17 +250,17 @@ fn decode_row(mut row: MyRow, columns: &Arc<[String]>) -> Result<Row> {
             phase: ErrorPhase::Read,
             remote_effect: RemoteEffect::None,
             retry: RetryDisposition::Never,
-            provider: Some(ProviderKind::Mysql),
+            provider: Some(kind),
             execution_id: None,
             diagnostics: None,
             message: format!("decode colonna MySQL idx={idx}: {error}"),
         })?;
-        values.push(convert_value(raw, idx)?);
+        values.push(convert_value(raw, idx, kind)?);
     }
     Ok(Row::new(Arc::clone(columns), values))
 }
 
-fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
+fn convert_value(value: Value, idx: usize, kind: ProviderKind) -> Result<ParameterValue> {
     Ok(match value {
         Value::NULL => ParameterValue::Null {
             type_name: "unknown".to_owned(),
@@ -276,7 +276,7 @@ fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
                     phase: ErrorPhase::Read,
                     remote_effect: RemoteEffect::None,
                     retry: RetryDisposition::Never,
-                    provider: Some(ProviderKind::Mysql),
+                    provider: Some(kind),
                     execution_id: None,
                     diagnostics: None,
                     message: format!("colonna MySQL idx={idx} UInt eccede i64"),
@@ -311,7 +311,7 @@ fn convert_value(value: Value, idx: usize) -> Result<ParameterValue> {
 
 impl TransactionScope for MysqlTransaction {
     fn provider_kind(&self) -> ProviderKind {
-        ProviderKind::Mysql
+        self.session.kind()
     }
 
     fn execute<'a>(
@@ -321,7 +321,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Write));
+                return Err(closed_error(ErrorPhase::Write, self.session.kind()));
             }
             // Fix P1 review MySQL: enforcement condiviso del core
             // (parity con `PostgresTransaction::execute`). Se
@@ -362,8 +362,11 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Read));
+                return Err(closed_error(ErrorPhase::Read, self.session.kind()));
             }
+            // Il prodotto della connessione, letto una volta: piu avanti la
+            // sessione e prestata in modo esclusivo e non e piu leggibile.
+            let kind = self.session.kind();
             // Fix P1 review MySQL: enforcement condiviso (parity Postgres).
             plenora_database_core::native_query_policy::enforce_policy(
                 self.native_query_policy,
@@ -375,7 +378,7 @@ impl TransactionScope for MysqlTransaction {
             let connection = self
                 .session
                 .connection_mut()
-                .ok_or_else(|| closed_error(ErrorPhase::Read))?;
+                .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
             let execution = connection.exec::<MyRow, _, _>(&statement.sql, params);
             let outcome = tokio::select! {
                 _ = cancellation.cancelled() => {
@@ -386,7 +389,7 @@ impl TransactionScope for MysqlTransaction {
                         phase: ErrorPhase::Read,
                         remote_effect: RemoteEffect::None,
                         retry: RetryDisposition::Never,
-                        provider: Some(ProviderKind::Mysql),
+                        provider: Some(kind),
                         execution_id: None,
                         diagnostics: None,
                         message: "query MySQL cancellata".to_owned(),
@@ -397,7 +400,12 @@ impl TransactionScope for MysqlTransaction {
             let rows = match outcome {
                 Ok(Ok(rows)) => rows,
                 Ok(Err(error)) => {
-                    return Err(driver_error(&error, ErrorPhase::Read, RemoteEffect::None));
+                    return Err(driver_error(
+                        kind,
+                        &error,
+                        ErrorPhase::Read,
+                        RemoteEffect::None,
+                    ));
                 }
                 Err(_) => {
                     self.session.discard().await;
@@ -407,7 +415,7 @@ impl TransactionScope for MysqlTransaction {
                         phase: ErrorPhase::Read,
                         remote_effect: RemoteEffect::None,
                         retry: RetryDisposition::Never,
-                        provider: Some(ProviderKind::Mysql),
+                        provider: Some(self.session.kind()),
                         execution_id: None,
                         diagnostics: None,
                         message: "query MySQL timeout".to_owned(),
@@ -426,7 +434,7 @@ impl TransactionScope for MysqlTransaction {
                 Arc::from(names)
             };
             rows.into_iter()
-                .map(|r| decode_row(r, &columns))
+                .map(|r| decode_row(r, &columns, kind))
                 .collect::<Result<Vec<_>>>()
         })
     }
@@ -443,7 +451,7 @@ impl TransactionScope for MysqlTransaction {
                 phase: ErrorPhase::Prepare,
                 remote_effect: RemoteEffect::None,
                 retry: RetryDisposition::Never,
-                provider: Some(ProviderKind::Mysql),
+                provider: Some(self.session.kind()),
                 execution_id: None,
                 diagnostics: None,
                 message: "query_stream MySQL non ancora implementato in v1 \
@@ -460,7 +468,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare));
+                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
             }
             let quoted = quote_savepoint_name(name)?;
             raw_exec(
@@ -480,7 +488,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare));
+                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
             }
             let quoted = quote_savepoint_name(name)?;
             raw_exec(
@@ -500,7 +508,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare));
+                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
             }
             let quoted = quote_savepoint_name(name)?;
             raw_exec(
@@ -519,7 +527,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'_, CommitOutcome> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Commit));
+                return Err(closed_error(ErrorPhase::Commit, self.session.kind()));
             }
             let outcome = self
                 .session
@@ -573,7 +581,7 @@ impl TransactionScope for MysqlTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             if !self.open {
-                return Err(closed_error(ErrorPhase::Write));
+                return Err(closed_error(ErrorPhase::Write, self.session.kind()));
             }
             // Fix P1 review MySQL: enforcement condiviso su UPDATE
             // (+ probe se presente). Parity con `PostgresTransaction`.
@@ -612,13 +620,13 @@ impl TransactionScope for MysqlTransaction {
     }
 }
 
-fn closed_error(phase: ErrorPhase) -> DatabaseError {
+fn closed_error(phase: ErrorPhase, kind: ProviderKind) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::InvalidPlan,
         phase,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(kind),
         execution_id: None,
         diagnostics: None,
         message: "MysqlTransaction già chiusa".to_owned(),

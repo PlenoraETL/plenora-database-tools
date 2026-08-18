@@ -15,7 +15,6 @@
 use crate::write::MysqlWritePlan;
 use crate::MysqlSession;
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
-use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::BatchStream;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::row_diagnostics::{
@@ -99,7 +98,7 @@ impl<'a> MysqlRowWriter<'a> {
                 .await
                 .map_err(|mut error| {
                     error.phase = ErrorPhase::Write;
-                    error.provider = Some(ProviderKind::Mysql);
+                    error.provider = Some(crate::profile::PROVISIONAL_KIND);
                     error
                 })?
                 .ok_or_else(|| row_error("input MySQL esaurito prima delle righe dichiarate"))?;
@@ -172,7 +171,7 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                     Ok(None) => return Ok(()),
                     Err(mut error) => {
                         error.phase = ErrorPhase::Write;
-                        error.provider = Some(ProviderKind::Mysql);
+                        error.provider = Some(crate::profile::PROVISIONAL_KIND);
                         return Err(error);
                     }
                 }
@@ -229,7 +228,7 @@ fn row_error(message: &'static str) -> DatabaseError {
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,
-        provider: Some(ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message: message.to_owned(),
         diagnostics: None,

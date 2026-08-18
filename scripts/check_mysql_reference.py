@@ -80,6 +80,8 @@ EXPECTED_UNIT_TESTS = {
     "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
     "pool::tests::checkout_preserves_the_independent_acquire_budget",
     "pool::tests::zero_capacity_is_rejected_without_network",
+    "profile::tests::every_boundary_that_returns_a_future_restamps_the_attribution",
+    "profile::tests::no_module_signs_an_error_with_a_hardcoded_product",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",
     "profile::tests::the_catalog_derived_specs_always_carry_a_profile",

@@ -155,6 +155,37 @@ pub(crate) trait ProductProfile: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MysqlProfile;
 
+/// Il `ProviderKind` con cui firma chi non ha ancora un prodotto sotto.
+///
+/// Rendering dell'AST, mappatura dei tipi, binding dei parametri e
+/// validazione della configurazione avvengono prima di qualunque connessione,
+/// e spesso dentro funzioni pure a cui un profilo non arriva se non
+/// attraversando decine di firme che non lo userebbero per altro.
+///
+/// Questa costante e percio un **segnaposto, non un'attribuzione**: ogni
+/// errore che lascia il crate passa da un bordo che lo ristampa con il kind
+/// del profilo effettivo (`attributed`). Il valore che il chiamante osserva
+/// e sempre quello del provider che ha ricevuto la chiamata, mai questo.
+///
+/// Cio che rende sicura la scorciatoia e il bordo, non la costante: una
+/// guardia verifica che i metodi di `Provider` timbrino tutti.
+pub(crate) const PROVISIONAL_KIND: ProviderKind = ProviderKind::Mysql;
+
+/// Ristampa l'attribuzione di un esito con il prodotto che lo ha davvero
+/// generato.
+///
+/// Si applica al bordo, dove il profilo c'e: da li in poi nessun segnaposto
+/// sopravvive.
+pub(crate) fn attributed<T>(
+    profile: &dyn ProductProfile,
+    result: plenora_database_core::Result<T>,
+) -> plenora_database_core::Result<T> {
+    result.map_err(|mut error| {
+        error.provider = Some(profile.kind());
+        error
+    })
+}
+
 /// L'unica istanza: il profilo e senza stato, costruirne altre non ha senso.
 pub(crate) static MYSQL_PROFILE: MysqlProfile = MysqlProfile;
 
@@ -197,8 +228,9 @@ impl ProductProfile for MysqlProfile {
             execution_id: None,
             message: format!(
                 "MariaDB rilevato (product_version={product_version:?}, \
-                 version_comment={version_comment:?}) — provider `mysql` non \
-                 qualificato per MariaDB. Un provider dedicato è in roadmap."
+                 version_comment={version_comment:?}) — provider `{}` non \
+                 qualificato per MariaDB. Un provider dedicato è in roadmap.",
+                self.product().to_ascii_lowercase()
             ),
             diagnostics: None,
         })
@@ -644,6 +676,71 @@ mod tests {
                 "{module} usa la forma senza profilo"
             );
         }
+    }
+
+    #[test]
+    fn no_module_signs_an_error_with_a_hardcoded_product() {
+        // Il segnaposto ha un nome perche sia greppabile e perche il bordo lo
+        // ristampi. Un literal scritto a mano non lo sarebbe: sopravvivrebbe
+        // al bordo solo se qualcuno lo mettesse dove il bordo non passa, ed e
+        // la ragione per cui qui non ne deve restare nessuno.
+        let literal = format!("ProviderKind::{}sql", "My");
+        // Il confine e il modulo di test. Composto a runtime perche un
+        // literal multilinea qui dentro e fragile da leggere e da mantenere.
+        // Il confine e l'apertura del modulo di test. Il marker comincia
+        // con un a capo e non con cio che lo precede: cosi aggancia sia
+        // un file LF sia uno CRLF, e le guardie non dipendono da come il
+        // working tree e stato scritto.
+        let marker = format!("{}mod tests {{", '\n');
+        for (module, source) in [
+            ("arrow.rs", include_str!("arrow.rs")),
+            ("catalog.rs", include_str!("catalog.rs")),
+            ("config.rs", include_str!("config.rs")),
+            ("error.rs", include_str!("error.rs")),
+            ("parameter.rs", include_str!("parameter.rs")),
+            ("pool.rs", include_str!("pool.rs")),
+            ("provider.rs", include_str!("provider.rs")),
+            ("query.rs", include_str!("query.rs")),
+            ("read.rs", include_str!("read.rs")),
+            ("row_diagnostics.rs", include_str!("row_diagnostics.rs")),
+            ("session.rs", include_str!("session.rs")),
+            ("transaction.rs", include_str!("transaction.rs")),
+            ("types.rs", include_str!("types.rs")),
+            ("write.rs", include_str!("write.rs")),
+        ] {
+            let production = source
+                .split_once(marker.as_str())
+                .map_or(source, |(head, _)| head);
+            assert_eq!(
+                production.matches(literal.as_str()).count(),
+                0,
+                "{module} firma un errore con il prodotto cablato"
+            );
+        }
+    }
+
+    #[test]
+    fn every_boundary_that_returns_a_future_restamps_the_attribution() {
+        // Il segnaposto e sicuro solo perche il bordo lo copre. Un metodo di
+        // `Provider` che restituisse un futuro senza timbrare lascerebbe
+        // uscire l'attribuzione con cui l'errore e nato, e nessuna delle
+        // guardie sopra se ne accorgerebbe.
+        let source = include_str!("provider.rs");
+        let start = source
+            .find("impl Provider for MysqlProvider {")
+            .expect("l'impl del trait deve esistere");
+        let end = source[start..]
+            .find(format!("{}}}", '\n').as_str())
+            .map_or(source.len(), |at| start + at);
+        let block = &source[start..end];
+        let boxed = format!("Box::{}(", "pin");
+        let stamped = format!("crate::profile::{}(", "attributed");
+        assert_eq!(
+            block.matches(boxed.as_str()).count(),
+            block.matches(stamped.as_str()).count(),
+            "ogni futuro restituito da Provider deve passare dal bordo"
+        );
+        assert!(block.matches(boxed.as_str()).count() >= 8);
     }
 
     #[test]

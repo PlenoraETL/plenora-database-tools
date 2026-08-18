@@ -386,7 +386,7 @@ const fn mapping_error_owned(message: String) -> DatabaseError {
         phase: ErrorPhase::Read,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
+        provider: Some(crate::profile::PROVISIONAL_KIND),
         execution_id: None,
         message,
         diagnostics: None,
