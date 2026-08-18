@@ -88,6 +88,72 @@ pub struct MysqlObjectDescription {
     pub token: MysqlSchemaToken,
 }
 
+/// Interruttore **di solo test** sul rifiuto iniziale di `MariaDB`.
+///
+/// Il provider `MySQL` non e qualificato per `MariaDB`, e lo dichiara alla
+/// probe.
+/// Quel rifiuto e cio che ADR 0014 chiede di misurare *attraverso*: senza
+/// attraversarlo non si puo sapere quali superfici del provider divergano
+/// davvero, e la lista delle divergenze resterebbe quella di una review —
+/// che, misurata, e risultata sbagliata su tre punti su cinque.
+///
+/// Tre proprieta lo rendono un bypass e non un supporto:
+///
+/// * e `#[cfg(test)]`, quindi non esiste nel binario pubblico. Non e una
+///   feature, non e una variabile d'ambiente, non e un parametro: non c'e
+///   modo di attivarlo da fuori il crate;
+/// * salta **solo** il rifiuto. Non tocca SQL, mapping, timeout, transazioni
+///   ne classificazione degli errori: cio che succede dopo e esattamente cio
+///   che il provider fa oggi, ed e il punto della misura;
+/// * fuori dai test la funzione e `false` costante, quindi la condizione
+///   resta quella di prima e il codice generato non cambia.
+#[cfg(test)]
+static MARIADB_REJECTION_BYPASS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Attiva il bypass per il resto del processo di test.
+///
+/// Globale e non per-thread perche il provider gira su un runtime tokio
+/// multi-thread: un interruttore legato al thread del test non sarebbe
+/// visibile dentro il task che apre la connessione.
+/// Attiva il bypass finche la guardia resta viva, e lo spegne al `Drop`.
+///
+/// Un interruttore che si accende e basta lascerebbe il rifiuto disattivato
+/// per il resto del processo di test: qualunque altro test eseguito dopo, in
+/// quel binario, vedrebbe un provider che accetta `MariaDB` senza che nessuno
+/// lo abbia chiesto. Lo scope lo rende un fatto locale alla misura.
+// `pub(crate)` in un modulo privato e cio che serve: la misura vive in un
+// modulo fratello e non deve poterlo chiamare nessun altro.
+#[allow(clippy::redundant_pub_crate)]
+#[cfg(test)]
+pub(crate) struct MariadbRejectionBypass;
+
+#[allow(clippy::redundant_pub_crate)]
+#[cfg(test)]
+impl MariadbRejectionBypass {
+    pub(crate) fn engage() -> Self {
+        MARIADB_REJECTION_BYPASS.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for MariadbRejectionBypass {
+    fn drop(&mut self) {
+        MARIADB_REJECTION_BYPASS.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+fn mariadb_rejection_bypassed() -> bool {
+    MARIADB_REJECTION_BYPASS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(not(test))]
+const fn mariadb_rejection_bypassed() -> bool {
+    false
+}
+
 /// Rileva versione, sessione deterministica e cifratura del server.
 ///
 /// # Errors
@@ -149,7 +215,7 @@ pub async fn probe_server(
     // divergenze in produzione.
     let looks_like_mariadb = product_version.to_ascii_lowercase().contains("mariadb")
         || version_comment.to_ascii_lowercase().contains("mariadb");
-    if looks_like_mariadb {
+    if looks_like_mariadb && !mariadb_rejection_bypassed() {
         return Err(DatabaseError {
             category: ErrorCategory::Unsupported,
             phase: ErrorPhase::Probe,

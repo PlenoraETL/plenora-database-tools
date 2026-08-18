@@ -123,3 +123,125 @@ decidere:
 
 Fino ad allora il fail-close resta, e questo documento resta cio che e: una
 misura, con la data della corsa e il comando per rifarla.
+
+---
+
+## Seconda tranche: driver e provider
+
+La prima tranche ha misurato dal **client**. Il client non vede il protocollo:
+i metadata di `COM_STMT_PREPARE`, i tipi wire, e cosa succede quando e il
+provider ad attraversare quelle superfici. Questa tranche misura li, e tiene
+separate due famiglie perche rispondono a due domande diverse — `raw`, cioe
+cosa offre il protocollo con il driver diretto, e `provider`, cioe cosa
+succede a **questo** codice.
+
+### Come riprodurla
+
+```bash
+docker compose -f docker-compose.mysql.yml up -d --wait
+docker compose -f docker-compose.mariadb.yml up -d --wait
+python scripts/check_mariadb_driver.py            # verdetto JSON
+python scripts/check_mariadb_driver.py --markdown # la tabella qui sotto
+```
+
+La misura gira **dentro il crate**, dove vive un bypass di solo test sul
+rifiuto iniziale di MariaDB. Il bypass e `#[cfg(test)]`: non e una feature,
+non e una variabile d'ambiente, non e un parametro, e nel binario pubblico
+non esiste. Supera **solo** il rifiuto: SQL, mapping, timeout, transazioni e
+classificazione degli errori restano quelli di oggi, ed e il punto — cio che
+si osserva dopo e il comportamento reale del provider, non di una sua
+variante indulgente.
+
+Le connessioni sono TLS verificate contro la CA privata di ciascuna fixture;
+il verdetto registra il cifrario negoziato accanto a versione e digest.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | protocollo | `raw.tls_cipher` | TLS_AES_128_GCM_SHA256 | TLS_AES_256_GCM_SHA384 | TLS_AES_256_GCM_SHA384 |
+| raw | wire | `raw.type_table` | creata | creata | creata |
+| raw | wire | `raw.type_row` | riga inserita | riga inserita | riga inserita |
+| raw | spatial | `raw.geometry_table` | creata | creata | creata |
+| raw | spatial | `raw.prepare_metadata_geometry` | shape:MYSQL_TYPE_GEOMETRY | shape:MYSQL_TYPE_GEOMETRY | shape:MYSQL_TYPE_GEOMETRY |
+| raw | wire | `raw.prepare_metadata` | id:MYSQL_TYPE_LONGLONG, small_signed:MYSQL_TYPE_SHORT, big_unsigned:MYSQL_TYPE_LONGLONG… | id:MYSQL_TYPE_LONGLONG, small_signed:MYSQL_TYPE_SHORT, big_unsigned:MYSQL_TYPE_LONGLONG… | id:MYSQL_TYPE_LONGLONG, small_signed:MYSQL_TYPE_SHORT, big_unsigned:MYSQL_TYPE_LONGLONG… |
+| raw | protocollo | `raw.prepare_parameters` | 1 | 1 | 1 |
+| raw | spatial | `raw.column_srid` | Some(None) | **no** Server error: `ERROR 1054 (42S22): Unknown column 'SRS_ID' in 'SELECT'' | **no** Server error: `ERROR 1054 (42S22): Unknown column 'SRS_ID' in 'SELECT'' |
+| raw | spatial | `raw.spatial_functions` | POINT srid=4326 wkb=21 byte | POINT srid=4326 wkb=21 byte | POINT srid=4326 wkb=21 byte |
+| raw | sessione | `raw.max_execution_time` | accettato | **no** Server error: `ERROR 1193 (HY000): Unknown system variable 'MAX_EXECUTION_TIME'' | **no** Server error: `ERROR 1193 (HY000): Unknown system variable 'MAX_EXECUTION_TIME'' |
+| raw | catalogo | `raw.statistics_expression` | presente | **no** Server error: `ERROR 1054 (42S22): Unknown column 'EXPRESSION' in 'SELECT'' | **no** Server error: `ERROR 1054 (42S22): Unknown column 'EXPRESSION' in 'SELECT'' |
+| provider | protocollo | `provider.test_connection` | server_version=9.7.2 | server_version=12.3.2-MariaDB-ubu2404 | server_version=11.8.8-MariaDB-ubu2404 |
+| provider | protocollo | `provider.capabilities` | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 |
+| provider | catalogo | `provider.describe_object` | colonne=14 indici=1 | **no** Schema: colonna MySQL non valida (codice 1054) | **no** Schema: colonna MySQL non valida (codice 1054) |
+| provider | wire | `provider.read` | schema=[id:Int64/false, small_signed:Int16/false, big_unsigned:UInt64/false, exact_deci… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… |
+| provider | spatial | `provider.read_geometry` | **no** Crs: colonna spatial MySQL senza SRID dichiarato | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… |
+| provider | sessione | `provider.transaction` | commit Committed | **no** Execution: errore server MySQL redatto (codice 1193) | **no** Execution: errore server MySQL redatto (codice 1193) |
+| provider | sessione | `provider.cancellation_inflight` | Cancelled/None/retry=Never | Cancelled/None/retry=Never | Cancelled/None/retry=Never |
+| provider | sessione | `provider.session_quarantine` | stato=Quarantined riusabile=false | stato=Quarantined riusabile=false | stato=Quarantined riusabile=false |
+| provider | sessione | `provider.session_reuse` | connessione rimpiazzata | connessione rimpiazzata | connessione rimpiazzata |
+| provider | commit | `provider.ambiguous_commit` | — richiede fault injection deterministica sul COMMIT — uccidere la connessione a meta com… | — richiede fault injection deterministica sul COMMIT — uccidere la connessione a meta com… | — richiede fault injection deterministica sul COMMIT — uccidere la connessione a meta com… |
+
+### Cosa dice
+
+**Il protocollo e quasi lo stesso.** Dodici colonne su quattordici hanno lo
+stesso tipo wire nei metadata del prepare, `ST_*` risponde identico, il numero
+di parametri dichiarati coincide, e la riga di dati viene accettata da tutti e
+tre. Due colonne no, e sono divergenze che dal client non si vedevano:
+
+* **`JSON` viaggia come `MYSQL_TYPE_BLOB`** su MariaDB e come
+  `MYSQL_TYPE_JSON` su MySQL. Su MariaDB `JSON` e un alias di `LONGTEXT` con
+  un CHECK, e il protocollo lo dice;
+* **`TIMESTAMP` porta il flag `unsigned`** su MariaDB e non su MySQL. Un
+  mapper che leggesse quel flag per decidere la firma di un intero
+  classificherebbe un istante come numero senza segno.
+
+**`SRS_ID` non esiste** in `information_schema.columns` su MariaDB — errore
+1054 — quindi non c'e modo di sapere se una geometry abbia un sistema di
+riferimento vincolato. E la controparte, al livello del catalogo,
+dell'attributo `SRID` di colonna che la prima tranche aveva gia visto
+rifiutare.
+
+**Il provider si ferma in due punti, e sono due righe di codice sue.**
+
+* `describe_object` legge `information_schema.statistics.EXPRESSION`, che su
+  MariaDB non esiste: errore 1054. Da li in poi nessuna superficie di lettura
+  e raggiungibile — `provider.read` e `provider.read_geometry` restano
+  `not_measured`, perche dipendono dal catalogo e registrarle come rifiuti
+  autonomi conterebbe tre divergenze dove ce n'e una;
+* `begin_transaction` con `statement_timeout_ms` emette
+  `SET SESSION MAX_EXECUTION_TIME`, che su MariaDB non esiste: errore 1193.
+  Con le opzioni di default questa sonda passava, perche il timeout restava
+  `None` e l'istruzione non veniva mai emessa — la prima stesura della misura
+  lo ha nascosto, ed e il motivo per cui ora il timeout e esplicito.
+
+Nessuna delle due e una divergenza del motore: sono istruzioni che **questo**
+provider emette sempre. Su MariaDB l'equivalente del timeout e
+`max_statement_time`, in secondi invece che millisecondi, e gli indici
+funzionali si riconoscono altrove — ma introdurre qui quei rami
+significherebbe rispondere alla domanda che la decisione deve ancora porsi.
+
+**Cio che il provider fa uguale.** Probe, capability, e — questo e il
+risultato meno atteso — **tutta la sessione**: una query cancellata mentre il
+server risponde viene classificata `Cancelled` con `remote_effect: none` e
+`retry: never` su tutti e tre, la sessione finisce in `Quarantined` e smette
+di essere riusabile su tutti e tre, e il provider la rimpiazza su tutti e tre.
+La macchina a stati della sessione, che e la parte piu delicata del provider,
+non distingue i due motori.
+
+`provider.read_geometry` su MySQL viene rifiutato dalla regola del provider —
+una geometry senza SRID dichiarato — non da un limite del motore: la fixture
+non puo dichiarare l'SRID perche MariaDB non accetta quell'attributo, e
+tabelle diverse non sarebbero confrontabili. La decodifica di una geometry
+resta quindi da misurare su una fixture asimmetrica.
+
+**Le due versioni di MariaDB non divergono fra loro** su nessuna delle
+ventuno sonde, come nella prima tranche.
+
+### Cosa resta not_measured
+
+`provider.ambiguous_commit`. Un commit di esito ignoto si osserva solo con
+fault injection deterministica: uccidere la connessione a meta `COMMIT` da
+una seconda sessione e una corsa, non un esperimento ripetibile, e un esito
+ottenuto cosi non distingue il comportamento del provider dal momento in cui
+e arrivato il colpo. Resta `not_measured`, senza inferenze: un esito assente
+non e un esito negativo.

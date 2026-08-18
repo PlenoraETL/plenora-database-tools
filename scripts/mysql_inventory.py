@@ -106,6 +106,17 @@ def _scan(source: Path) -> list[MysqlTest]:
     return found
 
 
+# File che dichiarano test ma non appartengono alla qualifica MySQL.
+#
+# `mariadb_evidence.rs` misura MariaDB attraverso il provider e ha un runner
+# suo (`scripts/check_mariadb_driver.py`). Contarlo qui lo farebbe entrare
+# negli inventari dei tre runner del gate, che dichiarano cosa il provider
+# **MySQL** ha dimostrato: un test su un motore non qualificato non puo
+# sostenere quell'affermazione, e il gate finirebbe per pretenderne
+# l'esecuzione contro il riferimento sbagliato.
+EXCLUDED_SOURCES = frozenset({"mariadb_evidence.rs"})
+
+
 def collect() -> dict[str, frozenset[str]]:
     """Inventario reale della sorgente, per famiglia di runner.
 
@@ -121,6 +132,8 @@ def collect() -> dict[str, frozenset[str]]:
         "live_reference": set(),
     }
     for source in sorted(SOURCE_DIR.glob("*.rs")):
+        if source.name in EXCLUDED_SOURCES:
+            continue
         for test in _scan(source):
             if test.path in families[test.family]:
                 raise RuntimeError(f"test duplicato nell'inventario: {test.path}")

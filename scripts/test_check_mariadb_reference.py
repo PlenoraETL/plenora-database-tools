@@ -335,5 +335,229 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
         self.assertIn("plenora_ctx_", transaction)
 
 
+class MariadbDriverEvidenceTests(unittest.TestCase):
+    """Il bypass resta di solo test, e la misura resta una misura.
+
+    E la guardia che tiene separate due cose che si somigliano: attraversare
+    il rifiuto per **misurare** e attraversarlo per **supportare**. La prima
+    e cio che ADR 0014 chiede, la seconda e la decisione che l'ADR rimanda.
+    """
+
+    CATALOG = ROOT / "crates" / "plenora-db-mysql" / "src" / "catalog.rs"
+    EVIDENCE = ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
+    LIB = ROOT / "crates" / "plenora-db-mysql" / "src" / "lib.rs"
+    RUNNER = ROOT / "scripts" / "check_mariadb_driver.py"
+    DOCUMENT = ROOT / "docs" / "mariadb" / "EVIDENCE.md"
+
+    def test_the_bypass_exists_only_in_test_builds(self) -> None:
+        """Ogni pezzo del bypass e dietro `cfg(test)`, e il modulo pure.
+
+        Una feature, una variabile d'ambiente o un parametro pubblico
+        renderebbero il rifiuto disattivabile da fuori: sarebbe supporto
+        silenzioso, non misura.
+        """
+
+        catalog = self.CATALOG.read_text(encoding="utf-8")
+        # Le quattro dichiarazioni del bypass, ognuna con la sua `cfg`.
+        newline = chr(10)
+        for declaration in (
+            "static MARIADB_REJECTION_BYPASS",
+            "pub(crate) struct MariadbRejectionBypass",
+            "impl Drop for MariadbRejectionBypass",
+            "fn mariadb_rejection_bypassed",
+        ):
+            position = catalog.find(declaration)
+            self.assertGreater(position, 0, f"dichiarazione assente: {declaration}")
+            preceding = catalog[:position].rstrip().rsplit(newline, 1)[-1].strip()
+            self.assertIn(
+                "cfg(",
+                preceding,
+                f"{declaration} non e dietro una cfg: {preceding}",
+            )
+        self.assertIn("#[cfg(not(test))]", catalog)
+        # Ripristinabile: un interruttore che si accende e basta lascerebbe il
+        # rifiuto disattivato per il resto del processo di test.
+        self.assertIn("fn drop(&mut self)", catalog)
+        self.assertIn("MARIADB_REJECTION_BYPASS.store(false", catalog)
+        evidence = self.EVIDENCE.read_text(encoding="utf-8")
+        self.assertIn("MariadbRejectionBypass::engage()", evidence)
+        # Fuori dai test la funzione e `false` costante, quindi la condizione
+        # del rifiuto resta quella di prima.
+        self.assertIn("    false" + chr(10) + "}", catalog)
+        self.assertIn(
+            "if looks_like_mariadb && !mariadb_rejection_bypassed() {", catalog
+        )
+
+        # Nessuna superficie pubblica lo espone.
+        self.assertNotIn("pub fn bypass", catalog)
+        self.assertNotIn("PLENORA_MARIADB", catalog)
+        manifest = (
+            ROOT / "crates" / "plenora-db-mysql" / "Cargo.toml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("mariadb", manifest.lower(), "una feature per MariaDB")
+
+        # E il modulo della misura non entra nel binario pubblico.
+        library = self.LIB.read_text(encoding="utf-8")
+        self.assertIn("#[cfg(test)]" + chr(10) + "mod mariadb_evidence;", library)
+
+    def test_the_measure_does_not_branch_on_the_engine(self) -> None:
+        """La misura non aggira cio che sta misurando.
+
+        Un ramo che scegliesse un'altra istruzione quando il server e MariaDB
+        — `max_statement_time` invece di `MAX_EXECUTION_TIME`, o una query
+        senza `EXPRESSION` — trasformerebbe l'evidenza in una dimostrazione
+        che si puo fare, che e una risposta alla domanda ancora aperta.
+        """
+
+        evidence = self.EVIDENCE.read_text(encoding="utf-8")
+        executable = chr(10).join(
+            line
+            for line in evidence.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        for forbidden in ("max_statement_time", "is_mariadb", "if mariadb"):
+            self.assertNotIn(
+                forbidden,
+                executable,
+                f"la misura si adatta al motore invece di misurarlo: {forbidden}",
+            )
+
+    def test_the_two_families_stay_separate(self) -> None:
+        """`raw` e `provider` rispondono a due domande, e restano distinte."""
+
+        evidence = self.EVIDENCE.read_text(encoding="utf-8")
+        self.assertIn('"raw"', evidence)
+        self.assertIn('"provider"', evidence)
+        runner = self.RUNNER.read_text(encoding="utf-8")
+        self.assertIn('"families"', runner)
+        document = self.DOCUMENT.read_text(encoding="utf-8")
+        self.assertIn("| raw |", document)
+        self.assertIn("| provider |", document)
+
+    def test_the_ambiguous_commit_stays_not_measured(self) -> None:
+        """Senza fault injection deterministica non si conclude niente.
+
+        E la sonda dove la tentazione di dedurre e piu forte: il commit e
+        andato, quindi "probabilmente" il provider lo classifica bene. Un
+        verdetto che confondesse un esito assente con uno negativo — o
+        positivo — porterebbe a decidere su una prova mai fatta.
+        """
+
+        evidence = self.EVIDENCE.read_text(encoding="utf-8")
+        self.assertIn('"provider.ambiguous_commit"', evidence)
+        self.assertIn("not_measured", evidence)
+        self.assertIn("fault injection deterministica", evidence)
+        self.assertIn("not_measured", self.DOCUMENT.read_text(encoding="utf-8"))
+
+    def test_every_driver_probe_is_recorded_in_the_document(self) -> None:
+        """La matrice del documento segue le sonde che la producono."""
+
+        evidence = self.EVIDENCE.read_text(encoding="utf-8")
+        probes = set(re.findall(r'"((?:raw|provider)\.[a-z_]+)"', evidence))
+        self.assertGreaterEqual(len(probes), 15, "catalogo driver non riconosciuto")
+        documented = set(
+            re.findall(r"`((?:raw|provider)\.[a-z_]+)`", self.DOCUMENT.read_text(encoding="utf-8"))
+        )
+        self.assertEqual(
+            probes - documented, set(), "sonde misurate e non registrate"
+        )
+        self.assertEqual(
+            documented - probes, set(), "il documento cita sonde inesistenti"
+        )
+
+
+class MariadbDriverRunnerTests(unittest.TestCase):
+    """Il runner della misura: cosa dichiara di aver misurato, e su cosa.
+
+    Il runner e l'unico modo di produrre il verdetto, quindi cio che il
+    verdetto afferma dipende da lui. Queste guardie tengono ferme le tre
+    affermazioni che un lettore da per vere senza poterle controllare:
+    l'immagine su cui la misura e girata, il commit del codice misurato, e il
+    fatto che le sonde siano le stesse sui tre server.
+    """
+
+    RUNNER = ROOT / "scripts" / "check_mariadb_driver.py"
+
+    def test_the_runner_verifies_the_image_it_measured(self) -> None:
+        """Digest dichiarato e digest in esecuzione devono coincidere.
+
+        Il documento dice quale immagine dovrebbe girare; `docker inspect`
+        dice quale gira. Registrare solo il primo farebbe passare per misurata
+        su una versione una corsa fatta su un'immagine sostituita sotto lo
+        stesso nome — il caso che il pin per digest esiste per escludere.
+        """
+
+        source = self.RUNNER.read_text(encoding="utf-8")
+        self.assertIn("def running_digest(", source)
+        self.assertIn('"{{.Image}}"', source)
+        self.assertIn("declared_digest", source)
+        self.assertIn("running_digest", source)
+        self.assertIn("la misura non riguarderebbe", source)
+
+    def test_the_runner_records_the_code_it_measured(self) -> None:
+        """Commit e stato dell'albero, come nel gate del SDK."""
+
+        source = self.RUNNER.read_text(encoding="utf-8")
+        self.assertIn("def repository_state(", source)
+        self.assertIn('"status", "--porcelain", "-uall"', source)
+        self.assertIn('"worktree_dirty"', source)
+        self.assertIn('"commit"', source)
+
+    def test_the_runner_refuses_a_probe_set_that_differs(self) -> None:
+        """Le sonde devono essere le stesse sui tre server.
+
+        Un confronto fra insiemi diversi non e un confronto: se un server
+        producesse una sonda in meno, la riga corrispondente sparirebbe dalla
+        matrice invece di comparire come divergenza.
+        """
+
+        source = self.RUNNER.read_text(encoding="utf-8")
+        self.assertIn("sonda {probe} assente", source)
+        self.assertIn("devono", source)
+
+    def test_the_runner_reads_versions_and_digests_from_the_documents(self) -> None:
+        """Nessuna versione o digest ricopiato nel runner."""
+
+        source = self.RUNNER.read_text(encoding="utf-8")
+        self.assertIn("from scripts.mariadb_references import", source)
+        self.assertIn("from scripts.mysql_references import", source)
+        # Solo le righe eseguibili: la docstring nomina le versioni per dire
+        # su cosa gira la misura, e vietarlo obbligherebbe a togliere la
+        # spiegazione insieme al valore.
+        executable = chr(10).join(
+            line
+            for line in source.splitlines()
+            if not line.lstrip().startswith(("#", '"""', "*", "`"))
+        )
+        for reference in REFERENCES:
+            self.assertNotIn(reference.digest, executable)
+
+    def test_the_evidence_test_is_not_in_the_mysql_inventory(self) -> None:
+        """La misura non entra negli inventari della qualifica MySQL.
+
+        I tre runner del gate filtrano il prefisso `live_`, e i loro inventari
+        dichiarano cosa il provider **MySQL** ha dimostrato. Un test che misura
+        MariaDB non puo sostenere quell'affermazione, e finirebbe per essere
+        eseguito contro il riferimento sbagliato.
+        """
+
+        from scripts.mysql_inventory import EXCLUDED_SOURCES, collect
+
+        self.assertIn("mariadb_evidence.rs", EXCLUDED_SOURCES)
+        evidence = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("async fn mariadb_driver_evidence()", evidence)
+        self.assertNotIn("async fn live_mariadb_driver_evidence", evidence)
+        self.assertIn("#[ignore", evidence)
+
+        inventory = collect()
+        for family in inventory.values():
+            self.assertFalse(
+                [name for name in family if "evidence" in name],
+                "la misura e finita nell'inventario MySQL",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
