@@ -7,8 +7,11 @@ prodotto la sua evidenza, e la scelta architetturale che rimandava e ora presa
 — si veda "Decisione architetturale" in fondo. Apre il ciclo MariaDB che ADR
 0012 aveva rimandato
 ("MariaDB non viene dedotta come compatibile e richiedera una campagna
-separata"). Questa ADR non decide se MariaDB avra un provider dedicato o sara
-qualificata sotto quello MySQL: decide **come** si arrivera a quella scelta.
+separata"). Alla stesura (2026-08-17) questa ADR **non decideva** se MariaDB
+avrebbe avuto un provider dedicato o sarebbe stata qualificata sotto quello
+MySQL: decideva **come** si sarebbe arrivati a quella scelta. L'evidenza che
+quel metodo ha prodotto ha poi permesso di deciderla, il 2026-08-18, in questo
+stesso documento.
 
 ## Contesto
 
@@ -59,9 +62,11 @@ fissa per SQL Server: capability atomiche dopo evidenza riproducibile.
    una sola non dice se una divergenza dipende dal fork o dalla versione.
 4. Il generatore TLS e **condiviso**, parametrizzato per nome host. Due copie
    della stessa fixture divergono alla prima correzione applicata a una sola.
-5. Quando l'evidenza sara raccolta, la scelta fra provider dedicato e
-   qualificazione sara registrata in una ADR successiva, con i risultati
-   allegati. Questa ADR non la anticipa.
+5. La scelta fra provider dedicato e qualificazione si registra **qui**,
+   quando l'evidenza c'e, con i risultati allegati: e la sezione "Decisione
+   architetturale". Una ADR che rimanda la propria conclusione a un documento
+   futuro lascia scoperto l'intervallo, e in quell'intervallo la scelta la fa
+   il primo che scrive codice.
 
 ## Riferimenti
 
@@ -94,8 +99,9 @@ aggiungono al documento, che e gia la sola fonte letta da compose e script.
 
 ## Decisione architetturale (2026-08-18)
 
-L'evidenza e raccolta — `docs/mariadb/EVIDENCE.md`, due tranche, 38 sonde su
-tre server fissati per digest — e risponde alla domanda che questa ADR aveva
+L'evidenza e raccolta — `docs/mariadb/EVIDENCE.md`, due tranche, **41 sonde
+registrate su tre server fissati per digest: 38 misurate e 3
+`not_measured`** — e risponde alla domanda che questa ADR aveva
 lasciato aperta. La scelta e **un crate solo**.
 
 ### Cosa dice la misura
@@ -137,12 +143,16 @@ Ogni riga e una divergenza misurata, non una previsione:
 | riconoscimento e versioni ammesse | oggi la detection e un `contains("mariadb")` su due stringhe; diventa il modo in cui ogni profilo riconosce **il proprio** motore e rifiuta l'altro |
 | SQL del timeout e conversione dell'unita | `MAX_EXECUTION_TIME` (ms) non esiste su MariaDB, che usa `max_statement_time` (s): errore 1193 misurato |
 | query di catalogo e indici funzionali | `information_schema.statistics.EXPRESSION` non esiste su MariaDB: errore 1054 misurato, e blocca ogni lettura che passa dal catalogo |
-| normalizzazione dei metadata wire | dalla stessa DDL `document JSON` escono `native_type=json` e `native_type=text`: divergenza misurata nello schema Arrow pubblicato |
+| semantica e produzione dei metadata nativi | dalla stessa DDL `document JSON` escono `native_type=json` e `native_type=text`: divergenza misurata nello schema Arrow pubblicato |
 | strategia SRID e capability spatial | l'attributo `SRID` di colonna e `information_schema.columns.SRS_ID` non esistono su MariaDB |
 
-Sul metadata wire il profilo deve anche **decidere cosa `MYSQL_NATIVE_TYPE`
-annoti** — il tipo del wire o quello della DDL — perche oggi il contratto non
-lo dice e le due letture portano a due normalizzazioni diverse. La scelta va
+Sui metadata nativi il profilo possiede due cose insieme, e sono distinte: la
+**semantica** — cosa `MYSQL_NATIVE_TYPE` afferma, il tipo del wire o quello
+della DDL, che oggi il contratto non dice — e la **produzione**, cioe da dove
+ogni prodotto ricava il valore che pubblica. Chiamarla "normalizzazione"
+presupporrebbe la prima risposta: che esista una forma giusta verso cui
+convergere. Se il campo annota il wire, `json` e `text` sono entrambi corretti
+e non c'e niente da normalizzare — c'e da documentare. La semantica va
 registrata dove il campo e definito, non dedotta dal comportamento.
 
 ### Cosa resta fail-closed
