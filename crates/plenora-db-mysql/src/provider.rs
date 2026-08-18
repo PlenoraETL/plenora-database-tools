@@ -1,10 +1,7 @@
 use crate::profile::{ProductProfile, MYSQL_PROFILE};
 use crate::{MysqlConfig, MysqlPool};
 use plenora_database_core::arrow::SchemaRef;
-use plenora_database_core::capabilities::{
-    ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
-    TransactionCapabilities, TransactionScope, WriteCapabilities,
-};
+use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
 use plenora_database_core::provider::{
@@ -20,7 +17,6 @@ use plenora_database_core::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -261,63 +257,7 @@ impl Provider for MysqlProvider {
                 )
                 .await?;
                 drop(session);
-                Ok(ProviderCapabilities {
-                    schema_version: 1,
-                    provider: self.profile.kind(),
-                    provider_version: probe.product_version,
-                    extension_versions: BTreeMap::new(),
-                    reads: ReadCapabilities {
-                        streaming: true,
-                        server_cursor: false,
-                        pagination: false,
-                        object_id_windows: false,
-                        projection: true,
-                        filter: true,
-                        ordering: true,
-                        resumable: false,
-                    },
-                    // Sei mode qualificate su sette. `TruncateInsert` resta
-                    // fail-closed e non ha un flag proprio nel contratto: il
-                    // consumer che la chiede riceve `Unsupported` in prepare, con
-                    // il rinvio a `Replace` nel messaggio.
-                    //
-                    // `rollback_on_failure = true` con `transactional_ddl =
-                    // false` e la combinazione documentata in
-                    // `WriteCapabilities::rollback_on_failure`: le righe tornano
-                    // sempre indietro, la tabella creata da `Create` no. Le altre
-                    // cinque mode non emettono DDL, quindi per loro il rollback e
-                    // pieno in entrambi i sensi.
-                    writes: WriteCapabilities {
-                        create: true,
-                        append: true,
-                        update: true,
-                        upsert: true,
-                        replace: true,
-                        delete_by_keys: true,
-                        bulk: true,
-                        array_binding: false,
-                        returning: false,
-                        apply_edits: false,
-                        rollback_on_failure: true,
-                        use_global_ids: false,
-                    },
-                    transactions: TransactionCapabilities {
-                        single_transaction: true,
-                        savepoints: true,
-                        transactional_ddl: false,
-                        staged_swap: false,
-                        scope: TransactionScope::Transaction,
-                    },
-                    spatial: mysql_spatial_capabilities(),
-                    limits: ProviderLimits {
-                        max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
-                        max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
-                        max_statement_bytes: None,
-                        max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
-                        max_payload_bytes: None,
-                        max_record_count: None,
-                    },
-                })
+                Ok(self.profile.capabilities(probe.product_version))
             }
             .await;
             crate::profile::attributed(self.profile, outcome)
@@ -1138,22 +1078,6 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
     provider_error(ErrorCategory::Unsupported, ErrorPhase::Prepare, message)
 }
 
-fn mysql_spatial_capabilities() -> SpatialCapabilities {
-    SpatialCapabilities {
-        read_wkb: true,
-        write_wkb: true,
-        geometry: true,
-        geography: false,
-        spatial_index: false,
-        mixed_geometry_types: true,
-        dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-        // v1.2: 20 funzioni spatial MySQL 8+ dichiarate verified via il
-        // dialect condiviso `plenora-database-sql`. Vedi
-        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` per la lista + rationale.
-        functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
-    }
-}
-
 fn provider_error(
     category: ErrorCategory,
     phase: ErrorPhase,
@@ -1185,6 +1109,7 @@ mod tests {
         QueryLockWait, QueryProjection, QuerySource, ScalarFunction,
     };
     use plenora_database_core::resource::ResourceLimits;
+    use std::collections::BTreeMap;
 
     const fn assert_provider<T: Provider>() {}
 
@@ -1800,7 +1725,9 @@ mod tests {
 
     #[test]
     fn published_spatial_capabilities_match_generic_geometry_contract() {
-        let capabilities = mysql_spatial_capabilities();
+        let capabilities = crate::profile::MYSQL_PROFILE
+            .capabilities("9.7.2".to_owned())
+            .spatial;
         assert!(capabilities.read_wkb);
         assert!(capabilities.write_wkb);
         assert!(capabilities.geometry);

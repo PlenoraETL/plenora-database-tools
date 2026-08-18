@@ -34,10 +34,15 @@ use crate::types::MysqlColumnKind;
 use crate::MysqlColumnSpec;
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::Column;
+use plenora_database_core::capabilities::{
+    ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
+    TransactionCapabilities, TransactionScope, WriteCapabilities,
+};
 use plenora_database_core::{
     plan::ProviderKind, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
+use std::collections::BTreeMap;
 
 /// Collation id riservato di `MySQL` per i tipi binari.
 const BINARY_CHARACTER_SET: u16 = 63;
@@ -146,6 +151,18 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// funzione sceglie anche quale dialetto ne esce. Separarli lascerebbe un
     /// controllo che valida l'output di una funzione che non conosce.
     fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool;
+
+    /// Le capability e i limiti che il prodotto pubblica.
+    ///
+    /// Non e una tabella di comodo: e il contratto su cui il consumatore
+    /// decide cosa puo chiedere. Cablata nel provider, un secondo prodotto la
+    /// ereditava intera — dichiarando qualificate spatial e write mode che
+    /// nessuna evidenza aveva provato su di lui. ADR 0010 e 0014 dicono il
+    /// contrario: una capability si dichiara dopo la prova, per prodotto.
+    ///
+    /// `provider_version` arriva dalla probe: e l'unica parte che il profilo
+    /// non decide, perche la dice il server.
+    fn capabilities(&self, provider_version: String) -> ProviderCapabilities;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -393,6 +410,66 @@ impl ProductProfile for MysqlProfile {
         })
     }
 
+    fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
+        ProviderCapabilities {
+            schema_version: 1,
+            provider: self.kind(),
+            provider_version,
+            extension_versions: BTreeMap::new(),
+            reads: ReadCapabilities {
+                streaming: true,
+                server_cursor: false,
+                pagination: false,
+                object_id_windows: false,
+                projection: true,
+                filter: true,
+                ordering: true,
+                resumable: false,
+            },
+            // Sei mode qualificate su sette. `TruncateInsert` resta
+            // fail-closed e non ha un flag proprio nel contratto: il
+            // consumer che la chiede riceve `Unsupported` in prepare, con
+            // il rinvio a `Replace` nel messaggio.
+            //
+            // `rollback_on_failure = true` con `transactional_ddl =
+            // false` e la combinazione documentata in
+            // `WriteCapabilities::rollback_on_failure`: le righe tornano
+            // sempre indietro, la tabella creata da `Create` no. Le altre
+            // cinque mode non emettono DDL, quindi per loro il rollback e
+            // pieno in entrambi i sensi.
+            writes: WriteCapabilities {
+                create: true,
+                append: true,
+                update: true,
+                upsert: true,
+                replace: true,
+                delete_by_keys: true,
+                bulk: true,
+                array_binding: false,
+                returning: false,
+                apply_edits: false,
+                rollback_on_failure: true,
+                use_global_ids: false,
+            },
+            transactions: TransactionCapabilities {
+                single_transaction: true,
+                savepoints: true,
+                transactional_ddl: false,
+                staged_swap: false,
+                scope: TransactionScope::Transaction,
+            },
+            spatial: mysql_spatial_capabilities(),
+            limits: ProviderLimits {
+                max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
+                max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
+                max_statement_bytes: None,
+                max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
+                max_payload_bytes: None,
+                max_record_count: None,
+            },
+        }
+    }
+
     fn is_spatial_native_type(&self, native_type: &str) -> bool {
         matches!(
             native_type,
@@ -490,6 +567,22 @@ fn decimal_kind(column: &Column, unsigned: bool) -> Result<MysqlColumnKind> {
         ));
     }
     Ok(MysqlColumnKind::Decimal { precision, scale })
+}
+
+fn mysql_spatial_capabilities() -> SpatialCapabilities {
+    SpatialCapabilities {
+        read_wkb: true,
+        write_wkb: true,
+        geometry: true,
+        geography: false,
+        spatial_index: false,
+        mixed_geometry_types: true,
+        dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
+        // v1.2: 20 funzioni spatial MySQL 8+ dichiarate verified via il
+        // dialect condiviso `plenora-database-sql`. Vedi
+        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` per la lista + rationale.
+        functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -741,6 +834,41 @@ mod tests {
             "ogni futuro restituito da Provider deve passare dal bordo"
         );
         assert!(block.matches(boxed.as_str()).count() >= 8);
+    }
+
+    #[test]
+    fn the_capability_table_is_built_only_by_the_profile() {
+        // Cablata nel provider, la tabella veniva ereditata intera da
+        // qualunque profilo: un secondo prodotto avrebbe dichiarato
+        // qualificate spatial e write mode che nessuna evidenza aveva provato
+        // su di lui. Qui il provider puo solo chiederla.
+        let source = include_str!("provider.rs");
+        let production = source
+            .split_once(format!("{}mod tests {{", '\n').as_str())
+            .map_or(source, |(head, _)| head);
+        for built in [
+            "ProviderCapabilities",
+            "SpatialCapabilities",
+            "ProviderLimits",
+        ] {
+            let literal = format!("{built} {{");
+            assert_eq!(
+                production.matches(literal.as_str()).count(),
+                0,
+                "provider.rs costruisce {built} invece di chiederla al profilo"
+            );
+        }
+        // E cio che il profilo pubblica resta quello di prima: sei mode su
+        // sette, `TruncateInsert` fail-closed, spatial senza indice.
+        let published = MYSQL_PROFILE.capabilities("9.7.2".to_owned());
+        assert_eq!(published.provider_version, "9.7.2");
+        assert_eq!(published.provider, MYSQL_PROFILE.kind());
+        assert!(published.spatial.read_wkb && published.spatial.write_wkb);
+        assert!(!published.spatial.spatial_index);
+        assert_eq!(
+            published.limits.max_bind_parameters,
+            Some(crate::MAX_BIND_PARAMETERS as u64)
+        );
     }
 
     #[test]

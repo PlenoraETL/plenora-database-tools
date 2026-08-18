@@ -84,6 +84,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::no_module_signs_an_error_with_a_hardcoded_product",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",
+    "profile::tests::the_capability_table_is_built_only_by_the_profile",
     "profile::tests::the_catalog_derived_specs_always_carry_a_profile",
     "profile::tests::the_catalog_is_queried_only_through_the_profile",
     "profile::tests::the_expected_wkb_matches_the_projection_that_produces_it",
