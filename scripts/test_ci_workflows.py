@@ -225,6 +225,13 @@ class CiWorkflowTests(unittest.TestCase):
             )
         # `--all-targets` porta dentro i test, che assumevano PostgreSQL.
         self.assertIn("--all-targets $features -- -D warnings", workflow)
+        # E la guardia dell'aiuto viene **eseguita**, non solo compilata: il
+        # suo valore sta nelle configurazioni non di default, dove il job
+        # `test-unit` non arriva.
+        self.assertIn(
+            "cargo test --locked -p plenora-database-cli $features usage_surface",
+            workflow,
+        )
         # Il ciclo prova tutte le combinazioni prima di uscire: fermarsi alla
         # prima nasconderebbe le altre tre dietro un errore solo.
         self.assertIn("status=1", workflow)

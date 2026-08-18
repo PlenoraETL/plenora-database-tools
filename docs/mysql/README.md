@@ -171,7 +171,8 @@ I nuovi progetti ripartono da volumi vuoti e le fixture nascono dagli script in
 
 Post-Blocchi B/A/C, il driver MySQL è accessibile dai consumer:
 
-**CLI** (9 sub-comandi, tutti behind `--features full`):
+**CLI** (9 sub-comandi, dietro `--features mysql`; `--features full` li
+compila insieme agli altri provider):
 
 ```
 plenora-database mysql-probe <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]

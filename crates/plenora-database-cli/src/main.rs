@@ -268,7 +268,7 @@ async fn run() -> CliResult<()> {
         "mysql-transaction-test" => mysql_cmd::mysql_transaction_test(&mut args).await,
         #[cfg(feature = "mysql")]
         "mysql-conditional-update" => mysql_cmd::mysql_conditional_update(&mut args).await,
-        _ => Err(usage().into()),
+        _ => Err(unknown_command(&command)),
     }
 }
 
@@ -980,7 +980,7 @@ fn parse_provider_arguments(
                     kind,
                     ErrorPhase::Prepare,
                     "provider dichiarato dal contratto ma adapter non disponibile \
-                     (ricompilare con --features full per MySQL/SQL Server)",
+                     (ricompilare con la feature di quel provider: --features mysql, \n                     --features sqlserver, oppure --features full per tutti)",
                 ))),
             }
         }
@@ -988,7 +988,7 @@ fn parse_provider_arguments(
             unsupported_kind,
             ErrorPhase::Prepare,
             "provider dichiarato dal contratto ma adapter non disponibile \
-             (ricompilare con --features full per MySQL/SQL Server)",
+             (ricompilare con la feature di quel provider: --features mysql, \n                     --features sqlserver, oppure --features full per tutti)",
         ))),
     }
 }
@@ -1288,29 +1288,180 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn usage() -> String {
+/// Il catalogo dei comandi: nome e feature che lo porta, `None` se c'e sempre.
+///
+/// E la sola fonte di cosa il binario sa fare. `usage` mostra le sezioni delle
+/// feature compilate, l'errore da comando sconosciuto distingue "non esiste"
+/// da "non compilato qui", e un test lo confronta con i rami del dispatch.
+/// Senza, le tre cose derivano — ed erano gia derivate: l'aiuto elencava i
+/// comandi `PostgreSQL` anche in un binario che non li aveva compilati, e
+/// dichiarava che `MySQL` richiedesse `--features full` quando
+/// `--features mysql` basta.
+const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
+    ("database-probe", None),
+    ("inspect-dataset", None),
+    ("validate-plan", None),
+    ("benchmark-oltp", Some("postgres")),
+    ("benchmark-read", Some("postgres")),
+    ("benchmark-spatial", Some("postgres")),
+    ("benchmark-write", Some("postgres")),
+    ("bulk-write", Some("postgres")),
+    ("conditional-update", Some("postgres")),
+    ("diagnose", Some("postgres")),
+    ("doctor", Some("postgres")),
+    ("execute-ddl", Some("postgres")),
+    ("execute-scalar", Some("postgres")),
+    ("execute-sql", Some("postgres")),
+    ("explain", Some("postgres")),
+    ("inspect-catalogs", Some("postgres")),
+    ("inspect-database", Some("postgres")),
+    ("inspect-objects", Some("postgres")),
+    ("inspect-schemas", Some("postgres")),
+    ("inspect-tables", Some("postgres")),
+    ("pool-status", Some("postgres")),
+    ("portable-compile", Some("postgres")),
+    ("portable-execute", Some("postgres")),
+    ("postgres-describe", Some("postgres")),
+    ("postgres-probe", Some("postgres")),
+    ("postgres-query", Some("postgres")),
+    ("postgres-read-ipc", Some("postgres")),
+    ("postgres-read-summary", Some("postgres")),
+    ("postgres-write-ipc", Some("postgres")),
+    ("profile-check", Some("postgres")),
+    ("profile-list", Some("postgres")),
+    ("session-context-test", Some("postgres")),
+    ("test-cancellation", Some("postgres")),
+    ("test-concurrency", Some("postgres")),
+    ("test-spatial", Some("postgres")),
+    ("test-streaming", Some("postgres")),
+    ("transaction-test", Some("postgres")),
+    ("mysql-conditional-update", Some("mysql")),
+    ("mysql-describe", Some("mysql")),
+    ("mysql-execute-ddl", Some("mysql")),
+    ("mysql-execute-scalar", Some("mysql")),
+    ("mysql-execute-sql", Some("mysql")),
+    ("mysql-inspect-schemas", Some("mysql")),
+    ("mysql-inspect-tables", Some("mysql")),
+    ("mysql-probe", Some("mysql")),
+    ("mysql-transaction-test", Some("mysql")),
+];
+
+/// Se la feature indicata e stata compilata in **questo** binario.
+///
+/// Serve alla guardia, non al binario: il catalogo lo consuma
+/// `unknown_command`, mentre la vista filtrata esiste per confrontare cio che
+/// il dispatch compila con cio che l'aiuto elenca.
+#[cfg(test)]
+fn feature_is_compiled(feature: &str) -> bool {
+    // Una tabella, non un predicato: `cfg!` va valutato per **ogni** nome,
+    // altrimenti la riga della feature assente sparirebbe insieme al ramo.
     [
-        "uso: plenora-database [flag-globali] COMANDO [args...]",
+        ("postgres", cfg!(feature = "postgres")),
+        ("mysql", cfg!(feature = "mysql")),
+        ("sqlserver", cfg!(feature = "sqlserver")),
+    ]
+    .into_iter()
+    .any(|(name, compiled)| name == feature && compiled)
+}
+
+/// I comandi che questo binario espone davvero.
+#[cfg(test)]
+fn compiled_commands() -> Vec<&'static str> {
+    COMMAND_CATALOGUE
+        .iter()
+        .filter(|(_, feature)| feature.is_none_or(feature_is_compiled))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// L'errore per un comando che il dispatch non riconosce.
+///
+/// Un comando che esiste nel progetto ma non e in questo binario merita una
+/// risposta diversa da uno che non esiste: la prima si risolve ricostruendo,
+/// la seconda no. Prima erano la stessa cosa — l'intero testo di aiuto — e
+/// quel testo elencava comandi che il binario non aveva.
+fn unknown_command(command: &str) -> CliError {
+    if let Some((_, Some(feature))) = COMMAND_CATALOGUE.iter().find(|(name, _)| *name == command) {
+        return CliError::from(format!(
+            "comando '{command}' non compilato in questo binario: ricostruire \
+             con --features {feature}\n\n{}",
+            usage()
+        ));
+    }
+    CliError::from(usage())
+}
+
+/// I provider che `database-probe` puo davvero istanziare qui.
+///
+/// Il contratto ne enumera nove; questo binario ne porta quelli compilati. La
+/// riga di aiuto diceva "mysql/sqlserver richiedono --features full", falso in
+/// due modi: `--features mysql` basta, e in un binario senza `PostgreSQL`
+/// nemmeno `postgres` e disponibile.
+fn compiled_providers() -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if cfg!(feature = "postgres") {
+        names.push("postgres");
+    }
+    if cfg!(feature = "mysql") {
+        names.push("mysql");
+    }
+    if cfg!(feature = "sqlserver") {
+        names.push("sqlserver");
+    }
+    names
+}
+
+fn usage() -> String {
+    #[allow(unused_mut)]
+    let mut sections = vec![common_usage()];
+    #[cfg(feature = "postgres")]
+    sections.push(postgres_usage());
+    #[cfg(feature = "mysql")]
+    sections.push(mysql_usage());
+    #[cfg(feature = "sqlserver")]
+    sections.push(sqlserver_usage());
+    sections.push(global_flags_usage());
+    sections.join("\n")
+}
+
+/// Cio che c'e in qualunque binario, comunque sia stato costruito.
+fn common_usage() -> String {
+    let providers = compiled_providers();
+    let compiled = if providers.is_empty() {
+        "nessuno: questo binario non ha adapter compilati".to_owned()
+    } else {
+        providers.join(" | ")
+    };
+    [
+        "uso: plenora-database [flag-globali] COMANDO [args...]".to_owned(),
+        String::new(),
+        "== sempre disponibili ==".to_owned(),
+        "  database-probe <provider> <secret-env> [args tls]".to_owned(),
+        format!("    provider compilati in questo binario: {compiled}"),
+        "  inspect-dataset <file.arrow>".to_owned(),
+        "  validate-plan <file.json>".to_owned(),
+    ]
+    .join("\n")
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_usage() -> String {
+    [
         "",
-        "== bootstrap / diagnostica ==",
-        "  probe / doctor / diagnose",
-        "  database-probe <provider> <secret-env> [args tls]",
-        "    provider: postgres | mysql | sqlserver (mysql/sqlserver richiedono --features full)",
+        "== PostgreSQL: diagnostica ==",
         "  postgres-probe <dsn-env> [--tls-ca-path-env NAME] [--tls-client-cert-path-env NAME \
          --tls-client-key-path-env NAME]",
-        "    verifica connessione + capabilities per Postgres",
+        "    verifica connessione + capabilities",
         "  doctor <dsn-env>",
         "    aggregato: connessione + capabilities + i 3 profili conformance",
         "  diagnose <dsn-env>",
         "    superset di doctor: connect_ms, config server, findings + suggerimenti",
         "  pool-status <dsn-env>",
         "    stato acquisizione connessione dal pool (acquire_ms + connection identity)",
-        "",
-        "== conformance ==",
         "  profile-list",
         "  profile-check <dsn-env> <APPLICATION_OLTP_V1|PFM_CORE_V1|PFM_GIS_V1>",
         "",
-        "== inspection (metadata) ==",
+        "== PostgreSQL: inspection (metadata) ==",
         "  inspect-database <dsn-env>          — version/encoding/timezone/size/extensions",
         "  inspect-catalogs <dsn-env>          — via Provider::inspect (raw)",
         "  inspect-schemas <dsn-env>           — schemi utente (filtrati)",
@@ -1319,7 +1470,7 @@ fn usage() -> String {
         "  postgres-describe <dsn-env> <schema> <object>",
         "    metadata dettagliati oggetto (columns/constraints/indexes/policies/privileges)",
         "",
-        "== read (Arrow bulk) ==",
+        "== PostgreSQL: read (Arrow bulk) ==",
         "  postgres-read-summary <dsn-env> <schema> <object>",
         "    schema Arrow + rowcount, senza materializzare",
         "  postgres-read-ipc <dsn-env> <schema> <object> <output.arrow> [opzioni]",
@@ -1328,7 +1479,7 @@ fn usage() -> String {
         "  postgres-query <dsn-env> <QUERY.json>",
         "    esegue QueryOperation AST via Provider::query, summary schema+rows",
         "",
-        "== write (Arrow bulk + DML) ==",
+        "== PostgreSQL: write (Arrow bulk + DML) ==",
         "  bulk-write <dsn-env> <WRITE_OP.json> <INPUT.arrow> [--dry-run]",
         "    esegue WriteOperation plan-based (create/append/replace/upsert/…) su input Arrow IPC",
         "  postgres-write-ipc <dsn-env> <schema> <object> <INPUT.arrow> [--mode X] [--keys K1,K2] \
@@ -1345,15 +1496,15 @@ fn usage() -> String {
         "  conditional-update <dsn-env> <UPDATE_SQL> <PROBE_SQL> <EXPECTED_AFFECTED> [--param VALUE:TYPE ...]",
         "    verifica optimistic concurrency: se affected != expected, PROBE distingue NotFound da ConcurrentModification",
         "  explain <dsn-env> <sql> [--analyze] [--verbose] [--format=text|json|yaml|xml] [--param ...]",
-        "    wrapper EXPLAIN [ANALYZE] su PostgreSQL",
+        "    wrapper EXPLAIN [ANALYZE]",
         "",
-        "== portable AST ==",
+        "== PostgreSQL: portable AST ==",
         "  portable-compile <postgres|mysql|sqlserver> <PORTABLE.json>",
         "    stampa SQL + numero parametri compilati (per debug pipeline PFM)",
         "  portable-execute <dsn-env> <PORTABLE.json>",
         "    compila per Postgres, esegue in una tx, ritorna rows o affected_rows",
         "",
-        "== transazioni / concorrenza (test) ==",
+        "== PostgreSQL: transazioni / concorrenza (test) ==",
         "  transaction-test <dsn-env>              — smoke: begin + savepoint + release + commit",
         "  session-context-test <dsn-env>          — isolamento context su pool reuse",
         "  test-cancellation <dsn-env>             — statement_timeout → Cancelled",
@@ -1361,11 +1512,18 @@ fn usage() -> String {
         "  test-spatial <dsn-env>                  — portable spatial AST end-to-end (PostGIS)",
         "  test-concurrency <dsn-env>              — 2 tx competono (richiede --allow-write-tests)",
         "",
-        "== benchmark ==",
+        "== PostgreSQL: benchmark ==",
         "  benchmark-oltp <dsn-env> [iterations=100]",
         "  benchmark-read <dsn-env> <sql> [iterations=100]",
         "  benchmark-write <dsn-env> [iterations=200] [batch_size=10]  (--allow-write-tests)",
         "  benchmark-spatial <dsn-env> [iterations=50]",
+    ]
+    .join("\n")
+}
+
+#[cfg(feature = "mysql")]
+fn mysql_usage() -> String {
+    [
         "",
         "== MySQL (v1.2, subset iniziale) ==",
         "  args comuni: <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]",
@@ -1378,10 +1536,24 @@ fn usage() -> String {
         "  mysql-execute-scalar <args...> <sql>  — SELECT scalare (1 riga × 1 colonna)",
         "  mysql-transaction-test <args...>   — smoke OLTP: begin + savepoint + rollback_to + commit",
         "  mysql-conditional-update <args...> <UPDATE_SQL> <EXPECTED_AFFECTED>  — pattern optimistic-lock",
+        "  nota: MariaDB non e qualificata — la probe la riconosce e la rifiuta (ADR 0014)",
+    ]
+    .join("\n")
+}
+
+#[cfg(feature = "sqlserver")]
+fn sqlserver_usage() -> String {
+    [
         "",
-        "== dataset / plan (offline) ==",
-        "  inspect-dataset <file.arrow>",
-        "  validate-plan <file.json>",
+        "== SQL Server ==",
+        "  nessun sotto-comando dedicato: l'adapter si raggiunge da",
+        "  `database-probe sqlserver <secret-env>`",
+    ]
+    .join("\n")
+}
+
+fn global_flags_usage() -> String {
+    [
         "",
         "== flag globali (accettati in qualsiasi posizione) ==",
         "  --format json|markdown|junit         formato di output (default: json)",
@@ -1391,6 +1563,161 @@ fn usage() -> String {
     ]
     .join("\n")
 }
+
+/// Comandi compilati, comandi documentati e rami del dispatch devono
+/// coincidere — nella configurazione con cui il binario e stato costruito.
+///
+/// La guardia sta qui e non in uno script Python perche e l'unica che puo
+/// vedere le `cfg`: da fuori il sorgente mostra tutti i rami, e un binario
+/// `MySQL`-only che elenca i comandi `PostgreSQL` sembrerebbe corretto. E
+/// quello che faceva.
+#[cfg(test)]
+mod usage_surface_tests {
+    use super::{compiled_commands, unknown_command, usage, COMMAND_CATALOGUE};
+
+    /// I nomi dei rami del `match` del dispatch, con la feature che li porta.
+    ///
+    /// Letti dal sorgente: un `match` non si enumera a runtime, e la
+    /// alternativa — una tabella di puntatori a funzione — sposterebbe il
+    /// problema senza risolverlo, perche resterebbe da provare che la tabella
+    /// e il `match` dicano la stessa cosa.
+    fn dispatch_arms() -> Vec<(String, Option<String>)> {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("let command = args.next()")
+            .expect("inizio del dispatch");
+        let end = source[start..]
+            .find("_ => Err(unknown_command(")
+            .expect("fine del dispatch")
+            + start;
+        let mut pending: Option<String> = None;
+        let mut arms = Vec::new();
+        for line in source[start..end].lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("#[cfg(feature = \"") {
+                if let Some(feature) = rest.split('"').next() {
+                    pending = Some(feature.to_owned());
+                }
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix('"') {
+                if let Some(name) = rest.split('"').next() {
+                    if rest[name.len()..]
+                        .trim_start_matches('"')
+                        .trim_start()
+                        .starts_with("=>")
+                    {
+                        arms.push((name.to_owned(), pending.take()));
+                        continue;
+                    }
+                }
+            }
+            pending = None;
+        }
+        arms
+    }
+
+    #[test]
+    fn the_catalogue_matches_the_dispatch() {
+        let mut from_dispatch: Vec<(String, Option<String>)> = dispatch_arms();
+        from_dispatch.sort();
+        assert!(
+            from_dispatch.len() >= 3,
+            "dispatch non riconosciuto: {from_dispatch:?}"
+        );
+        let mut from_catalogue: Vec<(String, Option<String>)> = COMMAND_CATALOGUE
+            .iter()
+            .map(|(name, feature)| {
+                (
+                    (*name).to_owned(),
+                    feature.map(std::string::ToString::to_string),
+                )
+            })
+            .collect();
+        from_catalogue.sort();
+        assert_eq!(
+            from_dispatch, from_catalogue,
+            "il catalogo e il dispatch non elencano gli stessi comandi"
+        );
+    }
+
+    #[test]
+    fn usage_lists_every_compiled_command_and_only_those() {
+        let text = usage();
+        for name in compiled_commands() {
+            assert!(
+                documents(&text, name),
+                "comando compilato e non documentato: {name}"
+            );
+        }
+        let compiled = compiled_commands();
+        for (name, _) in COMMAND_CATALOGUE {
+            if compiled.contains(name) {
+                continue;
+            }
+            assert!(
+                !documents(&text, name),
+                "l'aiuto elenca {name}, che questo binario non ha compilato"
+            );
+        }
+    }
+
+    /// Se l'aiuto presenta `name` **come comando**.
+    ///
+    /// Il confronto e per riga e non per sottostringa: `execute-sql` compare
+    /// dentro `mysql-execute-sql`, quindi un `contains` direbbe che un binario
+    /// `MySQL`-only documenta i comandi `PostgreSQL`.
+    fn documents(text: &str, name: &str) -> bool {
+        text.lines().any(|line| {
+            line.strip_prefix("  ")
+                .and_then(|rest| rest.strip_prefix(name))
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
+    }
+
+    #[test]
+    fn usage_declares_only_the_providers_this_binary_can_build() {
+        let text = usage();
+        let line = text
+            .lines()
+            .find(|line| line.contains("provider compilati in questo binario"))
+            .expect("riga dei provider");
+        for (feature, name) in [
+            (cfg!(feature = "postgres"), "postgres"),
+            (cfg!(feature = "mysql"), "mysql"),
+            (cfg!(feature = "sqlserver"), "sqlserver"),
+        ] {
+            assert_eq!(
+                line.contains(name),
+                feature,
+                "la riga dei provider non riflette le feature: {line}"
+            );
+        }
+        // L'affermazione che ha reso necessaria questa guardia.
+        assert!(!text.contains("--features full"));
+    }
+
+    #[test]
+    fn an_uncompiled_command_is_told_apart_from_one_that_does_not_exist() {
+        let missing = COMMAND_CATALOGUE
+            .iter()
+            .find(|(name, feature)| feature.is_some() && !compiled_commands().contains(name))
+            .map(|(name, _)| *name);
+        if let Some(name) = missing {
+            let message = format!("{:?}", unknown_command(name));
+            assert!(
+                message.contains("non compilato in questo binario"),
+                "comando non compilato trattato come inesistente: {message}"
+            );
+        }
+        let message = format!("{:?}", unknown_command("comando-che-non-esiste"));
+        assert!(
+            !message.contains("non compilato in questo binario"),
+            "un comando inesistente non va spacciato per non compilato"
+        );
+    }
+}
+
 // ============================================================================
 //  PFM subcommands: espongono le API application plane / conformance / DDL
 //  di Fase A/B/C/F1/P1/P2 come tool CLI. Tutti prendono il DSN Postgres via
