@@ -134,6 +134,41 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
             self.assertIn(reference.exact_version, adr)
             self.assertIn(reference.digest, adr)
 
+    def test_the_decision_does_not_promise_what_was_not_measured(self) -> None:
+        """La scelta del crate non e una qualifica, e l'ADR deve dirlo.
+
+        E il passo dove la confusione costa di piu: "un provider MariaDB
+        pubblico" e "MariaDB supportata" si somigliano abbastanza da essere
+        letti come la stessa cosa, e non lo sono. La decisione riguarda dove
+        vivra il codice; cosa e stato dimostrato lo dice l'evidenza, e tre
+        superfici non lo sono ancora.
+        """
+
+        adr = ADR.read_text(encoding="utf-8")
+        self.assertIn("Decisione architetturale", adr)
+        self.assertIn("MariaDB **non e qualificata** da questa decisione", adr)
+        self.assertIn("Cosa resta fail-closed", adr)
+        # In grassetto e come voce di elenco: e la forma con cui la sezione
+        # dichiara una superficie ancora chiusa. Cercare la sola frase
+        # lascerebbe passare "commit ambiguo, risolto", che dice il contrario.
+        closed = ADR.read_text(encoding="utf-8").split("Cosa resta fail-closed", 1)[1]
+        for surface in ("**spatial su MariaDB**", "**commit ambiguo**", "**lettura via catalogo**"):
+            self.assertIn(
+                f"* {surface} —",
+                closed,
+                f"superficie non piu dichiarata fail-closed: {surface}",
+            )
+
+        # Nessuna selezione automatica: e la proprieta che impedisce a un
+        # consumer di finire sull'altro motore senza accorgersene.
+        self.assertIn("Nessuna selezione automatica", adr)
+        self.assertIn("`MariadbProvider` rifiuta MySQL", adr)
+
+        # E ogni riga del profilo deve poggiare su una misura, non su una
+        # previsione: i codici osservati sono la prova che c'e stata.
+        for evidence in ("1193", "1054", "native_type=json", "SRS_ID"):
+            self.assertIn(evidence, adr, f"riga del profilo senza misura: {evidence}")
+
     def test_no_surface_declares_mariadb_qualified(self) -> None:
         """Nessun documento corrente puo dire che MariaDB e supportata.
 
