@@ -134,7 +134,7 @@ Dopo Blocchi B/A/C + upgrade 9.7:
   esposto: spatial predicates + `SpatialReference`.
 
 Inventario corrente del provider MySQL, verificato contro la sorgente da
-`scripts/mysql_inventory.py` a ogni esecuzione del gate: **142 unit**,
+`scripts/mysql_inventory.py` a ogni esecuzione del gate: **143 unit**,
 **37 live default** (test live senza `#[ignore]`) e
 **25 live reference** (test live `#[ignore]`). I conteggi
 non vanno aggiornati a mano: il gate fallisce se divergono.

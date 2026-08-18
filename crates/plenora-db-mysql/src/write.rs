@@ -763,7 +763,11 @@ impl MysqlWritePlan {
         Ok(())
     }
 
-    pub(super) fn preflight(&self, target: &MysqlObjectDescription) -> Result<LossReport> {
+    pub(super) fn preflight(
+        &self,
+        target: &MysqlObjectDescription,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<LossReport> {
         if target.kind != "BASE TABLE" {
             return Err(unsupported("append MySQL richiede una BASE TABLE"));
         }
@@ -786,7 +790,7 @@ impl MysqlWritePlan {
                     "append MySQL non puo scrivere una colonna generata",
                 ));
             }
-            let spec = MysqlColumnSpec::from_catalog(server)?;
+            let spec = MysqlColumnSpec::from_catalog_with_profile(server, profile)?;
             if column.kind == MysqlColumnKind::Geometry {
                 if spec.kind != MysqlColumnKind::Geometry {
                     return Err(mapping_error(
@@ -2379,11 +2383,14 @@ mod tests {
     #[test]
     fn server_preflight_reports_no_losses_only_for_a_compatible_table() {
         let report = identity_plan()
-            .preflight(&base_table(vec![
-                server_column("id", "bigint", "bigint", false),
-                server_column("label", "varchar", "varchar(32)", true),
-                server_column("noted_at", "datetime", "datetime(6)", true),
-            ]))
+            .preflight(
+                &base_table(vec![
+                    server_column("id", "bigint", "bigint", false),
+                    server_column("label", "varchar", "varchar(32)", true),
+                    server_column("noted_at", "datetime", "datetime(6)", true),
+                ]),
+                &crate::profile::MYSQL_PROFILE,
+            )
             .expect("preflight compatibile");
         assert_eq!(report.schema_version, 1);
         assert_eq!(report.policy, MappingPolicy::Strict);
@@ -2414,7 +2421,7 @@ mod tests {
         ];
         for columns in cases {
             let error = plan
-                .preflight(&base_table(columns))
+                .preflight(&base_table(columns), &crate::profile::MYSQL_PROFILE)
                 .expect_err("target incompatibile");
             assert_eq!(error.category, ErrorCategory::DataMapping);
             assert_eq!(error.phase, ErrorPhase::Prepare);
@@ -2423,7 +2430,7 @@ mod tests {
         let mut generated = base_table(identity_target());
         generated.columns[1].generation_expression = "concat('x')".to_owned();
         assert_eq!(
-            plan.preflight(&generated)
+            plan.preflight(&generated, &crate::profile::MYSQL_PROFILE)
                 .expect_err("colonna generata")
                 .category,
             ErrorCategory::DataMapping
@@ -2432,7 +2439,7 @@ mod tests {
         let mut view = base_table(identity_target());
         view.kind = "VIEW".to_owned();
         assert_eq!(
-            plan.preflight(&view)
+            plan.preflight(&view, &crate::profile::MYSQL_PROFILE)
                 .expect_err("target non tabella")
                 .category,
             ErrorCategory::Unsupported
@@ -2451,22 +2458,23 @@ mod tests {
             ("char", "char(8)"),
         ] {
             let error = plan
-                .preflight(&base_table(vec![
-                    server_column("id", "bigint", "bigint", false),
-                    server_column("label", data_type, declaration, true),
-                ]))
+                .preflight(
+                    &base_table(vec![
+                        server_column("id", "bigint", "bigint", false),
+                        server_column("label", data_type, declaration, true),
+                    ]),
+                    &crate::profile::MYSQL_PROFILE,
+                )
                 .expect_err("target non qualificato");
             assert_eq!(error.category, ErrorCategory::DataMapping);
         }
 
         let year = append_plan(vec![Field::new("year_value", DataType::Int16, false)]);
         assert_eq!(
-            year.preflight(&base_table(vec![server_column(
-                "year_value",
-                "year",
-                "year",
-                false,
-            )]))
+            year.preflight(
+                &base_table(vec![server_column("year_value", "year", "year", false,)]),
+                &crate::profile::MYSQL_PROFILE
+            )
             .expect_err("YEAR reinterpreta Int16")
             .category,
             ErrorCategory::DataMapping
@@ -2476,12 +2484,12 @@ mod tests {
         for (data_type, declaration) in [("bit", "bit(16)"), ("binary", "binary(16)")] {
             assert_eq!(
                 binary
-                    .preflight(&base_table(vec![server_column(
-                        "payload",
-                        data_type,
-                        declaration,
-                        true,
-                    )]))
+                    .preflight(
+                        &base_table(vec![
+                            server_column("payload", data_type, declaration, true,)
+                        ]),
+                        &crate::profile::MYSQL_PROFILE
+                    )
                     .expect_err("target binary non qualificato")
                     .category,
                 ErrorCategory::DataMapping
@@ -2500,7 +2508,7 @@ mod tests {
             let mut column = server_column("moment", "datetime", "datetime", true);
             column.datetime_precision = precision;
             assert_eq!(
-                plan.preflight(&base_table(vec![column]))
+                plan.preflight(&base_table(vec![column]), &crate::profile::MYSQL_PROFILE)
                     .expect_err("precisione temporale lossy")
                     .category,
                 ErrorCategory::DataMapping
@@ -2508,7 +2516,9 @@ mod tests {
         }
         let mut exact = server_column("moment", "datetime", "datetime(6)", true);
         exact.datetime_precision = Some(6);
-        assert!(plan.preflight(&base_table(vec![exact])).is_ok());
+        assert!(plan
+            .preflight(&base_table(vec![exact]), &crate::profile::MYSQL_PROFILE)
+            .is_ok());
     }
 
     /// Un COMMIT interrotto non e un rollback: l'esito resta ignoto e non
@@ -2768,12 +2778,18 @@ mod tests {
             "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(?, 4326));"
         );
         assert!(plan
-            .preflight(&base_table(vec![spatial_column("geometry", 4_326)]))
+            .preflight(
+                &base_table(vec![spatial_column("geometry", 4_326)]),
+                &crate::profile::MYSQL_PROFILE
+            )
             .is_ok());
         assert_eq!(
-            plan.preflight(&base_table(vec![spatial_column("geometry", 3_857)]))
-                .expect_err("SRID target diverso")
-                .category,
+            plan.preflight(
+                &base_table(vec![spatial_column("geometry", 3_857)]),
+                &crate::profile::MYSQL_PROFILE
+            )
+            .expect_err("SRID target diverso")
+            .category,
             ErrorCategory::Crs
         );
     }
@@ -2960,7 +2976,9 @@ mod tests {
         );
         let target =
             base_table_with_indexes(identity_target(), vec![unique_index("PRIMARY", &["id"])]);
-        assert!(plan.preflight(&target).is_ok());
+        assert!(plan
+            .preflight(&target, &crate::profile::MYSQL_PROFILE)
+            .is_ok());
     }
 
     /// Un unique index **aggiuntivo** diverso dalle keys rende l'Upsert
@@ -2982,7 +3000,7 @@ mod tests {
             ],
         );
         let error = plan
-            .preflight(&target)
+            .preflight(&target, &crate::profile::MYSQL_PROFILE)
             .expect_err("unique index in conflitto");
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
@@ -3007,7 +3025,7 @@ mod tests {
         };
         let target = base_table_with_indexes(identity_target(), vec![non_unique]);
         let error = plan
-            .preflight(&target)
+            .preflight(&target, &crate::profile::MYSQL_PROFILE)
             .expect_err("nessun unique index sulle keys");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
@@ -3034,7 +3052,7 @@ mod tests {
             vec![unique_index("PRIMARY", &["id"]), functional],
         );
         let error = plan
-            .preflight(&target)
+            .preflight(&target, &crate::profile::MYSQL_PROFILE)
             .expect_err("unique index funzionale");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
@@ -3057,6 +3075,8 @@ mod tests {
                 unique_index("uq_id_dup", &["id"]),
             ],
         );
-        assert!(plan.preflight(&target).is_ok());
+        assert!(plan
+            .preflight(&target, &crate::profile::MYSQL_PROFILE)
+            .is_ok());
     }
 }

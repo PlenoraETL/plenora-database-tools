@@ -426,7 +426,7 @@ impl Provider for MysqlProvider {
                     token,
                 )
                 .await?;
-                let report = plan.preflight(&target)?;
+                let report = plan.preflight(&target, self.profile)?;
                 drop(session);
                 report
             };
@@ -651,7 +651,7 @@ async fn execute_mysql_write_after_ddl(
         plenora_database_core::plan::WriteMode::Create
             | plenora_database_core::plan::WriteMode::DeleteByKeys
             | plenora_database_core::plan::WriteMode::Update
-    ) && plan.preflight(&target)? != prepared_loss
+    ) && plan.preflight(&target, provider.profile)? != prepared_loss
     {
         return Err(provider_error(
             ErrorCategory::Schema,

@@ -623,6 +623,30 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_derived_specs_always_carry_a_profile() {
+        // La forma pubblica di `from_catalog` ricade sul profilo statico. In
+        // produzione deve restare solo la sua definizione: un consumatore che
+        // la chiamasse validerebbe il target di un secondo prodotto con le
+        // regole di questo, ed e esattamente cio che il preflight di
+        // scrittura faceva.
+        let needle = format!("from{}catalog(", "_");
+        for (module, source, allowed) in [
+            ("write.rs", include_str!("write.rs"), 0),
+            ("read.rs", include_str!("read.rs"), 0),
+            ("types.rs", include_str!("types.rs"), 1),
+        ] {
+            let production = source
+                .split_once("#[cfg(test)]")
+                .map_or(source, |(head, _)| head);
+            assert_eq!(
+                production.matches(needle.as_str()).count(),
+                allowed,
+                "{module} usa la forma senza profilo"
+            );
+        }
+    }
+
+    #[test]
     fn the_profile_names_the_product_it_serves() {
         assert_eq!(MYSQL_PROFILE.product(), "MySQL");
         assert_eq!(MYSQL_PROFILE.kind(), ProviderKind::Mysql);

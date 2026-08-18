@@ -82,6 +82,7 @@ EXPECTED_UNIT_TESTS = {
     "pool::tests::zero_capacity_is_rejected_without_network",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",
+    "profile::tests::the_catalog_derived_specs_always_carry_a_profile",
     "profile::tests::the_catalog_is_queried_only_through_the_profile",
     "profile::tests::the_expected_wkb_matches_the_projection_that_produces_it",
     "profile::tests::the_functional_index_flag_matches_the_query_that_supports_it",
