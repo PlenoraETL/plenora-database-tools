@@ -105,6 +105,31 @@ pub async fn query_operation(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
+    query_operation_with_profile(
+        pool,
+        database,
+        operation,
+        parameters,
+        batch_rows,
+        &crate::profile::MYSQL_PROFILE,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// La query, con il profilo che interpreta i metadati del prepare.
+#[allow(clippy::redundant_pub_crate, clippy::too_many_arguments)]
+pub(crate) async fn query_operation_with_profile(
+    pool: &Arc<MysqlPool>,
+    database: &str,
+    operation: &QueryOperation,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    profile: &dyn crate::profile::ProductProfile,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
@@ -139,7 +164,7 @@ pub async fn query_operation(
         ));
     }
     let metadata = statement.columns();
-    let columns = crate::query::query_result_columns(&metadata)?;
+    let columns = crate::query::query_result_columns_with_profile(&metadata, profile)?;
     let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns)?;
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;

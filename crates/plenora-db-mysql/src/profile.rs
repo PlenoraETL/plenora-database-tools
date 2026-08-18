@@ -29,9 +29,18 @@
 // quella decisione resta scritta.
 #![allow(clippy::redundant_pub_crate)]
 
+use crate::query::{prepare_error, unsupported};
+use crate::types::MysqlColumnKind;
+use crate::MysqlColumnSpec;
+use mysql_async::consts::{ColumnFlags, ColumnType};
+use mysql_async::Column;
 use plenora_database_core::{
-    plan::ProviderKind, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+    plan::ProviderKind, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
+    RetryDisposition,
 };
+
+/// Collation id riservato di `MySQL` per i tipi binari.
+const BINARY_CHARACTER_SET: u16 = 63;
 
 /// Le decisioni che cambiano con il prodotto servito dalla connessione.
 ///
@@ -96,6 +105,26 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// confrontabile — renderebbe invisibile che non lo e, ed e la ragione
     /// per cui la parte senza colonna ne espressione resta un errore.
     fn reports_functional_index_parts(&self) -> bool;
+
+    /// I metadati nativi di una colonna, letti dal wire.
+    ///
+    /// Il prepare descrive il tipo del protocollo, non la dichiarazione SQL:
+    /// e da qui che esce `MYSQL_NATIVE_TYPE` sul path query, e qui che ADR
+    /// 0014 ha misurato la divergenza piu concreta — dalla stessa DDL
+    /// `document JSON` `MySQL` manda `MYSQL_TYPE_JSON` e `MariaDB`
+    /// `MYSQL_TYPE_BLOB`, quindi lo schema Arrow pubblicato porta
+    /// `native_type=json` sull'uno e `text` sull'altro.
+    ///
+    /// Il profilo possiede la **produzione** del valore: da quale tipo wire
+    /// nasce quale nome. Non possiede la **semantica** — se il campo debba
+    /// annotare il wire o la DDL — che e una domanda del contratto e va
+    /// decisa dove il campo e definito.
+    ///
+    /// # Errors
+    ///
+    /// Fallisce chiuso per colonne senza nome utilizzabile, decimal oltre
+    /// `Decimal128` e tipi wire non ancora qualificati.
+    fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec>;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -203,6 +232,114 @@ impl ProductProfile for MysqlProfile {
         ORDER BY INDEX_NAME, SEQ_IN_INDEX"
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec> {
+        let name = column.name_str().into_owned();
+        if name.is_empty() || name.contains('\0') {
+            return Err(prepare_error(
+                ErrorCategory::Schema,
+                "colonna di output MySQL senza nome utilizzabile",
+            ));
+        }
+        let flags = column.flags();
+        let unsigned = flags.contains(ColumnFlags::UNSIGNED_FLAG);
+        let binary = column.character_set() == BINARY_CHARACTER_SET;
+        let (kind, native_type) = match column.column_type() {
+            ColumnType::MYSQL_TYPE_TINY => (tiny_kind(column, unsigned), "tinyint"),
+            ColumnType::MYSQL_TYPE_SHORT => (
+                if unsigned {
+                    MysqlColumnKind::U16
+                } else {
+                    MysqlColumnKind::I16
+                },
+                "smallint",
+            ),
+            ColumnType::MYSQL_TYPE_YEAR => (MysqlColumnKind::I16, "year"),
+            ColumnType::MYSQL_TYPE_INT24 => (
+                if unsigned {
+                    MysqlColumnKind::U32
+                } else {
+                    MysqlColumnKind::I32
+                },
+                "mediumint",
+            ),
+            ColumnType::MYSQL_TYPE_LONG => (
+                if unsigned {
+                    MysqlColumnKind::U32
+                } else {
+                    MysqlColumnKind::I32
+                },
+                "int",
+            ),
+            ColumnType::MYSQL_TYPE_LONGLONG => (
+                if unsigned {
+                    MysqlColumnKind::U64
+                } else {
+                    MysqlColumnKind::I64
+                },
+                "bigint",
+            ),
+            ColumnType::MYSQL_TYPE_FLOAT => (MysqlColumnKind::F32, "float"),
+            ColumnType::MYSQL_TYPE_DOUBLE => (MysqlColumnKind::F64, "double"),
+            ColumnType::MYSQL_TYPE_DECIMAL | ColumnType::MYSQL_TYPE_NEWDECIMAL => {
+                (decimal_kind(column, unsigned)?, "decimal")
+            }
+            ColumnType::MYSQL_TYPE_DATE | ColumnType::MYSQL_TYPE_NEWDATE => {
+                (MysqlColumnKind::Date, "date")
+            }
+            ColumnType::MYSQL_TYPE_TIME | ColumnType::MYSQL_TYPE_TIME2 => {
+                (MysqlColumnKind::Time, "time")
+            }
+            ColumnType::MYSQL_TYPE_DATETIME | ColumnType::MYSQL_TYPE_DATETIME2 => {
+                (MysqlColumnKind::Timestamp, "datetime")
+            }
+            ColumnType::MYSQL_TYPE_TIMESTAMP | ColumnType::MYSQL_TYPE_TIMESTAMP2 => {
+                (MysqlColumnKind::Timestamp, "timestamp")
+            }
+            ColumnType::MYSQL_TYPE_JSON => (MysqlColumnKind::Utf8, "json"),
+            ColumnType::MYSQL_TYPE_BIT => (MysqlColumnKind::Binary, "bit"),
+            ColumnType::MYSQL_TYPE_ENUM => (MysqlColumnKind::Utf8, "enum"),
+            ColumnType::MYSQL_TYPE_SET => (MysqlColumnKind::Utf8, "set"),
+            ColumnType::MYSQL_TYPE_STRING => text_kind(binary, flags, "char", "binary"),
+            ColumnType::MYSQL_TYPE_VARCHAR | ColumnType::MYSQL_TYPE_VAR_STRING => {
+                text_kind(binary, flags, "varchar", "varbinary")
+            }
+            ColumnType::MYSQL_TYPE_TINY_BLOB => text_kind(binary, flags, "tinytext", "tinyblob"),
+            ColumnType::MYSQL_TYPE_MEDIUM_BLOB => {
+                text_kind(binary, flags, "mediumtext", "mediumblob")
+            }
+            ColumnType::MYSQL_TYPE_LONG_BLOB => text_kind(binary, flags, "longtext", "longblob"),
+            ColumnType::MYSQL_TYPE_BLOB => text_kind(binary, flags, "text", "blob"),
+            // Una geometria in uscita da una query non porta SRID ne profilo
+            // dimensionale dimostrati e il renderer non incapsula la colonna in
+            // ST_AsBinary: senza quel preflight il contratto GeoArrow sarebbe una
+            // dichiarazione non verificata.
+            ColumnType::MYSQL_TYPE_GEOMETRY => {
+                return Err(unsupported(
+                    "geometria MySQL nel path query richiede il preflight SRID non ancora qualificato",
+                ));
+            }
+            other => {
+                return Err(unsupported(format!(
+                    "tipo wire MySQL non qualificato nel result set: {other:?}"
+                )));
+            }
+        };
+        Ok(MysqlColumnSpec {
+            name,
+            // COM_STMT_PREPARE descrive il tipo wire, ma non conserva sempre la
+            // dichiarazione SQL originale (lunghezza caratteri, FSP, collation o
+            // tipo dell'espressione). Una stringa vuota fa omettere il metadato
+            // dichiarativo invece di pubblicarne uno ricostruito e non fedele.
+            native_declaration: String::new(),
+            native_type: native_type.to_owned(),
+            nullable: !flags.contains(ColumnFlags::NOT_NULL_FLAG),
+            collation: None,
+            kind,
+            spatial_srid: None,
+        })
+    }
+
     fn reports_functional_index_parts(&self) -> bool {
         // MySQL 8.0+ popola `EXPRESSION` per le parti funzionali, e la query
         // sopra la seleziona: le due affermazioni devono restare vere
@@ -211,9 +348,73 @@ impl ProductProfile for MysqlProfile {
     }
 }
 
+/// `MySQL` non distingue `tinyint(1)` da `tinyint` nel tipo wire: l'unico
+/// segnale e la larghezza dichiarata, la stessa usata dal path catalogo.
+fn tiny_kind(column: &Column, unsigned: bool) -> MysqlColumnKind {
+    if unsigned {
+        MysqlColumnKind::U8
+    } else if column.column_length() == 1 {
+        MysqlColumnKind::Bool
+    } else {
+        MysqlColumnKind::I8
+    }
+}
+
+const fn text_kind(
+    binary: bool,
+    flags: ColumnFlags,
+    text: &'static str,
+    blob: &'static str,
+) -> (MysqlColumnKind, &'static str) {
+    if binary {
+        (MysqlColumnKind::Binary, blob)
+    } else if flags.contains(ColumnFlags::ENUM_FLAG) {
+        (MysqlColumnKind::Utf8, "enum")
+    } else if flags.contains(ColumnFlags::SET_FLAG) {
+        (MysqlColumnKind::Utf8, "set")
+    } else {
+        (MysqlColumnKind::Utf8, text)
+    }
+}
+
+/// Ricostruisce precisione e scala dal solo `column_length` del protocollo.
+///
+/// `MySQL` pubblica la lunghezza di visualizzazione, cioe la precisione piu un
+/// carattere per il segno quando la colonna e signed e uno per il separatore
+/// decimale quando la scala e maggiore di zero.
+fn decimal_kind(column: &Column, unsigned: bool) -> Result<MysqlColumnKind> {
+    let scale = i8::try_from(column.decimals()).map_err(|_| {
+        prepare_error(
+            ErrorCategory::Unsupported,
+            "scala decimal MySQL non rappresentabile",
+        )
+    })?;
+    let separators = u32::from(!unsigned) + u32::from(scale > 0);
+    let precision = column
+        .column_length()
+        .checked_sub(separators)
+        .and_then(|value| u8::try_from(value).ok())
+        .ok_or_else(|| {
+            prepare_error(
+                ErrorCategory::Unsupported,
+                "precisione decimal MySQL non ricostruibile dai metadati",
+            )
+        })?;
+    if precision == 0 || precision > 38 || scale < 0 || scale > precision.cast_signed() {
+        return Err(prepare_error(
+            ErrorCategory::Unsupported,
+            "decimal MySQL oltre Decimal128 Arrow",
+        ));
+    }
+    Ok(MysqlColumnKind::Decimal { precision, scale })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProductProfile, MYSQL_PROFILE};
+    use crate::types::MysqlColumnKind;
+    use mysql_async::consts::ColumnType;
+    use mysql_async::Column;
     use plenora_database_core::{plan::ProviderKind, ErrorCategory, ErrorPhase};
 
     #[test]
@@ -282,6 +483,41 @@ mod tests {
             MYSQL_PROFILE.reports_functional_index_parts(),
             MYSQL_PROFILE.object_indexes_query().contains("EXPRESSION")
         );
+    }
+
+    #[test]
+    fn the_query_module_no_longer_maps_wire_types() {
+        // La mappatura vive nel profilo. Se `query.rs` tornasse a nominare i
+        // tipi del protocollo fuori dai propri test, esisterebbero due
+        // produzioni di `MYSQL_NATIVE_TYPE` e un secondo profilo ne
+        // cambierebbe una sola.
+        let source = include_str!("query.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("query.rs ha un modulo di test")
+            .0;
+        let wire = format!("ColumnType::MYSQL{}TYPE", "_");
+        assert!(!production.contains(wire.as_str()));
+    }
+
+    #[test]
+    fn the_wire_produces_the_native_type_that_diverged() {
+        // Il caso che ADR 0014 ha misurato: dalla stessa DDL `document JSON`
+        // MySQL manda MYSQL_TYPE_JSON e MariaDB MYSQL_TYPE_BLOB. Il nome che
+        // ne esce e cio che finisce nei metadata Arrow, ed e questo il valore
+        // che un secondo profilo dovra decidere di nuovo.
+        let json = Column::new(ColumnType::MYSQL_TYPE_JSON)
+            .with_name(b"document")
+            .with_character_set(255);
+        let spec = MYSQL_PROFILE.wire_column_spec(&json).expect("json");
+        assert_eq!(spec.native_type, "json");
+        assert_eq!(spec.kind, MysqlColumnKind::Utf8);
+
+        let blob = Column::new(ColumnType::MYSQL_TYPE_BLOB)
+            .with_name(b"document")
+            .with_character_set(255);
+        let spec = MYSQL_PROFILE.wire_column_spec(&blob).expect("blob");
+        assert_eq!(spec.native_type, "text");
     }
 
     #[test]

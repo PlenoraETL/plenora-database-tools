@@ -28,8 +28,7 @@
 //! qualsiasi contatto con il server.
 
 use crate::types::mysql_renderer;
-use crate::{MysqlColumnKind, MysqlColumnSpec, MAX_IDENTIFIER_CHARACTERS};
-use mysql_async::consts::{ColumnFlags, ColumnType};
+use crate::{MysqlColumnSpec, MAX_IDENTIFIER_CHARACTERS};
 use mysql_async::Column;
 use plenora_database_core::limits::Limits;
 use plenora_database_core::plan::ProviderKind;
@@ -42,9 +41,6 @@ use plenora_database_core::{
 };
 use plenora_database_sql::RenderedSql;
 use std::collections::BTreeSet;
-
-/// Collation id riservato di `MySQL` per i tipi binari.
-const BINARY_CHARACTER_SET: u16 = 63;
 
 /// Sottoinsieme delle funzioni spatial `MySQL` 8.4 qualificate per l'AST
 /// portabile — dichiarate live in `probe_capabilities` e utilizzabili
@@ -119,6 +115,15 @@ pub fn render_query(operation: &QueryOperation, database: &str) -> Result<Render
 /// Restituisce `Schema` per un result set privo di colonne o con nomi non
 /// utilizzabili, e `Unsupported` per tipi wire non ancora qualificati.
 pub fn query_result_columns(columns: &[Column]) -> Result<Vec<MysqlColumnSpec>> {
+    query_result_columns_with_profile(columns, &crate::profile::MYSQL_PROFILE)
+}
+
+/// I metadati di colonna, con il profilo che li interpreta.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn query_result_columns_with_profile(
+    columns: &[Column],
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<Vec<MysqlColumnSpec>> {
     if columns.is_empty() {
         return Err(prepare_error(
             ErrorCategory::Schema,
@@ -129,7 +134,7 @@ pub fn query_result_columns(columns: &[Column]) -> Result<Vec<MysqlColumnSpec>> 
     columns
         .iter()
         .map(|column| {
-            let specification = column_spec(column)?;
+            let specification = profile.wire_column_spec(column)?;
             if !names.insert(specification.name.clone()) {
                 return Err(prepare_error(
                     ErrorCategory::Schema,
@@ -139,173 +144,6 @@ pub fn query_result_columns(columns: &[Column]) -> Result<Vec<MysqlColumnSpec>> 
             Ok(specification)
         })
         .collect()
-}
-
-#[allow(clippy::too_many_lines)]
-fn column_spec(column: &Column) -> Result<MysqlColumnSpec> {
-    let name = column.name_str().into_owned();
-    if name.is_empty() || name.contains('\0') {
-        return Err(prepare_error(
-            ErrorCategory::Schema,
-            "colonna di output MySQL senza nome utilizzabile",
-        ));
-    }
-    let flags = column.flags();
-    let unsigned = flags.contains(ColumnFlags::UNSIGNED_FLAG);
-    let binary = column.character_set() == BINARY_CHARACTER_SET;
-    let (kind, native_type) = match column.column_type() {
-        ColumnType::MYSQL_TYPE_TINY => (tiny_kind(column, unsigned), "tinyint"),
-        ColumnType::MYSQL_TYPE_SHORT => (
-            if unsigned {
-                MysqlColumnKind::U16
-            } else {
-                MysqlColumnKind::I16
-            },
-            "smallint",
-        ),
-        ColumnType::MYSQL_TYPE_YEAR => (MysqlColumnKind::I16, "year"),
-        ColumnType::MYSQL_TYPE_INT24 => (
-            if unsigned {
-                MysqlColumnKind::U32
-            } else {
-                MysqlColumnKind::I32
-            },
-            "mediumint",
-        ),
-        ColumnType::MYSQL_TYPE_LONG => (
-            if unsigned {
-                MysqlColumnKind::U32
-            } else {
-                MysqlColumnKind::I32
-            },
-            "int",
-        ),
-        ColumnType::MYSQL_TYPE_LONGLONG => (
-            if unsigned {
-                MysqlColumnKind::U64
-            } else {
-                MysqlColumnKind::I64
-            },
-            "bigint",
-        ),
-        ColumnType::MYSQL_TYPE_FLOAT => (MysqlColumnKind::F32, "float"),
-        ColumnType::MYSQL_TYPE_DOUBLE => (MysqlColumnKind::F64, "double"),
-        ColumnType::MYSQL_TYPE_DECIMAL | ColumnType::MYSQL_TYPE_NEWDECIMAL => {
-            (decimal_kind(column, unsigned)?, "decimal")
-        }
-        ColumnType::MYSQL_TYPE_DATE | ColumnType::MYSQL_TYPE_NEWDATE => {
-            (MysqlColumnKind::Date, "date")
-        }
-        ColumnType::MYSQL_TYPE_TIME | ColumnType::MYSQL_TYPE_TIME2 => {
-            (MysqlColumnKind::Time, "time")
-        }
-        ColumnType::MYSQL_TYPE_DATETIME | ColumnType::MYSQL_TYPE_DATETIME2 => {
-            (MysqlColumnKind::Timestamp, "datetime")
-        }
-        ColumnType::MYSQL_TYPE_TIMESTAMP | ColumnType::MYSQL_TYPE_TIMESTAMP2 => {
-            (MysqlColumnKind::Timestamp, "timestamp")
-        }
-        ColumnType::MYSQL_TYPE_JSON => (MysqlColumnKind::Utf8, "json"),
-        ColumnType::MYSQL_TYPE_BIT => (MysqlColumnKind::Binary, "bit"),
-        ColumnType::MYSQL_TYPE_ENUM => (MysqlColumnKind::Utf8, "enum"),
-        ColumnType::MYSQL_TYPE_SET => (MysqlColumnKind::Utf8, "set"),
-        ColumnType::MYSQL_TYPE_STRING => text_kind(binary, flags, "char", "binary"),
-        ColumnType::MYSQL_TYPE_VARCHAR | ColumnType::MYSQL_TYPE_VAR_STRING => {
-            text_kind(binary, flags, "varchar", "varbinary")
-        }
-        ColumnType::MYSQL_TYPE_TINY_BLOB => text_kind(binary, flags, "tinytext", "tinyblob"),
-        ColumnType::MYSQL_TYPE_MEDIUM_BLOB => text_kind(binary, flags, "mediumtext", "mediumblob"),
-        ColumnType::MYSQL_TYPE_LONG_BLOB => text_kind(binary, flags, "longtext", "longblob"),
-        ColumnType::MYSQL_TYPE_BLOB => text_kind(binary, flags, "text", "blob"),
-        // Una geometria in uscita da una query non porta SRID ne profilo
-        // dimensionale dimostrati e il renderer non incapsula la colonna in
-        // ST_AsBinary: senza quel preflight il contratto GeoArrow sarebbe una
-        // dichiarazione non verificata.
-        ColumnType::MYSQL_TYPE_GEOMETRY => {
-            return Err(unsupported(
-                "geometria MySQL nel path query richiede il preflight SRID non ancora qualificato",
-            ));
-        }
-        other => {
-            return Err(unsupported(format!(
-                "tipo wire MySQL non qualificato nel result set: {other:?}"
-            )));
-        }
-    };
-    Ok(MysqlColumnSpec {
-        name,
-        // COM_STMT_PREPARE descrive il tipo wire, ma non conserva sempre la
-        // dichiarazione SQL originale (lunghezza caratteri, FSP, collation o
-        // tipo dell'espressione). Una stringa vuota fa omettere il metadato
-        // dichiarativo invece di pubblicarne uno ricostruito e non fedele.
-        native_declaration: String::new(),
-        native_type: native_type.to_owned(),
-        nullable: !flags.contains(ColumnFlags::NOT_NULL_FLAG),
-        collation: None,
-        kind,
-        spatial_srid: None,
-    })
-}
-
-/// `MySQL` non distingue `tinyint(1)` da `tinyint` nel tipo wire: l'unico
-/// segnale e la larghezza dichiarata, la stessa usata dal path catalogo.
-fn tiny_kind(column: &Column, unsigned: bool) -> MysqlColumnKind {
-    if unsigned {
-        MysqlColumnKind::U8
-    } else if column.column_length() == 1 {
-        MysqlColumnKind::Bool
-    } else {
-        MysqlColumnKind::I8
-    }
-}
-
-const fn text_kind(
-    binary: bool,
-    flags: ColumnFlags,
-    text: &'static str,
-    blob: &'static str,
-) -> (MysqlColumnKind, &'static str) {
-    if binary {
-        (MysqlColumnKind::Binary, blob)
-    } else if flags.contains(ColumnFlags::ENUM_FLAG) {
-        (MysqlColumnKind::Utf8, "enum")
-    } else if flags.contains(ColumnFlags::SET_FLAG) {
-        (MysqlColumnKind::Utf8, "set")
-    } else {
-        (MysqlColumnKind::Utf8, text)
-    }
-}
-
-/// Ricostruisce precisione e scala dal solo `column_length` del protocollo.
-///
-/// `MySQL` pubblica la lunghezza di visualizzazione, cioe la precisione piu un
-/// carattere per il segno quando la colonna e signed e uno per il separatore
-/// decimale quando la scala e maggiore di zero.
-fn decimal_kind(column: &Column, unsigned: bool) -> Result<MysqlColumnKind> {
-    let scale = i8::try_from(column.decimals()).map_err(|_| {
-        prepare_error(
-            ErrorCategory::Unsupported,
-            "scala decimal MySQL non rappresentabile",
-        )
-    })?;
-    let separators = u32::from(!unsigned) + u32::from(scale > 0);
-    let precision = column
-        .column_length()
-        .checked_sub(separators)
-        .and_then(|value| u8::try_from(value).ok())
-        .ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::Unsupported,
-                "precisione decimal MySQL non ricostruibile dai metadati",
-            )
-        })?;
-    if precision == 0 || precision > 38 || scale < 0 || scale > precision.cast_signed() {
-        return Err(prepare_error(
-            ErrorCategory::Unsupported,
-            "decimal MySQL oltre Decimal128 Arrow",
-        ));
-    }
-    Ok(MysqlColumnKind::Decimal { precision, scale })
 }
 
 /// Posizione sintattica in cui un'espressione viene ispezionata.
@@ -1099,11 +937,13 @@ fn ensure_identifier(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn unsupported(message: impl Into<String>) -> DatabaseError {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn unsupported(message: impl Into<String>) -> DatabaseError {
     DatabaseError::unsupported(ProviderKind::Mysql, ErrorPhase::Prepare, message)
 }
 
-fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
     DatabaseError {
         category,
         phase: ErrorPhase::Prepare,
@@ -1119,6 +959,8 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MysqlColumnKind;
+    use mysql_async::consts::{ColumnFlags, ColumnType};
     use plenora_database_core::arrow::schema::DataType;
     use plenora_database_core::plan::{ComparisonOperator, ObjectRef, SortDirection};
     use plenora_database_core::protocol;

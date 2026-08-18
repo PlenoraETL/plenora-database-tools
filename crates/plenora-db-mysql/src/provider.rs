@@ -353,12 +353,13 @@ impl Provider for MysqlProvider {
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
-            crate::query_operation(
+            crate::read::query_operation_with_profile(
                 &pool,
                 self.config.database(),
                 operation,
                 parameters,
                 crate::DEFAULT_BATCH_ROWS,
+                self.profile,
                 budget,
                 cancellation,
             )
