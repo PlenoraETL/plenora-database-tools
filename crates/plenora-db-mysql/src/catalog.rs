@@ -254,18 +254,21 @@ pub async fn list_schemas(
     session: &mut MysqlSession,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>> {
+    list_schemas_with_profile(session, &crate::profile::MYSQL_PROFILE, cancellation).await
+}
+
+/// Gli schemi, con il profilo che decide come interrogarli.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn list_schemas_with_profile(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>> {
     // v0.2 (fix H7.1): esclude system schemas MySQL (information_schema, mysql,
     // performance_schema, sys). Il consumer che ha bisogno anche dei system
     // schemas deve interrogare information_schema.schemata direttamente.
     session
-        .query_rows(
-            "SELECT SCHEMA_NAME AS schema_name \
-             FROM information_schema.schemata \
-             WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
-             ORDER BY SCHEMA_NAME",
-            ErrorPhase::Probe,
-            cancellation,
-        )
+        .query_rows(profile.schemas_query(), ErrorPhase::Probe, cancellation)
         .await?
         .iter()
         .map(|row| required(row, "schema_name", "schema_name"))
@@ -282,12 +285,26 @@ pub async fn list_objects(
     schema: &str,
     cancellation: &CancellationToken,
 ) -> Result<Vec<MysqlObjectSummary>> {
+    list_objects_with_profile(
+        session,
+        schema,
+        &crate::profile::MYSQL_PROFILE,
+        cancellation,
+    )
+    .await
+}
+
+/// Gli oggetti di uno schema, con il profilo che decide come interrogarli.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn list_objects_with_profile(
+    session: &mut MysqlSession,
+    schema: &str,
+    profile: &dyn crate::profile::ProductProfile,
+    cancellation: &CancellationToken,
+) -> Result<Vec<MysqlObjectSummary>> {
     session
         .exec_rows(
-            "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
-             TABLE_TYPE AS table_type, ENGINE AS engine \
-             FROM information_schema.tables WHERE TABLE_SCHEMA = ? \
-             ORDER BY TABLE_NAME",
+            profile.objects_query(),
             Params::Positional(vec![Value::from(schema)]),
             ErrorPhase::Probe,
             cancellation,
@@ -317,12 +334,28 @@ pub async fn describe_object(
     name: &str,
     cancellation: &CancellationToken,
 ) -> Result<MysqlObjectDescription> {
+    describe_object_with_profile(
+        session,
+        schema,
+        name,
+        &crate::profile::MYSQL_PROFILE,
+        cancellation,
+    )
+    .await
+}
+
+/// La descrizione di un oggetto, con il profilo che decide come interrogarlo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn describe_object_with_profile(
+    session: &mut MysqlSession,
+    schema: &str,
+    name: &str,
+    profile: &dyn crate::profile::ProductProfile,
+    cancellation: &CancellationToken,
+) -> Result<MysqlObjectDescription> {
     let objects = session
         .exec_rows(
-            "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
-             TABLE_TYPE AS table_type, ENGINE AS engine \
-             FROM information_schema.tables \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+            profile.object_query(),
             Params::Positional(vec![Value::from(schema), Value::from(name)]),
             ErrorPhase::Probe,
             cancellation,
@@ -334,15 +367,7 @@ pub async fn describe_object(
     let object = &objects[0];
     let column_rows = session
         .exec_rows(
-            "SELECT COLUMN_NAME AS column_name, ORDINAL_POSITION AS ordinal_position, \
-             DATA_TYPE AS data_type, COLUMN_TYPE AS column_type, \
-             IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS column_default, \
-             CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name, \
-             NUMERIC_PRECISION AS numeric_precision, NUMERIC_SCALE AS numeric_scale, \
-             DATETIME_PRECISION AS datetime_precision, SRS_ID AS srs_id, \
-             EXTRA AS extra, GENERATION_EXPRESSION AS generation_expression \
-             FROM information_schema.columns \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+            profile.object_columns_query(),
             Params::Positional(vec![Value::from(schema), Value::from(name)]),
             ErrorPhase::Probe,
             cancellation,
@@ -384,18 +409,13 @@ pub async fn describe_object(
     // confrontabile per colonne.
     let index_rows = session
         .exec_rows(
-            "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
-             SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
-             EXPRESSION AS expression \
-             FROM information_schema.statistics \
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
-             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            profile.object_indexes_query(),
             Params::Positional(vec![Value::from(schema), Value::from(name)]),
             ErrorPhase::Probe,
             cancellation,
         )
         .await?;
-    let indexes = build_indexes(&index_rows)?;
+    let indexes = build_indexes(&index_rows, profile)?;
     let schema_name: String = required(object, "table_schema", "table_schema")?;
     let object_name: String = required(object, "table_name", "table_name")?;
     let kind: String = required(object, "table_type", "table_type")?;
@@ -422,7 +442,10 @@ pub async fn describe_object(
 /// Aggrega le righe di `information_schema.statistics` (una per parte di
 /// indice) in una lista di `MysqlIndex`. Le righe arrivano già ordinate per
 /// `(INDEX_NAME, SEQ_IN_INDEX)`.
-fn build_indexes(rows: &[Row]) -> Result<Vec<MysqlIndex>> {
+fn build_indexes(
+    rows: &[Row],
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<Vec<MysqlIndex>> {
     let mut indexes: Vec<MysqlIndex> = Vec::new();
     for row in rows {
         let name: String = required(row, "index_name", "index_name")?;
@@ -443,9 +466,14 @@ fn build_indexes(rows: &[Row]) -> Result<Vec<MysqlIndex>> {
             .ok_or_else(|| mapping_error("aggregazione indici MySQL incoerente"))?;
         match column {
             Some(column_name) => current.columns.push(column_name),
-            // Parte funzionale (EXPRESSION non-NULL, COLUMN_NAME NULL):
-            // l'indice non è più confrontabile per colonne.
-            None if expression.is_some() => current.column_backed = false,
+            // Parte funzionale (espressione non nulla, colonna nulla):
+            // l'indice non è più confrontabile per colonne. Che il prodotto
+            // pubblichi o meno queste parti lo dice il profilo; che una parte
+            // senza colonna né espressione sia un errore no, perché sarebbe
+            // un indice di cui non sappiamo dire nulla.
+            None if expression.is_some() && profile.reports_functional_index_parts() => {
+                current.column_backed = false;
+            }
             None => {
                 return Err(mapping_error(
                     "parte di indice MySQL senza colonna né espressione",

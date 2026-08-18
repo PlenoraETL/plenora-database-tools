@@ -1,5 +1,5 @@
 use crate::profile::{ProductProfile, MYSQL_PROFILE};
-use crate::{describe_object, list_objects, list_schemas, MysqlConfig, MysqlPool};
+use crate::{MysqlConfig, MysqlPool};
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
@@ -149,7 +149,12 @@ impl MysqlProvider {
                 if let Some(source) = source {
                     self.validate_source(source)?;
                 }
-                let schemas = list_schemas(&mut session, cancellation).await?;
+                let schemas = crate::catalog::list_schemas_with_profile(
+                    &mut session,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
                 Ok(Inspection {
                     operation: "database.list_schemas".to_owned(),
                     document: json!({"schemas": schemas}),
@@ -163,7 +168,13 @@ impl MysqlProvider {
                     .as_ref()
                     .and_then(|value| value.schema.as_deref())
                     .unwrap_or_else(|| self.config.database());
-                let objects = list_objects(&mut session, schema, cancellation).await?;
+                let objects = crate::catalog::list_objects_with_profile(
+                    &mut session,
+                    schema,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
                 Ok(Inspection {
                     operation: "database.list_objects".to_owned(),
                     document: json!({"schema": schema, "objects": objects}),
@@ -175,8 +186,14 @@ impl MysqlProvider {
                     .schema
                     .as_deref()
                     .unwrap_or_else(|| self.config.database());
-                let description =
-                    describe_object(&mut session, schema, &source.object, cancellation).await?;
+                let description = crate::catalog::describe_object_with_profile(
+                    &mut session,
+                    schema,
+                    &source.object,
+                    self.profile,
+                    cancellation,
+                )
+                .await?;
                 Ok(Inspection {
                     operation: "database.describe_object".to_owned(),
                     document: json!(description),
@@ -399,9 +416,14 @@ impl Provider for MysqlProvider {
                     .schema
                     .as_deref()
                     .unwrap_or_else(|| self.config.database());
-                let target =
-                    describe_object(&mut session, target_schema, &operation.target.object, token)
-                        .await?;
+                let target = crate::catalog::describe_object_with_profile(
+                    &mut session,
+                    target_schema,
+                    &operation.target.object,
+                    self.profile,
+                    token,
+                )
+                .await?;
                 let report = plan.preflight(&target)?;
                 drop(session);
                 report
@@ -540,8 +562,14 @@ async fn execute_mysql_write(
     // Le altre mode non emettono DDL — Replace usa DELETE, Update una
     // TEMPORARY table che muore con la sessione.
     let ddl_residue = if operation.mode == plenora_database_core::plan::WriteMode::Create {
-        let pre_check =
-            describe_object(&mut session, target_schema, &operation.target.object, token).await;
+        let pre_check = crate::catalog::describe_object_with_profile(
+            &mut session,
+            target_schema,
+            &operation.target.object,
+            provider.profile,
+            token,
+        )
+        .await;
         match pre_check {
             Ok(_) => {
                 return Err(provider_error(
@@ -604,7 +632,14 @@ async fn execute_mysql_write_after_ddl(
     budget: &ResourceBudget,
     token: &CancellationToken,
 ) -> Result<WriteOutcome> {
-    let target = describe_object(session, target_schema, &operation.target.object, token).await?;
+    let target = crate::catalog::describe_object_with_profile(
+        session,
+        target_schema,
+        &operation.target.object,
+        provider.profile,
+        token,
+    )
+    .await?;
     // Skip preflight compare per Create (target appena creato dallo schema)
     // e DeleteByKeys (schema keys-only, preflight standard non applicabile).
     // Il target deve comunque esistere ed essere BASE TABLE InnoDB — questo

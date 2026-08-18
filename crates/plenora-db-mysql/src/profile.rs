@@ -69,6 +69,33 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// si misura in secondi. Un secondo profilo cambiera entrambe le cose
     /// insieme, in questo metodo, o non le cambiera in modo coerente.
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String;
+
+    /// Le interrogazioni del catalogo.
+    ///
+    /// Non sono qui per gusto di simmetria: ADR 0014 ha misurato che due
+    /// colonne che questo provider legge — `SRS_ID` in `columns`,
+    /// `EXPRESSION` in `statistics` — su `MariaDB` non esistono (errore 1054).
+    /// La query e la sola cosa che decide quali metadati arrivano, quindi e
+    /// la sola cosa che un secondo profilo deve poter cambiare.
+    /// Gli schemi visibili, esclusi quelli di sistema del prodotto.
+    fn schemas_query(&self) -> &'static str;
+    /// Tabelle e viste di uno schema.
+    fn objects_query(&self) -> &'static str;
+    /// L'oggetto singolo, per schema e nome.
+    fn object_query(&self) -> &'static str;
+    /// Le colonne di un oggetto, con i metadati che il mapping richiede.
+    fn object_columns_query(&self) -> &'static str;
+    /// Le parti di indice, ordinate per indice e posizione.
+    fn object_indexes_query(&self) -> &'static str;
+
+    /// Se il prodotto pubblica le parti funzionali di un indice.
+    ///
+    /// Un indice funzionale ha parti senza nome di colonna: `columns` non lo
+    /// descrive per intero e non e confrontabile con le keys di un upsert.
+    /// Un prodotto che non le pubblicasse non renderebbe l'indice
+    /// confrontabile — renderebbe invisibile che non lo e, ed e la ragione
+    /// per cui la parte senza colonna ne espressione resta un errore.
+    fn reports_functional_index_parts(&self) -> bool;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -133,6 +160,55 @@ impl ProductProfile for MysqlProfile {
         // dichiararlo serve a non farla sparire quando smettera di esserlo.
         format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}")
     }
+
+    fn schemas_query(&self) -> &'static str {
+        "SELECT SCHEMA_NAME AS schema_name \
+        FROM information_schema.schemata \
+        WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
+        ORDER BY SCHEMA_NAME"
+    }
+
+    fn objects_query(&self) -> &'static str {
+        "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
+        TABLE_TYPE AS table_type, ENGINE AS engine \
+        FROM information_schema.tables WHERE TABLE_SCHEMA = ? \
+        ORDER BY TABLE_NAME"
+    }
+
+    fn object_query(&self) -> &'static str {
+        "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
+        TABLE_TYPE AS table_type, ENGINE AS engine \
+        FROM information_schema.tables \
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+    }
+
+    fn object_columns_query(&self) -> &'static str {
+        "SELECT COLUMN_NAME AS column_name, ORDINAL_POSITION AS ordinal_position, \
+        DATA_TYPE AS data_type, COLUMN_TYPE AS column_type, \
+        IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS column_default, \
+        CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name, \
+        NUMERIC_PRECISION AS numeric_precision, NUMERIC_SCALE AS numeric_scale, \
+        DATETIME_PRECISION AS datetime_precision, SRS_ID AS srs_id, \
+        EXTRA AS extra, GENERATION_EXPRESSION AS generation_expression \
+        FROM information_schema.columns \
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
+    }
+
+    fn object_indexes_query(&self) -> &'static str {
+        "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
+        SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
+        EXPRESSION AS expression \
+        FROM information_schema.statistics \
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+        ORDER BY INDEX_NAME, SEQ_IN_INDEX"
+    }
+
+    fn reports_functional_index_parts(&self) -> bool {
+        // MySQL 8.0+ popola `EXPRESSION` per le parti funzionali, e la query
+        // sopra la seleziona: le due affermazioni devono restare vere
+        // insieme, ed e cio che una guardia verifica.
+        true
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +263,25 @@ mod tests {
         // cambierebbe in un posto solo e l'altro resterebbe MySQL.
         let variable = format!("MAX_EXECUTION{}TIME", "_");
         assert!(!include_str!("transaction.rs").contains(variable.as_str()));
+    }
+
+    #[test]
+    fn the_catalog_is_queried_only_through_the_profile() {
+        // Una query rimasta nel catalogo sarebbe una query che un secondo
+        // profilo non puo cambiare: verrebbe eseguita comunque, e fallirebbe
+        // sul prodotto sbagliato invece di essere sostituita.
+        let source = format!("FROM information{}schema", "_");
+        assert!(!include_str!("catalog.rs").contains(source.as_str()));
+    }
+
+    #[test]
+    fn the_functional_index_flag_matches_the_query_that_supports_it() {
+        // Il flag promette che le parti funzionali si vedono; a mostrarle e
+        // la colonna selezionata dalla query. Separati, uno dei due mente.
+        assert_eq!(
+            MYSQL_PROFILE.reports_functional_index_parts(),
+            MYSQL_PROFILE.object_indexes_query().contains("EXPRESSION")
+        );
     }
 
     #[test]
