@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod parameter;
 mod pool;
+mod profile;
 mod provider;
 mod query;
 mod read;

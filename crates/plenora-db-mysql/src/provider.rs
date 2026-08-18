@@ -1,4 +1,5 @@
-use crate::{describe_object, list_objects, list_schemas, probe_server, MysqlConfig, MysqlPool};
+use crate::profile::{ProductProfile, MYSQL_PROFILE};
+use crate::{describe_object, list_objects, list_schemas, MysqlConfig, MysqlPool};
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
@@ -34,12 +35,22 @@ pub struct MysqlProvider {
     config: MysqlConfig,
     max_connections: usize,
     cached_pool: Mutex<Option<CachedPool>>,
+    /// Il prodotto che questo provider serve.
+    ///
+    /// Non e configurabile e non si deduce dal server: lo fissa il
+    /// costruttore. Un provider che scoprisse il proprio prodotto
+    /// connettendosi sarebbe una selezione automatica, che ADR 0014 esclude
+    /// — il consumatore sceglie il provider, e il provider sa gia cosa
+    /// serve. Il riconoscimento alla probe verifica quella scelta, non la
+    /// compie.
+    profile: &'static dyn ProductProfile,
 }
 
 impl std::fmt::Debug for MysqlProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MysqlProvider")
+            .field("product", &self.profile.product())
             .field("config", &self.config)
             .field("max_connections", &self.max_connections)
             .field(
@@ -57,6 +68,21 @@ impl MysqlProvider {
     ///
     /// Fallisce se configurazione o limiti del pool non sono validi.
     pub fn new(config: MysqlConfig, max_connections: usize) -> Result<Self> {
+        Self::with_profile(config, max_connections, &MYSQL_PROFILE)
+    }
+
+    /// Il costruttore reale: nessun `MysqlProvider` esiste senza un profilo.
+    ///
+    /// `new` non ha un ramo alternativo, e non deve averlo: se la
+    /// costruzione potesse saltare il profilo, esisterebbe un provider le cui
+    /// decisioni di prodotto sono quelle sparse nel codice invece che quelle
+    /// dichiarate. E il seam da cui entrera il secondo provider.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn with_profile(
+        config: MysqlConfig,
+        max_connections: usize,
+        profile: &'static dyn ProductProfile,
+    ) -> Result<Self> {
         config.validate()?;
         if max_connections == 0 {
             return Err(provider_error(
@@ -69,6 +95,7 @@ impl MysqlProvider {
             config,
             max_connections,
             cached_pool: Mutex::new(None),
+            profile,
         })
     }
 
@@ -164,7 +191,7 @@ impl MysqlProvider {
 
 impl Provider for MysqlProvider {
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Mysql
+        self.profile.kind()
     }
 
     fn test_connection<'a>(
@@ -175,10 +202,12 @@ impl Provider for MysqlProvider {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
             let mut session = pool.checkout(cancellation).await?;
-            let probe = probe_server(&mut session, cancellation).await?;
+            let probe =
+                crate::catalog::probe_server_with_profile(&mut session, self.profile, cancellation)
+                    .await?;
             drop(session);
             Ok(ConnectionInfo {
-                provider: ProviderKind::Mysql,
+                provider: self.profile.kind(),
                 server_version: probe.product_version,
                 connection_identity: Some(probe.database),
             })
@@ -193,11 +222,13 @@ impl Provider for MysqlProvider {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
             let mut session = pool.checkout(cancellation).await?;
-            let probe = probe_server(&mut session, cancellation).await?;
+            let probe =
+                crate::catalog::probe_server_with_profile(&mut session, self.profile, cancellation)
+                    .await?;
             drop(session);
             Ok(ProviderCapabilities {
                 schema_version: 1,
-                provider: ProviderKind::Mysql,
+                provider: self.profile.kind(),
                 provider_version: probe.product_version,
                 extension_versions: BTreeMap::new(),
                 reads: ReadCapabilities {
@@ -1601,6 +1632,65 @@ mod tests {
         assert_eq!(provider.kind(), ProviderKind::Mysql);
         let rendered = format!("{provider:?}");
         assert!(!rendered.contains("unique-secret"));
+    }
+
+    #[test]
+    fn the_provider_is_always_built_through_a_profile() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 2).expect("provider");
+        assert_eq!(provider.profile.product(), "MySQL");
+        assert_eq!(provider.profile.kind(), ProviderKind::Mysql);
+
+        // La guardia strutturale: un secondo punto di costruzione sarebbe un
+        // provider senza profilo dichiarato, e il test comportamentale sopra
+        // non lo vedrebbe. Gli aghi si compongono a runtime perche scritti
+        // per intero comparirebbero in questo stesso file, e la guardia si
+        // troverebbe da sola.
+        //
+        // Due forme, perche un literal si scrive in due modi, e presidiarne
+        // uno solo e stato l'errore della prima stesura: una costruzione
+        // dentro un `Ok` con turbofish passava indisturbata sotto un ago che
+        // cercava la sola forma senza.
+        let source = include_str!("provider.rs");
+        let brace = " {";
+        let by_self = format!("Self{brace}");
+        // Un tipo di ritorno non e una costruzione: scontarlo tiene vero il
+        // messaggio dell'asserzione invece di allargare la guardia a un caso
+        // che non riguarda il profilo.
+        let returns_self = format!("-> Self{brace}");
+        let constructions = source.matches(by_self.as_str()).count()
+            - source.matches(returns_self.as_str()).count();
+        assert_eq!(
+            constructions, 1,
+            "il provider deve avere un solo punto di costruzione"
+        );
+        // La forma per nome compare anche in dichiarazione e negli `impl`:
+        // li e legittima, altrove sarebbe una seconda costruzione.
+        let by_name = format!("MysqlProvider{brace}");
+        for at in source.match_indices(by_name.as_str()).map(|(at, _)| at) {
+            let preceding = source[..at].trim_end();
+            assert!(
+                preceding.ends_with("struct")
+                    || preceding.ends_with("impl")
+                    || preceding.ends_with("for"),
+                "costruzione di MysqlProvider per nome fuori da with_profile"
+            );
+        }
+        let with_profile = source
+            .find("fn with_profile(")
+            .expect("with_profile deve esistere");
+        let built = source
+            .find(by_self.as_str())
+            .expect("la costruzione deve esistere");
+        assert!(
+            built > with_profile,
+            "l'unica costruzione deve stare dentro with_profile"
+        );
     }
 
     #[test]

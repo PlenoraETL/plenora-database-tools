@@ -164,6 +164,21 @@ pub async fn probe_server(
     session: &mut MysqlSession,
     cancellation: &CancellationToken,
 ) -> Result<MysqlProbe> {
+    probe_server_with_profile(session, &crate::profile::MYSQL_PROFILE, cancellation).await
+}
+
+/// La probe, con il profilo che decide quale prodotto e accettabile.
+///
+/// La forma pubblica sopra resta legata a un solo prodotto perche e API: chi
+/// la chiama sta chiedendo la probe `MySQL`. Il provider passa invece il
+/// proprio profilo, ed e da qui che un secondo prodotto entrera senza
+/// toccare la firma esportata.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn probe_server_with_profile(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    cancellation: &CancellationToken,
+) -> Result<MysqlProbe> {
     let mut rows = session
         .query_rows(
             "SELECT VERSION() AS product_version, DATABASE() AS database_name, \
@@ -206,30 +221,16 @@ pub async fn probe_server(
     let product_version: String = required(&row, "product_version", "product_version")?;
     let version_comment: String = required(&row, "version_comment", "version_comment")?;
 
-    // Fix P1 review MySQL 2026-08-15: fail-closed su MariaDB.
-    // MariaDB non è testato né qualificato: differenze rilevanti su
-    // sequenze, INSERT ... ON DUPLICATE KEY, MERGE syntax, spatial
-    // (GEOMETRYCOLLECTION), pool prepared statement cache, e
-    // isolation semantics. Il consumer che dichiara MariaDB usa il
-    // fork sbagliato — meglio errore chiaro alla probe che silenti
-    // divergenze in produzione.
-    let looks_like_mariadb = product_version.to_ascii_lowercase().contains("mariadb")
-        || version_comment.to_ascii_lowercase().contains("mariadb");
-    if looks_like_mariadb && !mariadb_rejection_bypassed() {
-        return Err(DatabaseError {
-            category: ErrorCategory::Unsupported,
-            phase: ErrorPhase::Probe,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(plenora_database_core::plan::ProviderKind::Mysql),
-            execution_id: None,
-            message: format!(
-                "MariaDB rilevato (product_version={product_version:?}, \
-                 version_comment={version_comment:?}) — provider `mysql` non \
-                 qualificato per MariaDB. Un provider dedicato è in roadmap."
-            ),
-            diagnostics: None,
-        });
+    // Il riconoscimento del prodotto, e la ragione per cui rifiutarlo,
+    // stanno nel profilo. Qui resta il punto in cui il rifiuto scatta, e con
+    // esso il bypass di test, che non si sposta: e questo il punto che
+    // attraversa, ed e accanto a questo che va letto.
+    if !mariadb_rejection_bypassed() {
+        if let Some(rejection) =
+            profile.foreign_product_rejection(&product_version, &version_comment)
+        {
+            return Err(rejection);
+        }
     }
 
     Ok(MysqlProbe {
