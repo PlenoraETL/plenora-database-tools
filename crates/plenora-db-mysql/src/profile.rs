@@ -125,6 +125,27 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Fallisce chiuso per colonne senza nome utilizzabile, decimal oltre
     /// `Decimal128` e tipi wire non ancora qualificati.
     fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec>;
+
+    /// Se un tipo dichiarato nel catalogo e una geometria.
+    fn is_spatial_native_type(&self, native_type: &str) -> bool;
+
+    /// Se una colonna spatial senza SRID dichiarato va rifiutata.
+    ///
+    /// Su `MySQL` l'SRID arriva da `SRS_ID`, che il catalogo seleziona. Un
+    /// prodotto che non lo pubblicasse non renderebbe la colonna priva di
+    /// CRS: renderebbe impossibile saperlo, ed e una differenza che la
+    /// decisione deve poter esprimere invece di ereditarla.
+    fn spatial_requires_declared_srid(&self) -> bool;
+
+    /// Come si proietta una colonna geometrica per ottenerne il WKB.
+    fn geometry_projection(&self, quoted: &str) -> String;
+
+    /// Se il WKB uscito da quella proiezione non e quello atteso.
+    ///
+    /// Sta accanto alla proiezione perche ne e la conseguenza: chi sceglie la
+    /// funzione sceglie anche quale dialetto ne esce. Separarli lascerebbe un
+    /// controllo che valida l'output di una funzione che non conosce.
+    fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -340,6 +361,36 @@ impl ProductProfile for MysqlProfile {
         })
     }
 
+    fn is_spatial_native_type(&self, native_type: &str) -> bool {
+        matches!(
+            native_type,
+            "geometry"
+                | "point"
+                | "linestring"
+                | "polygon"
+                | "multipoint"
+                | "multilinestring"
+                | "multipolygon"
+                | "geometrycollection"
+                | "geomcollection"
+        )
+    }
+
+    fn spatial_requires_declared_srid(&self) -> bool {
+        true
+    }
+
+    fn geometry_projection(&self, quoted: &str) -> String {
+        format!("ST_AsBinary({quoted}) AS {quoted}")
+    }
+
+    fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool {
+        // `ST_AsBinary` di `MySQL` produce WKB senza SRID incapsulato e solo
+        // XY: entrambe le cose sono cio che il contratto GeoArrow pubblicato
+        // dichiara, e una violazione e un difetto, non una variante.
+        srid.is_some() || dimensions != "xy"
+    }
+
     fn reports_functional_index_parts(&self) -> bool {
         // MySQL 8.0+ popola `EXPRESSION` per le parti funzionali, e la query
         // sopra la seleziona: le due affermazioni devono restare vere
@@ -518,6 +569,57 @@ mod tests {
             .with_character_set(255);
         let spec = MYSQL_PROFILE.wire_column_spec(&blob).expect("blob");
         assert_eq!(spec.native_type, "text");
+    }
+
+    #[test]
+    fn the_spatial_types_carry_the_srid_rule_that_qualifies_them() {
+        for spatial in [
+            "geometry",
+            "point",
+            "linestring",
+            "polygon",
+            "multipoint",
+            "multilinestring",
+            "multipolygon",
+            "geometrycollection",
+            "geomcollection",
+        ] {
+            assert!(MYSQL_PROFILE.is_spatial_native_type(spatial), "{spatial}");
+        }
+        for scalar in ["blob", "json", "text", "geo", "geometryx", ""] {
+            assert!(!MYSQL_PROFILE.is_spatial_native_type(scalar), "{scalar}");
+        }
+        // La regola che rende qualificata una colonna spatial: senza SRID
+        // dichiarato si rifiuta. Un profilo che la spegnesse pubblicherebbe
+        // geometrie con CRS ignoto, ed e la ragione per cui e una decisione
+        // e non una costante.
+        assert!(MYSQL_PROFILE.spatial_requires_declared_srid());
+    }
+
+    #[test]
+    fn the_expected_wkb_matches_the_projection_that_produces_it() {
+        assert_eq!(
+            MYSQL_PROFILE.geometry_projection("`geom`"),
+            "ST_AsBinary(`geom`) AS `geom`"
+        );
+        // Cio che quella funzione produce: XY, nessun SRID incapsulato.
+        assert!(!MYSQL_PROFILE.geometry_output_is_unexpected(None, "xy"));
+        assert!(MYSQL_PROFILE.geometry_output_is_unexpected(Some(4_326), "xy"));
+        assert!(MYSQL_PROFILE.geometry_output_is_unexpected(None, "xyz"));
+    }
+
+    #[test]
+    fn no_other_module_writes_the_geometry_projection() {
+        // La proiezione e l'attesa sul suo output sono due meta della stessa
+        // decisione. Se `types.rs` tornasse a scrivere la funzione, un
+        // secondo profilo ne cambierebbe una sola, e il controllo in lettura
+        // validerebbe l'output di una funzione che non ha scelto.
+        let production = include_str!("types.rs")
+            .split_once("#[cfg(test)]")
+            .expect("types.rs ha un modulo di test")
+            .0;
+        let function = format!("ST{}AsBinary", "_");
+        assert!(!production.contains(function.as_str()));
     }
 
     #[test]

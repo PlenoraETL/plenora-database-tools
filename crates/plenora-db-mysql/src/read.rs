@@ -1,7 +1,5 @@
 use crate::error::{interruption_error, timeout_error};
-use crate::{
-    bind_parameters, describe_object, MysqlColumnBuffer, MysqlColumnKind, MysqlPool, MysqlReadPlan,
-};
+use crate::{bind_parameters, MysqlColumnBuffer, MysqlColumnKind, MysqlPool, MysqlReadPlan};
 use mysql_async::prelude::StatementLike;
 use mysql_async::{Params, Row, Value};
 use plenora_database_core::arrow::array::{Array, BinaryArray};
@@ -37,6 +35,29 @@ pub async fn read_operation(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
+    read_operation_with_profile(
+        pool,
+        operation,
+        parameters,
+        batch_rows,
+        &crate::profile::MYSQL_PROFILE,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// La lettura, con il profilo che decide catalogo e parte spatial.
+#[allow(clippy::redundant_pub_crate, clippy::too_many_arguments)]
+pub(crate) async fn read_operation_with_profile(
+    pool: &Arc<MysqlPool>,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    batch_rows: usize,
+    profile: &'static dyn crate::profile::ProductProfile,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
     ensure_active_read_budget(budget)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
@@ -50,15 +71,27 @@ pub async fn read_operation(
             "schema MySQL obbligatorio per la lettura",
         )
     })?;
-    let description =
-        describe_object(&mut session, schema, &operation.source.object, &internal).await?;
-    let plan = MysqlReadPlan::compile(&description, operation)?;
+    let description = crate::catalog::describe_object_with_profile(
+        &mut session,
+        schema,
+        &operation.source.object,
+        profile,
+        &internal,
+    )
+    .await?;
+    let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
     let parameters = bind_parameters(&plan.bind_names, parameters)?;
-    let confirmation =
-        describe_object(&mut session, schema, &operation.source.object, &internal).await?;
+    let confirmation = crate::catalog::describe_object_with_profile(
+        &mut session,
+        schema,
+        &operation.source.object,
+        profile,
+        &internal,
+    )
+    .await?;
     if description.token != confirmation.token {
         return Err(read_error(
             ErrorCategory::Schema,
@@ -74,6 +107,7 @@ pub async fn read_operation(
         parameters,
         plan,
         batch_rows,
+        profile,
         budget,
         internal,
         &mut budget_cancellation,
@@ -126,7 +160,7 @@ pub(crate) async fn query_operation_with_profile(
     operation: &QueryOperation,
     parameters: &ParameterBag,
     batch_rows: usize,
-    profile: &dyn crate::profile::ProductProfile,
+    profile: &'static dyn crate::profile::ProductProfile,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
@@ -175,6 +209,7 @@ pub(crate) async fn query_operation_with_profile(
         bound,
         plan,
         batch_rows,
+        profile,
         budget,
         internal,
         &mut budget_cancellation,
@@ -191,6 +226,7 @@ fn start_row_stream<S>(
     parameters: Params,
     plan: MysqlReadPlan,
     batch_rows: usize,
+    profile: &'static dyn crate::profile::ProductProfile,
     budget: &ResourceBudget,
     internal: CancellationToken,
     budget_cancellation: &mut BudgetCancellation,
@@ -221,6 +257,7 @@ where
     let deadline_task = budget_cancellation.take_task()?;
     Ok(Box::new(MysqlBatchStream {
         receiver,
+        profile,
         demand_sender,
         columns: plan.columns,
         schema: plan.schema,
@@ -273,6 +310,9 @@ struct BatchFill {
 
 pub struct MysqlBatchStream {
     receiver: mpsc::Receiver<Result<Row>>,
+    /// Il profilo del provider che ha aperto lo stream: valida il WKB
+    /// contro la proiezione che lo stesso profilo ha scelto.
+    profile: &'static dyn crate::profile::ProductProfile,
     demand_sender: mpsc::Sender<()>,
     columns: Vec<crate::MysqlColumnSpec>,
     schema: SchemaRef,
@@ -527,6 +567,7 @@ impl MysqlBatchStream {
         let components = validate_spatial_batch(
             &batch,
             &self.columns,
+            self.profile,
             reservation.component_limit,
             self.budget.limits().cell_bytes,
             self.budget.limits().nesting_depth,
@@ -720,9 +761,11 @@ fn attribute_conversion_defect(
     diagnostics.reject_conversion_defect(error, row.and_then(|row| u64::try_from(row).ok()), column)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_spatial_batch(
     batch: &RecordBatch,
     columns: &[crate::MysqlColumnSpec],
+    profile: &dyn crate::profile::ProductProfile,
     component_limit: u64,
     cell_limit: u64,
     nesting_depth: u64,
@@ -775,7 +818,10 @@ fn validate_spatial_batch(
                             Some(index),
                         )
                     })?;
-            if inspection.root.srid.is_some() || inspection.root.dimensions_label() != "xy" {
+            if profile.geometry_output_is_unexpected(
+                inspection.root.srid,
+                inspection.root.dimensions_label(),
+            ) {
                 return Err(attribute_conversion_defect(
                     diagnostics,
                     columns,
@@ -977,6 +1023,7 @@ mod tests {
         let column_count = u64::try_from(columns.len()).expect("colonne rappresentabili");
         MysqlBatchStream {
             receiver,
+            profile: &crate::profile::MYSQL_PROFILE,
             demand_sender,
             columns,
             schema,

@@ -331,11 +331,12 @@ impl Provider for MysqlProvider {
                 .source
                 .schema
                 .get_or_insert_with(|| self.config.database().to_owned());
-            crate::read_operation(
+            crate::read::read_operation_with_profile(
                 &pool,
                 &effective,
                 parameters,
                 crate::DEFAULT_BATCH_ROWS,
+                self.profile,
                 budget,
                 cancellation,
             )

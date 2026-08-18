@@ -66,6 +66,20 @@ impl MysqlReadPlan {
         description: &MysqlObjectDescription,
         operation: &ReadOperation,
     ) -> Result<Self> {
+        Self::compile_with_profile(description, operation, &crate::profile::MYSQL_PROFILE)
+    }
+
+    /// Il piano di lettura, con il profilo che decide la parte spatial.
+    ///
+    /// # Errors
+    ///
+    /// Come `compile`.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn compile_with_profile(
+        description: &MysqlObjectDescription,
+        operation: &ReadOperation,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<Self> {
         if description.columns.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
@@ -82,12 +96,12 @@ impl MysqlReadPlan {
         let available = description
             .columns
             .iter()
-            .map(MysqlColumnSpec::from_catalog)
+            .map(|column| MysqlColumnSpec::from_catalog_with_profile(column, profile))
             .collect::<Result<Vec<_>>>()?;
         let columns = select_columns(&available, &operation.projection)?;
         let projection = columns
             .iter()
-            .map(|column| column.projection(&renderer))
+            .map(|column| column.projection(&renderer, profile))
             .collect::<Result<Vec<_>>>()?
             .join(", ");
         let object = ObjectName {
@@ -188,6 +202,19 @@ impl MysqlColumnSpec {
     /// Fallisce chiuso per tipi sconosciuti, decimal oltre 128 bit e profili
     /// spatial senza SRID dichiarato.
     pub fn from_catalog(column: &MysqlColumn) -> Result<Self> {
+        Self::from_catalog_with_profile(column, &crate::profile::MYSQL_PROFILE)
+    }
+
+    /// La colonna del catalogo, con il profilo che ne decide la parte spatial.
+    ///
+    /// # Errors
+    ///
+    /// Come `from_catalog`.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn from_catalog_with_profile(
+        column: &MysqlColumn,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<Self> {
         let native_type = column.data_type.to_ascii_lowercase();
         let native_declaration = column.native_declaration.to_ascii_lowercase();
         let unsigned = native_declaration
@@ -216,9 +243,8 @@ impl MysqlColumnSpec {
             "date" => MysqlColumnKind::Date,
             "time" => MysqlColumnKind::Time,
             "datetime" | "timestamp" => MysqlColumnKind::Timestamp,
-            "geometry" | "point" | "linestring" | "polygon" | "multipoint" | "multilinestring"
-            | "multipolygon" | "geometrycollection" | "geomcollection" => {
-                if column.spatial_srid.is_none() {
+            spatial if profile.is_spatial_native_type(spatial) => {
+                if profile.spatial_requires_declared_srid() && column.spatial_srid.is_none() {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
                         "colonna spatial MySQL senza SRID dichiarato",
@@ -244,11 +270,15 @@ impl MysqlColumnSpec {
         })
     }
 
-    fn projection(&self, renderer: &Renderer) -> Result<String> {
+    fn projection(
+        &self,
+        renderer: &Renderer,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<String> {
         let identifier = mysql_identifier(&self.name)?;
         let quoted = renderer.quote_identifier(&identifier)?;
         if self.kind == MysqlColumnKind::Geometry {
-            Ok(format!("ST_AsBinary({quoted}) AS {quoted}"))
+            Ok(profile.geometry_projection(&quoted))
         } else {
             Ok(quoted)
         }
@@ -606,7 +636,8 @@ mod tests {
             Some(&"xy".to_owned())
         );
         assert_eq!(
-            spec.projection(&mysql_renderer()).expect("projection"),
+            spec.projection(&mysql_renderer(), &crate::profile::MYSQL_PROFILE)
+                .expect("projection"),
             "ST_AsBinary(`geom`) AS `geom`"
         );
     }
