@@ -173,6 +173,8 @@ il verdetto registra il cifrario negoziato accanto a versione e digest.
 | provider | protocollo | `provider.test_connection` | server_version=9.7.2 | server_version=12.3.2-MariaDB-ubu2404 | server_version=11.8.8-MariaDB-ubu2404 |
 | provider | protocollo | `provider.capabilities` | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 |
 | provider | catalogo | `provider.describe_object` | colonne=14 indici=1 | **no** Schema: colonna MySQL non valida (codice 1054) | **no** Schema: colonna MySQL non valida (codice 1054) |
+| provider | wire | `provider.query_schema` | id:Int64/false, small_signed:Int16/false, big_unsigned:UInt64/false, exact_decimal:Deci… | id:Int64/false, small_signed:Int16/false, big_unsigned:UInt64/false, exact_decimal:Deci… | id:Int64/false, small_signed:Int16/false, big_unsigned:UInt64/false, exact_decimal:Deci… |
+| provider | wire | `provider.query_values` | PrimitiveArray<Int64> [ 1, ] | PrimitiveArray<Int16> [ -7, ] | PrimitiveArray<UInt64> [… | PrimitiveArray<Int64> [ 1, ] | PrimitiveArray<Int16> [ -7, ] | PrimitiveArray<UInt64> [… | PrimitiveArray<Int64> [ 1, ] | PrimitiveArray<Int16> [ -7, ] | PrimitiveArray<UInt64> [… |
 | provider | wire | `provider.read` | schema=[id:Int64/false, small_signed:Int16/false, big_unsigned:UInt64/false, exact_deci… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… |
 | provider | spatial | `provider.read_geometry` | **no** Crs: colonna spatial MySQL senza SRID dichiarato | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… | — dipende da provider.describe_object, che non ha raggiunto il catalogo: la superficie no… |
 | provider | sessione | `provider.transaction` | commit Committed | **no** Execution: errore server MySQL redatto (codice 1193) | **no** Execution: errore server MySQL redatto (codice 1193) |
@@ -185,15 +187,26 @@ il verdetto registra il cifrario negoziato accanto a versione e digest.
 
 **Il protocollo e quasi lo stesso.** Dodici colonne su quattordici hanno lo
 stesso tipo wire nei metadata del prepare, `ST_*` risponde identico, il numero
-di parametri dichiarati coincide, e la riga di dati viene accettata da tutti e
-tre. Due colonne no, e sono divergenze che dal client non si vedevano:
+di parametri dichiarati coincide, e la riga di dati e accettata da tutti e
+tre. Due colonne no, e dal client non si vedevano:
 
 * **`JSON` viaggia come `MYSQL_TYPE_BLOB`** su MariaDB e come
   `MYSQL_TYPE_JSON` su MySQL. Su MariaDB `JSON` e un alias di `LONGTEXT` con
   un CHECK, e il protocollo lo dice;
-* **`TIMESTAMP` porta il flag `unsigned`** su MariaDB e non su MySQL. Un
-  mapper che leggesse quel flag per decidere la firma di un intero
-  classificherebbe un istante come numero senza segno.
+* **`TIMESTAMP` porta il flag `unsigned`** su MariaDB e non su MySQL.
+
+**Il mapper del provider le assorbe entrambe.** E il risultato che serviva, e
+si vede solo attraverso `QueryOperation`, che deriva lo schema dai metadata
+del prepare e non dal catalogo: su tutti e tre i server `document` diventa
+`Utf8` e `moment_timestamp` diventa `Timestamp(Microsecond)`, e i valori
+decodificati coincidono — `2026-08-18T06:00:00` da entrambi i motori. Quattordici
+colonne, stesso schema Arrow, stessa nullability, stessi valori. Le due
+divergenze wire non arrivano al consumer perche il mapping legge il tipo
+dichiarato dal catalogo, non quello del protocollo.
+
+Senza questa sonda l'evidenza si sarebbe fermata al driver: `read` passa da
+`describe_object`, quindi su MariaDB non raggiunge mai il mapper, e i tipi
+sarebbero rimasti verificati solo in forma grezza.
 
 **`SRS_ID` non esiste** in `information_schema.columns` su MariaDB — errore
 1054 — quindi non c'e modo di sapere se una geometry abbia un sistema di
@@ -201,41 +214,38 @@ riferimento vincolato. E la controparte, al livello del catalogo,
 dell'attributo `SRID` di colonna che la prima tranche aveva gia visto
 rifiutare.
 
-**Il provider si ferma in due punti, e sono due righe di codice sue.**
+**Dove il provider si ferma, e cosa servirebbe.** Due sonde falliscono su
+MariaDB, e nessuna delle due per un limite del motore: sono istruzioni che
+**questo** provider emette sempre.
 
-* `describe_object` legge `information_schema.statistics.EXPRESSION`, che su
-  MariaDB non esiste: errore 1054. Da li in poi nessuna superficie di lettura
-  e raggiungibile — `provider.read` e `provider.read_geometry` restano
-  `not_measured`, perche dipendono dal catalogo e registrarle come rifiuti
-  autonomi conterebbe tre divergenze dove ce n'e una;
-* `begin_transaction` con `statement_timeout_ms` emette
-  `SET SESSION MAX_EXECUTION_TIME`, che su MariaDB non esiste: errore 1193.
-  Con le opzioni di default questa sonda passava, perche il timeout restava
-  `None` e l'istruzione non veniva mai emessa — la prima stesura della misura
-  lo ha nascosto, ed e il motivo per cui ora il timeout e esplicito.
+| superficie | cosa emette oggi | cosa chiederebbe un profilo |
+|---|---|---|
+| catalogo | `information_schema.statistics.EXPRESSION` (1054) | query di catalogo per prodotto, e un modo diverso di riconoscere gli indici funzionali |
+| timeout | `SET SESSION MAX_EXECUTION_TIME` (1193) | l'istruzione del prodotto e la conversione dell'unita — `max_statement_time` prende secondi, non millisecondi |
+| mapping wire | assorbe gia le due divergenze | normalizzazione esplicita invece che implicita, perche oggi regge per come e scritta, non per contratto |
+| spatial / SRID | `SRID` di colonna e `SRS_ID` di catalogo | una strategia SRID per prodotto, e capability spatial dichiarate di conseguenza |
 
-Nessuna delle due e una divergenza del motore: sono istruzioni che **questo**
-provider emette sempre. Su MariaDB l'equivalente del timeout e
-`max_statement_time`, in secondi invece che millisecondi, e gli indici
-funzionali si riconoscono altrove — ma introdurre qui quei rami
-significherebbe rispondere alla domanda che la decisione deve ancora porsi.
+Non sono "due righe da cambiare": sono quattro superfici, di cui due gia
+rotte, una che regge per caso e una non ancora misurata. E la misura di
+quanto costerebbe condividere il codice, non la prova che sia gratis.
 
-**Cio che il provider fa uguale.** Probe, capability, e — questo e il
-risultato meno atteso — **tutta la sessione**: una query cancellata mentre il
-server risponde viene classificata `Cancelled` con `remote_effect: none` e
-`retry: never` su tutti e tre, la sessione finisce in `Quarantined` e smette
-di essere riusabile su tutti e tre, e il provider la rimpiazza su tutti e tre.
-La macchina a stati della sessione, che e la parte piu delicata del provider,
-non distingue i due motori.
+**Cio che il provider fa uguale.** Probe, capability, mapper — e, questo e il
+risultato meno atteso, **tutta la sessione**: una query cancellata mentre il
+server risponde e `Cancelled` con `remote_effect: none` e `retry: never` su
+tutti e tre, la sessione finisce in `Quarantined` e smette di essere
+riusabile su tutti e tre, e il provider la rimpiazza su tutti e tre. La
+macchina a stati, che e la parte piu delicata del provider, non distingue i
+due motori.
 
-`provider.read_geometry` su MySQL viene rifiutato dalla regola del provider —
-una geometry senza SRID dichiarato — non da un limite del motore: la fixture
-non puo dichiarare l'SRID perche MariaDB non accetta quell'attributo, e
-tabelle diverse non sarebbero confrontabili. La decodifica di una geometry
-resta quindi da misurare su una fixture asimmetrica.
+`provider.read` e `provider.read_geometry` restano `not_measured` su MariaDB:
+dipendono dal catalogo, e registrarle come rifiuti autonomi conterebbe tre
+divergenze dove ce n'e una. `provider.read_geometry` su MySQL e rifiutato
+dalla regola del provider — una geometry senza SRID dichiarato — non dal
+motore: la fixture non puo dichiarare l'SRID perche MariaDB non accetta
+quell'attributo, e tabelle diverse non sarebbero confrontabili.
 
 **Le due versioni di MariaDB non divergono fra loro** su nessuna delle
-ventuno sonde, come nella prima tranche.
+ventitre sonde, come nella prima tranche.
 
 ### Cosa resta not_measured
 

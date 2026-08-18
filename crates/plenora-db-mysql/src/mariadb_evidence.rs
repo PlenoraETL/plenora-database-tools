@@ -37,6 +37,9 @@ use crate::{MysqlConfig, MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::query::{
+    ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
+};
 use plenora_database_core::transaction::TransactionOptions;
 use plenora_database_core::{CancellationToken, ResourceBudget, ResourceLimits};
 use serde_json::json;
@@ -666,6 +669,12 @@ async fn provider_surface_probes(
         filter: None,
     };
 
+    // La query non passa dal catalogo: lo schema esce dai metadata del
+    // prepare. Va eseguita comunque, anche quando `describe_object` fallisce,
+    // perche e l'unica strada che raggiunge il mapper del provider su un
+    // motore il cui catalogo non risponde.
+    query_probes(recorder, provider, &schema_name, &budget, cancellation).await;
+
     // La lettura dipende dalla descrizione: il provider deriva lo schema
     // dallo stesso catalogo. Quando quella fallisce, l'errore qui e la stessa
     // causa vista una seconda volta — registrarlo come rifiuto autonomo
@@ -750,6 +759,172 @@ async fn provider_surface_probes(
          il comportamento del provider dal momento in cui e arrivato il \
          colpo. Nessuna inferenza da qui.",
     );
+}
+
+/// Il mapper del provider, raggiunto **senza** passare dal catalogo.
+///
+/// `read` deriva lo schema da `describe_object`, quindi su `MariaDB` si ferma
+/// prima di mappare qualsiasi cosa: i tipi wire divergenti — `JSON` come
+/// `MYSQL_TYPE_BLOB`, `TIMESTAMP` con il flag unsigned — finora erano stati
+/// osservati solo dal driver diretto, mai attraverso il codice che li
+/// converte in Arrow. `QueryOperation` prende quella strada: lo schema esce
+/// dai metadata del prepare, non da `information_schema`, quindi la sonda
+/// misura il mapper anche dove il catalogo non e raggiungibile.
+///
+/// Consuma il batch: schema, nullability e valori decodificati insieme, che e
+/// l'unico modo di accorgersi che due `DataType` uguali portano contenuti
+/// diversi.
+#[allow(clippy::too_many_lines)]
+async fn query_probes(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    schema_name: &str,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) {
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: field.to_owned(),
+        },
+    };
+    let projected = [
+        "id",
+        "small_signed",
+        "big_unsigned",
+        "exact_decimal",
+        "approx_double",
+        "moment_date",
+        "moment_datetime",
+        "moment_timestamp",
+        "moment_time",
+        "text_utf8",
+        "blob_binary",
+        "document",
+        "choice",
+        "flags",
+    ];
+    let operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some(schema_name.to_owned()),
+                object: SCRATCH.to_owned(),
+                layer_id: None,
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: projected
+            .iter()
+            .map(|field| QueryProjection {
+                expression: column(field),
+                alias: None,
+            })
+            .collect(),
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("id"),
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(1),
+        row_offset: None,
+        locking: None,
+    };
+
+    match provider
+        .query(
+            &secret(),
+            &operation,
+            &ParameterBag::default(),
+            budget,
+            cancellation,
+        )
+        .await
+    {
+        Ok(mut stream) => match stream.next_batch(cancellation).await {
+            Ok(Some(batch)) => {
+                recorder.accepted(
+                    "provider.query_schema",
+                    "provider",
+                    "wire",
+                    "deriva lo schema Arrow dai metadata del prepare, senza catalogo",
+                    batch
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}:{:?}/{}",
+                                field.name(),
+                                field.data_type(),
+                                field.is_nullable()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                recorder.accepted(
+                    "provider.query_values",
+                    "provider",
+                    "wire",
+                    "decodifica i valori di ogni famiglia di tipo",
+                    truncate(
+                        &batch
+                            .columns()
+                            .iter()
+                            .map(|column| condense(&format!("{column:?}")))
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                        900,
+                    ),
+                );
+            }
+            Ok(None) => {
+                for probe in ["provider.query_schema", "provider.query_values"] {
+                    recorder.rejected(
+                        probe,
+                        "provider",
+                        "wire",
+                        "esegue una QueryOperation e ne consuma il batch",
+                        "stream aperto ma senza righe: la fixture non ha dati".to_owned(),
+                        None,
+                    );
+                }
+            }
+            Err(error) => {
+                for probe in ["provider.query_schema", "provider.query_values"] {
+                    recorder.rejected(
+                        probe,
+                        "provider",
+                        "wire",
+                        "esegue una QueryOperation e ne consuma il batch",
+                        condense(&format!("{:?}: {}", error.category, error.message)),
+                        None,
+                    );
+                }
+            }
+        },
+        Err(error) => {
+            for probe in ["provider.query_schema", "provider.query_values"] {
+                recorder.rejected(
+                    probe,
+                    "provider",
+                    "wire",
+                    "esegue una QueryOperation e ne consuma il batch",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    None,
+                );
+            }
+        }
+    }
 }
 
 /// Lettura Arrow: schema, metadata e **valori decodificati**.
@@ -1038,10 +1213,12 @@ async fn mariadb_driver_evidence() {
 
 /// Esegue la misura e stampa il verdetto sul marcatore.
 ///
-/// Il punto d'ingresso `#[test]` vive in `live_tests`, non qui: l'inventario
-/// dei runner pretende che ogni test live stia in quel file e porti il
-/// prefisso `live_`, e un test che sfuggisse a quella convenzione
-/// sfuggirebbe anche al runner che dovrebbe eseguirlo.
+/// Il punto d'ingresso `#[test]` sta poco sopra, in questo stesso modulo, e
+/// **non** in `live_tests`: quel file raccoglie i test della qualifica
+/// `MySQL`, i cui inventari dichiarano cosa quel provider ha dimostrato, e
+/// una misura su un motore non qualificato non puo sostenere
+/// quell'affermazione. Per lo stesso motivo il nome non porta il prefisso
+/// `live_`, che e cio che i tre runner del gate filtrano.
 ///
 /// # Panics
 ///
