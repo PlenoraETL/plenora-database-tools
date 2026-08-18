@@ -238,6 +238,7 @@ fn row_error(message: &'static str) -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::{checked_batch_end, checked_consumed_batch_end};
+    use crate::profile::ProductProfile;
     use plenora_database_core::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION;
 
     /// Le cause row-scoped nascono dal codice del server, non dal testo: ogni
@@ -246,14 +247,14 @@ mod tests {
     fn row_rejection_causes_come_from_server_codes_only() {
         for code in [1_048_u16, 1_062, 1_452, 3_819, 4_025] {
             assert_eq!(
-                crate::error::row_rejection_cause(code),
+                crate::profile::MYSQL_PROFILE.row_rejection_cause(code),
                 Some(CAUSE_CONSTRAINT_VIOLATION),
                 "il codice {code} dichiara un rifiuto di riga"
             );
         }
         for code in [0_u16, 1_045, 1_213, 1_205, 2_006, 65_535] {
             assert_eq!(
-                crate::error::row_rejection_cause(code),
+                crate::profile::MYSQL_PROFILE.row_rejection_cause(code),
                 None,
                 "il codice {code} non appartiene a un rifiuto di riga"
             );

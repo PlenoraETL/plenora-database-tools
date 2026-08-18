@@ -6,87 +6,48 @@ use plenora_database_core::{
 };
 
 pub fn driver_error(
-    kind: ProviderKind,
+    profile: &dyn crate::profile::ProductProfile,
     error: &Error,
     phase: ErrorPhase,
     requested_effect: RemoteEffect,
 ) -> DatabaseError {
+    let product = profile.product();
     let code = server_code(error);
     let (category, retry, message) = if is_tls_identity_rejection(error) {
         (
             ErrorCategory::Protocol,
             RetryDisposition::Never,
-            "verifica identita TLS MySQL rifiutata".to_owned(),
+            format!("verifica identita TLS {product} rifiutata"),
         )
     } else {
-        match code {
-            Some(1_045) => (
-                ErrorCategory::Authentication,
-                RetryDisposition::Never,
-                "autenticazione MySQL rifiutata (codice 1045)".to_owned(),
-            ),
-            Some(1_044) => (
-                ErrorCategory::Authorization,
-                RetryDisposition::Never,
-                "autorizzazione MySQL negata (codice 1044)".to_owned(),
-            ),
-            Some(1_049 | 1_146) => (
-                ErrorCategory::NotFound,
-                RetryDisposition::Never,
-                format!(
-                    "database o oggetto MySQL non trovato (codice {})",
-                    code.unwrap_or_default()
-                ),
-            ),
-            Some(1_054) => (
-                ErrorCategory::Schema,
-                RetryDisposition::Never,
-                "colonna MySQL non valida (codice 1054)".to_owned(),
-            ),
-            Some(1_062) => (
-                ErrorCategory::Conflict,
-                RetryDisposition::Never,
-                "vincolo univoco MySQL violato (codice 1062)".to_owned(),
-            ),
-            Some(1_213) => (
-                ErrorCategory::Transient,
-                RetryDisposition::Safe,
-                "deadlock MySQL; transazione vittima annullata".to_owned(),
-            ),
-            Some(1_205 | 3_024) => (
-                ErrorCategory::Timeout,
-                RetryDisposition::Never,
-                format!("timeout MySQL (codice {})", code.unwrap_or_default()),
-            ),
-            Some(native) => (
-                ErrorCategory::Execution,
-                RetryDisposition::Never,
-                format!("errore server MySQL redatto (codice {native})"),
-            ),
-            None => match error {
+        // `map_or_else` con due chiusure lunghe qui leggerebbe peggio, ma
+        // clippy ha ragione sulla forma: il ramo `Some` e una chiamata sola.
+        code.map_or_else(
+            || match error {
                 Error::Io(_) => (
                     ErrorCategory::Io,
                     RetryDisposition::Never,
-                    "errore I/O protocollo MySQL redatto".to_owned(),
+                    format!("errore I/O protocollo {product} redatto"),
                 ),
                 Error::Driver(_) => (
                     ErrorCategory::Protocol,
                     RetryDisposition::Never,
-                    "errore driver MySQL redatto".to_owned(),
+                    format!("errore driver {product} redatto"),
                 ),
                 Error::Url(_) => (
                     ErrorCategory::InvalidConfiguration,
                     RetryDisposition::Never,
-                    "configurazione endpoint MySQL non valida".to_owned(),
+                    format!("configurazione endpoint {product} non valida"),
                 ),
                 Error::Other(_) => (
                     ErrorCategory::Protocol,
                     RetryDisposition::Never,
-                    "errore TLS o protocollo MySQL redatto".to_owned(),
+                    format!("errore TLS o protocollo {product} redatto"),
                 ),
-                Error::Server(server) => generic_server_failure(server.code),
+                Error::Server(server) => profile.classify_server_code(server.code),
             },
-        }
+            |native| profile.classify_server_code(native),
+        )
     };
     let ambiguous = has_ambiguous_effect(code, phase);
     DatabaseError {
@@ -104,19 +65,11 @@ pub fn driver_error(
         } else {
             retry
         },
-        provider: Some(kind),
+        provider: Some(profile.kind()),
         execution_id: None,
         message,
         diagnostics: None,
     }
-}
-
-fn generic_server_failure(code: u16) -> (ErrorCategory, RetryDisposition, String) {
-    (
-        ErrorCategory::Execution,
-        RetryDisposition::Never,
-        format!("errore server MySQL redatto (codice {code})"),
-    )
 }
 
 fn is_tls_identity_rejection(error: &Error) -> bool {
@@ -141,28 +94,6 @@ fn is_tls_identity_rejection(error: &Error) -> bool {
 pub const fn server_code(error: &Error) -> Option<u16> {
     match error {
         Error::Server(server) => Some(server.code),
-        _ => None,
-    }
-}
-
-/// Causa di contratto per un rifiuto che appartiene a una singola riga.
-///
-/// La classificazione legge **solo il codice** del server. Il testo del
-/// messaggio è vendor, localizzato e trasporta valori di riga: interpretarlo
-/// significherebbe pubblicare come certo ciò che è una congettura, e il
-/// contratto `plenora-row-diagnostics-v1` lo vieta.
-///
-/// Un codice che non appartiene a questa tabella non produce una causa: la
-/// scrittura fallisce come qualunque altro errore, senza diagnostica per riga.
-#[must_use]
-pub const fn row_rejection_cause(code: u16) -> Option<&'static str> {
-    match code {
-        // 1048 NULL in colonna non nullable, 1062 chiave duplicata,
-        // 1452 vincolo di integrità referenziale, 3819 CHECK violato,
-        // 4025 CHECK violato sulla colonna (MySQL 8.0.16+).
-        1_048 | 1_062 | 1_452 | 3_819 | 4_025 => {
-            Some(plenora_database_core::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION)
-        }
         _ => None,
     }
 }
@@ -262,7 +193,7 @@ mod tests {
             "invalid peer certificate: certificate not valid for name",
         )));
         let mapped = driver_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             &tls,
             ErrorPhase::Connect,
             RemoteEffect::None,
@@ -275,7 +206,7 @@ mod tests {
             "host resolution failed",
         )));
         let mapped = driver_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             &dns,
             ErrorPhase::Connect,
             RemoteEffect::None,
@@ -314,7 +245,7 @@ mod tests {
                 state: "HY000".to_owned(),
             });
             let mapped = driver_error(
-                ProviderKind::Mysql,
+                &crate::profile::MYSQL_PROFILE,
                 &error,
                 ErrorPhase::Read,
                 RemoteEffect::None,
@@ -333,7 +264,7 @@ mod tests {
             "connection lost while exporting certificate_name column values",
         )));
         let mapped = driver_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             &error,
             ErrorPhase::Read,
             RemoteEffect::None,

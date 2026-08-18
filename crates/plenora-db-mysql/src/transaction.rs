@@ -320,38 +320,48 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Write, self.session.kind()));
-            }
-            // Fix P1 review MySQL: enforcement condiviso del core
-            // (parity con `PostgresTransaction::execute`). Se
-            // `native_query_policy = Deny`, blocca DDL/session/multi-
-            // statement prima del round-trip al server.
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &statement.sql,
-            )?;
-            let params = bind_positional_params(&statement.params)?;
-            let result = self
-                .session
-                .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
-                .await;
-            // Fix P0 review MySQL 2026-08-15: quando MySQL rifiuta lo
-            // statement con `RolledBack` (deadlock 1213, ambiguous
-            // timeout, ecc.), il server auto-annulla la transazione
-            // vittima. Prima `self.open` restava `true` e le scritture
-            // successive andavano in **autocommit** (silent write fuori
-            // dalla tx supposta). Ora chiudo la tx dopo qualsiasi
-            // errore che modifica lo stato server-side.
-            if let Err(ref error) = result {
-                if matches!(
-                    error.remote_effect,
-                    RemoteEffect::RolledBack | RemoteEffect::Unknown
-                ) {
-                    self.open = false;
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
+                // Fix P1 review MySQL: enforcement condiviso del core
+                // (parity con `PostgresTransaction::execute`). Se
+                // `native_query_policy = Deny`, blocca DDL/session/multi-
+                // statement prima del round-trip al server.
+                plenora_database_core::native_query_policy::enforce_policy(
+                    self.native_query_policy,
+                    &statement.sql,
+                )?;
+                let params = bind_positional_params(&statement.params)?;
+                let result = self
+                    .session
+                    .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
+                    .await;
+                // Fix P0 review MySQL 2026-08-15: quando MySQL rifiuta lo
+                // statement con `RolledBack` (deadlock 1213, ambiguous
+                // timeout, ecc.), il server auto-annulla la transazione
+                // vittima. Prima `self.open` restava `true` e le scritture
+                // successive andavano in **autocommit** (silent write fuori
+                // dalla tx supposta). Ora chiudo la tx dopo qualsiasi
+                // errore che modifica lo stato server-side.
+                if let Err(ref error) = result {
+                    if matches!(
+                        error.remote_effect,
+                        RemoteEffect::RolledBack | RemoteEffect::Unknown
+                    ) {
+                        self.open = false;
+                    }
+                }
+                result
             }
-            result
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -361,81 +371,92 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Read, self.session.kind()));
-            }
-            // Il prodotto della connessione, letto una volta: piu avanti la
-            // sessione e prestata in modo esclusivo e non e piu leggibile.
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
             let kind = self.session.kind();
-            // Fix P1 review MySQL: enforcement condiviso (parity Postgres).
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &statement.sql,
-            )?;
-            let params = bind_positional_params(&statement.params)?;
-            // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
-            let timeout = self.session.operation_timeout();
-            let connection = self
-                .session
-                .connection_mut()
-                .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
-            let execution = connection.exec::<MyRow, _, _>(&statement.sql, params);
-            let outcome = tokio::select! {
-                _ = cancellation.cancelled() => {
-                    self.session.discard().await;
-                    self.open = false;
-                    return Err(DatabaseError {
-                        category: ErrorCategory::Cancelled,
-                        phase: ErrorPhase::Read,
-                        remote_effect: RemoteEffect::None,
-                        retry: RetryDisposition::Never,
-                        provider: Some(kind),
-                        execution_id: None,
-                        diagnostics: None,
-                        message: "query MySQL cancellata".to_owned(),
-                    });
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Read, self.session.kind()));
                 }
-                result = tokio::time::timeout(timeout, execution) => result,
-            };
-            let rows = match outcome {
-                Ok(Ok(rows)) => rows,
-                Ok(Err(error)) => {
-                    return Err(driver_error(
-                        kind,
-                        &error,
-                        ErrorPhase::Read,
-                        RemoteEffect::None,
-                    ));
-                }
-                Err(_) => {
-                    self.session.discard().await;
-                    self.open = false;
-                    return Err(DatabaseError {
-                        category: ErrorCategory::Timeout,
-                        phase: ErrorPhase::Read,
-                        remote_effect: RemoteEffect::None,
-                        retry: RetryDisposition::Never,
-                        provider: Some(self.session.kind()),
-                        execution_id: None,
-                        diagnostics: None,
-                        message: "query MySQL timeout".to_owned(),
-                    });
-                }
-            };
-            // Extract column names dal primo row (o vuoto se nessun result).
-            let columns: Arc<[String]> = if rows.is_empty() {
-                Arc::from(Vec::<String>::new())
-            } else {
-                let names: Vec<String> = rows[0]
-                    .columns_ref()
-                    .iter()
-                    .map(|c| c.name_str().to_string())
-                    .collect();
-                Arc::from(names)
-            };
-            rows.into_iter()
-                .map(|r| decode_row(r, &columns, kind))
-                .collect::<Result<Vec<_>>>()
+                // Il prodotto della connessione, letto una volta: piu avanti la
+                // sessione e prestata in modo esclusivo e non e piu leggibile.
+                let kind = self.session.kind();
+                let profile = self.session.profile();
+                // Fix P1 review MySQL: enforcement condiviso (parity Postgres).
+                plenora_database_core::native_query_policy::enforce_policy(
+                    self.native_query_policy,
+                    &statement.sql,
+                )?;
+                let params = bind_positional_params(&statement.params)?;
+                // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
+                let timeout = self.session.operation_timeout();
+                let connection = self
+                    .session
+                    .connection_mut()
+                    .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
+                let execution = connection.exec::<MyRow, _, _>(&statement.sql, params);
+                let outcome = tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        self.session.discard().await;
+                        self.open = false;
+                        return Err(DatabaseError {
+                            category: ErrorCategory::Cancelled,
+                            phase: ErrorPhase::Read,
+                            remote_effect: RemoteEffect::None,
+                            retry: RetryDisposition::Never,
+                            provider: Some(kind),
+                            execution_id: None,
+                            diagnostics: None,
+                            message: "query MySQL cancellata".to_owned(),
+                        });
+                    }
+                    result = tokio::time::timeout(timeout, execution) => result,
+                };
+                let rows = match outcome {
+                    Ok(Ok(rows)) => rows,
+                    Ok(Err(error)) => {
+                        return Err(driver_error(
+                            profile,
+                            &error,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    Err(_) => {
+                        self.session.discard().await;
+                        self.open = false;
+                        return Err(DatabaseError {
+                            category: ErrorCategory::Timeout,
+                            phase: ErrorPhase::Read,
+                            remote_effect: RemoteEffect::None,
+                            retry: RetryDisposition::Never,
+                            provider: Some(self.session.kind()),
+                            execution_id: None,
+                            diagnostics: None,
+                            message: "query MySQL timeout".to_owned(),
+                        });
+                    }
+                };
+                // Extract column names dal primo row (o vuoto se nessun result).
+                let columns: Arc<[String]> = if rows.is_empty() {
+                    Arc::from(Vec::<String>::new())
+                } else {
+                    let names: Vec<String> = rows[0]
+                        .columns_ref()
+                        .iter()
+                        .map(|c| c.name_str().to_string())
+                        .collect();
+                    Arc::from(names)
+                };
+                rows.into_iter()
+                    .map(|r| decode_row(r, &columns, kind))
+                    .collect::<Result<Vec<_>>>()
+            }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -446,18 +467,28 @@ impl TransactionScope for MysqlTransaction {
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
         Box::pin(async move {
-            Err(DatabaseError {
-                category: ErrorCategory::Unsupported,
-                phase: ErrorPhase::Prepare,
-                remote_effect: RemoteEffect::None,
-                retry: RetryDisposition::Never,
-                provider: Some(self.session.kind()),
-                execution_id: None,
-                diagnostics: None,
-                message: "query_stream MySQL non ancora implementato in v1 \
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                Err(DatabaseError {
+                    category: ErrorCategory::Unsupported,
+                    phase: ErrorPhase::Prepare,
+                    remote_effect: RemoteEffect::None,
+                    retry: RetryDisposition::Never,
+                    provider: Some(self.session.kind()),
+                    execution_id: None,
+                    diagnostics: None,
+                    message: "query_stream MySQL non ancora implementato in v1 \
                           (usa Provider::read per stream Arrow bulk)"
-                    .to_owned(),
-            })
+                        .to_owned(),
+                })
+            }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -467,17 +498,27 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+                }
+                let quoted = quote_savepoint_name(name)?;
+                raw_exec(
+                    &mut self.session,
+                    &format!("SAVEPOINT {quoted}"),
+                    ErrorPhase::Prepare,
+                    cancellation,
+                )
+                .await
             }
-            let quoted = quote_savepoint_name(name)?;
-            raw_exec(
-                &mut self.session,
-                &format!("SAVEPOINT {quoted}"),
-                ErrorPhase::Prepare,
-                cancellation,
-            )
-            .await
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -487,17 +528,27 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+                }
+                let quoted = quote_savepoint_name(name)?;
+                raw_exec(
+                    &mut self.session,
+                    &format!("ROLLBACK TO SAVEPOINT {quoted}"),
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await
             }
-            let quoted = quote_savepoint_name(name)?;
-            raw_exec(
-                &mut self.session,
-                &format!("ROLLBACK TO SAVEPOINT {quoted}"),
-                ErrorPhase::Write,
-                cancellation,
-            )
-            .await
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -507,17 +558,27 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+                }
+                let quoted = quote_savepoint_name(name)?;
+                raw_exec(
+                    &mut self.session,
+                    &format!("RELEASE SAVEPOINT {quoted}"),
+                    ErrorPhase::Prepare,
+                    cancellation,
+                )
+                .await
             }
-            let quoted = quote_savepoint_name(name)?;
-            raw_exec(
-                &mut self.session,
-                &format!("RELEASE SAVEPOINT {quoted}"),
-                ErrorPhase::Prepare,
-                cancellation,
-            )
-            .await
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -526,51 +587,71 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &CancellationToken,
     ) -> ProviderFuture<'_, CommitOutcome> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Commit, self.session.kind()));
-            }
-            let outcome = self
-                .session
-                .exec_transaction(
-                    MysqlTransactionCommand::Commit,
-                    ErrorPhase::Commit,
-                    cancellation,
-                )
-                .await;
-            self.open = false;
-            match outcome {
-                Ok(()) => Ok(CommitOutcome::Committed),
-                Err(err)
-                    if matches!(
-                        err.category,
-                        ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                    ) =>
-                {
-                    // Canale compromesso durante commit: outcome ignoto.
-                    Ok(CommitOutcome::OutcomeUnknown {
-                        recovery: outcome_unknown_recovery(),
-                    })
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Commit, self.session.kind()));
                 }
-                Err(err) => Err(err),
+                let outcome = self
+                    .session
+                    .exec_transaction(
+                        MysqlTransactionCommand::Commit,
+                        ErrorPhase::Commit,
+                        cancellation,
+                    )
+                    .await;
+                self.open = false;
+                match outcome {
+                    Ok(()) => Ok(CommitOutcome::Committed),
+                    Err(err)
+                        if matches!(
+                            err.category,
+                            ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
+                        ) =>
+                    {
+                        // Canale compromesso durante commit: outcome ignoto.
+                        Ok(CommitOutcome::OutcomeUnknown {
+                            recovery: outcome_unknown_recovery(),
+                        })
+                    }
+                    Err(err) => Err(err),
+                }
             }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
     fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async move {
-            if !self.open {
-                return Ok(());
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Ok(());
+                }
+                let outcome = self
+                    .session
+                    .exec_transaction(
+                        MysqlTransactionCommand::Rollback,
+                        ErrorPhase::Rollback,
+                        cancellation,
+                    )
+                    .await;
+                self.open = false;
+                outcome
             }
-            let outcome = self
-                .session
-                .exec_transaction(
-                    MysqlTransactionCommand::Rollback,
-                    ErrorPhase::Rollback,
-                    cancellation,
-                )
-                .await;
-            self.open = false;
-            outcome
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 
@@ -580,42 +661,52 @@ impl TransactionScope for MysqlTransaction {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
-            if !self.open {
-                return Err(closed_error(ErrorPhase::Write, self.session.kind()));
-            }
-            // Fix P1 review MySQL: enforcement condiviso su UPDATE
-            // (+ probe se presente). Parity con `PostgresTransaction`.
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &request.update.sql,
-            )?;
-            if let Some(probe) = request.key_probe {
+            // Bordo della transazione: la policy nativa, la
+            // validazione dei savepoint e il binding costruiscono
+            // errori che non conoscono il prodotto — chi li riceve
+            // si', e li vedeva senza attribuzione o con il
+            // segnaposto.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Write, self.session.kind()));
+                }
+                // Fix P1 review MySQL: enforcement condiviso su UPDATE
+                // (+ probe se presente). Parity con `PostgresTransaction`.
                 plenora_database_core::native_query_policy::enforce_policy(
                     self.native_query_policy,
-                    &probe.sql,
+                    &request.update.sql,
                 )?;
+                if let Some(probe) = request.key_probe {
+                    plenora_database_core::native_query_policy::enforce_policy(
+                        self.native_query_policy,
+                        &probe.sql,
+                    )?;
+                }
+                // Pattern:
+                //   1. SAVEPOINT __plenora_cu
+                //   2. UPDATE ... → verifica affected_rows == expected
+                //   3. Se ok, RELEASE; se no, ROLLBACK TO + return ConcurrentModification
+                let sp = "__plenora_cu";
+                self.savepoint(sp, cancellation).await?;
+                let params = bind_positional_params(&request.update.params)?;
+                let affected = self
+                    .session
+                    .exec_write(&request.update.sql, params, ErrorPhase::Write, cancellation)
+                    .await?;
+                if affected == request.expected_affected_rows {
+                    self.release_savepoint(sp, cancellation).await?;
+                    Ok(())
+                } else {
+                    self.rollback_to_savepoint(sp, cancellation).await?;
+                    Err(concurrent_modification_error(format!(
+                        "MySQL: expected {} affected rows, got {}",
+                        request.expected_affected_rows, affected
+                    )))
+                }
             }
-            // Pattern:
-            //   1. SAVEPOINT __plenora_cu
-            //   2. UPDATE ... → verifica affected_rows == expected
-            //   3. Se ok, RELEASE; se no, ROLLBACK TO + return ConcurrentModification
-            let sp = "__plenora_cu";
-            self.savepoint(sp, cancellation).await?;
-            let params = bind_positional_params(&request.update.params)?;
-            let affected = self
-                .session
-                .exec_write(&request.update.sql, params, ErrorPhase::Write, cancellation)
-                .await?;
-            if affected == request.expected_affected_rows {
-                self.release_savepoint(sp, cancellation).await?;
-                Ok(())
-            } else {
-                self.rollback_to_savepoint(sp, cancellation).await?;
-                Err(concurrent_modification_error(format!(
-                    "MySQL: expected {} affected rows, got {}",
-                    request.expected_affected_rows, affected
-                )))
-            }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
         })
     }
 }

@@ -168,6 +168,39 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// `provider_version` arriva dalla probe: e l'unica parte che il profilo
     /// non decide, perche la dice il server.
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities;
+
+    /// Se il prodotto qualifica la **scrittura** di geometrie.
+    ///
+    /// Separata dalla lettura perche sono due prove diverse: leggere un WKB
+    /// prodotto dal server non dice nulla su cosa il server accetti in
+    /// ingresso. Un profilo senza evidenza di scrittura spatial risponde
+    /// `false`, e il piano si chiude in compilazione invece di scoprirlo al
+    /// primo INSERT.
+    fn write_spatial_is_qualified(&self) -> bool;
+
+    /// Se un tipo geometrico e scrivibile come dichiarazione `exact`.
+    ///
+    /// E un insieme piu stretto di quello letto: `geometry` e
+    /// `geomcollection` non compaiono, perche una dichiarazione `exact` che
+    /// nomina il tipo generico non e esatta.
+    fn writable_geometry_type(&self, name: &str) -> bool;
+
+    /// Cosa significa un codice di errore del server.
+    ///
+    /// I codici sono superficie di prodotto: ADR 0014 ne ha misurati due che
+    /// divergono gia oggi (1193 e 1054 su `MariaDB`). Ereditare questa tabella
+    /// significherebbe classificare come "colonna non valida" un errore che
+    /// sull'altro prodotto vuol dire altro — e la classificazione decide se
+    /// il chiamante puo ritentare.
+    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String);
+
+    /// Le cause di rifiuto per riga che il prodotto riconosce.
+    ///
+    /// La classificazione legge **solo il codice**. Il testo del messaggio e
+    /// vendor, localizzato e trasporta valori di riga: interpretarlo
+    /// significherebbe pubblicare come certo cio che e una congettura, e il
+    /// contratto `plenora-row-diagnostics-v1` lo vieta.
+    fn row_rejection_cause(&self, code: u16) -> Option<&'static str>;
 }
 
 /// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
@@ -259,14 +292,22 @@ pub(crate) const PROVISIONAL_KIND: ProviderKind = ProviderKind::Mysql;
 ///
 /// Si applica al bordo, dove il profilo c'e: da li in poi nessun segnaposto
 /// sopravvive.
+pub(crate) fn attributed_kind<T>(
+    kind: ProviderKind,
+    result: plenora_database_core::Result<T>,
+) -> plenora_database_core::Result<T> {
+    result.map_err(|mut error| {
+        error.provider = Some(kind);
+        error
+    })
+}
+
+/// Come [`attributed_kind`], quando il profilo e a portata di mano.
 pub(crate) fn attributed<T>(
     profile: &dyn ProductProfile,
     result: plenora_database_core::Result<T>,
 ) -> plenora_database_core::Result<T> {
-    result.map_err(|mut error| {
-        error.provider = Some(profile.kind());
-        error
-    })
+    attributed_kind(profile.kind(), result)
 }
 
 /// L'unica istanza: il profilo e senza stato, costruirne altre non ha senso.
@@ -531,7 +572,14 @@ impl ProductProfile for MysqlProfile {
             },
             spatial: mysql_spatial_capabilities(),
             limits: ProviderLimits {
-                max_identifier_bytes: Some(crate::MAX_IDENTIFIER_CHARACTERS as u64),
+                // Il contratto esprime il limite in **byte**, il prodotto in
+                // caratteri: `MAX_IDENTIFIER_CHARACTERS` sono 64 caratteri
+                // Unicode, che in utf8mb4 arrivano a 256 byte. Pubblicare 64
+                // dichiarerebbe un limite quattro volte piu stretto del vero
+                // e farebbe rifiutare al consumatore identificatori che il
+                // server accetta. Finche il contratto non esprime i
+                // caratteri, l'unica risposta onesta e "non dichiarato".
+                max_identifier_bytes: None,
                 max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
                 max_statement_bytes: None,
                 max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
@@ -539,6 +587,72 @@ impl ProductProfile for MysqlProfile {
                 max_record_count: None,
             },
         }
+    }
+
+    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String) {
+        let product = self.product();
+        match code {
+            1_045 => (
+                ErrorCategory::Authentication,
+                RetryDisposition::Never,
+                format!("autenticazione {product} rifiutata (codice 1045)"),
+            ),
+            1_044 => (
+                ErrorCategory::Authorization,
+                RetryDisposition::Never,
+                format!("autorizzazione {product} negata (codice 1044)"),
+            ),
+            1_049 | 1_146 => (
+                ErrorCategory::NotFound,
+                RetryDisposition::Never,
+                format!("database o oggetto {product} non trovato (codice {code})"),
+            ),
+            1_054 => (
+                ErrorCategory::Schema,
+                RetryDisposition::Never,
+                format!("colonna {product} non valida (codice 1054)"),
+            ),
+            1_062 => (
+                ErrorCategory::Conflict,
+                RetryDisposition::Never,
+                format!("vincolo univoco {product} violato (codice 1062)"),
+            ),
+            1_213 => (
+                ErrorCategory::Transient,
+                RetryDisposition::Safe,
+                format!("deadlock {product}; transazione vittima annullata"),
+            ),
+            1_205 | 3_024 => (
+                ErrorCategory::Timeout,
+                RetryDisposition::Never,
+                format!("timeout {product} (codice {code})"),
+            ),
+            native => (
+                ErrorCategory::Execution,
+                RetryDisposition::Never,
+                format!("errore server {product} redatto (codice {native})"),
+            ),
+        }
+    }
+
+    fn row_rejection_cause(&self, code: u16) -> Option<&'static str> {
+        match code {
+            // 1048 NULL in colonna non nullable, 1062 chiave duplicata,
+            // 1452 vincolo di integrità referenziale, 3819 CHECK violato,
+            // 4025 CHECK violato sulla colonna (MySQL 8.0.16+).
+            1_048 | 1_062 | 1_452 | 3_819 | 4_025 => {
+                Some(plenora_database_core::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION)
+            }
+            _ => None,
+        }
+    }
+
+    fn write_spatial_is_qualified(&self) -> bool {
+        true
+    }
+
+    fn writable_geometry_type(&self, name: &str) -> bool {
+        crate::write::geometry_type_is_writable(name)
     }
 
     fn is_spatial_native_type(&self, native_type: &str) -> bool {
@@ -656,15 +770,127 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
     }
 }
 
+/// Un secondo prodotto, esistente solo nei test.
+///
+/// Non e `MariadbProfile`: non decide nulla di `MariaDB` e non ne anticipa il
+/// comportamento. Serve a una cosa sola — rendere **osservabile** cio che
+/// altrimenti sarebbe indistinguibile, perche con un profilo solo ogni
+/// attribuzione e `Mysql` e nessun test puo dire se viene dal profilo o da
+/// un literal sopravvissuto. Delega tutto a `MYSQL_PROFILE` tranne
+/// l'identita, che e esattamente cio che si vuole vedere cambiare.
+#[cfg(test)]
+pub(crate) struct SecondProductProfile;
+
+#[cfg(test)]
+pub(crate) static SECOND_PRODUCT_PROFILE: SecondProductProfile = SecondProductProfile;
+
+#[cfg(test)]
+impl ProductProfile for SecondProductProfile {
+    fn product(&self) -> &'static str {
+        "SecondProduct"
+    }
+
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Mariadb
+    }
+
+    fn foreign_product_rejection(
+        &self,
+        product_version: &str,
+        version_comment: &str,
+    ) -> Option<DatabaseError> {
+        MYSQL_PROFILE.foreign_product_rejection(product_version, version_comment)
+    }
+
+    fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
+        MYSQL_PROFILE.statement_timeout_statement(timeout_ms)
+    }
+
+    fn schemas_query(&self) -> &'static str {
+        MYSQL_PROFILE.schemas_query()
+    }
+
+    fn objects_query(&self) -> &'static str {
+        MYSQL_PROFILE.objects_query()
+    }
+
+    fn object_query(&self) -> &'static str {
+        MYSQL_PROFILE.object_query()
+    }
+
+    fn object_columns_query(&self) -> &'static str {
+        MYSQL_PROFILE.object_columns_query()
+    }
+
+    fn object_indexes_query(&self) -> &'static str {
+        MYSQL_PROFILE.object_indexes_query()
+    }
+
+    fn reports_functional_index_parts(&self) -> bool {
+        MYSQL_PROFILE.reports_functional_index_parts()
+    }
+
+    fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec> {
+        MYSQL_PROFILE.wire_column_spec(column)
+    }
+
+    fn is_spatial_native_type(&self, native_type: &str) -> bool {
+        MYSQL_PROFILE.is_spatial_native_type(native_type)
+    }
+
+    fn spatial_requires_declared_srid(&self) -> bool {
+        MYSQL_PROFILE.spatial_requires_declared_srid()
+    }
+
+    fn geometry_projection(&self, quoted: &str) -> String {
+        MYSQL_PROFILE.geometry_projection(quoted)
+    }
+
+    fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool {
+        MYSQL_PROFILE.geometry_output_is_unexpected(srid, dimensions)
+    }
+
+    fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
+        ProviderCapabilities {
+            provider: self.kind(),
+            ..MYSQL_PROFILE.capabilities(provider_version)
+        }
+    }
+
+    fn write_spatial_is_qualified(&self) -> bool {
+        MYSQL_PROFILE.write_spatial_is_qualified()
+    }
+
+    fn writable_geometry_type(&self, name: &str) -> bool {
+        MYSQL_PROFILE.writable_geometry_type(name)
+    }
+
+    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String) {
+        MYSQL_PROFILE.classify_server_code(code)
+    }
+
+    fn row_rejection_cause(&self, code: u16) -> Option<&'static str> {
+        MYSQL_PROFILE.row_rejection_cause(code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ProductProfile, COLUMN_ALIASES, INDEX_PART_ALIASES, MYSQL_PROFILE, OBJECT_ALIASES,
-        SCHEMA_ALIASES,
+        SCHEMA_ALIASES, SECOND_PRODUCT_PROFILE,
     };
     use crate::types::MysqlColumnKind;
+    use crate::MysqlConfig;
     use mysql_async::consts::ColumnType;
     use mysql_async::Column;
+    use plenora_database_core::plan::ObjectRef;
+    use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    use plenora_database_core::CancellationToken;
     use plenora_database_core::{plan::ProviderKind, ErrorCategory, ErrorPhase};
 
     #[test]
@@ -887,27 +1113,95 @@ mod tests {
     }
 
     #[test]
-    fn every_boundary_that_returns_a_future_restamps_the_attribution() {
-        // Il segnaposto e sicuro solo perche il bordo lo copre. Un metodo di
-        // `Provider` che restituisse un futuro senza timbrare lascerebbe
-        // uscire l'attribuzione con cui l'errore e nato, e nessuna delle
-        // guardie sopra se ne accorgerebbe.
-        let source = include_str!("provider.rs");
-        let start = source
-            .find("impl Provider for MysqlProvider {")
-            .expect("l'impl del trait deve esistere");
-        let end = source[start..]
-            .find(format!("{}}}", '\n').as_str())
-            .map_or(source.len(), |at| start + at);
-        let block = &source[start..end];
+    fn every_method_that_returns_a_future_restamps_the_attribution() {
+        // Non un conteggio complessivo: quello lascerebbe compensare due
+        // sbilanciamenti in metodi diversi. La verifica e per metodo, sui due
+        // trait che restituiscono futuri — `Provider` e `TransactionScope` —
+        // perche il segnaposto e sicuro solo dove il bordo lo copre.
         let boxed = format!("Box::{}(", "pin");
-        let stamped = format!("crate::profile::{}(", "attributed");
-        assert_eq!(
-            block.matches(boxed.as_str()).count(),
-            block.matches(stamped.as_str()).count(),
-            "ogni futuro restituito da Provider deve passare dal bordo"
+        let stamped = format!("crate::profile::{}", "attributed");
+        for (module, source, header) in [
+            (
+                "provider.rs",
+                include_str!("provider.rs"),
+                "impl Provider for MysqlProvider {",
+            ),
+            (
+                "transaction.rs",
+                include_str!("transaction.rs"),
+                "impl TransactionScope for MysqlTransaction {",
+            ),
+        ] {
+            let start = source.find(header).expect("l'impl del trait deve esistere");
+            let end = source[start..]
+                .find(format!("{}}}", '\n').as_str())
+                .map_or(source.len(), |at| start + at);
+            let block = &source[start..end];
+            let mut methods = 0;
+            for method in block.split(format!("{}    fn ", '\n').as_str()).skip(1) {
+                if !method.contains(boxed.as_str()) {
+                    continue;
+                }
+                methods += 1;
+                let name = method.split(['(', '<']).next().unwrap_or("?");
+                assert!(
+                    method.contains(stamped.as_str()),
+                    "{module}::{name} restituisce un futuro senza ristampare l'attribuzione"
+                );
+            }
+            assert!(methods >= 8, "{module}: solo {methods} metodi ispezionati");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_profile_changes_what_the_caller_observes() {
+        // La prova che le guardie strutturali non possono dare: con un solo
+        // profilo ogni attribuzione e `Mysql`, e nessun test distingue il
+        // profilo da un literal sopravvissuto. Con due, la differenza si
+        // vede — e questo errore nasce nel renderer, con il segnaposto, e
+        // arriva al chiamante con l'identita del provider.
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
         );
-        assert!(block.matches(boxed.as_str()).count() >= 8);
+        let provider = crate::MysqlProvider::with_profile(config, 2, &SECOND_PRODUCT_PROFILE)
+            .expect("provider sul secondo profilo");
+        assert_eq!(provider.kind(), ProviderKind::Mariadb);
+
+        // Un identificatore oltre il limite fallisce nel rendering, prima di
+        // qualunque connessione: e il percorso che usa `PROVISIONAL_KIND`.
+        // Un identificatore oltre il limite fallisce nel rendering, prima
+        // di qualunque connessione: e il percorso che usa
+        // `PROVISIONAL_KIND`.
+        let mut operation = oversized_identifier_query();
+        operation.source = Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("warehouse".to_owned()),
+                object: "x".repeat(crate::MAX_IDENTIFIER_CHARACTERS + 1),
+                layer_id: None,
+            },
+            alias: None,
+        });
+
+        let error = provider
+            .query(
+                &SecretString::new("unique-secret"),
+                &operation,
+                &ParameterBag::default(),
+                &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .expect("identificatore oltre il limite");
+        assert_eq!(
+            error.provider,
+            Some(ProviderKind::Mariadb),
+            "l'errore esce con l'attribuzione del provider, non con il segnaposto"
+        );
     }
 
     #[test]
@@ -1000,6 +1294,76 @@ mod tests {
             let alias = tail.split('"').next().unwrap_or_default();
             assert!(declared.contains(&alias), "alias non dichiarato: {alias}");
             rest = tail;
+        }
+    }
+
+    fn oversized_identifier_query() -> QueryOperation {
+        QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("warehouse".to_owned()),
+                    object: "events".to_owned(),
+                    layer_id: None,
+                },
+                alias: None,
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "event_id".to_owned(),
+                    },
+                },
+                alias: None,
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        }
+    }
+
+    #[test]
+    fn no_production_path_uses_a_profileless_entry_point() {
+        // Ogni forma esportata ha un gemello `_with_profile`, e la forma
+        // senza esiste solo per chi il profilo non ce l'ha: chiamandola dal
+        // provider si perde silenziosamente il prodotto, ed e successo due
+        // volte — con il pool e con la compilazione della scrittura.
+        let source = include_str!("provider.rs");
+        let production = source
+            .split_once(format!("{}mod tests {{", '\n').as_str())
+            .map_or(source, |(head, _)| head);
+        for entry in [
+            "MysqlPool::new",
+            "probe_server",
+            "list_schemas",
+            "list_objects",
+            "describe_object",
+            "read_operation",
+            "query_operation",
+            "MysqlReadPlan::compile",
+            "MysqlWritePlan::compile",
+            "from_catalog",
+            "query_result_columns",
+        ] {
+            // L'ago e il nome seguito dalla parentesi: il gemello con il
+            // profilo ha altro in mezzo e non aggancia.
+            let literal = format!("{entry}(");
+            assert_eq!(
+                production.matches(literal.as_str()).count(),
+                0,
+                "il provider usa {entry} senza profilo"
+            );
         }
     }
 

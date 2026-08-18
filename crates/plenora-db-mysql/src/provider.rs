@@ -107,7 +107,15 @@ impl MysqlProvider {
             }
         }
         let config = self.config.clone().with_password(secret.clone());
-        let pool = Arc::new(MysqlPool::new(&config, self.max_connections)?);
+        // Il pool eredita il profilo del provider, e con esso ogni sessione
+        // che ne esce: `MysqlPool::new` forzerebbe quello MySQL, e un secondo
+        // provider avrebbe connessioni che si dichiarano del prodotto
+        // sbagliato fin dalla probe.
+        let pool = Arc::new(MysqlPool::new_with_profile(
+            &config,
+            self.max_connections,
+            self.profile,
+        )?);
         *cached = Some(CachedPool {
             secret_fingerprint: fingerprint,
             pool: Arc::clone(&pool),
@@ -363,10 +371,11 @@ impl Provider for MysqlProvider {
                 let effective_cancellation =
                     crate::read::BudgetCancellation::new(cancellation, budget);
                 let token = effective_cancellation.token();
-                let plan = crate::write::MysqlWritePlan::compile(
+                let plan = crate::write::MysqlWritePlan::compile_with_profile(
                     &input_schema,
                     operation,
                     self.config.database(),
+                    self.profile,
                 )?;
                 let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
                 let column_count = u64::try_from(input_schema.fields().len()).map_err(|_| {
@@ -550,8 +559,12 @@ async fn execute_mysql_write(
             "schema stream MySQL diverso dallo schema preparato",
         ));
     }
-    let plan =
-        crate::write::MysqlWritePlan::compile(&schema, &operation, provider.config.database())?;
+    let plan = crate::write::MysqlWritePlan::compile_with_profile(
+        &schema,
+        &operation,
+        provider.config.database(),
+        provider.profile,
+    )?;
     let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget);
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;
@@ -585,8 +598,12 @@ async fn execute_mysql_write(
             Err(err) if err.category == ErrorCategory::NotFound => {}
             Err(other) => return Err(other),
         }
-        let ddl =
-            crate::write::build_create_table_sql(&schema, &operation, provider.config.database())?;
+        let ddl = crate::write::build_create_table_sql(
+            &schema,
+            &operation,
+            provider.config.database(),
+            provider.profile,
+        )?;
         session
             .exec_control(&ddl, ErrorPhase::Prepare, token)
             .await?;
@@ -677,6 +694,7 @@ async fn execute_mysql_write_after_ddl(
             schema,
             &staging_name,
             provider.config.database(),
+            provider.profile,
         )?;
         session
             .exec_control(&staging_ddl, ErrorPhase::Prepare, token)

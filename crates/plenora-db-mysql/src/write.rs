@@ -71,9 +71,18 @@ pub struct MysqlWritePlan {
 fn compile_write_column(
     field: &Field,
     renderer: &plenora_database_sql::Renderer,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<MysqlWriteColumn> {
     let contract = FieldContract::parse(field)?;
     let (kind, spatial_srid, exact_geometry_type) = if contract.spatial {
+        // Il primo cancello e il prodotto: leggere geometrie non dice nulla
+        // su cosa il server accetti in ingresso, e senza quella prova il
+        // piano si chiude qui invece che al primo INSERT.
+        if !profile.write_spatial_is_qualified() {
+            return Err(unsupported(
+                "write spatial non qualificata per il prodotto servito",
+            ));
+        }
         if !contract.is_geometry()
             || contract.encoding != Some("wkb")
             || field.data_type() != &DataType::Binary
@@ -83,7 +92,9 @@ fn compile_write_column(
             ));
         }
         if contract.dimensions != Some("xy") {
-            return Err(unsupported("MySQL 8.4 qualifica soltanto geometrie XY"));
+            return Err(unsupported(
+                "write spatial MySQL qualifica soltanto geometrie XY",
+            ));
         }
         let srid = contract
             .srid
@@ -94,7 +105,7 @@ fn compile_write_column(
                 let geometry_type = contract
                     .geometry_types
                     .ok_or_else(|| mapping_error("tipo geometrico exact assente dal contratto"))?;
-                if geometry_type.contains(',') || !mysql_geometry_type_is_supported(geometry_type) {
+                if geometry_type.contains(',') || !profile.writable_geometry_type(geometry_type) {
                     return Err(unsupported(
                         "insieme di tipi geometrici non qualificato per MySQL",
                     ));
@@ -138,7 +149,12 @@ fn validate_spatial_policy(operation: &WriteOperation, columns: &[MysqlWriteColu
     }
 }
 
-fn mysql_geometry_type_is_supported(value: &str) -> bool {
+/// I tipi geometrici scrivibili come dichiarazione `exact`.
+///
+/// Vive qui perche qui e usata la lista in scrittura; il profilo la espone
+/// come decisione, cosi un secondo prodotto puo restringerla senza duplicarla.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn geometry_type_is_writable(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
         "point"
@@ -157,10 +173,16 @@ impl MysqlWritePlan {
     /// # Errors
     ///
     /// Fallisce chiuso fuori dal sottoinsieme qualificato.
-    pub(super) fn compile(
+    /// Il piano di scrittura, con il profilo che decide la parte spatial.
+    ///
+    /// # Errors
+    ///
+    /// Come `compile`.
+    pub(super) fn compile_with_profile(
         schema: &SchemaRef,
         operation: &WriteOperation,
         database: &str,
+        profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
         plenora_database_core::field_contract::validate_schema_contract(schema.as_ref())?;
         validate_operation(operation, database)?;
@@ -180,7 +202,7 @@ impl MysqlWritePlan {
         let columns = schema
             .fields()
             .iter()
-            .map(|field| compile_write_column(field, &renderer))
+            .map(|field| compile_write_column(field, &renderer, profile))
             .collect::<Result<Vec<_>>>()?;
         validate_spatial_policy(operation, &columns)?;
         if operation.mode == WriteMode::Create {
@@ -658,7 +680,7 @@ impl MysqlWritePlan {
                 let geometry_type = inspection
                     .root
                     .geometry_type_name()
-                    .filter(|value| mysql_geometry_type_is_supported(value))
+                    .filter(|value| geometry_type_is_writable(value))
                     .ok_or_else(|| {
                         write_error(
                             ErrorCategory::DataMapping,
@@ -1572,6 +1594,7 @@ pub(crate) fn build_create_table_sql(
     schema: &SchemaRef,
     operation: &WriteOperation,
     database: &str,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<String> {
     let renderer = mysql_renderer();
     let target_schema = operation.target.schema.as_deref().unwrap_or(database);
@@ -1585,7 +1608,7 @@ pub(crate) fn build_create_table_sql(
     let columns: Vec<MysqlWriteColumn> = schema
         .fields()
         .iter()
-        .map(|field| compile_write_column(field, &renderer))
+        .map(|field| compile_write_column(field, &renderer, profile))
         .collect::<Result<Vec<_>>>()?;
 
     let mut lines = Vec::with_capacity(columns.len() + 1);
@@ -1624,6 +1647,7 @@ pub(crate) fn build_temp_staging_sql(
     schema: &SchemaRef,
     staging_name: &str,
     database: &str,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<String> {
     let renderer = mysql_renderer();
     let staging_ident = mysql_identifier(staging_name)?;
@@ -1637,7 +1661,7 @@ pub(crate) fn build_temp_staging_sql(
     let columns: Vec<MysqlWriteColumn> = schema
         .fields()
         .iter()
-        .map(|field| compile_write_column(field, &renderer))
+        .map(|field| compile_write_column(field, &renderer, profile))
         .collect::<Result<Vec<_>>>()?;
     let lines: Vec<String> = columns
         .iter()
@@ -1755,8 +1779,13 @@ mod tests {
     }
 
     fn append_plan(fields: Vec<Field>) -> MysqlWritePlan {
-        MysqlWritePlan::compile(&schema(fields), &append_operation(), "warehouse")
-            .expect("piano append qualificato")
+        MysqlWritePlan::compile_with_profile(
+            &schema(fields),
+            &append_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano append qualificato")
     }
 
     /// L'ordine delle colonne e quello dello schema Arrow, non un ordine
@@ -1891,8 +1920,13 @@ mod tests {
         cases.push((operation, ErrorCategory::Unsupported));
 
         for (operation, expected) in cases {
-            let error = MysqlWritePlan::compile(&input, &operation, "warehouse")
-                .expect_err("forma write non qualificata");
+            let error = MysqlWritePlan::compile_with_profile(
+                &input,
+                &operation,
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE,
+            )
+            .expect_err("forma write non qualificata");
             assert_eq!(error.category, expected, "{operation:?}");
             assert_eq!(error.phase, ErrorPhase::Prepare);
         }
@@ -1917,8 +1951,20 @@ mod tests {
         operation.keys = vec!["id".to_owned(), "tenant".to_owned()];
         let input = schema(fields);
 
-        MysqlWritePlan::compile(&input, &operation, "warehouse").expect("Create con keys");
-        let ddl = build_create_table_sql(&input, &operation, "warehouse").expect("DDL");
+        MysqlWritePlan::compile_with_profile(
+            &input,
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("Create con keys");
+        let ddl = build_create_table_sql(
+            &input,
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("DDL");
         assert!(
             ddl.contains("PRIMARY KEY (`id`, `tenant`)"),
             "PRIMARY KEY assente dalla DDL: {ddl}"
@@ -1927,7 +1973,13 @@ mod tests {
         // Senza keys la tabella nasce senza chiave primaria: legittimo.
         let mut without = append_operation();
         without.mode = WriteMode::Create;
-        let plain = build_create_table_sql(&input, &without, "warehouse").expect("DDL");
+        let plain = build_create_table_sql(
+            &input,
+            &without,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("DDL");
         assert!(!plain.contains("PRIMARY KEY"), "{plain}");
 
         // Una key che non e nello schema Arrow non puo diventare PRIMARY KEY.
@@ -1935,9 +1987,14 @@ mod tests {
         absent.mode = WriteMode::Create;
         absent.keys = vec!["mai_dichiarata".to_owned()];
         assert_eq!(
-            MysqlWritePlan::compile(&input, &absent, "warehouse")
-                .expect_err("key assente accettata")
-                .category,
+            MysqlWritePlan::compile_with_profile(
+                &input,
+                &absent,
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE
+            )
+            .expect_err("key assente accettata")
+            .category,
             ErrorCategory::InvalidPlan
         );
 
@@ -1950,8 +2007,13 @@ mod tests {
         let mut on_nullable = append_operation();
         on_nullable.mode = WriteMode::Create;
         on_nullable.keys = vec!["id".to_owned()];
-        let error = MysqlWritePlan::compile(&nullable, &on_nullable, "warehouse")
-            .expect_err("PRIMARY KEY nullable accettata");
+        let error = MysqlWritePlan::compile_with_profile(
+            &nullable,
+            &on_nullable,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("PRIMARY KEY nullable accettata");
         assert_eq!(error.category, ErrorCategory::InvalidPlan);
         assert_eq!(error.phase, ErrorPhase::Prepare);
         assert!(error.message.contains("nullable"), "{}", error.message);
@@ -1961,9 +2023,14 @@ mod tests {
         repeated.mode = WriteMode::Create;
         repeated.keys = vec!["id".to_owned(), "id".to_owned()];
         assert_eq!(
-            MysqlWritePlan::compile(&input, &repeated, "warehouse")
-                .expect_err("chiave ripetuta accettata")
-                .category,
+            MysqlWritePlan::compile_with_profile(
+                &input,
+                &repeated,
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE
+            )
+            .expect_err("chiave ripetuta accettata")
+            .category,
             ErrorCategory::InvalidPlan
         );
 
@@ -1972,9 +2039,14 @@ mod tests {
         updating.mode = WriteMode::Create;
         updating.update_columns = vec!["label".to_owned()];
         assert_eq!(
-            MysqlWritePlan::compile(&input, &updating, "warehouse")
-                .expect_err("update_columns accettate")
-                .category,
+            MysqlWritePlan::compile_with_profile(
+                &input,
+                &updating,
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE
+            )
+            .expect_err("update_columns accettate")
+            .category,
             ErrorCategory::InvalidPlan
         );
     }
@@ -2002,7 +2074,12 @@ mod tests {
             let mut operation = append_operation();
             operation.mode = WriteMode::Create;
             operation.keys = vec![name.to_owned()];
-            let Err(error) = MysqlWritePlan::compile(&input, &operation, "warehouse") else {
+            let Err(error) = MysqlWritePlan::compile_with_profile(
+                &input,
+                &operation,
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE,
+            ) else {
                 panic!("{name}: chiave accettata");
             };
             assert_eq!(error.category, ErrorCategory::InvalidPlan, "{name}");
@@ -2032,8 +2109,13 @@ mod tests {
         let mut operation = spatial_operation();
         operation.mode = WriteMode::Create;
         operation.keys = vec!["geom".to_owned()];
-        let error = MysqlWritePlan::compile(&spatial, &operation, "warehouse")
-            .expect_err("chiave spatial accettata");
+        let error = MysqlWritePlan::compile_with_profile(
+            &spatial,
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("chiave spatial accettata");
         assert_eq!(error.category, ErrorCategory::InvalidPlan);
         assert!(error.message.contains("spatial"), "{}", error.message);
 
@@ -2045,8 +2127,13 @@ mod tests {
         let mut too_many = append_operation();
         too_many.mode = WriteMode::Create;
         too_many.keys = (0..17).map(|index| format!("k{index}")).collect();
-        let error =
-            MysqlWritePlan::compile(&wide, &too_many, "warehouse").expect_err("17 parti accettate");
+        let error = MysqlWritePlan::compile_with_profile(
+            &wide,
+            &too_many,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("17 parti accettate");
         assert_eq!(error.category, ErrorCategory::InvalidPlan);
         assert!(error.message.contains("16"), "{}", error.message);
 
@@ -2058,7 +2145,13 @@ mod tests {
         let mut exact = append_operation();
         exact.mode = WriteMode::Create;
         exact.keys = (0..16).map(|index| format!("k{index}")).collect();
-        MysqlWritePlan::compile(&bounded, &exact, "warehouse").expect("16 parti rifiutate");
+        MysqlWritePlan::compile_with_profile(
+            &bounded,
+            &exact,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("16 parti rifiutate");
     }
 
     #[test]
@@ -2067,10 +2160,11 @@ mod tests {
             let mut operation = append_operation();
             operation.mode = mode;
             operation.keys = vec!["id".to_owned()];
-            let error = MysqlWritePlan::compile(
+            let error = MysqlWritePlan::compile_with_profile(
                 &schema(vec![Field::new("id", DataType::Int64, false)]),
                 &operation,
                 "warehouse",
+                &crate::profile::MYSQL_PROFILE,
             )
             .expect_err("keys accettate");
             assert_eq!(error.category, ErrorCategory::InvalidPlan);
@@ -2084,10 +2178,11 @@ mod tests {
             operation.mode = mode;
             operation.update_columns = vec!["id".to_owned()];
             assert_eq!(
-                MysqlWritePlan::compile(
+                MysqlWritePlan::compile_with_profile(
                     &schema(vec![Field::new("id", DataType::Int64, false)]),
                     &operation,
                     "warehouse",
+                    &crate::profile::MYSQL_PROFILE,
                 )
                 .expect_err("update_columns accettate")
                 .category,
@@ -2102,20 +2197,36 @@ mod tests {
 
         let mut cross_database = append_operation();
         cross_database.target.schema = Some("other_database".to_owned());
-        let error = MysqlWritePlan::compile(&input, &cross_database, "warehouse")
-            .expect_err("target cross-database");
+        let error = MysqlWritePlan::compile_with_profile(
+            &input,
+            &cross_database,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("target cross-database");
         assert_eq!(error.category, ErrorCategory::Unsupported);
 
         let mut layer = append_operation();
         layer.target.layer_id = Some(plenora_database_core::plan::LayerId::Number(1));
-        let error = MysqlWritePlan::compile(&input, &layer, "warehouse").expect_err("layer MySQL");
+        let error = MysqlWritePlan::compile_with_profile(
+            &input,
+            &layer,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("layer MySQL");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 
     #[test]
     fn compile_rejects_empty_or_unqualified_arrow_schemas() {
-        let error = MysqlWritePlan::compile(&schema(Vec::new()), &append_operation(), "warehouse")
-            .expect_err("schema vuoto");
+        let error = MysqlWritePlan::compile_with_profile(
+            &schema(Vec::new()),
+            &append_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("schema vuoto");
         assert_eq!(error.category, ErrorCategory::Schema);
 
         let unsupported = schema(vec![Field::new(
@@ -2126,8 +2237,13 @@ mod tests {
             ),
             false,
         )]);
-        let error = MysqlWritePlan::compile(&unsupported, &append_operation(), "warehouse")
-            .expect_err("timestamp con timezone non qualificato");
+        let error = MysqlWritePlan::compile_with_profile(
+            &unsupported,
+            &append_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("timestamp con timezone non qualificato");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 
@@ -2142,8 +2258,13 @@ mod tests {
                 "999.0".to_owned(),
             )]),
         ));
-        let error = MysqlWritePlan::compile(&foreign, &append_operation(), "warehouse")
-            .expect_err("contratto Arrow estraneo");
+        let error = MysqlWritePlan::compile_with_profile(
+            &foreign,
+            &append_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("contratto Arrow estraneo");
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 
@@ -2550,7 +2671,7 @@ mod tests {
     #[test]
     fn a_declared_deadlock_stays_rolled_back_instead_of_unknown() {
         let deadlock = crate::error::driver_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             &server_error(1_213, "Deadlock found when trying to get lock"),
             ErrorPhase::Write,
             RemoteEffect::None,
@@ -2572,7 +2693,7 @@ mod tests {
     #[test]
     fn pre_commit_errors_claim_rollback_only_when_it_is_confirmed() {
         let failure = crate::error::driver_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             &server_error(1_062, "Duplicate entry"),
             ErrorPhase::Write,
             RemoteEffect::None,
@@ -2775,8 +2896,13 @@ mod tests {
     #[test]
     fn compile_and_preflight_qualify_only_xy_wkb_with_matching_srid() {
         let input = schema(vec![spatial_field("geometry", 4_326)]);
-        let plan = MysqlWritePlan::compile(&input, &spatial_operation(), "warehouse")
-            .expect("piano spatial XY");
+        let plan = MysqlWritePlan::compile_with_profile(
+            &input,
+            &spatial_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano spatial XY");
         assert_eq!(plan.columns[0].kind, MysqlColumnKind::Geometry);
         assert_eq!(plan.columns[0].spatial_srid, Some(4_326));
         assert_eq!(
@@ -2809,9 +2935,13 @@ mod tests {
                 dimensions.to_owned(),
             );
             let field = Field::new("geom", DataType::Binary, true).with_metadata(metadata);
-            let error =
-                MysqlWritePlan::compile(&schema(vec![field]), &spatial_operation(), "warehouse")
-                    .expect_err("dimensione non rappresentabile da MySQL");
+            let error = MysqlWritePlan::compile_with_profile(
+                &schema(vec![field]),
+                &spatial_operation(),
+                "warehouse",
+                &crate::profile::MYSQL_PROFILE,
+            )
+            .expect_err("dimensione non rappresentabile da MySQL");
             assert_eq!(error.category, ErrorCategory::Unsupported);
         }
     }
@@ -2819,8 +2949,13 @@ mod tests {
     #[test]
     fn spatial_batch_rejects_ewkb_srid_and_z_before_binding() {
         let input = schema(vec![spatial_field("geometry", 4_326)]);
-        let plan = MysqlWritePlan::compile(&input, &spatial_operation(), "warehouse")
-            .expect("piano spatial XY");
+        let plan = MysqlWritePlan::compile_with_profile(
+            &input,
+            &spatial_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano spatial XY");
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget spatial");
         for payload in [
             point_wkb(0x2000_0001, Some(4_326), &[1.0, 2.0]),
@@ -2865,8 +3000,13 @@ mod tests {
     #[test]
     fn spatial_batch_enforces_exact_type_and_cumulative_component_budget() {
         let input = schema(vec![spatial_field("linestring", 4_326)]);
-        let plan = MysqlWritePlan::compile(&input, &spatial_operation(), "warehouse")
-            .expect("piano spatial exact");
+        let plan = MysqlWritePlan::compile_with_profile(
+            &input,
+            &spatial_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano spatial exact");
         let point = point_wkb(1, None, &[1.0, 2.0]);
         let wrong_type = RecordBatch::try_new(
             Arc::clone(&input),
@@ -2884,8 +3024,13 @@ mod tests {
         );
 
         let input = schema(vec![spatial_field("point", 4_326)]);
-        let plan = MysqlWritePlan::compile(&input, &spatial_operation(), "warehouse")
-            .expect("piano point");
+        let plan = MysqlWritePlan::compile_with_profile(
+            &input,
+            &spatial_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano point");
         let limits = ResourceLimits {
             geometry_components: 3,
             ..ResourceLimits::default()
@@ -2932,8 +3077,13 @@ mod tests {
     }
 
     fn upsert_plan(fields: Vec<Field>, keys: Vec<String>) -> MysqlWritePlan {
-        MysqlWritePlan::compile(&schema(fields), &upsert_operation(keys), "warehouse")
-            .expect("piano upsert qualificato")
+        MysqlWritePlan::compile_with_profile(
+            &schema(fields),
+            &upsert_operation(keys),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("piano upsert qualificato")
     }
 
     /// Un Upsert con colonne non-key rende `ON DUPLICATE KEY UPDATE` che

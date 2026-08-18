@@ -116,7 +116,7 @@ impl MysqlPool {
                 match result {
                     Ok(Ok(connection)) => connection,
                     Ok(Err(error)) => {
-                        return Err(driver_error(self.profile.kind(), &error, ErrorPhase::Connect, RemoteEffect::None));
+                        return Err(driver_error(self.profile, &error, ErrorPhase::Connect, RemoteEffect::None));
                     }
                     Err(_) => return Err(timeout_error(self.profile.kind(), ErrorPhase::Connect, RemoteEffect::None)),
                 }

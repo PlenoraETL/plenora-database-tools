@@ -1,7 +1,5 @@
 use crate::config::MysqlConfig;
-use crate::error::{
-    driver_error, interruption_error, row_rejection_cause, server_code, timeout_error,
-};
+use crate::error::{driver_error, interruption_error, server_code, timeout_error};
 use crate::profile::ProductProfile;
 use futures_util::StreamExt;
 use mysql_async::prelude::{Queryable, StatementLike};
@@ -91,7 +89,7 @@ impl MysqlSession {
                 match result {
                     Ok(Ok(connection)) => connection,
                     Ok(Err(error)) => {
-                        return Err(driver_error(crate::profile::MYSQL_PROFILE.kind(), &error, ErrorPhase::Connect, RemoteEffect::None));
+                        return Err(driver_error(&crate::profile::MYSQL_PROFILE, &error, ErrorPhase::Connect, RemoteEffect::None));
                     }
                     Err(_) => return Err(timeout_error(crate::profile::MYSQL_PROFILE.kind(), ErrorPhase::Connect, RemoteEffect::None)),
                 }
@@ -125,6 +123,13 @@ impl MysqlSession {
     #[allow(clippy::redundant_pub_crate)]
     pub(crate) fn kind(&self) -> plenora_database_core::plan::ProviderKind {
         self.profile.kind()
+    }
+
+    /// Il profilo della connessione, per chi deve classificare e non solo
+    /// attribuire.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn profile(&self) -> &'static dyn crate::profile::ProductProfile {
+        self.profile
     }
 
     #[must_use]
@@ -174,7 +179,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -223,7 +228,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -274,7 +279,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -330,14 +335,16 @@ impl MysqlSession {
                 }
             }
             Ok(Err(error)) => {
-                if let Some(cause) = server_code(&error).and_then(row_rejection_cause) {
+                if let Some(cause) =
+                    server_code(&error).and_then(|code| self.profile.row_rejection_cause(code))
+                {
                     return Ok(Some(cause));
                 }
                 if error.is_fatal() {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -382,7 +389,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -422,7 +429,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     phase,
                     RemoteEffect::None,
@@ -478,7 +485,7 @@ impl MysqlSession {
                     self.quarantine().await;
                 }
                 Err(driver_error(
-                    self.profile.kind(),
+                    self.profile,
                     &error,
                     ErrorPhase::Prepare,
                     RemoteEffect::None,
@@ -521,7 +528,7 @@ impl MysqlSession {
                 result = tokio::time::timeout(operation_timeout, open) => {
                     match result {
                         Ok(Ok(stream)) => Some(Ok(stream)),
-                        Ok(Err(error)) => Some(Err(driver_error(self.profile.kind(),
+                        Ok(Err(error)) => Some(Err(driver_error(self.profile,
                             &error,
                             ErrorPhase::Read,
                             RemoteEffect::None,
@@ -564,7 +571,7 @@ impl MysqlSession {
                         }
                         Ok(Some(Err(error))) => {
                             break PumpOutcome::Failed(driver_error(
-                                self.profile.kind(),
+                                self.profile,
                                 &error,
                                 ErrorPhase::Read,
                                 RemoteEffect::None,

@@ -30,7 +30,8 @@ use plenora_database_core::{
 pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
     let provider_label = match provider {
         ProviderKind::Postgres => "PostgreSQL",
-        ProviderKind::Mysql | ProviderKind::Mariadb => "MySQL",
+        ProviderKind::Mysql => "MySQL",
+        ProviderKind::Mariadb => "MariaDB",
         ProviderKind::Sqlserver => "SQL Server",
         ProviderKind::Oracle => "Oracle",
         ProviderKind::Db2 => "Db2",
