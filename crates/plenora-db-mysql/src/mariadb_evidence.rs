@@ -861,11 +861,24 @@ async fn query_probes(
                         .fields()
                         .iter()
                         .map(|field| {
+                            // I metadata fanno parte dello schema Arrow: il
+                            // mapper vi pubblica il tipo nativo, e due campi
+                            // con lo stesso `DataType` possono portare
+                            // annotazioni diverse. Ordinati per chiave,
+                            // altrimenti l'ordine della mappa renderebbe
+                            // diversi due schemi uguali.
+                            let mut metadata = field
+                                .metadata()
+                                .iter()
+                                .map(|(key, value)| format!("{key}={value}"))
+                                .collect::<Vec<_>>();
+                            metadata.sort();
                             format!(
-                                "{}:{:?}/{}",
+                                "{}:{:?}/{}/{{{}}}",
                                 field.name(),
                                 field.data_type(),
-                                field.is_nullable()
+                                field.is_nullable(),
+                                metadata.join(",")
                             )
                         })
                         .collect::<Vec<_>>()
@@ -876,15 +889,18 @@ async fn query_probes(
                     "provider",
                     "wire",
                     "decodifica i valori di ogni famiglia di tipo",
-                    truncate(
-                        &batch
-                            .columns()
-                            .iter()
-                            .map(|column| condense(&format!("{column:?}")))
-                            .collect::<Vec<_>>()
-                            .join(" | "),
-                        900,
-                    ),
+                    // Nessun troncamento: una rappresentazione tagliata non
+                    // puo dimostrare che quattordici colonne coincidano, e il
+                    // confronto fra server e proprio su questa stringa. Il
+                    // riepilogo leggibile lo produce il runner, che ha anche
+                    // il digest per dire a colpo d'occhio se due server hanno
+                    // decodificato lo stesso contenuto.
+                    batch
+                        .columns()
+                        .iter()
+                        .map(|column| condense(&format!("{column:?}")))
+                        .collect::<Vec<_>>()
+                        .join(" | "),
                 );
             }
             Ok(None) => {

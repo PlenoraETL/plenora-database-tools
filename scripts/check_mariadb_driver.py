@@ -38,6 +38,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -250,6 +251,13 @@ def compare(documents: dict[str, dict[str, object]], fleet: tuple[Server, ...]) 
             observations[server.key] = {
                 "outcome": entry["outcome"],
                 "detail": entry["detail"],
+                # Il digest e sul dettaglio **intero**: due server che hanno
+                # decodificato lo stesso contenuto si riconoscono a colpo
+                # d'occhio, e il confronto non dipende dal fatto che qualcuno
+                # legga fino in fondo una riga di quattromila caratteri.
+                "digest": hashlib.sha256(
+                    entry["detail"].encode("utf-8")
+                ).hexdigest()[:16],
                 "server_code": entry["server_code"],
             }
         baseline = observations[reference]
