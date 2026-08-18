@@ -242,6 +242,45 @@ class CiWorkflowTests(unittest.TestCase):
             "la matrice moltiplica i job, e con essi i download della cache",
         )
 
+    def test_the_static_job_runs_every_serverless_self_test(self) -> None:
+        """I self-test che non chiedono un server girano a ogni push.
+
+        Restare fuori dalla CI e la condizione in cui un test smette di essere
+        letto: `test_candidate_sha_workflows.py` e morto cosi. PostgreSQL non
+        aveva un gate veloce come MySQL, quindi le sue guardie giravano solo
+        quando qualcuno lanciava il gate completo — cioe con i container su.
+
+        MySQL resta nel suo gate statico e MariaDB nella propria suite: qui si
+        aggiunge cio che non era eseguito da nessuno.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        static = jobs(workflow)["static-self-tests"]
+        for suite in (
+            "scripts/test_ci_workflows.py",
+            "scripts/test_check_mariadb_reference.py",
+            "scripts/test_check_postgres_reference.py",
+            "scripts/test_check_postgres_hardening.py",
+            "scripts/test_check_sqlserver_reference.py",
+        ):
+            self.assertIn(f"python3 {suite}", static, f"{suite} non eseguito")
+
+        # La duplicazione con `sqlserver-assurance` e voluta e dichiarata:
+        # senza la nota, il prossimo lettore la toglie credendola una svista.
+        self.assertIn("Duplicazione dichiarata", static)
+        self.assertIn(
+            "python3 scripts/test_check_sqlserver_reference.py",
+            (WORKFLOW_DIRECTORY / "sqlserver-assurance.yml").read_text(
+                encoding="utf-8"
+            ),
+            "la nota dichiara una duplicazione che non esiste",
+        )
+
+        # Il job resta leggero: se qui comparisse una toolchain, smetterebbe
+        # di essere il posto dove si aggiunge una suite senza pensarci.
+        self.assertNotIn("rust-toolchain", static)
+        self.assertNotIn("rust-cache", static)
+
     def test_fuzz_lock_uses_the_workspace_core_version(self) -> None:
         """Il lock del fuzz segue la versione del workspace.
 
