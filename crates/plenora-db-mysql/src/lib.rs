@@ -1,8 +1,13 @@
 //! Provider `MySQL` basato sul protocollo binario nativo.
 //!
-//! `MySQL` 8.4 LTS e il riferimento. Le capability restano fail-closed fino
-//! alla rispettiva prova live; in particolare il DDL atomico di `MySQL` non
-//! viene dichiarato come DDL transazionale.
+//! Il riferimento non e scritto qui: lo fissa `docker/mysql/references.json`
+//! per digest, ed e il gate a verificare che il server misurato sia quello.
+//! Al momento e `MySQL` 9.7 — la 8.4 LTS lo e stata fino al 2026-08 — e una
+//! versione scritta nel sorgente invecchia senza che nulla fallisca.
+//!
+//! Le capability restano fail-closed fino alla rispettiva prova live; in
+//! particolare il DDL atomico di `MySQL` non viene dichiarato come DDL
+//! transazionale.
 
 #![forbid(unsafe_code)]
 

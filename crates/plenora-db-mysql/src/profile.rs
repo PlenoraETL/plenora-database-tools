@@ -16,8 +16,13 @@
 //!
 //! * **`&'static dyn`, non un parametro generico.** `MysqlProvider<P>`
 //!   cambierebbe un tipo pubblico e si propagherebbe a CLI e SDK. Il profilo
-//!   e senza stato, quindi il costo del dispatch dinamico e una chiamata
-//!   indiretta su decisioni che si prendono una volta per statement.
+//!   e senza stato, quindi il costo e una chiamata indiretta non inlineabile.
+//!   Quasi tutte le decisioni si prendono una volta per statement, ma non
+//!   tutte: `geometry_output_is_unexpected` viene interrogato per **ogni
+//!   cella spatial** letta. Li la chiamata indiretta e comunque trascurabile
+//!   accanto all'ispezione EWKB che la precede, che percorre la geometria —
+//!   ed e la ragione per cui la forma resta questa, non il fatto che la
+//!   frequenza sia bassa.
 //! * **Il bypass `MariaDB` di test non si sposta.** Vive in `catalog.rs`,
 //!   accanto al punto in cui il rifiuto scatta, ed e li che va letto. Il
 //!   profilo dice *se* un prodotto e estraneo; resta al chiamante decidere
@@ -172,6 +177,67 @@ pub(crate) trait ProductProfile: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MysqlProfile;
 
+/// Gli alias che le interrogazioni del catalogo devono esporre.
+///
+/// Il profilo restituisce SQL libero, ma `catalog.rs` legge le righe **per
+/// nome**: una query che non esponesse `srs_id` compilerebbe e fallirebbe al
+/// primo oggetto descritto, a runtime, su un errore che parla di una colonna
+/// mancante invece che di un profilo incompleto. Il contratto appartiene
+/// percio al profilo, dove le query vivono.
+///
+/// Un prodotto che la colonna non ce l'ha — ADR 0014 ne ha misurati due,
+/// `SRS_ID` ed `EXPRESSION` su `MariaDB` — deve scrivere `NULL AS srs_id`, non
+/// ometterla. Non e una formalita: assente significherebbe "non misurato", e
+/// il lettore non avrebbe modo di distinguerlo da "nessun SRID dichiarato".
+/// Sono le due cose che l'evidenza tiene separate ovunque, e qui e il punto
+/// in cui si confonderebbero.
+///
+/// Le quattro liste esistono solo nei test, ed e una scelta: in produzione
+/// duplicherebbero le stringhe che le query gia contengono, e due copie della
+/// stessa verita divergono. A tenerle vere sono le guardie, che confrontano
+/// il contratto con le query da una parte e con cio che il catalogo legge
+/// dall'altra — le uniche due direzioni in cui puo rompersi.
+#[cfg(test)]
+pub(crate) const SCHEMA_ALIASES: &[&str] = &["schema_name"];
+
+/// Vedi [`SCHEMA_ALIASES`]. Vale per gli oggetti di uno schema e per il
+/// singolo oggetto: le due query rispondono alla stessa domanda con filtri
+/// diversi, e chi le legge non distingue.
+#[cfg(test)]
+pub(crate) const OBJECT_ALIASES: &[&str] = &["table_schema", "table_name", "table_type", "engine"];
+
+/// Vedi [`SCHEMA_ALIASES`]. `srs_id` e qui: e la colonna su cui poggia la
+/// strategia spatial, ed e la prima che un secondo profilo dovra dichiarare
+/// nulla invece che assente.
+#[cfg(test)]
+pub(crate) const COLUMN_ALIASES: &[&str] = &[
+    "column_name",
+    "ordinal_position",
+    "data_type",
+    "column_type",
+    "is_nullable",
+    "column_default",
+    "character_set_name",
+    "collation_name",
+    "numeric_precision",
+    "numeric_scale",
+    "datetime_precision",
+    "srs_id",
+    "extra",
+    "generation_expression",
+];
+
+/// Vedi [`SCHEMA_ALIASES`]. `seq_in_index` non viene letto ma ordina le
+/// parti, e `expression` e l'altra colonna che su `MariaDB` non esiste.
+#[cfg(test)]
+pub(crate) const INDEX_PART_ALIASES: &[&str] = &[
+    "index_name",
+    "non_unique",
+    "seq_in_index",
+    "column_name",
+    "expression",
+];
+
 /// Il `ProviderKind` con cui firma chi non ha ancora un prodotto sotto.
 ///
 /// Rendering dell'AST, mappatura dei tipi, binding dei parametri e
@@ -220,13 +286,18 @@ impl ProductProfile for MysqlProfile {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError> {
-        // Fix P1 review MySQL 2026-08-15: fail-closed su MariaDB.
-        // MariaDB non è testato né qualificato: differenze rilevanti su
-        // sequenze, INSERT ... ON DUPLICATE KEY, MERGE syntax, spatial
-        // (GEOMETRYCOLLECTION), pool prepared statement cache, e
-        // isolation semantics. Il consumer che dichiara MariaDB usa il
-        // fork sbagliato — meglio errore chiaro alla probe che silenti
-        // divergenze in produzione.
+        // Fail-closed su MariaDB, dal fix P1 del 2026-08-15. La lista di
+        // divergenze che accompagnava quel fix era una review, non una
+        // misura, e ADR 0014 l'ha smentita su piu punti di quanti ne abbia
+        // confermati. Non la si ripete qui: le divergenze misurate stanno in
+        // `docs/mariadb/EVIDENCE.md`, con il server e il digest su cui sono
+        // state osservate.
+        //
+        // Cio che regge il rifiuto non e la lista: e che il provider non e
+        // qualificato per MariaDB, e una capability non qualificata si
+        // dichiara chiusa. Meglio un errore alla probe che divergenze
+        // silenziose in produzione — a maggior ragione ora che sappiamo
+        // quali sono, e che non sono quelle che si credeva.
         //
         // Il riconoscimento e per stringa perche e cio che il server
         // espone: `VERSION()` e `@@version_comment`. ADR 0014 ha misurato
@@ -587,7 +658,10 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProductProfile, MYSQL_PROFILE};
+    use super::{
+        ProductProfile, COLUMN_ALIASES, INDEX_PART_ALIASES, MYSQL_PROFILE, OBJECT_ALIASES,
+        SCHEMA_ALIASES,
+    };
     use crate::types::MysqlColumnKind;
     use mysql_async::consts::ColumnType;
     use mysql_async::Column;
@@ -869,6 +943,64 @@ mod tests {
             published.limits.max_bind_parameters,
             Some(crate::MAX_BIND_PARAMETERS as u64)
         );
+    }
+
+    #[test]
+    fn every_catalog_query_exposes_the_aliases_its_reader_requires() {
+        for (label, sql, aliases) in [
+            ("schemi", MYSQL_PROFILE.schemas_query(), SCHEMA_ALIASES),
+            ("oggetti", MYSQL_PROFILE.objects_query(), OBJECT_ALIASES),
+            ("oggetto", MYSQL_PROFILE.object_query(), OBJECT_ALIASES),
+            (
+                "colonne",
+                MYSQL_PROFILE.object_columns_query(),
+                COLUMN_ALIASES,
+            ),
+            (
+                "indici",
+                MYSQL_PROFILE.object_indexes_query(),
+                INDEX_PART_ALIASES,
+            ),
+        ] {
+            for alias in aliases {
+                assert!(
+                    sql.contains(format!("AS {alias}").as_str()),
+                    "la query {label} non espone {alias}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_catalog_reads_no_alias_the_contract_does_not_declare() {
+        // L'altra direzione: un alias letto e non dichiarato sarebbe un
+        // requisito invisibile, che un secondo profilo scoprirebbe solo
+        // fallendo. La probe resta fuori — legge variabili di sessione, non
+        // il catalogo — e il taglio parte da dove il catalogo comincia.
+        let source = include_str!("catalog.rs");
+        let catalog = source
+            .split_once("pub async fn list_schemas")
+            .expect("il catalogo comincia da list_schemas")
+            .1;
+        let declared: Vec<&str> = SCHEMA_ALIASES
+            .iter()
+            .chain(OBJECT_ALIASES)
+            .chain(COLUMN_ALIASES)
+            .chain(INDEX_PART_ALIASES)
+            .copied()
+            .collect();
+        let mut rest = catalog;
+        while let Some((_, tail)) = rest.split_once("required(row, \"") {
+            let alias = tail.split('"').next().unwrap_or_default();
+            assert!(declared.contains(&alias), "alias non dichiarato: {alias}");
+            rest = tail;
+        }
+        let mut rest = catalog;
+        while let Some((_, tail)) = rest.split_once("optional(row, \"") {
+            let alias = tail.split('"').next().unwrap_or_default();
+            assert!(declared.contains(&alias), "alias non dichiarato: {alias}");
+            rest = tail;
+        }
     }
 
     #[test]
