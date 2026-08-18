@@ -229,7 +229,7 @@ class CiWorkflowTests(unittest.TestCase):
         # suo valore sta nelle configurazioni non di default, dove il job
         # `test-unit` non arriva.
         self.assertIn(
-            "cargo test --locked -p plenora-database-cli $features usage_surface",
+            "cargo test --locked -p plenora-database-cli $features usage",
             workflow,
         )
         # Il ciclo prova tutte le combinazioni prima di uscire: fermarsi alla

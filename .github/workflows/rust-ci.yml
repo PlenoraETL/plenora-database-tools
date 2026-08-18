@@ -121,17 +121,19 @@ jobs:
       # nulla lo dica. Il ciclo le prova tutte prima di fallire, cosi una
       # combinazione rotta non nasconde la successiva.
       #
-      # `usage_surface` viene anche **eseguito**, non solo compilato: e la
-      # guardia che confronta comandi compilati, documentati e rami del
-      # dispatch, e il suo valore sta tutto nelle configurazioni non di
-      # default — dove `cargo test` del job `test-unit` non arriva.
+      # I test che filtrano su `usage` vengono anche **eseguiti**, non solo
+      # compilati: sono la guardia che confronta comandi compilati,
+      # documentati e rami del dispatch, piu il test d'integrazione che
+      # verifica l'aiuto dal binario vero. Il loro valore sta tutto nelle
+      # configurazioni non di default — dove `cargo test` del job `test-unit`
+      # non arriva, ed e infatti li che l'aiuto mentiva.
       - name: cargo clippy su ogni adapter isolato
         run: |
           status=0
           for features in "--no-default-features --features postgres" "--no-default-features --features mysql" "--no-default-features --features sqlserver" "--all-features"; do
             echo "::group::clippy $features"
             # shellcheck disable=SC2086  # le feature sono argomenti multipli
-            if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings                && cargo test --locked -p plenora-database-cli $features usage_surface; then
+            if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings                && cargo test --locked -p plenora-database-cli $features usage; then
               echo "OK   $features"
             else
               echo "FAIL $features"

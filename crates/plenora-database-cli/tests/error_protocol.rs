@@ -408,10 +408,37 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
     // Post-F5.14: la usage() è ristrutturata per gruppi. Verifica che i
     // token essenziali per il contratto database-probe siano documentati.
     assert!(message.contains("database-probe"));
-    assert!(message.contains("postgres | mysql | sqlserver"));
-    assert!(message.contains("--tls-ca-path-env"));
-    assert!(message.contains("--tls-client-cert-path-env"));
-    assert!(message.contains("--tls-client-key-path-env"));
+
+    // I provider elencati sono quelli **compilati**. Questo test pretendeva
+    // `postgres | mysql | sqlserver` sempre: era vero finché l'aiuto elencava
+    // tutto a prescindere dalle feature, cioè finché mentiva in tre
+    // configurazioni su quattro. La riga si legge intera, non per
+    // sottostringa: `portable-compile <postgres|mysql|sqlserver>` nomina i tre
+    // provider anche in un binario che ne ha compilato uno solo.
+    let providers = message
+        .lines()
+        .find(|line| line.contains("provider compilati in questo binario"))
+        .expect("riga dei provider compilati");
+    for (compiled, name) in [
+        (cfg!(feature = "postgres"), "postgres"),
+        (cfg!(feature = "mysql"), "mysql"),
+        (cfg!(feature = "sqlserver"), "sqlserver"),
+    ] {
+        assert_eq!(
+            providers.contains(name),
+            compiled,
+            "la riga dei provider non riflette le feature compilate: {providers}"
+        );
+    }
+
+    // Le variabili TLS del probe vivono nella sezione PostgreSQL.
+    #[cfg(feature = "postgres")]
+    {
+        assert!(message.contains("--tls-ca-path-env"));
+        assert!(message.contains("--tls-client-cert-path-env"));
+        assert!(message.contains("--tls-client-key-path-env"));
+    }
+
     // Sezione flag globali con --format, --allow-write-tests, --session-context.
     assert!(message.contains("--format"));
     assert!(message.contains("--allow-write-tests"));

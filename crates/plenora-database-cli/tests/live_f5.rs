@@ -653,20 +653,35 @@ fn f5_14_usage_documents_all_groups_and_global_flags() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // Verifica presenza dei gruppi principali e dei flag globali.
-    for token in [
-        "bootstrap",
-        "conformance",
-        "inspection",
-        "read",
-        "write",
-        "portable AST",
-        "benchmark",
-        "flag globali",
-        "--session-context",
-        "--format",
-        "--allow-write-tests",
+    // I gruppi che ci sono in qualunque binario, comunque sia costruito.
+    for token in ["sempre disponibili", "flag globali"] {
+        assert!(
+            combined.contains(token),
+            "usage NON contiene '{token}':\n{combined}"
+        );
+    }
+
+    // I gruppi dei provider esistono **solo** dove l'adapter e compilato.
+    // Questo test li pretendeva tutti: era vero finche l'aiuto elencava ogni
+    // comando a prescindere dalle feature, cioe finche un binario MySQL-only
+    // prometteva `postgres-read-ipc` e `benchmark-spatial`.
+    for (compiled, token) in [
+        (cfg!(feature = "postgres"), "PostgreSQL: inspection"),
+        (cfg!(feature = "postgres"), "PostgreSQL: read"),
+        (cfg!(feature = "postgres"), "PostgreSQL: write"),
+        (cfg!(feature = "postgres"), "PostgreSQL: portable AST"),
+        (cfg!(feature = "postgres"), "PostgreSQL: benchmark"),
+        (cfg!(feature = "mysql"), "== MySQL"),
+        (cfg!(feature = "sqlserver"), "== SQL Server"),
     ] {
+        assert_eq!(
+            combined.contains(token),
+            compiled,
+            "il gruppo '{token}' non segue le feature compilate:\n{combined}"
+        );
+    }
+
+    for token in ["--session-context", "--format", "--allow-write-tests"] {
         assert!(
             combined.contains(token),
             "usage NON contiene '{token}':\n{combined}"
