@@ -952,6 +952,7 @@ mod tests {
     use crate::MysqlConfig;
     use mysql_async::consts::ColumnType;
     use mysql_async::Column;
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema, SchemaRef};
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::plan::{
         ComparisonOperator, ObjectRef, TransactionProfile, WriteMode, WriteOperation,
@@ -1513,6 +1514,17 @@ mod tests {
             "{what}: il messaggio non puo nominare un prodotto che non conosce — {}",
             error.message
         );
+        // E deve restare una frase. Togliere il nome del prodotto da un
+        // messaggio ne ha lasciati alcuni senza soggetto o con la
+        // punteggiatura sospesa: un errore pubblico degradato non e un
+        // dettaglio di forma.
+        assert!(
+            !error.message.contains(" :")
+                && !error.message.contains("  ")
+                && !error.message.contains(" ,"),
+            "{what}: punteggiatura sospesa — {}",
+            error.message
+        );
     }
 
     fn append_to_warehouse() -> WriteOperation {
@@ -1560,6 +1572,10 @@ mod tests {
             }),
         });
         query
+    }
+
+    fn schema_with(fields: Vec<Field>) -> SchemaRef {
+        std::sync::Arc::new(Schema::new(fields))
     }
 
     fn second_product_config() -> MysqlConfig {
@@ -1877,21 +1893,73 @@ mod tests {
             )
             .await;
         let Err(error) = outcome else {
-            panic!("DISTINCT ON non qualificato: doveva fallire");
+            panic!("CTE non qualificata: doveva fallire");
         };
         assert_names_no_product(&error, "AST non supportato");
 
-        // 3. Piano di scrittura: schema Arrow vuoto.
+        // 3. Piano di scrittura. Lo schema vuoto non basta: quell'errore
+        //    nasce nel ramo che il profilo ce l'ha, e non attraversa le
+        //    validazioni neutralizzate — e infatti non avrebbe intercettato
+        //    le frasi che lo sweep ha rotto. Servono errori che nascono
+        //    **dentro** quelle validazioni.
         let error = crate::write::MysqlWritePlan::compile_with_profile(
-            &std::sync::Arc::new(plenora_database_core::arrow::Schema::empty()),
+            &std::sync::Arc::new(Schema::empty()),
             &append_to_warehouse(),
             "warehouse",
             &SECOND_PRODUCT_PROFILE,
         )
         .expect_err("schema Arrow vuoto");
-        // Il piano di scrittura il profilo ce l'ha, quindi appartiene alla
-        // prima categoria: nomina il prodotto invece di tacerlo.
-        assert_names_the_second_product(&error, "piano write invalido");
+        // Questo ramo il profilo ce l'ha, quindi appartiene alla prima
+        // categoria: nomina il prodotto invece di tacerlo.
+        assert_names_the_second_product(&error, "piano write, ramo product-aware");
+
+        // 3a. `TruncateInsert`: modalita non qualificata dal dialetto.
+        let mut truncate = append_to_warehouse();
+        truncate.mode = WriteMode::TruncateInsert;
+        let error = crate::write::MysqlWritePlan::compile_with_profile(
+            &schema_with(vec![Field::new("id", DataType::Int64, false)]),
+            &truncate,
+            "warehouse",
+            &SECOND_PRODUCT_PROFILE,
+        )
+        .expect_err("TruncateInsert non qualificata");
+        assert_names_no_product(&error, "write TruncateInsert");
+
+        // 3b. Tipo Arrow che il mapping non qualifica.
+        let error = crate::write::MysqlWritePlan::compile_with_profile(
+            &schema_with(vec![Field::new(
+                "durata",
+                DataType::Duration(plenora_database_core::arrow::schema::TimeUnit::Second),
+                false,
+            )]),
+            &append_to_warehouse(),
+            "warehouse",
+            &SECOND_PRODUCT_PROFILE,
+        )
+        .expect_err("tipo Arrow non qualificato");
+        assert_names_no_product(&error, "write tipo non qualificato");
+
+        // 3c. Chiave primaria su un tipo che il motore rifiuta in chiave.
+        let mut create = append_to_warehouse();
+        create.mode = WriteMode::Create;
+        create.keys = vec!["etichetta".to_owned()];
+        let error = crate::write::MysqlWritePlan::compile_with_profile(
+            &schema_with(vec![Field::new("etichetta", DataType::Utf8, false)]),
+            &create,
+            "warehouse",
+            &SECOND_PRODUCT_PROFILE,
+        )
+        .expect_err("chiave primaria su Utf8");
+        assert_names_no_product(&error, "write chiave primaria");
+        // La punteggiatura sospesa si vede meccanicamente, il soggetto
+        // perduto no: togliendo il nome del prodotto questa causa era
+        // diventata "diventa TEXT e rifiuta TEXT", senza piu dire chi
+        // rifiuta. Chi rifiuta va nominato.
+        assert!(
+            error.message.contains("il motore"),
+            "il rifiuto deve dire chi rifiuta — {}",
+            error.message
+        );
     }
 
     #[test]

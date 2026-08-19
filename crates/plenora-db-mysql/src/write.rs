@@ -276,7 +276,7 @@ impl MysqlWritePlan {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
-                            "DeleteByKeys : colonna '{}' non è una key — schema Arrow \
+                            "DeleteByKeys: colonna '{}' non è una key — schema Arrow \
  deve contenere solo le colonne key",
                             col.name
                         ),
@@ -349,7 +349,7 @@ impl MysqlWritePlan {
             if set_names.is_empty() {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "Update : nessuna colonna da aggiornare (schema = keys only)",
+                    "Update: nessuna colonna da aggiornare (schema = keys only)",
                 ));
             }
             let set_quoted: Vec<String> = set_names
@@ -363,7 +363,7 @@ impl MysqlWritePlan {
                             prepare_error(
                                 ErrorCategory::InvalidPlan,
                                 format!(
-                                    "Update : colonna '{name}' \
+                                    "Update: colonna '{name}' \
  non presente nello schema Arrow"
                                 ),
                             )
@@ -1336,7 +1336,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         | WriteMode::Update => {}
         WriteMode::TruncateInsert => {
             return Err(unsupported(
-                "WriteMode::TruncateInsert non qualificata su : TRUNCATE e \
+                "WriteMode::TruncateInsert non qualificata in questo dialetto: TRUNCATE e \
  DDL con commit implicito, quindi non rollback-safe se l'INSERT \
  successivo fallisce, e non viene emulata con DELETE perche \
  avrebbe semantica diversa (AUTO_INCREMENT non azzerato, trigger \
@@ -1460,7 +1460,7 @@ fn write_column_kind(field: &Field) -> Result<MysqlColumnKind> {
         }
         other => {
             return Err(unsupported(format!(
-                "tipo Arrow non qualificato per append : {other:?}"
+                "tipo Arrow non qualificato per append: {other:?}"
             )));
         }
     };
@@ -1525,15 +1525,15 @@ fn validate_primary_key_parts(keys: &[String]) -> Result<()> {
 fn validate_primary_key_column(key: &str, column: &MysqlWriteColumn) -> Result<()> {
     let refusal = match column.kind {
         MysqlColumnKind::Utf8 => Some(
-            "il tipo Arrow Utf8 diventa TEXT e rifiuta TEXT in chiave \
+            "il tipo Arrow Utf8 diventa TEXT, e il motore rifiuta TEXT in chiave \
  senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
         ),
         MysqlColumnKind::Binary => Some(
-            "il tipo Arrow Binary diventa BLOB e rifiuta BLOB in chiave \
+            "il tipo Arrow Binary diventa BLOB, e il motore rifiuta BLOB in chiave \
  senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
         ),
         MysqlColumnKind::Geometry => {
-            Some("non ammette colonne spatial come chiave primaria o unique")
+            Some("il motore non ammette colonne spatial come chiave primaria o unique")
         }
         MysqlColumnKind::F32 | MysqlColumnKind::F64 => Some(
             "una chiave primaria in virgola mobile identifica le righe con un \

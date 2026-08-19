@@ -902,7 +902,9 @@ fn ensure_source(source: &QuerySource, database: &str) -> Result<()> {
     // MySQL usa nomi a due componenti: `database`.`tabella`. Un AST con
     // catalog e schema insieme renderizzerebbe tre componenti.
     if source.object.catalog.is_some() && source.object.schema.is_some() {
-        return Err(unsupported("non ammette nomi qualificati a tre componenti"));
+        return Err(unsupported(
+            "il dialetto non ammette nomi qualificati a tre componenti",
+        ));
     }
     for part in source
         .object

@@ -198,12 +198,12 @@ fn validate_context_keys(options: &TransactionOptions) -> Result<()> {
     for (name, _) in options.context.iter() {
         if !is_safe_context_name(name.as_str()) {
             return Err(DatabaseError::invalid_plan(format!(
-                "session context : nome non sicuro '{name}'"
+                "session context: nome non sicuro '{name}'"
             )));
         }
         if name.len() > MAX_CONTEXT_KEY {
             return Err(DatabaseError::invalid_plan(format!(
-                "session context : chiave '{name}' di {} caratteri; con il \
+                "session context: chiave '{name}' di {} caratteri; con il \
  prefisso '{CONTEXT_VARIABLE_PREFIX}' la variabile utente \
  supererebbe i {MAX_USER_VARIABLE_NAME} caratteri ammessi, \
  quindi al massimo {MAX_CONTEXT_KEY}",
