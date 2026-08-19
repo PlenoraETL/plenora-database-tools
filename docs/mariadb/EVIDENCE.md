@@ -299,20 +299,17 @@ che non e una decisione finche nessuno ha guardato.
 attraverso il driver **e** attraverso il percorso reale del pool — dove il
 bootstrap arriva come `setup` e viene applicato prima di qualunque probe.
 Tredici sonde: bootstrap eseguito a mano, bootstrap ricevuto dal pool,
-bootstrap dopo riuso della connessione, i quattro livelli di isolamento, le
-tre modalita di accesso, il session context, commit e rollback.
+bootstrap dopo il rientro di una sessione sporca, i quattro livelli di
+isolamento, le tre modalita di accesso, il session context, commit e
+rollback. La matrice, con i dettagli osservati, e in
+`docs/mariadb/SESSION-MATRIX.md`.
 
-**Tredici sonde su tredici coincidono sui tre server.** La matrice completa,
-con i dettagli osservati, e in `docs/mariadb/SESSION-MATRIX.md`.
-
-Due sonde, nella prima stesura, non misuravano cio che dichiaravano.
-`access_mode` leggeva `@@transaction_read_only`, che riflette `SET
-TRANSACTION` e non `START TRANSACTION READ ONLY`: dava lo stesso valore per
-tutte e tre le modalita, e sarebbe passata per "coincidono" senza distinguere
-nulla. Il contesto rileggeva isolamento e autocommit, cioe niente che
-riguardasse il contesto. Corrette prima di leggere i numeri: l'access mode si
-osserva ora tentando una scrittura dentro la transazione, il contesto
-rileggendo la variabile utente che il provider imposta.
+**Tredici sonde su tredici coincidono sui tre server, e tutte e tredici
+soddisfano il proprio contratto.** Le due cose sono distinte, e la seconda e
+quella che conta: `accepted` significa che l'osservato coincide con l'atteso,
+non che la misura sia riuscita. Senza questa distinzione sarebbero passati un
+READ ONLY che accetta scritture ovunque, quattro livelli che riportano tutti
+lo stesso valore sbagliato, un rollback che non annulla.
 
 ### Cosa ne segue
 
@@ -321,9 +318,31 @@ Il bootstrap di sessione, i livelli di isolamento e `START TRANSACTION`
 misura: spostarli sarebbe simmetria, non una decisione, e ADR 0014 chiede il
 contrario — nel profilo entra cio che diverge.
 
-La matrice e una prova permanente, non una fotografia: il runner fallisce se
-una sonda diverge, e fallisce anche se una sonda smette di essere accettata.
-La seconda condizione non e ridondante — "coincidono" e vero anche quando
-tutti e tre falliscono allo stesso modo, ed e il verde falso che questa
+La matrice e una prova permanente, non una fotografia. Il runner rifiuta un
+albero sporco prima di avviare Docker e verifica che HEAD non sia cambiato a
+misura finita; poi fallisce se l'inventario delle sonde non e esattamente
+quello dichiarato, se una sonda non e accettata, o se una diverge. La seconda
+condizione non e ridondante rispetto alla terza: "coincidono" e vero anche
+quando tutti e tre falliscono allo stesso modo, ed e il verde falso che questa
 misura esiste per escludere.
 
+### Cosa questa tranche non prova
+
+Tre sonde hanno dovuto essere corrette prima di leggere i numeri, e la terza
+correzione ha ristretto cio che si puo affermare.
+
+`access_mode` leggeva `@@transaction_read_only`, che riflette `SET
+TRANSACTION` e non `START TRANSACTION READ ONLY`: dava lo stesso valore per
+tutte e tre le modalita. Ora si osserva l'effetto — una scrittura dentro la
+transazione — e i tre casi si distinguono: ammessa, rifiutata, ammessa.
+
+Il contesto rileggeva isolamento e autocommit, cioe nulla che lo riguardasse.
+Ora rilegge la variabile utente che il provider imposta.
+
+La sonda sul riuso pretendeva che il pool riconsegnasse la **stessa**
+connessione dopo la restituzione. Fallisce su tutti e tre: `mysql_async` ne
+apre una nuova. Cio che resta provato e che ogni sessione consegnata dal pool
+e bootstrappata — la proprieta su cui il provider poggia — mentre la
+riapplicazione del bootstrap su una connessione **riusata** non e esercitata
+da questa configurazione. Resta non misurata, ed e scritto qui invece di
+essere sottinteso da una sonda verde.
