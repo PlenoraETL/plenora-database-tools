@@ -1664,12 +1664,24 @@ mod tests {
             let production = source
                 .split_once(format!("{}mod tests {{", '\n').as_str())
                 .map_or(*source, |(head, _)| head);
-            let inline = format!("{}mod ", '\n');
-            for at in production.match_indices(inline.as_str()).map(|(at, _)| at) {
-                let line = production[at + 1..].lines().next().unwrap_or_default();
+            // Qualunque dichiarazione `mod`, non solo la forma nuda seguita
+            // da graffa: la prima stesura cercava un a capo seguito da
+            // `mod ` e rifiutava solo le righe che finivano con `{`, quindi
+            // `mod mariadb;` passava e `pub mod mariadb` non veniva
+            // nemmeno vista. Le guardie leggono file: un modulo che non ha
+            // un file proprio, o che non e dichiarato in `lib.rs`, resta
+            // fuori da ogni ispezione senza che nulla lo segnali.
+            for (at, line) in production.lines().enumerate() {
+                let trimmed = line.trim();
+                let is_module_declaration = trimmed.starts_with("mod ")
+                    || trimmed.starts_with("pub mod ")
+                    || trimmed.starts_with("pub(crate) mod ")
+                    || trimmed.starts_with("pub(super) mod ")
+                    || trimmed.starts_with("pub(in ");
                 assert!(
-                    !line.trim_end().ends_with('{'),
-                    "{module} dichiara un modulo annidato in produzione: {line}"
+                    !is_module_declaration,
+                    "{module}:{} dichiara un modulo fuori da lib.rs: {trimmed}",
+                    at + 1
                 );
             }
         }
@@ -1691,11 +1703,53 @@ mod tests {
         assert_names_the_second_product(&error, "pool a capacita zero");
 
         // Una CA che non esiste: la validazione che il pool rifa al primo uso.
-        let unreadable =
-            second_product_config().with_private_ca_certificate("/percorso/inesistente.pem");
+        // CA in memoria vuota invece di un percorso che si presume assente:
+        // il test non deve dipendere da cosa esiste sul filesystem di chi lo
+        // esegue, ne dai permessi con cui gira.
+        let unreadable = second_product_config().with_private_ca_certificate_pem(Vec::new());
         let error = crate::MysqlPool::new_with_profile(&unreadable, 2, &SECOND_PRODUCT_PROFILE)
-            .expect_err("CA illeggibile");
-        assert_names_the_second_product(&error, "CA illeggibile");
+            .expect_err("CA vuota");
+        assert_names_the_second_product(&error, "CA in memoria vuota");
+    }
+
+    #[test]
+    fn the_shared_paths_name_the_product_in_their_messages() {
+        // I tre testi che la review precedente ha lasciato non verificati.
+        // Sono costruibili perche i loro costruttori sono stati estratti: un
+        // messaggio che non si puo costruire in un test e un messaggio che
+        // nessuno verifica, ed e cosi che il timeout della query e rimasto
+        // cablato su MySQL mentre il ramo accanto era gia parametrizzato.
+        assert_names_the_second_product(
+            &crate::transaction::query_timeout_error(&SECOND_PRODUCT_PROFILE),
+            "timeout della query",
+        );
+        assert_names_the_second_product(
+            &crate::transaction::conditional_update_mismatch(&SECOND_PRODUCT_PROFILE, 1, 0),
+            "update condizionale",
+        );
+        assert_names_the_second_product(
+            &crate::session::state_error(ErrorPhase::Write, &SECOND_PRODUCT_PROFILE),
+            "sessione non riusabile",
+        );
+
+        // E gli stessi tre su MySQL restano quelli di prima.
+        for (what, error) in [
+            (
+                "timeout",
+                crate::transaction::query_timeout_error(&MYSQL_PROFILE),
+            ),
+            (
+                "update condizionale",
+                crate::transaction::conditional_update_mismatch(&MYSQL_PROFILE, 1, 0),
+            ),
+            (
+                "sessione",
+                crate::session::state_error(ErrorPhase::Write, &MYSQL_PROFILE),
+            ),
+        ] {
+            assert!(error.message.contains("MySQL"), "{what}: {}", error.message);
+            assert_eq!(error.provider, Some(ProviderKind::Mysql), "{what}");
+        }
     }
 
     #[test]

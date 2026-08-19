@@ -151,6 +151,7 @@ impl MysqlProvider {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<Inspection> {
+        let product = self.profile.product();
         let mut session = pool.checkout(cancellation).await?;
         let result = match operation {
             Operation::DatabaseListCatalogs => Ok(Inspection {
@@ -211,7 +212,9 @@ impl MysqlProvider {
                     document: json!(description),
                 })
             }
-            _ => Err(unsupported("operazione inspect non supportata da MySQL")),
+            _ => Err(unsupported(format!(
+                "operazione inspect non supportata da {product}"
+            ))),
         };
         drop(session);
         result
@@ -368,6 +371,7 @@ impl Provider for MysqlProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
+        let product = self.profile.product();
         Box::pin(async move {
             // Bordo: da qui in poi l'attribuzione e quella del
             // profilo, non il segnaposto con cui l'errore e nato.
@@ -387,7 +391,7 @@ impl Provider for MysqlProvider {
                     provider_error(
                         ErrorCategory::ResourceLimit,
                         ErrorPhase::Prepare,
-                        "numero colonne MySQL non rappresentabile",
+                        format!("numero colonne {product} non rappresentabile"),
                     )
                 })?;
                 let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
@@ -654,6 +658,7 @@ async fn execute_mysql_write_after_ddl(
     budget: &ResourceBudget,
     token: &CancellationToken,
 ) -> Result<WriteOutcome> {
+    let product = session.profile().product();
     let target = crate::catalog::describe_object_with_profile(
         session,
         target_schema,
@@ -676,7 +681,7 @@ async fn execute_mysql_write_after_ddl(
         return Err(provider_error(
             ErrorCategory::Schema,
             ErrorPhase::Prepare,
-            "preflight MySQL cambiato fra prepare e write",
+            format!("preflight {product} cambiato fra prepare e write"),
         ));
     }
 
@@ -974,6 +979,7 @@ async fn write_input_batches(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteProgress> {
+    let product = session.profile().product();
     let mut progress = WriteProgress::default();
     loop {
         let batch = match input.next_batch(cancellation).await {
@@ -993,7 +999,7 @@ async fn write_input_batches(
             provider_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
-                "righe batch MySQL non rappresentabili",
+                format!("righe batch {product} non rappresentabili"),
             )
         })?;
         plan.validate_spatial_batch(&batch, budget)?;
@@ -1002,7 +1008,7 @@ async fn write_input_batches(
             provider_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
-                "overflow conteggio righe MySQL",
+                format!("overflow conteggio righe {product}"),
             )
         })?;
         let affected = write_batch_chunks_for_mode(
@@ -1018,7 +1024,7 @@ async fn write_input_batches(
             provider_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
-                "overflow righe inserite MySQL",
+                format!("overflow righe inserite {product}"),
             )
         })?;
         row_lease.commit(batch_rows)?;
@@ -1040,6 +1046,7 @@ async fn write_batch_chunks_for_mode(
     staging_override: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
+    let product = session.profile().product();
     let mut affected_total = 0_u64;
     let mut start = 0_usize;
     while start < batch.num_rows() {
@@ -1059,7 +1066,7 @@ async fn write_batch_chunks_for_mode(
             provider_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
-                "overflow righe write MySQL",
+                format!("overflow righe write {product}"),
             )
         })?;
         start += rows;

@@ -432,16 +432,7 @@ impl TransactionScope for MysqlTransaction {
                     Err(_) => {
                         self.session.discard().await;
                         self.open = false;
-                        return Err(DatabaseError {
-                            category: ErrorCategory::Timeout,
-                            phase: ErrorPhase::Read,
-                            remote_effect: RemoteEffect::None,
-                            retry: RetryDisposition::Never,
-                            provider: Some(self.session.kind()),
-                            execution_id: None,
-                            diagnostics: None,
-                            message: format!("query {} timeout", profile.product()),
-                        });
+                        return Err(query_timeout_error(profile));
                     }
                 };
                 // Extract column names dal primo row (o vuoto se nessun result).
@@ -703,18 +694,51 @@ impl TransactionScope for MysqlTransaction {
                     Ok(())
                 } else {
                     self.rollback_to_savepoint(sp, cancellation).await?;
-                    Err(concurrent_modification_error(format!(
-                        "{}: expected {} affected rows, got {}",
-                        self.session.profile().product(),
+                    Err(conditional_update_mismatch(
+                        self.session.profile(),
                         request.expected_affected_rows,
-                        affected
-                    )))
+                        affected,
+                    ))
                 }
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
         })
     }
+}
+
+/// Il timeout di una query dentro una transazione.
+///
+/// Estratto perche un messaggio che non si puo costruire in un test e un
+/// messaggio che nessuno verifica: era rimasto cablato su MySQL per due
+/// review mentre il ramo accanto era gia parametrizzato.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn query_timeout_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Timeout,
+        phase: ErrorPhase::Read,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(profile.kind()),
+        execution_id: None,
+        diagnostics: None,
+        message: format!("query {} timeout", profile.product()),
+    }
+}
+
+/// Il mismatch di righe di un update condizionale.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn conditional_update_mismatch(
+    profile: &dyn crate::profile::ProductProfile,
+    expected: u64,
+    affected: u64,
+) -> DatabaseError {
+    let mut error = concurrent_modification_error(format!(
+        "{}: expected {expected} affected rows, got {affected}",
+        profile.product()
+    ));
+    error.provider = Some(profile.kind());
+    error
 }
 
 fn closed_error(phase: ErrorPhase, kind: ProviderKind) -> DatabaseError {

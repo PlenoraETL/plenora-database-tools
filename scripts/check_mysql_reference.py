@@ -100,6 +100,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::the_profile_accepts_mysql_and_rejects_mariadb_from_either_string",
     "profile::tests::the_profile_names_the_product_it_serves",
     "profile::tests::the_query_module_no_longer_maps_wire_types",
+    "profile::tests::the_shared_paths_name_the_product_in_their_messages",
     "profile::tests::the_spatial_types_carry_the_srid_rule_that_qualifies_them",
     "profile::tests::the_statement_timeout_keeps_the_contract_unit",
     "profile::tests::the_wire_produces_the_native_type_that_diverged",

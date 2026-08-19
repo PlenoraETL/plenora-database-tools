@@ -73,6 +73,7 @@ fn compile_write_column(
     renderer: &plenora_database_sql::Renderer,
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<MysqlWriteColumn> {
+    let product = profile.product();
     let contract = FieldContract::parse(field)?;
     let (kind, spatial_srid, exact_geometry_type) = if contract.spatial {
         // Il primo cancello e il prodotto: leggere geometrie non dice nulla
@@ -87,18 +88,18 @@ fn compile_write_column(
             || contract.encoding != Some("wkb")
             || field.data_type() != &DataType::Binary
         {
-            return Err(unsupported(
-                "write spatial MySQL richiede geometry GeoArrow WKB Binary",
-            ));
+            return Err(unsupported(format!(
+                "write spatial {product} richiede geometry GeoArrow WKB Binary"
+            )));
         }
         if contract.dimensions != Some("xy") {
-            return Err(unsupported(
-                "write spatial MySQL qualifica soltanto geometrie XY",
-            ));
+            return Err(unsupported(format!(
+                "write spatial {product} qualifica soltanto geometrie XY"
+            )));
         }
-        let srid = contract
-            .srid
-            .ok_or_else(|| crs_error("write spatial MySQL richiede SRID dichiarato"))?;
+        let srid = contract.srid.ok_or_else(|| {
+            crs_error(format!("write spatial {product} richiede SRID dichiarato"))
+        })?;
         let exact = match contract.types_declaration {
             Some("mixed") => None,
             Some("exact") => {
@@ -106,16 +107,16 @@ fn compile_write_column(
                     .geometry_types
                     .ok_or_else(|| mapping_error("tipo geometrico exact assente dal contratto"))?;
                 if geometry_type.contains(',') || !profile.writable_geometry_type(geometry_type) {
-                    return Err(unsupported(
-                        "insieme di tipi geometrici non qualificato per MySQL",
-                    ));
+                    return Err(unsupported(format!(
+                        "insieme di tipi geometrici non qualificato per {product}"
+                    )));
                 }
                 Some(geometry_type.to_ascii_lowercase())
             }
             _ => {
-                return Err(unsupported(
-                    "dichiarazione tipi geometrici non qualificata per MySQL",
-                ));
+                return Err(unsupported(format!(
+                    "dichiarazione tipi geometrici non qualificata per {product}"
+                )));
             }
         };
         (MysqlColumnKind::Geometry, Some(srid), exact)
@@ -184,12 +185,13 @@ impl MysqlWritePlan {
         database: &str,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
+        let product = profile.product();
         plenora_database_core::field_contract::validate_schema_contract(schema.as_ref())?;
         validate_operation(operation, database)?;
         if schema.fields().is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
-                "schema Arrow vuoto per append MySQL",
+                format!("schema Arrow vuoto per append {product}"),
             ));
         }
         let renderer = mysql_renderer();
@@ -215,7 +217,7 @@ impl MysqlWritePlan {
             if let Err(violation) = validate_create_primary_key(schema, &operation.keys) {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    violation.message("MySQL"),
+                    violation.message(product),
                 ));
             }
             validate_primary_key_parts(&operation.keys)?;
@@ -790,13 +792,16 @@ impl MysqlWritePlan {
         target: &MysqlObjectDescription,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<LossReport> {
+        let product = profile.product();
         if target.kind != "BASE TABLE" {
-            return Err(unsupported("append MySQL richiede una BASE TABLE"));
+            return Err(unsupported(format!(
+                "append {product} richiede una BASE TABLE"
+            )));
         }
         if target.engine.as_deref() != Some("InnoDB") {
-            return Err(unsupported(
-                "append SingleTransaction MySQL richiede una tabella InnoDB",
-            ));
+            return Err(unsupported(format!(
+                "append SingleTransaction {product} richiede una tabella InnoDB"
+            )));
         }
         if self.mode == WriteMode::Upsert {
             self.validate_upsert_target_indexes(target)?;
@@ -806,46 +811,48 @@ impl MysqlWritePlan {
                 .columns
                 .iter()
                 .find(|candidate| candidate.name == column.name)
-                .ok_or_else(|| mapping_error("colonna target MySQL mancante"))?;
+                .ok_or_else(|| mapping_error(format!("colonna target {product} mancante")))?;
             if !server.generation_expression.is_empty() {
-                return Err(mapping_error(
-                    "append MySQL non puo scrivere una colonna generata",
-                ));
+                return Err(mapping_error(format!(
+                    "append {product} non puo scrivere una colonna generata"
+                )));
             }
             let spec = MysqlColumnSpec::from_catalog_with_profile(server, profile)?;
             if column.kind == MysqlColumnKind::Geometry {
                 if spec.kind != MysqlColumnKind::Geometry {
-                    return Err(mapping_error(
-                        "campo geometry Arrow diretto a una colonna MySQL non spatial",
-                    ));
+                    return Err(mapping_error(format!(
+                        "campo geometry Arrow diretto a una colonna {product} non spatial"
+                    )));
                 }
                 if server.spatial_srid != column.spatial_srid {
-                    return Err(crs_error("SRID target MySQL diverso dal contratto Arrow"));
+                    return Err(crs_error(format!(
+                        "SRID target {product} diverso dal contratto Arrow"
+                    )));
                 }
                 let native = server.data_type.to_ascii_lowercase();
                 if native != "geometry"
                     && column.exact_geometry_type.as_deref() != Some(native.as_str())
                 {
-                    return Err(mapping_error(
-                        "tipo geometry target MySQL incompatibile col contratto Arrow",
-                    ));
+                    return Err(mapping_error(format!(
+                        "tipo geometry target {product} incompatibile col contratto Arrow"
+                    )));
                 }
                 if column.exact_geometry_type.is_none() && native != "geometry" {
-                    return Err(mapping_error(
-                        "geometrie mixed richiedono una colonna MySQL GEOMETRY",
-                    ));
+                    return Err(mapping_error(format!(
+                        "geometrie mixed richiedono una colonna {product} GEOMETRY"
+                    )));
                 }
             } else if spec.kind != column.kind
                 || !write_native_type_is_qualified(server, &column.kind)
             {
-                return Err(mapping_error(
-                    "schema Arrow incompatibile con la colonna target MySQL",
-                ));
+                return Err(mapping_error(format!(
+                    "schema Arrow incompatibile con la colonna target {product}"
+                )));
             }
             if column.nullable && !server.nullable {
-                return Err(mapping_error(
-                    "nullability Arrow incompatibile con la colonna target MySQL",
-                ));
+                return Err(mapping_error(format!(
+                    "nullability Arrow incompatibile con la colonna target {product}"
+                )));
             }
         }
         for server in &target.columns {
@@ -858,9 +865,9 @@ impl MysqlWritePlan {
                 .split_ascii_whitespace()
                 .any(|part| part.eq_ignore_ascii_case("auto_increment"));
             if !server.nullable && server.default_expression.is_none() && !generated && !automatic {
-                return Err(mapping_error(
-                    "colonna target MySQL obbligatoria assente dallo schema Arrow",
-                ));
+                return Err(mapping_error(format!(
+                    "colonna target {product} obbligatoria assente dallo schema Arrow"
+                )));
             }
         }
         Ok(LossReport {

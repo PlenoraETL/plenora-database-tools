@@ -80,16 +80,19 @@ impl MysqlReadPlan {
         operation: &ReadOperation,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
+        let product = profile.product();
         if description.columns.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
-                "oggetto MySQL privo di colonne leggibili",
+                format!("oggetto {product} privo di colonne leggibili"),
             ));
         }
         if operation.row_limit.is_some() && operation.order_by.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "LIMIT MySQL richiede ORDER BY esplicito per un risultato deterministico",
+                format!(
+                    "LIMIT {product} richiede ORDER BY esplicito per un risultato deterministico"
+                ),
             ));
         }
         let renderer = mysql_renderer();
@@ -133,7 +136,7 @@ impl MysqlReadPlan {
                     if !available_names.contains(order.field.as_str()) {
                         return Err(prepare_error(
                             ErrorCategory::NotFound,
-                            "colonna ORDER BY MySQL non trovata",
+                            format!("colonna ORDER BY {product} non trovata"),
                         ));
                     }
                     let field = renderer.quote_identifier(&mysql_identifier(&order.field)?)?;
@@ -215,6 +218,7 @@ impl MysqlColumnSpec {
         column: &MysqlColumn,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
+        let product = profile.product();
         let native_type = column.data_type.to_ascii_lowercase();
         let native_declaration = column.native_declaration.to_ascii_lowercase();
         let unsigned = native_declaration
@@ -247,7 +251,7 @@ impl MysqlColumnSpec {
                 if profile.spatial_requires_declared_srid() && column.spatial_srid.is_none() {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
-                        "colonna spatial MySQL senza SRID dichiarato",
+                        format!("colonna spatial {product} senza SRID dichiarato"),
                     ));
                 }
                 MysqlColumnKind::Geometry
@@ -255,7 +259,7 @@ impl MysqlColumnSpec {
             _ => {
                 return Err(prepare_error(
                     ErrorCategory::Unsupported,
-                    format!("tipo MySQL non supportato: {native_type}"),
+                    format!("tipo {product} non supportato: {native_type}"),
                 ));
             }
         };

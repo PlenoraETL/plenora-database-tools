@@ -123,10 +123,11 @@ pub(crate) fn query_result_columns_with_profile(
     columns: &[Column],
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<Vec<MysqlColumnSpec>> {
+    let product = profile.product();
     if columns.is_empty() {
         return Err(prepare_error(
             ErrorCategory::Schema,
-            "QueryOperation MySQL senza colonne risultanti",
+            format!("QueryOperation {product} senza colonne risultanti"),
         ));
     }
     let mut names = BTreeSet::new();
@@ -137,7 +138,7 @@ pub(crate) fn query_result_columns_with_profile(
             if !names.insert(specification.name.clone()) {
                 return Err(prepare_error(
                     ErrorCategory::Schema,
-                    "QueryOperation MySQL con nomi colonna duplicati",
+                    format!("QueryOperation {product} con nomi colonna duplicati"),
                 ));
             }
             Ok(specification)

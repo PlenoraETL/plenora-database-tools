@@ -191,7 +191,10 @@ pub(crate) async fn probe_server_with_profile(
         )
         .await?;
     if rows.len() != 1 {
-        return Err(mapping_error("probe MySQL privo di una riga univoca"));
+        return Err(mapping_error(format!(
+            "probe {} priva di una riga univoca",
+            profile.product()
+        )));
     }
     let row = rows.remove(0);
     let tls_rows = session
@@ -214,7 +217,10 @@ pub(crate) async fn probe_server_with_profile(
             retry: RetryDisposition::Never,
             provider: Some(crate::profile::PROVISIONAL_KIND),
             execution_id: None,
-            message: "connessione MySQL priva di cifratura TLS negoziata".to_owned(),
+            message: format!(
+                "connessione {} priva di cifratura TLS negoziata",
+                profile.product()
+            ),
             diagnostics: None,
         });
     }
@@ -353,6 +359,7 @@ pub(crate) async fn describe_object_with_profile(
     profile: &dyn crate::profile::ProductProfile,
     cancellation: &CancellationToken,
 ) -> Result<MysqlObjectDescription> {
+    let product = profile.product();
     let objects = session
         .exec_rows(
             profile.object_query(),
@@ -362,7 +369,9 @@ pub(crate) async fn describe_object_with_profile(
         )
         .await?;
     if objects.len() != 1 {
-        return Err(not_found("oggetto MySQL non trovato o ambiguo"));
+        return Err(not_found(format!(
+            "oggetto {product} non trovato o ambiguo"
+        )));
     }
     let object = &objects[0];
     let column_rows = session
@@ -374,7 +383,9 @@ pub(crate) async fn describe_object_with_profile(
         )
         .await?;
     if column_rows.is_empty() {
-        return Err(mapping_error("oggetto MySQL senza colonne osservabili"));
+        return Err(mapping_error(format!(
+            "oggetto {product} senza colonne osservabili"
+        )));
     }
     let columns = column_rows
         .iter()
@@ -446,6 +457,7 @@ fn build_indexes(
     rows: &[Row],
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<Vec<MysqlIndex>> {
+    let product = profile.product();
     let mut indexes: Vec<MysqlIndex> = Vec::new();
     for row in rows {
         let name: String = required(row, "index_name", "index_name")?;
@@ -463,7 +475,7 @@ fn build_indexes(
         }
         let current = indexes
             .last_mut()
-            .ok_or_else(|| mapping_error("aggregazione indici MySQL incoerente"))?;
+            .ok_or_else(|| mapping_error(format!("aggregazione indici {product} incoerente")))?;
         match column {
             Some(column_name) => current.columns.push(column_name),
             // Parte funzionale (espressione non nulla, colonna nulla):
@@ -475,9 +487,9 @@ fn build_indexes(
                 current.column_backed = false;
             }
             None => {
-                return Err(mapping_error(
-                    "parte di indice MySQL senza colonna né espressione",
-                ))
+                return Err(mapping_error(format!(
+                    "parte di indice {product} senza colonna né espressione"
+                )))
             }
         }
     }
@@ -496,12 +508,12 @@ fn schema_token(
     // aggiunta di un unique index) fra prepare ed esecuzione deve cambiare
     // il token e non passare inosservata al preflight Upsert.
     let bytes = serde_json::to_vec(&(schema, name, kind, engine, columns, indexes))
-        .map_err(|_| mapping_error("serializzazione token schema MySQL fallita"))?;
+        .map_err(|_| mapping_error("serializzazione token schema fallita"))?;
     let digest = Sha256::digest(bytes);
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(&mut encoded, "{byte:02x}")
-            .map_err(|_| mapping_error("codifica token schema MySQL fallita"))?;
+            .map_err(|_| mapping_error("codifica token schema fallita"))?;
     }
     Ok(MysqlSchemaToken(encoded))
 }
@@ -514,11 +526,9 @@ where
     match row.get_opt::<T, _>(index) {
         Some(Ok(value)) => Ok(value),
         Some(Err(_)) => Err(mapping_error(format!(
-            "campo catalogo MySQL {field} non convertibile"
+            "campo catalogo {field} non convertibile"
         ))),
-        None => Err(mapping_error(format!(
-            "campo catalogo MySQL {field} assente"
-        ))),
+        None => Err(mapping_error(format!("campo catalogo {field} assente"))),
     }
 }
 
@@ -530,11 +540,9 @@ where
     match row.get_opt::<Option<T>, _>(index) {
         Some(Ok(value)) => Ok(value),
         Some(Err(_)) => Err(mapping_error(format!(
-            "campo catalogo MySQL {field} non convertibile"
+            "campo catalogo {field} non convertibile"
         ))),
-        None => Err(mapping_error(format!(
-            "campo catalogo MySQL {field} assente"
-        ))),
+        None => Err(mapping_error(format!("campo catalogo {field} assente"))),
     }
 }
 

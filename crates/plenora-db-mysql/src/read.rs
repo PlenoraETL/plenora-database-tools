@@ -58,6 +58,7 @@ pub(crate) async fn read_operation_with_profile(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
+    let product = profile.product();
     validate_batch_rows(batch_rows)?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
@@ -68,7 +69,7 @@ pub(crate) async fn read_operation_with_profile(
         read_error(
             ErrorCategory::InvalidPlan,
             ErrorPhase::Prepare,
-            "schema MySQL obbligatorio per la lettura",
+            format!("schema {product} obbligatorio per la lettura"),
         )
     })?;
     let description = crate::catalog::describe_object_with_profile(
@@ -80,8 +81,9 @@ pub(crate) async fn read_operation_with_profile(
     )
     .await?;
     let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
-    let column_count = u64::try_from(plan.columns.len())
-        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+    let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
+        DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
+    })?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
     let parameters = bind_parameters(&plan.bind_names, parameters)?;
     let confirmation = crate::catalog::describe_object_with_profile(
@@ -96,7 +98,7 @@ pub(crate) async fn read_operation_with_profile(
         return Err(read_error(
             ErrorCategory::Schema,
             ErrorPhase::Prepare,
-            "schema MySQL cambiato durante la preparazione",
+            format!("schema {product} cambiato durante la preparazione"),
         ));
     }
 
@@ -164,6 +166,7 @@ pub(crate) async fn query_operation_with_profile(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
+    let product = profile.product();
     validate_batch_rows(batch_rows)?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
@@ -180,9 +183,9 @@ pub(crate) async fn query_operation_with_profile(
         .map(|bind| bind.name.clone())
         .collect::<Vec<_>>();
     if bind_names.len() > crate::MAX_BIND_PARAMETERS {
-        return Err(DatabaseError::resource_limit(
-            "query MySQL oltre il limite di placeholder del prepared statement",
-        ));
+        return Err(DatabaseError::resource_limit(format!(
+            "query {product} oltre il limite di placeholder del prepared statement"
+        )));
     }
     let bound = bind_parameters(&bind_names, parameters)?;
     ensure_active_read_budget(budget, profile)?;
@@ -195,14 +198,15 @@ pub(crate) async fn query_operation_with_profile(
         return Err(read_error(
             ErrorCategory::Protocol,
             ErrorPhase::Prepare,
-            "placeholder MySQL diversi dai bind renderizzati",
+            format!("placeholder {product} diversi dai bind renderizzati"),
         ));
     }
     let metadata = statement.columns();
     let columns = crate::query::query_result_columns_with_profile(&metadata, profile)?;
     let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns)?;
-    let column_count = u64::try_from(plan.columns.len())
-        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+    let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
+        DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
+    })?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
     start_row_stream(
         session,
@@ -478,6 +482,7 @@ impl MysqlBatchStream {
         reservation: &BatchReservation,
         carried: Option<MeasuredRow>,
     ) -> Result<BatchFill> {
+        let product = self.profile.product();
         let capacity = bounded_buffer_capacity(
             reservation.row_limit,
             reservation.byte_limit,
@@ -518,14 +523,14 @@ impl MysqlBatchStream {
                     None => break,
                 }
             };
-            let next_estimate = estimated_bytes
-                .checked_add(measured.bytes)
-                .ok_or_else(|| DatabaseError::resource_limit("stima batch MySQL in overflow"))?;
+            let next_estimate = estimated_bytes.checked_add(measured.bytes).ok_or_else(|| {
+                DatabaseError::resource_limit(format!("stima batch {product} in overflow"))
+            })?;
             if next_estimate > reservation.byte_limit {
                 if rows == 0 {
-                    return Err(DatabaseError::resource_limit(
-                        "riga MySQL oltre il budget memoria del batch",
-                    ));
+                    return Err(DatabaseError::resource_limit(format!(
+                        "riga {product} oltre il budget memoria del batch"
+                    )));
                 }
                 deferred = Some(measured);
                 break;
@@ -558,6 +563,7 @@ impl MysqlBatchStream {
     }
 
     async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
+        let product = self.profile.product();
         if self.cancellation.is_cancelled() {
             return Err(interruption_error(
                 self.profile,
@@ -585,11 +591,13 @@ impl MysqlBatchStream {
             RecordBatch::try_new(Arc::clone(&self.schema), arrays).map_err(DatabaseError::from)?;
         let actual_bytes = batch.columns().iter().try_fold(0_u64, |total, array| {
             let bytes = u64::try_from(array.get_array_memory_size()).map_err(|_| {
-                DatabaseError::resource_limit("dimensione batch MySQL non rappresentabile")
+                DatabaseError::resource_limit(format!(
+                    "dimensione batch {product} non rappresentabile"
+                ))
             })?;
-            total
-                .checked_add(bytes)
-                .ok_or_else(|| DatabaseError::resource_limit("dimensione batch MySQL in overflow"))
+            total.checked_add(bytes).ok_or_else(|| {
+                DatabaseError::resource_limit(format!("dimensione batch {product} in overflow"))
+            })
         })?;
         let components = validate_spatial_batch(
             &batch,
@@ -600,8 +608,9 @@ impl MysqlBatchStream {
             self.budget.limits().nesting_depth,
             &self.read_diagnostics,
         )?;
-        let rows = u64::try_from(batch.num_rows())
-            .map_err(|_| DatabaseError::resource_limit("righe MySQL non rappresentabili"))?;
+        let rows = u64::try_from(batch.num_rows()).map_err(|_| {
+            DatabaseError::resource_limit(format!("righe {product} non rappresentabili"))
+        })?;
         reservation.commit(rows, actual_bytes, components)?;
         self.park(fill.deferred)?;
         // Il cursore avanza solo su un batch che sta per essere consegnato:
@@ -798,6 +807,7 @@ fn validate_spatial_batch(
     nesting_depth: u64,
     diagnostics: &ReadDiagnosticsTracker,
 ) -> Result<u64> {
+    let product = profile.product();
     let mut components = 0_u64;
     for (index, column) in columns.iter().enumerate() {
         if column.kind != MysqlColumnKind::Geometry {
@@ -811,7 +821,7 @@ fn validate_spatial_batch(
                 read_error(
                     ErrorCategory::Internal,
                     ErrorPhase::Read,
-                    "array spatial MySQL non binario",
+                    format!("array spatial {product} non binario"),
                 )
             })?;
         for row in 0..array.len() {
@@ -819,20 +829,21 @@ fn validate_spatial_batch(
                 continue;
             }
             let value = array.value(row);
-            let length = u64::try_from(value.len())
-                .map_err(|_| DatabaseError::resource_limit("WKB MySQL non rappresentabile"))?;
+            let length = u64::try_from(value.len()).map_err(|_| {
+                DatabaseError::resource_limit(format!("WKB {product} non rappresentabile"))
+            })?;
             if length > cell_limit {
-                return Err(DatabaseError::resource_limit(
-                    "WKB MySQL oltre il limite cella",
-                ));
+                return Err(DatabaseError::resource_limit(format!(
+                    "WKB {product} oltre il limite cella"
+                )));
             }
             let remaining = component_limit.checked_sub(components).ok_or_else(|| {
-                DatabaseError::resource_limit("componenti geometriche MySQL esaurite")
+                DatabaseError::resource_limit(format!("componenti geometriche {product} esaurite"))
             })?;
             if remaining == 0 {
-                return Err(DatabaseError::resource_limit(
-                    "componenti geometriche MySQL esaurite",
-                ));
+                return Err(DatabaseError::resource_limit(format!(
+                    "componenti geometriche {product} esaurite"
+                )));
             }
             let inspection =
                 plenora_database_core::ewkb::inspect_ewkb_detailed(value, remaining, nesting_depth)
@@ -855,7 +866,7 @@ fn validate_spatial_batch(
                     read_error(
                         ErrorCategory::DataMapping,
                         ErrorPhase::Read,
-                        "ST_AsBinary MySQL ha prodotto WKB non XY o con SRID embedded",
+                        format!("ST_AsBinary {product} ha prodotto WKB non XY o con SRID embedded"),
                     ),
                     Some(row),
                     Some(index),
@@ -864,7 +875,9 @@ fn validate_spatial_batch(
             components = components
                 .checked_add(inspection.stats.components)
                 .ok_or_else(|| {
-                    DatabaseError::resource_limit("componenti geometriche MySQL in overflow")
+                    DatabaseError::resource_limit(format!(
+                        "componenti geometriche {product} in overflow"
+                    ))
                 })?;
         }
     }

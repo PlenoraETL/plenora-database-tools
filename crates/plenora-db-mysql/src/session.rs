@@ -331,7 +331,7 @@ impl MysqlSession {
         match outcome {
             Ok(Ok(())) => {
                 let affected = connection.affected_rows();
-                match validate_row_write_affected_rows(affected) {
+                match validate_row_write_affected_rows(affected, profile) {
                     Ok(()) => Ok(None),
                     Err(error) => {
                         self.quarantine().await;
@@ -629,28 +629,38 @@ enum PumpOutcome {
     Failed(DatabaseError),
 }
 
-fn row_count_mismatch_error() -> DatabaseError {
+fn row_count_mismatch_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::Protocol,
         phase: ErrorPhase::Write,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::Quarantine,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
+        provider: Some(profile.kind()),
         execution_id: None,
-        message: "conteggio righe MySQL incoerente per statement row-scoped".to_owned(),
+        message: format!(
+            "conteggio righe {} incoerente per statement row-scoped",
+            profile.product()
+        ),
         diagnostics: None,
     }
 }
 
-fn validate_row_write_affected_rows(affected_rows: u64) -> Result<()> {
+fn validate_row_write_affected_rows(
+    affected_rows: u64,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<()> {
     if affected_rows == 1 {
         Ok(())
     } else {
-        Err(row_count_mismatch_error())
+        Err(row_count_mismatch_error(profile))
     }
 }
 
-fn state_error(phase: ErrorPhase, profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn state_error(
+    phase: ErrorPhase,
+    profile: &dyn crate::profile::ProductProfile,
+) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::InvalidPlan,
         phase,
@@ -676,9 +686,10 @@ mod tests {
 
     #[test]
     fn exactly_one_affected_row_is_required_for_row_scoped_success() {
-        validate_row_write_affected_rows(1).expect("una riga confermata");
+        validate_row_write_affected_rows(1, &crate::profile::MYSQL_PROFILE)
+            .expect("una riga confermata");
         for affected in [0, 2] {
-            let error = validate_row_write_affected_rows(affected)
+            let error = validate_row_write_affected_rows(affected, &crate::profile::MYSQL_PROFILE)
                 .expect_err("conteggio diverso da uno ambiguo");
             assert_eq!(error.phase, ErrorPhase::Write);
             assert_eq!(error.remote_effect, RemoteEffect::Unknown);
