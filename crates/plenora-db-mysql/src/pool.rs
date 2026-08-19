@@ -89,7 +89,7 @@ impl MysqlPool {
         let acquire_permit = Arc::clone(&self.permits).acquire_owned();
         let permit = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(interruption_error(self.profile.kind(),
+                return Err(interruption_error(self.profile,
                     cancellation,
                     ErrorPhase::Connect,
                     RemoteEffect::None,
@@ -99,14 +99,14 @@ impl MysqlPool {
                 match result {
                     Ok(Ok(permit)) => permit,
                     Ok(Err(_)) => return Err(semaphore_closed_error(self.profile.kind())),
-                    Err(_) => return Err(timeout_error(self.profile.kind(), ErrorPhase::Connect, RemoteEffect::None)),
+                    Err(_) => return Err(timeout_error(self.profile, ErrorPhase::Connect, RemoteEffect::None)),
                 }
             }
         };
         let acquire = self.pool.get_conn();
         let connection = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(interruption_error(self.profile.kind(),
+                return Err(interruption_error(self.profile,
                     cancellation,
                     ErrorPhase::Connect,
                     RemoteEffect::None,
@@ -118,7 +118,7 @@ impl MysqlPool {
                     Ok(Err(error)) => {
                         return Err(driver_error(self.profile, &error, ErrorPhase::Connect, RemoteEffect::None));
                     }
-                    Err(_) => return Err(timeout_error(self.profile.kind(), ErrorPhase::Connect, RemoteEffect::None)),
+                    Err(_) => return Err(timeout_error(self.profile, ErrorPhase::Connect, RemoteEffect::None)),
                 }
             }
         };

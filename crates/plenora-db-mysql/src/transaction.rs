@@ -410,7 +410,7 @@ impl TransactionScope for MysqlTransaction {
                             provider: Some(kind),
                             execution_id: None,
                             diagnostics: None,
-                            message: "query MySQL cancellata".to_owned(),
+                            message: format!("query {} cancellata", profile.product()),
                         });
                     }
                     result = tokio::time::timeout(timeout, execution) => result,

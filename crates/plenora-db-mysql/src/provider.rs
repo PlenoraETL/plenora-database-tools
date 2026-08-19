@@ -82,13 +82,18 @@ impl MysqlProvider {
         max_connections: usize,
         profile: &'static dyn ProductProfile,
     ) -> Result<Self> {
-        config.validate()?;
+        // Anche il costruttore e un bordo: qui il provider non esiste ancora,
+        // ma il profilo si', e sono gli unici errori che un consumatore vede
+        // senza aver mai toccato il server. Uscivano con il segnaposto.
+        crate::profile::attributed(profile, config.validate())?;
         if max_connections == 0 {
-            return Err(provider_error(
+            let mut error = provider_error(
                 ErrorCategory::InvalidConfiguration,
                 ErrorPhase::Validate,
                 "provider MySQL con pool a capacita zero",
-            ));
+            );
+            error.provider = Some(profile.kind());
+            return Err(error);
         }
         Ok(Self {
             config,

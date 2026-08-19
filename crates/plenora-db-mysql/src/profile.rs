@@ -52,6 +52,23 @@ use std::collections::BTreeMap;
 /// Collation id riservato di `MySQL` per i tipi binari.
 const BINARY_CHARACTER_SET: u16 = 63;
 
+/// Cosa un codice di errore del server significa, per intero.
+///
+/// L'effetto remoto sta qui e non nel chiamante perche e parte del
+/// significato: "deadlock, transazione vittima annullata" e un'affermazione
+/// sullo stato del server, e chi conosce i codici e il profilo. Lasciarla
+/// fuori voleva dire che un profilo poteva ridefinire la categoria di un
+/// codice ma non se quel codice avesse gia rollbackato — e la seconda decide
+/// se il chiamante debba ripulire.
+pub(crate) struct ServerCodeVerdict {
+    pub(crate) category: ErrorCategory,
+    pub(crate) retry: RetryDisposition,
+    pub(crate) message: String,
+    /// L'effetto che il codice implica di per se. `None` significa "il
+    /// codice non lo determina", non "nessun effetto".
+    pub(crate) remote_effect: Option<RemoteEffect>,
+}
+
 /// Le decisioni che cambiano con il prodotto servito dalla connessione.
 ///
 /// Ogni metodo qui e una domanda a cui `MySQL` e `MariaDB` rispondono, o
@@ -192,7 +209,7 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// significherebbe classificare come "colonna non valida" un errore che
     /// sull'altro prodotto vuol dire altro — e la classificazione decide se
     /// il chiamante puo ritentare.
-    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String);
+    fn classify_server_code(&self, code: u16) -> ServerCodeVerdict;
 
     /// Le cause di rifiuto per riga che il prodotto riconosce.
     ///
@@ -570,7 +587,14 @@ impl ProductProfile for MysqlProfile {
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
             },
-            spatial: mysql_spatial_capabilities(),
+            // Una sola origine: la capability pubblicata **e** la decisione che
+            // il piano di scrittura consulta. Dichiararle separatamente
+            // permetterebbe a un profilo di negare `write_wkb` e accettare
+            // comunque la compilazione spatial.
+            spatial: SpatialCapabilities {
+                write_wkb: self.write_spatial_is_qualified(),
+                ..mysql_spatial_capabilities()
+            },
             limits: ProviderLimits {
                 // Il contratto esprime il limite in **byte**, il prodotto in
                 // caratteri: `MAX_IDENTIFIER_CHARACTERS` sono 64 caratteri
@@ -589,49 +613,60 @@ impl ProductProfile for MysqlProfile {
         }
     }
 
-    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String) {
+    fn classify_server_code(&self, code: u16) -> ServerCodeVerdict {
         let product = self.product();
         match code {
-            1_045 => (
-                ErrorCategory::Authentication,
-                RetryDisposition::Never,
-                format!("autenticazione {product} rifiutata (codice 1045)"),
-            ),
-            1_044 => (
-                ErrorCategory::Authorization,
-                RetryDisposition::Never,
-                format!("autorizzazione {product} negata (codice 1044)"),
-            ),
-            1_049 | 1_146 => (
-                ErrorCategory::NotFound,
-                RetryDisposition::Never,
-                format!("database o oggetto {product} non trovato (codice {code})"),
-            ),
-            1_054 => (
-                ErrorCategory::Schema,
-                RetryDisposition::Never,
-                format!("colonna {product} non valida (codice 1054)"),
-            ),
-            1_062 => (
-                ErrorCategory::Conflict,
-                RetryDisposition::Never,
-                format!("vincolo univoco {product} violato (codice 1062)"),
-            ),
-            1_213 => (
-                ErrorCategory::Transient,
-                RetryDisposition::Safe,
-                format!("deadlock {product}; transazione vittima annullata"),
-            ),
-            1_205 | 3_024 => (
-                ErrorCategory::Timeout,
-                RetryDisposition::Never,
-                format!("timeout {product} (codice {code})"),
-            ),
-            native => (
-                ErrorCategory::Execution,
-                RetryDisposition::Never,
-                format!("errore server {product} redatto (codice {native})"),
-            ),
+            1_045 => ServerCodeVerdict {
+                category: ErrorCategory::Authentication,
+                retry: RetryDisposition::Never,
+                message: format!("autenticazione {product} rifiutata (codice 1045)"),
+                remote_effect: None,
+            },
+            1_044 => ServerCodeVerdict {
+                category: ErrorCategory::Authorization,
+                retry: RetryDisposition::Never,
+                message: format!("autorizzazione {product} negata (codice 1044)"),
+                remote_effect: None,
+            },
+            1_049 | 1_146 => ServerCodeVerdict {
+                category: ErrorCategory::NotFound,
+                retry: RetryDisposition::Never,
+                message: format!("database o oggetto {product} non trovato (codice {code})"),
+                remote_effect: None,
+            },
+            1_054 => ServerCodeVerdict {
+                category: ErrorCategory::Schema,
+                retry: RetryDisposition::Never,
+                message: format!("colonna {product} non valida (codice 1054)"),
+                remote_effect: None,
+            },
+            1_062 => ServerCodeVerdict {
+                category: ErrorCategory::Conflict,
+                retry: RetryDisposition::Never,
+                message: format!("vincolo univoco {product} violato (codice 1062)"),
+                remote_effect: None,
+            },
+            // L'unico codice che dichiara da se cosa e successo sul
+            // server: la transazione vittima e gia annullata, e il
+            // chiamante non ha nulla da ripulire.
+            1_213 => ServerCodeVerdict {
+                category: ErrorCategory::Transient,
+                retry: RetryDisposition::Safe,
+                message: format!("deadlock {product}; transazione vittima annullata"),
+                remote_effect: Some(RemoteEffect::RolledBack),
+            },
+            1_205 | 3_024 => ServerCodeVerdict {
+                category: ErrorCategory::Timeout,
+                retry: RetryDisposition::Never,
+                message: format!("timeout {product} (codice {code})"),
+                remote_effect: None,
+            },
+            native => ServerCodeVerdict {
+                category: ErrorCategory::Execution,
+                retry: RetryDisposition::Never,
+                message: format!("errore server {product} redatto (codice {native})"),
+                remote_effect: None,
+            },
         }
     }
 
@@ -803,7 +838,11 @@ impl ProductProfile for SecondProductProfile {
     }
 
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
-        MYSQL_PROFILE.statement_timeout_statement(timeout_ms)
+        // Diverge per nome **e** per unita, che e la forma della divergenza
+        // che ADR 0014 ha misurato su MariaDB. Se la conversione tornasse a
+        // vivere fuori dal profilo, questo profilo emetterebbe secondi con
+        // un valore in millisecondi e nessuno se ne accorgerebbe.
+        format!("SET SESSION max_statement_time = {}", timeout_ms / 1_000)
     }
 
     fn schemas_query(&self) -> &'static str {
@@ -851,21 +890,39 @@ impl ProductProfile for SecondProductProfile {
     }
 
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
-        ProviderCapabilities {
-            provider: self.kind(),
-            ..MYSQL_PROFILE.capabilities(provider_version)
-        }
+        // Delega, ma non sulle proprie decisioni: la guardia di coerenza ha
+        // trovato proprio questo — un profilo che nega la scrittura spatial e
+        // pubblica la capability ereditata dice due cose diverse, e il
+        // consumatore crede alla seconda.
+        let mut published = MYSQL_PROFILE.capabilities(provider_version);
+        published.provider = self.kind();
+        published.spatial.write_wkb = self.write_spatial_is_qualified();
+        published
     }
 
     fn write_spatial_is_qualified(&self) -> bool {
-        MYSQL_PROFILE.write_spatial_is_qualified()
+        // Nessuna evidenza di scrittura spatial per questo prodotto: e il
+        // fail-closed che un secondo profilo reale erediterebbe finche la
+        // prova non esiste.
+        false
     }
 
     fn writable_geometry_type(&self, name: &str) -> bool {
         MYSQL_PROFILE.writable_geometry_type(name)
     }
 
-    fn classify_server_code(&self, code: u16) -> (ErrorCategory, RetryDisposition, String) {
+    fn classify_server_code(&self, code: u16) -> ServerCodeVerdict {
+        // Un codice che su questo prodotto significa altro. Serve a provare
+        // che la classificazione viene davvero dal profilo: con una tabella
+        // sola, categoria e retry sarebbero indistinguibili dall'ereditarla.
+        if code == 1_054 {
+            return ServerCodeVerdict {
+                category: ErrorCategory::Unsupported,
+                retry: RetryDisposition::Never,
+                message: format!("codice 1054 non qualificato su {}", self.product()),
+                remote_effect: None,
+            };
+        }
         MYSQL_PROFILE.classify_server_code(code)
     }
 
@@ -891,7 +948,7 @@ mod tests {
     };
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
     use plenora_database_core::CancellationToken;
-    use plenora_database_core::{plan::ProviderKind, ErrorCategory, ErrorPhase};
+    use plenora_database_core::{plan::ProviderKind, ErrorCategory, ErrorPhase, RemoteEffect};
 
     #[test]
     fn the_profile_accepts_mysql_and_rejects_mariadb_from_either_string() {
@@ -1120,36 +1177,52 @@ mod tests {
         // perche il segnaposto e sicuro solo dove il bordo lo copre.
         let boxed = format!("Box::{}(", "pin");
         let stamped = format!("crate::profile::{}", "attributed");
-        for (module, source, header) in [
-            (
-                "provider.rs",
-                include_str!("provider.rs"),
-                "impl Provider for MysqlProvider {",
-            ),
-            (
-                "transaction.rs",
-                include_str!("transaction.rs"),
-                "impl TransactionScope for MysqlTransaction {",
-            ),
+        for (module, source) in [
+            ("provider.rs", include_str!("provider.rs")),
+            ("transaction.rs", include_str!("transaction.rs")),
         ] {
-            let start = source.find(header).expect("l'impl del trait deve esistere");
-            let end = source[start..]
-                .find(format!("{}}}", '\n').as_str())
-                .map_or(source.len(), |at| start + at);
-            let block = &source[start..end];
-            let mut methods = 0;
-            for method in block.split(format!("{}    fn ", '\n').as_str()).skip(1) {
-                if !method.contains(boxed.as_str()) {
-                    continue;
+            let mut inspected = 0;
+            // Ogni `impl` dei due trait, non solo quello di oggi: quando
+            // nascera un secondo provider dovra essere presidiato senza che
+            // nessuno si ricordi di aggiungerlo qui.
+            let headers: Vec<&str> = ["impl Provider for ", "impl TransactionScope for "]
+                .iter()
+                .flat_map(|header| source.match_indices(header).map(|(at, _)| at))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|at| &source[*at..])
+                .collect();
+            assert!(
+                !headers.is_empty(),
+                "{module} non contiene alcun impl dei trait presidiati"
+            );
+            for tail in headers {
+                let end = tail
+                    .find(format!("{}}}", '\n').as_str())
+                    .map_or(tail.len(), |at| at);
+                let block = &tail[..end];
+                let mut methods = 0;
+                for method in block.split(format!("{}    fn ", '\n').as_str()).skip(1) {
+                    if !method.contains(boxed.as_str()) {
+                        continue;
+                    }
+                    methods += 1;
+                    let name = method.split(['(', '<']).next().unwrap_or("?");
+                    assert!(
+                        method.contains(stamped.as_str()),
+                        "{module}::{name} restituisce un futuro senza ristampare l'attribuzione"
+                    );
                 }
-                methods += 1;
-                let name = method.split(['(', '<']).next().unwrap_or("?");
                 assert!(
-                    method.contains(stamped.as_str()),
-                    "{module}::{name} restituisce un futuro senza ristampare l'attribuzione"
+                    methods >= 1,
+                    "{module}: nessun metodo ispezionato in un impl presidiato"
                 );
+                inspected += methods;
             }
-            assert!(methods >= 8, "{module}: solo {methods} metodi ispezionati");
+            assert!(
+                inspected >= 8,
+                "{module}: solo {inspected} metodi ispezionati in totale"
+            );
         }
     }
 
@@ -1363,6 +1436,76 @@ mod tests {
                 production.matches(literal.as_str()).count(),
                 0,
                 "il provider usa {entry} senza profilo"
+            );
+        }
+    }
+
+    #[test]
+    fn the_constructor_attributes_its_own_failures_to_the_profile() {
+        // I due errori che un consumatore puo vedere senza aver mai toccato
+        // il server. Uscivano entrambi con il segnaposto, e il test
+        // precedente non li vedeva perche usava solo configurazioni valide.
+        let invalid = MysqlConfig::new("", "warehouse", "loader", SecretString::new("s"));
+        let error = crate::MysqlProvider::with_profile(invalid, 2, &SECOND_PRODUCT_PROFILE)
+            .expect_err("configurazione invalida");
+        assert_eq!(error.provider, Some(ProviderKind::Mariadb));
+
+        let valid = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let error = crate::MysqlProvider::with_profile(valid, 0, &SECOND_PRODUCT_PROFILE)
+            .expect_err("pool a capacita zero");
+        assert_eq!(error.provider, Some(ProviderKind::Mariadb));
+    }
+
+    #[test]
+    fn a_diverging_profile_changes_timeout_classification_and_spatial() {
+        // Se il secondo profilo divergesse solo sull'identita, proverebbe il
+        // transito dell'attribuzione e nient'altro: le altre decisioni
+        // resterebbero indistinguibili da una tabella ereditata.
+
+        // Timeout: nome e unita insieme, che e la forma della divergenza.
+        let mysql = MYSQL_PROFILE.statement_timeout_statement(5_000);
+        let second = SECOND_PRODUCT_PROFILE.statement_timeout_statement(5_000);
+        assert_ne!(mysql, second);
+        assert!(mysql.contains("5000"), "{mysql}");
+        assert!(second.contains(" 5"), "{second}");
+        assert!(!second.contains("5000"), "{second}");
+
+        // Classificazione: lo stesso codice, due significati.
+        assert_eq!(
+            MYSQL_PROFILE.classify_server_code(1_054).category,
+            ErrorCategory::Schema
+        );
+        assert_eq!(
+            SECOND_PRODUCT_PROFILE.classify_server_code(1_054).category,
+            ErrorCategory::Unsupported
+        );
+        // E l'effetto remoto, che prima il chiamante decideva da solo.
+        assert_eq!(
+            MYSQL_PROFILE.classify_server_code(1_213).remote_effect,
+            Some(RemoteEffect::RolledBack)
+        );
+        assert_eq!(
+            MYSQL_PROFILE.classify_server_code(1_062).remote_effect,
+            None
+        );
+
+        // Spatial: una sola origine, e il profilo che non ha la prova la nega
+        // in entrambi i posti.
+        assert!(MYSQL_PROFILE.write_spatial_is_qualified());
+        assert!(!SECOND_PRODUCT_PROFILE.write_spatial_is_qualified());
+        for profile in [
+            &MYSQL_PROFILE as &dyn ProductProfile,
+            &SECOND_PRODUCT_PROFILE as &dyn ProductProfile,
+        ] {
+            assert_eq!(
+                profile.capabilities("9.7.2".to_owned()).spatial.write_wkb,
+                profile.write_spatial_is_qualified(),
+                "capability e decisione devono avere una sola origine"
             );
         }
     }

@@ -59,7 +59,7 @@ pub(crate) async fn read_operation_with_profile(
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
-    ensure_active_read_budget(budget, profile.kind())?;
+    ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
@@ -167,7 +167,7 @@ pub(crate) async fn query_operation_with_profile(
     validate_batch_rows(batch_rows)?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
-            profile.kind(),
+            profile,
             cancellation,
             ErrorPhase::Prepare,
             RemoteEffect::None,
@@ -185,7 +185,7 @@ pub(crate) async fn query_operation_with_profile(
         ));
     }
     let bound = bind_parameters(&bind_names, parameters)?;
-    ensure_active_read_budget(budget, profile.kind())?;
+    ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
     let internal = budget_cancellation.token().clone();
@@ -382,7 +382,7 @@ impl MysqlBatchStream {
             }
             if cancellation.is_cancelled() {
                 let error = interruption_error(
-                    self.profile.kind(),
+                    self.profile,
                     cancellation,
                     ErrorPhase::Read,
                     RemoteEffect::None,
@@ -400,7 +400,7 @@ impl MysqlBatchStream {
             };
             completed.unwrap_or_else(|| {
                 let error = interruption_error(
-                    self.profile.kind(),
+                    self.profile,
                     cancellation,
                     ErrorPhase::Read,
                     RemoteEffect::None,
@@ -501,7 +501,7 @@ impl MysqlBatchStream {
                 let _ = self.demand_sender.send(()).await;
                 let received = tokio::select! {
                     _ = self.cancellation.cancelled() => {
-                        return Err(interruption_error(self.profile.kind(),
+                        return Err(interruption_error(self.profile,
                             &self.cancellation,
                             ErrorPhase::Read,
                             RemoteEffect::None,
@@ -560,13 +560,13 @@ impl MysqlBatchStream {
     async fn next_active_batch(&mut self) -> Result<Option<RecordBatch>> {
         if self.cancellation.is_cancelled() {
             return Err(interruption_error(
-                self.profile.kind(),
+                self.profile,
                 &self.cancellation,
                 ErrorPhase::Read,
                 RemoteEffect::None,
             ));
         }
-        ensure_active_read_budget(&self.budget, self.profile.kind())?;
+        ensure_active_read_budget(&self.budget, self.profile)?;
         // Il carry-over restituisce la sua quota prima della riserva: la
         // riserva prenota tutto il residuo, quindi la stessa riga risulterebbe
         // altrimenti contabilizzata due volte.
@@ -884,11 +884,11 @@ fn validate_batch_rows(batch_rows: usize) -> Result<()> {
 
 fn ensure_active_read_budget(
     budget: &ResourceBudget,
-    kind: plenora_database_core::plan::ProviderKind,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<()> {
     budget.ensure_active().map_err(|error| {
         if budget.remaining_duration().is_none() {
-            timeout_error(kind, ErrorPhase::Read, RemoteEffect::None)
+            timeout_error(profile, ErrorPhase::Read, RemoteEffect::None)
         } else {
             error
         }
@@ -965,7 +965,6 @@ mod tests {
     use mysql_async::consts::ColumnType;
     use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::arrow::Schema;
-    use plenora_database_core::plan::ProviderKind;
     use plenora_database_core::resource::ResourceLimits;
 
     /// Stima conservativa di una riga di sole colonne intere: per ciascuna
@@ -1429,7 +1428,7 @@ mod tests {
         .expect("budget breve");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         assert_eq!(
-            ensure_active_read_budget(&budget, ProviderKind::Mysql)
+            ensure_active_read_budget(&budget, &crate::profile::MYSQL_PROFILE)
                 .expect_err("deadline scaduta")
                 .category,
             ErrorCategory::Timeout

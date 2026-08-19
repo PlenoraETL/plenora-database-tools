@@ -1,5 +1,5 @@
+use crate::profile::ServerCodeVerdict;
 use mysql_async::Error;
-use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{
     CancellationReason, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
     RetryDisposition,
@@ -13,37 +13,42 @@ pub fn driver_error(
 ) -> DatabaseError {
     let product = profile.product();
     let code = server_code(error);
-    let (category, retry, message) = if is_tls_identity_rejection(error) {
-        (
-            ErrorCategory::Protocol,
-            RetryDisposition::Never,
-            format!("verifica identita TLS {product} rifiutata"),
-        )
+    let verdict = if is_tls_identity_rejection(error) {
+        ServerCodeVerdict {
+            category: ErrorCategory::Protocol,
+            retry: RetryDisposition::Never,
+            message: format!("verifica identita TLS {product} rifiutata"),
+            remote_effect: None,
+        }
     } else {
         // `map_or_else` con due chiusure lunghe qui leggerebbe peggio, ma
         // clippy ha ragione sulla forma: il ramo `Some` e una chiamata sola.
         code.map_or_else(
             || match error {
-                Error::Io(_) => (
-                    ErrorCategory::Io,
-                    RetryDisposition::Never,
-                    format!("errore I/O protocollo {product} redatto"),
-                ),
-                Error::Driver(_) => (
-                    ErrorCategory::Protocol,
-                    RetryDisposition::Never,
-                    format!("errore driver {product} redatto"),
-                ),
-                Error::Url(_) => (
-                    ErrorCategory::InvalidConfiguration,
-                    RetryDisposition::Never,
-                    format!("configurazione endpoint {product} non valida"),
-                ),
-                Error::Other(_) => (
-                    ErrorCategory::Protocol,
-                    RetryDisposition::Never,
-                    format!("errore TLS o protocollo {product} redatto"),
-                ),
+                Error::Io(_) => ServerCodeVerdict {
+                    category: ErrorCategory::Io,
+                    retry: RetryDisposition::Never,
+                    message: format!("errore I/O protocollo {product} redatto"),
+                    remote_effect: None,
+                },
+                Error::Driver(_) => ServerCodeVerdict {
+                    category: ErrorCategory::Protocol,
+                    retry: RetryDisposition::Never,
+                    message: format!("errore driver {product} redatto"),
+                    remote_effect: None,
+                },
+                Error::Url(_) => ServerCodeVerdict {
+                    category: ErrorCategory::InvalidConfiguration,
+                    retry: RetryDisposition::Never,
+                    message: format!("configurazione endpoint {product} non valida"),
+                    remote_effect: None,
+                },
+                Error::Other(_) => ServerCodeVerdict {
+                    category: ErrorCategory::Protocol,
+                    retry: RetryDisposition::Never,
+                    message: format!("errore TLS o protocollo {product} redatto"),
+                    remote_effect: None,
+                },
                 Error::Server(server) => profile.classify_server_code(server.code),
             },
             |native| profile.classify_server_code(native),
@@ -51,23 +56,23 @@ pub fn driver_error(
     };
     let ambiguous = has_ambiguous_effect(code, phase);
     DatabaseError {
-        category,
+        category: verdict.category,
         phase,
-        remote_effect: if code == Some(1_213) {
-            RemoteEffect::RolledBack
-        } else if ambiguous {
+        // L'effetto che il codice dichiara vince: e cio che il server dice di
+        // aver fatto, e nessuna euristica locale lo sa meglio.
+        remote_effect: verdict.remote_effect.unwrap_or(if ambiguous {
             RemoteEffect::Unknown
         } else {
             requested_effect
-        },
+        }),
         retry: if ambiguous {
             RetryDisposition::RequiresRecovery
         } else {
-            retry
+            verdict.retry
         },
         provider: Some(profile.kind()),
         execution_id: None,
-        message,
+        message: verdict.message,
         diagnostics: None,
     }
 }
@@ -106,7 +111,12 @@ const fn has_ambiguous_effect(code: Option<u16>, phase: ErrorPhase) -> bool {
         )
 }
 
-pub fn timeout_error(kind: ProviderKind, phase: ErrorPhase, effect: RemoteEffect) -> DatabaseError {
+pub fn timeout_error(
+    profile: &dyn crate::profile::ProductProfile,
+    phase: ErrorPhase,
+    effect: RemoteEffect,
+) -> DatabaseError {
+    let product = profile.product();
     let ambiguous = matches!(
         phase,
         ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
@@ -124,22 +134,23 @@ pub fn timeout_error(kind: ProviderKind, phase: ErrorPhase, effect: RemoteEffect
         } else {
             RetryDisposition::Never
         },
-        provider: Some(kind),
+        provider: Some(profile.kind()),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
-            "timeout connessione MySQL prima della creazione della sessione".to_owned()
+            format!("timeout connessione {product} prima della creazione della sessione")
         } else {
-            "timeout operazione MySQL; connessione quarantinata".to_owned()
+            format!("timeout operazione {product}; connessione quarantinata")
         },
         diagnostics: None,
     }
 }
 
 pub fn cancellation_error(
-    kind: ProviderKind,
+    profile: &dyn crate::profile::ProductProfile,
     phase: ErrorPhase,
     effect: RemoteEffect,
 ) -> DatabaseError {
+    let product = profile.product();
     let ambiguous = matches!(
         phase,
         ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
@@ -157,27 +168,27 @@ pub fn cancellation_error(
         } else {
             RetryDisposition::Never
         },
-        provider: Some(kind),
+        provider: Some(profile.kind()),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
-            "connessione MySQL cancellata prima della creazione della sessione".to_owned()
+            format!("connessione {product} cancellata prima della creazione della sessione")
         } else {
-            "operazione MySQL cancellata; connessione quarantinata".to_owned()
+            format!("operazione {product} cancellata; connessione quarantinata")
         },
         diagnostics: None,
     }
 }
 
 pub fn interruption_error(
-    kind: ProviderKind,
+    profile: &dyn crate::profile::ProductProfile,
     cancellation: &CancellationToken,
     phase: ErrorPhase,
     effect: RemoteEffect,
 ) -> DatabaseError {
     if cancellation.reason() == Some(CancellationReason::Deadline) {
-        timeout_error(kind, phase, effect)
+        timeout_error(profile, phase, effect)
     } else {
-        cancellation_error(kind, phase, effect)
+        cancellation_error(profile, phase, effect)
     }
 }
 
@@ -275,7 +286,11 @@ mod tests {
 
     #[test]
     fn pre_session_timeout_and_cancellation_do_not_claim_quarantine() {
-        let timeout = timeout_error(ProviderKind::Mysql, ErrorPhase::Connect, RemoteEffect::None);
+        let timeout = timeout_error(
+            &crate::profile::MYSQL_PROFILE,
+            ErrorPhase::Connect,
+            RemoteEffect::None,
+        );
         assert_eq!(timeout.category, ErrorCategory::Timeout);
         assert!(
             !timeout.message.contains("quarantin"),
@@ -283,8 +298,11 @@ mod tests {
             timeout.message
         );
 
-        let cancelled =
-            cancellation_error(ProviderKind::Mysql, ErrorPhase::Connect, RemoteEffect::None);
+        let cancelled = cancellation_error(
+            &crate::profile::MYSQL_PROFILE,
+            ErrorPhase::Connect,
+            RemoteEffect::None,
+        );
         assert_eq!(cancelled.category, ErrorCategory::Cancelled);
         assert!(
             !cancelled.message.contains("quarantin"),
@@ -295,7 +313,11 @@ mod tests {
 
     #[test]
     fn in_flight_timeout_still_reports_quarantine() {
-        let error = timeout_error(ProviderKind::Mysql, ErrorPhase::Read, RemoteEffect::None);
+        let error = timeout_error(
+            &crate::profile::MYSQL_PROFILE,
+            ErrorPhase::Read,
+            RemoteEffect::None,
+        );
         assert!(error.message.contains("quarantinata"));
     }
 
@@ -305,7 +327,7 @@ mod tests {
         deadline.cancel_due_to_deadline();
         assert_eq!(
             interruption_error(
-                ProviderKind::Mysql,
+                &crate::profile::MYSQL_PROFILE,
                 &deadline,
                 ErrorPhase::Read,
                 RemoteEffect::None
@@ -318,7 +340,7 @@ mod tests {
         requested.cancel();
         assert_eq!(
             interruption_error(
-                ProviderKind::Mysql,
+                &crate::profile::MYSQL_PROFILE,
                 &requested,
                 ErrorPhase::Read,
                 RemoteEffect::None
@@ -330,14 +352,22 @@ mod tests {
 
     #[test]
     fn write_timeout_never_claims_rollback() {
-        let error = timeout_error(ProviderKind::Mysql, ErrorPhase::Commit, RemoteEffect::None);
+        let error = timeout_error(
+            &crate::profile::MYSQL_PROFILE,
+            ErrorPhase::Commit,
+            RemoteEffect::None,
+        );
         assert_eq!(error.remote_effect, RemoteEffect::Unknown);
         assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
     }
 
     #[test]
     fn read_cancellation_is_non_retryable_and_effect_free() {
-        let error = cancellation_error(ProviderKind::Mysql, ErrorPhase::Read, RemoteEffect::None);
+        let error = cancellation_error(
+            &crate::profile::MYSQL_PROFILE,
+            ErrorPhase::Read,
+            RemoteEffect::None,
+        );
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(error.retry, RetryDisposition::Never);
     }

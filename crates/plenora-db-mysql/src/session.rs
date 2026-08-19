@@ -1,6 +1,5 @@
 use crate::config::MysqlConfig;
 use crate::error::{driver_error, interruption_error, server_code, timeout_error};
-use crate::profile::ProductProfile;
 use futures_util::StreamExt;
 use mysql_async::prelude::{Queryable, StatementLike};
 use mysql_async::{Conn, Params, Row, Statement};
@@ -83,7 +82,7 @@ impl MysqlSession {
         let connect = Conn::new(opts);
         let connection = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(interruption_error(crate::profile::MYSQL_PROFILE.kind(), cancellation, ErrorPhase::Connect, RemoteEffect::None));
+                return Err(interruption_error(&crate::profile::MYSQL_PROFILE, cancellation, ErrorPhase::Connect, RemoteEffect::None));
             }
             result = tokio::time::timeout(config.connect_timeout(), connect) => {
                 match result {
@@ -91,7 +90,7 @@ impl MysqlSession {
                     Ok(Err(error)) => {
                         return Err(driver_error(&crate::profile::MYSQL_PROFILE, &error, ErrorPhase::Connect, RemoteEffect::None));
                     }
-                    Err(_) => return Err(timeout_error(crate::profile::MYSQL_PROFILE.kind(), ErrorPhase::Connect, RemoteEffect::None)),
+                    Err(_) => return Err(timeout_error(&crate::profile::MYSQL_PROFILE, ErrorPhase::Connect, RemoteEffect::None)),
                 }
             }
         };
@@ -168,7 +167,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::None));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
@@ -187,11 +186,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::None,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::None))
             }
         }
     }
@@ -217,7 +212,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::None));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
@@ -236,11 +231,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::None,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::None))
             }
         }
     }
@@ -264,7 +255,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::None));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
@@ -287,11 +278,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::None,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::None))
             }
         }
     }
@@ -319,7 +306,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::None));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
@@ -352,11 +339,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::None,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::None))
             }
         }
     }
@@ -378,7 +361,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::Unknown));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::Unknown));
             }
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
@@ -397,11 +380,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::Unknown,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::Unknown))
             }
         }
     }
@@ -418,7 +397,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, phase, RemoteEffect::Unknown));
+                return Err(interruption_error(self.profile, cancellation, phase, RemoteEffect::Unknown));
             }
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
@@ -437,11 +416,7 @@ impl MysqlSession {
             }
             Err(_) => {
                 self.quarantine().await;
-                Err(timeout_error(
-                    self.profile.kind(),
-                    phase,
-                    RemoteEffect::Unknown,
-                ))
+                Err(timeout_error(self.profile, phase, RemoteEffect::Unknown))
             }
         }
     }
@@ -474,7 +449,7 @@ impl MysqlSession {
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
-                return Err(interruption_error(self.profile.kind(), cancellation, ErrorPhase::Prepare, RemoteEffect::None));
+                return Err(interruption_error(self.profile, cancellation, ErrorPhase::Prepare, RemoteEffect::None));
             }
             result = tokio::time::timeout(self.operation_timeout, prepare) => result,
         };
@@ -494,7 +469,7 @@ impl MysqlSession {
             Err(_) => {
                 self.quarantine().await;
                 Err(timeout_error(
-                    self.profile.kind(),
+                    self.profile,
                     ErrorPhase::Prepare,
                     RemoteEffect::None,
                 ))
@@ -533,7 +508,7 @@ impl MysqlSession {
                             ErrorPhase::Read,
                             RemoteEffect::None,
                         ))),
-                        Err(_) => Some(Err(timeout_error(self.profile.kind(),
+                        Err(_) => Some(Err(timeout_error(self.profile,
                             ErrorPhase::Read,
                             RemoteEffect::None,
                         ))),
@@ -580,7 +555,7 @@ impl MysqlSession {
                         Ok(None) => break PumpOutcome::Drained,
                         Err(_) => {
                             break PumpOutcome::Failed(timeout_error(
-                                self.profile.kind(),
+                                self.profile,
                                 ErrorPhase::Read,
                                 RemoteEffect::None,
                             ));
@@ -594,7 +569,7 @@ impl MysqlSession {
             PumpOutcome::Cancelled => {
                 self.quarantine().await;
                 Err(interruption_error(
-                    self.profile.kind(),
+                    self.profile,
                     cancellation,
                     ErrorPhase::Read,
                     RemoteEffect::None,

@@ -1636,9 +1636,13 @@ pub(crate) fn build_create_table_sql(
 }
 
 /// Genera `CREATE TEMPORARY TABLE staging_name (...)` con la stessa
-/// struttura dello schema Arrow. Usato per WriteMode::Update / Replace
-/// che accumulano dati in una staging table e poi eseguono UPDATE JOIN /
-/// RENAME atomico.
+/// struttura dello schema Arrow.
+///
+/// Serve a `WriteMode::Update`, che accumula le righe in staging e poi
+/// esegue un UPDATE JOIN. Il commento diceva anche `Replace`, con RENAME
+/// atomico: non e piu vero da quando Replace usa DELETE + INSERT nella
+/// stessa transazione, e una descrizione che nomina un meccanismo
+/// inesistente e peggio di nessuna descrizione.
 ///
 /// # Errors
 ///
@@ -2647,7 +2651,7 @@ mod tests {
     #[test]
     fn commit_interruption_produces_an_unknown_outcome_without_automatic_retry() {
         let interrupted = crate::error::timeout_error(
-            ProviderKind::Mysql,
+            &crate::profile::MYSQL_PROFILE,
             ErrorPhase::Commit,
             RemoteEffect::None,
         );
