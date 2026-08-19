@@ -130,17 +130,20 @@ impl MysqlProvider {
     }
 
     fn validate_source(&self, source: &plenora_database_core::plan::ObjectRef) -> Result<()> {
+        let product = self.profile.product();
         if source.layer_id.is_some() {
-            return Err(unsupported("layer_id non appartiene al provider MySQL"));
+            return Err(unsupported(format!(
+                "layer_id non appartiene al provider {product}"
+            )));
         }
         if source
             .catalog
             .as_deref()
             .is_some_and(|catalog| catalog != self.config.database())
         {
-            return Err(unsupported(
-                "accesso cross-database MySQL non supportato dal provider",
-            ));
+            return Err(unsupported(format!(
+                "accesso cross-database {product} non supportato dal provider"
+            )));
         }
         Ok(())
     }
@@ -544,7 +547,7 @@ async fn execute_mysql_write(
         return Err(provider_error(
             ErrorCategory::InvalidPlan,
             ErrorPhase::Write,
-            "budget MySQL sostituito fra prepare e write",
+            "budget sostituito fra prepare e write",
         ));
     }
     budget.ensure_active()?;
@@ -561,7 +564,7 @@ async fn execute_mysql_write(
         return Err(provider_error(
             ErrorCategory::InvalidPlan,
             ErrorPhase::Write,
-            "schema stream MySQL diverso dallo schema preparato",
+            "schema stream diverso dallo schema preparato",
         ));
     }
     let plan = crate::write::MysqlWritePlan::compile_with_profile(
@@ -597,7 +600,7 @@ async fn execute_mysql_write(
                 return Err(provider_error(
                     ErrorCategory::Conflict,
                     ErrorPhase::Prepare,
-                    "target MySQL già esistente (mode='create')",
+                    "target già esistente (mode='create')",
                 ));
             }
             Err(err) if err.category == ErrorCategory::NotFound => {}

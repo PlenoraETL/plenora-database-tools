@@ -952,7 +952,10 @@ mod tests {
     use crate::MysqlConfig;
     use mysql_async::consts::ColumnType;
     use mysql_async::Column;
-    use plenora_database_core::plan::ObjectRef;
+    use plenora_database_core::loss::MappingPolicy;
+    use plenora_database_core::plan::{
+        ComparisonOperator, ObjectRef, TransactionProfile, WriteMode, WriteOperation,
+    };
     use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
     use plenora_database_core::query::{
         ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
@@ -1279,7 +1282,7 @@ mod tests {
             alias: None,
         });
 
-        let error = provider
+        let outcome = provider
             .query(
                 &SecretString::new("unique-secret"),
                 &operation,
@@ -1287,9 +1290,10 @@ mod tests {
                 &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
                 &CancellationToken::new(),
             )
-            .await
-            .err()
-            .expect("identificatore oltre il limite");
+            .await;
+        let Err(error) = outcome else {
+            panic!("identificatore oltre il limite: doveva fallire");
+        };
         assert_eq!(
             error.provider,
             Some(ProviderKind::Mariadb),
@@ -1495,6 +1499,69 @@ mod tests {
         );
     }
 
+    /// Un errore che nasce dove il profilo non arriva non deve nominare
+    /// nessun prodotto: il bordo ne corregge l'attribuzione, non il testo.
+    fn assert_names_no_product(error: &plenora_database_core::DatabaseError, what: &str) {
+        assert_eq!(error.provider, Some(ProviderKind::Mariadb), "{what}");
+        assert!(
+            !error.message.contains("MySQL"),
+            "{what}: il messaggio nomina MySQL — {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("SecondProduct"),
+            "{what}: il messaggio non puo nominare un prodotto che non conosce — {}",
+            error.message
+        );
+    }
+
+    fn append_to_warehouse() -> WriteOperation {
+        WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("warehouse".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        }
+    }
+
+    /// Una query che dichiara un parametro: senza fornirlo, il binding
+    /// fallisce prima di qualunque connessione.
+    fn parameterized_query() -> QueryOperation {
+        let mut query = oversized_identifier_query();
+        query.source = Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("warehouse".to_owned()),
+                object: "events".to_owned(),
+                layer_id: None,
+            },
+            alias: None,
+        });
+        query.filter = Some(QueryExpression::Compare {
+            left: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: None,
+                    field: "event_id".to_owned(),
+                },
+            }),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "wanted".to_owned(),
+            }),
+        });
+        query
+    }
+
     fn second_product_config() -> MysqlConfig {
         MysqlConfig::new(
             "mysql.example.test",
@@ -1673,11 +1740,21 @@ mod tests {
             // fuori da ogni ispezione senza che nulla lo segnali.
             for (at, line) in production.lines().enumerate() {
                 let trimmed = line.trim();
-                let is_module_declaration = trimmed.starts_with("mod ")
-                    || trimmed.starts_with("pub mod ")
-                    || trimmed.starts_with("pub(crate) mod ")
-                    || trimmed.starts_with("pub(super) mod ")
-                    || trimmed.starts_with("pub(in ");
+                // Il riconoscimento non elenca piu le visibilita: `pub(self)`
+                // e Rust valido e mancava, e un elenco di prefissi si elude
+                // con uno spazio in piu fra i token. Si guarda la prima
+                // parola dopo l'eventuale visibilita, qualunque essa sia.
+                let rest = trimmed.strip_prefix("pub").map_or(trimmed, |after| {
+                    let after = after.trim_start();
+                    after.strip_prefix('(').map_or(after, |scoped| {
+                        scoped
+                            .find(')')
+                            .map_or(after, |at| scoped[at + 1..].trim_start())
+                    })
+                });
+                let is_module_declaration = rest
+                    .strip_prefix("mod")
+                    .is_some_and(|after| after.starts_with(char::is_whitespace));
                 assert!(
                     !is_module_declaration,
                     "{module}:{} dichiara un modulo fuori da lib.rs: {trimmed}",
@@ -1750,6 +1827,71 @@ mod tests {
             assert!(error.message.contains("MySQL"), "{what}: {}", error.message);
             assert_eq!(error.provider, Some(ProviderKind::Mysql), "{what}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_pure_paths_no_longer_contradict_the_attribution() {
+        // I tre percorsi che la review indica come il confine fra un refactor
+        // MySQL corretto e una base riusabile: il binding dei parametri,
+        // l'AST non qualificato e il piano di scrittura invalido. Nessuno dei
+        // tre ha un profilo in portata, e il bordo puo ristampare
+        // l'attribuzione ma non riscrivere una frase — quindi la frase non
+        // deve piu nominare un prodotto.
+        let provider =
+            crate::MysqlProvider::with_profile(second_product_config(), 2, &SECOND_PRODUCT_PROFILE)
+                .expect("provider sul secondo profilo");
+        let secret = SecretString::new("unique-secret");
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let cancellation = CancellationToken::new();
+
+        // 1. Binding: un parametro dichiarato e mai fornito.
+        let outcome = provider
+            .query(
+                &secret,
+                &parameterized_query(),
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("parametro mancante: doveva fallire");
+        };
+        assert_names_no_product(&error, "binding invalido");
+
+        // 2. AST: una forma che il dialetto non qualifica.
+        let mut unsupported = oversized_identifier_query();
+        unsupported.common_table_expressions =
+            vec![plenora_database_core::query::CommonTableExpression {
+                name: "recenti".to_owned(),
+                recursive: false,
+                query: Box::new(oversized_identifier_query()),
+            }];
+        let outcome = provider
+            .query(
+                &secret,
+                &unsupported,
+                &ParameterBag::default(),
+                &budget,
+                &cancellation,
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("DISTINCT ON non qualificato: doveva fallire");
+        };
+        assert_names_no_product(&error, "AST non supportato");
+
+        // 3. Piano di scrittura: schema Arrow vuoto.
+        let error = crate::write::MysqlWritePlan::compile_with_profile(
+            &std::sync::Arc::new(plenora_database_core::arrow::Schema::empty()),
+            &append_to_warehouse(),
+            "warehouse",
+            &SECOND_PRODUCT_PROFILE,
+        )
+        .expect_err("schema Arrow vuoto");
+        // Il piano di scrittura il profilo ce l'ha, quindi appartiene alla
+        // prima categoria: nomina il prodotto invece di tacerlo.
+        assert_names_the_second_product(&error, "piano write invalido");
     }
 
     #[test]

@@ -142,10 +142,10 @@ fn validate_spatial_policy(operation: &WriteOperation, columns: &[MysqlWriteColu
             Ok(())
         }
         (true, _) => Err(unsupported(
-            "write spatial MySQL richiede SridPolicy::RequireMatch",
+            "write spatial richiede SridPolicy::RequireMatch",
         )),
         (false, Some(_)) => Err(unsupported(
-            "srid_policy non appartiene a una append MySQL scalare",
+            "srid_policy non appartiene a una append scalare",
         )),
     }
 }
@@ -180,6 +180,22 @@ impl MysqlWritePlan {
     ///
     /// Come `compile`.
     pub(super) fn compile_with_profile(
+        schema: &SchemaRef,
+        operation: &WriteOperation,
+        database: &str,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<Self> {
+        // Chi ha il profilo attribuisce da se: dipendere dal bordo del
+        // provider funziona in produzione e lascia scoperto ogni chiamante
+        // interno, che e poi il modo in cui questi errori si osservano nei
+        // test.
+        crate::profile::attributed(
+            profile,
+            Self::compile_unattributed(schema, operation, database, profile),
+        )
+    }
+
+    fn compile_unattributed(
         schema: &SchemaRef,
         operation: &WriteOperation,
         database: &str,
@@ -247,7 +263,7 @@ impl MysqlWritePlan {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
-                            "chiave {:?} MySQL '{key}' assente dallo schema Arrow",
+                            "chiave {:?} '{key}' assente dallo schema Arrow",
                             operation.mode
                         ),
                     ));
@@ -260,8 +276,8 @@ impl MysqlWritePlan {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
-                            "DeleteByKeys MySQL: colonna '{}' non è una key — schema Arrow \
-                             deve contenere solo le colonne key",
+                            "DeleteByKeys : colonna '{}' non è una key — schema Arrow \
+ deve contenere solo le colonne key",
                             col.name
                         ),
                     ));
@@ -293,7 +309,7 @@ impl MysqlWritePlan {
                         .ok_or_else(|| {
                             prepare_error(
                                 ErrorCategory::InvalidPlan,
-                                format!("chiave Upsert MySQL '{k}' assente dallo schema Arrow"),
+                                format!("chiave Upsert '{k}' assente dallo schema Arrow"),
                             )
                         })
                 })
@@ -315,7 +331,7 @@ impl MysqlWritePlan {
                         .ok_or_else(|| {
                             prepare_error(
                                 ErrorCategory::InvalidPlan,
-                                format!("chiave Update MySQL '{k}' assente dallo schema Arrow"),
+                                format!("chiave Update '{k}' assente dallo schema Arrow"),
                             )
                         })
                 })
@@ -333,7 +349,7 @@ impl MysqlWritePlan {
             if set_names.is_empty() {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "Update MySQL: nessuna colonna da aggiornare (schema = keys only)",
+                    "Update : nessuna colonna da aggiornare (schema = keys only)",
                 ));
             }
             let set_quoted: Vec<String> = set_names
@@ -347,8 +363,8 @@ impl MysqlWritePlan {
                             prepare_error(
                                 ErrorCategory::InvalidPlan,
                                 format!(
-                                    "Update MySQL: colonna '{name}' \
-                                     non presente nello schema Arrow"
+                                    "Update : colonna '{name}' \
+ non presente nello schema Arrow"
                                 ),
                             )
                         })
@@ -469,20 +485,20 @@ impl MysqlWritePlan {
         if rows == 0 {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "INSERT MySQL richiede almeno una riga",
+                "INSERT richiede almeno una riga",
             ));
         }
         let placeholder_count = rows.checked_mul(self.columns.len()).ok_or_else(|| {
             prepare_error(
                 ErrorCategory::ResourceLimit,
-                "overflow nel conteggio dei placeholder MySQL",
+                "overflow nel conteggio dei placeholder",
             )
         })?;
         if placeholder_count > crate::MAX_BIND_PARAMETERS {
             return Err(prepare_error(
                 ErrorCategory::ResourceLimit,
                 format!(
-                    "INSERT MySQL con {placeholder_count} placeholder oltre il limite di {}",
+                    "INSERT con {placeholder_count} placeholder oltre il limite di {}",
                     crate::MAX_BIND_PARAMETERS
                 ),
             ));
@@ -542,20 +558,20 @@ impl MysqlWritePlan {
         if rows == 0 {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "DELETE MySQL richiede almeno una riga di keys",
+                "DELETE richiede almeno una riga di keys",
             ));
         }
         let placeholder_count = rows.checked_mul(self.columns.len()).ok_or_else(|| {
             prepare_error(
                 ErrorCategory::ResourceLimit,
-                "overflow nel conteggio dei placeholder MySQL",
+                "overflow nel conteggio dei placeholder",
             )
         })?;
         if placeholder_count > crate::MAX_BIND_PARAMETERS {
             return Err(prepare_error(
                 ErrorCategory::ResourceLimit,
                 format!(
-                    "DELETE MySQL con {placeholder_count} placeholder oltre il limite di {}",
+                    "DELETE con {placeholder_count} placeholder oltre il limite di {}",
                     crate::MAX_BIND_PARAMETERS
                 ),
             ));
@@ -602,13 +618,13 @@ impl MysqlWritePlan {
         {
             return Err(write_error(
                 ErrorCategory::InvalidPlan,
-                "intervallo batch MySQL non valido",
+                "intervallo batch non valido",
             ));
         }
         let capacity = rows.checked_mul(self.columns.len()).ok_or_else(|| {
             write_error(
                 ErrorCategory::ResourceLimit,
-                "overflow nel conteggio dei bind MySQL",
+                "overflow nel conteggio dei bind",
             )
         })?;
         let mut values = Vec::with_capacity(capacity);
@@ -619,7 +635,7 @@ impl MysqlWritePlan {
                     if !column.nullable {
                         return Err(prepare_error(
                             ErrorCategory::DataMapping,
-                            format!("NULL nella colonna MySQL non nullable `{}`", column.name),
+                            format!("NULL nella colonna non nullable `{}`", column.name),
                         ));
                     }
                     values.push(Value::NULL);
@@ -649,7 +665,7 @@ impl MysqlWritePlan {
                 .ok_or_else(|| {
                     write_error(
                         ErrorCategory::DataMapping,
-                        "array geometry incoerente con il piano MySQL",
+                        "array geometry incoerente con il piano",
                     )
                 })?;
             for row in 0..batch.num_rows() {
@@ -670,13 +686,13 @@ impl MysqlWritePlan {
                 if inspection.has_any_z || inspection.has_any_m {
                     return Err(write_error(
                         ErrorCategory::DataMapping,
-                        "MySQL 8.4 qualifica soltanto payload WKB XY",
+                        "il provider qualifica soltanto payload WKB XY",
                     ));
                 }
                 if inspection.has_any_embedded_srid {
                     return Err(write_error(
                         ErrorCategory::DataMapping,
-                        "SRID embedded nel payload EWKB MySQL non qualificato",
+                        "SRID embedded nel payload EWKB non qualificato",
                     ));
                 }
                 let geometry_type = inspection
@@ -686,7 +702,7 @@ impl MysqlWritePlan {
                     .ok_or_else(|| {
                         write_error(
                             ErrorCategory::DataMapping,
-                            "tipo geometry WKB non qualificato per MySQL",
+                            "tipo geometry WKB non qualificato dal provider",
                         )
                     })?;
                 if column
@@ -702,10 +718,7 @@ impl MysqlWritePlan {
                 components = components
                     .checked_add(inspection.stats.components)
                     .ok_or_else(|| {
-                        write_error(
-                            ErrorCategory::ResourceLimit,
-                            "overflow componenti geometry MySQL",
-                        )
+                        write_error(ErrorCategory::ResourceLimit, "overflow componenti geometry")
                     })?;
                 max_depth = max_depth.max(inspection.stats.max_depth);
             }
@@ -744,7 +757,7 @@ impl MysqlWritePlan {
             // validate_operation garantisce keys non vuote; difesa in profondità.
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "Upsert MySQL richiede almeno una key column",
+                "Upsert richiede almeno una key column",
             ));
         }
         let mut anchor_found = false;
@@ -754,10 +767,10 @@ impl MysqlWritePlan {
             }
             if !index.column_backed {
                 return Err(unsupported(format!(
-                    "Upsert MySQL non qualificato: la tabella '{}' ha un unique \
-                     index funzionale/espressione ('{}') non confrontabile con \
-                     le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
-                     riga sbagliata",
+                    "Upsert non qualificato: la tabella '{}' ha un unique \
+ index funzionale/espressione ('{}') non confrontabile con \
+ le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
+ riga sbagliata",
                     target.name, index.name
                 )));
             }
@@ -766,21 +779,21 @@ impl MysqlWritePlan {
                 anchor_found = true;
             } else {
                 return Err(unsupported(format!(
-                    "Upsert MySQL non sicuro: keys={:?} ma la tabella '{}' ha un \
-                     altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
-                     UPDATE potrebbe collidere su quell'indice e aggiornare la \
-                     riga sbagliata. Rimuovere l'indice in conflitto o usare \
-                     WriteMode::Update esplicito.",
+                    "Upsert non sicuro: keys={:?} ma la tabella '{}' ha un \
+ altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
+ UPDATE potrebbe collidere su quell'indice e aggiornare la \
+ riga sbagliata. Rimuovere l'indice in conflitto o usare \
+ WriteMode::Update esplicito.",
                     self.upsert_keys, target.name, index.name, index.columns
                 )));
             }
         }
         if !anchor_found {
             return Err(unsupported(format!(
-                "Upsert MySQL non sicuro: nessun PRIMARY KEY o UNIQUE index della \
-                 tabella '{}' corrisponde a keys={:?}. Senza un unique index sulle \
-                 keys, ON DUPLICATE KEY UPDATE non rileverebbe i conflitti e \
-                 inserirebbe duplicati invece di aggiornare.",
+                "Upsert non sicuro: nessun PRIMARY KEY o UNIQUE index della \
+ tabella '{}' corrisponde a keys={:?}. Senza un unique index sulle \
+ keys, ON DUPLICATE KEY UPDATE non rileverebbe i conflitti e \
+ inserirebbe duplicati invece di aggiornare.",
                 target.name, self.upsert_keys
             )));
         }
@@ -884,7 +897,7 @@ pub fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Resul
     } else {
         Err(write_error(
             ErrorCategory::InvalidPlan,
-            "schema del batch MySQL diverso dallo schema dichiarato",
+            "schema del batch diverso dallo schema dichiarato",
         ))
     }
 }
@@ -1027,7 +1040,7 @@ pub fn commit_failure(
             idempotency_key: None,
             staging_object: None,
             verification_action: Some(
-                "verificare la tabella target MySQL prima di qualsiasi retry".to_owned(),
+                "verificare la tabella target prima di qualsiasi retry".to_owned(),
             ),
         }),
     };
@@ -1128,8 +1141,8 @@ pub fn stamp_ddl_residue(
                 error.retry = RetryDisposition::RequiresRecovery;
             }
             error.message = format!(
-                "{} [la tabella creata da mode='create' e rimasta: il DDL MySQL \
-                 fa commit implicito e non e annullato dal rollback]",
+                "{} [la tabella creata da mode='create' e rimasta: il DDL \
+ fa commit implicito e non e annullato dal rollback]",
                 error.message
             );
             Err(error)
@@ -1140,9 +1153,9 @@ pub fn stamp_ddl_residue(
             }
             if let Some(recovery) = outcome.recovery.as_mut() {
                 recovery.verification_action = Some(
-                    "la tabella creata da mode='create' esiste comunque (DDL MySQL \
-                     autocommit): verificarne le righe, non la presenza, prima di \
-                     qualsiasi retry"
+                    "la tabella creata da mode='create' esiste comunque (DDL \
+ autocommit): verificarne le righe, non la presenza, prima di \
+ qualsiasi retry"
                         .to_owned(),
                 );
             }
@@ -1158,7 +1171,7 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             let values = array
                 .as_any()
                 .downcast_ref::<$array>()
-                .ok_or_else(|| mapping_error("array Arrow incoerente con il piano MySQL"))?;
+                .ok_or_else(|| mapping_error("array Arrow incoerente con il piano"))?;
             $value(values.value(row))
         }};
     }
@@ -1184,18 +1197,17 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             let days = array
                 .as_any()
                 .downcast_ref::<Date32Array>()
-                .ok_or_else(|| mapping_error("array Date32 incoerente con il piano MySQL"))?
+                .ok_or_else(|| mapping_error("array Date32 incoerente con il piano"))?
                 .value(row);
             let date = NaiveDate::from_ymd_opt(1970, 1, 1)
                 .and_then(|epoch| epoch.checked_add_signed(chrono::Duration::days(i64::from(days))))
-                .ok_or_else(|| mapping_error("Date32 fuori intervallo MySQL"))?;
+                .ok_or_else(|| mapping_error("Date32 fuori intervallo"))?;
             Value::Date(
-                u16::try_from(date.year())
-                    .map_err(|_| mapping_error("anno fuori intervallo MySQL"))?,
+                u16::try_from(date.year()).map_err(|_| mapping_error("anno fuori intervallo"))?,
                 u8::try_from(date.month())
-                    .map_err(|_| mapping_error("mese data fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("mese data fuori intervallo"))?,
                 u8::try_from(date.day())
-                    .map_err(|_| mapping_error("giorno data fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("giorno data fuori intervallo"))?,
                 0,
                 0,
                 0,
@@ -1206,24 +1218,24 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             let micros = array
                 .as_any()
                 .downcast_ref::<TimestampMicrosecondArray>()
-                .ok_or_else(|| mapping_error("array timestamp incoerente con il piano MySQL"))?
+                .ok_or_else(|| mapping_error("array timestamp incoerente con il piano"))?
                 .value(row);
             let instant = chrono::DateTime::from_timestamp_micros(micros)
-                .ok_or_else(|| mapping_error("timestamp fuori intervallo MySQL"))?
+                .ok_or_else(|| mapping_error("timestamp fuori intervallo"))?
                 .naive_utc();
             Value::Date(
                 u16::try_from(instant.year())
-                    .map_err(|_| mapping_error("anno timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("anno timestamp fuori intervallo"))?,
                 u8::try_from(instant.month())
-                    .map_err(|_| mapping_error("mese timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("mese timestamp fuori intervallo"))?,
                 u8::try_from(instant.day())
-                    .map_err(|_| mapping_error("giorno timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("giorno timestamp fuori intervallo"))?,
                 u8::try_from(instant.hour())
-                    .map_err(|_| mapping_error("ora timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("ora timestamp fuori intervallo"))?,
                 u8::try_from(instant.minute())
-                    .map_err(|_| mapping_error("minuto timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("minuto timestamp fuori intervallo"))?,
                 u8::try_from(instant.second())
-                    .map_err(|_| mapping_error("secondo timestamp fuori intervallo MySQL"))?,
+                    .map_err(|_| mapping_error("secondo timestamp fuori intervallo"))?,
                 instant.nanosecond() / 1_000,
             )
         }
@@ -1231,12 +1243,12 @@ fn bind_value(array: &dyn Array, row: usize, kind: &MysqlColumnKind) -> Result<V
             let value = array
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| mapping_error("array decimal incoerente con il piano MySQL"))?
+                .ok_or_else(|| mapping_error("array decimal incoerente con il piano"))?
                 .value(row);
             Value::Bytes(decimal_text(value, *scale)?.into_bytes())
         }
         MysqlColumnKind::Time => {
-            return Err(mapping_error("tipo MySQL non qualificato per append"));
+            return Err(mapping_error("tipo non qualificato per append"));
         }
     })
 }
@@ -1324,27 +1336,25 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         | WriteMode::Update => {}
         WriteMode::TruncateInsert => {
             return Err(unsupported(
-                "WriteMode::TruncateInsert non qualificata su MySQL: TRUNCATE e \
-                 DDL con commit implicito, quindi non rollback-safe se l'INSERT \
-                 successivo fallisce, e non viene emulata con DELETE perche \
-                 avrebbe semantica diversa (AUTO_INCREMENT non azzerato, trigger \
-                 e log riga per riga attivi). Usare WriteMode::Replace, che \
-                 dichiara DELETE FROM + insert nella stessa transazione.",
+                "WriteMode::TruncateInsert non qualificata su : TRUNCATE e \
+ DDL con commit implicito, quindi non rollback-safe se l'INSERT \
+ successivo fallisce, e non viene emulata con DELETE perche \
+ avrebbe semantica diversa (AUTO_INCREMENT non azzerato, trigger \
+ e log riga per riga attivi). Usare WriteMode::Replace, che \
+ dichiara DELETE FROM + insert nella stessa transazione.",
             ));
         }
     }
     if operation.transaction_profile != TransactionProfile::SingleTransaction {
-        return Err(unsupported(
-            "write MySQL richiede il profilo SingleTransaction",
-        ));
+        return Err(unsupported("write richiede il profilo SingleTransaction"));
     }
     if operation.mapping_policy != MappingPolicy::Strict {
         return Err(unsupported(
-            "write MySQL richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
+            "write richiede MappingPolicy::Strict finche il loss preflight non e qualificato",
         ));
     }
     if operation.allow_partial {
-        return Err(unsupported("write MySQL parziale non qualificata"));
+        return Err(unsupported("write parziale non qualificata"));
     }
     // `Create` accetta keys opzionali e le rende PRIMARY KEY della tabella che
     // costruisce, come su PostgreSQL. Non le richiede: una tabella senza
@@ -1352,8 +1362,8 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     if operation.mode == WriteMode::Create && !operation.update_columns.is_empty() {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "Create MySQL non ha colonne da aggiornare: update_columns non e \
-             applicabile",
+            "Create non ha colonne da aggiornare: update_columns non e \
+ applicabile",
         ));
     }
     // Upsert, DeleteByKeys e Update richiedono keys; Append e Replace le
@@ -1365,10 +1375,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         if operation.keys.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                format!(
-                    "mode '{:?}' MySQL richiede almeno una key column",
-                    operation.mode
-                ),
+                format!("mode '{:?}' richiede almeno una key column", operation.mode),
             ));
         }
         // Upsert/DeleteByKeys: update_columns esplicite non permesse (v1.2).
@@ -1391,19 +1398,19 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
             format!(
-                "mode '{:?}' MySQL non ha semantica di chiave: keys e \
-                 update_columns non sono applicabili",
+                "mode '{:?}' non ha semantica di chiave: keys e \
+ update_columns non sono applicabili",
                 operation.mode
             ),
         ));
     }
     if operation.create_spatial_index {
         return Err(unsupported(
-            "creazione indice spatial MySQL non ancora qualificata",
+            "creazione indice spatial non ancora qualificata",
         ));
     }
     if operation.target.layer_id.is_some() {
-        return Err(unsupported("layer_id non appartiene al provider MySQL"));
+        return Err(unsupported("layer_id non appartiene al provider"));
     }
     if operation
         .target
@@ -1417,7 +1424,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
             .is_some_and(|schema| schema != database)
     {
         return Err(unsupported(
-            "target cross-database MySQL non supportato dal provider",
+            "target cross-database non supportato dal provider",
         ));
     }
     Ok(())
@@ -1453,7 +1460,7 @@ fn write_column_kind(field: &Field) -> Result<MysqlColumnKind> {
         }
         other => {
             return Err(unsupported(format!(
-                "tipo Arrow non qualificato per append MySQL: {other:?}"
+                "tipo Arrow non qualificato per append : {other:?}"
             )));
         }
     };
@@ -1479,8 +1486,8 @@ fn validate_primary_key_parts(keys: &[String]) -> Result<()> {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
             format!(
-                "chiave primaria MySQL con {} colonne: il motore ne accetta al \
-                 massimo {MAX_PRIMARY_KEY_PARTS}",
+                "chiave primaria con {} colonne: il motore ne accetta al \
+ massimo {MAX_PRIMARY_KEY_PARTS}",
                 keys.len()
             ),
         ));
@@ -1518,15 +1525,15 @@ fn validate_primary_key_parts(keys: &[String]) -> Result<()> {
 fn validate_primary_key_column(key: &str, column: &MysqlWriteColumn) -> Result<()> {
     let refusal = match column.kind {
         MysqlColumnKind::Utf8 => Some(
-            "il tipo Arrow Utf8 diventa TEXT e MySQL rifiuta TEXT in chiave \
-             senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
+            "il tipo Arrow Utf8 diventa TEXT e rifiuta TEXT in chiave \
+ senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
         ),
         MysqlColumnKind::Binary => Some(
-            "il tipo Arrow Binary diventa BLOB e MySQL rifiuta BLOB in chiave \
-             senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
+            "il tipo Arrow Binary diventa BLOB e rifiuta BLOB in chiave \
+ senza una lunghezza di prefisso, che lo schema Arrow non dichiara",
         ),
         MysqlColumnKind::Geometry => {
-            Some("MySQL non ammette colonne spatial come chiave primaria o unique")
+            Some("non ammette colonne spatial come chiave primaria o unique")
         }
         MysqlColumnKind::F32 | MysqlColumnKind::F64 => Some(
             "una chiave primaria in virgola mobile identifica le righe con un \
@@ -1537,7 +1544,7 @@ fn validate_primary_key_column(key: &str, column: &MysqlWriteColumn) -> Result<(
     if let Some(reason) = refusal {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            format!("chiave primaria MySQL '{key}' non qualificata: {reason}"),
+            format!("chiave primaria '{key}' non qualificata: {reason}"),
         ));
     }
     Ok(())

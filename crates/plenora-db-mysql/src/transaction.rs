@@ -198,15 +198,15 @@ fn validate_context_keys(options: &TransactionOptions) -> Result<()> {
     for (name, _) in options.context.iter() {
         if !is_safe_context_name(name.as_str()) {
             return Err(DatabaseError::invalid_plan(format!(
-                "session context MySQL: nome non sicuro '{name}'"
+                "session context : nome non sicuro '{name}'"
             )));
         }
         if name.len() > MAX_CONTEXT_KEY {
             return Err(DatabaseError::invalid_plan(format!(
-                "session context MySQL: chiave '{name}' di {} caratteri; con il \
-                 prefisso '{CONTEXT_VARIABLE_PREFIX}' la variabile utente \
-                 supererebbe i {MAX_USER_VARIABLE_NAME} caratteri ammessi, \
-                 quindi al massimo {MAX_CONTEXT_KEY}",
+                "session context : chiave '{name}' di {} caratteri; con il \
+ prefisso '{CONTEXT_VARIABLE_PREFIX}' la variabile utente \
+ supererebbe i {MAX_USER_VARIABLE_NAME} caratteri ammessi, \
+ quindi al massimo {MAX_CONTEXT_KEY}",
                 name.len()
             )));
         }
@@ -257,7 +257,7 @@ fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Re
             provider: Some(kind),
             execution_id: None,
             diagnostics: None,
-            message: format!("decode colonna MySQL idx={idx}: {error}"),
+            message: format!("decode colonna idx={idx}: {error}"),
         })?;
         values.push(convert_value(raw, idx, kind)?);
     }
@@ -283,7 +283,7 @@ fn convert_value(value: Value, idx: usize, kind: ProviderKind) -> Result<Paramet
                     provider: Some(kind),
                     execution_id: None,
                     diagnostics: None,
-                    message: format!("colonna MySQL idx={idx} UInt eccede i64"),
+                    message: format!("colonna idx={idx} UInt eccede i64"),
                 })?
         }
         Value::Float(v) => ParameterValue::F64(f64::from(v)),
@@ -477,8 +477,8 @@ impl TransactionScope for MysqlTransaction {
                     provider: Some(self.session.kind()),
                     execution_id: None,
                     diagnostics: None,
-                    message: "query_stream MySQL non ancora implementato in v1 \
-                          (usa Provider::read per stream Arrow bulk)"
+                    message: "query_stream non ancora implementato in v1 \
+ (usa Provider::read per stream Arrow bulk)"
                         .to_owned(),
                 })
             }

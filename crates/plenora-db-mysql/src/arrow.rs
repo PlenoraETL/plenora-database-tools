@@ -79,7 +79,7 @@ impl MysqlColumnBuffer {
     pub fn append(&mut self, row: &Row, index: usize, cell_limit: u64) -> Result<()> {
         let value = row
             .as_ref(index)
-            .ok_or_else(|| mapping_error("riga MySQL con meno colonne del piano dichiarato"))?;
+            .ok_or_else(|| mapping_error("riga con meno colonne del piano dichiarato"))?;
         match self {
             Self::Bool(builder) => append_bool(builder, value),
             Self::I8(builder) => append_signed(builder, value, i8::try_from),
@@ -198,7 +198,7 @@ fn append_bool(builder: &mut BooleanBuilder, value: &Value) -> Result<()> {
         Value::NULL => builder.append_null(),
         Value::Int(0) | Value::UInt(0) => builder.append_value(false),
         Value::Int(1) | Value::UInt(1) => builder.append_value(true),
-        _ => return Err(mapping_error("boolean MySQL diverso da 0 o 1")),
+        _ => return Err(mapping_error("boolean diverso da 0 o 1")),
     }
     Ok(())
 }
@@ -227,8 +227,7 @@ fn append_utf8(builder: &mut StringBuilder, value: &Value, cell_limit: u64) -> R
         Value::NULL => builder.append_null(),
         Value::Bytes(bytes) => {
             enforce_cell(bytes.len(), cell_limit)?;
-            let text =
-                std::str::from_utf8(bytes).map_err(|_| mapping_error("testo MySQL non UTF-8"))?;
+            let text = std::str::from_utf8(bytes).map_err(|_| mapping_error("testo non UTF-8"))?;
             builder.append_value(text);
         }
         _ => return Err(wire_type_error()),
@@ -254,11 +253,11 @@ fn append_date(builder: &mut Date32Builder, value: &Value) -> Result<()> {
         Value::Date(year, month, day, 0, 0, 0, 0) => {
             let date =
                 NaiveDate::from_ymd_opt(i32::from(*year), u32::from(*month), u32::from(*day))
-                    .ok_or_else(|| mapping_error("data MySQL fuori intervallo Arrow"))?;
+                    .ok_or_else(|| mapping_error("data fuori intervallo Arrow"))?;
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
                 .ok_or_else(|| mapping_error("epoch data non rappresentabile"))?;
             let days = i32::try_from(date.signed_duration_since(epoch).num_days())
-                .map_err(|_| mapping_error("data MySQL fuori Date32"))?;
+                .map_err(|_| mapping_error("data fuori Date32"))?;
             builder.append_value(days);
         }
         _ => return Err(wire_type_error()),
@@ -272,7 +271,7 @@ fn append_timestamp(builder: &mut TimestampMicrosecondBuilder, value: &Value) ->
         Value::Date(year, month, day, hour, minute, second, micros) => {
             let date =
                 NaiveDate::from_ymd_opt(i32::from(*year), u32::from(*month), u32::from(*day))
-                    .ok_or_else(|| mapping_error("timestamp MySQL con data non valida"))?;
+                    .ok_or_else(|| mapping_error("timestamp con data non valida"))?;
             let timestamp = date
                 .and_hms_micro_opt(
                     u32::from(*hour),
@@ -280,7 +279,7 @@ fn append_timestamp(builder: &mut TimestampMicrosecondBuilder, value: &Value) ->
                     u32::from(*second),
                     *micros,
                 )
-                .ok_or_else(|| mapping_error("timestamp MySQL fuori intervallo"))?;
+                .ok_or_else(|| mapping_error("timestamp fuori intervallo"))?;
             builder.append_value(timestamp.and_utc().timestamp_micros());
         }
         _ => return Err(wire_type_error()),
@@ -295,9 +294,9 @@ fn append_time(builder: &mut StringBuilder, value: &Value) -> Result<()> {
             let total_hours = u64::from(*days)
                 .checked_mul(24)
                 .and_then(|value| value.checked_add(u64::from(*hours)))
-                .ok_or_else(|| mapping_error("TIME MySQL in overflow"))?;
+                .ok_or_else(|| mapping_error("TIME in overflow"))?;
             if *minutes > 59 || *seconds > 59 || *micros > 999_999 {
-                return Err(mapping_error("TIME MySQL non canonico"));
+                return Err(mapping_error("TIME non canonico"));
             }
             let sign = if *negative { "-" } else { "" };
             builder.append_value(format!(
@@ -320,7 +319,7 @@ fn append_decimal(
         Value::Bytes(bytes) => {
             enforce_cell(bytes.len(), cell_limit)?;
             let text =
-                std::str::from_utf8(bytes).map_err(|_| mapping_error("decimal MySQL non ASCII"))?;
+                std::str::from_utf8(bytes).map_err(|_| mapping_error("decimal non ASCII"))?;
             builder.append_value(parse_decimal128(text, scale)?);
         }
         _ => return Err(wire_type_error()),
@@ -339,7 +338,7 @@ fn parse_decimal128(text: &str, scale: i8) -> Result<i128> {
         || !fractional.bytes().all(|byte| byte.is_ascii_digit())
         || fractional.len() > scale
     {
-        return Err(mapping_error("decimal MySQL non canonico"));
+        return Err(mapping_error("decimal non canonico"));
     }
     let mut digits = String::with_capacity(whole.len().saturating_add(scale));
     digits.push_str(whole);
@@ -347,11 +346,11 @@ fn parse_decimal128(text: &str, scale: i8) -> Result<i128> {
     digits.extend(std::iter::repeat_n('0', scale - fractional.len()));
     let magnitude = digits
         .parse::<i128>()
-        .map_err(|_| mapping_error("decimal MySQL oltre i128"))?;
+        .map_err(|_| mapping_error("decimal oltre i128"))?;
     if negative {
         magnitude
             .checked_neg()
-            .ok_or_else(|| mapping_error("decimal MySQL in overflow"))
+            .ok_or_else(|| mapping_error("decimal in overflow"))
     } else {
         Ok(magnitude)
     }
@@ -359,21 +358,21 @@ fn parse_decimal128(text: &str, scale: i8) -> Result<i128> {
 
 fn enforce_cell(length: usize, limit: u64) -> Result<()> {
     let length = u64::try_from(length)
-        .map_err(|_| DatabaseError::resource_limit("cella MySQL non rappresentabile"))?;
+        .map_err(|_| DatabaseError::resource_limit("cella non rappresentabile"))?;
     if length > limit {
         return Err(DatabaseError::resource_limit(
-            "cella MySQL oltre il limite configurato",
+            "cella oltre il limite configurato",
         ));
     }
     Ok(())
 }
 
 fn numeric_overflow() -> DatabaseError {
-    mapping_error("intero MySQL fuori intervallo Arrow")
+    mapping_error("intero fuori intervallo Arrow")
 }
 
 fn wire_type_error() -> DatabaseError {
-    mapping_error("tipo wire MySQL diverso dal piano")
+    mapping_error("tipo wire diverso dal piano")
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {

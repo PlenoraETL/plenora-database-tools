@@ -38,7 +38,7 @@ pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Pa
     {
         return Err(parameter_error(
             ErrorCategory::InvalidPlan,
-            "ParameterBag MySQL contiene parametri non usati",
+            "ParameterBag contiene parametri non usati",
         ));
     }
     let values = names
@@ -49,7 +49,7 @@ pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Pa
                 .ok_or_else(|| {
                     parameter_error(
                         ErrorCategory::InvalidPlan,
-                        format!("parametro MySQL mancante: {name}"),
+                        format!("parametro mancante: {name}"),
                     )
                 })
                 .and_then(parameter_value)
@@ -74,7 +74,7 @@ pub fn parameter_value(value: &ParameterValue) -> Result<Value> {
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Double(*value)),
         ParameterValue::F64(_) => Err(parameter_error(
             ErrorCategory::DataMapping,
-            "parametro float MySQL non finito",
+            "parametro float non finito",
         )),
         ParameterValue::String(value)
         | ParameterValue::Date(value)
@@ -85,7 +85,7 @@ pub fn parameter_value(value: &ParameterValue) -> Result<Value> {
             if value.contains('\0') {
                 return Err(parameter_error(
                     ErrorCategory::DataMapping,
-                    "parametro testuale MySQL contiene NUL",
+                    "parametro testuale contiene NUL",
                 ));
             }
             Ok(Value::Bytes(value.as_bytes().to_vec()))
@@ -94,27 +94,27 @@ pub fn parameter_value(value: &ParameterValue) -> Result<Value> {
         ParameterValue::Json(value) => serde_json::to_vec(value).map(Value::Bytes).map_err(|_| {
             parameter_error(
                 ErrorCategory::DataMapping,
-                "serializzazione parametro JSON MySQL fallita",
+                "serializzazione parametro JSON fallita",
             )
         }),
         ParameterValue::Null { type_name } => {
             if type_name.is_empty() || type_name.contains('\0') {
                 return Err(parameter_error(
                     ErrorCategory::DataMapping,
-                    "tipo NULL MySQL vuoto o contenente NUL",
+                    "tipo NULL vuoto o contenente NUL",
                 ));
             }
             Ok(Value::NULL)
         }
         ParameterValue::Wkb { .. } => Err(parameter_error(
             ErrorCategory::Unsupported,
-            "parametro WKB MySQL richiede SRID e preflight spatial qualificato",
+            "parametro WKB richiede SRID e preflight spatial qualificato",
         )),
         ParameterValue::Enum { label, .. } => {
             if label.contains('\0') {
                 return Err(parameter_error(
                     ErrorCategory::DataMapping,
-                    "label ENUM MySQL contiene NUL",
+                    "label ENUM contiene NUL",
                 ));
             }
             Ok(Value::Bytes(label.as_bytes().to_vec()))

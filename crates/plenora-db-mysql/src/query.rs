@@ -177,30 +177,28 @@ const WINDOW_OPERAND: Scope = Scope::RowOnly("dentro una window function");
 /// dalla sola struttura della `QueryOperation`.
 fn ensure_qualified_subset(query: &QueryOperation) -> Result<()> {
     if !query.common_table_expressions.is_empty() {
-        return Err(unsupported(
-            "CTE MySQL non ancora qualificate nel path query",
-        ));
+        return Err(unsupported("CTE non ancora qualificate nel path query"));
     }
     if !query.set_operations.is_empty() {
         return Err(unsupported(
-            "set operation MySQL non ancora qualificate nel path query",
+            "set operation non ancora qualificate nel path query",
         ));
     }
     if query.derived_source.is_some() {
         return Err(unsupported(
-            "subquery come sorgente MySQL non ancora qualificata nel path query",
+            "subquery come sorgente non ancora qualificata nel path query",
         ));
     }
     if query.locking.is_some() {
         return Err(unsupported(
-            "locking esplicito MySQL non ancora qualificato nel path query",
+            "locking esplicito non ancora qualificato nel path query",
         ));
     }
     // DISTINCT ON e una estensione PostgreSQL: qui la forma qualificata e
     // DISTINCT, l'equivalente si esprime con GROUP BY.
     if !query.distinct_on.is_empty() {
         return Err(unsupported(
-            "DISTINCT ON non esiste in MySQL: la forma qualificata e DISTINCT",
+            "DISTINCT ON non esiste in questo dialetto: la forma qualificata e DISTINCT",
         ));
     }
     Ok(())
@@ -221,13 +219,13 @@ fn ensure_window_interactions(query: &QueryOperation, grouped: bool) -> Result<(
     }
     if grouped {
         return Err(unsupported(
-            "window MySQL insieme a GROUP BY o a un aggregato di gruppo \
-             non ancora qualificata nel path query",
+            "window insieme a GROUP BY o a un aggregato di gruppo \
+ non ancora qualificata nel path query",
         ));
     }
     if query.distinct {
         return Err(unsupported(
-            "window MySQL insieme a DISTINCT non ancora qualificata nel path query",
+            "window insieme a DISTINCT non ancora qualificata nel path query",
         ));
     }
     Ok(())
@@ -238,7 +236,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
     if query.row_limit.is_some() && query.order_by.is_empty() {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "LIMIT MySQL richiede ORDER BY esplicito per un risultato deterministico",
+            "LIMIT richiede ORDER BY esplicito per un risultato deterministico",
         ));
     }
     let relations = ensure_relations(query, database)?;
@@ -256,7 +254,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
     if query.having.is_some() && !grouped {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "HAVING MySQL senza aggregazione: il filtro per riga appartiene a WHERE",
+            "HAVING senza aggregazione: il filtro per riga appartiene a WHERE",
         ));
     }
 
@@ -268,7 +266,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
         if matches!(key, QueryExpression::Parameter { .. }) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "parametro MySQL in GROUP BY: la chiave sarebbe ambigua",
+                "parametro in GROUP BY: la chiave sarebbe ambigua",
             ));
         }
         ensure_expression(key, Scope::RowOnly("in GROUP BY"), &relations)?;
@@ -287,7 +285,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
                 if grouped {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
-                        "wildcard MySQL in una query aggregata non e determinato dal gruppo",
+                        "wildcard in una query aggregata non e determinato dal gruppo",
                     ));
                 }
             }
@@ -327,12 +325,10 @@ fn relation_name(source: &QuerySource) -> &str {
 /// renderebbero ambigua ogni colonna qualificata e `MySQL` se ne accorgerebbe
 /// solo al prepare, con un messaggio che non identifica il piano.
 fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTreeSet<&'a str>> {
-    let source = query.source.as_ref().ok_or_else(|| {
-        prepare_error(
-            ErrorCategory::InvalidPlan,
-            "query MySQL senza sorgente fisica",
-        )
-    })?;
+    let source = query
+        .source
+        .as_ref()
+        .ok_or_else(|| prepare_error(ErrorCategory::InvalidPlan, "query senza sorgente fisica"))?;
     ensure_source(source, database)?;
     let mut relations = BTreeSet::from([relation_name(source)]);
     for join in &query.joins {
@@ -340,12 +336,12 @@ fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTr
         // solo per PostgreSQL: la forma resta non dimostrata, non assente.
         if join.lateral {
             return Err(unsupported(
-                "join LATERAL MySQL non ancora qualificati nel path query",
+                "join LATERAL non ancora qualificati nel path query",
             ));
         }
         if join.derived_source.is_some() {
             return Err(unsupported(
-                "join su subquery MySQL non ancora qualificati nel path query",
+                "join su subquery non ancora qualificati nel path query",
             ));
         }
         match join.kind {
@@ -354,22 +350,19 @@ fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTr
             // rifiuta: qui il limite e del motore, non della tranche.
             JoinKind::Full => {
                 return Err(unsupported(
-                    "FULL JOIN non esiste in MySQL: la forma equivalente e l'unione \
-                     di un LEFT JOIN e di un RIGHT JOIN",
+                    "FULL JOIN non esiste in questo dialetto: la forma equivalente e l'unione \
+ di un LEFT JOIN e di un RIGHT JOIN",
                 ));
             }
         }
         let joined = join.source.as_ref().ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::InvalidPlan,
-                "join MySQL senza sorgente fisica",
-            )
+            prepare_error(ErrorCategory::InvalidPlan, "join senza sorgente fisica")
         })?;
         ensure_source(joined, database)?;
         if !relations.insert(relation_name(joined)) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "alias di relazione MySQL duplicato fra sorgente e join",
+                "alias di relazione duplicato fra sorgente e join",
             ));
         }
 
@@ -380,13 +373,13 @@ fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTr
             (JoinKind::Cross, Some(_)) => {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "CROSS JOIN MySQL con clausola ON",
+                    "CROSS JOIN con clausola ON",
                 ));
             }
             (_, None) => {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "JOIN MySQL senza clausola ON",
+                    "JOIN senza clausola ON",
                 ));
             }
             // ON e valutata per riga durante la costruzione del join: un
@@ -405,7 +398,7 @@ fn ensure_known_relation(relation: &str, relations: &BTreeSet<&str>) -> Result<(
     if !relations.contains(relation) {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "riferimento MySQL a una relazione assente da FROM e dai join",
+            "riferimento a una relazione assente da FROM e dai join",
         ));
     }
     Ok(())
@@ -417,11 +410,11 @@ fn ensure_aggregable(scope: Scope) -> Result<()> {
         Scope::Projection | Scope::Aggregable => Ok(()),
         Scope::RowOnly(clause) => Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            format!("funzione aggregata MySQL non ammessa {clause}"),
+            format!("funzione aggregata non ammessa {clause}"),
         )),
         Scope::AggregateArgument => Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "aggregato MySQL annidato in un altro aggregato",
+            "aggregato annidato in un altro aggregato",
         )),
     }
 }
@@ -438,7 +431,7 @@ fn ensure_expression(
             QueryExpression::Wildcard { .. } => {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "wildcard MySQL ammesso solo come voce di proiezione o come COUNT(*)",
+                    "wildcard ammesso solo come voce di proiezione o come COUNT(*)",
                 ));
             }
             QueryExpression::Column { column } => {
@@ -477,7 +470,7 @@ fn ensure_expression(
                 | ScalarFunction::Lead => {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
-                        "funzione window MySQL usata senza clausola OVER",
+                        "funzione window usata senza clausola OVER",
                     ));
                 }
             },
@@ -507,7 +500,7 @@ fn ensure_expression(
             }
             QueryExpression::Window { .. } | QueryExpression::SpatialWindow { .. } => {
                 return Err(unsupported(
-                    "window function MySQL non ancora qualificata nel path query",
+                    "window function non ancora qualificata nel path query",
                 ));
             }
             QueryExpression::Spatial {
@@ -519,22 +512,22 @@ fn ensure_expression(
                 // live dedicato su MySQL 8.4.
                 if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
                     return Err(unsupported(format!(
-                        "funzione spatial MySQL '{function:?}' non ancora qualificata \
-                         (vedi VERIFIED_SPATIAL_FUNCTIONS per il subset verified v1.2)"
+                        "funzione spatial '{function:?}' non ancora qualificata \
+ (vedi VERIFIED_SPATIAL_FUNCTIONS per il subset verified v1.2)"
                     )));
                 }
                 stack.extend(arguments.iter().map(|argument| (argument, scope)));
             }
             QueryExpression::SpatialOperator { .. } => {
                 return Err(unsupported(
-                    "spatial operator MySQL non ancora qualificato nel path query",
+                    "spatial operator non ancora qualificato nel path query",
                 ));
             }
             QueryExpression::ScalarSubquery { .. }
             | QueryExpression::Exists { .. }
             | QueryExpression::InSubquery { .. } => {
                 return Err(unsupported(
-                    "subquery MySQL non ancora qualificata nel path query",
+                    "subquery non ancora qualificata nel path query",
                 ));
             }
         }
@@ -563,7 +556,7 @@ fn ensure_window(
             if !arguments.is_empty() {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "funzione MySQL di rango con argomenti: la posizione non ne accetta",
+                    "funzione di rango con argomenti: la posizione non ne accetta",
                 ));
             }
             ensure_peer_stable_window(order_by, frame)?;
@@ -585,7 +578,7 @@ fn ensure_window(
         ScalarFunction::Lower | ScalarFunction::Upper | ScalarFunction::Coalesce => {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "funzione scalare MySQL usata come window function",
+                "funzione scalare usata come window function",
             ));
         }
     }
@@ -615,10 +608,10 @@ fn ensure_window(
 /// Assumerla dalla sola presenza di un ORDER BY non vuoto pubblicherebbe come
 /// deterministico un valore che non lo e.
 const TOTAL_ORDER_NOT_PROVABLE: &str =
-    "window MySQL che numera le righe pari (ROW_NUMBER, LAG, LEAD, frame ROWS) \
-     non ancora qualificata nel path query: l'AST portabile non dimostra che la \
-     chiave d'ordine sia un ordine totale univoco e con chiavi duplicate il \
-     valore non sarebbe riproducibile";
+    "window che numera le righe pari (ROW_NUMBER, LAG, LEAD, frame ROWS) \
+ non ancora qualificata nel path query: l'AST portabile non dimostra che la \
+ chiave d'ordine sia un ordine totale univoco e con chiavi duplicate il \
+ valore non sarebbe riproducibile";
 
 /// Vincoli comuni alle window di rango stabili fra pari: `RANK` e `DENSE_RANK`.
 ///
@@ -634,15 +627,15 @@ fn ensure_peer_stable_window(
     if order_by.is_empty() {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "window MySQL di rango senza ORDER BY: \
-             la posizione della riga non sarebbe riproducibile",
+            "window di rango senza ORDER BY: \
+ la posizione della riga non sarebbe riproducibile",
         ));
     }
     if frame.is_some() {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "frame esplicito su una window MySQL di rango: \
-             il motore lo ignora e il piano reso non sarebbe quello richiesto",
+            "frame esplicito su una window di rango: \
+ il motore lo ignora e il piano reso non sarebbe quello richiesto",
         ));
     }
     Ok(())
@@ -667,28 +660,28 @@ fn ensure_window_frame(frame: &WindowFrame, order_by: &[QueryOrdering]) -> Resul
             {
                 return Err(prepare_error(
                     ErrorCategory::InvalidPlan,
-                    "frame RANGE MySQL con limite iniziale o finale non valido",
+                    "frame RANGE con limite iniziale o finale non valido",
                 ));
             }
             if frame_offset(&frame.start) || frame.end.as_ref().is_some_and(frame_offset) {
                 return Err(unsupported(
-                    "frame RANGE MySQL con offset non ancora qualificato nel path query: \
-                     l'AST portabile non esprime l'INTERVAL richiesto da una chiave temporale",
+                    "frame RANGE con offset non ancora qualificato nel path query: \
+ l'AST portabile non esprime l'INTERVAL richiesto da una chiave temporale",
                 ));
             }
         }
         WindowFrameUnits::Groups => {
             return Err(unsupported(
-                "la clausola GROUPS non esiste in MySQL 8.4: \
-                 le unita di frame disponibili sono ROWS e RANGE",
+                "la clausola GROUPS non esiste in questo dialetto: \
+ le unita di frame disponibili sono ROWS e RANGE",
             ));
         }
     }
     if order_by.is_empty() {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "frame di window MySQL senza ORDER BY: \
-             la porzione di partizione non sarebbe determinata",
+            "frame di window senza ORDER BY: \
+ la porzione di partizione non sarebbe determinata",
         ));
     }
     Ok(())
@@ -794,7 +787,7 @@ fn ensure_group_determinism(query: &QueryOperation) -> Result<()> {
         if !is_determined_by_group(&projection.expression, &query.group_by) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "proiezione MySQL non aggregata e assente da GROUP BY",
+                "proiezione non aggregata e assente da GROUP BY",
             ));
         }
     }
@@ -802,7 +795,7 @@ fn ensure_group_determinism(query: &QueryOperation) -> Result<()> {
         if !is_determined_by_group(having, &query.group_by) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "HAVING MySQL su un'espressione assente da GROUP BY",
+                "HAVING su un'espressione assente da GROUP BY",
             ));
         }
     }
@@ -812,7 +805,7 @@ fn ensure_group_determinism(query: &QueryOperation) -> Result<()> {
         {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "ORDER BY MySQL su un'espressione assente da GROUP BY",
+                "ORDER BY su un'espressione assente da GROUP BY",
             ));
         }
     }
@@ -826,7 +819,7 @@ fn ensure_distinct_determinism(query: &QueryOperation) -> Result<()> {
         if !matches_projection(&ordering.expression, query) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
-                "ORDER BY MySQL fuori dalla proiezione DISTINCT: l'ordine non sarebbe riproducibile",
+                "ORDER BY fuori dalla proiezione DISTINCT: l'ordine non sarebbe riproducibile",
             ));
         }
     }
@@ -889,7 +882,7 @@ fn matches_projection(expression: &QueryExpression, query: &QueryOperation) -> b
 
 fn ensure_source(source: &QuerySource, database: &str) -> Result<()> {
     if source.object.layer_id.is_some() {
-        return Err(unsupported("layer_id non appartiene al provider MySQL"));
+        return Err(unsupported("layer_id non appartiene al provider"));
     }
     if source
         .object
@@ -903,15 +896,13 @@ fn ensure_source(source: &QuerySource, database: &str) -> Result<()> {
             .is_some_and(|schema| schema != database)
     {
         return Err(unsupported(
-            "accesso cross-database MySQL non supportato dal provider",
+            "accesso cross-database non supportato dal provider",
         ));
     }
     // MySQL usa nomi a due componenti: `database`.`tabella`. Un AST con
     // catalog e schema insieme renderizzerebbe tre componenti.
     if source.object.catalog.is_some() && source.object.schema.is_some() {
-        return Err(unsupported(
-            "MySQL non ammette nomi qualificati a tre componenti",
-        ));
+        return Err(unsupported("non ammette nomi qualificati a tre componenti"));
     }
     for part in source
         .object
@@ -931,7 +922,7 @@ fn ensure_identifier(value: &str) -> Result<()> {
     {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "identificatore MySQL vuoto, con NUL o oltre 64 caratteri",
+            "identificatore vuoto, con NUL o oltre 64 caratteri",
         ));
     }
     Ok(())
@@ -1357,7 +1348,7 @@ mod tests {
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
         assert!(
-            error.message.contains("non esiste in MySQL"),
+            error.message.contains("non esiste in questo dialetto"),
             "{}",
             error.message
         );
@@ -1582,11 +1573,7 @@ mod tests {
             assert_eq!(provider.category, ErrorCategory::InvalidPlan, "{label}");
             assert_eq!(provider.phase, ErrorPhase::Prepare, "{label}");
             assert_eq!(provider.provider, Some(ProviderKind::Mysql), "{label}");
-            assert!(
-                provider.message.contains("JOIN MySQL"),
-                "{}",
-                provider.message
-            );
+            assert!(provider.message.contains("JOIN"), "{}", provider.message);
         }
     }
 
@@ -2043,7 +2030,7 @@ mod tests {
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
         assert!(
-            error.message.contains("non esiste in MySQL"),
+            error.message.contains("non esiste in questo dialetto"),
             "{}",
             error.message
         );
@@ -2447,7 +2434,7 @@ mod tests {
         // ROWS esiste nel parser di MySQL 8.4: il rifiuto e una qualificazione
         // mancante di questa tranche, non un'assenza del motore.
         assert!(
-            !positional.message.contains("non esiste in MySQL"),
+            !positional.message.contains("non esiste in questo dialetto"),
             "{}",
             positional.message
         );
@@ -2467,7 +2454,7 @@ mod tests {
         assert_eq!(absent.category, ErrorCategory::Unsupported);
         assert_eq!(absent.phase, ErrorPhase::Prepare);
         assert!(
-            absent.message.contains("non esiste in MySQL"),
+            absent.message.contains("non esiste in questo dialetto"),
             "{}",
             absent.message
         );
@@ -2604,7 +2591,7 @@ mod tests {
             // MySQL 8.4 ha ROW_NUMBER, LAG e LEAD: il rifiuto e una
             // qualificazione mancante di questa tranche, non un'assenza.
             assert!(
-                !error.message.contains("non esiste in MySQL"),
+                !error.message.contains("non esiste in questo dialetto"),
                 "{call}: {}",
                 error.message
             );

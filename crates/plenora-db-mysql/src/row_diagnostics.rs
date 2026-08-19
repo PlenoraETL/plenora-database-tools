@@ -84,9 +84,9 @@ impl<'a> MysqlRowWriter<'a> {
                 if source_index < end {
                     let offset = source_index
                         .checked_sub(self.batch_start)
-                        .ok_or_else(|| row_error("indice sorgente MySQL già superato"))?;
+                        .ok_or_else(|| row_error("indice sorgente già superato"))?;
                     return usize::try_from(offset)
-                        .map_err(|_| row_error("offset di batch MySQL non rappresentabile"));
+                        .map_err(|_| row_error("offset di batch non rappresentabile"));
                 }
                 self.batch_start = end;
                 self.batch = None;
@@ -101,7 +101,7 @@ impl<'a> MysqlRowWriter<'a> {
                     error.provider = Some(crate::profile::PROVISIONAL_KIND);
                     error
                 })?
-                .ok_or_else(|| row_error("input MySQL esaurito prima delle righe dichiarate"))?;
+                .ok_or_else(|| row_error("input esaurito prima delle righe dichiarate"))?;
             crate::write::validate_batch_schema(&batch, self.schema)?;
             if batch.num_rows() == 0 {
                 continue;
@@ -127,7 +127,7 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                 let batch = self
                     .batch
                     .as_ref()
-                    .ok_or_else(|| row_error("batch MySQL assente dopo il posizionamento"))?;
+                    .ok_or_else(|| row_error("batch assente dopo il posizionamento"))?;
                 (
                     self.plan.render_insert(1)?,
                     self.plan.bind_chunk(batch, offset, 1)?,
@@ -146,7 +146,7 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                 self.applied = self
                     .applied
                     .checked_add(1)
-                    .ok_or_else(|| row_error("overflow nelle righe applicate MySQL"))?;
+                    .ok_or_else(|| row_error("overflow nelle righe applicate"))?;
                 Ok(RowApplication::Applied)
             }
         })
@@ -166,7 +166,7 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                 match self.input.next_batch(self.cancellation).await {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => {
-                        return Err(row_error("input MySQL oltre il totale dichiarato"));
+                        return Err(row_error("input oltre il totale dichiarato"));
                     }
                     Ok(None) => return Ok(()),
                     Err(mut error) => {
@@ -205,19 +205,19 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
 }
 
 fn batch_rows(batch: &RecordBatch) -> Result<u64> {
-    u64::try_from(batch.num_rows()).map_err(|_| row_error("righe batch MySQL non rappresentabili"))
+    u64::try_from(batch.num_rows()).map_err(|_| row_error("righe batch non rappresentabili"))
 }
 
 fn checked_batch_end(batch_start: u64, rows: u64) -> Result<u64> {
     batch_start
         .checked_add(rows)
-        .ok_or_else(|| row_error("overflow nell'offset sorgente MySQL"))
+        .ok_or_else(|| row_error("overflow nell'offset sorgente"))
 }
 
 fn checked_consumed_batch_end(batch_start: u64, rows: u64, applied: u64) -> Result<u64> {
     let end = checked_batch_end(batch_start, rows)?;
     if end != applied {
-        return Err(row_error("input MySQL oltre il totale dichiarato"));
+        return Err(row_error("input oltre il totale dichiarato"));
     }
     Ok(end)
 }

@@ -80,6 +80,19 @@ impl MysqlReadPlan {
         operation: &ReadOperation,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
+        // Vedi `MysqlWritePlan::compile_with_profile`: chi ha il profilo
+        // attribuisce da se.
+        crate::profile::attributed(
+            profile,
+            Self::compile_unattributed(description, operation, profile),
+        )
+    }
+
+    fn compile_unattributed(
+        description: &MysqlObjectDescription,
+        operation: &ReadOperation,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<Self> {
         let product = profile.product();
         if description.columns.is_empty() {
             return Err(prepare_error(
@@ -179,7 +192,7 @@ impl MysqlReadPlan {
         if columns.is_empty() {
             return Err(prepare_error(
                 ErrorCategory::Schema,
-                "QueryOperation MySQL priva di colonne risultanti",
+                "QueryOperation priva di colonne risultanti",
             ));
         }
         let schema = contract_schema(columns.iter().map(MysqlColumnSpec::arrow_field).collect());
@@ -372,28 +385,28 @@ fn canonical_geometry_type(native_type: &str) -> &str {
 }
 
 fn decimal_kind(column: &MysqlColumn) -> Result<MysqlColumnKind> {
-    let precision = column.numeric_precision.ok_or_else(|| {
-        prepare_error(ErrorCategory::DataMapping, "decimal MySQL senza precisione")
-    })?;
+    let precision = column
+        .numeric_precision
+        .ok_or_else(|| prepare_error(ErrorCategory::DataMapping, "decimal senza precisione"))?;
     let scale = column
         .numeric_scale
-        .ok_or_else(|| prepare_error(ErrorCategory::DataMapping, "decimal MySQL senza scala"))?;
+        .ok_or_else(|| prepare_error(ErrorCategory::DataMapping, "decimal senza scala"))?;
     let precision = u8::try_from(precision).map_err(|_| {
         prepare_error(
             ErrorCategory::Unsupported,
-            "precisione decimal MySQL non rappresentabile",
+            "precisione decimal non rappresentabile",
         )
     })?;
     let scale = i8::try_from(scale).map_err(|_| {
         prepare_error(
             ErrorCategory::Unsupported,
-            "scala decimal MySQL non rappresentabile",
+            "scala decimal non rappresentabile",
         )
     })?;
     if precision == 0 || precision > 38 || scale < 0 || scale > precision.cast_signed() {
         return Err(prepare_error(
             ErrorCategory::Unsupported,
-            "decimal MySQL oltre Decimal128 Arrow",
+            "decimal oltre Decimal128 Arrow",
         ));
     }
     Ok(MysqlColumnKind::Decimal { precision, scale })
@@ -417,7 +430,7 @@ fn select_columns(
                 || {
                     Err(prepare_error(
                         ErrorCategory::NotFound,
-                        "colonna projection MySQL non trovata",
+                        "colonna projection non trovata",
                     ))
                 },
                 |column| Ok((*column).clone()),
@@ -481,7 +494,7 @@ fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
             if *case_insensitive {
                 return Err(prepare_error(
                     ErrorCategory::Unsupported,
-                    "LIKE case-insensitive MySQL richiede collation esplicita",
+                    "LIKE case-insensitive richiede collation esplicita",
                 ));
             }
             Ok(Expression::Like {
@@ -492,7 +505,7 @@ fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
         }
         FilterExpression::Spatial { .. } => Err(prepare_error(
             ErrorCategory::Unsupported,
-            "filtro spatial MySQL richiede validazione WKB e SRID",
+            "filtro spatial richiede validazione WKB e SRID",
         )),
     }
 }
@@ -534,7 +547,7 @@ fn ensure_filter_columns(expression: &FilterExpression, columns: &[MysqlColumnSp
     } else {
         Err(prepare_error(
             ErrorCategory::NotFound,
-            "colonna filtro MySQL non trovata",
+            "colonna filtro non trovata",
         ))
     }
 }
@@ -553,7 +566,7 @@ pub fn mysql_identifier(value: &str) -> Result<Identifier> {
     if value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS {
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
-            "identificatore oltre 64 caratteri MySQL",
+            "identificatore oltre 64 caratteri",
         ));
     }
     Identifier::new(value.to_owned())

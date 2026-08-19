@@ -637,14 +637,14 @@ fn bounded_buffer_capacity(
         return Ok(row_limit.min(1_024));
     }
     let columns = u64::try_from(column_count)
-        .map_err(|_| DatabaseError::resource_limit("numero colonne MySQL non rappresentabile"))?;
+        .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let minimum_row_bytes = CONSERVATIVE_CELL_BYTES
         .checked_mul(columns)
-        .ok_or_else(|| DatabaseError::resource_limit("stima riga MySQL in overflow"))?;
+        .ok_or_else(|| DatabaseError::resource_limit("stima riga in overflow"))?;
     let rows_by_bytes = byte_limit / minimum_row_bytes;
     if rows_by_bytes == 0 {
         return Err(DatabaseError::resource_limit(
-            "budget memoria insufficiente per una riga MySQL",
+            "budget memoria insufficiente per una riga",
         ));
     }
     let rows_by_bytes = usize::try_from(rows_by_bytes).unwrap_or(usize::MAX);
@@ -658,14 +658,14 @@ fn conservative_row_bytes(row: &Row, column_count: usize) -> Result<u64> {
             read_error(
                 ErrorCategory::DataMapping,
                 ErrorPhase::Read,
-                "riga MySQL con meno colonne del piano",
+                "riga con meno colonne del piano",
             )
         })?;
         let payload_bytes = match value {
             Value::Bytes(bytes) => u64::try_from(bytes.len())
-                .map_err(|_| DatabaseError::resource_limit("payload MySQL non rappresentabile"))?
+                .map_err(|_| DatabaseError::resource_limit("payload non rappresentabile"))?
                 .checked_mul(2)
-                .ok_or_else(|| DatabaseError::resource_limit("stima payload MySQL in overflow"))?,
+                .ok_or_else(|| DatabaseError::resource_limit("stima payload in overflow"))?,
             Value::Time(..) => 64,
             Value::Date(..)
             | Value::Int(_)
@@ -677,7 +677,7 @@ fn conservative_row_bytes(row: &Row, column_count: usize) -> Result<u64> {
         total = total
             .checked_add(CONSERVATIVE_CELL_BYTES)
             .and_then(|value| value.checked_add(payload_bytes))
-            .ok_or_else(|| DatabaseError::resource_limit("stima riga MySQL in overflow"))?;
+            .ok_or_else(|| DatabaseError::resource_limit("stima riga in overflow"))?;
     }
     Ok(total)
 }
@@ -731,7 +731,7 @@ impl BatchReservation {
             .remaining(ResourceKind::MemoryBytes)
             .min(budget.remaining(ResourceKind::OutputBytes));
         if rows == 0 || bytes == 0 {
-            return Err(DatabaseError::resource_limit("budget MySQL read esaurito"));
+            return Err(DatabaseError::resource_limit("budget read esaurito"));
         }
         let has_spatial = columns
             .iter()
@@ -743,7 +743,7 @@ impl BatchReservation {
         };
         if has_spatial && component_limit == 0 {
             return Err(DatabaseError::resource_limit(
-                "budget componenti geometriche MySQL esaurito",
+                "budget componenti geometriche esaurito",
             ));
         }
         Ok(Self {
@@ -762,7 +762,7 @@ impl BatchReservation {
     fn commit(self, rows: u64, bytes: u64, components: u64) -> Result<()> {
         if bytes == 0 || bytes > self.byte_limit {
             return Err(DatabaseError::resource_limit(
-                "batch Arrow MySQL oltre il budget memoria/output",
+                "batch Arrow oltre il budget memoria/output",
             ));
         }
         self.rows_lease.commit(rows)?;
@@ -770,7 +770,7 @@ impl BatchReservation {
         self.output_lease.commit(bytes)?;
         if components > 0 {
             self.geometry_lease
-                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico MySQL assente"))?
+                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico assente"))?
                 .commit(components)?;
         }
         Ok(())
@@ -889,7 +889,7 @@ fn validate_batch_rows(batch_rows: usize) -> Result<()> {
         return Err(read_error(
             ErrorCategory::InvalidPlan,
             ErrorPhase::Validate,
-            "batch_rows MySQL fuori intervallo 1..=65536",
+            "batch_rows fuori intervallo 1..=65536",
         ));
     }
     Ok(())
@@ -941,7 +941,7 @@ impl BudgetCancellation {
             read_error(
                 ErrorCategory::Internal,
                 ErrorPhase::Prepare,
-                "task deadline MySQL assente",
+                "task deadline assente",
             )
         })
     }

@@ -145,7 +145,7 @@ fn semaphore_closed_error(kind: plenora_database_core::plan::ProviderKind) -> Da
         retry: RetryDisposition::Never,
         provider: Some(kind),
         execution_id: None,
-        message: "semaphore pool MySQL chiuso".to_owned(),
+        message: "semaphore pool chiuso".to_owned(),
         diagnostics: None,
     }
 }
