@@ -278,7 +278,11 @@ async fn live_pool_reset_reapplies_deterministic_session_bootstrap() {
     use mysql_async::prelude::Queryable;
 
     let config = live_config();
-    let pool = mysql_async::Pool::new(config.pooled_driver_opts(1).expect("pool opts MySQL live"));
+    let pool = mysql_async::Pool::new(
+        config
+            .pooled_driver_opts(1, "MySQL")
+            .expect("pool opts MySQL live"),
+    );
     let mut connection = pool.get_conn().await.expect("checkout");
     let first_connection_id: Option<u64> = connection
         .query_first("SELECT CONNECTION_ID()")
@@ -579,7 +583,7 @@ async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
     let config = live_config();
     let setup = mysql_async::Pool::new(
         config
-            .pooled_driver_opts(1)
+            .pooled_driver_opts(1, "MySQL")
             .expect("pool setup righe variabili"),
     );
     let mut connection = setup.get_conn().await.expect("checkout setup");
@@ -671,7 +675,11 @@ async fn live_default_limits_batch_many_rows_over_four_columns() {
     use plenora_database_core::plan::{OrderBy, ReadOperation, SortDirection};
 
     let config = live_config();
-    let setup = mysql_async::Pool::new(config.pooled_driver_opts(1).expect("pool setup batching"));
+    let setup = mysql_async::Pool::new(
+        config
+            .pooled_driver_opts(1, "MySQL")
+            .expect("pool setup batching"),
+    );
     let mut connection = setup.get_conn().await.expect("checkout setup");
     connection
         .query_drop("DROP TABLE IF EXISTS wide_stream_probe")
@@ -2367,7 +2375,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     };
     let audit_pool = mysql_async::Pool::new(
         live_config()
-            .pooled_driver_opts(1)
+            .pooled_driver_opts(1, "MySQL")
             .expect("pool performance_schema"),
     );
     let mut audit = audit_pool.get_conn().await.expect("checkout audit");
@@ -2613,7 +2621,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
         };
     let audit_pool = mysql_async::Pool::new(
         live_config()
-            .pooled_driver_opts(1)
+            .pooled_driver_opts(1, "MySQL")
             .expect("pool audit lifecycle"),
     );
     let mut audit = audit_pool
@@ -2920,9 +2928,13 @@ const APPEND_TARGET_DDL: &str = "(\
      payload VARBINARY(32) NULL) ENGINE=InnoDB";
 
 async fn append_setup_connection(config: &MysqlConfig) -> mysql_async::Conn {
-    mysql_async::Conn::new(config.driver_opts().expect("opzioni driver MySQL live"))
-        .await
-        .expect("connessione di servizio MySQL live")
+    mysql_async::Conn::new(
+        config
+            .driver_opts("MySQL")
+            .expect("opzioni driver MySQL live"),
+    )
+    .await
+    .expect("connessione di servizio MySQL live")
 }
 
 async fn reset_append_target(connection: &mut mysql_async::Conn, table: &str) {
@@ -3919,7 +3931,9 @@ async fn live_v12_session_context_is_cleared_when_a_connection_is_reused() {
 
     let retaining = mysql_async::Pool::new(mysql_async::Opts::from(
         mysql_async::OptsBuilder::from_opts(
-            live_config().pooled_driver_opts(1).expect("opts pooled"),
+            live_config()
+                .pooled_driver_opts(1, "MySQL")
+                .expect("opts pooled"),
         )
         .pool_opts(Some(
             mysql_async::PoolOpts::default()

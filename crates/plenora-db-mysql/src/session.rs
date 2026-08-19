@@ -1,5 +1,6 @@
 use crate::config::MysqlConfig;
 use crate::error::{driver_error, interruption_error, server_code, timeout_error};
+use crate::profile::ProductProfile;
 use futures_util::StreamExt;
 use mysql_async::prelude::{Queryable, StatementLike};
 use mysql_async::{Conn, Params, Row, Statement};
@@ -78,7 +79,7 @@ impl MysqlSession {
     ///
     /// Propaga configurazione, autenticazione, cancellazione e timeout.
     pub async fn open(config: &MysqlConfig, cancellation: &CancellationToken) -> Result<Self> {
-        let opts = config.driver_opts()?;
+        let opts = config.driver_opts(crate::profile::MYSQL_PROFILE.product())?;
         let connect = Conn::new(opts);
         let connection = tokio::select! {
             _ = cancellation.cancelled() => {

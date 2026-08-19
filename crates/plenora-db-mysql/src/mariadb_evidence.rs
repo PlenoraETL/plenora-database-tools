@@ -1248,7 +1248,7 @@ async fn run_driver_evidence() {
 
     let mut connection = mysql_async::Conn::new(
         config()
-            .driver_opts()
+            .driver_opts("MySQL")
             .expect("opzioni driver della misura: harness, non divergenza"),
     )
     .await

@@ -66,13 +66,19 @@ impl MysqlPool {
                 retry: plenora_database_core::RetryDisposition::Never,
                 provider: Some(profile.kind()),
                 execution_id: None,
-                message: "pool MySQL con capacita zero".to_owned(),
+                message: format!("pool {} con capacita zero", profile.product()),
                 diagnostics: None,
             });
         }
         Ok(Self {
             profile,
-            pool: Pool::new(config.pooled_driver_opts(max_connections)?),
+            // Anche il costruttore del pool e un bordo: qui la
+            // configurazione viene rivalidata, e l'errore che ne esce e il
+            // primo che il consumatore vede al checkout.
+            pool: Pool::new(crate::profile::attributed(
+                profile,
+                config.pooled_driver_opts(max_connections, profile.product()),
+            )?),
             checkout_timeout: config.acquire_timeout(),
             connect_timeout: config.connect_timeout(),
             operation_timeout: config.operation_timeout(),

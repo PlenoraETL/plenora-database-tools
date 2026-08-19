@@ -842,14 +842,17 @@ impl ProductProfile for SecondProductProfile {
         // che ADR 0014 ha misurato su MariaDB. Se la conversione tornasse a
         // vivere fuori dal profilo, questo profilo emetterebbe secondi con
         // un valore in millisecondi e nessuno se ne accorgerebbe.
-        // Arrotondamento **per eccesso**, con un minimo di uno: su un
-        // prodotto a granularita di secondi un timeout di 200 ms diventerebbe
-        // zero con la divisione intera, e zero su MySQL significa "nessun
-        // limite". Il modo peggiore di sbagliare un timeout e trasformarlo
-        // nel suo contrario, e vale per il profilo vero quanto per questo.
+        // Conversione **esatta**, in aritmetica intera. Arrotondare per
+        // eccesso evitava lo zero ma allentava il contratto: 200 ms
+        // diventavano un secondo, e un timeout che si allunga da solo e un
+        // timeout che non protegge piu da cio per cui era stato chiesto.
+        // `max_statement_time` e numerico e accetta secondi frazionari,
+        // quindi la conversione giusta non perde nulla — e non serve un
+        // float per farla.
         format!(
-            "SET SESSION max_statement_time = {}",
-            timeout_ms.div_ceil(1_000).max(1)
+            "SET SESSION max_statement_time = {}.{:03}",
+            timeout_ms / 1_000,
+            timeout_ms % 1_000
         )
     }
 
@@ -1475,6 +1478,32 @@ mod tests {
         }
     }
 
+    /// Il messaggio non deve limitarsi a non contraddire l'attribuzione:
+    /// deve nominare il prodotto servito. Asserire il solo `provider` e cio
+    /// che ha lasciato passare il residuo del pool per una review intera.
+    fn assert_names_the_second_product(error: &plenora_database_core::DatabaseError, what: &str) {
+        assert_eq!(error.provider, Some(ProviderKind::Mariadb), "{what}");
+        assert!(
+            error.message.contains("SecondProduct"),
+            "{what}: il messaggio non nomina il prodotto — {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("MySQL"),
+            "{what}: il messaggio nomina ancora MySQL — {}",
+            error.message
+        );
+    }
+
+    fn second_product_config() -> MysqlConfig {
+        MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        )
+    }
+
     #[test]
     fn the_constructor_attributes_its_own_failures_to_the_profile() {
         // I due errori che un consumatore puo vedere senza aver mai toccato
@@ -1483,17 +1512,12 @@ mod tests {
         let invalid = MysqlConfig::new("", "warehouse", "loader", SecretString::new("s"));
         let error = crate::MysqlProvider::with_profile(invalid, 2, &SECOND_PRODUCT_PROFILE)
             .expect_err("configurazione invalida");
-        assert_eq!(error.provider, Some(ProviderKind::Mariadb));
+        assert_names_the_second_product(&error, "configurazione invalida");
 
-        let valid = MysqlConfig::new(
-            "mysql.example.test",
-            "warehouse",
-            "loader",
-            SecretString::new("unique-secret"),
-        );
-        let error = crate::MysqlProvider::with_profile(valid, 0, &SECOND_PRODUCT_PROFILE)
-            .expect_err("pool a capacita zero");
-        assert_eq!(error.provider, Some(ProviderKind::Mariadb));
+        let error =
+            crate::MysqlProvider::with_profile(second_product_config(), 0, &SECOND_PRODUCT_PROFILE)
+                .expect_err("pool a capacita zero");
+        assert_names_the_second_product(&error, "pool a capacita zero");
     }
 
     #[test]
@@ -1507,12 +1531,24 @@ mod tests {
         let second = SECOND_PRODUCT_PROFILE.statement_timeout_statement(5_000);
         assert_ne!(mysql, second);
         assert!(mysql.contains("5000"), "{mysql}");
-        assert!(second.contains(" 5"), "{second}");
-        assert!(!second.contains("5000"), "{second}");
-        // Il caso che la divisione intera sbaglierebbe: sotto il secondo, un
-        // timeout non puo diventare "nessun timeout".
-        let sub_second = SECOND_PRODUCT_PROFILE.statement_timeout_statement(200);
-        assert!(sub_second.ends_with(" 1"), "{sub_second}");
+        assert!(second.ends_with(" 5.000"), "{second}");
+        // I due casi che una conversione approssimata sbaglierebbe in
+        // direzioni opposte: la divisione intera porterebbe 200 ms a zero,
+        // cioe a "nessun limite"; l'arrotondamento per eccesso li porterebbe
+        // a un secondo, cioe a un timeout cinque volte piu lasco di quello
+        // chiesto. La conversione esatta non perde nulla.
+        assert!(
+            SECOND_PRODUCT_PROFILE
+                .statement_timeout_statement(200)
+                .ends_with(" 0.200"),
+            "sotto il secondo la conversione deve restare esatta"
+        );
+        assert!(
+            SECOND_PRODUCT_PROFILE
+                .statement_timeout_statement(1)
+                .ends_with(" 0.001"),
+            "un millisecondo non puo sparire"
+        );
 
         // Classificazione: lo stesso codice, due significati.
         assert_eq!(
@@ -1576,21 +1612,42 @@ mod tests {
 
     #[test]
     fn the_guarded_module_list_covers_every_production_module() {
-        // I moduli di solo test non contano: non esistono nel binario che
-        // il consumatore riceve, ed e quello che le guardie presidiano.
+        // I moduli di solo test non contano: non esistono nel binario che il
+        // consumatore riceve, ed e quello che le guardie presidiano.
+        //
+        // Il riconoscimento accetta qualunque visibilita — `mod x;`,
+        // `pub(crate) mod x;`, `pub mod x;` — perche la prima stesura
+        // riconosceva solo la forma nuda, e un modulo dichiarato altrimenti
+        // sarebbe rimasto fuori senza che nulla fallisse.
         let source = include_str!("lib.rs");
         let lines: Vec<&str> = source.lines().collect();
-        let declared: Vec<String> = lines
-            .iter()
-            .enumerate()
-            .filter(|(at, line)| {
-                line.starts_with("mod ")
-                    && *at > 0
-                    && !lines[at - 1].trim().starts_with("#[cfg(test)]")
-            })
-            .filter_map(|(_, line)| line.strip_prefix("mod ")?.strip_suffix(';'))
-            .map(|name| format!("{name}.rs"))
-            .collect();
+        let mut declared = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed
+                .strip_prefix("pub(crate) mod ")
+                .or_else(|| trimmed.strip_prefix("pub mod "))
+                .or_else(|| trimmed.strip_prefix("mod "))
+            else {
+                continue;
+            };
+            // Un modulo inline (`mod x {`) non ha un file da ispezionare, e
+            // uno annidato sfuggirebbe comunque a questa lettura: entrambi
+            // vanno vietati, non ignorati.
+            assert!(
+                rest.ends_with(';'),
+                "lib.rs dichiara un modulo inline: le guardie leggono file, non blocchi — {trimmed}"
+            );
+            let name = rest.trim_end_matches(';');
+            assert!(
+                !name.contains("::"),
+                "lib.rs dichiara un modulo annidato: {name}"
+            );
+            if at > 0 && lines[at - 1].trim().starts_with("#[cfg(test)]") {
+                continue;
+            }
+            declared.push(format!("{name}.rs"));
+        }
         assert!(declared.len() >= 15, "moduli dichiarati: {declared:?}");
         for module in &declared {
             assert!(
@@ -1598,6 +1655,47 @@ mod tests {
                 "{module} e dichiarato in lib.rs ma nessuna guardia lo ispeziona"
             );
         }
+        // E nessun modulo dichiarato altrove: i sorgenti del crate sono i
+        // file di `src`, e un file non dichiarato non compila comunque, ma
+        // uno dichiarato in un sottomodulo si.
+        for (module, source) in GUARDED_MODULES {
+            // Solo la produzione: il modulo di test e annidato per
+            // definizione, e non e cio che le guardie devono ispezionare.
+            let production = source
+                .split_once(format!("{}mod tests {{", '\n').as_str())
+                .map_or(*source, |(head, _)| head);
+            let inline = format!("{}mod ", '\n');
+            for at in production.match_indices(inline.as_str()).map(|(at, _)| at) {
+                let line = production[at + 1..].lines().next().unwrap_or_default();
+                assert!(
+                    !line.trim_end().ends_with('{'),
+                    "{module} dichiara un modulo annidato in produzione: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_pool_keeps_naming_the_product_when_it_rebuilds_the_options() {
+        // Il provider valida in costruzione, il pool ricostruisce le opzioni
+        // al primo checkout: fra i due momenti la configurazione puo essere
+        // diventata invalida, e l'errore che ne esce e il primo che il
+        // consumatore vede. Passava per MySQL perche nessun test guardava il
+        // testo, e il percorso non e raggiungibile dal costruttore.
+        let error = crate::MysqlPool::new_with_profile(
+            &second_product_config(),
+            0,
+            &SECOND_PRODUCT_PROFILE,
+        )
+        .expect_err("pool a capacita zero");
+        assert_names_the_second_product(&error, "pool a capacita zero");
+
+        // Una CA che non esiste: la validazione che il pool rifa al primo uso.
+        let unreadable =
+            second_product_config().with_private_ca_certificate("/percorso/inesistente.pem");
+        let error = crate::MysqlPool::new_with_profile(&unreadable, 2, &SECOND_PRODUCT_PROFILE)
+            .expect_err("CA illeggibile");
+        assert_names_the_second_product(&error, "CA illeggibile");
     }
 
     #[test]

@@ -96,6 +96,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::the_expected_wkb_matches_the_projection_that_produces_it",
     "profile::tests::the_functional_index_flag_matches_the_query_that_supports_it",
     "profile::tests::the_guarded_module_list_covers_every_production_module",
+    "profile::tests::the_pool_keeps_naming_the_product_when_it_rebuilds_the_options",
     "profile::tests::the_profile_accepts_mysql_and_rejects_mariadb_from_either_string",
     "profile::tests::the_profile_names_the_product_it_serves",
     "profile::tests::the_query_module_no_longer_maps_wire_types",

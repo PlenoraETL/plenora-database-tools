@@ -286,15 +286,15 @@ impl MysqlConfig {
         Ok(())
     }
 
-    pub(crate) fn driver_opts(&self) -> Result<Opts> {
-        Ok(self.driver_opts_builder()?.into())
+    pub(crate) fn driver_opts(&self, product: &str) -> Result<Opts> {
+        Ok(self.driver_opts_builder(product)?.into())
     }
 
-    pub(crate) fn pooled_driver_opts(&self, max_connections: usize) -> Result<Opts> {
+    pub(crate) fn pooled_driver_opts(&self, max_connections: usize, product: &str) -> Result<Opts> {
         let constraints = PoolConstraints::new(0, max_connections).ok_or_else(|| {
-            invalid_configuration("configurazione MySQL: vincoli pool non validi")
+            invalid_configuration(format!("configurazione {product}: vincoli pool non validi"))
         })?;
-        let builder = self.driver_opts_builder()?.pool_opts(Some(
+        let builder = self.driver_opts_builder(product)?.pool_opts(Some(
             PoolOpts::default()
                 .with_constraints(constraints)
                 .with_reset_connection(true),
@@ -302,8 +302,13 @@ impl MysqlConfig {
         Ok(builder.into())
     }
 
-    fn driver_opts_builder(&self) -> Result<OptsBuilder> {
-        self.validate()?;
+    fn driver_opts_builder(&self, product: &str) -> Result<OptsBuilder> {
+        // La validazione si ripete qui, ed e la seconda volta che il prodotto
+        // deve arrivarci: il provider valida in costruzione, il pool
+        // ricostruisce le opzioni al primo checkout. Fra i due momenti la CA
+        // puo diventare illeggibile, e l'errore che ne esce e il primo che il
+        // consumatore vede davvero.
+        self.validate_for_product(product)?;
         let mut ssl = SslOpts::default();
         if let Some(source) = &self.private_ca_certificate {
             let root = match source {
@@ -400,7 +405,7 @@ mod tests {
     fn driver_opts_require_tls_even_for_explicit_trust_opt_out() {
         let opts = config("secret")
             .with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate)
-            .driver_opts()
+            .driver_opts("MySQL")
             .expect("driver opts");
         let ssl = opts.ssl_opts().expect("TLS must remain required");
         assert!(ssl.accept_invalid_certs());
@@ -410,7 +415,7 @@ mod tests {
     #[test]
     fn pooled_driver_opts_reapply_bootstrap_after_connection_reset() {
         let opts = config("secret")
-            .pooled_driver_opts(2)
+            .pooled_driver_opts(2, "MySQL")
             .expect("driver opts pooled");
         assert!(opts.pool_opts().reset_connection());
         assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
@@ -421,7 +426,7 @@ mod tests {
         let pem = b"test-only-public-ca-material".to_vec();
         let configured = config("secret").with_private_ca_certificate_pem(pem.clone());
         assert_eq!(configured.private_ca_certificate(), None);
-        let opts = configured.driver_opts().expect("driver opts");
+        let opts = configured.driver_opts("MySQL").expect("driver opts");
         let roots = opts.ssl_opts().expect("TLS required").root_certs();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].read().await.expect("buffered CA").as_ref(), pem);
