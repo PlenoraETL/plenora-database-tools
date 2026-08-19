@@ -119,14 +119,22 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         che accetta e poi diverge in silenzio e peggio di uno che rifiuta.
         """
 
+        # Il riconoscimento e la sua motivazione vivono ora nel profilo; il
+        # punto in cui il rifiuto scatta, e con esso il bypass, e rimasto nel
+        # catalogo. La guardia verifica entrambi, perche il fail-close regge
+        # solo se stanno insieme.
         catalog = CATALOG.read_text(encoding="utf-8")
-        self.assertIn("looks_like_mariadb", catalog)
-        self.assertIn("ErrorCategory::Unsupported", catalog)
-        self.assertIn("RemoteEffect::None", catalog)
+        profile = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "profile.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("looks_like_mariadb", profile)
+        self.assertIn("ErrorCategory::Unsupported", profile)
+        self.assertIn("RemoteEffect::None", profile)
         # Riconosciuta da entrambe le stringhe che il server pubblica: una
         # sola basterebbe a farla passare se il fork cambiasse l'altra.
-        self.assertIn("product_version.to_ascii_lowercase().contains(\"mariadb\")", catalog)
-        self.assertIn("version_comment.to_ascii_lowercase().contains(\"mariadb\")", catalog)
+        self.assertIn("product_version.to_ascii_lowercase().contains(\"mariadb\")", profile)
+        self.assertIn("version_comment.to_ascii_lowercase().contains(\"mariadb\")", profile)
+        self.assertIn("foreign_product_rejection", catalog)
 
         adr = ADR.read_text(encoding="utf-8")
         self.assertIn("Il **fail-close resta**", adr)
@@ -359,9 +367,17 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
             ROOT / "crates" / "plenora-db-mysql" / "src" / "transaction.rs"
         ).read_text(encoding="utf-8")
         catalog = CATALOG.read_text(encoding="utf-8")
+        # L'estrazione del profilo ha spostato la decisione su *quale*
+        # variabile scrivere: la transazione emette il timeout, ma il nome e
+        # l'unita li decide il profilo. L'asserzione segue il codice, non il
+        # file in cui stava.
+        profile = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "profile.rs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("MAX_EXECUTION_TIME", harness)
-        self.assertIn("MAX_EXECUTION_TIME", transaction)
+        self.assertIn("MAX_EXECUTION_TIME", profile)
+        self.assertIn("statement_timeout_statement", transaction)
         self.assertIn("EXPRESSION", harness)
         self.assertIn("expression", catalog)
         self.assertIn("SET SESSION TRANSACTION ISOLATION LEVEL", harness)
@@ -419,9 +435,12 @@ class MariadbDriverEvidenceTests(unittest.TestCase):
         # Fuori dai test la funzione e `false` costante, quindi la condizione
         # del rifiuto resta quella di prima.
         self.assertIn("    false" + chr(10) + "}", catalog)
-        self.assertIn(
-            "if looks_like_mariadb && !mariadb_rejection_bypassed() {", catalog
-        )
+        # La forma della condizione e cambiata con l'estrazione del profilo —
+        # il bypass ora avvolge il rifiuto invece di essere una congiunzione —
+        # ma cio che deve restare vero e lo stesso: il rifiuto passa di li, e
+        # senza bypass scatta.
+        self.assertIn("if !mariadb_rejection_bypassed() {", catalog)
+        self.assertIn("return Err(rejection);", catalog)
 
         # Nessuna superficie pubblica lo espone.
         self.assertNotIn("pub fn bypass", catalog)
