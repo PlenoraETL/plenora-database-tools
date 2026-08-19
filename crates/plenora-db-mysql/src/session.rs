@@ -161,8 +161,12 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<Vec<Row>> {
+        let profile = self.profile;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let query = connection.query::<Row, _>(sql);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -192,10 +196,11 @@ impl MysqlSession {
     }
 
     fn require_ready(&self, phase: ErrorPhase) -> Result<()> {
+        let profile = self.profile;
         if self.is_reusable() {
             Ok(())
         } else {
-            Err(state_error(phase))
+            Err(state_error(phase, profile))
         }
     }
 
@@ -206,8 +211,12 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<Vec<Row>> {
+        let profile = self.profile;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let query = connection.exec::<Row, _, _>(sql, parameters);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -249,8 +258,12 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
+        let profile = self.profile;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let execution = connection.exec_drop(sql, parameters);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -264,7 +277,7 @@ impl MysqlSession {
                 .connection
                 .as_ref()
                 .map(Conn::affected_rows)
-                .ok_or_else(|| state_error(phase)),
+                .ok_or_else(|| state_error(phase, profile)),
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -299,9 +312,13 @@ impl MysqlSession {
         parameters: Params,
         cancellation: &CancellationToken,
     ) -> Result<Option<&'static str>> {
+        let profile = self.profile;
         let phase = ErrorPhase::Write;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let execution = connection.exec_drop(sql, parameters);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -355,8 +372,12 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        let profile = self.profile;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let execution = connection.query_drop(sql);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -391,8 +412,12 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        let profile = self.profile;
         self.require_ready(phase)?;
-        let connection = self.connection.as_mut().ok_or_else(|| state_error(phase))?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
         let execution = connection.query_drop(command.sql());
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -440,11 +465,12 @@ impl MysqlSession {
         sql: &str,
         cancellation: &CancellationToken,
     ) -> Result<Statement> {
+        let profile = self.profile;
         self.require_ready(ErrorPhase::Prepare)?;
         let connection = self
             .connection
             .as_mut()
-            .ok_or_else(|| state_error(ErrorPhase::Prepare))?;
+            .ok_or_else(|| state_error(ErrorPhase::Prepare, profile))?;
         let prepare = connection.prep(sql);
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
@@ -489,12 +515,13 @@ impl MysqlSession {
         S: StatementLike + 'static,
     {
         self.require_ready(ErrorPhase::Read)?;
+        let profile = self.profile;
         let operation_timeout = self.operation_timeout;
         let outcome = {
             let connection = self
                 .connection
                 .as_mut()
-                .ok_or_else(|| state_error(ErrorPhase::Read))?;
+                .ok_or_else(|| state_error(ErrorPhase::Read, profile))?;
             let open = connection.exec_stream::<Row, _, _>(statement, parameters);
             let stream = tokio::select! {
                 _ = cancellation.cancelled() => {
@@ -622,15 +649,15 @@ fn validate_row_write_affected_rows(affected_rows: u64) -> Result<()> {
     }
 }
 
-fn state_error(phase: ErrorPhase) -> DatabaseError {
+fn state_error(phase: ErrorPhase, profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::InvalidPlan,
         phase,
         remote_effect: RemoteEffect::None,
         retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
+        provider: Some(profile.kind()),
         execution_id: None,
-        message: "sessione MySQL non riusabile".to_owned(),
+        message: format!("sessione {} non riusabile", profile.product()),
         diagnostics: None,
     }
 }

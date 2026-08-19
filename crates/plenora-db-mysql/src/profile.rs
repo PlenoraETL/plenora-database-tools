@@ -842,7 +842,15 @@ impl ProductProfile for SecondProductProfile {
         // che ADR 0014 ha misurato su MariaDB. Se la conversione tornasse a
         // vivere fuori dal profilo, questo profilo emetterebbe secondi con
         // un valore in millisecondi e nessuno se ne accorgerebbe.
-        format!("SET SESSION max_statement_time = {}", timeout_ms / 1_000)
+        // Arrotondamento **per eccesso**, con un minimo di uno: su un
+        // prodotto a granularita di secondi un timeout di 200 ms diventerebbe
+        // zero con la divisione intera, e zero su MySQL significa "nessun
+        // limite". Il modo peggiore di sbagliare un timeout e trasformarlo
+        // nel suo contrario, e vale per il profilo vero quanto per questo.
+        format!(
+            "SET SESSION max_statement_time = {}",
+            timeout_ms.div_ceil(1_000).max(1)
+        )
     }
 
     fn schemas_query(&self) -> &'static str {
@@ -1177,25 +1185,30 @@ mod tests {
         // perche il segnaposto e sicuro solo dove il bordo lo copre.
         let boxed = format!("Box::{}(", "pin");
         let stamped = format!("crate::profile::{}", "attributed");
-        for (module, source) in [
-            ("provider.rs", include_str!("provider.rs")),
-            ("transaction.rs", include_str!("transaction.rs")),
-        ] {
+        let mut presidiati = 0;
+        for (module, source) in GUARDED_MODULES {
             let mut inspected = 0;
             // Ogni `impl` dei due trait, non solo quello di oggi: quando
             // nascera un secondo provider dovra essere presidiato senza che
             // nessuno si ricordi di aggiungerlo qui.
-            let headers: Vec<&str> = ["impl Provider for ", "impl TransactionScope for "]
+            // Gli intestatori si compongono a runtime: scritti per intero
+            // comparirebbero in questo file, e la guardia ispezionerebbe se
+            // stessa trovando zero metodi.
+            let trait_headers = [
+                format!("impl {} for ", "Provider"),
+                format!("impl {} for ", "TransactionScope"),
+            ];
+            let headers: Vec<&str> = trait_headers
                 .iter()
-                .flat_map(|header| source.match_indices(header).map(|(at, _)| at))
+                .flat_map(|header| source.match_indices(header.as_str()).map(|(at, _)| at))
                 .collect::<Vec<_>>()
                 .iter()
                 .map(|at| &source[*at..])
                 .collect();
-            assert!(
-                !headers.is_empty(),
-                "{module} non contiene alcun impl dei trait presidiati"
-            );
+            if headers.is_empty() {
+                continue;
+            }
+            presidiati += 1;
             for tail in headers {
                 let end = tail
                     .find(format!("{}}}", '\n').as_str())
@@ -1224,6 +1237,10 @@ mod tests {
                 "{module}: solo {inspected} metodi ispezionati in totale"
             );
         }
+        assert_eq!(
+            presidiati, 2,
+            "i due trait devono vivere in due moduli: trovati {presidiati}"
+        );
     }
 
     #[tokio::test]
@@ -1409,34 +1426,52 @@ mod tests {
     #[test]
     fn no_production_path_uses_a_profileless_entry_point() {
         // Ogni forma esportata ha un gemello `_with_profile`, e la forma
-        // senza esiste solo per chi il profilo non ce l'ha: chiamandola dal
-        // provider si perde silenziosamente il prodotto, ed e successo due
-        // volte — con il pool e con la compilazione della scrittura.
-        let source = include_str!("provider.rs");
-        let production = source
-            .split_once(format!("{}mod tests {{", '\n').as_str())
-            .map_or(source, |(head, _)| head);
-        for entry in [
-            "MysqlPool::new",
-            "probe_server",
-            "list_schemas",
-            "list_objects",
-            "describe_object",
-            "read_operation",
-            "query_operation",
-            "MysqlReadPlan::compile",
-            "MysqlWritePlan::compile",
-            "from_catalog",
-            "query_result_columns",
-        ] {
-            // L'ago e il nome seguito dalla parentesi: il gemello con il
-            // profilo ha altro in mezzo e non aggancia.
-            let literal = format!("{entry}(");
-            assert_eq!(
-                production.matches(literal.as_str()).count(),
-                0,
-                "il provider usa {entry} senza profilo"
-            );
+        // senza esiste solo per chi il profilo non ce l'ha. Chiamandola da
+        // dentro il crate si perde silenziosamente il prodotto, ed e successo
+        // due volte — con il pool e con la compilazione della scrittura.
+        //
+        // La verifica copre tutti i moduli di produzione, non il solo
+        // provider: un secondo provider vivrebbe in un file nuovo, e una
+        // guardia che nomina i file da ispezionare invecchia esattamente
+        // quando serve.
+        let entries = [
+            format!("Mysql{}::new", "Pool"),
+            format!("probe{}server", "_"),
+            format!("list{}schemas", "_"),
+            format!("list{}objects", "_"),
+            format!("describe{}object", "_"),
+            format!("read{}operation", "_"),
+            format!("query{}operation", "_"),
+            format!("MysqlReadPlan::{}", "compile"),
+            format!("from{}catalog", "_"),
+            format!("query{}result{}columns", "_", "_"),
+        ];
+        for (module, source) in GUARDED_MODULES {
+            let production = source
+                .split_once(format!("{}mod tests {{", '\n').as_str())
+                .map_or(*source, |(head, _)| head);
+            for entry in &entries {
+                let needle = format!("{entry}(");
+                for at in production.match_indices(needle.as_str()).map(|(at, _)| at) {
+                    // Confine di parola: `validate_query_operation` finisce
+                    // con l'ago senza esserlo, e senza questo controllo la
+                    // guardia grida su una funzione che non c'entra.
+                    let head = &production[..at];
+                    if head
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        continue;
+                    }
+                    // La definizione non e una chiamata: e proprio li che la
+                    // forma senza profilo deve continuare a esistere.
+                    assert!(
+                        head.trim_end().ends_with("fn"),
+                        "{module} chiama {entry} senza profilo"
+                    );
+                }
+            }
         }
     }
 
@@ -1474,6 +1509,10 @@ mod tests {
         assert!(mysql.contains("5000"), "{mysql}");
         assert!(second.contains(" 5"), "{second}");
         assert!(!second.contains("5000"), "{second}");
+        // Il caso che la divisione intera sbaglierebbe: sotto il secondo, un
+        // timeout non puo diventare "nessun timeout".
+        let sub_second = SECOND_PRODUCT_PROFILE.statement_timeout_statement(200);
+        assert!(sub_second.ends_with(" 1"), "{sub_second}");
 
         // Classificazione: lo stesso codice, due significati.
         assert_eq!(
@@ -1506,6 +1545,57 @@ mod tests {
                 profile.capabilities("9.7.2".to_owned()).spatial.write_wkb,
                 profile.write_spatial_is_qualified(),
                 "capability e decisione devono avere una sola origine"
+            );
+        }
+    }
+
+    /// Ogni modulo di produzione del crate, con il proprio sorgente.
+    ///
+    /// Le guardie strutturali non nominano piu i moduli che ispezionano: un
+    /// `mariadb_provider.rs` nato domani sarebbe rimasto fuori da una lista
+    /// scritta a mano, e le guardie avrebbero continuato a passare dicendo
+    /// una cosa che non era piu vera. La lista qui e presidiata a sua volta
+    /// contro le dichiarazioni `mod` di `lib.rs`.
+    const GUARDED_MODULES: &[(&str, &str)] = &[
+        ("arrow.rs", include_str!("arrow.rs")),
+        ("catalog.rs", include_str!("catalog.rs")),
+        ("config.rs", include_str!("config.rs")),
+        ("error.rs", include_str!("error.rs")),
+        ("parameter.rs", include_str!("parameter.rs")),
+        ("pool.rs", include_str!("pool.rs")),
+        ("profile.rs", include_str!("profile.rs")),
+        ("provider.rs", include_str!("provider.rs")),
+        ("query.rs", include_str!("query.rs")),
+        ("read.rs", include_str!("read.rs")),
+        ("row_diagnostics.rs", include_str!("row_diagnostics.rs")),
+        ("session.rs", include_str!("session.rs")),
+        ("transaction.rs", include_str!("transaction.rs")),
+        ("types.rs", include_str!("types.rs")),
+        ("write.rs", include_str!("write.rs")),
+    ];
+
+    #[test]
+    fn the_guarded_module_list_covers_every_production_module() {
+        // I moduli di solo test non contano: non esistono nel binario che
+        // il consumatore riceve, ed e quello che le guardie presidiano.
+        let source = include_str!("lib.rs");
+        let lines: Vec<&str> = source.lines().collect();
+        let declared: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(at, line)| {
+                line.starts_with("mod ")
+                    && *at > 0
+                    && !lines[at - 1].trim().starts_with("#[cfg(test)]")
+            })
+            .filter_map(|(_, line)| line.strip_prefix("mod ")?.strip_suffix(';'))
+            .map(|name| format!("{name}.rs"))
+            .collect();
+        assert!(declared.len() >= 15, "moduli dichiarati: {declared:?}");
+        for module in &declared {
+            assert!(
+                GUARDED_MODULES.iter().any(|(name, _)| name == module),
+                "{module} e dichiarato in lib.rs ma nessuna guardia lo ispeziona"
             );
         }
     }

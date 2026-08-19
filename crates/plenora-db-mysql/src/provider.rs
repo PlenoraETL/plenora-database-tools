@@ -85,12 +85,12 @@ impl MysqlProvider {
         // Anche il costruttore e un bordo: qui il provider non esiste ancora,
         // ma il profilo si', e sono gli unici errori che un consumatore vede
         // senza aver mai toccato il server. Uscivano con il segnaposto.
-        crate::profile::attributed(profile, config.validate())?;
+        crate::profile::attributed(profile, config.validate_for_product(profile.product()))?;
         if max_connections == 0 {
             let mut error = provider_error(
                 ErrorCategory::InvalidConfiguration,
                 ErrorPhase::Validate,
-                "provider MySQL con pool a capacita zero",
+                format!("provider {} con pool a capacita zero", profile.product()),
             );
             error.provider = Some(profile.kind());
             return Err(error);
@@ -476,13 +476,9 @@ impl Provider for MysqlProvider {
             let outcome = async move {
                 let pool = self.pool_for(secret)?;
                 let session = pool.checkout(cancellation).await?;
-                let transaction = crate::transaction::MysqlTransaction::begin(
-                    session,
-                    options,
-                    self.profile,
-                    cancellation,
-                )
-                .await?;
+                let transaction =
+                    crate::transaction::MysqlTransaction::begin(session, options, cancellation)
+                        .await?;
                 Ok(Box::new(transaction)
                     as Box<
                         dyn plenora_database_core::transaction::TransactionScope,

@@ -180,11 +180,26 @@ impl MysqlConfig {
     /// Restituisce un errore fail-closed se la configurazione non e sicura o
     /// non e rappresentabile dal driver.
     pub fn validate(&self) -> Result<()> {
-        self.validate_without_password()?;
+        self.validate_for_product("MySQL")
+    }
+
+    /// La validazione, con il nome del prodotto che comparira nei messaggi.
+    ///
+    /// La forma pubblica resta legata a `MySQL` perche il tipo si chiama
+    /// `MysqlConfig`: chi la chiama sta configurando quello. Il provider
+    /// passa invece il nome del proprio profilo, cosi l'errore che il
+    /// consumatore legge non contraddice l'attribuzione che porta.
+    ///
+    /// # Errors
+    ///
+    /// Come `validate`.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn validate_for_product(&self, product: &str) -> Result<()> {
+        self.validate_without_password_for_product(product)?;
         if self.password.expose().is_empty() || self.password.expose().contains('\0') {
-            return Err(invalid_configuration(
-                "configurazione MySQL: password vuoto o contenente NUL",
-            ));
+            return Err(invalid_configuration(format!(
+                "configurazione {product}: password vuoto o contenente NUL"
+            )));
         }
         Ok(())
     }
@@ -195,6 +210,16 @@ impl MysqlConfig {
     ///
     /// Restituisce un errore fail-closed per campi non secret o trust material non validi.
     pub fn validate_without_password(&self) -> Result<()> {
+        self.validate_without_password_for_product("MySQL")
+    }
+
+    /// Vedi `validate_for_product`.
+    ///
+    /// # Errors
+    ///
+    /// Come `validate_without_password`.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn validate_without_password_for_product(&self, product: &str) -> Result<()> {
         for (name, value) in [
             ("host", self.host.as_str()),
             ("database", self.database.as_str()),
@@ -202,24 +227,28 @@ impl MysqlConfig {
         ] {
             if value.is_empty() || value.contains('\0') {
                 return Err(invalid_configuration(format!(
-                    "configurazione MySQL: {name} vuoto o contenente NUL"
+                    "configurazione {product}: {name} vuoto o contenente NUL"
                 )));
             }
         }
         if self.port == 0 {
-            return Err(invalid_configuration("configurazione MySQL: porta zero"));
+            return Err(invalid_configuration(format!(
+                "configurazione {product}: porta zero"
+            )));
         }
         if self.connect_timeout.is_zero()
             || self.operation_timeout.is_zero()
             || self.acquire_timeout.is_zero()
         {
-            return Err(invalid_configuration("configurazione MySQL: timeout nullo"));
+            return Err(invalid_configuration(format!(
+                "configurazione {product}: timeout nullo"
+            )));
         }
         if let Some(source) = &self.private_ca_certificate {
             if self.certificate_policy == MysqlCertificatePolicy::TrustServerCertificate {
-                return Err(invalid_configuration(
-                    "configurazione MySQL: CA privata incompatibile con TrustServerCertificate",
-                ));
+                return Err(invalid_configuration(format!(
+                    "configurazione {product}: CA privata incompatibile con TrustServerCertificate",
+                )));
             }
             match source {
                 PrivateCaCertificate::Path(path) => {
@@ -228,28 +257,28 @@ impl MysqlConfig {
                         .and_then(|value| value.to_str())
                         .map(str::to_ascii_lowercase);
                     if !matches!(extension.as_deref(), Some("pem" | "crt" | "der")) {
-                        return Err(invalid_configuration(
-                            "configurazione MySQL: estensione CA privata non supportata",
-                        ));
+                        return Err(invalid_configuration(format!(
+                            "configurazione {product}: estensione CA privata non supportata",
+                        )));
                     }
                     let metadata = std::fs::File::open(path)
                         .and_then(|file| file.metadata())
                         .map_err(|_| {
-                            invalid_configuration(
-                                "configurazione MySQL: file CA privata assente o non leggibile",
-                            )
+                            invalid_configuration(format!(
+                                "configurazione {product}: file CA privata assente o non leggibile",
+                            ))
                         })?;
                     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 1_048_576 {
-                        return Err(invalid_configuration(
-                            "configurazione MySQL: file CA privata vuoto o oltre 1 MiB",
-                        ));
+                        return Err(invalid_configuration(format!(
+                            "configurazione {product}: file CA privata vuoto o oltre 1 MiB",
+                        )));
                     }
                 }
                 PrivateCaCertificate::Pem(pem) => {
                     if pem.is_empty() || pem.len() > 1_048_576 {
-                        return Err(invalid_configuration(
-                            "configurazione MySQL: CA privata in memoria vuota o oltre 1 MiB",
-                        ));
+                        return Err(invalid_configuration(format!(
+                            "configurazione {product}: CA privata in memoria vuota o oltre 1 MiB",
+                        )));
                     }
                 }
             }

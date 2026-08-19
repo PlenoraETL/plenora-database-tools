@@ -58,9 +58,13 @@ impl MysqlTransaction {
     pub async fn begin(
         mut session: MysqlSession,
         options: &TransactionOptions,
-        profile: &dyn crate::profile::ProductProfile,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
+        // Il profilo si ricava dalla sessione, non si riceve a parte: due
+        // fonti permetterebbero di aprire una transazione con il timeout di
+        // un prodotto e classificarne gli errori come di un altro, e la
+        // chiamata sarebbe legittima per il compilatore.
+        let profile = session.profile();
         // 0. Il context si valida **prima** di qualunque statement.
         //    Validarlo al passo 4, dopo START TRANSACTION, significava
         //    aprire una transazione e un isolamento di sessione per poi
@@ -436,7 +440,7 @@ impl TransactionScope for MysqlTransaction {
                             provider: Some(self.session.kind()),
                             execution_id: None,
                             diagnostics: None,
-                            message: "query MySQL timeout".to_owned(),
+                            message: format!("query {} timeout", profile.product()),
                         });
                     }
                 };
@@ -700,8 +704,10 @@ impl TransactionScope for MysqlTransaction {
                 } else {
                     self.rollback_to_savepoint(sp, cancellation).await?;
                     Err(concurrent_modification_error(format!(
-                        "MySQL: expected {} affected rows, got {}",
-                        request.expected_affected_rows, affected
+                        "{}: expected {} affected rows, got {}",
+                        self.session.profile().product(),
+                        request.expected_affected_rows,
+                        affected
                     )))
                 }
             }
