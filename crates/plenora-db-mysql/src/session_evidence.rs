@@ -197,13 +197,22 @@ async fn bootstrap_through_pool() -> Probe {
     ))
 }
 
-/// Il bootstrap dopo il riuso della **stessa** connessione.
+/// Il bootstrap su una sessione consegnata **dopo** che una sporca e tornata.
 ///
-/// Un pool a una connessione sola, l'identita registrata, lo stato sporcato di
-/// proposito, la restituzione, e la rilettura sulla stessa identita. Leggere
-/// due volte una sessione gia corretta non provava niente: il pool poteva
-/// consegnarne un'altra, e non c'era nulla da ripristinare.
-async fn bootstrap_survives_reuse() -> Probe {
+/// La domanda e se lo stato alterato da una sessione possa arrivare alla
+/// successiva. Si sporcano `autocommit`, `time_zone` e `sql_mode`, si restituisce
+/// sessione a un pool a una connessione sola, e si rilegge sulla successiva
+/// registrando l'identita di entrambe.
+///
+/// L'identita e osservata, non pretesa: `mysql_async` non ha riconsegnato la
+/// stessa connessione in nessuno dei tre riferimenti — ne apre una nuova — e
+/// pretendere il riuso avrebbe fatto fallire una sonda su cio che il driver
+/// non fa. Il dettaglio lo dice, perche la conseguenza va letta: cio che
+/// resta provato e che **ogni sessione consegnata dal pool e bootstrappata**,
+/// che e la proprieta su cui il provider poggia; la riapplicazione del
+/// bootstrap su una connessione riusata non e esercitata da questa
+/// configurazione, ed e scritto nella matrice invece di essere sottinteso.
+async fn bootstrap_after_return() -> Probe {
     let cancel = CancellationToken::new();
     let pool = pool(1)?;
 
@@ -218,9 +227,9 @@ async fn bootstrap_survives_reuse() -> Probe {
         .await?;
     let dirtied = read_variables(&mut session, &cancel).await?;
     if bootstrap_satisfied(&dirtied) {
-        // Se lo stato non si e sporcato, la sonda non puo provare il
-        // ripristino: sarebbe di nuovo la lettura di una sessione gia
-        // corretta, cioe il difetto che questa versione corregge.
+        // Se lo stato non si e sporcato, la sonda non prova nulla: sarebbe di
+        // nuovo la lettura di una sessione gia corretta, cioe il difetto che
+        // questa versione corregge.
         return Ok(Measured::new(
             format!(
                 "lo stato non si e sporcato: {}",
@@ -232,17 +241,26 @@ async fn bootstrap_survives_reuse() -> Probe {
     }
     drop(session);
 
-    let mut reused = pool.checkout(&cancel).await?;
-    let second = connection_id(&mut reused, &cancel).await?;
-    let observed = read_variables(&mut reused, &cancel).await?;
-    let same_connection = first == second;
+    // La restituzione al pool e asincrona: chiedere subito la successiva
+    // misurerebbe l'apertura invece del comportamento del pool.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut next = pool.checkout(&cancel).await?;
+    let second = connection_id(&mut next, &cancel).await?;
+    let observed = read_variables(&mut next, &cancel).await?;
     Ok(Measured::new(
+        // Gli identificatori non entrano nel dettaglio: cambiano a ogni
+        // corsa e per server, e renderebbero la matrice divergente per
+        // costruzione — un rumore che poi si zittisce mettendo la sonda fra
+        // quelle confrontate per solo esito, cioe smettendo di guardarne il
+        // testo. Entra il fatto derivato, che e stabile e confrontabile.
         format!(
-            "connessione {first}->{second} riusata={same_connection} {}",
+            "connessione riusata={} {}",
+            first == second,
             describe(&observed.0, &observed.1, &observed.2)
         ),
-        format!("stessa connessione e {}", bootstrap_expectation()),
-        same_connection && bootstrap_satisfied(&observed),
+        bootstrap_expectation(),
+        bootstrap_satisfied(&observed),
     ))
 }
 
@@ -507,10 +525,10 @@ async fn session_semantics_evidence() {
     );
     record(
         &mut recorder,
-        "bootstrap.pool_reuse",
+        "bootstrap.after_return",
         "bootstrap",
-        "la stessa connessione, sporcata e restituita, torna bootstrappata",
-        bootstrap_survives_reuse().await,
+        "una sessione consegnata dopo il rientro di una sporca e bootstrappata",
+        bootstrap_after_return().await,
     );
 
     for (probe, level, expected) in [

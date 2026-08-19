@@ -41,7 +41,7 @@ from scripts.check_mariadb_driver import (  # noqa: E402
 EXPECTED_PROBES: tuple[str, ...] = (
     "bootstrap.statement",
     "bootstrap.pool",
-    "bootstrap.pool_reuse",
+    "bootstrap.after_return",
     "transaction.isolation.read_uncommitted",
     "transaction.isolation.read_committed",
     "transaction.isolation.repeatable_read",
