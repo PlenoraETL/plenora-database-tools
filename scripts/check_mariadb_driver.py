@@ -171,7 +171,11 @@ def run(command: list[str]) -> str:
     return completed.stdout
 
 
-def measure(server: Server) -> dict[str, object]:
+def measure(
+    server: Server,
+    marker: str = MARKER,
+    test_command: str = TEST_COMMAND,
+) -> dict[str, object]:
     """Esegue la misura contro un server e ne restituisce il documento.
 
     La CA arriva dal volume TLS del container, chiesto a Docker: il
@@ -214,22 +218,26 @@ def measure(server: Server) -> dict[str, object]:
         "-w", "/workspace",
         "-e", "CARGO_TARGET_DIR=/workspace/target-docker",
         *environment,
-        RUST_IMAGE, "sh", "-c", TEST_COMMAND,
+        RUST_IMAGE, "sh", "-c", test_command,
     ]
     output = run(command)
     # Il marcatore non e a inizio riga: `cargo test` stampa "test nome ... "
     # e poi lascia scrivere al test, quindi il JSON arriva in coda alla riga
     # del risultato. Cercarlo con `startswith` non trovava niente.
     for line in reversed(output.splitlines()):
-        position = line.find(MARKER)
+        position = line.find(marker)
         if position >= 0:
-            return json.loads(line[position + len(MARKER) :])
+            return json.loads(line[position + len(marker) :])
     raise RuntimeError(
-        f"{server.label}: la misura non ha stampato il marcatore {MARKER.strip()}"
+        f"{server.label}: la misura non ha stampato il marcatore {marker.strip()}"
     )
 
 
-def compare(documents: dict[str, dict[str, object]], fleet: tuple[Server, ...]) -> list[dict[str, object]]:
+def compare(
+    documents: dict[str, dict[str, object]],
+    fleet: tuple[Server, ...],
+    outcome_only: frozenset[str] = OUTCOME_ONLY,
+) -> list[dict[str, object]]:
     """Allinea le sonde dei tre server e nomina le divergenze."""
 
     reference = fleet[0].key
@@ -267,7 +275,7 @@ def compare(documents: dict[str, dict[str, object]], fleet: tuple[Server, ...]) 
             same_outcome = observed["outcome"] == baseline["outcome"]
             same_code = observed["server_code"] == baseline["server_code"]
             same_detail = (
-                probe in OUTCOME_ONLY or observed["detail"] == baseline["detail"]
+                probe in outcome_only or observed["detail"] == baseline["detail"]
             )
             if not (same_outcome and same_code and same_detail):
                 divergent.append(server.key)

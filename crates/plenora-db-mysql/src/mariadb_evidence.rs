@@ -33,10 +33,13 @@
 //! irraggiungibile, una fixture assente — che e un problema suo e va chiuso
 //! prima, non registrato come divergenza.
 
-use crate::{MysqlConfig, MysqlProvider, MysqlSession};
+use crate::evidence::{
+    condense, config, environment, secret, server_code, truncate, Observation, Recorder,
+};
+use crate::{MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
-use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
 };
@@ -56,157 +59,6 @@ const SCRATCH: &str = "plenora_driver_evidence";
 /// lettura di quella tabella. Tenendole insieme, la sonda sul mapping wire
 /// misurava quella regola invece dei tipi.
 const SCRATCH_GEO: &str = "plenora_driver_evidence_geo";
-
-fn environment(name: &str, fallback: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
-}
-
-fn secret() -> SecretString {
-    SecretString::new(environment("PLENORA_MYSQL_PASSWORD", "DataFlow_Test_2026!"))
-}
-
-fn config() -> MysqlConfig {
-    let ca = std::env::var("PLENORA_MYSQL_CA")
-        .expect("PLENORA_MYSQL_CA obbligatoria: la misura non accetta TLS non verificata");
-    MysqlConfig::new(
-        environment("PLENORA_MYSQL_HOST", "127.0.0.1"),
-        environment("PLENORA_MYSQL_DATABASE", "dataflow_test"),
-        environment("PLENORA_MYSQL_USER", "dataflow"),
-        secret(),
-    )
-    .with_port(
-        environment("PLENORA_MYSQL_PORT", "3306")
-            .parse()
-            .expect("porta MySQL della misura"),
-    )
-    .with_private_ca_certificate(ca)
-}
-
-/// Una riga del verdetto.
-struct Observation {
-    probe: &'static str,
-    family: &'static str,
-    surface: &'static str,
-    question: &'static str,
-    outcome: String,
-    detail: String,
-    server_code: Option<u16>,
-}
-
-impl Observation {
-    fn to_json(&self) -> serde_json::Value {
-        json!({
-            "probe": self.probe,
-            "family": self.family,
-            "surface": self.surface,
-            "question": self.question,
-            "outcome": self.outcome,
-            "detail": self.detail,
-            "server_code": self.server_code,
-        })
-    }
-}
-
-struct Recorder(Vec<Observation>);
-
-/// Se una sonda gia registrata e stata accettata.
-///
-/// Serve alle sonde che dipendono da un'altra: quando la dipendenza fallisce,
-/// il loro errore e la stessa cosa vista due volte. Registrarlo come rifiuto
-/// autonomo gonfierebbe il conto delle divergenze con una sola causa, e
-/// nasconderebbe che la superficie non e mai stata raggiunta.
-impl Recorder {
-    fn accepted_probe(&self, probe: &str) -> bool {
-        self.0
-            .iter()
-            .any(|entry| entry.probe == probe && entry.outcome == "accepted")
-    }
-}
-
-impl Recorder {
-    fn accepted(
-        &mut self,
-        probe: &'static str,
-        family: &'static str,
-        surface: &'static str,
-        question: &'static str,
-        detail: String,
-    ) {
-        self.0.push(Observation {
-            probe,
-            family,
-            surface,
-            question,
-            outcome: "accepted".to_owned(),
-            detail,
-            server_code: None,
-        });
-    }
-
-    fn rejected(
-        &mut self,
-        probe: &'static str,
-        family: &'static str,
-        surface: &'static str,
-        question: &'static str,
-        detail: String,
-        server_code: Option<u16>,
-    ) {
-        self.0.push(Observation {
-            probe,
-            family,
-            surface,
-            question,
-            outcome: "rejected".to_owned(),
-            detail,
-            server_code,
-        });
-    }
-
-    /// Una superficie che questa tranche non misura, e perche.
-    ///
-    /// Dichiararlo e piu onesto che dedurlo: un esito assente non e un esito
-    /// negativo, e un verdetto che li confondesse porterebbe a decidere su
-    /// una prova che non e stata fatta.
-    fn not_measured(
-        &mut self,
-        probe: &'static str,
-        family: &'static str,
-        surface: &'static str,
-        question: &'static str,
-        reason: &str,
-    ) {
-        self.0.push(Observation {
-            probe,
-            family,
-            surface,
-            question,
-            outcome: "not_measured".to_owned(),
-            detail: reason.to_owned(),
-            server_code: None,
-        });
-    }
-}
-
-/// Il codice d'errore che il server ha mandato, se l'errore viene da li.
-fn server_code(error: &mysql_async::Error) -> Option<u16> {
-    match error {
-        mysql_async::Error::Server(server) => Some(server.code),
-        _ => None,
-    }
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        text.to_owned()
-    } else {
-        text.chars().take(limit).collect::<String>() + "…"
-    }
-}
-
-fn condense(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 // --------------------------------------------------------------------------
 // Famiglia `raw`: il driver contro il server, senza provider in mezzo.

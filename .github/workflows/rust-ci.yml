@@ -49,6 +49,8 @@ jobs:
         run: python3 scripts/test_check_postgres_reference.py
       - name: scripts/test_check_postgres_hardening.py
         run: python3 scripts/test_check_postgres_hardening.py
+      - name: scripts/test_check_session_matrix.py
+        run: python3 scripts/test_check_session_matrix.py
       # Duplicazione dichiarata: `sqlserver-assurance` esegue gia questo
       # self-test su push. Qui gira anche sulle PR, dove quel workflow parte
       # solo se il diff tocca i path del provider — e un self-test che si

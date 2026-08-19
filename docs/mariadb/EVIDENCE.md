@@ -286,3 +286,44 @@ una seconda sessione e una corsa, non un esperimento ripetibile, e un esito
 ottenuto cosi non distingue il comportamento del provider dal momento in cui
 e arrivato il colpo. Resta `not_measured`, senza inferenze: un esito assente
 non e un esito negativo.
+
+## Terza tranche: la semantica di sessione
+
+Le prime due tranche hanno misurato catalogo, protocollo e superfici del
+provider. Restava fuori cio che sta **prima**: il bootstrap che il pool
+applica a ogni connessione, e le opzioni con cui una transazione viene
+aperta. La fase 1 li aveva lasciati fuori dal profilo dichiarandoli residui,
+che non e una decisione finche nessuno ha guardato.
+
+`scripts/check_session_matrix.py` li misura sui tre riferimenti gia accesi,
+attraverso il driver **e** attraverso il percorso reale del pool — dove il
+bootstrap arriva come `setup` e viene applicato prima di qualunque probe.
+Tredici sonde: bootstrap eseguito a mano, bootstrap ricevuto dal pool,
+bootstrap dopo riuso della connessione, i quattro livelli di isolamento, le
+tre modalita di accesso, il session context, commit e rollback.
+
+**Tredici sonde su tredici coincidono sui tre server.** La matrice completa,
+con i dettagli osservati, e in `docs/mariadb/SESSION-MATRIX.md`.
+
+Due sonde, nella prima stesura, non misuravano cio che dichiaravano.
+`access_mode` leggeva `@@transaction_read_only`, che riflette `SET
+TRANSACTION` e non `START TRANSACTION READ ONLY`: dava lo stesso valore per
+tutte e tre le modalita, e sarebbe passata per "coincidono" senza distinguere
+nulla. Il contesto rileggeva isolamento e autocommit, cioe niente che
+riguardasse il contesto. Corrette prima di leggere i numeri: l'access mode si
+osserva ora tentando una scrittura dentro la transazione, il contesto
+rileggendo la variabile utente che il provider imposta.
+
+### Cosa ne segue
+
+Il bootstrap di sessione, i livelli di isolamento e `START TRANSACTION`
+**restano codice condiviso**. Non entrano nel profilo, e la ragione e la
+misura: spostarli sarebbe simmetria, non una decisione, e ADR 0014 chiede il
+contrario — nel profilo entra cio che diverge.
+
+La matrice e una prova permanente, non una fotografia: il runner fallisce se
+una sonda diverge, e fallisce anche se una sonda smette di essere accettata.
+La seconda condizione non e ridondante — "coincidono" e vero anche quando
+tutti e tre falliscono allo stesso modo, ed e il verde falso che questa
+misura esiste per escludere.
+

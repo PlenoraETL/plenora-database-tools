@@ -114,7 +114,12 @@ def _scan(source: Path) -> list[MysqlTest]:
 # **MySQL** ha dimostrato: un test su un motore non qualificato non puo
 # sostenere quell'affermazione, e il gate finirebbe per pretenderne
 # l'esecuzione contro il riferimento sbagliato.
-EXCLUDED_SOURCES = frozenset({"mariadb_evidence.rs"})
+#
+# `session_evidence.rs` misura la semantica di sessione sui tre riferimenti,
+# con lo stesso runner parametrizzato (`scripts/check_session_matrix.py`).
+# Vale la stessa ragione: due terzi delle sue corse avvengono su un motore che
+# il gate non qualifica.
+EXCLUDED_SOURCES = frozenset({"mariadb_evidence.rs", "session_evidence.rs"})
 
 
 def collect() -> dict[str, frozenset[str]]:

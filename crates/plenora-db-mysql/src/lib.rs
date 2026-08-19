@@ -33,7 +33,13 @@ mod live_tests;
 // Misura di evidenza MariaDB (ADR 0014): esiste solo nei test, e con essa il
 // bypass sul rifiuto iniziale. Il binario pubblico non la contiene.
 #[cfg(test)]
+mod evidence;
+
+#[cfg(test)]
 mod mariadb_evidence;
+
+#[cfg(test)]
+mod session_evidence;
 
 pub use arrow::MysqlColumnBuffer;
 pub use catalog::{
