@@ -16,18 +16,27 @@
 //!   `setup` del driver e viene applicato prima di qualunque probe. Eseguire
 //!   lo stesso SQL a mano direbbe del server, non del pool.
 //!
-//! Come per ADR 0014, nessuna sonda fa `panic` su un errore del server:
-//! l'errore e la misura. Il test fallisce solo se l'harness non riesce a
-//! misurare — server irraggiungibile, TLS assente, fixture non creabile.
+//! **`accepted` significa contratto soddisfatto, non misura riuscita.** E la
+//! differenza che rende utile la matrice: una sonda che registrasse "ho
+//! ottenuto una risposta" farebbe passare per accordo tre server che sbagliano
+//! allo stesso modo — un READ ONLY che accetta scritture ovunque, quattro
+//! livelli che riportano tutti lo stesso valore, un rollback che non annulla.
+//! Ogni sonda dichiara cosa si aspetta, e cio che ha osservato viene
+//! confrontato con quello.
+//!
+//! Nessuna sonda fa `panic` su un errore del server: l'errore e la misura. Il
+//! test fallisce solo se l'harness non riesce a misurare — server
+//! irraggiungibile, TLS assente, fixture non creabile.
 
 // La sessione vive fino alla fine della sonda per costruzione: e cio che si
 // sta misurando. Rilasciarla prima renderebbe la misura piu corta della
 // domanda.
 #![allow(clippy::significant_drop_tightening)]
 
-use crate::evidence::{condense, config, environment, server_code, Observation, Recorder};
+use crate::evidence::{condense, config, environment, Observation, Recorder};
 use crate::profile::MYSQL_PROFILE;
 use mysql_async::prelude::Queryable;
+use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
 use plenora_database_core::transaction::{
     AccessMode, IsolationLevel, Statement, TransactionOptions, TransactionScope,
@@ -41,23 +50,114 @@ const MARKER: &str = "PLENORA_SESSION_EVIDENCE ";
 /// Tabella di lavoro: la crea la misura, e la droppa.
 const SCRATCH: &str = "plenora_session_evidence";
 
-/// Cio che il bootstrap pretende di fissare, piu l'isolamento di partenza.
-const OBSERVED_VARIABLES: &str =
-    "SELECT @@autocommit, @@time_zone, @@sql_mode, @@transaction_isolation";
+/// Cio che il bootstrap pretende di fissare.
+const OBSERVED_VARIABLES: &str = "SELECT @@autocommit, @@time_zone, @@sql_mode";
 
-/// Lo stato che una transazione aperta rende osservabile.
-const TRANSACTION_STATE: &str =
-    "SELECT @@transaction_isolation, @@transaction_read_only, @@autocommit";
+/// I valori che il bootstrap deve produrre.
+///
+/// Scritti qui e non dedotti dalla costante: dedurli significherebbe
+/// confrontare la costante con se stessa, e una sonda che si aspetta cio che
+/// ha appena letto non verifica niente. Che descrivano davvero
+/// `SESSION_BOOTSTRAP_SQL` lo controlla `expectations_match_the_bootstrap`
+/// prima di misurare — se qualcuno cambia la costante e non queste attese, e
+/// un guasto dell'harness e va visto subito.
+const EXPECTED_AUTOCOMMIT: &str = "1";
+const EXPECTED_TIME_ZONE: &str = "+00:00";
+const EXPECTED_SQL_MODE: &str =
+    "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION";
 
-fn pool() -> Result<crate::MysqlPool, DatabaseError> {
-    crate::MysqlPool::new_with_profile(&config(), 2, &MYSQL_PROFILE)
+/// L'esito di una sonda: cosa si e osservato, cosa serviva, e se coincidono.
+struct Measured {
+    detail: String,
+    expectation: String,
+    satisfied: bool,
 }
 
-/// Il bootstrap: prima eseguito a mano, poi ricevuto dal pool.
-async fn bootstrap_probes(recorder: &mut Recorder) {
-    let cancel = CancellationToken::new();
+impl Measured {
+    fn new(detail: impl Into<String>, expectation: impl Into<String>, satisfied: bool) -> Self {
+        Self {
+            detail: detail.into(),
+            expectation: expectation.into(),
+            satisfied,
+        }
+    }
+}
 
-    // 1. L'esatto SQL del pool su una connessione qualunque. Dice del server.
+type Probe = Result<Measured, DatabaseError>;
+
+/// Registra una sonda. `accepted` solo se il contratto e soddisfatto.
+fn record(
+    recorder: &mut Recorder,
+    probe: &'static str,
+    surface: &'static str,
+    question: &'static str,
+    outcome: Probe,
+) {
+    match outcome {
+        Ok(measured) if measured.satisfied => {
+            recorder.accepted(probe, "session", surface, question, measured.detail);
+        }
+        Ok(measured) => recorder.rejected(
+            probe,
+            "session",
+            surface,
+            question,
+            format!(
+                "osservato: {} — atteso: {}",
+                measured.detail, measured.expectation
+            ),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            probe,
+            "session",
+            surface,
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            None,
+        ),
+    }
+}
+
+fn pool(connections: usize) -> Result<crate::MysqlPool, DatabaseError> {
+    crate::MysqlPool::new_with_profile(&config(), connections, &MYSQL_PROFILE)
+}
+
+/// Le attese del bootstrap devono descrivere la costante che si sta misurando.
+///
+/// # Panics
+///
+/// Se divergono: e un guasto dell'harness, va chiuso prima di leggere i
+/// numeri e non registrato come divergenza fra server.
+fn expectations_match_the_bootstrap() {
+    for expected in [
+        format!("autocommit = {EXPECTED_AUTOCOMMIT}"),
+        format!("time_zone = '{EXPECTED_TIME_ZONE}'"),
+        format!("sql_mode = '{EXPECTED_SQL_MODE}'"),
+    ] {
+        assert!(
+            crate::SESSION_BOOTSTRAP_SQL.contains(&expected),
+            "l'attesa {expected} non compare in SESSION_BOOTSTRAP_SQL: harness, non divergenza"
+        );
+    }
+}
+
+fn describe(autocommit: &str, time_zone: &str, sql_mode: &str) -> String {
+    format!("autocommit={autocommit} time_zone={time_zone} sql_mode={sql_mode}")
+}
+
+fn bootstrap_expectation() -> String {
+    describe(EXPECTED_AUTOCOMMIT, EXPECTED_TIME_ZONE, EXPECTED_SQL_MODE)
+}
+
+fn bootstrap_satisfied(observed: &(String, String, String)) -> bool {
+    observed.0 == EXPECTED_AUTOCOMMIT
+        && observed.1 == EXPECTED_TIME_ZONE
+        && observed.2 == EXPECTED_SQL_MODE
+}
+
+/// Il bootstrap eseguito a mano: dice del server.
+async fn bootstrap_statement() -> Probe {
     let mut connection = mysql_async::Conn::new(
         config()
             .driver_opts("MySQL")
@@ -65,164 +165,204 @@ async fn bootstrap_probes(recorder: &mut Recorder) {
     )
     .await
     .expect("connessione: harness, non divergenza");
-    match connection.query_drop(crate::SESSION_BOOTSTRAP_SQL).await {
-        Ok(()) => {
-            let observed = connection
-                .query_first::<(String, String, String, String), _>(OBSERVED_VARIABLES)
-                .await
-                .expect("lettura variabili: harness, non divergenza")
-                .expect("variabili presenti");
-            recorder.accepted(
-                "bootstrap.statement",
-                "session",
-                "bootstrap",
-                "il server accetta l'esatto SESSION_BOOTSTRAP_SQL del pool",
-                format!(
-                    "autocommit={} time_zone={} sql_mode={} isolation={}",
-                    observed.0, observed.1, observed.2, observed.3
-                ),
-            );
-        }
-        Err(error) => recorder.rejected(
-            "bootstrap.statement",
-            "session",
-            "bootstrap",
-            "il server accetta l'esatto SESSION_BOOTSTRAP_SQL del pool",
-            condense(&format!("{error}")),
-            server_code(&error),
-        ),
+    if let Err(error) = connection.query_drop(crate::SESSION_BOOTSTRAP_SQL).await {
+        return Ok(Measured::new(
+            format!("statement rifiutato: {}", condense(&format!("{error}"))),
+            bootstrap_expectation(),
+            false,
+        ));
     }
-
-    // 2. Il percorso reale. Il pool passa il bootstrap come `setup` del
-    //    driver, quindi cio che si legge qui e cio che il provider trova
-    //    all'inizio di ogni operazione, prima della probe. La seconda
-    //    iterazione riusa una connessione gia restituita al pool: con
-    //    `reset_connection` attivo, il bootstrap deve essere riapplicato.
-    let Ok(pool) = pool() else {
-        for probe in ["bootstrap.pool", "bootstrap.pool_reuse"] {
-            recorder.rejected(
-                probe,
-                "session",
-                "bootstrap",
-                "il pool consegna sessioni gia bootstrappate",
-                "pool non costruibile".to_owned(),
-                None,
-            );
-        }
-        return;
-    };
-    for probe in ["bootstrap.pool", "bootstrap.pool_reuse"] {
-        let observed = read_through_pool(&pool, &cancel).await;
-        record(
-            recorder,
-            probe,
-            "bootstrap",
-            "il pool consegna sessioni gia bootstrappate",
-            observed,
-        );
-    }
+    let observed = connection
+        .query_first::<(String, String, String), _>(OBSERVED_VARIABLES)
+        .await
+        .expect("lettura variabili: harness, non divergenza")
+        .expect("variabili presenti");
+    Ok(Measured::new(
+        describe(&observed.0, &observed.1, &observed.2),
+        bootstrap_expectation(),
+        bootstrap_satisfied(&observed),
+    ))
 }
 
-async fn read_through_pool(
-    pool: &crate::MysqlPool,
+/// Il bootstrap ricevuto dal pool: dice del pool.
+async fn bootstrap_through_pool() -> Probe {
+    let cancel = CancellationToken::new();
+    let pool = pool(2)?;
+    let mut session = pool.checkout(&cancel).await?;
+    let observed = read_variables(&mut session, &cancel).await?;
+    Ok(Measured::new(
+        describe(&observed.0, &observed.1, &observed.2),
+        bootstrap_expectation(),
+        bootstrap_satisfied(&observed),
+    ))
+}
+
+/// Il bootstrap dopo il riuso della **stessa** connessione.
+///
+/// Un pool a una connessione sola, l'identita registrata, lo stato sporcato di
+/// proposito, la restituzione, e la rilettura sulla stessa identita. Leggere
+/// due volte una sessione gia corretta non provava niente: il pool poteva
+/// consegnarne un'altra, e non c'era nulla da ripristinare.
+async fn bootstrap_survives_reuse() -> Probe {
+    let cancel = CancellationToken::new();
+    let pool = pool(1)?;
+
+    let mut session = pool.checkout(&cancel).await?;
+    let first = connection_id(&mut session, &cancel).await?;
+    session
+        .query_rows(
+            "SET SESSION autocommit = 0, time_zone = '+05:00', sql_mode = 'ANSI_QUOTES'",
+            ErrorPhase::Prepare,
+            &cancel,
+        )
+        .await?;
+    let dirtied = read_variables(&mut session, &cancel).await?;
+    if bootstrap_satisfied(&dirtied) {
+        // Se lo stato non si e sporcato, la sonda non puo provare il
+        // ripristino: sarebbe di nuovo la lettura di una sessione gia
+        // corretta, cioe il difetto che questa versione corregge.
+        return Ok(Measured::new(
+            format!(
+                "lo stato non si e sporcato: {}",
+                describe(&dirtied.0, &dirtied.1, &dirtied.2)
+            ),
+            "stato alterato prima della restituzione",
+            false,
+        ));
+    }
+    drop(session);
+
+    let mut reused = pool.checkout(&cancel).await?;
+    let second = connection_id(&mut reused, &cancel).await?;
+    let observed = read_variables(&mut reused, &cancel).await?;
+    let same_connection = first == second;
+    Ok(Measured::new(
+        format!(
+            "connessione {first}->{second} riusata={same_connection} {}",
+            describe(&observed.0, &observed.1, &observed.2)
+        ),
+        format!("stessa connessione e {}", bootstrap_expectation()),
+        same_connection && bootstrap_satisfied(&observed),
+    ))
+}
+
+async fn read_variables(
+    session: &mut crate::MysqlSession,
     cancel: &CancellationToken,
-) -> Result<Vec<String>, DatabaseError> {
-    let mut session = pool.checkout(cancel).await?;
+) -> Result<(String, String, String), DatabaseError> {
     let rows = session
         .query_rows(OBSERVED_VARIABLES, ErrorPhase::Probe, cancel)
         .await?;
     let row = rows.first().expect("riga delle variabili");
-    Ok(vec![format!(
-        "autocommit={} time_zone={} sql_mode={} isolation={}",
+    Ok((
         row.get::<String, _>(0).unwrap_or_default(),
         row.get::<String, _>(1).unwrap_or_default(),
         row.get::<String, _>(2).unwrap_or_default(),
-        row.get::<String, _>(3).unwrap_or_default(),
-    )])
+    ))
 }
 
-/// Apre una transazione con le opzioni date e ne legge lo stato osservabile.
-async fn transaction_state(options: &TransactionOptions) -> Result<Vec<String>, DatabaseError> {
+async fn connection_id(
+    session: &mut crate::MysqlSession,
+    cancel: &CancellationToken,
+) -> Result<u64, DatabaseError> {
+    let rows = session
+        .query_rows("SELECT CONNECTION_ID()", ErrorPhase::Probe, cancel)
+        .await?;
+    Ok(rows
+        .first()
+        .and_then(|row| row.get(0))
+        .expect("identita della connessione: harness, non divergenza"))
+}
+
+/// Il valore di un `ParameterValue` senza la decorazione del `Debug`.
+fn plain(value: &ParameterValue) -> String {
+    match value {
+        ParameterValue::String(value) => value.clone(),
+        other => condense(&format!("{other:?}")),
+    }
+}
+
+/// Il livello che la sessione dichiara dentro la transazione.
+async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
+    let options = TransactionOptions {
+        isolation: Some(level),
+        ..TransactionOptions::default()
+    };
     let cancel = CancellationToken::new();
-    let pool = pool()?;
+    let pool = pool(2)?;
     let session = pool.checkout(&cancel).await?;
     let mut transaction =
-        crate::transaction::MysqlTransaction::begin(session, options, &cancel).await?;
+        crate::transaction::MysqlTransaction::begin(session, &options, &cancel).await?;
     let rows = transaction
-        .query(&Statement::new(TRANSACTION_STATE), &cancel)
+        .query(&Statement::new("SELECT @@transaction_isolation"), &cancel)
         .await?;
-    let state = rows.first().map_or_else(Vec::new, |row| {
-        row.values()
-            .iter()
-            .map(|value| condense(&format!("{value:?}")))
-            .collect::<Vec<_>>()
-    });
+    let observed = rows
+        .first()
+        .and_then(|row| row.values().first())
+        .map_or_else(|| "assente".to_owned(), plain);
     Box::new(transaction).commit(&cancel).await?;
-    Ok(state)
+    Ok(Measured::new(
+        observed.clone(),
+        expected.to_owned(),
+        observed == expected,
+    ))
 }
 
-/// I quattro livelli, le tre modalita di accesso e il contesto di sessione.
-async fn transaction_probes(recorder: &mut Recorder) {
-    for (probe, level) in [
-        (
-            "transaction.isolation.read_uncommitted",
-            IsolationLevel::ReadUncommitted,
-        ),
-        (
-            "transaction.isolation.read_committed",
-            IsolationLevel::ReadCommitted,
-        ),
-        (
-            "transaction.isolation.repeatable_read",
-            IsolationLevel::RepeatableRead,
-        ),
-        (
-            "transaction.isolation.serializable",
-            IsolationLevel::Serializable,
-        ),
+/// Una scrittura dentro la transazione: ammessa o rifiutata dalla modalita.
+async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Probe {
+    let options = TransactionOptions {
+        access_mode: mode,
+        ..TransactionOptions::default()
+    };
+    let cancel = CancellationToken::new();
+    let pool = pool(2)?;
+    let table = format!("{SCRATCH}_rw");
+    let mut setup = pool.checkout(&cancel).await?;
+    for sql in [
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!("CREATE TABLE {table} (id BIGINT PRIMARY KEY) ENGINE=InnoDB"),
     ] {
-        let options = TransactionOptions {
-            isolation: Some(level),
-            ..TransactionOptions::default()
-        };
-        record(
-            recorder,
-            probe,
-            "isolation",
-            "il livello richiesto e quello che la sessione dichiara",
-            transaction_state(&options).await,
-        );
+        setup.query_rows(&sql, ErrorPhase::Prepare, &cancel).await?;
     }
+    drop(setup);
 
-    // L'access mode si osserva sull'**effetto**, non su `@@transaction_read_only`:
-    // quella variabile riflette `SET TRANSACTION`, non `START TRANSACTION READ
-    // ONLY`, e leggerla dava lo stesso valore per tutte e tre le modalita.
-    // Una sonda che non distingue i casi che dichiara di distinguere non e
-    // una misura.
-    for (probe, mode) in [
-        ("transaction.access_mode.absent", None),
-        (
-            "transaction.access_mode.read_only",
-            Some(AccessMode::ReadOnly),
-        ),
-        (
-            "transaction.access_mode.read_write",
-            Some(AccessMode::ReadWrite),
-        ),
-    ] {
-        let options = TransactionOptions {
-            access_mode: mode,
-            ..TransactionOptions::default()
-        };
-        record(
-            recorder,
-            probe,
-            "access_mode",
-            "una scrittura dentro la transazione e ammessa o rifiutata secondo la modalita",
-            write_inside_transaction(&options).await,
-        );
-    }
+    let session = pool.checkout(&cancel).await?;
+    let mut transaction =
+        crate::transaction::MysqlTransaction::begin(session, &options, &cancel).await?;
+    let attempt = transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (id) VALUES (1)")),
+            &cancel,
+        )
+        .await;
+    let admitted = attempt.is_ok();
+    let observed = match &attempt {
+        Ok(_) => "scrittura ammessa".to_owned(),
+        Err(error) => format!("scrittura rifiutata ({:?})", error.category),
+    };
+    let _ = Box::new(transaction).rollback(&cancel).await;
 
+    let mut cleanup = pool.checkout(&cancel).await?;
+    let _ = cleanup
+        .query_rows(
+            &format!("DROP TABLE IF EXISTS {table}"),
+            ErrorPhase::Prepare,
+            &cancel,
+        )
+        .await;
+    Ok(Measured::new(
+        observed,
+        if admits {
+            "scrittura ammessa"
+        } else {
+            "scrittura rifiutata"
+        },
+        admitted == admits,
+    ))
+}
+
+/// La variabile utente che il provider imposta per il session context.
+async fn context_inside_transaction() -> Probe {
     let mut context = SessionContext::new();
     context
         .insert(
@@ -234,152 +374,42 @@ async fn transaction_probes(recorder: &mut Recorder) {
         context,
         ..TransactionOptions::default()
     };
-    // Il contesto si rilegge dalla variabile utente che il provider imposta:
-    // leggere di nuovo isolamento e autocommit non diceva nulla del contesto,
-    // e infatti la sonda era indistinguibile da quella senza contesto.
-    record(
-        recorder,
-        "transaction.context",
-        "context",
-        "il session context e leggibile dalla variabile utente dopo START TRANSACTION",
-        context_inside_transaction(&options).await,
-    );
-
-    durability_probes(recorder).await;
-}
-
-/// Una scrittura dentro la transazione: ammessa o rifiutata dalla modalita.
-async fn write_inside_transaction(
-    options: &TransactionOptions,
-) -> Result<Vec<String>, DatabaseError> {
     let cancel = CancellationToken::new();
-    let pool = pool()?;
-    let mut setup = pool.checkout(&cancel).await?;
-    for sql in [
-        format!("DROP TABLE IF EXISTS {SCRATCH}_rw"),
-        format!("CREATE TABLE {SCRATCH}_rw (id BIGINT PRIMARY KEY) ENGINE=InnoDB"),
-    ] {
-        setup.query_rows(&sql, ErrorPhase::Prepare, &cancel).await?;
-    }
-    drop(setup);
-
+    let pool = pool(2)?;
     let session = pool.checkout(&cancel).await?;
     let mut transaction =
-        crate::transaction::MysqlTransaction::begin(session, options, &cancel).await?;
-    let attempt = transaction
-        .execute(
-            &Statement::new(format!("INSERT INTO {SCRATCH}_rw (id) VALUES (1)")),
-            &cancel,
-        )
-        .await;
-    let observed = match &attempt {
-        Ok(_) => "scrittura ammessa".to_owned(),
-        Err(error) => format!("scrittura rifiutata: {:?}", error.category),
-    };
-    let _ = Box::new(transaction).rollback(&cancel).await;
-
-    let mut cleanup = pool.checkout(&cancel).await?;
-    let _ = cleanup
-        .query_rows(
-            &format!("DROP TABLE IF EXISTS {SCRATCH}_rw"),
-            ErrorPhase::Prepare,
-            &cancel,
-        )
-        .await;
-    Ok(vec![observed])
-}
-
-/// La variabile utente che il provider imposta per il session context.
-async fn context_inside_transaction(
-    options: &TransactionOptions,
-) -> Result<Vec<String>, DatabaseError> {
-    let cancel = CancellationToken::new();
-    let pool = pool()?;
-    let session = pool.checkout(&cancel).await?;
-    let mut transaction =
-        crate::transaction::MysqlTransaction::begin(session, options, &cancel).await?;
+        crate::transaction::MysqlTransaction::begin(session, &options, &cancel).await?;
     let rows = transaction
         .query(
             &Statement::new("SELECT @`plenora_ctx_plenora.tenant`"),
             &cancel,
         )
         .await?;
-    let observed = rows.first().map_or_else(
-        || "nessuna riga".to_owned(),
-        |row| {
-            row.values()
-                .iter()
-                .map(|value| condense(&format!("{value:?}")))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        },
-    );
+    let observed = rows
+        .first()
+        .and_then(|row| row.values().first())
+        .map_or_else(|| "assente".to_owned(), plain);
     Box::new(transaction).commit(&cancel).await?;
-    Ok(vec![observed])
+    Ok(Measured::new(
+        observed.clone(),
+        "acme".to_owned(),
+        observed == "acme",
+    ))
 }
 
-/// Commit e rollback misurati sull'effetto, non sull'assenza di errore.
-async fn durability_probes(recorder: &mut Recorder) {
+/// Commit e rollback misurati sull'effetto, su una seconda sessione.
+async fn durability_round(id: u8, durable: bool) -> Probe {
     let cancel = CancellationToken::new();
-    let Ok(pool) = pool() else {
-        for probe in ["transaction.commit", "transaction.rollback"] {
-            recorder.rejected(
-                probe,
-                "session",
-                "durability",
-                "l'esito dichiarato corrisponde a cio che resta sul server",
-                "pool non costruibile".to_owned(),
-                None,
-            );
-        }
-        return;
-    };
-    let mut setup = pool
-        .checkout(&cancel)
-        .await
-        .expect("sessione della fixture: harness, non divergenza");
+    let pool = pool(2)?;
+    let mut setup = pool.checkout(&cancel).await?;
     for sql in [
         format!("DROP TABLE IF EXISTS {SCRATCH}"),
         format!("CREATE TABLE {SCRATCH} (id BIGINT PRIMARY KEY) ENGINE=InnoDB"),
     ] {
-        setup
-            .query_rows(&sql, ErrorPhase::Prepare, &cancel)
-            .await
-            .expect("fixture della misura: harness, non divergenza");
+        setup.query_rows(&sql, ErrorPhase::Prepare, &cancel).await?;
     }
     drop(setup);
 
-    for (probe, id, durable) in [
-        ("transaction.commit", 1_u8, true),
-        ("transaction.rollback", 2, false),
-    ] {
-        let outcome = durability_round(&pool, id, durable).await;
-        record(
-            recorder,
-            probe,
-            "durability",
-            "l'esito dichiarato corrisponde a cio che resta sul server",
-            outcome,
-        );
-    }
-
-    if let Ok(mut session) = pool.checkout(&cancel).await {
-        let _ = session
-            .query_rows(
-                &format!("DROP TABLE IF EXISTS {SCRATCH}"),
-                ErrorPhase::Prepare,
-                &cancel,
-            )
-            .await;
-    }
-}
-
-async fn durability_round(
-    pool: &crate::MysqlPool,
-    id: u8,
-    durable: bool,
-) -> Result<Vec<String>, DatabaseError> {
-    let cancel = CancellationToken::new();
     let session = pool.checkout(&cancel).await?;
     let mut transaction = crate::transaction::MysqlTransaction::begin(
         session,
@@ -401,8 +431,8 @@ async fn durability_round(
 
     // L'effetto si rilegge su una **seconda** sessione: leggerlo su quella
     // della transazione confonderebbe la durabilita con la visibilita.
-    let mut session = pool.checkout(&cancel).await?;
-    let rows = session
+    let mut reader = pool.checkout(&cancel).await?;
+    let rows = reader
         .query_rows(
             &format!("SELECT COUNT(*) FROM {SCRATCH} WHERE id = {id}"),
             ErrorPhase::Read,
@@ -413,32 +443,19 @@ async fn durability_round(
         .first()
         .and_then(|row| row.get(0))
         .expect("conteggio della misura: harness, non divergenza");
+    let _ = reader
+        .query_rows(
+            &format!("DROP TABLE IF EXISTS {SCRATCH}"),
+            ErrorPhase::Prepare,
+            &cancel,
+        )
+        .await;
     let expected = i64::from(durable);
-    Ok(vec![format!(
-        "righe={observed} attese={expected} coerente={}",
-        observed == expected
-    )])
-}
-
-/// Registra l'esito di una sonda che restituisce uno stato o un errore.
-fn record(
-    recorder: &mut Recorder,
-    probe: &'static str,
-    surface: &'static str,
-    question: &'static str,
-    outcome: Result<Vec<String>, DatabaseError>,
-) {
-    match outcome {
-        Ok(state) => recorder.accepted(probe, "session", surface, question, state.join(" | ")),
-        Err(error) => recorder.rejected(
-            probe,
-            "session",
-            surface,
-            question,
-            condense(&format!("{:?}: {}", error.category, error.message)),
-            None,
-        ),
-    }
+    Ok(Measured::new(
+        format!("righe={observed}"),
+        format!("righe={expected}"),
+        observed == expected,
+    ))
 }
 
 /// La misura della semantica di sessione sui tre riferimenti.
@@ -448,11 +465,13 @@ fn record(
 ///
 /// # Panics
 ///
-/// Se l'harness non riesce a misurare. Sono guasti suoi, non divergenze, e
-/// vanno chiusi prima di leggere i numeri.
+/// Se l'harness non riesce a misurare. Sono guasti suoi, non divergenze.
 #[tokio::test]
 #[ignore = "misura della semantica di sessione: richiede un riferimento live esplicito"]
+#[allow(clippy::too_many_lines)]
 async fn session_semantics_evidence() {
+    expectations_match_the_bootstrap();
+
     // Il bypass serve ai due riferimenti MariaDB: senza, la probe li rifiuta
     // e nessuna sonda arriva alla sessione. Non tocca nient'altro.
     let _bypass = crate::catalog::MariadbRejectionBypass::engage();
@@ -471,8 +490,102 @@ async fn session_semantics_evidence() {
         .expect("identita presente");
 
     let mut recorder = Recorder(Vec::new());
-    bootstrap_probes(&mut recorder).await;
-    transaction_probes(&mut recorder).await;
+
+    record(
+        &mut recorder,
+        "bootstrap.statement",
+        "bootstrap",
+        "il server applica l'esatto SESSION_BOOTSTRAP_SQL del pool",
+        bootstrap_statement().await,
+    );
+    record(
+        &mut recorder,
+        "bootstrap.pool",
+        "bootstrap",
+        "il pool consegna sessioni gia bootstrappate",
+        bootstrap_through_pool().await,
+    );
+    record(
+        &mut recorder,
+        "bootstrap.pool_reuse",
+        "bootstrap",
+        "la stessa connessione, sporcata e restituita, torna bootstrappata",
+        bootstrap_survives_reuse().await,
+    );
+
+    for (probe, level, expected) in [
+        (
+            "transaction.isolation.read_uncommitted",
+            IsolationLevel::ReadUncommitted,
+            "READ-UNCOMMITTED",
+        ),
+        (
+            "transaction.isolation.read_committed",
+            IsolationLevel::ReadCommitted,
+            "READ-COMMITTED",
+        ),
+        (
+            "transaction.isolation.repeatable_read",
+            IsolationLevel::RepeatableRead,
+            "REPEATABLE-READ",
+        ),
+        (
+            "transaction.isolation.serializable",
+            IsolationLevel::Serializable,
+            "SERIALIZABLE",
+        ),
+    ] {
+        record(
+            &mut recorder,
+            probe,
+            "isolation",
+            "la sessione dichiara il livello richiesto",
+            isolation_probe(level, expected).await,
+        );
+    }
+
+    for (probe, mode, admits) in [
+        ("transaction.access_mode.absent", None, true),
+        (
+            "transaction.access_mode.read_only",
+            Some(AccessMode::ReadOnly),
+            false,
+        ),
+        (
+            "transaction.access_mode.read_write",
+            Some(AccessMode::ReadWrite),
+            true,
+        ),
+    ] {
+        record(
+            &mut recorder,
+            probe,
+            "access_mode",
+            "una scrittura dentro la transazione e ammessa o rifiutata secondo la modalita",
+            write_inside_transaction(mode, admits).await,
+        );
+    }
+
+    record(
+        &mut recorder,
+        "transaction.context",
+        "context",
+        "il session context e leggibile dalla variabile utente dopo START TRANSACTION",
+        context_inside_transaction().await,
+    );
+
+    for (probe, id, durable) in [
+        ("transaction.commit", 1_u8, true),
+        ("transaction.rollback", 2, false),
+    ] {
+        record(
+            &mut recorder,
+            probe,
+            "durability",
+            "l'esito dichiarato corrisponde a cio che resta sul server",
+            durability_round(id, durable).await,
+        );
+    }
 
     let document = json!({
         "schema_version": 1,

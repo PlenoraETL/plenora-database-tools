@@ -34,27 +34,46 @@ def load():
 MATRIX = load()
 
 
-def document(outcome: str, detail: str) -> dict[str, object]:
-    return {
-        "server": {"product_version": "x", "version_comment": "y"},
-        "bootstrap_sql": "SET SESSION autocommit = 1",
-        "observations": [
-            {
-                "probe": "bootstrap.statement",
-                "family": "session",
-                "surface": "bootstrap",
-                "question": "domanda",
-                "outcome": outcome,
-                "detail": detail,
-                "server_code": None,
-            }
-        ],
-    }
+def observations(probes, outcome: str = "accepted", detail: str = "uguale"):
+    return [
+        {
+            "probe": probe,
+            "family": "session",
+            "surface": "bootstrap",
+            "question": "domanda",
+            "outcome": outcome,
+            "detail": detail,
+            "server_code": None,
+        }
+        for probe in probes
+    ]
+
+
+def documents(fleet, probes=None, **override):
+    """Tre documenti identici, salvo cio che il caso vuole cambiare."""
+
+    probes = MATRIX.EXPECTED_PROBES if probes is None else probes
+    built = {}
+    for index, server in enumerate(fleet):
+        outcome = override.get("outcome") if index and "outcome" in override else "accepted"
+        detail = override.get("detail") if index and "detail" in override else "uguale"
+        if override.get("everywhere"):
+            outcome = override.get("outcome", "accepted")
+        built[server.key] = {
+            "server": {"product_version": "x", "version_comment": "y"},
+            "bootstrap_sql": "SET SESSION autocommit = 1",
+            "observations": observations(probes, outcome, detail),
+        }
+    return built
 
 
 class SessionMatrixTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fleet = MATRIX.servers()
+
+    def judge(self, built):
+        results = MATRIX.compare(built, self.fleet, MATRIX.OUTCOME_ONLY)
+        MATRIX.validate(built, results)
 
     def test_the_matrix_measures_the_three_declared_references(self) -> None:
         keys = [server.key for server in self.fleet]
@@ -81,51 +100,77 @@ class SessionMatrixTests(unittest.TestCase):
 
         self.assertEqual(MATRIX.OUTCOME_ONLY, frozenset())
 
-    def test_a_diverging_probe_is_named(self) -> None:
-        documents = {
-            server.key: document(
-                "accepted", "uguale" if server.key == "mysql" else "diverso"
-            )
-            for server in self.fleet
-        }
-        results = MATRIX.compare(documents, self.fleet, MATRIX.OUTCOME_ONLY)
-        self.assertEqual(results[0]["verdict"], "differs")
-        self.assertEqual(sorted(results[0]["divergent"]), ["mariadb-11", "mariadb-12"])
+    def test_a_complete_and_agreeing_matrix_is_accepted(self) -> None:
+        self.judge(documents(self.fleet))
 
-    def test_a_shared_failure_is_not_agreement(self) -> None:
+    def test_a_diverging_probe_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            self.judge(documents(self.fleet, detail="diverso"))
+        self.assertIn("divergenti", str(raised.exception))
+
+    def test_a_shared_failure_is_refused(self) -> None:
         """Il verde falso che questa misura esiste per escludere."""
 
-        documents = {
-            server.key: document("rejected", "uguale") for server in self.fleet
-        }
-        results = MATRIX.compare(documents, self.fleet, MATRIX.OUTCOME_ONLY)
-        self.assertEqual(results[0]["verdict"], "same")
-        unaccepted = [
-            key
-            for entry in results
-            for key, observation in entry["observations"].items()
-            if observation["outcome"] != "accepted"
-        ]
-        self.assertEqual(len(unaccepted), 3, "il runner deve poterle contare")
+        with self.assertRaises(RuntimeError) as raised:
+            self.judge(documents(self.fleet, outcome="rejected", everywhere=True))
+        self.assertIn("non accettate", str(raised.exception))
+
+    def test_a_shrinking_inventory_is_refused(self) -> None:
+        """Dodici sonde su tredici non sono la matrice che decide."""
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.judge(documents(self.fleet, probes=MATRIX.EXPECTED_PROBES[:-1]))
+        self.assertIn("inventario", str(raised.exception))
+
+    def test_a_reordered_inventory_is_refused(self) -> None:
+        reordered = (MATRIX.EXPECTED_PROBES[-1],) + MATRIX.EXPECTED_PROBES[:-1]
+        with self.assertRaises(RuntimeError) as raised:
+            self.judge(documents(self.fleet, probes=reordered))
+        self.assertIn("inventario", str(raised.exception))
+
+    def test_a_duplicated_probe_is_refused(self) -> None:
+        duplicated = MATRIX.EXPECTED_PROBES[:-1] + (MATRIX.EXPECTED_PROBES[0],)
+        with self.assertRaises(RuntimeError) as raised:
+            self.judge(documents(self.fleet, probes=duplicated))
+        self.assertIn("duplicate", str(raised.exception))
+
+    def test_a_probe_present_on_one_server_only_is_refused(self) -> None:
+        built = documents(self.fleet)
+        built["mariadb-11"]["observations"] = observations(MATRIX.EXPECTED_PROBES[:-1])
+        with self.assertRaises(RuntimeError):
+            self.judge(built)
+
+    def recorded_matrix(self) -> str:
+        """Il documento generato, se esiste.
+
+        E un artefatto: prima della prima esecuzione non c'e, e pretenderlo
+        renderebbe rosso il commit che introduce il runner. Dopo, il runner
+        pretende un albero pulito, quindi cio che si legge qui descrive un
+        commit preciso. Il salto vale per l'assenza, non per un documento
+        vecchio: quello fa fallire le asserzioni sotto, ed e giusto cosi.
+        """
+
+        if not MATRIX.EVIDENCE.exists():
+            self.skipTest(f"{MATRIX.EVIDENCE} non ancora generato")
+        return MATRIX.EVIDENCE.read_text(encoding="utf-8")
 
     def test_the_generated_document_declares_it_is_generated(self) -> None:
-        evidence = MATRIX.EVIDENCE
-        self.assertTrue(evidence.exists(), f"{evidence} deve esistere")
-        text = evidence.read_text(encoding="utf-8")
+        text = self.recorded_matrix()
         self.assertIn("non modificare a mano", text)
         self.assertIn("check_session_matrix.py", text)
         for server in self.fleet:
             self.assertIn(server.label, text)
 
-    def test_the_recorded_matrix_still_justifies_the_decision(self) -> None:
-        """Il documento committato deve dire cio su cui la decisione poggia.
+    def test_the_recorded_matrix_was_measured_on_a_clean_tree(self) -> None:
+        """Un documento generato da un albero sporco non e autorevole.
 
-        Se una futura esecuzione registrasse una divergenza, il runner
-        fallirebbe prima di scriverla; ma il documento resta nel repository, e
-        va letto anche da chi non riesegue la misura.
+        Il commit che dichiara non descriverebbe il codice misurato, e la
+        matrice smetterebbe di essere una prova su qualcosa di identificabile.
         """
 
-        text = MATRIX.EVIDENCE.read_text(encoding="utf-8")
+        text = self.recorded_matrix()
+        self.assertIn("albero pulito", text)
+        self.assertNotIn("modifiche non committate", text)
         self.assertIn("0 divergono", text)
         self.assertNotIn("| differs |", text)
 

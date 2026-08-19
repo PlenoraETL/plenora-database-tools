@@ -19,6 +19,7 @@ correzione, e la seconda misura la erediterebbe rotta.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +32,26 @@ from scripts.check_mariadb_driver import (  # noqa: E402
     repository_state,
     running_digest,
     servers,
+)
+
+# L'inventario esatto e ordinato delle sonde. Non si deduce dal documento del
+# primo server: se una sonda sparisse da tutti e tre, dedurlo farebbe passare
+# una matrice piu piccola per una matrice intatta, e la decisione resterebbe
+# in piedi con meno prove di quante ne dichiara.
+EXPECTED_PROBES: tuple[str, ...] = (
+    "bootstrap.statement",
+    "bootstrap.pool",
+    "bootstrap.pool_reuse",
+    "transaction.isolation.read_uncommitted",
+    "transaction.isolation.read_committed",
+    "transaction.isolation.repeatable_read",
+    "transaction.isolation.serializable",
+    "transaction.access_mode.absent",
+    "transaction.access_mode.read_only",
+    "transaction.access_mode.read_write",
+    "transaction.context",
+    "transaction.commit",
+    "transaction.rollback",
 )
 
 MARKER = "PLENORA_SESSION_EVIDENCE "
@@ -50,7 +71,117 @@ OUTCOME_ONLY: frozenset[str] = frozenset()
 EVIDENCE = ROOT / "docs" / "mariadb" / "SESSION-MATRIX.md"
 
 
+def validate(documents: dict[str, dict[str, object]], results: list[dict[str, object]]) -> None:
+    """Il giudizio della matrice, separato da chi la esegue.
+
+    Sta qui e non dentro `verdict` perche un self-test che ne replicasse le
+    condizioni resterebbe verde anche togliendole dal runner: verificherebbe
+    la propria copia. Questa funzione e cio che il runner chiama e cio che il
+    self-test chiama, e sono la stessa.
+
+    # Raises
+
+    `RuntimeError` alla prima condizione violata. Sono quattro, e nessuna e
+    ridondante rispetto alle altre.
+    """
+
+    # 1. L'inventario: esatto, ordinato, e lo stesso su ogni server. Un
+    #    documento che ne dichiarasse dodici, o gli stessi tredici in ordine
+    #    diverso, non e la matrice che giustifica la decisione.
+    for key, document in documents.items():
+        probes = [entry["probe"] for entry in document["observations"]]
+        if len(probes) != len(set(probes)):
+            raise RuntimeError(f"{key}: sonde duplicate nel documento — {probes}")
+        if tuple(probes) != EXPECTED_PROBES:
+            missing = sorted(set(EXPECTED_PROBES) - set(probes))
+            extra = sorted(set(probes) - set(EXPECTED_PROBES))
+            raise RuntimeError(
+                f"{key}: inventario diverso da quello atteso — mancanti {missing}, "
+                f"in piu {extra}, ordine {'diverso' if not missing and not extra else 'n/d'}"
+            )
+
+    # 2. Ogni sonda deve essere accettata. `accepted` significa contratto
+    #    soddisfatto, non misura riuscita: senza questo, "coincidono" sarebbe
+    #    vero anche per tre server che sbagliano allo stesso modo.
+    unaccepted = [
+        f"{entry['probe']}@{key}"
+        for entry in results
+        for key, observation in entry["observations"].items()
+        if observation["outcome"] != "accepted"
+    ]
+    if unaccepted:
+        raise RuntimeError(
+            "sonde non accettate: "
+            + ", ".join(unaccepted)
+            + " — una matrice che coincide su un fallimento non giustifica nulla"
+        )
+
+    # 3. Nessuna divergenza: e su questo che poggia il fatto che il codice di
+    #    sessione resti condiviso.
+    divergent = [entry for entry in results if entry["verdict"] == "differs"]
+    if divergent:
+        raise RuntimeError(
+            "sonde divergenti: "
+            + ", ".join(
+                f"{entry['probe']} ({', '.join(entry['divergent'])})"
+                for entry in divergent
+            )
+            + " — la semantica di sessione non e piu condivisa, e la decisione "
+            "che la lascia fuori dal profilo va rivista"
+        )
+
+    # 4. Il confronto deve avere prodotto una riga per sonda: se `compare`
+    #    restituisse meno righe, le prime tre condizioni parlerebbero di una
+    #    matrice diversa da quella che si e misurata.
+    if len(results) != len(EXPECTED_PROBES):
+        raise RuntimeError(
+            f"il confronto ha prodotto {len(results)} righe su {len(EXPECTED_PROBES)} sonde"
+        )
+
+
+def head() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        cwd=ROOT,
+    ).stdout.strip()
+
+
+def worktree_changes() -> list[str]:
+    return [
+        line
+        for line in subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            cwd=ROOT,
+        ).stdout.splitlines()
+        if line.strip()
+    ]
+
+
 def verdict() -> dict[str, object]:
+    # L'albero deve essere pulito **prima** di avviare Docker, non dopo: un
+    # documento generato da un albero con modifiche non committate dichiara un
+    # commit che non descrive il codice misurato, e il commit e l'unica cosa
+    # che lega la matrice a cio di cui parla.
+    changes = worktree_changes()
+    if changes:
+        raise RuntimeError(
+            "albero con modifiche non committate: "
+            + ", ".join(change.strip() for change in changes[:5])
+            + (" ..." if len(changes) > 5 else "")
+            + " — la misura deve partire da HEAD pulito"
+        )
+    started_at = head()
+
     fleet = servers()
     for server in fleet:
         observed = running_digest(server.container)
@@ -73,38 +204,23 @@ def verdict() -> dict[str, object]:
             f"i server hanno misurato SESSION_BOOTSTRAP_SQL diversi: {statements}"
         )
 
-    results = compare(documents, fleet, OUTCOME_ONLY)
-    divergent = [entry for entry in results if entry["verdict"] == "differs"]
+    # E deve esserlo rimasto: fra la prima e l'ultima misura passano minuti,
+    # e un albero cambiato in mezzo renderebbe il documento un collage di due
+    # versioni del codice.
+    if head() != started_at:
+        raise RuntimeError(
+            f"HEAD e cambiato durante la misura: {started_at} -> {head()}"
+        )
+    changed_during = worktree_changes()
+    if changed_during:
+        raise RuntimeError(
+            "l'albero e cambiato durante la misura: "
+            + ", ".join(change.strip() for change in changed_during[:5])
+        )
 
-    # La matrice e una prova permanente, non una fotografia: da qui in poi
-    # l'esecuzione **fallisce** se cio che ha giustificato la decisione
-    # cambia. Sono due condizioni, e servono entrambe.
-    #
-    # La prima e ovvia: nessuna sonda deve divergere, perche su questo poggia
-    # il fatto che il codice di sessione resti condiviso.
-    #
-    # La seconda meno: "coincidono" e vero anche quando tutti e tre
-    # falliscono allo stesso modo. Una regressione che rompesse il bootstrap
-    # ovunque passerebbe per accordo perfetto, ed e esattamente il verde
-    # falso che questa misura esiste per escludere.
-    unaccepted = [
-        f"{entry['probe']}@{key}"
-        for entry in results
-        for key, observation in entry["observations"].items()
-        if observation["outcome"] != "accepted"
-    ]
-    if unaccepted:
-        raise RuntimeError(
-            "sonde non accettate: " + ", ".join(unaccepted) + " — una matrice "
-            "che coincide su un fallimento non giustifica nulla"
-        )
-    if divergent:
-        raise RuntimeError(
-            "sonde divergenti: "
-            + ", ".join(f"{entry['probe']} ({', '.join(entry['divergent'])})" for entry in divergent)
-            + " — la semantica di sessione non e piu condivisa, e la "
-            "decisione che la lascia fuori dal profilo va rivista"
-        )
+    results = compare(documents, fleet, OUTCOME_ONLY)
+    validate(documents, results)
+    divergent = [entry for entry in results if entry["verdict"] == "differs"]
     return {
         "schema_version": 1,
         "measure": "session-semantics",
@@ -142,9 +258,9 @@ def markdown(document: dict[str, object]) -> str:
         # Il commit e quello su cui la misura e girata, non quello che la
         # contiene: un artefatto generato precede per costruzione il commit
         # che lo porta. Dirlo evita di leggerlo come una contraddizione.
-        f"Misurata su `{document['repository']['commit']}`"
-        f"{', albero con modifiche non committate' if document['repository']['worktree_dirty'] else ', albero pulito'}"
-        ". Il documento entra nel commit successivo.",
+        # Il runner rifiuta un albero sporco, quindi questo commit descrive
+        # esattamente il codice misurato.
+        f"Misurata su `{document['repository']['commit']}`, albero pulito.",
         "",
         "```sql",
         str(document["bootstrap_sql"]),
