@@ -1100,10 +1100,20 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
             message: format!("autenticazione {product} rifiutata (codice 1045)"),
             remote_effect: None,
         },
-        1_044 => ServerCodeVerdict {
+        // 1044 e il permesso negato su un database, 1142 su un comando o una
+        // tabella. Sono la stessa risposta a due domande vicine, e finivano in
+        // due posti diversi: 1142 non era in tabella, quindi un errore di
+        // privilegio si classificava come esecuzione generica — cioe come un
+        // guasto, invece che come "questo utente non puo".
+        //
+        // La quarta tranche l'ha visto arrivare identico dai tre riferimenti,
+        // ed e per questo che la riga si allarga adesso: la classificazione di
+        // un provider qualificato si cambia con una misura sotto, non con una
+        // lettura della documentazione.
+        1_044 | 1_142 => ServerCodeVerdict {
             category: ErrorCategory::Authorization,
             retry: RetryDisposition::Never,
-            message: format!("autorizzazione {product} negata (codice 1044)"),
+            message: format!("autorizzazione {product} negata (codice {code})"),
             remote_effect: None,
         },
         1_049 | 1_146 => ServerCodeVerdict {
@@ -1175,7 +1185,7 @@ pub(crate) const MARIADB_STATEMENT_TIMEOUT: u16 = 1_969;
 /// colonna che non esiste, una chiave duplicata, una tabella assente,
 /// un'attesa di lock scaduta, un deadlock con la vittima annullata. Cio che
 /// non c'e non e negato: e non misurato, e finisce nel verdetto generico.
-pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[1_045, 1_054, 1_062, 1_146, 1_205, 1_213];
+pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[1_045, 1_054, 1_062, 1_142, 1_146, 1_205, 1_213];
 
 /// Il mapper dei metadata wire, condiviso fra i prodotti che parlano il
 /// protocollo `MySQL`.
@@ -3174,6 +3184,47 @@ mod tests {
         assert!(!MEASURED_SERVER_CODES.contains(&1_044));
         assert!(!MEASURED_SERVER_CODES.contains(&1_049));
         assert!(!MEASURED_SERVER_CODES.contains(&3_024));
+    }
+
+    #[test]
+    fn a_privilege_error_is_authorization_on_both_products() {
+        // 1142 arriva ogni volta che il permesso manca su un comando o una
+        // tabella, ed e il codice che la quarta tranche ha ricevuto **al
+        // posto** di 1044 e 1049: e la risposta piu comune del motore a una
+        // richiesta che l'utente non puo fare.
+        //
+        // Restava fuori dalla tabella, quindi si classificava come esecuzione
+        // generica: il chiamante leggeva un guasto dove c'era un permesso
+        // mancante, e le due cose si risolvono in modi diversi — una si
+        // ritenta, l'altra si concede. Il cambio tocca anche il provider
+        // MySQL qualificato, ed e giusto che lo tocchi: la misura vale per
+        // tutti e tre i riferimenti.
+        for profile in [&MYSQL_PROFILE as &dyn ProductProfile, &MARIADB_PROFILE] {
+            let verdict = profile.classify_server_code(1_142);
+            assert_eq!(
+                verdict.category,
+                ErrorCategory::Authorization,
+                "{}",
+                profile.product()
+            );
+            assert_eq!(verdict.retry, RetryDisposition::Never);
+            assert_eq!(verdict.remote_effect, None);
+            assert!(
+                verdict.message.contains("autorizzazione") && verdict.message.contains("1142"),
+                "{}: {}",
+                profile.product(),
+                verdict.message
+            );
+        }
+        // E vale per entrambi perche e stato misurato su entrambi: sta
+        // nell'elenco dei codici osservati, non in un ramo scritto a mano nel
+        // profilo che lo ha visto per primo.
+        assert!(MEASURED_SERVER_CODES.contains(&1_142));
+        // 1044 no: la sonda che lo cercava ha ricevuto 1142, quindi su
+        // MariaDB quel codice resta non misurato e prende il verdetto
+        // generico. Due codici della stessa famiglia, due stati di prova
+        // diversi.
+        assert!(!MEASURED_SERVER_CODES.contains(&1_044));
     }
 
     #[test]

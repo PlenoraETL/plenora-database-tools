@@ -435,11 +435,15 @@ il proprio.
 e schema inesistente — non si osservano da questa configurazione: entrambi i
 tentativi ricevono **1142** prima di arrivarci, perche il permesso manca prima
 che il nome venga risolto. Restano `not_measured` e finiscono nel verdetto
-generico del profilo MariaDB, che e `Execution`/`Never`. Vale la pena notare
-che **1142 non e nella tabella di nessuno dei due prodotti**: anche su MySQL,
-oggi, un errore di privilegio si classifica come esecuzione generica. E una
-lacuna del provider qualificato, non una divergenza, e sta qui perche questa
-misura l'ha vista.
+generico del profilo MariaDB, che e `Execution`/`Never`.
+
+**1142 invece era una lacuna, e la misura l'ha scoperta.** Non era nella
+tabella di nessuno dei due prodotti: anche su MySQL, fino a questa tranche, un
+errore di privilegio si classificava come esecuzione generica — un guasto,
+invece che un permesso mancante, che sono due cose con due rimedi diversi.
+Arriva identico dai tre riferimenti, quindi e ora `Authorization`/`Never` per
+entrambi. E un cambio al comportamento di un provider qualificato, e sta in un
+commit suo per questo.
 
 **Su MariaDB un indice su espressione non si crea nemmeno.** `CREATE INDEX ...
 ((LOWER(col)))` e un errore di sintassi (1064). Il profilo dichiara di non
@@ -476,9 +480,12 @@ rifiuto e strutturale, perche `srs_id` arriva sempre nullo.
 
 * **1044 e 1049** su tutti e tre i server, per la ragione detta sopra: il
   privilegio manca prima del nome. Servirebbe un utente con grant diversi.
-* **1142** e misurato ma non classificato da nessun profilo: chiuderlo
-  cambierebbe il comportamento del provider MySQL qualificato, e non e una
-  modifica che questa fase puo fare di passaggio.
+* ~~**1142** e misurato ma non classificato da nessun profilo.~~ **Chiuso**:
+  arriva identico dai tre riferimenti, ed e ora `Authorization`/`Never` per
+  entrambi i prodotti. Il cambio tocca anche il provider MySQL qualificato —
+  un errore di privilegio si classificava come esecuzione generica, cioe come
+  un guasto invece che come un permesso mancante — ed e stato fatto in un
+  commit suo, con il gate completo rieseguito.
 * **Come MariaDB pubblica un indice su colonna generata**, che e l'unica forma
   di indice non su colonna semplice che quel motore accetta.
 * **Le scritture attraverso il profilo**: nessun piano di scrittura e stato

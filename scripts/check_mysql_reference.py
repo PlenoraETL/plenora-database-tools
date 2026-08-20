@@ -86,6 +86,7 @@ EXPECTED_UNIT_TESTS = {
     "pool::tests::checkout_preserves_the_independent_acquire_budget",
     "pool::tests::zero_capacity_is_rejected_without_network",
     "profile::tests::a_diverging_profile_changes_timeout_classification_and_spatial",
+    "profile::tests::a_privilege_error_is_authorization_on_both_products",
     "profile::tests::a_second_profile_changes_what_the_caller_observes",
     "profile::tests::every_catalog_query_exposes_the_aliases_its_reader_requires",
     "profile::tests::every_method_that_returns_a_future_restamps_the_attribution",
