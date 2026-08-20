@@ -177,7 +177,7 @@ class SessionMatrixTests(unittest.TestCase):
 
         original = {
             name: getattr(MATRIX, name)
-            for name in ("worktree_changes", "head", "servers", "running_digest", "measure")
+            for name in ("worktree_changes", "head", "servers", "image_identities", "measure")
         }
         changes = list(changes)
         heads = list(heads)
@@ -185,7 +185,7 @@ class SessionMatrixTests(unittest.TestCase):
             MATRIX.worktree_changes = lambda: changes.pop(0) if changes else []
             MATRIX.head = lambda: heads.pop(0) if heads else "commit"
             MATRIX.servers = spy.servers
-            MATRIX.running_digest = spy.running_digest
+            MATRIX.image_identities = spy.image_identities
             MATRIX.measure = spy.measure
             return MATRIX.verdict()
         finally:
@@ -203,10 +203,17 @@ class SessionMatrixTests(unittest.TestCase):
             def servers(self):
                 return fleet
 
-            def running_digest(self, container):
+            def image_identities(self, container):
                 for server in fleet:
                     if server.container == container:
-                        return server.digest
+                        # Come le riporta un demone con il graph driver: il
+                        # riferimento configurato, l'ID della config, e il
+                        # digest del manifest fra i RepoDigests.
+                        return (
+                            f"mysql@{server.digest}",
+                            "sha256:" + "1" * 64,
+                            f"mysql@{server.digest}",
+                        )
                 raise AssertionError(container)
 
             def measure(self, server, marker, command):
@@ -238,6 +245,46 @@ class SessionMatrixTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as raised:
             self.run_verdict([[], [" M crates/x.rs"]], ["commit"], spy)
         self.assertIn("albero e cambiato durante la misura", str(raised.exception))
+
+    def test_the_image_is_recognised_whatever_the_daemon_reports(self) -> None:
+        """Il caso che ha fatto fallire la prima campagna su CI.
+
+        `{{.Image}}` e l'**ID** dell'immagine: con containerd coincide con il
+        digest del manifest, con il graph driver classico e il digest della
+        *config*, un valore diverso. Confrontarlo con il pin passava in locale
+        e falliva sul runner — verde dove non serviva, rossa dove serviva.
+        """
+
+        declared = "sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e"
+
+        # Store containerd: l'ID **e** il digest del manifest.
+        self.assertTrue(
+            MATRIX.declares_image(
+                (f"mysql@{declared}", declared, f"mysql@{declared}"), declared
+            )
+        )
+        # Graph driver: l'ID e il digest della config, e solo `RepoDigests`
+        # porta quello del manifest. E la forma che rompeva.
+        self.assertTrue(
+            MATRIX.declares_image(
+                (
+                    f"mysql@{declared}",
+                    "sha256:4e28ade5359ee24890f115d202b396388a6b7d2514f1b2fed38d57e84be64aee",
+                    f"mysql@{declared}",
+                ),
+                declared,
+            )
+        )
+        # Un'immagine sostituita sotto lo stesso nome resta un rifiuto: e
+        # l'unica cosa che questo controllo esiste per vedere.
+        other = "sha256:" + "0" * 64
+        self.assertFalse(
+            MATRIX.declares_image(
+                (f"mysql@{other}", other, f"mysql@{other}"), declared
+            )
+        )
+        # E nemmeno una corrispondenza parziale basta.
+        self.assertFalse(MATRIX.declares_image((declared[:20],), declared))
 
     def test_a_live_campaign_exists_and_runs_the_matrix(self) -> None:
         """Il self-test statico non puo accorgersi di un comportamento cambiato.

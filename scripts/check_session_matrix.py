@@ -30,7 +30,8 @@ from scripts.check_mariadb_driver import (  # noqa: E402
     compare,
     measure,
     repository_state,
-    running_digest,
+    declares_image,
+    image_identities,
     servers,
 )
 
@@ -199,11 +200,11 @@ def verdict() -> dict[str, object]:
 
     fleet = servers()
     for server in fleet:
-        observed = running_digest(server.container)
-        if observed != server.digest:
+        identities = image_identities(server.container)
+        if not declares_image(identities, server.digest):
             raise RuntimeError(
-                f"{server.label}: il container esegue {observed}, il documento "
-                f"dichiara {server.digest} — la misura non riguarderebbe "
+                f"{server.label}: il container esegue {', '.join(identities)}, il "
+                f"documento dichiara {server.digest} — la misura non riguarderebbe "
                 "l'immagine dichiarata"
             )
     documents = {
@@ -244,8 +245,13 @@ def verdict() -> dict[str, object]:
         "servers": {
             server.key: {
                 "label": server.label,
+                # Solo il digest **dichiarato**: e quello verificato contro
+                # l'immagine che gira, ed e l'unico stabile. L'ID
+                # dell'immagine cambia con lo store del demone, quindi
+                # scriverlo qui rendeva il documento diverso fra locale e
+                # runner — e la campagna, che lo rigenera per confrontarlo con
+                # quello committato, avrebbe visto una differenza sempre.
                 "declared_digest": server.digest,
-                "running_digest": running_digest(server.container),
                 "product_version": documents[server.key]["server"]["product_version"],
                 "version_comment": documents[server.key]["server"]["version_comment"],
             }
@@ -293,7 +299,7 @@ def markdown(document: dict[str, object]) -> str:
         entry = servers_document[key]
         lines.append(
             f"| `{key}` | {entry['label']} | {entry['product_version']} | "
-            f"`{entry['running_digest'][:23]}` |"
+            f"`{entry['declared_digest'][:23]}` |"
         )
     totals = document["totals"]
     lines += [

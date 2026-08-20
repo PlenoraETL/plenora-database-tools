@@ -109,23 +109,56 @@ def servers() -> tuple[Server, ...]:
     return tuple(entries)
 
 
-def running_digest(container: str) -> str:
-    """Il digest dell'immagine che il container sta **davvero** eseguendo.
+def declares_image(identities: tuple[str, ...], digest: str) -> bool:
+    """Se una di quelle identita e il digest dichiarato.
+
+    Funzione pura, e separata per questo: e la parte che si puo sbagliare in
+    silenzio, e l'unica verificabile senza un demone.
+    """
+
+    return any(
+        identity == digest or identity.endswith(f"@{digest}") for identity in identities
+    )
+
+
+def image_identities(container: str) -> tuple[str, ...]:
+    """I modi in cui il demone dice quale immagine sta girando.
 
     Il documento dei riferimenti dice quale immagine dovrebbe girare; questo
     dice quale gira. Registrare solo il primo farebbe passare per misurata su
-    12.3.2 una corsa fatta su un'immagine sostituita sotto lo stesso nome —
-    ed e esattamente il caso che il pin per digest esiste per escludere.
+    12.3.2 una corsa fatta su un'immagine sostituita sotto lo stesso nome — ed
+    e esattamente il caso che il pin per digest esiste per escludere.
+
+    Non basta pero `{{.Image}}`: quello e l'**ID** dell'immagine, e cosa
+    contenga dipende dallo store del demone. Con containerd coincide con il
+    digest del manifest; con il graph driver classico e il digest della
+    *config*, un valore diverso. Confrontarlo con il pin passava in locale e
+    falliva sul runner — verde dove non serviva, rossa dove serviva, che e il
+    modo peggiore in cui una verifica puo sbagliare.
+    #
+    Si guardano quindi tutte e tre le risposte: il riferimento con cui il
+    container e stato creato, l'ID dell'immagine, e i digest di manifest per
+    cui quell'immagine e conosciuta. Il pin e un digest di manifest, e deve
+    comparire fra queste.
     """
 
-    return subprocess.run(
-        ["docker", "inspect", "--format", "{{.Image}}", container],
-        check=True,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    ).stdout.strip()
+    def inspect(arguments: list[str]) -> str:
+        return subprocess.run(
+            ["docker", *arguments],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        ).stdout.strip()
+
+    configured = inspect(["inspect", "--format", "{{.Config.Image}}", container])
+    image_id = inspect(["inspect", "--format", "{{.Image}}", container])
+    repo_digests = json.loads(
+        inspect(["image", "inspect", "--format", "{{json .RepoDigests}}", image_id])
+        or "[]"
+    )
+    return (configured, image_id, *repo_digests)
 
 
 def repository_state() -> dict[str, object]:
@@ -297,11 +330,11 @@ def compare(
 def verdict() -> dict[str, object]:
     fleet = servers()
     for server in fleet:
-        observed = running_digest(server.container)
-        if observed != server.digest:
+        identities = image_identities(server.container)
+        if not declares_image(identities, server.digest):
             raise RuntimeError(
-                f"{server.label}: il container esegue {observed}, il documento "
-                f"dichiara {server.digest} — la misura non riguarderebbe "
+                f"{server.label}: il container esegue {', '.join(identities)}, il "
+                f"documento dichiara {server.digest} — la misura non riguarderebbe "
                 "l'immagine dichiarata"
             )
     documents = {server.key: measure(server) for server in fleet}
@@ -327,7 +360,7 @@ def verdict() -> dict[str, object]:
                 "label": server.label,
                 "container": server.container,
                 "declared_digest": server.digest,
-                "running_digest": running_digest(server.container),
+                "declared_digest": server.digest,
                 "product_version": documents[server.key]["server"]["product_version"],
                 "version_comment": documents[server.key]["server"]["version_comment"],
                 "tls": next(

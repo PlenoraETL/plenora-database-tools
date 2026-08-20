@@ -542,10 +542,16 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         """
 
         source = self.RUNNER.read_text(encoding="utf-8")
-        self.assertIn("def running_digest(", source)
+        self.assertIn("def image_identities(", source)
+        self.assertIn("def declares_image(", source)
+        # Tutte e tre le risposte del demone, non solo l'ID: quello e il
+        # digest del manifest con containerd e quello della config con il
+        # graph driver, e confrontarlo con il pin passava in locale e falliva
+        # sul runner.
+        self.assertIn('"{{.Config.Image}}"', source)
         self.assertIn('"{{.Image}}"', source)
+        self.assertIn("RepoDigests", source)
         self.assertIn("declared_digest", source)
-        self.assertIn("running_digest", source)
         self.assertIn("la misura non riguarderebbe", source)
 
     def test_the_runner_records_the_code_it_measured(self) -> None:
