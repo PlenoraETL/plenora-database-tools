@@ -98,6 +98,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::every_method_that_returns_a_future_restamps_the_attribution",
     "profile::tests::mariadb_attributes_only_the_row_causes_it_did_not_infer",
     "profile::tests::mariadb_does_not_promise_index_parts_its_query_cannot_produce",
+    "profile::tests::no_literal_carries_a_collapsed_continuation",
     "profile::tests::no_module_signs_an_error_with_a_hardcoded_product",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",

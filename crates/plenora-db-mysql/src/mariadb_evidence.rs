@@ -87,7 +87,8 @@ const SCRATCH_LOCK: &str = "plenora_driver_evidence_lock";
 /// applicato e la `SLEEP` finiva indisturbata — "nessun errore" dove ci si
 /// aspettava un codice — perche il controllo del tempo non passa di li. Una
 /// scansione incrociata ci passa, e i due motori la interrompono entrambi.
-const INTERRUPTIBLE_QUERY: &str = "SELECT COUNT(*) FROM information_schema.columns a,      information_schema.columns b, information_schema.columns c";
+const INTERRUPTIBLE_QUERY: &str = "SELECT COUNT(*) FROM information_schema.columns a, \
+     information_schema.columns b, information_schema.columns c";
 
 // --------------------------------------------------------------------------
 // Famiglia `raw`: il driver contro il server, senza provider in mezzo.
@@ -185,7 +186,10 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
     // puo divergere sul filo — resterebbe fuori dalla misura.
     let seeded = connection
         .query_drop(format!(
-            "INSERT INTO {SCRATCH} VALUES (1, -7, 18446744073709551615, 1234.5678,              2.5, '2026-08-18', '2026-08-18 06:00:00.000000',              '2026-08-18 06:00:00', '01:02:03.400', 'testo', 0x0102,              '{{\"k\": 1}}', 'alfa', 'x,y')"
+            "INSERT INTO {SCRATCH} VALUES (1, -7, 18446744073709551615, 1234.5678, \
+             2.5, '2026-08-18', '2026-08-18 06:00:00.000000', \
+             '2026-08-18 06:00:00', '01:02:03.400', 'testo', 0x0102, \
+             '{{\"k\": 1}}', 'alfa', 'x,y')"
         ))
         .await;
     match seeded {
@@ -2452,30 +2456,26 @@ async fn profile_timeout_probe(
             return;
         }
     };
-    let mut transaction = match crate::transaction::MysqlTransaction::begin(
-        session,
-        &options,
-        cancellation,
-    )
-    .await
-    {
-        Ok(transaction) => transaction,
-        Err(error) => {
-            recorder.not_measured(
+    let mut transaction =
+        match crate::transaction::MysqlTransaction::begin(session, &options, cancellation).await {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                recorder.not_measured(
                     "provider.profile_timeout",
                     "provider",
                     "profilo",
                     question,
                     &format!(
-                        "timeout non applicato dal profilo {}: {:?}: {} — la transazione                          non e nemmeno cominciata",
+                        "timeout non applicato dal profilo {}: {:?}: {} — la \
+                         transazione non e nemmeno cominciata",
                         profile.product(),
                         error.category,
                         error.message
                     ),
                 );
-            return;
-        }
-    };
+                return;
+            }
+        };
     match transaction
         .query(&Statement::new(INTERRUPTIBLE_QUERY), cancellation)
         .await

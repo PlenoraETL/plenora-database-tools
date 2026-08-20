@@ -1065,7 +1065,9 @@ pub(crate) fn unqualified_version_rejection(
         provider: Some(profile.kind()),
         execution_id: None,
         message: format!(
-            "versione {product} {product_version:?} non misurata: il profilo e              qualificato su {declared}. Non e un difetto del server — e una              versione su cui nessuna prova e stata fatta."
+            "versione {product} {product_version:?} non misurata: il profilo e \
+             qualificato su {declared}. Non e un difetto del server — e \
+             una versione su cui nessuna prova e stata fatta."
         ),
         diagnostics: None,
     })
@@ -2305,6 +2307,68 @@ mod tests {
         ("types.rs", include_str!("types.rs")),
         ("write.rs", include_str!("write.rs")),
     ];
+
+    #[test]
+    fn no_literal_carries_a_collapsed_continuation() {
+        // Una riga spezzata in un literal Rust si scrive con `\` a fine riga:
+        // il compilatore toglie l'a capo **e** l'indentazione, e il messaggio
+        // torna una frase sola. Se quel `\` si perde — succede scrivendo il
+        // codice con uno strumento che lo mangia — la stringa resta valida e
+        // compila, ma porta dentro l'indentazione: quello che il chiamante
+        // legge diventa "la transazione                 non e cominciata".
+        //
+        // Non e un difetto di stile. Un messaggio d'errore e cio che qualcuno
+        // legge alle tre di notte, e una riga sfondata da venti spazi lo
+        // rende illeggibile proprio dove serve. Il compilatore non se ne
+        // accorge, i test sul contenuto nemmeno — cercano sottostringhe corte
+        // — e la review l'ha trovato a occhio: e il genere di cosa che va
+        // presa da una guardia.
+        //
+        // Un `\n` esplicito seguito da indentazione e un'altra cosa: e SQL
+        // scritto su piu righe, dove l'a capo appartiene alla stringa. Quello
+        // resta legittimo, ed e l'unica eccezione.
+        let sources: [(&str, &str); 9] = [
+            ("arrow.rs", include_str!("arrow.rs")),
+            ("catalog.rs", include_str!("catalog.rs")),
+            ("evidence.rs", include_str!("evidence.rs")),
+            ("live_tests.rs", include_str!("live_tests.rs")),
+            ("mariadb_evidence.rs", include_str!("mariadb_evidence.rs")),
+            ("profile.rs", include_str!("profile.rs")),
+            ("session_evidence.rs", include_str!("session_evidence.rs")),
+            ("transaction.rs", include_str!("transaction.rs")),
+            ("types.rs", include_str!("types.rs")),
+        ];
+        let run = " ".repeat(4);
+        for (module, source) in sources {
+            for (at, line) in source.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // Le righe di commento sono prosa: l'allineamento di una
+                // tabella in un commento non finisce in nessun messaggio.
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                let Some(quoted) = trimmed.split_once('"').map(|(_, rest)| rest) else {
+                    continue;
+                };
+                let Some(offset) = quoted.find(run.as_str()) else {
+                    continue;
+                };
+                if quoted[..offset].ends_with(r"\n") {
+                    continue;
+                }
+                assert!(
+                    !quoted[..offset]
+                        .chars()
+                        .next_back()
+                        .is_some_and(
+                            |character| character.is_alphanumeric() || ".,:;)'".contains(character)
+                        ),
+                    "{module}:{}: literal con una continuazione persa — {trimmed}",
+                    at + 1
+                );
+            }
+        }
+    }
 
     #[test]
     fn no_production_module_selects_the_mariadb_profile() {

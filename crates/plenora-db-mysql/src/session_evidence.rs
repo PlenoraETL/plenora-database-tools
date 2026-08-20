@@ -152,7 +152,9 @@ fn expectations_match_the_bootstrap() {
         .collect();
     assert_eq!(
         observed, expected,
-        "SESSION_BOOTSTRAP_SQL fissa assegnazioni diverse dal contratto osservato:          harness, non divergenza. Se ne e stata aggiunta una, va aggiunta a          BOOTSTRAP_CONTRACT, che e anche cio che le sonde rileggono"
+        "SESSION_BOOTSTRAP_SQL fissa assegnazioni diverse dal contratto \
+         osservato: harness, non divergenza. Se ne e stata aggiunta una, va \
+         aggiunta a BOOTSTRAP_CONTRACT, che e anche cio che le sonde rileggono"
     );
 }
 

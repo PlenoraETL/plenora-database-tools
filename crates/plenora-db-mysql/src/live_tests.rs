@@ -4092,7 +4092,8 @@ async fn live_v12_transaction_session_context_reaches_the_server() {
     // il result set e vuoto. Cosi l'assert dipende dai valori, non dal fatto
     // che la query giri.
     let statement = plenora_database_core::transaction::Statement {
-        sql: "SELECT 1 WHERE @`plenora_ctx_app.tenant` = 'acme'               AND @`plenora_ctx_app.request_id` = '42'"
+        sql: "SELECT 1 WHERE @`plenora_ctx_app.tenant` = 'acme' \
+             AND @`plenora_ctx_app.request_id` = '42'"
             .to_owned(),
         params: Vec::new(),
     };
@@ -5696,7 +5697,8 @@ async fn live_v12_write_create_primary_key_on_text_is_refused_before_the_network
 
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT IFNULL(MAX(TABLE_NAME), '-') FROM information_schema.TABLES              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+            "SELECT IFNULL(MAX(TABLE_NAME), '-') FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
         ))
         .await,
         "-",
@@ -6496,7 +6498,10 @@ async fn live_v12_write_create_with_keys_declares_the_primary_key() {
 
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT IFNULL(GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX), '-')              FROM information_schema.STATISTICS              WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'                AND INDEX_NAME = 'PRIMARY'"
+            "SELECT IFNULL(GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX), '-') \
+             FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}' \
+             AND INDEX_NAME = 'PRIMARY'"
         ))
         .await,
         "id",
