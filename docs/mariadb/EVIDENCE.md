@@ -610,9 +610,28 @@ Serviva perche prima non era cosi: due rifiuti identici sui tre server erano
 l'osservazione cambiava, non che la regressione venisse fermata — mentre il
 profilo continuava a pubblicare le quattro bandiere come `true`.
 
-Una guardia separata pretende che **ogni** sonda `provider.profile_*` sia
-classificata in uno dei due inventari: una sonda nuova deve dire cosa
-sostiene, o cosa dimostra restando chiusa.
+Gli inventari sono tre, non due: `OBSERVATION_ONLY_PROBES` raccoglie le sonde
+che **osservano e basta**, e nessuna capability pubblicata poggia su di loro —
+oggi `provider.profile_functional_index`, che racconta come il catalogo
+descrive gli indici mentre il contratto semantico dell'indice arriva al punto
+2. Il terzo elenco esiste per non avere una terza categoria implicita: "non e
+in nessun inventario" e indistinguibile da "qualcuno si e dimenticato di
+classificarla". Una guardia pretende che ogni sonda `provider.profile_*` stia
+in **esattamente** uno dei tre, senza sovrapposizioni.
+
+Per le sonde il cui rifiuto e la prova, `rejected` significa **quel** rifiuto.
+Una sessione che non si apre, una transazione che non comincia, un catalogo
+che non risponde: sono tutti `Err`, e registrarli come rifiuti direbbe che la
+regola sorvegliata ha fatto il suo lavoro quando la sonda non ci e mai
+arrivata. Diventano `not_measured`, e il gate li conta come prova mancante —
+verificato perturbando il checkout del timeout, che finisce sulla porta
+sbagliata, e la causa del rifiuto geometrico, che diventa un oggetto assente:
+sei violazioni, tre per sonda.
+
+E i nomi duplicati vengono rifiutati **prima** che una lista diventi un
+dizionario, in entrambi i punti in cui succede. Due voci con lo stesso nome ne
+producono una sola: su un server sarebbe una divergenza inventata, su tutti e
+tre una sonda che non esiste piu e continua a comparire.
 
 ### Cosa ne segue per le capability
 

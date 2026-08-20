@@ -14,6 +14,7 @@ viva la esercita il ciclo, non questa suite.
 
 from __future__ import annotations
 
+import itertools
 import re
 import sys
 import unittest
@@ -620,6 +621,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         """
 
         from scripts.check_mariadb_driver import (
+            OBSERVATION_ONLY_PROBES,
             REQUIRED_ACCEPTED_PROBES,
             REQUIRED_REJECTED_PROBES,
         )
@@ -628,7 +630,12 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
         ).read_text(encoding="utf-8")
         declared = set(re.findall(r'"(provider\.profile_[a-z_]+)"', source))
-        classified = set(REQUIRED_ACCEPTED_PROBES) | set(REQUIRED_REJECTED_PROBES)
+        inventories = {
+            "accettate": set(REQUIRED_ACCEPTED_PROBES),
+            "rifiutate": set(REQUIRED_REJECTED_PROBES),
+            "osservative": set(OBSERVATION_ONLY_PROBES),
+        }
+        classified = set().union(*inventories.values())
         self.assertEqual(
             declared - classified,
             set(),
@@ -639,6 +646,89 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             set(),
             "il runner pretende sonde che la misura non produce piu",
         )
+        # **Esattamente** uno dei tre. Una sonda in due inventari e una
+        # contraddizione — dovrebbe passare e insieme fallire — e il fatto che
+        # oggi la somma dei tre torni non lo impedisce domani.
+        for first, second in itertools.combinations(sorted(inventories), 2):
+            self.assertEqual(
+                inventories[first] & inventories[second],
+                set(),
+                f"sonde classificate sia fra le {first} sia fra le {second}",
+            )
+        self.assertEqual(
+            sum(len(names) for names in inventories.values()),
+            len(classified),
+            "un inventario ripete una sonda che un altro gia dichiara",
+        )
+
+    def test_a_duplicated_probe_is_refused_before_it_disappears(self) -> None:
+        """Due voci con lo stesso nome ne producono una sola, in silenzio.
+
+        E il modo in cui una sonda smette di esistere senza che niente
+        fallisca: il dizionario tiene l'ultima, e la matrice continua a
+        mostrare quel nome come se fosse stato misurato una volta.
+        """
+
+        from scripts.check_mariadb_driver import (
+            capability_violations,
+            compare,
+            duplicate_probes,
+            servers,
+        )
+
+        self.assertEqual(duplicate_probes(["a", "b", "a", "c", "a"]), ["a"])
+        self.assertEqual(duplicate_probes(["a", "b"]), [])
+
+        fleet = servers()
+
+        def document(names: list[str]) -> dict[str, object]:
+            return {
+                "observations": [
+                    {
+                        "probe": name,
+                        "outcome": "accepted",
+                        "detail": "d",
+                        "server_code": None,
+                        "family": "provider",
+                        "surface": "profilo",
+                        "question": "q",
+                    }
+                    for name in names
+                ]
+            }
+
+        healthy = ["provider.profile_read_schema", "provider.profile_read_values"]
+        documents = {server.key: document(healthy) for server in fleet}
+        self.assertEqual(len(compare(documents, fleet)), 2)
+
+        # Duplicato su un solo server: senza il controllo diventerebbe una
+        # divergenza inventata, perche il confronto guarderebbe la seconda voce
+        # contro la prima degli altri.
+        one_server = dict(documents)
+        one_server[fleet[1].key] = document(healthy + [healthy[0]])
+        with self.assertRaises(RuntimeError) as raised:
+            compare(one_server, fleet)
+        self.assertIn(fleet[1].key, str(raised.exception))
+        self.assertIn(healthy[0], str(raised.exception))
+
+        # Duplicato identico su tutti e tre: il confronto tornerebbe `same`, e
+        # la sonda sparita non lo direbbe a nessuno.
+        everywhere = {server.key: document(healthy + [healthy[0]]) for server in fleet}
+        with self.assertRaises(RuntimeError):
+            compare(everywhere, fleet)
+
+        # E lo stesso vale nel giudizio sulle capability, che costruisce un
+        # dizionario dalla stessa lista.
+        with self.assertRaises(RuntimeError) as raised:
+            capability_violations(
+                {
+                    "results": [
+                        {"probe": "provider.profile_read_schema", "observations": {}},
+                        {"probe": "provider.profile_read_schema", "observations": {}},
+                    ]
+                }
+            )
+        self.assertIn("duplicate", str(raised.exception))
 
     def test_the_runner_verifies_the_image_it_measured(self) -> None:
         """Digest dichiarato e digest in esecuzione devono coincidere.

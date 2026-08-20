@@ -42,6 +42,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,7 +100,21 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_read_ordering_asc": "reads.ordering, verso ascendente",
     "provider.profile_read_ordering_desc": "reads.ordering, verso discendente",
     "provider.profile_read_streaming": "reads.streaming",
-    "provider.profile_functional_index": "il catalogo descrive gli indici dell'oggetto",
+}
+
+# Le sonde che **osservano** e basta: nessuna capability pubblicata poggia su
+# di loro, quindi il loro esito e una misura come le altre della matrice.
+#
+# Il terzo elenco esiste per non avere una terza categoria implicita. Una
+# sonda che non sostiene niente e legittima — serve a sapere come si comporta
+# il motore — ma dev'essere **dichiarata** tale, altrimenti "non e in nessun
+# inventario" e indistinguibile da "qualcuno si e dimenticato di
+# classificarla".
+OBSERVATION_ONLY_PROBES: dict[str, str] = {
+    # Come MariaDB pubblichi un indice su colonna generata non e ancora
+    # misurato, e il contratto semantico dell'indice arriva al punto 2 della
+    # fase 3: finche non c'e, questa sonda racconta e non sostiene.
+    "provider.profile_functional_index": "come il catalogo descrive gli indici, senza contratto",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -125,6 +140,22 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 }
 
 
+def duplicate_probes(names: Iterable[str]) -> list[str]:
+    """I nomi che compaiono piu di una volta, in ordine.
+
+    Pura, e usata da entrambi i punti in cui un elenco di sonde diventa un
+    dizionario: e li che un duplicato smette di essere visibile.
+    """
+
+    seen: set[str] = set()
+    duplicated: list[str] = []
+    for name in names:
+        if name in seen and name not in duplicated:
+            duplicated.append(name)
+        seen.add(name)
+    return sorted(duplicated)
+
+
 def capability_violations(document: dict[str, object]) -> list[str]:
     """Le prove che una capability pubblicata non ha piu, o non ha mai avuto.
 
@@ -132,6 +163,12 @@ def capability_violations(document: dict[str, object]) -> list[str]:
     senza accendere un server.
     """
 
+    duplicated = duplicate_probes(entry["probe"] for entry in document["results"])
+    if duplicated:
+        raise RuntimeError(
+            f"sonde duplicate nel verdetto — {', '.join(duplicated)}: il giudizio "
+            "sulle capability guarderebbe una voce sola"
+        )
     entries = {entry["probe"]: entry for entry in document["results"]}
     violations: list[str] = []
     for required, expected in (
@@ -355,6 +392,16 @@ def compare(
     """Allinea le sonde dei tre server e nomina le divergenze."""
 
     reference = fleet[0].key
+    for key, document in sorted(documents.items()):
+        # Prima di costruire il dizionario, non dopo: due voci con lo stesso
+        # nome ne producono una sola, e la seconda sparisce senza dire niente.
+        # Su un server solo diventerebbe una divergenza inventata; su tutti e
+        # tre, una sonda che non esiste piu ma continua a comparire.
+        duplicated = duplicate_probes(entry["probe"] for entry in document["observations"])
+        if duplicated:
+            raise RuntimeError(
+                f"{key}: sonde duplicate nella misura — {', '.join(duplicated)}"
+            )
     by_server = {
         key: {entry["probe"]: entry for entry in document["observations"]}
         for key, document in documents.items()

@@ -2199,7 +2199,22 @@ async fn profile_probes(
 
     // La geometria: la regola dell'SRID dichiarato e la stessa sui due
     // profili, ma su MariaDB `srs_id` arriva sempre nullo, quindi il rifiuto
-    // e la sola risposta possibile. Qui si osserva quale rifiuto sia.
+    // e la sola risposta possibile.
+    //
+    // E il rifiuto vale come prova **solo** se viene da quella regola. Una
+    // sessione che non si apre, un catalogo che non risponde, una colonna che
+    // manca: sono tutti `Err`, e registrarli come `rejected` direbbe che
+    // `spatial.read_wkb` resta chiusa per la ragione sorvegliata quando invece
+    // la sonda non ci e mai arrivata. Diventano `not_measured`, che e cio che
+    // sono, e il gate li conta come prova mancante.
+    let geometry_question =
+        "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto";
+    let unreached = |what: &str, error: &plenora_database_core::DatabaseError| {
+        format!(
+            "{what}: {:?}: {} — la regola sull'SRID non e stata raggiunta",
+            error.category, error.message
+        )
+    };
     match pool.checkout(cancellation).await {
         Ok(mut session) => {
             match crate::catalog::describe_object_with_profile(
@@ -2229,36 +2244,75 @@ async fn profile_probes(
                             "provider.profile_describe_geometry",
                             "provider",
                             "profilo",
-                            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
+                            geometry_question,
                             format!("colonne={}", specs.len()),
                         ),
-                        Err(error) => recorder.rejected(
-                            "provider.profile_describe_geometry",
-                            "provider",
-                            "profilo",
-                            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
-                            condense(&format!("{:?}: {}", error.category, error.message)),
-                            crate::evidence::server_code_in_message(&error.message),
-                        ),
+                        Err(error) => {
+                            // Il frammento non nomina il prodotto perche il
+                            // messaggio lo porta gia, e il controllo su quello
+                            // e separato: cosi un rifiuto giusto attribuito al
+                            // prodotto sbagliato non passa per buono.
+                            let contract = RefusalContract {
+                                category: ErrorCategory::Crs,
+                                phase: ErrorPhase::Prepare,
+                                remote_effect: RemoteEffect::None,
+                                retry: RetryDisposition::Never,
+                                message_contains: "senza SRID dichiarato",
+                            };
+                            match refusal_mismatch(&contract, &error) {
+                                Some(mismatch) => recorder.not_measured(
+                                    "provider.profile_describe_geometry",
+                                    "provider",
+                                    "profilo",
+                                    geometry_question,
+                                    &format!("rifiuto per un'altra ragione — {mismatch}"),
+                                ),
+                                None if !error.message.contains(profile.product()) => recorder
+                                    .not_measured(
+                                        "provider.profile_describe_geometry",
+                                        "provider",
+                                        "profilo",
+                                        geometry_question,
+                                        &format!(
+                                            "il rifiuto non nomina {}: {}",
+                                            profile.product(),
+                                            error.message
+                                        ),
+                                    ),
+                                None => recorder.rejected(
+                                    "provider.profile_describe_geometry",
+                                    "provider",
+                                    "profilo",
+                                    geometry_question,
+                                    condense(&format!(
+                                        "{:?}/{:?}/{:?}/{:?}: {}",
+                                        error.category,
+                                        error.phase,
+                                        error.remote_effect,
+                                        error.retry,
+                                        error.message
+                                    )),
+                                    crate::evidence::server_code_in_message(&error.message),
+                                ),
+                            }
+                        }
                     }
                 }
-                Err(error) => recorder.rejected(
+                Err(error) => recorder.not_measured(
                     "provider.profile_describe_geometry",
                     "provider",
                     "profilo",
-                    "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
-                    condense(&format!("{:?}: {}", error.category, error.message)),
-                    crate::evidence::server_code_in_message(&error.message),
+                    geometry_question,
+                    &unreached("catalogo", &error),
                 ),
             }
         }
-        Err(error) => recorder.rejected(
+        Err(error) => recorder.not_measured(
             "provider.profile_describe_geometry",
             "provider",
             "profilo",
-            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
-            condense(&format!("sessione non aperta: {:?}", error.category)),
-            None,
+            geometry_question,
+            &unreached("sessione non aperta", &error),
         ),
     }
 
@@ -2378,40 +2432,50 @@ async fn profile_timeout_probe(
         ..TransactionOptions::default()
     };
     let question = "cosa legge il chiamante quando scatta il timeout applicato dal profilo";
+    // Sessione e transazione sono il **preambolo** della sonda, non cio che
+    // misura. Un checkout che non riesce o un `begin` che fallisce sono `Err`
+    // come lo e il timeout, e registrarli come `rejected` direbbe che il
+    // limite ha fatto il suo lavoro quando la query non e mai partita.
     let session = match pool.checkout(cancellation).await {
         Ok(session) => session,
         Err(error) => {
-            recorder.rejected(
+            recorder.not_measured(
                 "provider.profile_timeout",
                 "provider",
                 "profilo",
                 question,
-                condense(&format!("sessione non aperta: {:?}", error.category)),
-                None,
+                &format!(
+                    "sessione non aperta: {:?}: {} — il timeout non e stato applicato",
+                    error.category, error.message
+                ),
             );
             return;
         }
     };
-    let mut transaction =
-        match crate::transaction::MysqlTransaction::begin(session, &options, cancellation).await {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                recorder.rejected(
+    let mut transaction = match crate::transaction::MysqlTransaction::begin(
+        session,
+        &options,
+        cancellation,
+    )
+    .await
+    {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            recorder.not_measured(
                     "provider.profile_timeout",
                     "provider",
                     "profilo",
                     question,
-                    condense(&format!(
-                        "timeout non applicato dal profilo {}: {:?}: {}",
+                    &format!(
+                        "timeout non applicato dal profilo {}: {:?}: {} — la transazione                          non e nemmeno cominciata",
                         profile.product(),
                         error.category,
                         error.message
-                    )),
-                    crate::evidence::server_code_in_message(&error.message),
+                    ),
                 );
-                return;
-            }
-        };
+            return;
+        }
+    };
     match transaction
         .query(&Statement::new(INTERRUPTIBLE_QUERY), cancellation)
         .await
