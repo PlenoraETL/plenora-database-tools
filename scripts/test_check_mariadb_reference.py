@@ -611,6 +611,62 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         self.assertEqual(len(violations), 1, violations)
         self.assertIn("sonda assente", violations[0])
 
+    def expected_probes(self) -> tuple[str, ...]:
+        from scripts.check_mariadb_driver import EXPECTED_PROBES
+
+        return EXPECTED_PROBES
+
+    def document(self, names: list[str]) -> dict[str, object]:
+        return {
+            "observations": [
+                {
+                    "probe": name,
+                    "outcome": "accepted",
+                    "detail": "d",
+                    "server_code": None,
+                    "family": "provider",
+                    "surface": "profilo",
+                    "question": "q",
+                }
+                for name in names
+            ]
+        }
+
+    def test_the_inventory_is_checked_on_every_server_not_only_the_baseline(self) -> None:
+        """Dopo l'allineamento l'informazione non c'e piu.
+
+        L'elenco delle sonde viene dal solo server di riferimento, e gli altri
+        passano da un dizionario: una sonda in piu — o spostata — su MariaDB
+        sparirebbe dall'allineamento, e il documento finale conserverebbe le
+        sonde di MySQL intatte. Il controllo va fatto su ogni documento grezzo,
+        prima che l'allineamento le perda.
+        """
+
+        from scripts.check_mariadb_driver import OUTCOME_ONLY, compare, servers
+
+        fleet = servers()
+        healthy = list(self.expected_probes())
+
+        # Una sonda in piu su un server che **non** e il riferimento.
+        extra = {server.key: self.document(healthy) for server in fleet}
+        extra[fleet[2].key] = self.document(healthy + ["raw.inventata"])
+        with self.assertRaises(RuntimeError) as raised:
+            compare(extra, fleet, OUTCOME_ONLY, self.expected_probes())
+        self.assertIn(fleet[2].key, str(raised.exception))
+        self.assertIn("raw.inventata", str(raised.exception))
+
+        # Lo stesso insieme, in un altro ordine, sempre fuori dal riferimento:
+        # senza il confronto ordinato, l'allineamento per nome non se ne
+        # accorgerebbe mai.
+        reordered = list(healthy)
+        reordered[0], reordered[1] = reordered[1], reordered[0]
+        shuffled = {server.key: self.document(healthy) for server in fleet}
+        shuffled[fleet[1].key] = self.document(reordered)
+        with self.assertRaises(RuntimeError) as raised:
+            compare(shuffled, fleet, OUTCOME_ONLY, self.expected_probes())
+        self.assertIn(fleet[1].key, str(raised.exception))
+        self.assertIn("altro ordine", str(raised.exception))
+
     def test_every_read_probe_is_classified_by_the_runner(self) -> None:
         """Una sonda di lettura nuova deve dire cosa sostiene.
 
@@ -680,32 +736,15 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         self.assertEqual(duplicate_probes(["a", "b"]), [])
 
         fleet = servers()
-
-        def document(names: list[str]) -> dict[str, object]:
-            return {
-                "observations": [
-                    {
-                        "probe": name,
-                        "outcome": "accepted",
-                        "detail": "d",
-                        "server_code": None,
-                        "family": "provider",
-                        "surface": "profilo",
-                        "question": "q",
-                    }
-                    for name in names
-                ]
-            }
-
-        healthy = ["provider.profile_read_schema", "provider.profile_read_values"]
-        documents = {server.key: document(healthy) for server in fleet}
-        self.assertEqual(len(compare(documents, fleet)), 2)
+        healthy = list(self.expected_probes())
+        documents = {server.key: self.document(healthy) for server in fleet}
+        self.assertEqual(len(compare(documents, fleet)), len(healthy))
 
         # Duplicato su un solo server: senza il controllo diventerebbe una
         # divergenza inventata, perche il confronto guarderebbe la seconda voce
         # contro la prima degli altri.
         one_server = dict(documents)
-        one_server[fleet[1].key] = document(healthy + [healthy[0]])
+        one_server[fleet[1].key] = self.document(healthy + [healthy[0]])
         with self.assertRaises(RuntimeError) as raised:
             compare(one_server, fleet)
         self.assertIn(fleet[1].key, str(raised.exception))
@@ -713,7 +752,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
         # Duplicato identico su tutti e tre: il confronto tornerebbe `same`, e
         # la sonda sparita non lo direbbe a nessuno.
-        everywhere = {server.key: document(healthy + [healthy[0]]) for server in fleet}
+        everywhere = {server.key: self.document(healthy + [healthy[0]]) for server in fleet}
         with self.assertRaises(RuntimeError):
             compare(everywhere, fleet)
 
@@ -945,6 +984,52 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             self.assertEqual(touched, [], "la campagna ha toccato Docker con l'albero sporco")
         finally:
             campaign.repository_state = original
+
+    def test_a_repository_that_moves_still_cleans_up(self) -> None:
+        """Il postflight sta dentro il percorso protetto, non dopo.
+
+        Fuori, un repository cambiato durante la corsa faceva fallire la
+        campagna **saltando** diagnostica e pulizia: i tre server restavano
+        accesi, ed e la condizione in cui la corsa successiva misura un
+        accumulo invece di un riferimento. Il fallimento va bene; lasciare i
+        server su no.
+        """
+
+        campaign = self.campaign()
+        lifecycle = self.lifecycle()
+        snapshots = iter(["A", "B"])
+        calls = []
+
+        original = {name: getattr(campaign, name) for name in ("preflight", "verdict")}
+        shared = {name: getattr(lifecycle, name) for name in ("compose", "run")}
+        try:
+            campaign.preflight = lambda: next(snapshots)
+            campaign.verdict = lambda: {"results": self.full_results()}
+            lifecycle.compose = lambda file, *arguments, **keywords: calls.append(
+                (file, arguments[0])
+            )
+            lifecycle.run = lambda *arguments, **keywords: ""
+            with self.assertRaises(RuntimeError) as raised:
+                campaign.main([])
+        finally:
+            for name, value in original.items():
+                setattr(campaign, name, value)
+            for name, value in shared.items():
+                setattr(lifecycle, name, value)
+
+        self.assertIn("e cambiato durante la misura", str(raised.exception))
+        self.assertIn("A -> B", str(raised.exception))
+
+        # E la pulizia c'e stata: dopo l'ultima accensione arriva uno
+        # spegnimento, che e la cosa che prima non succedeva.
+        verbs = [verb for _, verb in calls]
+        self.assertIn("up", verbs)
+        self.assertIn("down", verbs)
+        self.assertGreater(
+            len(verbs) - 1 - verbs[::-1].index("down"),
+            len(verbs) - 1 - verbs[::-1].index("up"),
+            f"nessuno spegnimento dopo l'ultima accensione: {calls}",
+        )
 
     def test_a_capability_without_its_proof_fails_the_campaign(self) -> None:
         """Il verdetto si stampa comunque, ma l'uscita dice cosa manca.

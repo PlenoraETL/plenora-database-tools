@@ -499,8 +499,17 @@ def compare(
     documents: dict[str, dict[str, object]],
     fleet: tuple[Server, ...],
     outcome_only: frozenset[str] = OUTCOME_ONLY,
+    expected: tuple[str, ...] | None = None,
 ) -> list[dict[str, object]]:
-    """Allinea le sonde dei tre server e nomina le divergenze."""
+    """Allinea le sonde dei tre server e nomina le divergenze.
+
+    `expected` e l'inventario che ogni documento **grezzo** deve dichiarare,
+    esatto e ordinato. E un parametro e non una costante perche questa
+    funzione la usano due misure con due inventari: la matrice di sessione ne
+    ha tredici, e passargli quello di MariaDB le faceva rifiutare ogni
+    documento. Chi non lo passa ha un controllo suo — e la matrice di sessione
+    ce l'ha, in `validate`.
+    """
 
     reference = fleet[0].key
     for key, document in sorted(documents.items()):
@@ -512,6 +521,26 @@ def compare(
         if duplicated:
             raise RuntimeError(
                 f"{key}: sonde duplicate nella misura — {', '.join(duplicated)}"
+            )
+        # L'inventario si verifica **su ogni documento grezzo**, non sul
+        # risultato del confronto. Dopo, l'informazione non c'e piu: l'elenco
+        # delle sonde viene dal solo server di riferimento e gli altri passano
+        # da un dizionario, quindi una sonda in piu — o spostata — su MariaDB
+        # sparirebbe dall'allineamento e il documento finale conserverebbe le
+        # sonde di MySQL, intatte.
+        if expected is None:
+            continue
+        observed = tuple(entry["probe"] for entry in document["observations"])
+        if observed != expected:
+            missing = [probe for probe in expected if probe not in observed]
+            unexpected = [probe for probe in observed if probe not in expected]
+            difference = (
+                f"mancano {missing}" if missing else ""
+            ) + (
+                f"{'; ' if missing else ''}in piu {unexpected}" if unexpected else ""
+            ) or "stesso insieme, altro ordine"
+            raise RuntimeError(
+                f"{key}: l'inventario delle sonde non e quello dichiarato — {difference}"
             )
     by_server = {
         key: {entry["probe"]: entry for entry in document["observations"]}
@@ -577,7 +606,7 @@ def verdict() -> dict[str, object]:
                 "l'immagine dichiarata"
             )
     documents = {server.key: measure(server) for server in fleet}
-    results = compare(documents, fleet)
+    results = compare(documents, fleet, OUTCOME_ONLY, EXPECTED_PROBES)
     families = sorted({entry["family"] for entry in results})
     differing = [entry for entry in results if entry["verdict"] == "differs"]
     not_measured = [

@@ -134,6 +134,34 @@ def diagnostics(destination: Path, started: Iterable[str]) -> None:
         )
 
 
+def confirm(ended_at: object, started_at: object) -> None:
+    """Il repository non si e mosso durante la misura.
+
+    # Cosa garantisce, e cosa no
+
+    Due istantanee: una prima di accendere, una dopo l'ultima sonda. Vedono un
+    `HEAD` diverso alla fine e una modifica **rimasta** nell'albero.
+
+    Non vedono cio che e transitorio: un file modificato e poi rimesso identico,
+    o un `HEAD` che va da A a B e torna ad A, danno due istantanee uguali. Su un
+    runner pulito la distinzione non esiste — nessuno tocca l'albero mentre la
+    campagna gira — e in locale la garanzia e quella scritta qui, non di piu.
+    Chiuderla del tutto vorrebbe dire misurare da un checkout immutabile, cioe
+    cambiare da dove la campagna legge il codice: e la mossa giusta, ed e
+    grande abbastanza da meritare la propria.
+
+    # Raises
+
+    `RuntimeError` se le due istantanee differiscono.
+    """
+
+    if ended_at != started_at:
+        raise RuntimeError(
+            f"il repository e cambiato durante la misura: {started_at} -> {ended_at} "
+            "— le sonde non parlano tutte dello stesso codice"
+        )
+
+
 def campaign(
     *,
     compose_files: Sequence[str],
@@ -150,11 +178,11 @@ def campaign(
 
     # Raises
 
-    Qualunque cosa sollevino `preflight` o `measure`, dopo aver raccolto la
-    diagnostica e tentato la pulizia. `RuntimeError` se il preflight ripetuto
-    alla fine non da lo stesso esito di quello iniziale — il repository e
-    cambiato mentre si misurava. E `RuntimeError` se la misura riesce ma la
-    pulizia no: li il `down` fallito **e** l'errore.
+    Qualunque cosa sollevino `preflight`, `measure` o il postflight, dopo aver
+    raccolto la diagnostica e tentato la pulizia. E `RuntimeError` se la misura
+    riesce ma la pulizia no: li il `down` fallito **e** l'errore.
+
+    Cosa il postflight garantisce, e cosa no, sta in [`confirm`].
     """
 
     started_at = preflight()
@@ -165,6 +193,12 @@ def campaign(
         # primo e gia acceso e va spento.
         start_fixtures(compose_files, started)
         measured = measure()
+        # Il postflight sta **dentro** il tentativo. Fuori, un repository
+        # cambiato durante la corsa faceva fallire la campagna saltando la
+        # diagnostica e la pulizia: i tre server restavano accesi, ed e
+        # esattamente la condizione in cui la corsa successiva misura un
+        # accumulo invece di un riferimento.
+        confirm(preflight(), started_at)
     except BaseException:
         if diagnostics_directory is not None:
             diagnostics(diagnostics_directory, started)
@@ -172,18 +206,6 @@ def campaign(
             for failure in stop_fixtures(started):
                 print(f"pulizia incompleta: {failure}", file=sys.stderr)
         raise
-
-    # Il preflight si ripete, e il suo esito si confronta con quello iniziale.
-    # Senza, il documento attribuiva tutte le misure all'ultimo `HEAD` letto —
-    # che e quello di **dopo** la corsa: un commit fatto mentre i server
-    # rispondevano, o un file toccato a meta, sarebbero rimasti invisibili e la
-    # misura avrebbe dichiarato un codice che non e quello che l'ha prodotta.
-    ended_at = preflight()
-    if ended_at != started_at:
-        raise RuntimeError(
-            f"il repository e cambiato durante la misura: {started_at} -> {ended_at} "
-            "— le sonde non parlano tutte dello stesso codice"
-        )
 
     if not keep_fixtures:
         failures = stop_fixtures(started)

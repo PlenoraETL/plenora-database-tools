@@ -28,6 +28,15 @@ name: mariadb-evidence
 # `scripts/fixture_campaign.py`, condiviso con la campagna di sessione e
 # eseguibile identico in locale. Uno YAML che accende container e una decisione
 # senza test.
+#
+# Il documento dichiara il commit misurato, e la campagna verifica che il
+# repository non si sia mosso: due istantanee, una prima di accendere e una
+# dopo l'ultima sonda. Vedono un `HEAD` diverso alla fine e una modifica
+# rimasta nell'albero; non vedono cio che e transitorio — un file modificato e
+# rimesso identico, o un `HEAD` che va da A a B e torna ad A. Qui la
+# distinzione non esiste, perche il checkout e fresco e nessuno tocca l'albero
+# mentre la corsa gira; in locale la garanzia e quella, e chiuderla del tutto
+# vorrebbe dire misurare da un checkout immutabile.
 
 on:
   schedule:
