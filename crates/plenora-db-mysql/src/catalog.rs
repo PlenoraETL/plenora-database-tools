@@ -237,16 +237,18 @@ pub(crate) async fn probe_server_with_profile(
         {
             return Err(rejection);
         }
-        // Riconosciuto il prodotto, resta la seconda domanda: quella versione
-        // e stata misurata? Il profilo che non dichiara un elenco non rifiuta
-        // nulla, quindi per MySQL qui non cambia niente; per un profilo che lo
-        // dichiara, il rifiuto scatta prima di qualunque decisione presa su
-        // una misura che non lo riguarda.
-        if let Some(rejection) =
-            crate::profile::unqualified_version_rejection(profile, &product_version)
-        {
-            return Err(rejection);
-        }
+    }
+
+    // La seconda domanda sta **fuori** dal bypass, e la differenza non e
+    // formale. Il bypass esiste per attraversare il rifiuto del prodotto e
+    // misurare cosa c'e dietro; la qualifica della versione non e quel
+    // rifiuto, e tenerla dentro voleva dire che la misura — che il bypass lo
+    // accende sempre — era l'unico percorso a non attraversarla mai. Cioe
+    // proprio il percorso che deve dimostrarla.
+    if let Some(rejection) =
+        crate::profile::unqualified_version_rejection(profile, &product_version)
+    {
+        return Err(rejection);
     }
 
     Ok(MysqlProbe {

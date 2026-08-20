@@ -1447,6 +1447,59 @@ async fn profile_probes(
     let pool = crate::MysqlPool::new_with_profile(&config(), 2, profile)
         .expect("pool della misura: harness, non divergenza");
 
+    // La probe, attraversata con il profilo del prodotto che risponde. E
+    // l'unico punto in cui il riconoscimento e la qualifica della versione
+    // vengono davvero eseguiti: tutte le altre sonde partono da una sessione
+    // gia aperta, e quelle due decisioni le avrebbero saltate.
+    //
+    // Il bypass e acceso — la misura lo accende sempre — e salta il **rifiuto
+    // del prodotto**, non la qualifica: se la versione di questo server non
+    // fosse fra quelle dichiarate dal profilo, la sonda lo direbbe qui.
+    match pool.checkout(cancellation).await {
+        Ok(mut session) => {
+            match crate::catalog::probe_server_with_profile(&mut session, profile, cancellation)
+                .await
+            {
+                Ok(probe) => recorder.accepted(
+                    "provider.profile_probe",
+                    "provider",
+                    "profilo",
+                    "supera la probe con il profilo del prodotto, qualifica della versione inclusa",
+                    format!(
+                        "versione={} qualificata={}",
+                        probe.product_version,
+                        profile.qualified_versions().map_or_else(
+                            || "nessun elenco dichiarato".to_owned(),
+                            |versions| {
+                                versions
+                                    .iter()
+                                    .map(|(major, minor)| format!("{major}.{minor}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            }
+                        ),
+                    ),
+                ),
+                Err(error) => recorder.rejected(
+                    "provider.profile_probe",
+                    "provider",
+                    "profilo",
+                    "supera la probe con il profilo del prodotto, qualifica della versione inclusa",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_probe",
+            "provider",
+            "profilo",
+            "supera la probe con il profilo del prodotto, qualifica della versione inclusa",
+            condense(&format!("sessione non aperta: {:?}", error.category)),
+            None,
+        ),
+    }
+
     // Il catalogo, con le query che il profilo decide. Su MariaDB e la prima
     // volta che `NULL AS srs_id` e `NULL AS expression` arrivano al server.
     match pool.checkout(cancellation).await {

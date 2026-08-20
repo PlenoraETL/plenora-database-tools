@@ -394,6 +394,7 @@ sonde:
 | raw | errori | `raw.error_deadlock` | 1213 — effetto=vittima annullata | 1213 — effetto=vittima annullata | 1213 — effetto=vittima annullata |
 | raw | errori | `raw.error_statement_timeout` | **3024** | **1969** | **1969** |
 | raw | errori | `raw.functional_index_ddl` | accettato | **rifiutato** — ERROR 1064: sintassi | **rifiutato** — ERROR 1064: sintassi |
+| provider | profilo | `provider.profile_probe` | versione=9.7.2, qualificata=nessun elenco dichiarato | versione=12.3.2-MariaDB-ubu2404, qualificata=11.8 12.3 | versione=11.8.8-MariaDB-ubu2404, qualificata=11.8 12.3 |
 | provider | profilo | `provider.profile_describe_object` | colonne=14 indici=1 | colonne=14 indici=1 | colonne=14 indici=1 |
 | provider | profilo | `provider.profile_describe_geometry` | **no** Crs: colonna spatial MySQL senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato |
 | provider | profilo | `provider.profile_functional_index` | `plenora_idx_expression`:colonne=0 confrontabile=false, `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true |
@@ -448,6 +449,15 @@ leggere non e un indice su nessuna colonna — ma va letto per quello che e, una
 difesa contro un caso che questi due server non producono per quella via.
 Come MariaDB indicizzi una colonna generata, e come `statistics` la descriva,
 non e misurato.
+
+**La qualifica della versione e attraversata, non solo dichiarata.** La probe
+con il profilo del prodotto e l'unico punto in cui riconoscimento e qualifica
+vengono eseguiti: le altre sonde partono da una sessione gia aperta e li
+salterebbero. Il bypass di test — che questa misura accende sempre — supera il
+rifiuto del prodotto, e **solo** quello: la qualifica sta fuori dal blocco,
+altrimenti l'unica corsa che deve dimostrarla sarebbe anche l'unica a non
+attraversarla. I due riferimenti passano la propria lista (11.8, 12.3); MySQL
+non dichiara elenco, e la sonda lo registra invece di lasciarlo intendere.
 
 **Il profilo, attraversato davvero, funziona — dopo una correzione.** Le query
 di catalogo che dichiarano `NULL AS srs_id` e `NULL AS expression` girano sui

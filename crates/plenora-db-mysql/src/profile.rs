@@ -166,7 +166,9 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// I metadati nativi di una colonna, letti dal wire.
     ///
     /// Il prepare descrive il tipo del protocollo, non la dichiarazione SQL:
-    /// e da qui che esce `MYSQL_NATIVE_TYPE` sul path query, e qui che ADR
+    /// e da qui che esce il `native_type` sul path query — sotto la chiave
+    /// che il profilo dichiara in [`ProductProfile::metadata_keys`], non
+    /// sotto una fissa — e qui che ADR
     /// 0014 ha misurato la divergenza piu concreta — dalla stessa DDL
     /// `document JSON` `MySQL` manda `MYSQL_TYPE_JSON` e `MariaDB`
     /// `MYSQL_TYPE_BLOB`, quindi lo schema Arrow pubblicato porta
@@ -794,7 +796,8 @@ impl ProductProfile for MariadbProfile {
         // dichiarazioni sono indistinguibili, quindi la normalizzazione
         // dovrebbe inventare la DDL da metadata che non la portano. Il
         // contratto pubblicato resta percio quello del filo, ed e cio che
-        // `MYSQL_NATIVE_TYPE` dichiara.
+        // `MARIADB_NATIVE_TYPE` dichiara — la chiave di questo prodotto, non
+        // quella dell'altro.
         wire_column_spec_for(self.product(), column)
     }
 
@@ -1623,8 +1626,8 @@ mod tests {
     fn the_query_module_no_longer_maps_wire_types() {
         // La mappatura vive nel profilo. Se `query.rs` tornasse a nominare i
         // tipi del protocollo fuori dai propri test, esisterebbero due
-        // produzioni di `MYSQL_NATIVE_TYPE` e un secondo profilo ne
-        // cambierebbe una sola.
+        // produzioni del `native_type` e un secondo profilo ne cambierebbe
+        // una sola.
         let source = include_str!("query.rs");
         let production = source
             .split_once("#[cfg(test)]")
@@ -2725,6 +2728,35 @@ mod tests {
         assert!(
             production.contains("unqualified_version_rejection"),
             "la probe non verifica la qualifica della versione"
+        );
+
+        // E la verifica sta **fuori** dal bypass di test. Dentro, l'unico
+        // percorso che accende il bypass — la misura di evidenza — sarebbe
+        // anche l'unico a non attraversarla mai: il gate esisterebbe, e la
+        // corsa che deve dimostrarlo lo salterebbe.
+        let opening = "if !mariadb_rejection_bypassed() {";
+        let at = production
+            .find(opening)
+            .expect("il bypass vive nella probe");
+        let mut depth = 0_i32;
+        let mut end = at;
+        for (offset, character) in production[at..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(depth == 0 && end > at, "blocco del bypass non delimitato");
+        assert!(
+            !production[at..=end].contains("unqualified_version_rejection"),
+            "la qualifica della versione e dentro il bypass: la misura non la attraversa"
         );
     }
 
