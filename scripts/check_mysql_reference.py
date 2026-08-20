@@ -60,6 +60,8 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 EXPECTED_UNIT_TESTS = {
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
+    "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
+    "catalog::tests::a_part_without_a_column_is_refused_where_the_product_cannot_describe_it",
     "catalog::tests::schema_token_is_stable_and_sensitive",
     "config::tests::debug_redacts_credentials",
     "config::tests::driver_opts_require_tls_even_for_explicit_trust_opt_out",
@@ -185,6 +187,7 @@ EXPECTED_UNIT_TESTS = {
     "transaction::tests::a_key_of_fifty_two_characters_is_accepted",
     "transaction::tests::an_empty_context_is_valid",
     "transaction::tests::the_longest_writable_key_is_fifty_two_characters",
+    "types::tests::a_geometry_without_a_declared_srid_is_refused_by_both_profiles",
     "types::tests::concrete_spatial_type_produces_an_exact_valid_contract",
     "types::tests::limit_without_order_is_rejected_fail_closed",
     "types::tests::mapping_preserves_signedness_and_rejects_wide_decimal",

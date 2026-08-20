@@ -600,6 +600,7 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::ProductProfile;
     use plenora_database_core::field_contract::validate_schema_contract;
     use plenora_database_core::plan::{ObjectRef, OrderBy};
 
@@ -639,6 +640,52 @@ mod tests {
                 .category,
             ErrorCategory::Unsupported
         );
+    }
+
+    #[test]
+    fn a_geometry_without_a_declared_srid_is_refused_by_both_profiles() {
+        // La regola e la stessa per i due prodotti; a divergere e cio che il
+        // catalogo puo dire. Su MySQL `SRS_ID` esiste, quindi una geometry con
+        // SRID dichiarato si descrive; su MariaDB la colonna non esiste e la
+        // query la dichiara nulla, percio **ogni** geometry finisce in questo
+        // ramo. Non e "questa colonna non ha un CRS": e "non c'e modo di
+        // saperlo", e il contratto GeoArrow pubblicato un CRS lo dichiara.
+        let unknown = column("geom", "geometry", "geometry");
+        for profile in [
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            &crate::profile::MARIADB_PROFILE,
+        ] {
+            let error = MysqlColumnSpec::from_catalog_with_profile(&unknown, profile)
+                .expect_err("una geometry senza SRID dichiarato si rifiuta");
+            assert_eq!(error.category, ErrorCategory::Crs);
+            assert!(
+                error.message.contains(profile.product()),
+                "{}: il rifiuto non nomina chi ha rifiutato — {}",
+                profile.product(),
+                error.message
+            );
+        }
+
+        // Con l'SRID dichiarato la colonna si descrive, e questo e cio che
+        // rende il rifiuto sopra una conseguenza della query e non della
+        // regola: su MariaDB questo caso non si presenta, perche `srs_id`
+        // arriva sempre nullo.
+        let declared = MysqlColumn {
+            spatial_srid: Some(4_326),
+            ..column("geom", "geometry", "geometry")
+        };
+        for profile in [
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            &crate::profile::MARIADB_PROFILE,
+        ] {
+            let spec = MysqlColumnSpec::from_catalog_with_profile(&declared, profile)
+                .expect("geometry con SRID");
+            assert_eq!(spec.kind, MysqlColumnKind::Geometry);
+            assert_eq!(spec.spatial_srid, Some(4_326));
+        }
+        assert!(crate::profile::MARIADB_PROFILE
+            .object_columns_query()
+            .contains("NULL AS srs_id"));
     }
 
     #[test]
