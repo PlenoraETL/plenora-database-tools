@@ -270,6 +270,11 @@ class SessionMatrixTests(unittest.TestCase):
         # scrive, e pretende che la riga nomini `RUNNER_TEMP`.
         self.assertIn("$RUNNER_TEMP/session-matrix", workflow)
         self.assertIn("runner.temp", workflow)
+        # Il ciclo di vita delle fixture sta nello script, non qui. Questa
+        # asserzione era stata cancellata riscrivendo il blocco accanto: il
+        # workflow resta corretto, ma niente lo teneva tale, e `up`/`down`
+        # avrebbero potuto tornare nello YAML in silenzio.
+        self.assertNotIn("docker compose", workflow)
         for line in workflow.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -316,7 +321,15 @@ class SessionMatrixTests(unittest.TestCase):
         self.assertNotIn(chr(34) + "--remove" + "-orphans" + chr(34), campaign)
 
     def run_campaign(
-        self, tmp, calls, *, fail_on=None, fail_down=None, fail_run=False, arguments=None
+        self,
+        tmp,
+        calls,
+        *,
+        fail_on=None,
+        fail_down=None,
+        down_error=RuntimeError,
+        fail_run=False,
+        arguments=None,
     ):
         """Esegue `main` della campagna con Docker e misura sostituiti.
 
@@ -351,7 +364,7 @@ class SessionMatrixTests(unittest.TestCase):
                 and parameters[0] == "down"
                 and last_up["seen"]
             ):
-                raise RuntimeError(f"{file}: spegnimento fallito")
+                raise down_error(f"{file}: spegnimento fallito")
             return ""
 
         def preflight():
@@ -460,6 +473,46 @@ class SessionMatrixTests(unittest.TestCase):
             tmp = Path(directory)
             with self.assertRaises(RuntimeError) as raised:
                 self.run_campaign(tmp, calls, fail_down=CAMPAIGN.COMPOSE_FILES[0])
+        self.assertIn("la pulizia no", str(raised.exception))
+
+    def test_an_os_error_during_cleanup_does_not_mask_the_original_error(self) -> None:
+        """`subprocess.run` solleva `OSError` se l'eseguibile non c'e.
+
+        La pulizia catturava `RuntimeError` e `SubprocessError` ma non quella
+        famiglia: un `docker` sparito dal PATH durante la corsa avrebbe fatto
+        risalire quell'errore al posto della ragione vera.
+        """
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_campaign(
+                    tmp,
+                    calls,
+                    fail_on=CAMPAIGN.COMPOSE_FILES[1],
+                    fail_down=CAMPAIGN.COMPOSE_FILES[0],
+                    down_error=FileNotFoundError,
+                )
+        self.assertIn("avvio fallito", str(raised.exception))
+
+    def test_an_os_error_during_cleanup_still_fails_a_successful_run(self) -> None:
+        """E sul percorso riuscito resta un errore, non un successo."""
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_campaign(
+                    tmp,
+                    calls,
+                    fail_down=CAMPAIGN.COMPOSE_FILES[0],
+                    down_error=FileNotFoundError,
+                )
         self.assertIn("la pulizia no", str(raised.exception))
 
     def test_a_failed_cleanup_does_not_mask_the_original_error(self) -> None:

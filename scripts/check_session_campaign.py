@@ -109,7 +109,12 @@ def stop_fixtures(started: list[str]) -> list[str]:
     for file in reversed(started):
         try:
             compose(file, "down", "-v")
-        except (RuntimeError, subprocess.SubprocessError) as error:
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            # `OSError` sta nell'elenco perche `subprocess.run` lo solleva
+            # quando l'eseguibile non c'e: senza, un `docker` sparito dal PATH
+            # durante la corsa avrebbe fatto risalire quell'errore al posto
+            # della ragione per cui la campagna e finita li. La stessa
+            # famiglia che gia cattura la diagnostica, per la stessa ragione.
             failures.append(f"{file}: {error}")
     return failures
 
