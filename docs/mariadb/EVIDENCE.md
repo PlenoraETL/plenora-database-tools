@@ -334,7 +334,11 @@ correzione ha ristretto cio che si puo affermare.
 `access_mode` leggeva `@@transaction_read_only`, che riflette `SET
 TRANSACTION` e non `START TRANSACTION READ ONLY`: dava lo stesso valore per
 tutte e tre le modalita. Ora si osserva l'effetto — una scrittura dentro la
-transazione — e i tre casi si distinguono: ammessa, rifiutata, ammessa.
+transazione — e i tre casi si distinguono: ammessa, rifiutata, ammessa. Il
+rifiuto dev'essere **quello del read-only**: codice 1792 su tutti e tre, con
+categoria `Execution` ed effetto `None`. Accettare un errore qualunque
+avrebbe fatto passare una tabella assente o un timeout per prova che la
+transazione era in sola lettura.
 
 Il contesto rileggeva isolamento e autocommit, cioe nulla che lo riguardasse.
 Ora rilegge la variabile utente che il provider imposta.
