@@ -263,18 +263,43 @@ class SessionMatrixTests(unittest.TestCase):
         # sporcherebbero l'albero e il preflight della campagna rifiuterebbe
         # proprio quel file: un gate che non puo passare per costruzione, ed e
         # esattamente com'era scritto la prima volta.
+        #
+        # La guardia guardava tre forme — `mkdir`, `| tee`, `--diagnostics` —
+        # mentre prometteva "nessuna scrittura nell'albero": `touch`, `cp`,
+        # `echo >` sarebbero passati. Ora cerca **qualunque** forma che
+        # scrive, e pretende che la riga nomini `RUNNER_TEMP`.
         self.assertIn("$RUNNER_TEMP/session-matrix", workflow)
         self.assertIn("runner.temp", workflow)
         for line in workflow.splitlines():
             stripped = line.strip()
-            if stripped.startswith(("mkdir", "| tee", "--diagnostics")):
-                self.assertIn(
-                    "RUNNER_TEMP",
-                    stripped,
-                    f"scrive nell'albero di lavoro: {stripped}",
-                )
-        # Il ciclo di vita delle fixture sta nello script, non nello YAML.
-        self.assertNotIn("docker compose", workflow)
+            if stripped.startswith("#"):
+                continue
+            # Le redirezioni fra descrittori non scrivono su file, e
+            # `/dev/null` non e nell'albero: toglierle prima evita di
+            # chiedere `RUNNER_TEMP` a una riga che non scrive niente.
+            neutral = (
+                stripped.replace("2>&1", "")
+                .replace(">&2", "")
+                .replace("/dev/null", "")
+            )
+            writers = (
+                "mkdir",
+                "touch",
+                "cp ",
+                "mv ",
+                "tee",
+                "printf",
+                "install ",
+                "dd ",
+                ">",
+            )
+            if not any(writer in neutral for writer in writers):
+                continue
+            self.assertIn(
+                "RUNNER_TEMP",
+                stripped,
+                f"il workflow scrive nell'albero di lavoro: {stripped}",
+            )
 
         campaign = (ROOT / "scripts" / "check_session_campaign.py").read_text(
             encoding="utf-8"
@@ -290,7 +315,9 @@ class SessionMatrixTests(unittest.TestCase):
         # che vieta il flag in tutti i runner del repository.
         self.assertNotIn(chr(34) + "--remove" + "-orphans" + chr(34), campaign)
 
-    def run_campaign(self, tmp, calls, *, fail_on=None, arguments=None):
+    def run_campaign(
+        self, tmp, calls, *, fail_on=None, fail_down=None, fail_run=False, arguments=None
+    ):
         """Esegue `main` della campagna con Docker e misura sostituiti.
 
         Cio che si verifica e l'ordine e il ciclo di vita: preflight prima di
@@ -307,19 +334,37 @@ class SessionMatrixTests(unittest.TestCase):
             for name in ("compose", "run", "preflight", "verdict", "markdown", "EVIDENCE")
         }
 
+        last_up = {"seen": False}
+
         def compose(file, *parameters, capture=False):
             calls.append((file, parameters[0]))
+            if parameters[0] == "up":
+                last_up["seen"] = True
             if fail_on is not None and file == fail_on and parameters[0] == "up":
                 raise RuntimeError(f"{file}: avvio fallito")
+            # Solo lo spegnimento **di pulizia** fallisce: quello che porta
+            # allo stato noto precede le accensioni, e farlo fallire misurerebbe
+            # un caso diverso.
+            if (
+                fail_down is not None
+                and file == fail_down
+                and parameters[0] == "down"
+                and last_up["seen"]
+            ):
+                raise RuntimeError(f"{file}: spegnimento fallito")
             return ""
 
         def preflight():
             calls.append(("git", "preflight"))
             return "commit"
 
+        def failing_run(command, capture=False):
+            # `docker ps` fallisce; i log dei compose passano da `compose`.
+            raise RuntimeError("docker ps non disponibile")
+
         try:
             CAMPAIGN.compose = compose
-            CAMPAIGN.run = lambda command, capture=False: ""
+            CAMPAIGN.run = failing_run if fail_run else (lambda command, capture=False: "")
             CAMPAIGN.preflight = preflight
             CAMPAIGN.verdict = lambda: {"totals": {"probes": 13}}
             CAMPAIGN.markdown = lambda document: "matrice" + chr(10)
@@ -352,15 +397,93 @@ class SessionMatrixTests(unittest.TestCase):
         # per partire da uno stato noto — il compose genera il materiale TLS
         # con un container one-shot, e un `up` su uno stack gia acceso lo
         # rigenera sotto i server che lo usano — e una alla fine, nella
-        # pulizia. Quello che conta e che alla fine siano spenti entrambi.
-        stopped = [file for file, action in calls if action == "down"]
+        # pulizia.
+        #
+        # Cercare quei nomi "fra gli ultimi down" era un falso positivo:
+        # togliendo la pulizia finale, le asserzioni restavano soddisfatte dai
+        # down iniziali. Cio che va verificato e la **posizione**: per ogni
+        # riferimento deve esistere uno spegnimento dopo l'ultimo tentativo di
+        # accensione, di qualunque riferimento.
+        last_up = max(
+            index for index, (_, action) in enumerate(calls) if action == "up"
+        )
         for file in CAMPAIGN.COMPOSE_FILES:
-            self.assertIn(file, stopped[-len(CAMPAIGN.COMPOSE_FILES) :])
-        # E che il primo comando su ogni riferimento sia lo spegnimento, non
-        # l'accensione.
+            self.assertTrue(
+                any(
+                    target == file and action == "down" and index > last_up
+                    for index, (target, action) in enumerate(calls)
+                ),
+                f"{file}: nessuno spegnimento dopo l'ultima accensione",
+            )
+        # E il primo comando su ogni riferimento e lo spegnimento, non
+        # l'accensione: e cio che porta lo stack a uno stato noto.
         for file in CAMPAIGN.COMPOSE_FILES:
             actions = [action for target, action in calls if target == file]
             self.assertEqual(actions[:3], ["config", "down", "up"], file)
+
+    def test_diagnostics_are_collected_piece_by_piece(self) -> None:
+        """Un artefatto che fallisce non porta via gli altri.
+
+        Con un solo `try` attorno alla raccolta, un `docker ps` che fallisce
+        si portava dietro anche i log dei compose — cioe proprio la cosa che
+        chi guarda un runner rosso sta cercando.
+        """
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError):
+                self.run_campaign(
+                    tmp, calls, fail_on=CAMPAIGN.COMPOSE_FILES[1], fail_run=True
+                )
+            collected = sorted(path.name for path in (tmp / "diag").iterdir())
+        # `containers.txt` manca — `docker ps` e fallito — ma i log del
+        # riferimento che era partito ci sono.
+        self.assertNotIn("containers.txt", collected)
+        self.assertIn("mysql.log", collected)
+
+    def test_a_failed_cleanup_fails_the_campaign(self) -> None:
+        """Misura riuscita e pulizia fallita non sono un successo.
+
+        I fallimenti di `stop_fixtures` venivano stampati e basta: la campagna
+        finiva in verde lasciando i server accesi sul runner, e la corsa
+        successiva li avrebbe trovati li. Sul percorso riuscito un `down`
+        fallito **e** l'errore.
+        """
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_campaign(tmp, calls, fail_down=CAMPAIGN.COMPOSE_FILES[0])
+        self.assertIn("la pulizia no", str(raised.exception))
+
+    def test_a_failed_cleanup_does_not_mask_the_original_error(self) -> None:
+        """Quando un errore c'e gia, la pulizia non deve sostituirlo.
+
+        E l'altra meta della regola: sul percorso fallito il chiamante deve
+        vedere perche la campagna e finita li, non che un `down` non e
+        riuscito dopo.
+        """
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_campaign(
+                    tmp,
+                    calls,
+                    fail_on=CAMPAIGN.COMPOSE_FILES[1],
+                    fail_down=CAMPAIGN.COMPOSE_FILES[0],
+                )
+        self.assertIn("avvio fallito", str(raised.exception))
+        self.assertNotIn("la pulizia no", str(raised.exception))
 
     def test_a_failure_starting_the_second_compose_cleans_up_the_first(self) -> None:
         """Il caso che lasciava container accesi senza nemmeno i log.
@@ -381,11 +504,19 @@ class SessionMatrixTests(unittest.TestCase):
 
         # L'errore che arriva e quello vero, non quello della pulizia.
         self.assertIn("avvio fallito", str(raised.exception))
-        # E il primo compose, che era davvero acceso, e stato spento.
-        self.assertIn(
-            CAMPAIGN.COMPOSE_FILES[0],
-            [file for file, action in calls if action == "down"],
-            "il primo riferimento e rimasto acceso",
+        # E il primo compose, che era davvero acceso, e stato spento **dopo**
+        # il tentativo fallito: prima dell'`up` del secondo ci sono gli
+        # spegnimenti che portano allo stato noto, e cercarli senza guardare
+        # la posizione avrebbe fatto passare una campagna senza pulizia.
+        failed_up = max(
+            index for index, (_, action) in enumerate(calls) if action == "up"
+        )
+        self.assertTrue(
+            any(
+                target == CAMPAIGN.COMPOSE_FILES[0] and action == "down" and index > failed_up
+                for index, (target, action) in enumerate(calls)
+            ),
+            "il primo riferimento e rimasto acceso dopo il fallimento",
         )
 
     def test_the_generated_document_declares_it_is_generated(self) -> None:

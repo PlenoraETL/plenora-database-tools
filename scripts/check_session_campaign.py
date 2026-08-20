@@ -117,23 +117,33 @@ def stop_fixtures(started: list[str]) -> list[str]:
 def diagnostics(destination: Path, started: list[str]) -> None:
     """Cosa serve a capire un fallimento, raccolto prima di spegnere tutto.
 
-    Best-effort per costruzione: se la diagnostica fallisse a sua volta,
-    sostituirebbe l'errore vero con il proprio, che e il modo piu efficace di
-    perdere la causa.
+    Best-effort **per artefatto**, non in blocco: con un solo `try` attorno a
+    tutto, un `docker ps` che fallisce portava via anche i log, e chi guardava
+    il runner si ritrovava senza la cosa che stava cercando. Ogni pezzo si
+    tenta per conto suo, e cio che non riesce lo dice.
     """
 
-    try:
-        destination.mkdir(parents=True, exist_ok=True)
-        (destination / "containers.txt").write_text(
+    def attempt(what: str, produce) -> None:
+        try:
+            produce()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            print(f"diagnostica: {what} non raccolto ({error})", file=sys.stderr)
+
+    attempt("cartella", lambda: destination.mkdir(parents=True, exist_ok=True))
+    attempt(
+        "stato dei container",
+        lambda: (destination / "containers.txt").write_text(
             run(["docker", "ps", "-a"], capture=True), encoding="utf-8"
-        )
-        for file in started:
-            name = Path(file).stem.replace("docker-compose.", "")
-            (destination / f"{name}.log").write_text(
+        ),
+    )
+    for file in started:
+        name = Path(file).stem.replace("docker-compose.", "")
+        attempt(
+            f"log di {name}",
+            lambda file=file, name=name: (destination / f"{name}.log").write_text(
                 compose(file, "logs", "--no-color", capture=True), encoding="utf-8"
-            )
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"diagnostica incompleta: {error}", file=sys.stderr)
+            ),
+        )
 
 
 def main(arguments: list[str]) -> int:
@@ -159,20 +169,32 @@ def main(arguments: list[str]) -> int:
 
     started: list[str] = []
     try:
-        start_fixtures(started)
-        document = verdict()
-    except BaseException:
         # L'avvio sta dentro il tentativo: se il secondo compose fallisce, il
         # primo e gia acceso e va spento. Prima restava su, senza nemmeno i
         # log per capire perche.
+        start_fixtures(started)
+        document = verdict()
+    except BaseException:
         if parsed.diagnostics is not None:
             diagnostics(parsed.diagnostics, started)
-        raise
-    finally:
+        # Qui un errore c'e gia, ed e quello che il chiamante deve vedere: la
+        # pulizia si tenta e i suoi fallimenti si stampano, ma non sostituiscono
+        # la ragione per cui la campagna e finita qui.
         if not parsed.keep_fixtures:
-            failures = stop_fixtures(started)
-            for failure in failures:
+            for failure in stop_fixtures(started):
                 print(f"pulizia incompleta: {failure}", file=sys.stderr)
+        raise
+
+    # Sul percorso riuscito, invece, un `down` fallito **e** l'errore. Stamparlo
+    # e proseguire faceva finire la campagna in verde lasciando tre server
+    # accesi sul runner: il gate avrebbe dichiarato che tutto va bene mentre
+    # lasciava dietro di se cio che la corsa successiva trovera.
+    if not parsed.keep_fixtures:
+        failures = stop_fixtures(started)
+        if failures:
+            raise RuntimeError(
+                "la misura e riuscita ma la pulizia no: " + "; ".join(failures)
+            )
 
     EVIDENCE.write_text(markdown(document), encoding="utf-8", newline="\n")
     print(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=1))
