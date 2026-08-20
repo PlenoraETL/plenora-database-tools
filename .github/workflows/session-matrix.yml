@@ -53,12 +53,16 @@ jobs:
       - name: self-test del runner
         run: python3 scripts/test_check_session_matrix.py
 
+      # Log e diagnostica vivono **fuori** dal repository. Scriverli dentro
+      # sporcherebbe l'albero, e il preflight della campagna — che pretende
+      # un albero pulito — rifiuterebbe proprio quel file: un gate che non
+      # puo passare per costruzione.
       - name: campagna live sui tre riferimenti
         run: |
-          mkdir -p session-matrix-results
+          mkdir -p "$RUNNER_TEMP/session-matrix"
           python3 scripts/check_session_campaign.py \
-            --diagnostics session-matrix-results 2>&1 \
-            | tee session-matrix-results/session-matrix.log
+            --diagnostics "$RUNNER_TEMP/session-matrix" 2>&1 \
+            | tee "$RUNNER_TEMP/session-matrix/session-matrix.log"
 
       # Il documento rigenerato deve coincidere con quello committato: se
       # differisce, il comportamento misurato non e piu quello su cui la
@@ -71,5 +75,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: session-matrix-results
-          path: session-matrix-results/
+          path: ${{ runner.temp }}/session-matrix/
           retention-days: 7

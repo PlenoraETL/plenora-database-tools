@@ -27,7 +27,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.check_session_matrix import EVIDENCE, markdown, verdict  # noqa: E402
+from scripts.check_session_matrix import (  # noqa: E402
+    EVIDENCE,
+    markdown,
+    preflight,
+    verdict,
+)
 
 # I due compose che accendono i tre riferimenti della matrice. L'ordine non
 # conta — sono reti separate — ma l'elenco si: una campagna che ne avviasse
@@ -63,8 +68,13 @@ def compose(file: str, *arguments: str, capture: bool = False) -> str:
     return run(["docker", "compose", "-f", file, *arguments], capture=capture)
 
 
-def start_fixtures() -> None:
-    """Avvia i tre riferimenti e aspetta che siano sani.
+def start_fixtures(started: list[str]) -> None:
+    """Avvia i riferimenti, annotando via via quali sono partiti.
+
+    L'elenco cresce mentre si avanza, e non alla fine: se il secondo compose
+    fallisce, il chiamante deve sapere che il primo e acceso. Prima non lo
+    sapeva, e un fallimento a meta lasciava container su senza diagnostica ne
+    pulizia.
 
     `--wait` e cio che rende la campagna deterministica: senza, la prima
     misura partirebbe contro un server che sta ancora inizializzando, e il
@@ -73,29 +83,57 @@ def start_fixtures() -> None:
 
     for file in COMPOSE_FILES:
         compose(file, "config", "--quiet")
+        started.append(file)
+        # Prima si spegne, poi si accende. Non e prudenza: il compose genera
+        # il materiale TLS con un container one-shot, e un `up` su uno stack
+        # gia acceso lo rigenera **sotto** i server che lo stanno usando. La
+        # prima corsa reale e morta cosi, con un `BadSignature` che somigliava
+        # a un problema di rete. Da uno stato noto, invece, la campagna misura
+        # il riferimento dichiarato e non l'accumulo di corse precedenti.
+        compose(file, "down", "-v")
         # Mai `--remove-orphans`: ogni compose dichiara il proprio progetto, e
         # su una macchina con piu riferimenti accesi quel flag cancella i
         # container degli altri provider.
         compose(file, "up", "-d", "--wait")
 
 
-def stop_fixtures() -> None:
-    for file in COMPOSE_FILES:
-        compose(file, "down", "-v")
+def stop_fixtures(started: list[str]) -> list[str]:
+    """Spegne cio che era stato avviato, senza fermarsi al primo errore.
+
+    Restituisce i fallimenti invece di sollevarli: la pulizia non deve
+    mascherare la ragione per cui la campagna e finita qui. Un `down` che
+    fallisce e un problema, ma e il secondo.
+    """
+
+    failures = []
+    for file in reversed(started):
+        try:
+            compose(file, "down", "-v")
+        except (RuntimeError, subprocess.SubprocessError) as error:
+            failures.append(f"{file}: {error}")
+    return failures
 
 
-def diagnostics(destination: Path) -> None:
-    """Cosa serve a capire un fallimento, salvato prima di spegnere tutto."""
+def diagnostics(destination: Path, started: list[str]) -> None:
+    """Cosa serve a capire un fallimento, raccolto prima di spegnere tutto.
 
-    destination.mkdir(parents=True, exist_ok=True)
-    (destination / "containers.txt").write_text(
-        run(["docker", "ps", "-a"], capture=True), encoding="utf-8"
-    )
-    for file in COMPOSE_FILES:
-        name = Path(file).stem.replace("docker-compose.", "")
-        (destination / f"{name}.log").write_text(
-            compose(file, "logs", "--no-color", capture=True), encoding="utf-8"
+    Best-effort per costruzione: se la diagnostica fallisse a sua volta,
+    sostituirebbe l'errore vero con il proprio, che e il modo piu efficace di
+    perdere la causa.
+    """
+
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "containers.txt").write_text(
+            run(["docker", "ps", "-a"], capture=True), encoding="utf-8"
         )
+        for file in started:
+            name = Path(file).stem.replace("docker-compose.", "")
+            (destination / f"{name}.log").write_text(
+                compose(file, "logs", "--no-color", capture=True), encoding="utf-8"
+            )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"diagnostica incompleta: {error}", file=sys.stderr)
 
 
 def main(arguments: list[str]) -> int:
@@ -113,16 +151,28 @@ def main(arguments: list[str]) -> int:
     )
     parsed = parser.parse_args(arguments)
 
-    start_fixtures()
+    # Il preflight sull'albero **prima** di Docker: scoprire un albero sporco
+    # con tre server accesi e uno spreco, e l'affermazione che il controllo
+    # precede Docker sarebbe stata falsa. `verdict` lo rifa — e giusto che lo
+    # faccia, perche si usa anche da solo — ma qui e gia deciso.
+    preflight()
+
+    started: list[str] = []
     try:
+        start_fixtures(started)
         document = verdict()
-    except Exception:
+    except BaseException:
+        # L'avvio sta dentro il tentativo: se il secondo compose fallisce, il
+        # primo e gia acceso e va spento. Prima restava su, senza nemmeno i
+        # log per capire perche.
         if parsed.diagnostics is not None:
-            diagnostics(parsed.diagnostics)
+            diagnostics(parsed.diagnostics, started)
         raise
     finally:
         if not parsed.keep_fixtures:
-            stop_fixtures()
+            failures = stop_fixtures(started)
+            for failure in failures:
+                print(f"pulizia incompleta: {failure}", file=sys.stderr)
 
     EVIDENCE.write_text(markdown(document), encoding="utf-8", newline="\n")
     print(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=1))

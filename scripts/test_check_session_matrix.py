@@ -34,6 +34,18 @@ def load():
 MATRIX = load()
 
 
+def load_campaign():
+    specification = importlib.util.spec_from_file_location(
+        "session_campaign", ROOT / "scripts" / "check_session_campaign.py"
+    )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+CAMPAIGN = load_campaign()
+
+
 def observations(probes, outcome: str = "accepted", detail: str = "uguale"):
     return [
         {
@@ -246,6 +258,21 @@ class SessionMatrixTests(unittest.TestCase):
         # E deve accorgersi se la matrice registrata non e piu quella
         # osservata: senza questo, la campagna girerebbe e non direbbe nulla.
         self.assertIn("git diff --exit-code -- docs/mariadb/SESSION-MATRIX.md", workflow)
+
+        # Log e diagnostica **fuori** dal repository. Scritti dentro,
+        # sporcherebbero l'albero e il preflight della campagna rifiuterebbe
+        # proprio quel file: un gate che non puo passare per costruzione, ed e
+        # esattamente com'era scritto la prima volta.
+        self.assertIn("$RUNNER_TEMP/session-matrix", workflow)
+        self.assertIn("runner.temp", workflow)
+        for line in workflow.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("mkdir", "| tee", "--diagnostics")):
+                self.assertIn(
+                    "RUNNER_TEMP",
+                    stripped,
+                    f"scrive nell'albero di lavoro: {stripped}",
+                )
         # Il ciclo di vita delle fixture sta nello script, non nello YAML.
         self.assertNotIn("docker compose", workflow)
 
@@ -262,6 +289,104 @@ class SessionMatrixTests(unittest.TestCase):
         # pezzi, perche scritto per intero questo file violerebbe la guardia
         # che vieta il flag in tutti i runner del repository.
         self.assertNotIn(chr(34) + "--remove" + "-orphans" + chr(34), campaign)
+
+    def run_campaign(self, tmp, calls, *, fail_on=None, arguments=None):
+        """Esegue `main` della campagna con Docker e misura sostituiti.
+
+        Cio che si verifica e l'ordine e il ciclo di vita: preflight prima di
+        Docker, avvio dentro il tentativo, pulizia di cio che era partito, e
+        l'errore originale che arriva al chiamante invece di essere sostituito
+        da quello della pulizia.
+
+        `calls` e del chiamante perche serve anche quando la campagna
+        fallisce, ed e proprio allora che dice la cosa interessante.
+        """
+
+        original = {
+            name: getattr(CAMPAIGN, name)
+            for name in ("compose", "run", "preflight", "verdict", "markdown", "EVIDENCE")
+        }
+
+        def compose(file, *parameters, capture=False):
+            calls.append((file, parameters[0]))
+            if fail_on is not None and file == fail_on and parameters[0] == "up":
+                raise RuntimeError(f"{file}: avvio fallito")
+            return ""
+
+        def preflight():
+            calls.append(("git", "preflight"))
+            return "commit"
+
+        try:
+            CAMPAIGN.compose = compose
+            CAMPAIGN.run = lambda command, capture=False: ""
+            CAMPAIGN.preflight = preflight
+            CAMPAIGN.verdict = lambda: {"totals": {"probes": 13}}
+            CAMPAIGN.markdown = lambda document: "matrice" + chr(10)
+            CAMPAIGN.EVIDENCE = tmp / "SESSION-MATRIX.md"
+            return CAMPAIGN.main(
+                arguments if arguments is not None else ["--diagnostics", str(tmp / "diag")]
+            )
+        finally:
+            for name, value in original.items():
+                setattr(CAMPAIGN, name, value)
+
+    def test_the_campaign_starts_measures_and_cleans_up(self) -> None:
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            code = self.run_campaign(tmp, calls)
+            self.assertEqual(code, 0)
+            self.assertTrue((tmp / "SESSION-MATRIX.md").exists(), "documento non scritto")
+
+        # Il preflight sull'albero precede qualunque comando Docker: farlo dopo
+        # significava scoprire l'albero sporco con tre server gia accesi.
+        self.assertEqual(calls[0], ("git", "preflight"))
+        self.assertEqual(
+            [file for file, action in calls if action == "up"],
+            list(CAMPAIGN.COMPOSE_FILES),
+        )
+        # Ogni riferimento viene spento due volte: una prima di accenderlo,
+        # per partire da uno stato noto — il compose genera il materiale TLS
+        # con un container one-shot, e un `up` su uno stack gia acceso lo
+        # rigenera sotto i server che lo usano — e una alla fine, nella
+        # pulizia. Quello che conta e che alla fine siano spenti entrambi.
+        stopped = [file for file, action in calls if action == "down"]
+        for file in CAMPAIGN.COMPOSE_FILES:
+            self.assertIn(file, stopped[-len(CAMPAIGN.COMPOSE_FILES) :])
+        # E che il primo comando su ogni riferimento sia lo spegnimento, non
+        # l'accensione.
+        for file in CAMPAIGN.COMPOSE_FILES:
+            actions = [action for target, action in calls if target == file]
+            self.assertEqual(actions[:3], ["config", "down", "up"], file)
+
+    def test_a_failure_starting_the_second_compose_cleans_up_the_first(self) -> None:
+        """Il caso che lasciava container accesi senza nemmeno i log.
+
+        L'avvio stava fuori dal tentativo: un fallimento a meta lasciava su il
+        primo compose, senza diagnostica ne pulizia.
+        """
+
+        import tempfile
+
+        calls: list[tuple[str, str]] = []
+        second = CAMPAIGN.COMPOSE_FILES[1]
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            with self.assertRaises(RuntimeError) as raised:
+                self.run_campaign(tmp, calls, fail_on=second)
+            self.assertTrue((tmp / "diag").exists(), "diagnostica non raccolta")
+
+        # L'errore che arriva e quello vero, non quello della pulizia.
+        self.assertIn("avvio fallito", str(raised.exception))
+        # E il primo compose, che era davvero acceso, e stato spento.
+        self.assertIn(
+            CAMPAIGN.COMPOSE_FILES[0],
+            [file for file, action in calls if action == "down"],
+            "il primo riferimento e rimasto acceso",
+        )
 
     def test_the_generated_document_declares_it_is_generated(self) -> None:
         text = self.recorded_matrix()

@@ -167,11 +167,22 @@ def worktree_changes() -> list[str]:
     ]
 
 
-def verdict() -> dict[str, object]:
-    # L'albero deve essere pulito **prima** di avviare Docker, non dopo: un
-    # documento generato da un albero con modifiche non committate dichiara un
-    # commit che non descrive il codice misurato, e il commit e l'unica cosa
-    # che lega la matrice a cio di cui parla.
+def preflight() -> str:
+    """Pretende un albero pulito e restituisce il commit da cui si parte.
+
+    Estratto da `verdict` perche la campagna deve poterlo eseguire **prima**
+    di accendere i container: farlo dopo significava scoprire l'albero sporco
+    con tre server gia su, e soprattutto rendeva falsa l'affermazione che il
+    controllo precede Docker.
+
+    # Raises
+
+    `RuntimeError` se l'albero ha modifiche non committate: un documento
+    generato da li dichiarerebbe un commit che non descrive il codice
+    misurato, e il commit e l'unica cosa che lega la matrice a cio di cui
+    parla.
+    """
+
     changes = worktree_changes()
     if changes:
         raise RuntimeError(
@@ -180,7 +191,11 @@ def verdict() -> dict[str, object]:
             + (" ..." if len(changes) > 5 else "")
             + " — la misura deve partire da HEAD pulito"
         )
-    started_at = head()
+    return head()
+
+
+def verdict() -> dict[str, object]:
+    started_at = preflight()
 
     fleet = servers()
     for server in fleet:

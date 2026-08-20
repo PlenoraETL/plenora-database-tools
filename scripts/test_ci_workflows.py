@@ -261,6 +261,7 @@ class CiWorkflowTests(unittest.TestCase):
             "scripts/test_check_mariadb_reference.py",
             "scripts/test_check_postgres_reference.py",
             "scripts/test_check_postgres_hardening.py",
+            "scripts/test_check_session_matrix.py",
             "scripts/test_check_sqlserver_reference.py",
         ):
             self.assertIn(f"python3 {suite}", static, f"{suite} non eseguito")
