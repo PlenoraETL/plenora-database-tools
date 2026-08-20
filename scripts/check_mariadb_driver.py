@@ -100,6 +100,12 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_read_ordering_asc": "reads.ordering, verso ascendente",
     "provider.profile_read_ordering_desc": "reads.ordering, verso discendente",
     "provider.profile_read_streaming": "reads.streaming",
+    # Punto 2 della fase 3: il contratto dell'indice. La descrizione deve
+    # riuscire, e cio che ne esce deve corrispondere all'esito della DDL —
+    # dove l'indice su espressione si crea deve risultare non confrontabile,
+    # dove non si crea non deve comparire.
+    "provider.profile_functional_index": "il catalogo descrive gli indici, e li descrive come sono",
+    "provider.profile_generated_index": "il catalogo descrive la colonna generata e il suo indice",
 }
 
 # Le sonde che **osservano** e basta: nessuna capability pubblicata poggia su
@@ -110,12 +116,12 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
 # il motore — ma dev'essere **dichiarata** tale, altrimenti "non e in nessun
 # inventario" e indistinguibile da "qualcuno si e dimenticato di
 # classificarla".
-OBSERVATION_ONLY_PROBES: dict[str, str] = {
-    # Come MariaDB pubblichi un indice su colonna generata non e ancora
-    # misurato, e il contratto semantico dell'indice arriva al punto 2 della
-    # fase 3: finche non c'e, questa sonda racconta e non sostiene.
-    "provider.profile_functional_index": "come il catalogo descrive gli indici, senza contratto",
-}
+#
+# Oggi e vuoto, ed e un buon segno: il punto 2 ha dato un contratto anche
+# all'ultima sonda che ne era priva. Resta perche la prossima sonda senza
+# contratto abbia dove stare **dichiarata**, invece di non stare da nessuna
+# parte.
+OBSERVATION_ONLY_PROBES: dict[str, str] = {}
 
 # Le sonde il cui **rifiuto** e la prova.
 #
@@ -137,6 +143,12 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
     # quaterna e quella dichiarata, quindi un 1969 che tornasse generico non
     # arriverebbe qui come `rejected`.
     "provider.profile_timeout": "il timeout del profilo scatta ed e classificato come tale",
+    # Le tre forme che una tabella con un indice unico su colonna generata
+    # permette. Nessuna e sicura, e il rifiuto di ciascuna e la prova che
+    # `writes.upsert` — quando si aprira — non le accettera per distrazione.
+    "provider.profile_upsert_on_primary_key": "l'Upsert rifiuta un secondo indice unico",
+    "provider.profile_upsert_on_generated_key": "l'Upsert rifiuta le keys che non ancorano da sole",
+    "provider.profile_upsert_generated_anchor": "l'Upsert rifiuta di scrivere una colonna generata",
 }
 
 

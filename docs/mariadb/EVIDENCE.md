@@ -646,3 +646,85 @@ Le scritture restano chiuse per intero: nessun piano di scrittura e mai stato
 eseguito con questo profilo. E lo spatial resta chiuso in lettura, perche su
 MariaDB `srs_id` arriva sempre nullo e ogni colonna geometrica viene rifiutata
 alla descrizione — la lettura funziona su tutto tranne che li.
+
+## Sesta tranche: l'indice su colonna generata, e cosa ne fa l'Upsert
+
+Il punto 2 della fase 3. La domanda non e se MariaDB sappia indicizzare
+un'espressione — sa farlo, in un modo solo — ma **come si presenta** al
+catalogo, perche da li discendono due decisioni: se la colonna sia scrivibile,
+e se l'indice sia confrontabile con le keys di un Upsert.
+
+La prima ha un rischio che questa tranche esisteva per escludere, e riguarda
+una correzione fatta nella quinta. Su MariaDB `GENERATION_EXPRESSION` e NULL
+dove MySQL manda la stringa vuota, e il profilo la normalizza con
+`COALESCE(..., '')` perche il lettore pretende una stringa. Se fosse NULL
+**anche** per le colonne generate, quella normalizzazione trasformerebbe una
+colonna non scrivibile in una scrivibile: un fail-open introdotto da un fix.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | catalogo | `raw.generated_column_catalog` | extra=VIRTUAL GENERATED, espressione=`lower(\`name\`)`, indice_su=lname, non_unique=0 | idem, espressione=`lcase(\`name\`)` | idem, espressione=`lcase(\`name\`)` |
+| provider | profilo | `provider.profile_generated_index` | espressione_non_vuota=true, `PRIMARY`:id unico confrontabile, `uq_lname`:lname unico confrontabile | **identico** | **identico** |
+| provider | profilo | `provider.profile_upsert_on_primary_key` | **rifiutato** — Unsupported/Prepare: altro PK/UNIQUE index (`uq_lname`) | **identico** | **identico** |
+| provider | profilo | `provider.profile_upsert_on_generated_key` | **rifiutato** — Unsupported/Prepare: altro PK/UNIQUE index (`PRIMARY`) | **identico** | **identico** |
+| provider | profilo | `provider.profile_upsert_generated_anchor` | **rifiutato** — DataMapping/Prepare: non puo scrivere una colonna generata | **identico**, con il proprio nome | **identico**, con il proprio nome |
+
+### Cosa dice
+
+**Il fail-open non c'e.** Su MariaDB `GENERATION_EXPRESSION` e NULL soltanto
+per le colonne **non** generate; quella generata porta la sua espressione. La
+normalizzazione con `COALESCE` coincide percio esattamente con la semantica di
+MySQL — vuota significa scrivibile, non vuota significa rifiutata — e la sonda
+lo verifica attraverso il profilo: `espressione_non_vuota=true` su tutti e tre.
+
+**L'indice su colonna generata e un indice ordinario.** `COLUMN_NAME` porta il
+nome della colonna, `NON_UNIQUE` e zero, e il profilo lo descrive
+confrontabile per colonne su tutti e tre i riferimenti. Ne segue che il
+rifiuto per "parte senza colonna ne espressione", che il profilo di MariaDB
+puo produrre perche dichiara `NULL AS expression`, difende da una forma che
+questi due server non producono: la sola via all'indice su espressione, li, e
+la colonna generata, e quella via passa dal catalogo come qualunque colonna.
+
+**L'espressione e scritta in due modi.** `lower(\`name\`)` su MySQL,
+`lcase(\`name\`)` su MariaDB, dalla stessa DDL: e la forma canonica con cui
+ciascun motore riscrive la funzione. Finisce nel token di schema, che serve a
+riconoscere un cambio di schema fra prepare ed esecuzione **sullo stesso
+server**, quindi la differenza non attraversa nulla. Registrata perche non
+venga scambiata per un difetto la prima volta che qualcuno confronta due token.
+
+**L'Upsert chiude tutte e tre le forme, e non sempre con la stessa guardia.**
+Una tabella con un indice unico su colonna generata ne permette tre, e nessuna
+e sicura:
+
+| forma | chi la ferma |
+|---|---|
+| keys = chiave primaria, con un secondo indice unico sulla generata | il preflight: `ON DUPLICATE KEY UPDATE` scatterebbe anche su quell'altro indice |
+| keys = colonna generata, con una chiave primaria | il preflight, per lo stesso motivo visto dall'altro lato |
+| keys = colonna generata, **senza** chiave primaria | non il preflight — l'indice coincide con le keys ed e confrontabile — ma la guardia che vieta di scrivere una colonna generata |
+
+La terza riga e la piu istruttiva: il preflight sugli indici non ha niente da
+obiettare, e cio che salva la scrittura e una regola diversa, piu avanti nel
+piano. Se domani cadesse quella, il preflight direbbe ancora di si. Per questo
+le tre sonde stanno fra le prove necessarie del gate, con la categoria e la
+causa del rifiuto verificate: sono la rete sotto `writes.upsert`, che oggi e
+chiusa e che il punto 3 aprira una mode alla volta.
+
+**Il contratto dell'indice funzionale, che mancava.** La sonda su
+`plenora_idx_expression` registrava cio che vedeva senza pretendere niente.
+Ora l'esito della DDL decide cosa il catalogo deve dire: dove l'indice su
+espressione si crea deve comparire **non** confrontabile per colonne — se
+comparisse confrontabile, la regola che rifiuta un Upsert su un indice non
+confrontabile non sarebbe mai raggiungibile — e dove la DDL viene rifiutata
+quell'indice non deve esserci affatto. E l'ultima sonda del profilo che era
+senza contratto: `OBSERVATION_ONLY_PROBES` oggi e vuoto.
+
+### Cosa resta not_measured
+
+* **la scrittura vera**: tutte e tre le forme sono state fermate in `prepare`,
+  quindi nessuna riga e mai arrivata al server. Cosa succeda eseguendo un
+  Upsert qualificato — e come si comporti sotto rollback e cancellazione — e
+  il punto 3.
+* **come MariaDB descriva un indice su colonna generata `PERSISTENT`**: qui e
+  `VIRTUAL`, che e la forma piu comune e la sola misurata.

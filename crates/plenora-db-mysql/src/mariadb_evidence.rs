@@ -44,8 +44,10 @@ use crate::profile::{ProductProfile, MARIADB_PROFILE, MYSQL_PROFILE};
 use crate::{MysqlConfig, MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
 use plenora_database_core::arrow::array::{Array, Int32Array, Int64Array};
+use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::{
-    FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection,
+    FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection, TransactionProfile,
+    WriteMode, WriteOperation,
 };
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider};
@@ -1737,6 +1739,325 @@ async fn streaming_read_probes(
         .await;
 }
 
+/// La tabella con una colonna generata e un unique index sopra.
+///
+/// E l'unico modo in cui `MariaDB` indicizza un'espressione: la sintassi
+/// dell'indice funzionale non esiste (1064, misurato), quindi chi vuole
+/// indicizzare `LOWER(name)` dichiara una colonna generata e indicizza quella.
+const SCRATCH_GENERATED: &str = "plenora_driver_evidence_generated";
+
+/// La stessa tabella **senza** chiave primaria: l'unico indice unico e quello
+/// sulla colonna generata.
+///
+/// Serve alla sola forma in cui il preflight dell'Upsert non ha niente da
+/// obiettare — l'indice coincide con le keys ed e confrontabile per colonne —
+/// e a rendere visibile cosa la fermi allora: una colonna generata non si
+/// scrive, e a dirlo e una guardia diversa, piu avanti.
+const SCRATCH_GENERATED_ONLY: &str = "plenora_driver_evidence_generated_only";
+
+/// Come il catalogo pubblica una colonna generata e l'indice che la usa, e
+/// cosa ne segue per il preflight dell'Upsert.
+///
+/// E il punto 2 della fase 3. La domanda non e "`MariaDB` sa indicizzare
+/// un'espressione" — sa farlo, in un modo solo — ma **come si presenta** al
+/// catalogo, perche da li discendono due decisioni: se la colonna sia
+/// scrivibile e se l'indice sia confrontabile con le keys di un Upsert.
+///
+/// La prima ha un rischio che questa tranche esiste per escludere. Su `MariaDB`
+/// `GENERATION_EXPRESSION` e NULL per le colonne **non** generate, e il
+/// profilo la normalizza con `COALESCE(..., '')` perche il lettore pretende
+/// una stringa. Se fosse NULL anche per quelle generate, quella normalizzazione
+/// trasformerebbe una colonna non scrivibile in una scrivibile — un fail-open
+/// introdotto da una correzione. La sonda lo misura invece di fidarsi.
+#[allow(clippy::too_many_lines)]
+async fn generated_column_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let mut connection = open_connection().await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_GENERATED}"),
+        format!(
+            "CREATE TABLE {SCRATCH_GENERATED} (id INT NOT NULL PRIMARY KEY, \
+             name VARCHAR(32) NOT NULL, \
+             lname VARCHAR(32) AS (LOWER(name)) VIRTUAL, \
+             UNIQUE KEY uq_lname (lname)) ENGINE = InnoDB"
+        ),
+        format!("DROP TABLE IF EXISTS {SCRATCH_GENERATED_ONLY}"),
+        format!(
+            "CREATE TABLE {SCRATCH_GENERATED_ONLY} (name VARCHAR(32) NOT NULL, \
+             lname VARCHAR(32) AS (LOWER(name)) VIRTUAL, \
+             UNIQUE KEY uq_lname (lname)) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella della colonna generata: harness, non divergenza");
+    }
+
+    // Cosa il catalogo dice, letto senza profilo: e l'ingresso da cui tutto il
+    // resto discende.
+    let catalogued: Option<(String, String, String, i64)> = connection
+        .query_first(format!(
+            "SELECT c.EXTRA, IFNULL(c.GENERATION_EXPRESSION, '<NULL>'), \
+             IFNULL(s.COLUMN_NAME, '<NULL>'), s.NON_UNIQUE \
+             FROM information_schema.columns c \
+             JOIN information_schema.statistics s \
+             ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME \
+             WHERE c.TABLE_SCHEMA = '{schema_name}' \
+             AND c.TABLE_NAME = '{SCRATCH_GENERATED}' \
+             AND c.COLUMN_NAME = 'lname' AND s.INDEX_NAME = 'uq_lname'"
+        ))
+        .await
+        .ok()
+        .flatten();
+    match catalogued {
+        Some((extra, expression, indexed, non_unique)) => recorder.accepted(
+            "raw.generated_column_catalog",
+            "raw",
+            "catalogo",
+            "come il catalogo pubblica una colonna generata e l'indice che la usa",
+            format!(
+                "extra={extra} espressione={expression} indice_su={indexed} non_unique={non_unique}"
+            ),
+        ),
+        None => recorder.rejected(
+            "raw.generated_column_catalog",
+            "raw",
+            "catalogo",
+            "come il catalogo pubblica una colonna generata e l'indice che la usa",
+            "il catalogo non ha reso la riga attesa".to_owned(),
+            None,
+        ),
+    }
+
+    let pool = crate::MysqlPool::new_with_profile(&config(), 2, profile)
+        .expect("pool della misura: harness, non divergenza");
+    let question = "come il profilo descrive la colonna generata e il suo indice";
+    match pool.checkout(cancellation).await {
+        Ok(mut session) => {
+            match crate::catalog::describe_object_with_profile(
+                &mut session,
+                schema_name,
+                SCRATCH_GENERATED,
+                profile,
+                cancellation,
+            )
+            .await
+            {
+                Ok(description) => {
+                    let generated = description
+                        .columns
+                        .iter()
+                        .find(|column| column.name == "lname");
+                    let indexes = description
+                        .indexes
+                        .iter()
+                        .map(|index| {
+                            format!(
+                                "{}:{}/unico={}/confrontabile={}",
+                                index.name,
+                                index.columns.join("+"),
+                                index.unique,
+                                index.column_backed
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    recorder.accepted(
+                        "provider.profile_generated_index",
+                        "provider",
+                        "profilo",
+                        question,
+                        format!(
+                            "espressione_non_vuota={} {indexes}",
+                            generated
+                                .is_some_and(|column| !column.generation_expression.is_empty())
+                        ),
+                    );
+                }
+                Err(error) => recorder.rejected(
+                    "provider.profile_generated_index",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+            }
+        }
+        Err(error) => recorder.not_measured(
+            "provider.profile_generated_index",
+            "provider",
+            "profilo",
+            question,
+            &format!(
+                "sessione non aperta: {:?}: {}",
+                error.category, error.message
+            ),
+        ),
+    }
+
+    upsert_preflight_probes(recorder, profile, schema_name, cancellation).await;
+
+    for table in [SCRATCH_GENERATED, SCRATCH_GENERATED_ONLY] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+    }
+}
+
+/// Cosa il preflight dell'Upsert decide su una tabella con un unique index su
+/// colonna generata.
+///
+/// Il preflight non e una formalita: `ON DUPLICATE KEY UPDATE` scatta su
+/// **qualsiasi** unique index in conflitto, non solo sulle keys dichiarate,
+/// quindi un secondo indice unico su colonne diverse aggiornerebbe in silenzio
+/// la riga sbagliata. Le due forme qui sotto sono le sole che una tabella cosi
+/// permette, e devono essere **entrambe** rifiutate — per ragioni diverse, che
+/// e cio che le sonde verificano.
+#[allow(clippy::too_many_lines)]
+async fn upsert_preflight_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let budget = read_budget();
+    let field = |name: &str, kind: plenora_database_core::arrow::schema::DataType| {
+        plenora_database_core::arrow::schema::Field::new(name, kind, false)
+    };
+    let schema = |fields: Vec<plenora_database_core::arrow::schema::Field>| {
+        std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(fields))
+    };
+    let text = plenora_database_core::arrow::schema::DataType::Utf8;
+    let integer = plenora_database_core::arrow::schema::DataType::Int32;
+
+    // Le tre forme che una tabella con un indice unico su colonna generata
+    // permette, e cosa deve fermarle. Nessuna e sicura, e nessuna deve
+    // arrivare al server: cambia **chi** le ferma, ed e questo che la sonda
+    // registra.
+    for (probe, object, keys, columns, question, category, expected) in [
+        (
+            "provider.profile_upsert_on_primary_key",
+            SCRATCH_GENERATED,
+            vec!["id".to_owned()],
+            vec![field("id", integer.clone()), field("name", text.clone())],
+            "l'Upsert sulla chiave primaria si ferma davanti al secondo indice unico",
+            ErrorCategory::Unsupported,
+            "altro PK/UNIQUE index",
+        ),
+        (
+            "provider.profile_upsert_on_generated_key",
+            SCRATCH_GENERATED,
+            vec!["lname".to_owned()],
+            vec![
+                field("id", integer.clone()),
+                field("name", text.clone()),
+                field("lname", text.clone()),
+            ],
+            "l'Upsert sulla colonna generata si ferma davanti alla chiave primaria",
+            ErrorCategory::Unsupported,
+            "altro PK/UNIQUE index",
+        ),
+        (
+            // La forma in cui il preflight sugli indici non ha niente da
+            // obiettare: l'indice unico coincide con le keys ed e
+            // confrontabile per colonne. A fermare l'Upsert e allora un'altra
+            // guardia — la colonna generata non si scrive — e sapere **quale**
+            // delle due regge e il punto: se domani cadesse questa, il
+            // preflight direbbe ancora di si.
+            "provider.profile_upsert_generated_anchor",
+            SCRATCH_GENERATED_ONLY,
+            vec!["lname".to_owned()],
+            vec![field("name", text.clone()), field("lname", text.clone())],
+            "l'Upsert ancorato alla colonna generata si ferma perche quella colonna non si scrive",
+            ErrorCategory::DataMapping,
+            "colonna generata",
+        ),
+    ] {
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some(schema_name.to_owned()),
+                object: object.to_owned(),
+                layer_id: None,
+            },
+            mode: WriteMode::Upsert,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys,
+            // Vuote: le colonne da aggiornare si dichiarano solo per
+            // `WriteMode::Update`, e la prima stesura le passava anche
+            // all'Upsert — il piano rifiutava prima, e il preflight sugli
+            // indici non veniva mai raggiunto. La sonda lo ha detto invece di
+            // registrare quel rifiuto come se fosse il suo.
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        match provider
+            .prepare_write(
+                &secret(),
+                &operation,
+                schema(columns),
+                &budget,
+                cancellation,
+            )
+            .await
+        {
+            // Un Upsert preparato qui sarebbe la notizia: significherebbe che
+            // nessuna delle due guardie ha visto quello che c'era da vedere.
+            Ok(_) => recorder.accepted(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                "preparato: nessuna guardia ha rifiutato".to_owned(),
+            ),
+            Err(error) => {
+                let contract = RefusalContract {
+                    category,
+                    phase: ErrorPhase::Prepare,
+                    remote_effect: RemoteEffect::None,
+                    retry: RetryDisposition::Never,
+                    message_contains: expected,
+                };
+                match refusal_mismatch(&contract, &error) {
+                    None => recorder.rejected(
+                        probe,
+                        "provider",
+                        "profilo",
+                        question,
+                        condense(&format!(
+                            "{:?}/{:?}/{:?}/{:?}: {}",
+                            error.category,
+                            error.phase,
+                            error.remote_effect,
+                            error.retry,
+                            error.message
+                        )),
+                        None,
+                    ),
+                    Some(mismatch) => recorder.not_measured(
+                        probe,
+                        "provider",
+                        "profilo",
+                        question,
+                        &format!("rifiuto per un'altra ragione — {mismatch}"),
+                    ),
+                }
+            }
+        }
+    }
+}
+
 /// Il profilo del prodotto che sta rispondendo, scelto come lo sceglierebbe
 /// un provider: chiedendo al profilo `MySQL` se quel server e suo.
 ///
@@ -2322,6 +2643,7 @@ async fn profile_probes(
 
     functional_index_probes(recorder, profile, &pool, &schema_name, cancellation).await;
     profile_read_probes(recorder, profile, &schema_name, cancellation).await;
+    generated_column_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
 }
 
@@ -2333,6 +2655,7 @@ async fn profile_probes(
 /// da li discende un rifiuto; se pero su quel motore un indice su espressione
 /// non si puo nemmeno creare, quel rifiuto e una difesa contro un caso che il
 /// server non produce — che e una cosa diversa da un difetto, e va scritta.
+#[allow(clippy::too_many_lines)]
 async fn functional_index_probes(
     recorder: &mut Recorder,
     profile: &'static dyn ProductProfile,
@@ -2352,6 +2675,14 @@ async fn functional_index_probes(
         format!("CREATE INDEX plenora_idx_expression ON {SCRATCH} ((LOWER(text_utf8)))"),
     )
     .await;
+    // L'esito della DDL decide cosa il catalogo **deve** dire dopo: e la sola
+    // forma in cui questa sonda puo avere un contratto, perche i due prodotti
+    // partono da due punti diversi. Dove l'indice su espressione si crea, deve
+    // comparire una parte che il catalogo non sa attribuire a una colonna —
+    // altrimenti la regola che rifiuta gli Upsert su indici non confrontabili
+    // non sarebbe mai raggiungibile. Dove non si crea, quell'indice non deve
+    // esserci affatto.
+    let expression_index_exists = recorder.accepted_probe("raw.functional_index_ddl");
 
     match pool.checkout(cancellation).await {
         Ok(mut session) => {
@@ -2381,13 +2712,45 @@ async fn functional_index_probes(
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    recorder.accepted(
-                        "provider.profile_functional_index",
-                        "provider",
-                        "profilo",
-                        "come il catalogo descrive gli indici dopo il tentativo su espressione",
-                        truncate(&described, 160),
-                    );
+                    let functional = description
+                        .indexes
+                        .iter()
+                        .find(|index| index.name == "plenora_idx_expression");
+                    let question =
+                        "come il catalogo descrive gli indici dopo il tentativo su espressione";
+                    let mismatch = match (expression_index_exists, functional) {
+                        (true, None) => Some(
+                            "la DDL e stata accettata ma l'indice non compare nel catalogo"
+                                .to_owned(),
+                        ),
+                        (true, Some(index)) if index.column_backed => Some(format!(
+                            "l'indice su espressione risulta confrontabile per colonne ({:?}): \
+                             la regola che rifiuta un Upsert su un indice non \
+                             confrontabile non sarebbe raggiungibile",
+                            index.columns
+                        )),
+                        (false, Some(_)) => Some(
+                            "la DDL e stata rifiutata ma l'indice compare lo stesso".to_owned(),
+                        ),
+                        _ => None,
+                    };
+                    match mismatch {
+                        None => recorder.accepted(
+                            "provider.profile_functional_index",
+                            "provider",
+                            "profilo",
+                            question,
+                            truncate(&described, 160),
+                        ),
+                        Some(reason) => recorder.rejected(
+                            "provider.profile_functional_index",
+                            "provider",
+                            "profilo",
+                            question,
+                            condense(&format!("contratto non soddisfatto: {reason}")),
+                            None,
+                        ),
+                    }
                 }
                 Err(error) => recorder.rejected(
                     "provider.profile_functional_index",
