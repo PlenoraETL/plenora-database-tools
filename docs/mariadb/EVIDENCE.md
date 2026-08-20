@@ -508,19 +508,31 @@ continui a dirlo.
 | famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
 |---|---|---|---|---|---|
 | provider | profilo | `provider.profile_read_schema` | 14 campi, namespace `plenora.mysql.*` | 14 campi, namespace `plenora.mariadb.*` | 14 campi, namespace `plenora.mariadb.*` |
-| provider | profilo | `provider.profile_read_values` | quattordici colonne decodificate | **identico** | **identico** |
-| provider | profilo | `provider.profile_read_namespace` | chiave=`plenora.mysql.native_type` annotate=14 estranee=0 | chiave=`plenora.mariadb.native_type` annotate=14 estranee=0 | chiave=`plenora.mariadb.native_type` annotate=14 estranee=0 |
-| provider | profilo | `provider.profile_read_projection` | tre colonne, nell'ordine dichiarato | idem | idem |
-| provider | profilo | `provider.profile_read_filter` | righe=1, id=7 | righe=1, id=7 | righe=1, id=7 |
-| provider | profilo | `provider.profile_read_ordering` | asc=1 desc=8193 | asc=1 desc=8193 | asc=1 desc=8193 |
-| provider | profilo | `provider.profile_read_streaming` | batch=2 righe=8193 | batch=2 righe=8193 | batch=2 righe=8193 |
+| provider | profilo | `provider.profile_read_values` | digest `8501c769…` | **identico** | **identico** |
+| provider | profilo | `provider.profile_read_namespace` | annotate=14 estranee=0 su 14 campi | annotate=14 estranee=0 su 14 campi | annotate=14 estranee=0 su 14 campi |
+| provider | profilo | `provider.profile_read_projection` | tre colonne nell'ordine dichiarato | idem | idem |
+| provider | profilo | `provider.profile_read_filter_forms` | tredici forme, conteggi e prima riga attesi | idem | idem |
+| provider | profilo | `provider.profile_read_filter_closed_like` | **rifiutato** — LIKE case-insensitive | **rifiutato** | **rifiutato** |
+| provider | profilo | `provider.profile_read_filter_closed_spatial` | **rifiutato** — filtro spatial | **rifiutato** | **rifiutato** |
+| provider | profilo | `provider.profile_read_ordering_asc` | primo=1 | primo=1 | primo=1 |
+| provider | profilo | `provider.profile_read_ordering_desc` | primo=8193 | primo=8193 | primo=8193 |
+| provider | profilo | `provider.profile_read_streaming` | batch=2 righe=8193 digest `21b5b708…` | **identico** | **identico** |
 
 ### Cosa dice
 
+**Le sonde verificano un contratto, non l'assenza di errore.** E la
+correzione che ha cambiato la tranche: la prima stesura registrava `accepted`
+per qualunque `Ok`, quindi una projection ignorata, un ordinamento che non
+ordina o uno stream consegnato in un colpo solo sarebbero finiti verdi — su
+tutti e tre i server, con l'aria di una convergenza. Ogni sonda dichiara ora
+righe attese, colonne attese, batch attesi e primo valore atteso; il
+confronto e una funzione pura, e i suoi sei modi di fallire hanno un self-test
+offline ciascuno.
+
 **I valori coincidono per intero.** Quattordici famiglie di tipo, stesso
-contenuto decodificato sui tre server, confrontato sulla stringa completa e
-non su una rappresentazione troncata. E il risultato che il punto 1 doveva
-produrre, ed e quello che permette di aprire la lettura nelle capability.
+digest sui tre server — e il digest copre **tutti** i batch, non il primo:
+sulle 8193 righe dello stream lungo i tre server rendono `21b5b708…` senza
+differenze.
 
 **Lo streaming e misurato al taglio, non per abbondanza.** La tabella ha
 `DEFAULT_BATCH_ROWS + 1` righe, cioe la piu piccola che non puo stare in un
@@ -529,6 +541,21 @@ proprio limite, e uno solo avrebbe significato che lo ignora. La prima
 stesura provava a spezzare il batch con un budget di memoria stretto e ha
 misurato altro — i budget sono **cumulativi**, non per batch, quindi la
 lettura moriva di `ResourceLimit` a meta invece di consegnare piu batch.
+
+**Le tredici forme di filtro qualificate rendono cio che devono.**
+`filter = true` copriva una superficie dedotta da `id = ?`: ora ogni forma che
+il renderer qualifica — `Eq`, `Ne`, `Lt`, `Lte`, `Gt`, `Gte`, `IsNull`,
+`IsNotNull`, `In`, `Between`, `Like`, `And`, `Or` — ha il proprio conteggio e
+la propria prima riga, e i tre server rendono la stessa riga di esiti:
+`eq=1/7 ne=8192/1 lt=99/1 lte=100/1 gt=3/8191 gte=4/8190 is_null=2731/3
+is_not_null=5462/1 in=3/1 between=11/10 like=1/7 and=2/8191 or=2/1`. Il primo
+valore accanto al conteggio non e ridondante: novantanove righe le rende anche
+`id > 8093`.
+
+Le due forme che il renderer **non** qualifica — `LIKE` case-insensitive e il
+filtro spatial — restano rifiutate su tutti e tre, e hanno una sonda propria:
+senza, `filter = true` si leggerebbe come "tutte le forme", che e la lettura
+che il flag non sostiene.
 
 **Il namespace regge fino ai metadata pubblicati.** Quattordici campi
 annotati con la chiave del proprio prodotto, zero con quella dell'altro, su
@@ -564,7 +591,8 @@ quale delle due strade abbia ragione, e nessuna delle due ha torto.
 ### Cosa ne segue per le capability
 
 Quattro bandiere di lettura si aprono per MariaDB — `streaming`, `projection`,
-`filter`, `ordering` — e ciascuna ha la propria sonda. Le altre quattro
+`filter`, `ordering` — e ciascuna ha le proprie sonde, con attese esatte.
+`filter` copre le tredici forme qualificate e nessuna delle due chiuse. Le altre quattro
 restano chiuse perche il crate **non le offre a nessuno dei due prodotti**:
 `server_cursor`, `pagination`, `object_id_windows` e `resumable` sono false
 anche per MySQL, quindi qui non c'e niente da qualificare.

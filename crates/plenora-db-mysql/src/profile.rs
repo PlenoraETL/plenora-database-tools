@@ -853,11 +853,18 @@ impl ProductProfile for MariadbProfile {
         // provate.
         //
         // La lettura e la prima ad aprirsi, ed e la quinta tranche a
-        // sostenerla: `provider.profile_read_values` ha decodificato le
-        // quattordici famiglie di tipo con lo stesso contenuto sui tre
-        // riferimenti, `provider.profile_read_streaming` ha consegnato due
-        // batch su 8193 righe — il taglio del lettore, non un caso —, e
-        // proiezione, filtro e ordinamento hanno ciascuno la propria sonda.
+        // sostenerla, con sonde che verificano un contratto invece di
+        // limitarsi a non fallire: `provider.profile_read_values` ha
+        // decodificato le quattordici famiglie di tipo con lo stesso digest
+        // sui tre riferimenti, `provider.profile_read_streaming` ha consegnato
+        // due batch su 8193 righe — il taglio del lettore, non un caso — e
+        // `provider.profile_read_filter_forms` ha verificato **tutte e
+        // tredici** le forme che il renderer qualifica, ciascuna con il
+        // proprio conteggio e la propria prima riga.
+        //
+        // `filter` significa quelle tredici, non "qualunque filtro": le due
+        // che il renderer rifiuta — `LIKE` case-insensitive e il filtro
+        // spatial — hanno una sonda che verifica che restino rifiutate.
         //
         // Le scritture no: nessun piano di scrittura e mai stato eseguito con
         // questo profilo, e restano chiuse per intero.

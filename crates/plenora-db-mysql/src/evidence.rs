@@ -214,9 +214,236 @@ pub(crate) fn server_code_in_message(message: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
+/// Cosa una lettura ha prodotto, per intero.
+///
+/// Il conteggio dei batch e il digest esistono per la stessa ragione: una
+/// sonda che si fermasse al primo batch non distingue una lettura che streamma
+/// da una che materializza tutto e la consegna in un colpo solo, e un
+/// confronto sul solo primo batch direbbe "identici" di due stream che
+/// divergono alla riga successiva.
+#[derive(Debug, Default)]
+pub(crate) struct ReadOutcome {
+    pub(crate) batches: usize,
+    pub(crate) rows: usize,
+    /// I nomi dei campi, nell'ordine in cui la lettura li pubblica.
+    pub(crate) names: Vec<String>,
+    /// Lo schema leggibile, metadata compresi.
+    pub(crate) schema: String,
+    /// Il **primo** batch, per chi legge il verdetto. Il confronto fra server
+    /// non passa di qui ma dal digest, che copre tutti i batch.
+    pub(crate) first_batch: String,
+    /// L'impronta di **tutto** cio che e stato decodificato.
+    pub(crate) digest: String,
+    /// Campi annotati con la chiave del proprio prodotto, e con quella
+    /// dell'altro.
+    pub(crate) own_namespace: usize,
+    pub(crate) foreign_namespace: usize,
+    /// Il primo valore intero della prima colonna, quando c'e: e cio che
+    /// distingue un ordinamento ascendente da uno discendente.
+    pub(crate) first_integer: Option<i64>,
+}
+
+/// Cosa una sonda di lettura pretende di osservare.
+///
+/// Esiste perche `accepted` non diventi "la chiamata non ha dato errore". Una
+/// projection ignorata, un ordinamento che non ordina, uno stream che
+/// consegna un batch solo: tutte e tre restituiscono `Ok`, e senza attese
+/// esatte finirebbero verdi — su tutti e tre i server, il che le farebbe
+/// sembrare pure una convergenza.
+#[derive(Debug)]
+pub(crate) struct ReadContract {
+    /// I nomi attesi, nell'ordine. Vuoto significa "non e questa la domanda".
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) rows: usize,
+    /// I batch attesi. `None` quando la sonda non parla di streaming.
+    pub(crate) batches: Option<usize>,
+    /// Il primo intero atteso, per le sonde su ordinamento e filtro.
+    pub(crate) first_integer: Option<i64>,
+}
+
+/// Cosa manca perche l'osservazione soddisfi il contratto, o `None`.
+///
+/// Restituisce la **prima** differenza e non tutte: il verdetto deve dire
+/// cosa e successo, e un elenco di sei righe su una sonda che ne ha sbagliata
+/// una sola si legge peggio.
+pub(crate) fn read_mismatch(contract: &ReadContract, outcome: &ReadOutcome) -> Option<String> {
+    if !contract.columns.is_empty() && outcome.names != contract.columns {
+        return Some(format!(
+            "colonne attese {:?}, osservate {:?}",
+            contract.columns, outcome.names
+        ));
+    }
+    if outcome.rows != contract.rows {
+        return Some(format!(
+            "righe attese {}, osservate {}",
+            contract.rows, outcome.rows
+        ));
+    }
+    if let Some(batches) = contract.batches {
+        if outcome.batches != batches {
+            return Some(format!(
+                "batch attesi {batches}, osservati {}",
+                outcome.batches
+            ));
+        }
+    }
+    if contract.first_integer.is_some() && outcome.first_integer != contract.first_integer {
+        return Some(format!(
+            "primo valore atteso {:?}, osservato {:?}",
+            contract.first_integer, outcome.first_integer
+        ));
+    }
+    // Il namespace non e un parametro del contratto: e sempre lo stesso
+    // requisito, e vale per ogni lettura. Ogni campo pubblicato porta la
+    // chiave del proprio prodotto, e nessuno porta quella dell'altro.
+    if outcome.foreign_namespace != 0 {
+        return Some(format!(
+            "{} campi annotati con il namespace dell'altro prodotto",
+            outcome.foreign_namespace
+        ));
+    }
+    if !outcome.names.is_empty() && outcome.own_namespace != outcome.names.len() {
+        return Some(format!(
+            "campi annotati {} su {}",
+            outcome.own_namespace,
+            outcome.names.len()
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{server_code_in_message, sql_assignments};
+    use super::{
+        read_mismatch, server_code_in_message, sql_assignments, ReadContract, ReadOutcome,
+    };
+
+    fn observed() -> ReadOutcome {
+        ReadOutcome {
+            batches: 2,
+            rows: 8_193,
+            names: vec!["id".to_owned(), "payload".to_owned()],
+            schema: String::new(),
+            first_batch: String::new(),
+            digest: String::new(),
+            own_namespace: 2,
+            foreign_namespace: 0,
+            first_integer: Some(1),
+        }
+    }
+
+    fn contract() -> ReadContract {
+        ReadContract {
+            columns: &["id", "payload"],
+            rows: 8_193,
+            batches: Some(2),
+            first_integer: Some(1),
+        }
+    }
+
+    #[test]
+    fn a_read_that_meets_the_contract_has_nothing_to_report() {
+        assert_eq!(read_mismatch(&contract(), &observed()), None);
+    }
+
+    #[test]
+    fn every_clause_of_the_read_contract_can_fail_on_its_own() {
+        // Una per difetto, e sono i difetti che le sonde live non potrebbero
+        // distinguere da un successo: la projection ignorata, il filtro che
+        // non filtra, l'ordinamento che non ordina, lo stream che consegna
+        // tutto in un colpo, il namespace dell'altro prodotto.
+        //
+        // Sono tutti casi che restituiscono `Ok` al chiamante, ed e la
+        // ragione per cui esiste questo validatore invece di un `is_ok()`.
+        let perturbations: Vec<(&str, ReadOutcome, &str)> = vec![
+            (
+                "projection ignorata",
+                ReadOutcome {
+                    names: vec!["id".to_owned(), "payload".to_owned(), "label".to_owned()],
+                    own_namespace: 3,
+                    ..observed()
+                },
+                "colonne attese",
+            ),
+            (
+                "filtro che non filtra",
+                ReadOutcome {
+                    rows: 8_192,
+                    ..observed()
+                },
+                "righe attese",
+            ),
+            (
+                "stream consegnato in un colpo solo",
+                ReadOutcome {
+                    batches: 1,
+                    ..observed()
+                },
+                "batch attesi",
+            ),
+            (
+                "ordinamento che non ordina",
+                ReadOutcome {
+                    first_integer: Some(8_193),
+                    ..observed()
+                },
+                "primo valore atteso",
+            ),
+            (
+                "namespace dell'altro prodotto",
+                ReadOutcome {
+                    foreign_namespace: 1,
+                    ..observed()
+                },
+                "namespace dell'altro prodotto",
+            ),
+            (
+                "campo senza annotazione",
+                ReadOutcome {
+                    own_namespace: 1,
+                    ..observed()
+                },
+                "campi annotati",
+            ),
+        ];
+        for (what, outcome, expected) in perturbations {
+            let reported = read_mismatch(&contract(), &outcome)
+                .unwrap_or_else(|| panic!("{what}: il validatore non se n'e accorto"));
+            assert!(
+                reported.contains(expected),
+                "{what}: il verdetto non dice cosa manca — {reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_contract_without_a_question_does_not_invent_one() {
+        // `columns` vuoto e `batches`/`first_integer` assenti significano "non
+        // e questa la domanda", non "va bene qualunque cosa": cio che resta
+        // dichiarato continua a essere verificato.
+        let loose = ReadContract {
+            columns: &[],
+            rows: 8_193,
+            batches: None,
+            first_integer: None,
+        };
+        let different = ReadOutcome {
+            names: vec!["altro".to_owned()],
+            own_namespace: 1,
+            batches: 9,
+            first_integer: Some(42),
+            ..observed()
+        };
+        assert_eq!(read_mismatch(&loose, &different), None);
+        assert!(read_mismatch(
+            &loose,
+            &ReadOutcome {
+                rows: 1,
+                ..observed()
+            }
+        )
+        .is_some());
+    }
 
     #[test]
     fn assignments_survive_a_comma_inside_a_quoted_value() {
