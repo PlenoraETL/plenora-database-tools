@@ -123,23 +123,63 @@ fn pool(connections: usize) -> Result<crate::MysqlPool, DatabaseError> {
     crate::MysqlPool::new_with_profile(&config(), connections, &MYSQL_PROFILE)
 }
 
-/// Le attese del bootstrap devono descrivere la costante che si sta misurando.
+/// Le assegnazioni di `SESSION_BOOTSTRAP_SQL`, come coppie nome/valore.
+///
+/// Le virgole dentro un valore quotato non separano: `sql_mode` ne contiene
+/// due, e uno split ingenuo produrrebbe tre assegnazioni inventate.
+fn bootstrap_assignments() -> Vec<(String, String)> {
+    let body = crate::SESSION_BOOTSTRAP_SQL
+        .strip_prefix("SET SESSION ")
+        .expect("SESSION_BOOTSTRAP_SQL deve cominciare con SET SESSION: harness");
+    let mut assignments = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for character in body.chars() {
+        match character {
+            '\'' => {
+                quoted = !quoted;
+            }
+            ',' if !quoted => {
+                assignments.push(std::mem::take(&mut current));
+            }
+            other => current.push(other),
+        }
+    }
+    assignments.push(current);
+    assignments
+        .into_iter()
+        .map(|assignment| {
+            let (name, value) = assignment
+                .split_once('=')
+                .expect("assegnazione senza '=': harness, non divergenza");
+            (name.trim().to_owned(), value.trim().to_owned())
+        })
+        .collect()
+}
+
+/// Le attese devono descrivere lo statement **intero**, non parte di esso.
+///
+/// Verificare tre sottostringhe lasciava passare una quarta assegnazione: la
+/// costante avrebbe fissato una variabile che nessuna sonda osserva, e la
+/// matrice avrebbe continuato a dichiarare che il bootstrap e misurato. Qui
+/// l'insieme delle assegnazioni deve coincidere, nome per nome e valore per
+/// valore, con quello che le sonde rileggono.
 ///
 /// # Panics
 ///
 /// Se divergono: e un guasto dell'harness, va chiuso prima di leggere i
 /// numeri e non registrato come divergenza fra server.
 fn expectations_match_the_bootstrap() {
-    for expected in [
-        format!("autocommit = {EXPECTED_AUTOCOMMIT}"),
-        format!("time_zone = '{EXPECTED_TIME_ZONE}'"),
-        format!("sql_mode = '{EXPECTED_SQL_MODE}'"),
-    ] {
-        assert!(
-            crate::SESSION_BOOTSTRAP_SQL.contains(&expected),
-            "l'attesa {expected} non compare in SESSION_BOOTSTRAP_SQL: harness, non divergenza"
-        );
-    }
+    let observed = bootstrap_assignments();
+    let expected = vec![
+        ("autocommit".to_owned(), EXPECTED_AUTOCOMMIT.to_owned()),
+        ("time_zone".to_owned(), EXPECTED_TIME_ZONE.to_owned()),
+        ("sql_mode".to_owned(), EXPECTED_SQL_MODE.to_owned()),
+    ];
+    assert_eq!(
+        observed, expected,
+        "SESSION_BOOTSTRAP_SQL fissa assegnazioni diverse da quelle attese e osservate:          harness, non divergenza. Se ne e stata aggiunta una, va aggiunta anche alla          lettura, altrimenti resterebbe fissata e mai verificata"
+    );
 }
 
 fn describe(autocommit: &str, time_zone: &str, sql_mode: &str) -> String {
@@ -326,6 +366,28 @@ async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
     ))
 }
 
+/// Il codice con cui il server rifiuta una scrittura in transazione read-only.
+///
+/// `ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION`. Se un prodotto ne usasse un
+/// altro, la sonda lo registra come rifiuto: e una divergenza, non un
+/// dettaglio, perche la classificazione decide se il chiamante puo ritentare.
+const READ_ONLY_REFUSAL_CODE: u16 = 1_792;
+
+/// Il codice del server dentro un `DatabaseError`, quando c'e.
+///
+/// Il contratto non porta un campo per il codice: lo porta il messaggio, che
+/// la classificazione compone come `(codice N)`. Leggerlo di li e una
+/// dipendenza dal testo, e va detto — se quella forma cambiasse, questa sonda
+/// fallirebbe invece di tacere, che e il verso giusto in cui rompersi.
+fn server_error_code(error: &DatabaseError) -> Option<u16> {
+    let at = error.message.find("codice ")? + "codice ".len();
+    let digits: String = error.message[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
 /// Una scrittura dentro la transazione: ammessa o rifiutata dalla modalita.
 async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Probe {
     let options = TransactionOptions {
@@ -353,10 +415,24 @@ async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Pro
             &cancel,
         )
         .await;
-    let admitted = attempt.is_ok();
+    // Un rifiuto qualunque non basta. Con `admits=false` sarebbero passati
+    // una tabella assente, un timeout, una connessione persa: tutti errori,
+    // nessuno dei quali dice che la transazione e read-only. La sonda
+    // pretende il codice del server, e registra categoria ed effetto remoto
+    // accanto, cosi una classificazione diversa fra i due prodotti si vede
+    // come divergenza invece di sparire dentro "rifiutata".
     let observed = match &attempt {
         Ok(_) => "scrittura ammessa".to_owned(),
-        Err(error) => format!("scrittura rifiutata ({:?})", error.category),
+        Err(error) => format!(
+            "scrittura rifiutata codice={} categoria={:?} effetto={:?}",
+            server_error_code(error).map_or_else(|| "assente".to_owned(), |code| code.to_string()),
+            error.category,
+            error.remote_effect
+        ),
+    };
+    let satisfied = match &attempt {
+        Ok(_) => admits,
+        Err(error) => !admits && server_error_code(error) == Some(READ_ONLY_REFUSAL_CODE),
     };
     let _ = Box::new(transaction).rollback(&cancel).await;
 
@@ -371,11 +447,11 @@ async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Pro
     Ok(Measured::new(
         observed,
         if admits {
-            "scrittura ammessa"
+            "scrittura ammessa".to_owned()
         } else {
-            "scrittura rifiutata"
+            format!("scrittura rifiutata con codice {READ_ONLY_REFUSAL_CODE}")
         },
-        admitted == admits,
+        satisfied,
     ))
 }
 

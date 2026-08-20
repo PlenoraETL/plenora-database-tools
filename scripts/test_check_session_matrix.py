@@ -154,6 +154,79 @@ class SessionMatrixTests(unittest.TestCase):
             self.skipTest(f"{MATRIX.EVIDENCE} non ancora generato")
         return MATRIX.EVIDENCE.read_text(encoding="utf-8")
 
+    def run_verdict(self, changes, heads, spy):
+        """Esegue `verdict()` sostituendo cio che tocca l'host.
+
+        Il documento gia generato non dice se i preflight esistono ancora:
+        toglierli dal runner lo lascerebbe identico. Qui si chiama la funzione
+        vera, con le sole letture di git e Docker sostituite, e si guarda se
+        rifiuta — e se rifiuta **prima** di misurare.
+        """
+
+        original = {
+            name: getattr(MATRIX, name)
+            for name in ("worktree_changes", "head", "servers", "running_digest", "measure")
+        }
+        changes = list(changes)
+        heads = list(heads)
+        try:
+            MATRIX.worktree_changes = lambda: changes.pop(0) if changes else []
+            MATRIX.head = lambda: heads.pop(0) if heads else "commit"
+            MATRIX.servers = spy.servers
+            MATRIX.running_digest = spy.running_digest
+            MATRIX.measure = spy.measure
+            return MATRIX.verdict()
+        finally:
+            for name, value in original.items():
+                setattr(MATRIX, name, value)
+
+    def spy(self):
+        fleet = MATRIX.servers()
+        outer = self
+
+        class Spy:
+            def __init__(self) -> None:
+                self.measured = 0
+
+            def servers(self):
+                return fleet
+
+            def running_digest(self, container):
+                for server in fleet:
+                    if server.container == container:
+                        return server.digest
+                raise AssertionError(container)
+
+            def measure(self, server, marker, command):
+                self.measured += 1
+                return outer_documents(fleet)[server.key]
+
+        def outer_documents(fleet):
+            return documents(fleet)
+
+        _ = outer
+        return Spy()
+
+    def test_a_dirty_tree_is_refused_before_any_measure(self) -> None:
+        spy = self.spy()
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_verdict([[" M crates/x.rs"]], ["commit"], spy)
+        self.assertIn("albero con modifiche non committate", str(raised.exception))
+        self.assertEqual(spy.measured, 0, "il rifiuto deve precedere Docker")
+
+    def test_a_head_that_moves_during_the_run_is_refused(self) -> None:
+        spy = self.spy()
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_verdict([[], []], ["prima", "dopo", "dopo"], spy)
+        self.assertIn("HEAD e cambiato", str(raised.exception))
+        self.assertEqual(spy.measured, 3, "le misure erano gia partite")
+
+    def test_a_tree_touched_during_the_run_is_refused(self) -> None:
+        spy = self.spy()
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_verdict([[], [" M crates/x.rs"]], ["commit"], spy)
+        self.assertIn("albero e cambiato durante la misura", str(raised.exception))
+
     def test_the_generated_document_declares_it_is_generated(self) -> None:
         text = self.recorded_matrix()
         self.assertIn("non modificare a mano", text)
