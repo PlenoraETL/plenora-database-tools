@@ -108,7 +108,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::the_functional_index_flag_matches_the_query_that_supports_it",
     "profile::tests::the_guarded_module_list_covers_every_production_module",
     "profile::tests::the_mapper_rejections_name_the_profile_that_refused",
-    "profile::tests::the_mariadb_capabilities_are_closed_where_nothing_was_measured",
+    "profile::tests::the_mariadb_capabilities_open_only_where_a_probe_supports_them",
     "profile::tests::the_mariadb_catalog_differs_only_where_the_measure_says_so",
     "profile::tests::the_mariadb_timeout_diverges_in_name_and_in_unit",
     "profile::tests::the_pool_keeps_naming_the_product_when_it_rebuilds_the_options",

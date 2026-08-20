@@ -846,31 +846,38 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
-        // Fail-closed per intero, e non per prudenza generica: nessuna delle
-        // superfici che queste bandiere dichiarano e stata misurata **end to
-        // end** su MariaDB. `provider.read` e `provider.read_geometry` restano
-        // `not_measured` perche dipendono da `describe_object`, che sui due
-        // riferimenti non raggiungeva il catalogo; nessun piano di scrittura e
-        // mai stato eseguito.
-        //
+        // Le bandiere si aprono una alla volta, ciascuna con la sua misura.
         // Ereditare la tabella di MySQL era il difetto originale che ADR 0010
         // e 0014 hanno nominato: dichiarava qualificate sei write mode e
         // ventisei funzioni spatial su un prodotto su cui nessuno le aveva
-        // provate. Ogni `true` qui sotto tornera una alla volta, ciascuno con
-        // la sua misura.
+        // provate.
+        //
+        // La lettura e la prima ad aprirsi, ed e la quinta tranche a
+        // sostenerla: `provider.profile_read_values` ha decodificato le
+        // quattordici famiglie di tipo con lo stesso contenuto sui tre
+        // riferimenti, `provider.profile_read_streaming` ha consegnato due
+        // batch su 8193 righe — il taglio del lettore, non un caso —, e
+        // proiezione, filtro e ordinamento hanno ciascuno la propria sonda.
+        //
+        // Le scritture no: nessun piano di scrittura e mai stato eseguito con
+        // questo profilo, e restano chiuse per intero.
         ProviderCapabilities {
             schema_version: 1,
             provider: self.kind(),
             provider_version,
             extension_versions: BTreeMap::new(),
             reads: ReadCapabilities {
-                streaming: false,
+                // Le quattro misurate. `server_cursor`, `pagination`,
+                // `object_id_windows` e `resumable` restano false perche il
+                // crate non li offre a nessuno dei due prodotti: sono chiusi
+                // anche per MySQL, e qui non c'e niente da qualificare.
+                streaming: true,
                 server_cursor: false,
                 pagination: false,
                 object_id_windows: false,
-                projection: false,
-                filter: false,
-                ordering: false,
+                projection: true,
+                filter: true,
+                ordering: true,
                 resumable: false,
             },
             writes: WriteCapabilities {
@@ -3084,19 +3091,31 @@ mod tests {
     }
 
     #[test]
-    fn the_mariadb_capabilities_are_closed_where_nothing_was_measured() {
+    fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
         let published = MARIADB_PROFILE.capabilities("11.8.8-MariaDB".to_owned());
         assert_eq!(published.provider, ProviderKind::Mariadb);
         assert_eq!(published.provider_version, "11.8.8-MariaDB");
 
-        // Lettura e scrittura: nessuna delle due e mai stata attraversata
-        // end to end su MariaDB, e una capability non provata si dichiara
-        // chiusa. Il difetto che ADR 0010 e 0014 hanno nominato era
-        // esattamente l'ereditarieta di questa tabella.
+        // La lettura e aperta, e ognuna delle quattro ha una sonda che la
+        // sostiene: valori, streaming, proiezione, filtro, ordinamento. Le
+        // altre quattro restano chiuse perche il crate non le offre a
+        // nessuno dei due prodotti — non perche siano state provate e
+        // fallite.
         let reads = &published.reads;
-        assert!(!reads.streaming && !reads.projection && !reads.filter && !reads.ordering);
+        assert!(reads.streaming && reads.projection && reads.filter && reads.ordering);
         assert!(!reads.server_cursor && !reads.pagination && !reads.object_id_windows);
         assert!(!reads.resumable);
+        // E dove il crate non offre niente, i due prodotti dicono la stessa
+        // cosa: una bandiera chiusa qui non e una divergenza di prodotto.
+        let mysql_reads = &MYSQL_PROFILE.capabilities("9.7.2".to_owned()).reads;
+        assert_eq!(reads.server_cursor, mysql_reads.server_cursor);
+        assert_eq!(reads.pagination, mysql_reads.pagination);
+        assert_eq!(reads.object_id_windows, mysql_reads.object_id_windows);
+        assert_eq!(reads.resumable, mysql_reads.resumable);
+
+        // La scrittura no: nessun piano e mai stato eseguito con questo
+        // profilo, ed e la differenza che rende leggibile la tabella — non
+        // "tutto chiuso", ma "chiuso cio che non e stato attraversato".
         let writes = &published.writes;
         assert!(!writes.create && !writes.append && !writes.update);
         assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
@@ -3137,10 +3156,13 @@ mod tests {
         );
 
         // E il confronto che rende la chiusura osservabile: dove MySQL
-        // dichiara qualificato, MariaDB non lo fa.
+        // dichiara qualificata la scrittura e lo spatial, MariaDB non lo fa.
+        // La lettura invece ora coincide, ed e il primo punto in cui i due
+        // prodotti dichiarano la stessa cosa perche entrambi l'hanno provata.
         let mysql = MYSQL_PROFILE.capabilities("9.7.2".to_owned());
-        assert!(mysql.reads.streaming && mysql.writes.append && mysql.spatial.read_wkb);
+        assert!(mysql.writes.append && mysql.spatial.read_wkb);
         assert!(!mysql.spatial.functions.is_empty());
+        assert_eq!(mysql.reads, published.reads);
     }
 
     #[test]

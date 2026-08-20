@@ -39,7 +39,10 @@ use crate::evidence::{
 use crate::profile::{ProductProfile, MARIADB_PROFILE, MYSQL_PROFILE};
 use crate::{MysqlConfig, MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
-use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
+use plenora_database_core::plan::{
+    FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection,
+};
+use plenora_database_core::protocol;
 use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
@@ -47,6 +50,7 @@ use plenora_database_core::query::{
 use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
 use plenora_database_core::{CancellationToken, ResourceBudget, ResourceLimits};
 use serde_json::json;
+use std::fmt::Write as _;
 
 /// Il marcatore che il runner cerca nell'output di `cargo test --nocapture`.
 const MARKER: &str = "PLENORA_MARIADB_EVIDENCE ";
@@ -60,6 +64,9 @@ const SCRATCH: &str = "plenora_driver_evidence";
 /// lettura di quella tabella. Tenendole insieme, la sonda sul mapping wire
 /// misurava quella regola invece dei tipi.
 const SCRATCH_GEO: &str = "plenora_driver_evidence_geo";
+
+/// La tabella delle sonde di lettura: righe abbastanza da spezzare un batch.
+const SCRATCH_ROWS: &str = "plenora_driver_evidence_rows";
 
 /// La tabella delle sonde sugli errori: vincoli da violare e righe da bloccare.
 const SCRATCH_LOCK: &str = "plenora_driver_evidence_lock";
@@ -1080,6 +1087,454 @@ async fn cancellation_probes(
 // classificazione del profilo deve riconoscerlo.
 // --------------------------------------------------------------------------
 
+/// Quante righe mette la tabella su cui si misura lo streaming.
+///
+/// `DEFAULT_BATCH_ROWS + 1`, cioe la tabella piu piccola che **non** puo stare
+/// in un batch solo. Il numero non e scelto per abbondanza: e il taglio del
+/// lettore, quindi una lettura che ne consegna due sta streammando e una che
+/// ne consegna uno ha ignorato il proprio limite.
+///
+/// La prima stesura provava a spezzare il batch con un budget di memoria
+/// stretto, e ha misurato altro: i budget sono **cumulativi**, non per batch,
+/// quindi la lettura moriva di `ResourceLimit` a meta invece di consegnare
+/// piu batch. Il budget qui e percio largo, e a spezzare e solo il conteggio
+/// delle righe.
+const STREAMING_ROWS: usize = crate::DEFAULT_BATCH_ROWS + 1;
+
+/// Cosa una lettura ha prodotto, per intero.
+///
+/// Il conteggio dei batch e la ragione per cui questa struttura esiste: una
+/// sonda che si fermasse al primo batch — come fa quella storica — non
+/// distingue una lettura che streamma da una che materializza tutto e la
+/// consegna in un colpo solo.
+struct ReadOutcome {
+    batches: usize,
+    rows: usize,
+    schema: String,
+    values: String,
+    foreign_namespace: usize,
+    own_namespace: usize,
+}
+
+/// Consuma uno stream fino in fondo e ne descrive il contenuto.
+async fn drain_read(
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<ReadOutcome, plenora_database_core::DatabaseError> {
+    let mut stream = provider
+        .read(&secret(), operation, parameters, budget, cancellation)
+        .await?;
+    let keys = profile.metadata_keys();
+    let foreign = if keys.native_type == protocol::MYSQL_NATIVE_TYPE {
+        protocol::MARIADB_NATIVE_TYPE
+    } else {
+        protocol::MYSQL_NATIVE_TYPE
+    };
+    let mut outcome = ReadOutcome {
+        batches: 0,
+        rows: 0,
+        schema: String::new(),
+        values: String::new(),
+        foreign_namespace: 0,
+        own_namespace: 0,
+    };
+    while let Some(batch) = stream.next_batch(cancellation).await? {
+        if outcome.batches == 0 {
+            outcome.schema = batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| {
+                    let mut metadata = field
+                        .metadata()
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect::<Vec<_>>();
+                    metadata.sort();
+                    format!(
+                        "{}:{:?}/{}/{{{}}}",
+                        field.name(),
+                        field.data_type(),
+                        field.is_nullable(),
+                        metadata.join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Nessun troncamento: il confronto fra server e su questa
+            // stringa, e il runner ne calcola il digest.
+            outcome.values = batch
+                .columns()
+                .iter()
+                .map(|column| condense(&format!("{column:?}")))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            for field in batch.schema().fields() {
+                outcome.own_namespace +=
+                    usize::from(field.metadata().contains_key(keys.native_type));
+                outcome.foreign_namespace += usize::from(field.metadata().contains_key(foreign));
+            }
+        }
+        outcome.batches += 1;
+        outcome.rows += batch.num_rows();
+    }
+    Ok(outcome)
+}
+
+/// `provider.read` attraversato con il profilo del prodotto, fino al contenuto.
+///
+/// E il punto 1 della fase 3: schema, valori e namespace sui due riferimenti
+/// qualificati. La sonda storica `provider.read` resta dov'e e continua a
+/// misurare il provider `MySQL`; questa misura cosa succede quando a leggere e
+/// il profilo che il prodotto merita, ed e l'unica che su `MariaDB` arriva
+/// in fondo — l'altra si ferma al catalogo che non risponde.
+///
+/// Le cinque sonde sono separate perche rispondono a domande separate, e una
+/// sola riga verde su tutte non direbbe **quale** parte regge.
+#[allow(clippy::too_many_lines)]
+async fn profile_read_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: 4_096,
+        memory_bytes: 256 * 1_024,
+        output_bytes: 8 * 1_024 * 1_024,
+        cell_bytes: 2 * 1_024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget della misura: harness, non divergenza");
+    let source = |object: &str| ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: object.to_owned(),
+        layer_id: None,
+    };
+    let ordered = |object: &str| ReadOperation {
+        source: source(object),
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        filter: None,
+    };
+
+    // 1-3: schema, valori e namespace dalla stessa lettura. Tre osservazioni
+    // e non una perche una riga sola direbbe "la lettura funziona" senza dire
+    // se a coincidere sia il tipo, il valore o l'annotazione.
+    let full = drain_read(
+        &provider,
+        profile,
+        &ordered(SCRATCH),
+        &ParameterBag::default(),
+        &budget,
+        cancellation,
+    )
+    .await;
+    match full {
+        Ok(outcome) => {
+            recorder.accepted(
+                "provider.profile_read_schema",
+                "provider",
+                "profilo",
+                "lo schema Arrow che la lettura pubblica, metadata compresi",
+                outcome.schema.clone(),
+            );
+            recorder.accepted(
+                "provider.profile_read_values",
+                "provider",
+                "profilo",
+                "i valori decodificati dalla lettura, per intero",
+                outcome.values.clone(),
+            );
+            recorder.accepted(
+                "provider.profile_read_namespace",
+                "provider",
+                "profilo",
+                "sotto quale namespace la lettura annota le colonne",
+                format!(
+                    "chiave={} annotate={} estranee={} righe={} batch={}",
+                    profile.metadata_keys().native_type,
+                    outcome.own_namespace,
+                    outcome.foreign_namespace,
+                    outcome.rows,
+                    outcome.batches
+                ),
+            );
+        }
+        Err(error) => {
+            for probe in [
+                "provider.profile_read_schema",
+                "provider.profile_read_values",
+                "provider.profile_read_namespace",
+            ] {
+                recorder.rejected(
+                    probe,
+                    "provider",
+                    "profilo",
+                    "legge un oggetto per intero con il profilo del prodotto",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                );
+            }
+        }
+    }
+
+    // 4: proiezione. Un sottoinsieme dichiarato deve tornare quello, in
+    // quell'ordine: e la differenza fra "il provider accetta una projection" e
+    // "la projection decide cosa esce".
+    let projected = ReadOperation {
+        projection: vec![
+            "text_utf8".to_owned(),
+            "id".to_owned(),
+            "exact_decimal".to_owned(),
+        ],
+        ..ordered(SCRATCH)
+    };
+    match drain_read(
+        &provider,
+        profile,
+        &projected,
+        &ParameterBag::default(),
+        &budget,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_read_projection",
+            "provider",
+            "profilo",
+            "una projection dichiarata decide quali colonne escono, e in quale ordine",
+            outcome.schema,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_read_projection",
+            "provider",
+            "profilo",
+            "una projection dichiarata decide quali colonne escono, e in quale ordine",
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    streaming_read_probes(
+        recorder,
+        &provider,
+        profile,
+        schema_name,
+        &budget,
+        cancellation,
+    )
+    .await;
+}
+
+/// Filtro, ordinamento e streaming, su una tabella fatta per questo.
+///
+/// Le tre sonde vogliono piu di una riga: un filtro che non esclude niente,
+/// un ordinamento su un elemento solo e uno stream che finisce al primo batch
+/// non distinguono un provider che le implementa da uno che le ignora.
+#[allow(clippy::too_many_lines)]
+async fn streaming_read_probes(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) {
+    let mut connection = open_connection().await;
+    let mut values = String::new();
+    for id in 1..=STREAMING_ROWS {
+        if id > 1 {
+            values.push(',');
+        }
+        // Un payload di lunghezza fissa: il batch si spezza per memoria, e una
+        // riga di dimensione variabile renderebbe il punto in cui si spezza
+        // diverso da corsa a corsa.
+        let _ = write!(&mut values, "({id},'{id:064}')");
+    }
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_ROWS}"),
+        format!(
+            "CREATE TABLE {SCRATCH_ROWS} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(64) NOT NULL) ENGINE = InnoDB"
+        ),
+        format!("INSERT INTO {SCRATCH_ROWS} (id, payload) VALUES {values}"),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella delle sonde di lettura: harness, non divergenza");
+    }
+
+    let source = ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: SCRATCH_ROWS.to_owned(),
+        layer_id: None,
+    };
+    let ascending = ReadOperation {
+        source: source.clone(),
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        filter: None,
+    };
+
+    // Filtro: una riga su cinquecentododici, scelta per parametro.
+    let filtered = ReadOperation {
+        row_limit: None,
+        filter: Some(FilterExpression::Eq {
+            field: "id".to_owned(),
+            parameter: "wanted".to_owned(),
+        }),
+        ..ascending.clone()
+    };
+    let parameters = ParameterBag::new(std::collections::BTreeMap::from([(
+        "wanted".to_owned(),
+        plenora_database_core::provider::ParameterValue::I64(7),
+    )]));
+    match drain_read(
+        provider,
+        profile,
+        &filtered,
+        &parameters,
+        budget,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_read_filter",
+            "provider",
+            "profilo",
+            "un filtro per parametro riduce le righe a quelle che lo soddisfano",
+            format!(
+                "righe={} valori={}",
+                outcome.rows,
+                truncate(&outcome.values, 120)
+            ),
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_read_filter",
+            "provider",
+            "profilo",
+            "un filtro per parametro riduce le righe a quelle che lo soddisfano",
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // Ordinamento: la prima riga dell'ordine discendente non e la prima di
+    // quello ascendente, ed e l'unica osservazione che li distingue.
+    let descending = ReadOperation {
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Desc,
+        }],
+        row_limit: Some(1),
+        ..ascending.clone()
+    };
+    let first_of = |outcome: &ReadOutcome| truncate(&outcome.values, 60);
+    let ascending_first = ReadOperation {
+        row_limit: Some(1),
+        ..ascending.clone()
+    };
+    match (
+        drain_read(
+            provider,
+            profile,
+            &ascending_first,
+            &ParameterBag::default(),
+            budget,
+            cancellation,
+        )
+        .await,
+        drain_read(
+            provider,
+            profile,
+            &descending,
+            &ParameterBag::default(),
+            budget,
+            cancellation,
+        )
+        .await,
+    ) {
+        (Ok(first), Ok(last)) => recorder.accepted(
+            "provider.profile_read_ordering",
+            "provider",
+            "profilo",
+            "l'ordinamento dichiarato decide quale riga arriva per prima",
+            format!("asc={} desc={}", first_of(&first), first_of(&last)),
+        ),
+        (Err(error), _) | (Ok(_), Err(error)) => recorder.rejected(
+            "provider.profile_read_ordering",
+            "provider",
+            "profilo",
+            "l'ordinamento dichiarato decide quale riga arriva per prima",
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // Streaming: lo stesso oggetto, letto per intero con un budget che non
+    // interferisce. Cio che si osserva e il numero di batch, la sola cosa che
+    // distingue una lettura incrementale da una materializzata e consegnata in
+    // un colpo solo.
+    let generous = ResourceBudget::new(ResourceLimits {
+        rows: 3 * STREAMING_ROWS as u64,
+        memory_bytes: 32 * 1_024 * 1_024,
+        output_bytes: 64 * 1_024 * 1_024,
+        cell_bytes: 2 * 1_024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget della misura: harness, non divergenza");
+    match drain_read(
+        provider,
+        profile,
+        &ascending,
+        &ParameterBag::default(),
+        &generous,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_read_streaming",
+            "provider",
+            "profilo",
+            "una lettura piu lunga di un batch ne consegna piu di uno",
+            format!("batch={} righe={}", outcome.batches, outcome.rows),
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_read_streaming",
+            "provider",
+            "profilo",
+            "una lettura piu lunga di un batch ne consegna piu di uno",
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_ROWS}"))
+        .await;
+}
+
 /// Il profilo del prodotto che sta rispondendo, scelto come lo sceglierebbe
 /// un provider: chiedendo al profilo `MySQL` se quel server e suo.
 ///
@@ -1610,6 +2065,7 @@ async fn profile_probes(
     }
 
     functional_index_probes(recorder, profile, &pool, &schema_name, cancellation).await;
+    profile_read_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
 }
 
@@ -1847,7 +2303,7 @@ async fn run_driver_evidence() {
     error_code_probes(&mut recorder, profile).await;
     profile_probes(&mut recorder, profile, &CancellationToken::new()).await;
 
-    for table in [SCRATCH, SCRATCH_GEO, SCRATCH_LOCK] {
+    for table in [SCRATCH, SCRATCH_GEO, SCRATCH_LOCK, SCRATCH_ROWS] {
         let _ = connection
             .query_drop(format!("DROP TABLE IF EXISTS {table}"))
             .await;

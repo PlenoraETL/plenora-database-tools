@@ -490,3 +490,86 @@ rifiuto e strutturale, perche `srs_id` arriva sempre nullo.
   di indice non su colonna semplice che quel motore accetta.
 * **Le scritture attraverso il profilo**: nessun piano di scrittura e stato
   eseguito con `MARIADB_PROFILE`. Le capability di scrittura restano chiuse.
+
+## Quinta tranche: la lettura, dall'inizio alla fine
+
+Il punto 1 della fase 3: `read` attraversato con il profilo del prodotto sui
+due riferimenti qualificati, e verificato su tre cose separate — lo schema che
+pubblica, i valori che decodifica, il namespace con cui li annota. Tre
+osservazioni e non una, perche una riga verde sola direbbe "la lettura
+funziona" senza dire quale parte regge.
+
+La sonda storica `provider.read` resta dov'e e continua a misurare il provider
+`MySQL`: su MariaDB si ferma al catalogo che non risponde, ed e giusto che
+continui a dirlo.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_read_schema` | 14 campi, namespace `plenora.mysql.*` | 14 campi, namespace `plenora.mariadb.*` | 14 campi, namespace `plenora.mariadb.*` |
+| provider | profilo | `provider.profile_read_values` | quattordici colonne decodificate | **identico** | **identico** |
+| provider | profilo | `provider.profile_read_namespace` | chiave=`plenora.mysql.native_type` annotate=14 estranee=0 | chiave=`plenora.mariadb.native_type` annotate=14 estranee=0 | chiave=`plenora.mariadb.native_type` annotate=14 estranee=0 |
+| provider | profilo | `provider.profile_read_projection` | tre colonne, nell'ordine dichiarato | idem | idem |
+| provider | profilo | `provider.profile_read_filter` | righe=1, id=7 | righe=1, id=7 | righe=1, id=7 |
+| provider | profilo | `provider.profile_read_ordering` | asc=1 desc=8193 | asc=1 desc=8193 | asc=1 desc=8193 |
+| provider | profilo | `provider.profile_read_streaming` | batch=2 righe=8193 | batch=2 righe=8193 | batch=2 righe=8193 |
+
+### Cosa dice
+
+**I valori coincidono per intero.** Quattordici famiglie di tipo, stesso
+contenuto decodificato sui tre server, confrontato sulla stringa completa e
+non su una rappresentazione troncata. E il risultato che il punto 1 doveva
+produrre, ed e quello che permette di aprire la lettura nelle capability.
+
+**Lo streaming e misurato al taglio, non per abbondanza.** La tabella ha
+`DEFAULT_BATCH_ROWS + 1` righe, cioe la piu piccola che non puo stare in un
+batch solo: due batch su 8193 righe significa che il lettore rispetta il
+proprio limite, e uno solo avrebbe significato che lo ignora. La prima
+stesura provava a spezzare il batch con un budget di memoria stretto e ha
+misurato altro — i budget sono **cumulativi**, non per batch, quindi la
+lettura moriva di `ResourceLimit` a meta invece di consegnare piu batch.
+
+**Il namespace regge fino ai metadata pubblicati.** Quattordici campi
+annotati con la chiave del proprio prodotto, zero con quella dell'altro, su
+tutti e tre. E la verifica che la scelta del namespace non si fermi al profilo
+ma arrivi allo schema che il consumatore riceve.
+
+**Tre divergenze nuove nello schema pubblicato**, tutte nel campo
+`native_declaration` o nella collation, nessuna nel `DataType` e nessuna nei
+valori:
+
+| campo | MySQL 9.7 | MariaDB |
+|---|---|---|
+| `id` | `bigint` | `bigint(20)` |
+| `small_signed` | `smallint` | `smallint(6)` |
+| `text_utf8` (collation) | `utf8mb4_0900_ai_ci` | `utf8mb4_uca1400_ai_ci` |
+| `document` (DDL `JSON`) | `json` | `longtext`, collation `utf8mb4_bin` |
+
+La larghezza di visualizzazione — `(20)`, `(6)` — MySQL l'ha tolta dalla 8.0.19,
+MariaDB la pubblica ancora. Le collation sono i default dei due server, non
+una scelta del provider. Entrambe sono fedeli a cio che il catalogo ha
+risposto, ed e cio che il contratto dichiara di annotare.
+
+**`JSON` diverge una seconda volta, e in un modo che MySQL non ha.** Sul path
+query MariaDB annota `text`, sul path catalogo annota `longtext`: due nomi
+diversi per la stessa colonna, a seconda della strada. Su MySQL le due strade
+dicono entrambe `json`. Non e una violazione del contratto — ogni annotazione
+descrive cio che quella strada ha osservato, e sul filo `LONGTEXT` e `TEXT`
+non si distinguono oltre la lunghezza massima — ma e un'asimmetria che il
+prodotto qualificato non ha, e che un consumer che alterna le due strade
+vedrebbe. Registrata, non risolta: normalizzarla richiederebbe di decidere
+quale delle due strade abbia ragione, e nessuna delle due ha torto.
+
+### Cosa ne segue per le capability
+
+Quattro bandiere di lettura si aprono per MariaDB — `streaming`, `projection`,
+`filter`, `ordering` — e ciascuna ha la propria sonda. Le altre quattro
+restano chiuse perche il crate **non le offre a nessuno dei due prodotti**:
+`server_cursor`, `pagination`, `object_id_windows` e `resumable` sono false
+anche per MySQL, quindi qui non c'e niente da qualificare.
+
+Le scritture restano chiuse per intero: nessun piano di scrittura e mai stato
+eseguito con questo profilo. E lo spatial resta chiuso in lettura, perche su
+MariaDB `srs_id` arriva sempre nullo e ogni colonna geometrica viene rifiutata
+alla descrizione — la lettura funziona su tutto tranne che li.
