@@ -711,6 +711,27 @@ le tre sonde stanno fra le prove necessarie del gate, con la categoria e la
 causa del rifiuto verificate: sono la rete sotto `writes.upsert`, che oggi e
 chiusa e che il punto 3 aprira una mode alla volta.
 
+**Cosa verifica ciascuna sonda, e cosa distingue.** Le tre sonde di questa
+tranche registravano cio che vedevano; ora pretendono cio che serve, ed e la
+differenza fra un dato e una prova:
+
+* `raw.generated_column_catalog` separa tre esiti e non due. La riga c'e, la
+  riga non c'e, oppure **la domanda non e arrivata**: un privilegio mancante o
+  una query incompatibile finivano fra le assenze, e un'assenza inventata e un
+  fatto registrato che nessuno ha osservato. L'errore diventa `not_measured`,
+  con il codice del server.
+* `provider.profile_generated_index` confronta la struttura intera — colonna
+  presente, espressione non vuota, indice sulla sola colonna generata, unico e
+  confrontabile. Da quella forma dipendono due decisioni, e una descrizione
+  che perdesse `lname` o rendesse l'indice non unico le cambierebbe entrambe
+  restando verde.
+* `provider.profile_functional_index` pretende che la DDL abbia dato **l'esito
+  misurato**: accettata su MySQL, rifiutata con 1064 su MariaDB. Prima
+  qualunque errore diventava "l'indice non c'e", e un catalogo senza indice
+  passava per la conferma di un rifiuto mai avvenuto. Un esito diverso rende
+  la sonda `not_measured`: senza la premessa, il catalogo non ha una forma
+  attesa da confrontare.
+
 **Il contratto dell'indice funzionale, che mancava.** La sonda su
 `plenora_idx_expression` registrava cio che vedeva senza pretendere niente.
 Ora l'esito della DDL decide cosa il catalogo deve dire: dove l'indice su

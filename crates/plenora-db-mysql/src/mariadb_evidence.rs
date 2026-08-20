@@ -1800,7 +1800,7 @@ async fn generated_column_probes(
 
     // Cosa il catalogo dice, letto senza profilo: e l'ingresso da cui tutto il
     // resto discende.
-    let catalogued: Option<(String, String, String, i64)> = connection
+    let catalogued: Result<Option<(String, String, String, i64)>, _> = connection
         .query_first(format!(
             "SELECT c.EXTRA, IFNULL(c.GENERATION_EXPRESSION, '<NULL>'), \
              IFNULL(s.COLUMN_NAME, '<NULL>'), s.NON_UNIQUE \
@@ -1811,11 +1811,14 @@ async fn generated_column_probes(
              AND c.TABLE_NAME = '{SCRATCH_GENERATED}' \
              AND c.COLUMN_NAME = 'lname' AND s.INDEX_NAME = 'uq_lname'"
         ))
-        .await
-        .ok()
-        .flatten();
+        .await;
+    // Tre esiti, non due: la riga c'e, la riga non c'e, oppure la domanda non
+    // e arrivata. Il terzo si confondeva con il secondo — `.ok().flatten()`
+    // trasformava un privilegio mancante o una query incompatibile in
+    // "assente" — e un'assenza inventata e un fatto registrato che non e mai
+    // stato osservato.
     match catalogued {
-        Some((extra, expression, indexed, non_unique)) => recorder.accepted(
+        Ok(Some((extra, expression, indexed, non_unique))) => recorder.accepted(
             "raw.generated_column_catalog",
             "raw",
             "catalogo",
@@ -1824,13 +1827,24 @@ async fn generated_column_probes(
                 "extra={extra} espressione={expression} indice_su={indexed} non_unique={non_unique}"
             ),
         ),
-        None => recorder.rejected(
+        Ok(None) => recorder.rejected(
             "raw.generated_column_catalog",
             "raw",
             "catalogo",
             "come il catalogo pubblica una colonna generata e l'indice che la usa",
             "il catalogo non ha reso la riga attesa".to_owned(),
             None,
+        ),
+        Err(error) => recorder.not_measured(
+            "raw.generated_column_catalog",
+            "raw",
+            "catalogo",
+            "come il catalogo pubblica una colonna generata e l'indice che la usa",
+            &format!(
+                "la domanda non e arrivata: {}{}",
+                condense(&error.to_string()),
+                server_code(&error).map_or_else(String::new, |code| format!(" (codice {code})"))
+            ),
         ),
     }
 
@@ -1853,6 +1867,10 @@ async fn generated_column_probes(
                         .columns
                         .iter()
                         .find(|column| column.name == "lname");
+                    let functional = description
+                        .indexes
+                        .iter()
+                        .find(|index| index.name == "uq_lname");
                     let indexes = description
                         .indexes
                         .iter()
@@ -1867,17 +1885,48 @@ async fn generated_column_probes(
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    recorder.accepted(
-                        "provider.profile_generated_index",
-                        "provider",
-                        "profilo",
-                        question,
-                        format!(
-                            "espressione_non_vuota={} {indexes}",
-                            generated
-                                .is_some_and(|column| !column.generation_expression.is_empty())
+                    // La struttura attesa, per intero. Registrare cio che si
+                    // vede e diverso dal verificare che sia cio che serve: da
+                    // questa forma dipendono due decisioni — se la colonna sia
+                    // scrivibile e se l'indice sia confrontabile con le keys —
+                    // e una descrizione che perdesse `lname`, o rendesse
+                    // l'indice non unico, le cambierebbe entrambe restando
+                    // verde.
+                    let mismatch = match (generated, functional) {
+                        (None, _) => Some("la colonna generata non compare".to_owned()),
+                        (_, None) => Some("l'indice sulla colonna generata non compare".to_owned()),
+                        (Some(column), _) if column.generation_expression.is_empty() => {
+                            Some("la colonna risulta non generata: sarebbe scrivibile".to_owned())
+                        }
+                        (_, Some(index)) if index.columns != ["lname"] => Some(format!(
+                            "l'indice non e sulla sola colonna generata: {:?}",
+                            index.columns
+                        )),
+                        (_, Some(index)) if !index.unique => {
+                            Some("l'indice non risulta unico".to_owned())
+                        }
+                        (_, Some(index)) if !index.column_backed => {
+                            Some("l'indice non risulta confrontabile per colonne".to_owned())
+                        }
+                        _ => None,
+                    };
+                    match mismatch {
+                        None => recorder.accepted(
+                            "provider.profile_generated_index",
+                            "provider",
+                            "profilo",
+                            question,
+                            format!("espressione_non_vuota=true {indexes}"),
                         ),
-                    );
+                        Some(reason) => recorder.rejected(
+                            "provider.profile_generated_index",
+                            "provider",
+                            "profilo",
+                            question,
+                            condense(&format!("contratto non soddisfatto: {reason} — {indexes}")),
+                            None,
+                        ),
+                    }
                 }
                 Err(error) => recorder.rejected(
                     "provider.profile_generated_index",
@@ -2655,6 +2704,57 @@ async fn profile_probes(
 /// da li discende un rifiuto; se pero su quel motore un indice su espressione
 /// non si puo nemmeno creare, quel rifiuto e una difesa contro un caso che il
 /// server non produce — che e una cosa diversa da un difetto, e va scritta.
+/// L'esito che la DDL dell'indice su espressione **deve** avere, per prodotto.
+///
+/// Non e una previsione: e cio che la quarta tranche ha misurato — `MySQL` la
+/// accetta, `MariaDB` la rifiuta con 1064, la sintassi non esiste. Pinnarlo
+/// serve perche l'esito della DDL decide cosa il catalogo debba mostrare
+/// dopo: senza, un errore qualunque — un privilegio mancante, un timeout —
+/// diventerebbe "l'indice non c'e", e un catalogo senza indice passerebbe per
+/// la conferma di un rifiuto che non e mai avvenuto.
+enum ExpressionIndexDdl {
+    /// Creato: il catalogo deve mostrarlo, e deve mostrarlo non confrontabile.
+    Accepted,
+    /// Rifiutato con questo codice: il catalogo non deve mostrarlo affatto.
+    Refused(u16),
+}
+
+impl ExpressionIndexDdl {
+    /// Cosa ci si aspetta da questo prodotto.
+    fn of(profile: &dyn ProductProfile) -> Self {
+        if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb {
+            Self::Refused(1_064)
+        } else {
+            Self::Accepted
+        }
+    }
+
+    /// Cosa non torna fra l'esito atteso e quello osservato, o `None`.
+    fn mismatch(&self, observed: &Result<(), mysql_async::Error>) -> Option<String> {
+        match (self, observed) {
+            (Self::Accepted, Ok(())) => None,
+            (Self::Accepted, Err(error)) => Some(format!(
+                "la DDL doveva essere accettata: {}",
+                condense(&error.to_string())
+            )),
+            (Self::Refused(code), Err(error)) => match server_code(error) {
+                Some(observed) if observed == *code => None,
+                Some(observed) => Some(format!(
+                    "la DDL doveva essere rifiutata con {code}, osservato {observed}"
+                )),
+                None => Some(format!(
+                    "la DDL doveva essere rifiutata con {code}, ma l'errore non porta un \
+                     codice del server: {}",
+                    condense(&error.to_string())
+                )),
+            },
+            (Self::Refused(code), Ok(())) => Some(format!(
+                "la DDL doveva essere rifiutata con {code}, ed e passata"
+            )),
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn functional_index_probes(
     recorder: &mut Recorder,
@@ -2667,22 +2767,39 @@ async fn functional_index_probes(
     let _ = connection
         .query_drop(format!("DROP INDEX plenora_idx_expression ON {SCRATCH}"))
         .await;
-    record_server_code(
-        recorder,
-        &mut connection,
-        "raw.functional_index_ddl",
-        "accetta un indice su espressione, che e cio che popola EXPRESSION",
-        format!("CREATE INDEX plenora_idx_expression ON {SCRATCH} ((LOWER(text_utf8)))"),
-    )
-    .await;
-    // L'esito della DDL decide cosa il catalogo **deve** dire dopo: e la sola
-    // forma in cui questa sonda puo avere un contratto, perche i due prodotti
-    // partono da due punti diversi. Dove l'indice su espressione si crea, deve
-    // comparire una parte che il catalogo non sa attribuire a una colonna —
-    // altrimenti la regola che rifiuta gli Upsert su indici non confrontabili
-    // non sarebbe mai raggiungibile. Dove non si crea, quell'indice non deve
-    // esserci affatto.
-    let expression_index_exists = recorder.accepted_probe("raw.functional_index_ddl");
+    // La DDL si esegue qui invece che dentro `record_server_code` perche il
+    // suo esito serve due volte: come misura, e come premessa di cio che il
+    // catalogo dovra mostrare dopo.
+    let ddl = connection
+        .query_drop(format!(
+            "CREATE INDEX plenora_idx_expression ON {SCRATCH} ((LOWER(text_utf8)))"
+        ))
+        .await;
+    let ddl_question = "accetta un indice su espressione, che e cio che popola EXPRESSION";
+    match &ddl {
+        Ok(()) => recorder.accepted(
+            "raw.functional_index_ddl",
+            "raw",
+            "errori",
+            ddl_question,
+            "nessun errore: il server ha accettato".to_owned(),
+        ),
+        Err(error) => recorder.rejected(
+            "raw.functional_index_ddl",
+            "raw",
+            "errori",
+            ddl_question,
+            condense(&error.to_string()),
+            server_code(error),
+        ),
+    }
+    // L'esito della DDL decide cosa il catalogo **deve** dire dopo, e per
+    // deciderlo deve essere **quello misurato**: MySQL accetta, MariaDB
+    // rifiuta con 1064. Un errore qualunque al suo posto — un privilegio
+    // mancante, un timeout — diventava "l'indice non c'e", e un catalogo
+    // senza indice passava per la conferma di un rifiuto mai avvenuto.
+    let ddl_mismatch = ExpressionIndexDdl::of(profile).mismatch(&ddl);
+    let expression_index_exists = ddl.is_ok();
 
     match pool.checkout(cancellation).await {
         Ok(mut session) => {
@@ -2718,31 +2835,44 @@ async fn functional_index_probes(
                         .find(|index| index.name == "plenora_idx_expression");
                     let question =
                         "come il catalogo descrive gli indici dopo il tentativo su espressione";
-                    let mismatch = match (expression_index_exists, functional) {
-                        (true, None) => Some(
-                            "la DDL e stata accettata ma l'indice non compare nel catalogo"
-                                .to_owned(),
-                        ),
-                        (true, Some(index)) if index.column_backed => Some(format!(
+                    // Se la DDL non ha dato l'esito misurato, il catalogo non
+                    // ha una forma attesa da confrontare: la superficie non e
+                    // stata provata, e dirlo e diverso dal dichiararla sana.
+                    let mismatch = ddl_mismatch.clone().map_or_else(
+                        || match (expression_index_exists, functional) {
+                            (true, None) => Some(
+                                "la DDL e stata accettata ma l'indice non compare nel catalogo"
+                                    .to_owned(),
+                            ),
+                            (true, Some(index)) if index.column_backed => Some(format!(
                             "l'indice su espressione risulta confrontabile per colonne ({:?}): \
                              la regola che rifiuta un Upsert su un indice non \
                              confrontabile non sarebbe raggiungibile",
                             index.columns
                         )),
-                        (false, Some(_)) => Some(
-                            "la DDL e stata rifiutata ma l'indice compare lo stesso".to_owned(),
-                        ),
-                        _ => None,
-                    };
-                    match mismatch {
-                        None => recorder.accepted(
+                            (false, Some(_)) => Some(
+                                "la DDL e stata rifiutata ma l'indice compare lo stesso".to_owned(),
+                            ),
+                            _ => None,
+                        },
+                        Some,
+                    );
+                    match (mismatch, ddl_mismatch.is_some()) {
+                        (None, _) => recorder.accepted(
                             "provider.profile_functional_index",
                             "provider",
                             "profilo",
                             question,
                             truncate(&described, 160),
                         ),
-                        Some(reason) => recorder.rejected(
+                        (Some(reason), true) => recorder.not_measured(
+                            "provider.profile_functional_index",
+                            "provider",
+                            "profilo",
+                            question,
+                            &format!("premessa mancante: {reason}"),
+                        ),
+                        (Some(reason), false) => recorder.rejected(
                             "provider.profile_functional_index",
                             "provider",
                             "profilo",
