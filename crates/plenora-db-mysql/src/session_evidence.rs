@@ -50,21 +50,31 @@ const MARKER: &str = "PLENORA_SESSION_EVIDENCE ";
 /// Tabella di lavoro: la crea la misura, e la droppa.
 const SCRATCH: &str = "plenora_session_evidence";
 
-/// Cio che il bootstrap pretende di fissare.
-const OBSERVED_VARIABLES: &str = "SELECT @@autocommit, @@time_zone, @@sql_mode";
-
-/// I valori che il bootstrap deve produrre.
+/// Il contratto del bootstrap: cosa fissa, e a quale valore.
 ///
-/// Scritti qui e non dedotti dalla costante: dedurli significherebbe
-/// confrontare la costante con se stessa, e una sonda che si aspetta cio che
-/// ha appena letto non verifica niente. Che descrivano davvero
-/// `SESSION_BOOTSTRAP_SQL` lo controlla `expectations_match_the_bootstrap`
-/// prima di misurare — se qualcuno cambia la costante e non queste attese, e
-/// un guasto dell'harness e va visto subito.
-const EXPECTED_AUTOCOMMIT: &str = "1";
-const EXPECTED_TIME_ZONE: &str = "+00:00";
-const EXPECTED_SQL_MODE: &str =
-    "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION";
+/// **Una sola tabella**, e non e simmetria: da qui si ricavano sia il
+/// confronto con `SESSION_BOOTSTRAP_SQL` sia la query che rilegge le
+/// variabili. Con due elenchi separati, aggiungere una quarta assegnazione e
+/// aggiornare solo quello atteso lasciava una variabile fissata dal pool e
+/// mai osservata da nessuna sonda — e la matrice avrebbe continuato a
+/// dichiarare che il bootstrap e misurato.
+const BOOTSTRAP_CONTRACT: &[(&str, &str)] = &[
+    ("autocommit", "1"),
+    ("time_zone", "+00:00"),
+    (
+        "sql_mode",
+        "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+    ),
+];
+
+/// La query che rilegge esattamente le variabili del contratto.
+fn observed_variables() -> String {
+    let columns: Vec<String> = BOOTSTRAP_CONTRACT
+        .iter()
+        .map(|(name, _)| format!("@@{name}"))
+        .collect();
+    format!("SELECT {}", columns.join(", "))
+}
 
 /// L'esito di una sonda: cosa si e osservato, cosa serviva, e se coincidono.
 struct Measured {
@@ -123,77 +133,52 @@ fn pool(connections: usize) -> Result<crate::MysqlPool, DatabaseError> {
     crate::MysqlPool::new_with_profile(&config(), connections, &MYSQL_PROFILE)
 }
 
-/// Le assegnazioni di `SESSION_BOOTSTRAP_SQL`, come coppie nome/valore.
-///
-/// Le virgole dentro un valore quotato non separano: `sql_mode` ne contiene
-/// due, e uno split ingenuo produrrebbe tre assegnazioni inventate.
-fn bootstrap_assignments() -> Vec<(String, String)> {
-    let body = crate::SESSION_BOOTSTRAP_SQL
-        .strip_prefix("SET SESSION ")
-        .expect("SESSION_BOOTSTRAP_SQL deve cominciare con SET SESSION: harness");
-    let mut assignments = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for character in body.chars() {
-        match character {
-            '\'' => {
-                quoted = !quoted;
-            }
-            ',' if !quoted => {
-                assignments.push(std::mem::take(&mut current));
-            }
-            other => current.push(other),
-        }
-    }
-    assignments.push(current);
-    assignments
-        .into_iter()
-        .map(|assignment| {
-            let (name, value) = assignment
-                .split_once('=')
-                .expect("assegnazione senza '=': harness, non divergenza");
-            (name.trim().to_owned(), value.trim().to_owned())
-        })
-        .collect()
-}
-
 /// Le attese devono descrivere lo statement **intero**, non parte di esso.
 ///
-/// Verificare tre sottostringhe lasciava passare una quarta assegnazione: la
-/// costante avrebbe fissato una variabile che nessuna sonda osserva, e la
-/// matrice avrebbe continuato a dichiarare che il bootstrap e misurato. Qui
-/// l'insieme delle assegnazioni deve coincidere, nome per nome e valore per
-/// valore, con quello che le sonde rileggono.
+/// Verificare tre sottostringhe lasciava passare una quarta assegnazione.
+/// Qui l'insieme delle assegnazioni parsate deve coincidere, nome per nome e
+/// valore per valore, con il contratto — che e anche cio che le sonde
+/// rileggono.
 ///
 /// # Panics
 ///
 /// Se divergono: e un guasto dell'harness, va chiuso prima di leggere i
 /// numeri e non registrato come divergenza fra server.
 fn expectations_match_the_bootstrap() {
-    let observed = bootstrap_assignments();
-    let expected = vec![
-        ("autocommit".to_owned(), EXPECTED_AUTOCOMMIT.to_owned()),
-        ("time_zone".to_owned(), EXPECTED_TIME_ZONE.to_owned()),
-        ("sql_mode".to_owned(), EXPECTED_SQL_MODE.to_owned()),
-    ];
+    let observed = crate::evidence::sql_assignments(crate::SESSION_BOOTSTRAP_SQL);
+    let expected: Vec<(String, String)> = BOOTSTRAP_CONTRACT
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
     assert_eq!(
         observed, expected,
-        "SESSION_BOOTSTRAP_SQL fissa assegnazioni diverse da quelle attese e osservate:          harness, non divergenza. Se ne e stata aggiunta una, va aggiunta anche alla          lettura, altrimenti resterebbe fissata e mai verificata"
+        "SESSION_BOOTSTRAP_SQL fissa assegnazioni diverse dal contratto osservato:          harness, non divergenza. Se ne e stata aggiunta una, va aggiunta a          BOOTSTRAP_CONTRACT, che e anche cio che le sonde rileggono"
     );
 }
 
-fn describe(autocommit: &str, time_zone: &str, sql_mode: &str) -> String {
-    format!("autocommit={autocommit} time_zone={time_zone} sql_mode={sql_mode}")
+fn describe(observed: &[String]) -> String {
+    BOOTSTRAP_CONTRACT
+        .iter()
+        .zip(observed)
+        .map(|((name, _), value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn bootstrap_expectation() -> String {
-    describe(EXPECTED_AUTOCOMMIT, EXPECTED_TIME_ZONE, EXPECTED_SQL_MODE)
+    BOOTSTRAP_CONTRACT
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn bootstrap_satisfied(observed: &(String, String, String)) -> bool {
-    observed.0 == EXPECTED_AUTOCOMMIT
-        && observed.1 == EXPECTED_TIME_ZONE
-        && observed.2 == EXPECTED_SQL_MODE
+fn bootstrap_satisfied(observed: &[String]) -> bool {
+    observed.len() == BOOTSTRAP_CONTRACT.len()
+        && BOOTSTRAP_CONTRACT
+            .iter()
+            .zip(observed)
+            .all(|((_, expected), value)| value == expected)
 }
 
 /// Il bootstrap eseguito a mano: dice del server.
@@ -212,15 +197,21 @@ async fn bootstrap_statement() -> Probe {
             false,
         ));
     }
-    let observed = connection
-        .query_first::<(String, String, String), _>(OBSERVED_VARIABLES)
+    // `FromRow` non e implementato per `Vec<String>`: si prende la riga
+    // grezza e si legge per indice, che e cio che serve a una query
+    // costruita dal contratto e quindi di larghezza non nota al tipo.
+    let raw = connection
+        .query_first::<mysql_async::Row, _>(observed_variables())
         .await
         .expect("lettura variabili: harness, non divergenza")
         .expect("variabili presenti");
+    let row: Vec<String> = (0..BOOTSTRAP_CONTRACT.len())
+        .map(|index| raw.get::<String, _>(index).unwrap_or_default())
+        .collect();
     Ok(Measured::new(
-        describe(&observed.0, &observed.1, &observed.2),
+        describe(&row),
         bootstrap_expectation(),
-        bootstrap_satisfied(&observed),
+        bootstrap_satisfied(&row),
     ))
 }
 
@@ -231,7 +222,7 @@ async fn bootstrap_through_pool() -> Probe {
     let mut session = pool.checkout(&cancel).await?;
     let observed = read_variables(&mut session, &cancel).await?;
     Ok(Measured::new(
-        describe(&observed.0, &observed.1, &observed.2),
+        describe(&observed),
         bootstrap_expectation(),
         bootstrap_satisfied(&observed),
     ))
@@ -271,10 +262,7 @@ async fn bootstrap_after_return() -> Probe {
         // nuovo la lettura di una sessione gia corretta, cioe il difetto che
         // questa versione corregge.
         return Ok(Measured::new(
-            format!(
-                "lo stato non si e sporcato: {}",
-                describe(&dirtied.0, &dirtied.1, &dirtied.2)
-            ),
+            format!("lo stato non si e sporcato: {}", describe(&dirtied)),
             "stato alterato prima della restituzione",
             false,
         ));
@@ -297,7 +285,7 @@ async fn bootstrap_after_return() -> Probe {
         format!(
             "connessione riusata={} {}",
             first == second,
-            describe(&observed.0, &observed.1, &observed.2)
+            describe(&observed)
         ),
         bootstrap_expectation(),
         bootstrap_satisfied(&observed),
@@ -307,16 +295,14 @@ async fn bootstrap_after_return() -> Probe {
 async fn read_variables(
     session: &mut crate::MysqlSession,
     cancel: &CancellationToken,
-) -> Result<(String, String, String), DatabaseError> {
+) -> Result<Vec<String>, DatabaseError> {
     let rows = session
-        .query_rows(OBSERVED_VARIABLES, ErrorPhase::Probe, cancel)
+        .query_rows(&observed_variables(), ErrorPhase::Probe, cancel)
         .await?;
     let row = rows.first().expect("riga delle variabili");
-    Ok((
-        row.get::<String, _>(0).unwrap_or_default(),
-        row.get::<String, _>(1).unwrap_or_default(),
-        row.get::<String, _>(2).unwrap_or_default(),
-    ))
+    Ok((0..BOOTSTRAP_CONTRACT.len())
+        .map(|index| row.get::<String, _>(index).unwrap_or_default())
+        .collect())
 }
 
 async fn connection_id(
@@ -366,26 +352,39 @@ async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
     ))
 }
 
-/// Il codice con cui il server rifiuta una scrittura in transazione read-only.
+/// Il rifiuto che una transazione read-only deve produrre, per intero.
 ///
-/// `ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION`. Se un prodotto ne usasse un
-/// altro, la sonda lo registra come rifiuto: e una divergenza, non un
-/// dettaglio, perche la classificazione decide se il chiamante puo ritentare.
-const READ_ONLY_REFUSAL_CODE: u16 = 1_792;
+/// Il solo codice non basta: una regressione che classificasse 1792 come
+/// `Authentication`, o ne dichiarasse l'effetto `Unknown`, o lo rendesse
+/// ritentabile, resterebbe `accepted` su tutti e tre — e sono proprio le tre
+/// cose che decidono cosa il chiamante fa dopo. Il contratto e la quaterna.
+struct ReadOnlyRefusal;
 
-/// Il codice del server dentro un `DatabaseError`, quando c'e.
-///
-/// Il contratto non porta un campo per il codice: lo porta il messaggio, che
-/// la classificazione compone come `(codice N)`. Leggerlo di li e una
-/// dipendenza dal testo, e va detto — se quella forma cambiasse, questa sonda
-/// fallirebbe invece di tacere, che e il verso giusto in cui rompersi.
-fn server_error_code(error: &DatabaseError) -> Option<u16> {
-    let at = error.message.find("codice ")? + "codice ".len();
-    let digits: String = error.message[at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+impl ReadOnlyRefusal {
+    /// `ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION`.
+    const CODE: u16 = 1_792;
+    const CATEGORY: plenora_database_core::ErrorCategory =
+        plenora_database_core::ErrorCategory::Execution;
+    const EFFECT: plenora_database_core::RemoteEffect = plenora_database_core::RemoteEffect::None;
+    const RETRY: plenora_database_core::RetryDisposition =
+        plenora_database_core::RetryDisposition::Never;
+
+    fn describe() -> String {
+        format!(
+            "rifiuto codice={} categoria={:?} effetto={:?} retry={:?}",
+            Self::CODE,
+            Self::CATEGORY,
+            Self::EFFECT,
+            Self::RETRY
+        )
+    }
+
+    fn satisfied_by(error: &DatabaseError) -> bool {
+        crate::evidence::server_code_in_message(&error.message) == Some(Self::CODE)
+            && error.category == Self::CATEGORY
+            && error.remote_effect == Self::EFFECT
+            && error.retry == Self::RETRY
+    }
 }
 
 /// Una scrittura dentro la transazione: ammessa o rifiutata dalla modalita.
@@ -424,15 +423,17 @@ async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Pro
     let observed = match &attempt {
         Ok(_) => "scrittura ammessa".to_owned(),
         Err(error) => format!(
-            "scrittura rifiutata codice={} categoria={:?} effetto={:?}",
-            server_error_code(error).map_or_else(|| "assente".to_owned(), |code| code.to_string()),
+            "rifiuto codice={} categoria={:?} effetto={:?} retry={:?}",
+            crate::evidence::server_code_in_message(&error.message)
+                .map_or_else(|| "assente".to_owned(), |code| code.to_string()),
             error.category,
-            error.remote_effect
+            error.remote_effect,
+            error.retry
         ),
     };
     let satisfied = match &attempt {
         Ok(_) => admits,
-        Err(error) => !admits && server_error_code(error) == Some(READ_ONLY_REFUSAL_CODE),
+        Err(error) => !admits && ReadOnlyRefusal::satisfied_by(error),
     };
     let _ = Box::new(transaction).rollback(&cancel).await;
 
@@ -449,7 +450,7 @@ async fn write_inside_transaction(mode: Option<AccessMode>, admits: bool) -> Pro
         if admits {
             "scrittura ammessa".to_owned()
         } else {
-            format!("scrittura rifiutata con codice {READ_ONLY_REFUSAL_CODE}")
+            ReadOnlyRefusal::describe()
         },
         satisfied,
     ))

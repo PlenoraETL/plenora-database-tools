@@ -165,3 +165,97 @@ pub(crate) fn truncate(text: &str, limit: usize) -> String {
 pub(crate) fn condense(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+/// Le assegnazioni di uno `SET ... a = 1, b = 'x'`, come coppie nome/valore.
+///
+/// Le virgole dentro un valore quotato non separano: `sql_mode` ne contiene
+/// due, e uno split ingenuo produrrebbe assegnazioni inventate.
+///
+/// # Panics
+///
+/// Se lo statement non comincia con `SET SESSION ` o se un pezzo non contiene
+/// `=`: chi lo chiama sta descrivendo una costante del crate, non input.
+pub(crate) fn sql_assignments(statement: &str) -> Vec<(String, String)> {
+    let body = statement
+        .strip_prefix("SET SESSION ")
+        .expect("lo statement deve cominciare con SET SESSION");
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for character in body.chars() {
+        match character {
+            '\'' => quoted = !quoted,
+            ',' if !quoted => pieces.push(std::mem::take(&mut current)),
+            other => current.push(other),
+        }
+    }
+    pieces.push(current);
+    pieces
+        .into_iter()
+        .map(|piece| {
+            let (name, value) = piece.split_once('=').expect("assegnazione senza '='");
+            (name.trim().to_owned(), value.trim().to_owned())
+        })
+        .collect()
+}
+
+/// Il codice del server dentro il messaggio di un `DatabaseError`.
+///
+/// Il contratto non porta un campo per il codice: lo porta il messaggio, che
+/// la classificazione compone come `(codice N)`. Leggerlo di li e una
+/// dipendenza dal testo, e va detta — se quella forma cambiasse, la sonda che
+/// lo usa fallirebbe invece di tacere, che e il verso giusto in cui rompersi.
+pub(crate) fn server_code_in_message(message: &str) -> Option<u16> {
+    let at = message.find("codice ")? + "codice ".len();
+    let digits: String = message[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{server_code_in_message, sql_assignments};
+
+    #[test]
+    fn assignments_survive_a_comma_inside_a_quoted_value() {
+        let parsed =
+            sql_assignments("SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'A,B,C'");
+        assert_eq!(
+            parsed,
+            vec![
+                ("autocommit".to_owned(), "1".to_owned()),
+                ("time_zone".to_owned(), "+00:00".to_owned()),
+                ("sql_mode".to_owned(), "A,B,C".to_owned()),
+            ],
+            "le virgole dentro gli apici non separano assegnazioni"
+        );
+    }
+
+    #[test]
+    fn the_real_bootstrap_parses_into_three_assignments() {
+        let parsed = sql_assignments(crate::SESSION_BOOTSTRAP_SQL);
+        let names: Vec<&str> = parsed.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["autocommit", "time_zone", "sql_mode"]);
+    }
+
+    #[test]
+    fn the_server_code_is_read_from_the_message_or_absent() {
+        assert_eq!(
+            server_code_in_message("errore server MySQL redatto (codice 1792)"),
+            Some(1_792)
+        );
+        assert_eq!(
+            server_code_in_message("colonna MySQL non valida (codice 1054)"),
+            Some(1_054)
+        );
+        // Nessun codice: un errore che nasce prima del server non ne ha uno,
+        // e dedurne zero sarebbe peggio che dire "assente".
+        assert_eq!(
+            server_code_in_message("schema Arrow vuoto per append"),
+            None
+        );
+        assert_eq!(server_code_in_message("codice non numerico"), None);
+    }
+}

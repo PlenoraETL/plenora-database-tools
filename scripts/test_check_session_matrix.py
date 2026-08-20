@@ -227,6 +227,40 @@ class SessionMatrixTests(unittest.TestCase):
             self.run_verdict([[], [" M crates/x.rs"]], ["commit"], spy)
         self.assertIn("albero e cambiato durante la misura", str(raised.exception))
 
+    def test_a_live_campaign_exists_and_runs_the_matrix(self) -> None:
+        """Il self-test statico non puo accorgersi di un comportamento cambiato.
+
+        Verifica il giudizio del runner su documenti costruiti a mano, che e
+        cio che serve su una PR; se domani cambiasse `SESSION_BOOTSTRAP_SQL`
+        il documento resterebbe quello di ieri. La campagna live e cio che
+        chiude il buco, e deve esistere, essere schedulata e invocabile a
+        mano, e rieseguire davvero la misura.
+        """
+
+        workflow = (ROOT / ".github" / "workflows" / "session-matrix.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("schedule:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("scripts/check_session_campaign.py", workflow)
+        # E deve accorgersi se la matrice registrata non e piu quella
+        # osservata: senza questo, la campagna girerebbe e non direbbe nulla.
+        self.assertIn("git diff --exit-code -- docs/mariadb/SESSION-MATRIX.md", workflow)
+        # Il ciclo di vita delle fixture sta nello script, non nello YAML.
+        self.assertNotIn("docker compose", workflow)
+
+        campaign = (ROOT / "scripts" / "check_session_campaign.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("docker-compose.mysql.yml", campaign)
+        self.assertIn("docker-compose.mariadb.yml", campaign)
+        self.assertIn("--wait", campaign)
+        # Mai `--remove-orphans`: cancellerebbe i container degli altri
+        # provider su una macchina con piu riferimenti accesi. L'ago cerca
+        # l'argomento quotato, non la parola: il commento che spiega perche
+        # non si usa la contiene, ed e giusto che la contenga.
+        self.assertNotIn(chr(34) + "--remove-orphans" + chr(34), campaign)
+
     def test_the_generated_document_declares_it_is_generated(self) -> None:
         text = self.recorded_matrix()
         self.assertIn("non modificare a mano", text)
@@ -244,6 +278,10 @@ class SessionMatrixTests(unittest.TestCase):
         text = self.recorded_matrix()
         self.assertIn("albero pulito", text)
         self.assertNotIn("modifiche non committate", text)
+        # Il documento non nomina un commit: cambierebbe a ogni corsa, e la
+        # campagna che lo rigenera per confrontarlo vedrebbe una differenza
+        # sempre, cioe mai una vera.
+        self.assertNotIn("Misurata su `", text)
         self.assertIn("0 divergono", text)
         self.assertNotIn("| differs |", text)
 

@@ -255,12 +255,15 @@ def markdown(document: dict[str, object]) -> str:
         "il client. Generata da `scripts/check_session_matrix.py`; non "
         "modificare a mano.",
         "",
-        # Il commit e quello su cui la misura e girata, non quello che la
-        # contiene: un artefatto generato precede per costruzione il commit
-        # che lo porta. Dirlo evita di leggerlo come una contraddizione.
-        # Il runner rifiuta un albero sporco, quindi questo commit descrive
-        # esattamente il codice misurato.
-        f"Misurata su `{document['repository']['commit']}`, albero pulito.",
+        # Il commit **non** entra nel documento: cambierebbe a ogni corsa, e
+        # la campagna che rigenera la matrice per confrontarla con quella
+        # committata vedrebbe una differenza sempre, cioe mai una vera. Cio
+        # che il documento deve garantire e di essere riproducibile; che sia
+        # stato misurato da un albero pulito lo impone il runner, e il commit
+        # preciso resta nel verdetto JSON della corsa.
+        "Misurata da un albero pulito: il runner lo pretende prima di avviare "
+        "Docker, e verifica che HEAD non si muova durante la corsa. Il commit "
+        "e nel verdetto JSON.",
         "",
         "```sql",
         str(document["bootstrap_sql"]),

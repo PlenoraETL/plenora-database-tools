@@ -1,0 +1,75 @@
+name: session-matrix
+
+# Campagna live della semantica di sessione sui tre riferimenti.
+#
+# La matrice in `docs/mariadb/SESSION-MATRIX.md` giustifica una decisione
+# architetturale: bootstrap, isolamento e `START TRANSACTION` restano codice
+# condiviso perche MySQL 9.7 e le due MariaDB si comportano allo stesso modo.
+# Il self-test statico gira su ogni PR e verifica il **giudizio** del runner;
+# non puo accorgersi che il comportamento e cambiato, perche non tocca un
+# server. Se domani cambiasse `SESSION_BOOTSTRAP_SQL`, il documento resterebbe
+# quello di ieri e la CI resterebbe verde.
+#
+# Questa campagna e cio che chiude quel buco. Non gira su push: accende tre
+# server e ne misura tredici superfici, che e troppo per ogni commit e
+# inutile per la maggior parte. Gira a cadenza fissa — dove scopre una
+# divergenza introdotta da un cambio del codice o da un aggiornamento
+# dell'immagine — e a mano, quando qualcuno tocca la sessione e vuole saperlo
+# prima della review.
+#
+# Il ciclo di vita delle fixture non e qui: sta in
+# `scripts/check_session_campaign.py`, che si esegue identico in locale. Uno
+# YAML che accende container e una decisione senza test.
+
+on:
+  schedule:
+    # Lunedi mattina: la settimana comincia sapendo se la matrice regge.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+# Sola lettura: la campagna misura, non scrive sul repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: session-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  session-matrix:
+    name: matrice della semantica di sessione
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: self-test del runner
+        run: python3 scripts/test_check_session_matrix.py
+
+      - name: campagna live sui tre riferimenti
+        run: |
+          mkdir -p session-matrix-results
+          python3 scripts/check_session_campaign.py \
+            --diagnostics session-matrix-results 2>&1 \
+            | tee session-matrix-results/session-matrix.log
+
+      # Il documento rigenerato deve coincidere con quello committato: se
+      # differisce, il comportamento misurato non e piu quello su cui la
+      # decisione poggia, e va riletto prima di aggiornare il file.
+      - name: la matrice registrata e ancora quella osservata
+        run: git diff --exit-code -- docs/mariadb/SESSION-MATRIX.md
+
+      - name: diagnostica
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-matrix-results
+          path: session-matrix-results/
+          retention-days: 7
