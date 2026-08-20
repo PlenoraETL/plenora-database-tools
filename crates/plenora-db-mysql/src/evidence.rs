@@ -455,6 +455,104 @@ pub(crate) fn qualified_filter_forms() -> Vec<FilterCase> {
     ]
 }
 
+/// L'esito che la DDL dell'indice su espressione **deve** avere, per prodotto.
+///
+/// Non e una previsione: e cio che la quarta tranche ha misurato — `MySQL` la
+/// accetta, `MariaDB` la rifiuta con 1064, la sintassi non esiste. Pinnarlo
+/// serve perche l'esito della DDL decide cosa il catalogo debba mostrare
+/// dopo: senza, un errore qualunque — un privilegio mancante, un timeout —
+/// diventerebbe "l'indice non c'e", e un catalogo senza indice passerebbe per
+/// la conferma di un rifiuto che non e mai avvenuto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpressionIndexDdl {
+    /// Creato: il catalogo deve mostrarlo, e deve mostrarlo non confrontabile.
+    Accepted,
+    /// Rifiutato con questo codice: il catalogo non deve mostrarlo affatto.
+    Refused(u16),
+}
+
+impl ExpressionIndexDdl {
+    /// Cosa ci si aspetta da questo prodotto.
+    pub(crate) fn of(profile: &dyn crate::profile::ProductProfile) -> Self {
+        if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb {
+            Self::Refused(1_064)
+        } else {
+            Self::Accepted
+        }
+    }
+
+    /// Cosa non torna fra l'esito atteso e quello osservato, o `None`.
+    ///
+    /// `observed` porta il **codice** e non l'errore del driver: cosi il
+    /// giudizio si prova offline, senza costruire un errore di `mysql_async`.
+    /// Il testo completo di cio che il server ha detto resta nella sonda
+    /// `raw` che lo registra, dove serve a leggere il verdetto.
+    pub(crate) fn mismatch(self, observed: Result<(), Option<u16>>) -> Option<String> {
+        match (self, observed) {
+            (Self::Accepted, Ok(())) => None,
+            (Self::Accepted, Err(code)) => Some(format!(
+                "la DDL doveva essere accettata, e stata rifiutata ({})",
+                code.map_or_else(
+                    || "senza codice del server".to_owned(),
+                    |code| format!("codice {code}")
+                )
+            )),
+            (Self::Refused(expected), Err(Some(observed))) if observed == expected => None,
+            (Self::Refused(expected), Err(Some(observed))) => Some(format!(
+                "la DDL doveva essere rifiutata con {expected}, osservato {observed}"
+            )),
+            (Self::Refused(expected), Err(None)) => Some(format!(
+                "la DDL doveva essere rifiutata con {expected}, ma l'errore non porta \
+                 un codice del server"
+            )),
+            (Self::Refused(expected), Ok(())) => Some(format!(
+                "la DDL doveva essere rifiutata con {expected}, ed e passata"
+            )),
+        }
+    }
+}
+
+/// La forma che una tabella con un indice unico su colonna generata deve
+/// avere, vista dal catalogo.
+///
+/// Registrare cio che si vede e diverso dal verificare che sia cio che serve:
+/// da questa forma dipendono due decisioni — se la colonna sia scrivibile e se
+/// l'indice sia confrontabile con le keys di un Upsert — e una descrizione che
+/// perdesse la colonna, o rendesse l'indice non unico, le cambierebbe entrambe
+/// senza che nulla fallisse.
+pub(crate) fn generated_index_mismatch(
+    description: &crate::MysqlObjectDescription,
+    column_name: &str,
+    index_name: &str,
+) -> Option<String> {
+    let generated = description
+        .columns
+        .iter()
+        .find(|column| column.name == column_name);
+    let index = description
+        .indexes
+        .iter()
+        .find(|index| index.name == index_name);
+    match (generated, index) {
+        (None, _) => Some(format!("la colonna generata {column_name} non compare")),
+        (_, None) => Some(format!("l'indice {index_name} non compare")),
+        (Some(column), _) if column.generation_expression.is_empty() => Some(format!(
+            "la colonna {column_name} risulta non generata: sarebbe scrivibile"
+        )),
+        (_, Some(index)) if index.columns != [column_name] => Some(format!(
+            "l'indice {index_name} non e sulla sola colonna generata: {:?}",
+            index.columns
+        )),
+        (_, Some(index)) if !index.unique => {
+            Some(format!("l'indice {index_name} non risulta unico"))
+        }
+        (_, Some(index)) if !index.column_backed => Some(format!(
+            "l'indice {index_name} non risulta confrontabile per colonne"
+        )),
+        _ => None,
+    }
+}
+
 /// Il rifiuto che una sonda si aspetta, per intero.
 ///
 /// Esiste perche "ha dato errore" non e una misura. Una forma di filtro che
@@ -615,9 +713,170 @@ pub(crate) fn read_mismatch(contract: &ReadContract, outcome: &ReadOutcome) -> O
 #[cfg(test)]
 mod tests {
     use super::{
-        qualified_filter_forms, read_mismatch, refusal_mismatch, server_code_in_message,
-        sql_assignments, ReadContract, ReadOutcome, RefusalContract, QUALIFIED_FILTER_FORMS,
+        generated_index_mismatch, qualified_filter_forms, read_mismatch, refusal_mismatch,
+        server_code_in_message, sql_assignments, ExpressionIndexDdl, ReadContract, ReadOutcome,
+        RefusalContract, QUALIFIED_FILTER_FORMS,
     };
+    #[test]
+    fn the_expected_ddl_outcome_is_the_measured_one() {
+        // I due prodotti partono da due punti diversi, e ciascuno ha il suo:
+        // MySQL accetta l'indice su espressione, MariaDB lo rifiuta con 1064.
+        assert_eq!(
+            ExpressionIndexDdl::of(&crate::profile::MYSQL_PROFILE),
+            ExpressionIndexDdl::Accepted
+        );
+        assert_eq!(
+            ExpressionIndexDdl::of(&crate::profile::MARIADB_PROFILE),
+            ExpressionIndexDdl::Refused(1_064)
+        );
+
+        assert_eq!(ExpressionIndexDdl::Accepted.mismatch(Ok(())), None);
+        assert_eq!(
+            ExpressionIndexDdl::Refused(1_064).mismatch(Err(Some(1_064))),
+            None
+        );
+
+        // E ogni altro esito e una premessa che manca. Il caso che conta e il
+        // terzo: un errore diverso da quello misurato — un privilegio, un
+        // timeout — rendeva la sonda verde, perche "l'indice non c'e" era
+        // indistinguibile da "il server lo ha rifiutato come sappiamo".
+        for (what, expectation, observed, expected) in [
+            (
+                "accettata ma rifiutata",
+                ExpressionIndexDdl::Accepted,
+                Err(Some(1_142)),
+                "doveva essere accettata",
+            ),
+            (
+                "accettata ma rifiutata senza codice",
+                ExpressionIndexDdl::Accepted,
+                Err(None),
+                "senza codice del server",
+            ),
+            (
+                "rifiutata con un altro codice",
+                ExpressionIndexDdl::Refused(1_064),
+                Err(Some(1_142)),
+                "osservato 1142",
+            ),
+            (
+                "rifiutata senza codice",
+                ExpressionIndexDdl::Refused(1_064),
+                Err(None),
+                "non porta un codice del server",
+            ),
+            (
+                "rifiutata ma passata",
+                ExpressionIndexDdl::Refused(1_064),
+                Ok(()),
+                "ed e passata",
+            ),
+        ] {
+            let reported = expectation
+                .mismatch(observed)
+                .unwrap_or_else(|| panic!("{what}: scambiato per l'esito atteso"));
+            assert!(
+                reported.contains(expected),
+                "{what}: il verdetto non dice cosa non torna — {reported}"
+            );
+        }
+    }
+
+    fn generated_description() -> crate::MysqlObjectDescription {
+        let column = |name: &str, generation: &str| crate::MysqlColumn {
+            name: name.to_owned(),
+            ordinal: 1,
+            data_type: "varchar".to_owned(),
+            native_declaration: "varchar(32)".to_owned(),
+            nullable: true,
+            default_expression: None,
+            character_set: None,
+            collation: None,
+            numeric_precision: None,
+            numeric_scale: None,
+            datetime_precision: None,
+            spatial_srid: None,
+            extra: String::new(),
+            generation_expression: generation.to_owned(),
+        };
+        crate::MysqlObjectDescription {
+            schema: "dataflow_test".to_owned(),
+            name: "generata".to_owned(),
+            kind: "BASE TABLE".to_owned(),
+            engine: Some("InnoDB".to_owned()),
+            columns: vec![column("name", ""), column("lname", "lower(`name`)")],
+            indexes: vec![crate::MysqlIndex {
+                name: "uq_lname".to_owned(),
+                unique: true,
+                column_backed: true,
+                columns: vec!["lname".to_owned()],
+            }],
+            token: crate::MysqlSchemaToken(String::new()),
+        }
+    }
+
+    #[test]
+    fn the_generated_index_contract_is_verified_in_full() {
+        assert_eq!(
+            generated_index_mismatch(&generated_description(), "lname", "uq_lname"),
+            None
+        );
+
+        // Cinque modi di perdere la forma, e ciascuno cambia una delle due
+        // decisioni che da quella forma dipendono: se la colonna sia
+        // scrivibile, e se l'indice sia confrontabile con le keys.
+        let without = |mutate: fn(&mut crate::MysqlObjectDescription)| {
+            let mut description = generated_description();
+            mutate(&mut description);
+            description
+        };
+        for (what, description, expected) in [
+            (
+                "colonna assente",
+                without(|description| description.columns.retain(|column| column.name != "lname")),
+                "non compare",
+            ),
+            (
+                "indice assente",
+                without(|description| description.indexes.clear()),
+                "non compare",
+            ),
+            (
+                "colonna non piu generata",
+                without(|description| {
+                    for column in &mut description.columns {
+                        column.generation_expression.clear();
+                    }
+                }),
+                "sarebbe scrivibile",
+            ),
+            (
+                "indice su piu colonne",
+                without(|description| {
+                    description.indexes[0].columns.push("name".to_owned());
+                }),
+                "non e sulla sola colonna generata",
+            ),
+            (
+                "indice non unico",
+                without(|description| description.indexes[0].unique = false),
+                "non risulta unico",
+            ),
+            (
+                "indice non confrontabile",
+                without(|description| description.indexes[0].column_backed = false),
+                "non risulta confrontabile",
+            ),
+        ] {
+            let reported = generated_index_mismatch(&description, "lname", "uq_lname")
+                .unwrap_or_else(|| panic!("{what}: la forma perduta e passata per buona"));
+            assert!(
+                reported.contains(expected),
+                "{what}: il verdetto non dice cosa manca — {reported}"
+            );
+        }
+    }
+
     use plenora_database_core::plan::FilterExpression;
     use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 

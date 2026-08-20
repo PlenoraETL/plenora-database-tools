@@ -84,6 +84,8 @@ EXPECTED_UNIT_TESTS = {
     "evidence::tests::assignments_survive_a_comma_inside_a_quoted_value",
     "evidence::tests::every_clause_of_the_read_contract_can_fail_on_its_own",
     "evidence::tests::the_deliberate_refusal_is_recognised",
+    "evidence::tests::the_expected_ddl_outcome_is_the_measured_one",
+    "evidence::tests::the_generated_index_contract_is_verified_in_full",
     "evidence::tests::the_qualified_filter_forms_are_the_thirteen_declared",
     "evidence::tests::the_real_bootstrap_parses_into_three_assignments",
     "evidence::tests::the_server_code_is_read_from_the_message_or_absent",

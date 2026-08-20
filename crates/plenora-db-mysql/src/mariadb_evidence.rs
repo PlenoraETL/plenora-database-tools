@@ -37,8 +37,8 @@ use crate::evidence::{
     condense, config, environment, secret, server_code, truncate, Observation, Recorder,
 };
 use crate::evidence::{
-    qualified_filter_forms, read_mismatch, refusal_mismatch, ReadContract, ReadOutcome,
-    RefusalContract, STREAMING_ROWS, STREAMING_ROWS_I64,
+    qualified_filter_forms, read_mismatch, refusal_mismatch, ExpressionIndexDdl, ReadContract,
+    ReadOutcome, RefusalContract, STREAMING_ROWS, STREAMING_ROWS_I64,
 };
 use crate::profile::{ProductProfile, MARIADB_PROFILE, MYSQL_PROFILE};
 use crate::{MysqlConfig, MysqlProvider, MysqlSession};
@@ -1863,14 +1863,6 @@ async fn generated_column_probes(
             .await
             {
                 Ok(description) => {
-                    let generated = description
-                        .columns
-                        .iter()
-                        .find(|column| column.name == "lname");
-                    let functional = description
-                        .indexes
-                        .iter()
-                        .find(|index| index.name == "uq_lname");
                     let indexes = description
                         .indexes
                         .iter()
@@ -1892,24 +1884,11 @@ async fn generated_column_probes(
                     // e una descrizione che perdesse `lname`, o rendesse
                     // l'indice non unico, le cambierebbe entrambe restando
                     // verde.
-                    let mismatch = match (generated, functional) {
-                        (None, _) => Some("la colonna generata non compare".to_owned()),
-                        (_, None) => Some("l'indice sulla colonna generata non compare".to_owned()),
-                        (Some(column), _) if column.generation_expression.is_empty() => {
-                            Some("la colonna risulta non generata: sarebbe scrivibile".to_owned())
-                        }
-                        (_, Some(index)) if index.columns != ["lname"] => Some(format!(
-                            "l'indice non e sulla sola colonna generata: {:?}",
-                            index.columns
-                        )),
-                        (_, Some(index)) if !index.unique => {
-                            Some("l'indice non risulta unico".to_owned())
-                        }
-                        (_, Some(index)) if !index.column_backed => {
-                            Some("l'indice non risulta confrontabile per colonne".to_owned())
-                        }
-                        _ => None,
-                    };
+                    let mismatch = crate::evidence::generated_index_mismatch(
+                        &description,
+                        "lname",
+                        "uq_lname",
+                    );
                     match mismatch {
                         None => recorder.accepted(
                             "provider.profile_generated_index",
@@ -2704,57 +2683,6 @@ async fn profile_probes(
 /// da li discende un rifiuto; se pero su quel motore un indice su espressione
 /// non si puo nemmeno creare, quel rifiuto e una difesa contro un caso che il
 /// server non produce — che e una cosa diversa da un difetto, e va scritta.
-/// L'esito che la DDL dell'indice su espressione **deve** avere, per prodotto.
-///
-/// Non e una previsione: e cio che la quarta tranche ha misurato — `MySQL` la
-/// accetta, `MariaDB` la rifiuta con 1064, la sintassi non esiste. Pinnarlo
-/// serve perche l'esito della DDL decide cosa il catalogo debba mostrare
-/// dopo: senza, un errore qualunque — un privilegio mancante, un timeout —
-/// diventerebbe "l'indice non c'e", e un catalogo senza indice passerebbe per
-/// la conferma di un rifiuto che non e mai avvenuto.
-enum ExpressionIndexDdl {
-    /// Creato: il catalogo deve mostrarlo, e deve mostrarlo non confrontabile.
-    Accepted,
-    /// Rifiutato con questo codice: il catalogo non deve mostrarlo affatto.
-    Refused(u16),
-}
-
-impl ExpressionIndexDdl {
-    /// Cosa ci si aspetta da questo prodotto.
-    fn of(profile: &dyn ProductProfile) -> Self {
-        if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb {
-            Self::Refused(1_064)
-        } else {
-            Self::Accepted
-        }
-    }
-
-    /// Cosa non torna fra l'esito atteso e quello osservato, o `None`.
-    fn mismatch(&self, observed: &Result<(), mysql_async::Error>) -> Option<String> {
-        match (self, observed) {
-            (Self::Accepted, Ok(())) => None,
-            (Self::Accepted, Err(error)) => Some(format!(
-                "la DDL doveva essere accettata: {}",
-                condense(&error.to_string())
-            )),
-            (Self::Refused(code), Err(error)) => match server_code(error) {
-                Some(observed) if observed == *code => None,
-                Some(observed) => Some(format!(
-                    "la DDL doveva essere rifiutata con {code}, osservato {observed}"
-                )),
-                None => Some(format!(
-                    "la DDL doveva essere rifiutata con {code}, ma l'errore non porta un \
-                     codice del server: {}",
-                    condense(&error.to_string())
-                )),
-            },
-            (Self::Refused(code), Ok(())) => Some(format!(
-                "la DDL doveva essere rifiutata con {code}, ed e passata"
-            )),
-        }
-    }
-}
-
 #[allow(clippy::too_many_lines)]
 async fn functional_index_probes(
     recorder: &mut Recorder,
@@ -2798,7 +2726,8 @@ async fn functional_index_probes(
     // rifiuta con 1064. Un errore qualunque al suo posto — un privilegio
     // mancante, un timeout — diventava "l'indice non c'e", e un catalogo
     // senza indice passava per la conferma di un rifiuto mai avvenuto.
-    let ddl_mismatch = ExpressionIndexDdl::of(profile).mismatch(&ddl);
+    let ddl_mismatch = ExpressionIndexDdl::of(profile)
+        .mismatch(ddl.as_ref().copied().map_err(crate::evidence::server_code));
     let expression_index_exists = ddl.is_ok();
 
     match pool.checkout(cancellation).await {
