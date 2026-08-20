@@ -597,18 +597,38 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
         from scripts.mysql_inventory import EXCLUDED_SOURCES, collect
 
-        self.assertIn("mariadb_evidence.rs", EXCLUDED_SOURCES)
-        evidence = (
-            ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
-        ).read_text(encoding="utf-8")
-        self.assertIn("async fn mariadb_driver_evidence()", evidence)
-        self.assertNotIn("async fn live_mariadb_driver_evidence", evidence)
-        self.assertIn("#[ignore", evidence)
+        # Le due misure, entrambe: quella su MariaDB di ADR 0014 e quella
+        # sulla semantica di sessione. Vale per tutt'e due la stessa ragione —
+        # due terzi delle loro corse avvengono su un motore che il gate non
+        # qualifica.
+        measurements = {
+            "mariadb_evidence.rs": "mariadb_driver_evidence",
+            "session_evidence.rs": "session_semantics_evidence",
+        }
+        for source, entry_point in measurements.items():
+            self.assertIn(source, EXCLUDED_SOURCES)
+            text = (ROOT / "crates" / "plenora-db-mysql" / "src" / source).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(f"async fn {entry_point}()", text)
+            self.assertNotIn("async fn live_", text)
+            self.assertIn("#[ignore", text)
 
+        # L'inventario non deve contenere i **punti d'ingresso** delle misure.
+        # La regola era scritta come "nessun nome che contenga `evidence`", ed
+        # e stata un'approssimazione utile finche quella parola compariva solo
+        # nei moduli di misura. Da quando i parser condivisi vivono in
+        # `evidence.rs` con i propri unit test offline, quella forma
+        # confondeva una misura con il test di una funzione pura: sono cose
+        # diverse, e la seconda appartiene all'inventario.
         inventory = collect()
         for family in inventory.values():
             self.assertFalse(
-                [name for name in family if "evidence" in name],
+                [
+                    name
+                    for name in family
+                    if name.endswith(tuple(measurements.values()))
+                ],
                 "la misura e finita nell'inventario MySQL",
             )
 

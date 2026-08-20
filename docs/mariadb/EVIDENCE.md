@@ -321,7 +321,13 @@ contrario — nel profilo entra cio che diverge.
 La matrice e una prova permanente, non una fotografia. Il runner rifiuta un
 albero sporco prima di avviare Docker e verifica che HEAD non sia cambiato a
 misura finita; poi fallisce se l'inventario delle sonde non e esattamente
-quello dichiarato, se una sonda non e accettata, o se una diverge. La seconda
+quello dichiarato, se una sonda non e accettata, o se una diverge.
+
+Ed e **eseguita**: la campagna `session-matrix` accende i tre riferimenti a
+cadenza settimanale e su richiesta, riesegue la misura e confronta il
+documento rigenerato con quello committato. Senza quella corsa il self-test
+statico verificherebbe il giudizio del runner e nient'altro: un cambio di
+`SESSION_BOOTSTRAP_SQL` lascerebbe il documento di ieri e la CI verde. La seconda
 condizione non e ridondante rispetto alla terza: "coincidono" e vero anche
 quando tutti e tre falliscono allo stesso modo, ed e il verde falso che questa
 misura esiste per escludere.
@@ -335,10 +341,12 @@ correzione ha ristretto cio che si puo affermare.
 TRANSACTION` e non `START TRANSACTION READ ONLY`: dava lo stesso valore per
 tutte e tre le modalita. Ora si osserva l'effetto — una scrittura dentro la
 transazione — e i tre casi si distinguono: ammessa, rifiutata, ammessa. Il
-rifiuto dev'essere **quello del read-only**: codice 1792 su tutti e tre, con
-categoria `Execution` ed effetto `None`. Accettare un errore qualunque
-avrebbe fatto passare una tabella assente o un timeout per prova che la
-transazione era in sola lettura.
+rifiuto dev'essere **quello del read-only**, per intero: codice 1792,
+categoria `Execution`, effetto `None`, retry `Never`, identici sui tre
+server. Il solo codice non basterebbe — una regressione che classificasse
+quel codice come autenticazione, o ne dichiarasse l'effetto ignoto, o lo
+rendesse ritentabile, resterebbe accettata ovunque, e sono le tre cose che
+decidono cosa il chiamante fa dopo.
 
 Il contesto rileggeva isolamento e autocommit, cioe nulla che lo riguardasse.
 Ora rilegge la variabile utente che il provider imposta.
