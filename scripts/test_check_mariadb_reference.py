@@ -837,5 +837,186 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             )
 
 
+
+class MariadbEvidenceCampaignTests(unittest.TestCase):
+    """La campagna che porta le cinquantasei sonde su un runner pulito.
+
+    Il runner sa gia giudicare, ma pretende tre server accesi: finche quello e
+    stato l'unico modo di lanciarlo, le prove erano presidiate da chi si
+    ricordava di farlo. Queste guardie tengono ferme le tre cose che rendono
+    la campagna una garanzia invece di un comando: quando gira, cosa fa
+    fallire, e in quale ordine tocca le cose.
+    """
+
+    WORKFLOW = ROOT / ".github" / "workflows" / "mariadb-evidence.yml"
+
+    def campaign(self):
+        import importlib
+
+        return importlib.import_module("scripts.check_mariadb_campaign")
+
+    def lifecycle(self):
+        import importlib
+
+        return importlib.import_module("scripts.fixture_campaign")
+
+    def test_the_campaign_runs_on_a_schedule_and_never_on_push(self) -> None:
+        """Cinquantasei sonde e tre server non stanno su ogni commit.
+
+        E l'altra meta della stessa frase: se non girasse mai da sola, non
+        sarebbe una garanzia. Quindi cadenza fissa piu esecuzione a mano, e
+        nessun trigger su push.
+        """
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+
+        # I trigger si leggono nel blocco `on:`, non nel file: il commento che
+        # spiega perche la campagna **non** gira su push contiene la parola
+        # "push", ed e giusto che la contenga. Cercarla ovunque faceva fallire
+        # la guardia sulla spiegazione invece che sulla configurazione.
+        triggers = workflow.split(chr(10) + "on:" + chr(10), 1)[1]
+        triggers = triggers.split(chr(10) + "permissions:", 1)[0]
+        self.assertIn("schedule:", triggers)
+        self.assertIn("workflow_dispatch:", triggers)
+        self.assertIn("cron:", triggers)
+        self.assertNotIn("push:", triggers)
+        self.assertNotIn("pull_request:", triggers)
+
+        # Cio che esegue, e cio che raccoglie quando va male.
+        self.assertIn("scripts/check_mariadb_campaign.py", workflow)
+        self.assertIn("scripts/test_check_mariadb_reference.py", workflow)
+        self.assertIn("if: failure()", workflow)
+        self.assertIn("upload-artifact", workflow)
+
+        # Il ciclo di vita non sta nello YAML: uno YAML che accende container
+        # e una decisione senza test.
+        self.assertNotIn("docker compose", workflow)
+        self.assertNotIn("docker run", workflow)
+
+        # E niente scritture nell'albero: il preflight pretende un albero
+        # pulito, e un log scritto dentro lo sporcherebbe — un gate che non
+        # puo passare per costruzione.
+        for line in workflow.splitlines():
+            stripped = line.strip()
+            neutral = stripped.replace("$RUNNER_TEMP", "").replace(
+                "${{ runner.temp }}", ""
+            )
+            if not any(writer in neutral for writer in ("tee ", "> ", ">> ", "mkdir ")):
+                continue
+            self.assertIn(
+                "RUNNER_TEMP",
+                stripped,
+                f"il workflow scrive nell'albero di lavoro: {stripped}",
+            )
+
+    def test_the_preflight_refuses_a_dirty_tree_before_docker(self) -> None:
+        """Il commit registrato deve descrivere il codice misurato.
+
+        E il controllo va fatto **prima** di accendere: scoprirlo con tre
+        server su e uno spreco, e renderebbe falsa l'affermazione che precede
+        Docker.
+        """
+
+        campaign = self.campaign()
+        lifecycle = self.lifecycle()
+        original = campaign.repository_state
+        touched = []
+        try:
+            campaign.repository_state = lambda: {
+                "commit": "abc",
+                "worktree_dirty": True,
+                "worktree_changes": [" M scripts/check_mariadb_campaign.py"],
+            }
+            with self.assertRaises(RuntimeError) as raised:
+                campaign.preflight()
+            self.assertIn("HEAD pulito", str(raised.exception))
+
+            # E dentro la campagna, il rifiuto arriva senza che Docker sia
+            # stato toccato.
+            shared = {name: getattr(lifecycle, name) for name in ("compose", "run")}
+            try:
+                lifecycle.compose = lambda *arguments, **keywords: touched.append(arguments)
+                lifecycle.run = lambda *arguments, **keywords: touched.append(arguments)
+                with self.assertRaises(RuntimeError):
+                    campaign.main([])
+            finally:
+                for name, value in shared.items():
+                    setattr(lifecycle, name, value)
+            self.assertEqual(touched, [], "la campagna ha toccato Docker con l'albero sporco")
+        finally:
+            campaign.repository_state = original
+
+    def test_a_capability_without_its_proof_fails_the_campaign(self) -> None:
+        """Il verdetto si stampa comunque, ma l'uscita dice cosa manca.
+
+        E la ragione per cui la campagna esiste: una sonda che smette di
+        passare non e piu una misura fra due motori, e una promessa pubblicata
+        che ha perso la sua prova.
+        """
+
+        campaign = self.campaign()
+        lifecycle = self.lifecycle()
+        healthy = {
+            "results": [
+                {
+                    "probe": probe,
+                    "observations": {
+                        server: {"outcome": outcome}
+                        for server in ("mysql", "mariadb-12", "mariadb-11")
+                    },
+                }
+                for probe, outcome in self.expected_outcomes().items()
+            ],
+            "capability_violations": [],
+        }
+        regressed = {
+            "results": [dict(entry) for entry in healthy["results"]],
+            "capability_violations": [],
+        }
+        regressed["results"][0]["observations"] = {
+            server: {"outcome": "not_measured"}
+            for server in ("mysql", "mariadb-12", "mariadb-11")
+        }
+
+        original = {
+            name: getattr(campaign, name) for name in ("preflight", "verdict")
+        }
+        shared = {name: getattr(lifecycle, name) for name in ("compose", "run")}
+        calls = []
+        try:
+            campaign.preflight = lambda: "commit"
+            lifecycle.compose = lambda file, *arguments, **keywords: calls.append(
+                (file, arguments[0])
+            )
+            lifecycle.run = lambda *arguments, **keywords: ""
+
+            campaign.verdict = lambda: healthy
+            self.assertEqual(campaign.main([]), 0)
+
+            campaign.verdict = lambda: regressed
+            self.assertEqual(campaign.main([]), 1)
+        finally:
+            for name, value in original.items():
+                setattr(campaign, name, value)
+            for name, value in shared.items():
+                setattr(lifecycle, name, value)
+
+        # E il ciclo di vita e stato quello: stato noto, accensione, pulizia,
+        # per ciascuno dei due compose e per ciascuna delle due corse.
+        for file in campaign.COMPOSE_FILES:
+            for verb in ("config", "down", "up"):
+                self.assertIn((file, verb), calls)
+
+    def expected_outcomes(self) -> dict[str, str]:
+        from scripts.check_mariadb_driver import (
+            REQUIRED_ACCEPTED_PROBES,
+            REQUIRED_REJECTED_PROBES,
+        )
+
+        outcomes = {probe: "accepted" for probe in REQUIRED_ACCEPTED_PROBES}
+        outcomes.update({probe: "rejected" for probe in REQUIRED_REJECTED_PROBES})
+        return outcomes
+
+
 if __name__ == "__main__":
     unittest.main()

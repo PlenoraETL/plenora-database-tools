@@ -1,0 +1,82 @@
+name: mariadb-evidence
+
+# Campagna live dell'evidenza MariaDB sui tre riferimenti.
+#
+# Cinquantasei sonde, e i contratti che le rendono prove: quali codici arrivano
+# dalle superfici che la classificazione traduce, cosa il catalogo pubblica
+# quando lo si legge con il profilo del prodotto, quali forme di filtro
+# decidono davvero quali righe escono, e quali rifiuti sono la prova che una
+# capability resta chiusa. Il runner sa gia giudicare — esce diverso da zero
+# se una prova necessaria manca — ma pretende tre server accesi, e finche
+# quello e stato l'unico modo di lanciarlo, quelle prove erano presidiate solo
+# da chi si ricordava di farlo.
+#
+# Il self-test statico gira su ogni PR e verifica il **giudizio** su documenti
+# costruiti a mano; non puo accorgersi che il comportamento e cambiato, perche
+# non tocca un server. Questa campagna e cio che chiude quel buco, e arriva
+# adesso e non piu tardi: il punto 3 della fase 3 comincia ad aprire capability
+# di scrittura, ed e meglio che ogni prova nuova entri subito in una corsa su
+# runner puliti invece di recuperare la garanzia poco prima del provider
+# pubblico.
+#
+# Non gira su push: accende tre server e ne misura cinquantasei superfici, che
+# e troppo per ogni commit. Gira a cadenza fissa — dove scopre una regressione
+# introdotta dal codice o da un aggiornamento dell'immagine — e a mano, quando
+# qualcuno tocca il profilo e vuole saperlo prima della review.
+#
+# Il ciclo di vita delle fixture non e qui: sta in
+# `scripts/fixture_campaign.py`, condiviso con la campagna di sessione e
+# eseguibile identico in locale. Uno YAML che accende container e una decisione
+# senza test.
+
+on:
+  schedule:
+    # Lunedi mattina, un'ora dopo la matrice di sessione: le due campagne
+    # accendono gli stessi container e non devono incrociarsi.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# Sola lettura: la campagna misura, non scrive sul repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: mariadb-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  mariadb-evidence:
+    name: evidenza del driver sui tre riferimenti
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: self-test del runner e della campagna
+        run: python3 scripts/test_check_mariadb_reference.py
+
+      # Log e diagnostica vivono **fuori** dal repository. Scriverli dentro
+      # sporcherebbe l'albero, e il preflight della campagna — che pretende un
+      # albero pulito — rifiuterebbe proprio quel file: un gate che non puo
+      # passare per costruzione.
+      - name: campagna live sui tre riferimenti
+        run: |
+          mkdir -p "$RUNNER_TEMP/mariadb-evidence"
+          python3 scripts/check_mariadb_campaign.py \
+            --diagnostics "$RUNNER_TEMP/mariadb-evidence" 2>&1 \
+            | tee "$RUNNER_TEMP/mariadb-evidence/mariadb-evidence.log"
+
+      - name: diagnostica
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-evidence-results
+          path: ${{ runner.temp }}/mariadb-evidence/
+          retention-days: 7

@@ -13,6 +13,7 @@ costruiti a mano, che e la parte che puo rompersi in silenzio.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import sys
 import unittest
@@ -44,6 +45,8 @@ def load_campaign():
 
 
 CAMPAIGN = load_campaign()
+
+LIFECYCLE = importlib.import_module("scripts.fixture_campaign")
 
 
 def observations(probes, outcome: str = "accepted", detail: str = "uguale"):
@@ -358,7 +361,14 @@ class SessionMatrixTests(unittest.TestCase):
         )
         self.assertIn("docker-compose.mysql.yml", campaign)
         self.assertIn("docker-compose.mariadb.yml", campaign)
-        self.assertIn("--wait", campaign)
+
+        # Le proprieta del ciclo di vita si verificano dove il ciclo di vita
+        # vive: da quando due campagne lo condividono, cercarle nella campagna
+        # di sessione le troverebbe assenti — e sarebbero assenti davvero, ma
+        # per la ragione sbagliata.
+        lifecycle = (ROOT / "scripts" / "fixture_campaign.py").read_text(encoding="utf-8")
+        self.assertIn("--wait", lifecycle)
+        self.assertIn("down", lifecycle)
         # Mai `--remove-orphans`: cancellerebbe i container degli altri
         # provider su una macchina con piu riferimenti accesi. L'ago cerca
         # l'argomento quotato, non la parola: il commento che spiega perche
@@ -366,6 +376,7 @@ class SessionMatrixTests(unittest.TestCase):
         # pezzi, perche scritto per intero questo file violerebbe la guardia
         # che vieta il flag in tutti i runner del repository.
         self.assertNotIn(chr(34) + "--remove" + "-orphans" + chr(34), campaign)
+        self.assertNotIn(chr(34) + "--remove" + "-orphans" + chr(34), lifecycle)
 
     def run_campaign(
         self,
@@ -389,10 +400,16 @@ class SessionMatrixTests(unittest.TestCase):
         fallisce, ed e proprio allora che dice la cosa interessante.
         """
 
+        # Il ciclo di vita vive in `fixture_campaign`, condiviso con la
+        # campagna MariaDB: le sostituzioni vanno li, che e anche il modo in
+        # cui questi test continuano a dire la verita dopo l'estrazione — se
+        # tornassero a sostituire i nomi della campagna, non toccherebbero il
+        # codice che gira.
         original = {
             name: getattr(CAMPAIGN, name)
-            for name in ("compose", "run", "preflight", "verdict", "markdown", "EVIDENCE")
+            for name in ("preflight", "verdict", "markdown", "EVIDENCE")
         }
+        shared = {name: getattr(LIFECYCLE, name) for name in ("compose", "run")}
 
         last_up = {"seen": False}
 
@@ -423,8 +440,8 @@ class SessionMatrixTests(unittest.TestCase):
             raise RuntimeError("docker ps non disponibile")
 
         try:
-            CAMPAIGN.compose = compose
-            CAMPAIGN.run = failing_run if fail_run else (lambda command, capture=False: "")
+            LIFECYCLE.compose = compose
+            LIFECYCLE.run = failing_run if fail_run else (lambda command, capture=False: "")
             CAMPAIGN.preflight = preflight
             CAMPAIGN.verdict = lambda: {"totals": {"probes": 13}}
             CAMPAIGN.markdown = lambda document: "matrice" + chr(10)
@@ -435,6 +452,8 @@ class SessionMatrixTests(unittest.TestCase):
         finally:
             for name, value in original.items():
                 setattr(CAMPAIGN, name, value)
+            for name, value in shared.items():
+                setattr(LIFECYCLE, name, value)
 
     def test_the_campaign_starts_measures_and_cleans_up(self) -> None:
         import tempfile
