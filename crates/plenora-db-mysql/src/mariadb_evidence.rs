@@ -36,7 +36,10 @@
 use crate::evidence::{
     condense, config, environment, secret, server_code, truncate, Observation, Recorder,
 };
-use crate::evidence::{read_mismatch, ReadContract, ReadOutcome};
+use crate::evidence::{
+    qualified_filter_forms, read_mismatch, refusal_mismatch, ReadContract, ReadOutcome,
+    RefusalContract, STREAMING_ROWS, STREAMING_ROWS_I64,
+};
 use crate::profile::{ProductProfile, MARIADB_PROFILE, MYSQL_PROFILE};
 use crate::{MysqlConfig, MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
@@ -50,7 +53,10 @@ use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
 };
 use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
-use plenora_database_core::{CancellationToken, ResourceBudget, ResourceLimits};
+use plenora_database_core::{
+    CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
+    RetryDisposition,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -1090,31 +1096,6 @@ async fn cancellation_probes(
 // classificazione del profilo deve riconoscerlo.
 // --------------------------------------------------------------------------
 
-/// Quante righe mette la tabella su cui si misurano lettura e filtri.
-///
-/// `DEFAULT_BATCH_ROWS + 1`, cioe la tabella piu piccola che **non** puo stare
-/// in un batch solo. Il numero non e scelto per abbondanza: e il taglio del
-/// lettore, quindi una lettura che ne consegna due sta streammando e una che
-/// ne consegna uno ha ignorato il proprio limite.
-///
-/// La prima stesura provava a spezzare il batch con un budget di memoria
-/// stretto, e ha misurato altro: i budget sono **cumulativi**, non per batch,
-/// quindi la lettura moriva di `ResourceLimit` a meta invece di consegnare piu
-/// batch. A spezzare e il conteggio delle righe, e il budget qui e largo
-/// apposta perche non interferisca.
-const STREAMING_ROWS: usize = crate::DEFAULT_BATCH_ROWS + 1;
-
-/// Lo stesso numero con segno, per i parametri legati e per le attese sul
-/// primo valore. Il cast e sicuro per costruzione — la costante e 8193 — e
-/// dichiararlo qui evita di ripeterlo a ogni uso.
-#[allow(clippy::cast_possible_wrap)]
-const STREAMING_ROWS_I64: i64 = STREAMING_ROWS as i64;
-
-/// Ogni terza riga ha `label` nulla: e cio che rende `IS NULL` e `IS NOT NULL`
-/// due domande con due risposte diverse invece di due modi di dire "tutte".
-const UNLABELLED_ROWS: usize = STREAMING_ROWS / 3;
-const LABELLED_ROWS: usize = STREAMING_ROWS - UNLABELLED_ROWS;
-
 /// Un budget che non interferisce: le sonde di lettura misurano il lettore,
 /// non il limite di risorse, e un budget condiviso fra piu letture si
 /// esaurirebbe a meta perche le prenotazioni si accumulano.
@@ -1448,203 +1429,6 @@ async fn profile_read_probes(
     streaming_read_probes(recorder, &provider, profile, schema_name, cancellation).await;
 }
 
-/// Una forma di filtro qualificata, con cosa deve rendere.
-struct FilterCase {
-    name: &'static str,
-    expression: FilterExpression,
-    rows: usize,
-    first: i64,
-    parameters: ParameterBag,
-}
-
-/// Le forme di filtro che il renderer qualifica, con cosa devono rendere.
-///
-/// I numeri non sono calcolati dall'harness: sono scritti qui, derivati dalla
-/// definizione della fixture. Calcolarli con lo stesso codice che li misura
-/// farebbe passare per verificata una formula sbagliata due volte allo stesso
-/// modo.
-///
-/// Ogni riga porta anche il **primo** valore atteso, perche il conteggio da
-/// solo non distingue `id < 100` da `id > 8093`: sono novantanove righe
-/// entrambi.
-///
-/// E ogni riga porta i **propri** parametri. Non e una comodita: il provider
-/// rifiuta un `ParameterBag` che contenga voci che il piano non lega, e ha
-/// ragione — un parametro non usato e quasi sempre un filtro scritto male. La
-/// prima stesura ne passava dieci a ogni forma, e le ha viste rifiutare tutte.
-#[allow(clippy::too_many_lines)]
-fn qualified_filter_forms() -> Vec<FilterCase> {
-    let bag = |pairs: Vec<(&str, ParameterValue)>| {
-        ParameterBag::new(
-            pairs
-                .into_iter()
-                .map(|(name, value)| (name.to_owned(), value))
-                .collect(),
-        )
-    };
-    let integer = |name: &'static str, value: i64| (name, ParameterValue::I64(value));
-    let field = |name: &str| name.to_owned();
-    let penultimate = STREAMING_ROWS_I64 - 3;
-    vec![
-        FilterCase {
-            name: "eq",
-            expression: FilterExpression::Eq {
-                field: field("id"),
-                parameter: field("sette"),
-            },
-            rows: 1,
-            first: 7,
-            parameters: bag(vec![integer("sette", 7)]),
-        },
-        FilterCase {
-            name: "ne",
-            expression: FilterExpression::Ne {
-                field: field("id"),
-                parameter: field("sette"),
-            },
-            rows: STREAMING_ROWS - 1,
-            first: 1,
-            parameters: bag(vec![integer("sette", 7)]),
-        },
-        FilterCase {
-            name: "lt",
-            expression: FilterExpression::Lt {
-                field: field("id"),
-                parameter: field("cento"),
-            },
-            rows: 99,
-            first: 1,
-            parameters: bag(vec![integer("cento", 100)]),
-        },
-        FilterCase {
-            name: "lte",
-            expression: FilterExpression::Lte {
-                field: field("id"),
-                parameter: field("cento"),
-            },
-            rows: 100,
-            first: 1,
-            parameters: bag(vec![integer("cento", 100)]),
-        },
-        FilterCase {
-            name: "gt",
-            expression: FilterExpression::Gt {
-                field: field("id"),
-                parameter: field("penultime"),
-            },
-            rows: 3,
-            first: penultimate + 1,
-            parameters: bag(vec![integer("penultime", penultimate)]),
-        },
-        FilterCase {
-            name: "gte",
-            expression: FilterExpression::Gte {
-                field: field("id"),
-                parameter: field("penultime"),
-            },
-            rows: 4,
-            first: penultimate,
-            parameters: bag(vec![integer("penultime", penultimate)]),
-        },
-        FilterCase {
-            name: "is_null",
-            expression: FilterExpression::IsNull {
-                field: field("label"),
-            },
-            rows: UNLABELLED_ROWS,
-            first: 3,
-            parameters: ParameterBag::default(),
-        },
-        FilterCase {
-            name: "is_not_null",
-            expression: FilterExpression::IsNotNull {
-                field: field("label"),
-            },
-            rows: LABELLED_ROWS,
-            first: 1,
-            parameters: ParameterBag::default(),
-        },
-        FilterCase {
-            name: "in",
-            expression: FilterExpression::In {
-                field: field("id"),
-                parameters: vec![field("uno"), field("due"), field("tre")],
-            },
-            rows: 3,
-            first: 1,
-            parameters: bag(vec![
-                integer("uno", 1),
-                integer("due", 2),
-                integer("tre", 3),
-            ]),
-        },
-        FilterCase {
-            name: "between",
-            expression: FilterExpression::Between {
-                field: field("id"),
-                lower_parameter: field("dieci"),
-                upper_parameter: field("venti"),
-            },
-            rows: 11,
-            first: 10,
-            parameters: bag(vec![integer("dieci", 10), integer("venti", 20)]),
-        },
-        FilterCase {
-            name: "like",
-            expression: FilterExpression::Like {
-                field: field("payload"),
-                parameter: field("coda_sette"),
-                case_insensitive: false,
-            },
-            rows: 1,
-            first: 7,
-            parameters: bag(vec![(
-                "coda_sette",
-                ParameterValue::String("%0007".to_owned()),
-            )]),
-        },
-        FilterCase {
-            name: "and",
-            expression: FilterExpression::And {
-                args: vec![
-                    FilterExpression::Gt {
-                        field: field("id"),
-                        parameter: field("penultime"),
-                    },
-                    FilterExpression::Lt {
-                        field: field("id"),
-                        parameter: field("ultima"),
-                    },
-                ],
-            },
-            rows: 2,
-            first: penultimate + 1,
-            parameters: bag(vec![
-                integer("penultime", penultimate),
-                integer("ultima", STREAMING_ROWS_I64),
-            ]),
-        },
-        FilterCase {
-            name: "or",
-            expression: FilterExpression::Or {
-                args: vec![
-                    FilterExpression::Eq {
-                        field: field("id"),
-                        parameter: field("uno"),
-                    },
-                    FilterExpression::Eq {
-                        field: field("id"),
-                        parameter: field("due"),
-                    },
-                ],
-            },
-            rows: 2,
-            first: 1,
-            parameters: bag(vec![integer("uno", 1), integer("due", 2)]),
-        },
-    ]
-}
-
 /// Filtro, ordinamento e streaming, su una tabella fatta per questo.
 ///
 /// Le sonde vogliono piu di una riga: un filtro che non esclude niente, un
@@ -1765,17 +1549,35 @@ async fn streaming_read_probes(
     }
 
     // Le due forme che il renderer rifiuta per scelta. Sono nel contratto
-    // pubblico e non nella superficie qualificata: senza questa sonda,
+    // pubblico e non nella superficie qualificata: senza queste sonde,
     // `filter = true` si leggerebbe come "tutte le forme", che e la lettura
     // che il flag non sostiene.
-    for (name, probe, expression) in [
+    //
+    // Il rifiuto si verifica per intero — categoria, fase, effetto remoto,
+    // retry e causa — e non come "ha dato errore". Un `Err` arriva anche
+    // quando la colonna non esiste o il parametro e del tipo sbagliato: il
+    // giorno in cui il renderer spatial venisse abilitato, una sonda che si
+    // accontenta di `Err` resterebbe verde per la ragione sbagliata, e il
+    // fail-close sembrerebbe ancora verificato.
+    for (name, probe, expression, parameters, contract) in [
         (
             "like case-insensitive",
             "provider.profile_read_filter_closed_like",
             FilterExpression::Like {
                 field: "label".to_owned(),
-                parameter: "coda_sette".to_owned(),
+                parameter: "testo".to_owned(),
                 case_insensitive: true,
+            },
+            ParameterBag::new(std::collections::BTreeMap::from([(
+                "testo".to_owned(),
+                ParameterValue::String("eti-%".to_owned()),
+            )])),
+            RefusalContract {
+                category: ErrorCategory::Unsupported,
+                phase: ErrorPhase::Prepare,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                message_contains: "LIKE case-insensitive richiede collation esplicita",
             },
         ),
         (
@@ -1784,8 +1586,33 @@ async fn streaming_read_probes(
             FilterExpression::Spatial {
                 function: plenora_database_core::query::SpatialFunction::Intersects,
                 field: "label".to_owned(),
-                geometry_parameter: Some("coda_sette".to_owned()),
+                geometry_parameter: Some("punto".to_owned()),
                 distance_parameter: None,
+            },
+            // Un WKB vero — `POINT(0 0)`, little endian, ventuno byte — e un
+            // campo che **esiste**: cosi il rifiuto non puo venire ne dal
+            // parametro ne dalla colonna, e resta solo la regola che la sonda
+            // sorveglia. Il renderer rifiuta `Spatial` prima di guardare il
+            // tipo della colonna, quindi `label` va bene quanto una geometry —
+            // e leggere la tabella spatial vera non andrebbe: il provider la
+            // rifiuta prima, per SRID non dichiarato, mascherando la causa.
+            //
+            // La prima stesura nominava `geom`, che quella tabella non ha, e
+            // il rifiuto arrivava da `NotFound`: il fail-close sembrava
+            // verificato e non lo era. E il contratto ad averlo scoperto.
+            ParameterBag::new(std::collections::BTreeMap::from([(
+                "punto".to_owned(),
+                ParameterValue::Bytes(vec![
+                    0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                ]),
+            )])),
+            RefusalContract {
+                category: ErrorCategory::Unsupported,
+                phase: ErrorPhase::Prepare,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                message_contains: "filtro spatial richiede validazione WKB e SRID",
             },
         ),
     ] {
@@ -1793,20 +1620,10 @@ async fn streaming_read_probes(
             filter: Some(expression),
             ..ascending.clone()
         };
-        let question = "le forme di filtro non qualificate restano rifiutate";
-        let closed_parameters = ParameterBag::new(std::collections::BTreeMap::from([(
-            "coda_sette".to_owned(),
-            ParameterValue::String("%0007".to_owned()),
-        )]));
-        match drain_read(
-            provider,
-            profile,
-            &operation,
-            &closed_parameters,
-            cancellation,
-        )
-        .await
-        {
+        let question =
+            "le forme di filtro non qualificate restano rifiutate, e per la loro ragione";
+        match drain_read(provider, profile, &operation, &parameters, cancellation).await {
+            // Il fail-close non c'e piu: la forma e passata.
             Ok(outcome) => recorder.accepted(
                 probe,
                 "provider",
@@ -1814,14 +1631,32 @@ async fn streaming_read_probes(
                 question,
                 format!("{name}: accettata, righe={}", outcome.rows),
             ),
-            Err(error) => recorder.rejected(
-                probe,
-                "provider",
-                "profilo",
-                question,
-                condense(&format!("{name}: {:?}: {}", error.category, error.message)),
-                None,
-            ),
+            Err(error) => match refusal_mismatch(&contract, &error) {
+                None => recorder.rejected(
+                    probe,
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{name}: {:?}/{:?}/{:?}/{:?}: {}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    None,
+                ),
+                // Rifiutata, ma non da cio che la sonda sorveglia: la
+                // superficie non e stata provata, non e stata verificata.
+                Some(mismatch) => recorder.not_measured(
+                    probe,
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!("{name}: rifiuto per un'altra ragione — {mismatch}"),
+                ),
+            },
         }
     }
 
@@ -2588,20 +2423,45 @@ async fn profile_timeout_probe(
             question,
             "nessun errore: il timeout applicato non ha interrotto".to_owned(),
         ),
-        Err(error) => recorder.rejected(
-            "provider.profile_timeout",
-            "provider",
-            "profilo",
-            question,
-            // La quaterna, non il solo messaggio: categoria, retry ed effetto
-            // remoto sono cio che il chiamante usa per decidere, e sono le tre
-            // cose che una classificazione ereditata sbaglia insieme.
-            condense(&format!(
-                "{:?}/{:?}/{:?}: {}",
-                error.category, error.retry, error.remote_effect, error.message
-            )),
-            crate::evidence::server_code_in_message(&error.message),
-        ),
+        // La quaterna, non il solo messaggio: categoria, fase, retry ed
+        // effetto remoto sono cio che il chiamante usa per decidere, e sono le
+        // cose che una classificazione ereditata sbaglia insieme. Verificarle
+        // qui e cio che rende il rifiuto una prova: un 1969 che tornasse nel
+        // ramo generico darebbe ancora un `Err`, e senza contratto la sonda
+        // resterebbe verde.
+        Err(error) => {
+            let contract = RefusalContract {
+                category: ErrorCategory::Timeout,
+                phase: ErrorPhase::Read,
+                remote_effect: RemoteEffect::None,
+                retry: RetryDisposition::Never,
+                message_contains: "timeout",
+            };
+            match refusal_mismatch(&contract, &error) {
+                None => recorder.rejected(
+                    "provider.profile_timeout",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {}",
+                        error.category,
+                        error.phase,
+                        error.retry,
+                        error.remote_effect,
+                        error.message
+                    )),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+                Some(mismatch) => recorder.not_measured(
+                    "provider.profile_timeout",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!("il timeout non e stato classificato come tale — {mismatch}"),
+                ),
+            }
+        }
     }
     let _ = Box::new(transaction).rollback(cancellation).await;
 }

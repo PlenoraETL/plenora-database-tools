@@ -75,6 +75,87 @@ TEST_COMMAND = (
 OUTCOME_ONLY = frozenset({"raw.tls_cipher", "provider.test_connection"})
 
 
+# Le sonde che sostengono una capability gia pubblicata, e cosa sostengono.
+#
+# Il resto della matrice **osserva**: una sonda che diventa `rejected` e una
+# misura, e il verdetto la registra senza fallire — e il modo giusto di
+# raccontare due motori diversi. Queste no. Il profilo dichiara `streaming`,
+# `projection`, `filter` e `ordering` come `true`, e quella dichiarazione
+# poggia su queste corse: se una smette di passare, la promessa resta
+# pubblicata e la prova non c'e piu.
+#
+# Il runner esce percio diverso da zero, e la perturbazione che rende rossa
+# una sonda rende rosso anche il gate — che e cio che la review ha chiesto,
+# e che prima non succedeva: due rifiuti identici sui tre server erano `same`,
+# e `same` usciva con zero.
+REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
+    "provider.profile_probe": "riconoscimento del prodotto e qualifica della versione",
+    "provider.profile_describe_object": "catalogo letto con le query del profilo",
+    "provider.profile_read_schema": "lo schema che la lettura pubblica",
+    "provider.profile_read_values": "i valori che la lettura decodifica",
+    "provider.profile_read_namespace": "i metadata nel namespace del prodotto",
+    "provider.profile_read_projection": "reads.projection",
+    "provider.profile_read_filter_forms": "reads.filter, tutte e tredici le forme",
+    "provider.profile_read_ordering_asc": "reads.ordering, verso ascendente",
+    "provider.profile_read_ordering_desc": "reads.ordering, verso discendente",
+    "provider.profile_read_streaming": "reads.streaming",
+    "provider.profile_functional_index": "il catalogo descrive gli indici dell'oggetto",
+}
+
+# Le sonde il cui **rifiuto** e la prova.
+#
+# `filter = true` significa le tredici forme qualificate e non "qualunque
+# filtro": se una di queste due passasse, il flag coprirebbe una superficie
+# che nessuna misura sostiene. Un `not_measured` conta come violazione — e
+# cio che la sonda registra quando il rifiuto arriva per un'altra ragione, e
+# un fail-close verificato per la ragione sbagliata non e verificato.
+REQUIRED_REJECTED_PROBES: dict[str, str] = {
+    "provider.profile_read_filter_closed_like": "reads.filter esclude LIKE case-insensitive",
+    "provider.profile_read_filter_closed_spatial": "reads.filter esclude il filtro spatial",
+    # Su MariaDB `srs_id` arriva sempre nullo, quindi una geometry non e
+    # descrivibile: `spatial.read_wkb` resta chiusa, e il rifiuto e la sua
+    # prova. Su MySQL la stessa tabella e rifiutata perche la fixture non
+    # dichiara un SRID — due ragioni diverse per lo stesso esito, ed e per
+    # questo che la riga dice quale delle due sostiene cosa.
+    "provider.profile_describe_geometry": "spatial.read_wkb resta chiusa su MariaDB",
+    # Il timeout **deve** scattare: la sonda registra il rifiuto solo se la
+    # quaterna e quella dichiarata, quindi un 1969 che tornasse generico non
+    # arriverebbe qui come `rejected`.
+    "provider.profile_timeout": "il timeout del profilo scatta ed e classificato come tale",
+}
+
+
+def capability_violations(document: dict[str, object]) -> list[str]:
+    """Le prove che una capability pubblicata non ha piu, o non ha mai avuto.
+
+    Pura: prende il documento e ne guarda gli esiti, cosi il giudizio si prova
+    senza accendere un server.
+    """
+
+    entries = {entry["probe"]: entry for entry in document["results"]}
+    violations: list[str] = []
+    for required, expected in (
+        (REQUIRED_ACCEPTED_PROBES, "accepted"),
+        (REQUIRED_REJECTED_PROBES, "rejected"),
+    ):
+        for probe, capability in sorted(required.items()):
+            entry = entries.get(probe)
+            if entry is None:
+                violations.append(
+                    f"{probe}: sonda assente dalla matrice — {capability} resta "
+                    "dichiarata senza prova"
+                )
+                continue
+            for server, observation in sorted(entry["observations"].items()):
+                if observation["outcome"] != expected:
+                    violations.append(
+                        f"{probe} su {server}: atteso {expected}, osservato "
+                        f"{observation['outcome']} — {capability}"
+                    )
+    return violations
+
+
+
 @dataclass(frozen=True)
 class Server:
     """Un riferimento su cui ripetere la misura."""
@@ -349,7 +430,7 @@ def verdict() -> dict[str, object]:
             for observation in entry["observations"].values()
         )
     ]
-    return {
+    document: dict[str, object] = {
         "schema_version": 1,
         "gate": "mariadb-driver-evidence",
         "status": "observed",
@@ -359,7 +440,6 @@ def verdict() -> dict[str, object]:
                 "key": server.key,
                 "label": server.label,
                 "container": server.container,
-                "declared_digest": server.digest,
                 "declared_digest": server.digest,
                 "product_version": documents[server.key]["server"]["product_version"],
                 "version_comment": documents[server.key]["server"]["version_comment"],
@@ -385,6 +465,9 @@ def verdict() -> dict[str, object]:
         "results": results,
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
+    document["capability_violations"] = capability_violations(document)
+    document["status"] = "regressed" if document["capability_violations"] else "observed"
+    return document
 
 
 def markdown(document: dict[str, object]) -> str:
@@ -431,6 +514,20 @@ def main() -> int:
         print(markdown(document))
     else:
         print(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2))
+
+    # Il verdetto si stampa comunque — anche una corsa che fallisce e una
+    # misura, e nasconderla renderebbe il fallimento illeggibile — ma l'uscita
+    # dice se cio che il profilo dichiara ha ancora una prova sotto.
+    violations = document["capability_violations"]
+    if violations:
+        print(
+            "mariadb driver evidence FAILED: una capability pubblicata non ha piu "
+            "la sua prova",
+            file=sys.stderr,
+        )
+        for violation in violations:
+            print(f"  - {violation}", file=sys.stderr)
+        return 1
     return 0
 
 

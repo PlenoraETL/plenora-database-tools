@@ -557,6 +557,14 @@ filtro spatial — restano rifiutate su tutti e tre, e hanno una sonda propria:
 senza, `filter = true` si leggerebbe come "tutte le forme", che e la lettura
 che il flag non sostiene.
 
+Quelle due sonde verificano il rifiuto **per intero** — categoria, fase,
+effetto remoto, retry e causa — e non "ha dato errore". Non e pedanteria: la
+prima stesura nominava una colonna che quella tabella non ha, e il rifiuto
+arrivava da `NotFound` invece che dalla regola sorvegliata. Il fail-close
+sembrava verificato e non lo era, e a scoprirlo e stato il contratto. Lo
+stesso vale per il timeout, che ora e `Timeout/Read/Never/None` verificato
+nella quaterna e non un `Err` qualunque.
+
 **Il namespace regge fino ai metadata pubblicati.** Quattordici campi
 annotati con la chiave del proprio prodotto, zero con quella dell'altro, su
 tutti e tre. E la verifica che la scelta del namespace non si fermi al profilo
@@ -587,6 +595,24 @@ non si distinguono oltre la lunghezza massima — ma e un'asimmetria che il
 prodotto qualificato non ha, e che un consumer che alterna le due strade
 vedrebbe. Registrata, non risolta: normalizzarla richiederebbe di decidere
 quale delle due strade abbia ragione, e nessuna delle due ha torto.
+
+### Il gate, e cosa lo rende rosso
+
+Una sonda che diventa `rejected` e, per il resto della matrice, una misura: e
+il modo giusto di raccontare due motori diversi, e il runner la registra senza
+fallire. Per le sonde su cui poggia una capability **gia pubblicata** no. Il
+runner porta ora due inventari — `REQUIRED_ACCEPTED_PROBES` e
+`REQUIRED_REJECTED_PROBES` — e esce diverso da zero se una prova necessaria
+manca, cambia esito o sparisce dalla matrice.
+
+Serviva perche prima non era cosi: due rifiuti identici sui tre server erano
+`same`, e `same` usciva con zero. La perturbazione dimostrava che
+l'osservazione cambiava, non che la regressione venisse fermata — mentre il
+profilo continuava a pubblicare le quattro bandiere come `true`.
+
+Una guardia separata pretende che **ogni** sonda `provider.profile_*` sia
+classificata in uno dei due inventari: una sonda nuova deve dire cosa
+sostiene, o cosa dimostra restando chiusa.
 
 ### Cosa ne segue per le capability
 

@@ -163,14 +163,35 @@ restano finche non c'e una misura che le sostenga:
 
 * **spatial su MariaDB** — la decodifica di una geometry attraverso il
   provider non e mai stata osservata: su MySQL la regola sull'SRID dichiarato
-  la rifiuta, e su MariaDB il catalogo non risponde;
+  la rifiuta, e su MariaDB `SRS_ID` non esiste, quindi ogni colonna
+  geometrica viene rifiutata alla descrizione;
 * **commit ambiguo** — `not_measured` su tutti e tre i server, perche
-  osservarlo richiede fault injection deterministica sul `COMMIT`;
-* **lettura via catalogo** — `not_measured` su MariaDB, dipendente
-  dall'errore 1054.
+  osservarlo richiede fault injection deterministica sul `COMMIT`.
 
-Nessuna delle tre blocca la scelta del crate condiviso, e nessuna delle tre
+Nessuna delle due blocca la scelta del crate condiviso, e nessuna delle due
 puo essere pubblicata come capability prima di essere misurata.
+
+### Aggiornamento del 2026-08-20: la lettura via catalogo e stata misurata
+
+Questa ADR elencava fra le superfici fail-closed anche la **lettura via
+catalogo**, `not_measured` su MariaDB perche l'errore 1054 su
+`information_schema.columns.SRS_ID` fermava `describe_object` prima del
+mapping. Quella frase descriveva il provider `MySQL` puntato su MariaDB, ed e
+rimasta vera per quel percorso: e il percorso che l'ADR aveva davanti.
+
+La quinta tranche di `docs/mariadb/EVIDENCE.md` ha misurato l'altro. Con
+`MariadbProfile` — che dichiara `NULL AS srs_id` e `NULL AS expression` — il
+catalogo risponde, e la lettura arriva in fondo: quattordici colonne, stesso
+digest dei valori sui tre riferimenti, ottomilacentonovantatre righe in due
+batch, tredici forme di filtro con conteggi e prima riga attesi. Le quattro
+bandiere di lettura del profilo MariaDB sono aperte, ciascuna con la propria
+sonda.
+
+Cosa **non** cambia: nessun provider seleziona quel profilo, quindi nessun
+consumatore puo raggiungere quella lettura. La decisione di questa ADR —
+MariaDB non e qualificata, e non c'e selezione automatica — resta intera. Ed
+e cambiata la ragione per cui lo spatial resta chiuso: non piu "il catalogo
+non risponde", ma "risponde, e dice che l'SRID non si puo sapere".
 
 ### Conseguenza sul bypass
 

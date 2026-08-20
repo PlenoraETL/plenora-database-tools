@@ -160,12 +160,21 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         # dichiara una superficie ancora chiusa. Cercare la sola frase
         # lascerebbe passare "commit ambiguo, risolto", che dice il contrario.
         closed = ADR.read_text(encoding="utf-8").split("Cosa resta fail-closed", 1)[1]
-        for surface in ("**spatial su MariaDB**", "**commit ambiguo**", "**lettura via catalogo**"):
+        for surface in ("**spatial su MariaDB**", "**commit ambiguo**"):
             self.assertIn(
                 f"* {surface} —",
                 closed,
                 f"superficie non piu dichiarata fail-closed: {surface}",
             )
+
+        # La lettura via catalogo era la terza, ed e stata misurata: l'elenco
+        # non puo continuare a dichiararla chiusa, e l'ADR non puo tacerlo.
+        # La guardia pretende entrambe le cose, perche togliere la voce senza
+        # spiegare dove sia finita e il modo in cui un documento smette di
+        # essere leggibile.
+        self.assertNotIn("**lettura via catalogo** —", closed)
+        self.assertIn("la lettura via catalogo e stata misurata", adr)
+        self.assertIn("nessun provider seleziona quel profilo", adr)
 
         # Nessuna selezione automatica: e la proprieta che impedisce a un
         # consumer di finire sull'altro motore senza accorgersene.
@@ -531,6 +540,105 @@ class MariadbDriverRunnerTests(unittest.TestCase):
     """
 
     RUNNER = ROOT / "scripts" / "check_mariadb_driver.py"
+
+    def test_a_probe_that_supports_a_capability_makes_the_gate_red(self) -> None:
+        """Una prova che viene a mancare non e piu solo un'osservazione.
+
+        E la distanza fra le due cose che il runner faceva coincidere: la
+        matrice **osserva** due motori diversi, e un rifiuto identico su tutti
+        e tre e `same`, che usciva con zero. Ma se quel rifiuto riguarda una
+        sonda su cui poggia una capability gia pubblicata, la promessa resta e
+        la prova no.
+        """
+
+        from scripts.check_mariadb_driver import (
+            REQUIRED_ACCEPTED_PROBES,
+            REQUIRED_REJECTED_PROBES,
+            capability_violations,
+        )
+
+        def document(outcomes: dict[str, str]) -> dict[str, object]:
+            return {
+                "results": [
+                    {
+                        "probe": probe,
+                        "observations": {
+                            server: {"outcome": outcome}
+                            for server in ("mysql", "mariadb-12", "mariadb-11")
+                        },
+                    }
+                    for probe, outcome in outcomes.items()
+                ]
+            }
+
+        healthy = {probe: "accepted" for probe in REQUIRED_ACCEPTED_PROBES}
+        healthy.update({probe: "rejected" for probe in REQUIRED_REJECTED_PROBES})
+        self.assertEqual(capability_violations(document(healthy)), [])
+
+        # Una prova positiva che diventa un rifiuto, su un server solo.
+        regressed = dict(healthy)
+        first = sorted(REQUIRED_ACCEPTED_PROBES)[0]
+        broken = document(regressed)
+        entry = next(item for item in broken["results"] if item["probe"] == first)
+        entry["observations"]["mariadb-11"]["outcome"] = "rejected"
+        violations = capability_violations(broken)
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("mariadb-11", violations[0])
+        self.assertIn("atteso accepted", violations[0])
+
+        # Un fail-close che smette di chiudere.
+        opened = dict(healthy)
+        closed_probe = sorted(REQUIRED_REJECTED_PROBES)[0]
+        opened[closed_probe] = "accepted"
+        violations = capability_violations(document(opened))
+        self.assertEqual(len(violations), 3, violations)
+        self.assertTrue(all("atteso rejected" in entry for entry in violations))
+
+        # Un fail-close rifiutato per un'altra ragione: la sonda lo registra
+        # come `not_measured`, e un fail-close non verificato non e verificato.
+        wrong_reason = dict(healthy)
+        wrong_reason[closed_probe] = "not_measured"
+        violations = capability_violations(document(wrong_reason))
+        self.assertEqual(len(violations), 3, violations)
+        self.assertTrue(all("not_measured" in entry for entry in violations))
+
+        # E una sonda sparita non e un problema in meno.
+        missing = {
+            probe: outcome for probe, outcome in healthy.items() if probe != first
+        }
+        violations = capability_violations(document(missing))
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("sonda assente", violations[0])
+
+    def test_every_read_probe_is_classified_by_the_runner(self) -> None:
+        """Una sonda di lettura nuova deve dire cosa sostiene.
+
+        Senza questa guardia si potrebbe aggiungere una sonda che nessun
+        inventario nomina: girerebbe, comparirebbe nella matrice, e non
+        renderebbe rosso niente. La classificazione e una decisione, e va
+        presa quando la sonda si scrive.
+        """
+
+        from scripts.check_mariadb_driver import (
+            REQUIRED_ACCEPTED_PROBES,
+            REQUIRED_REJECTED_PROBES,
+        )
+
+        source = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
+        ).read_text(encoding="utf-8")
+        declared = set(re.findall(r'"(provider\.profile_[a-z_]+)"', source))
+        classified = set(REQUIRED_ACCEPTED_PROBES) | set(REQUIRED_REJECTED_PROBES)
+        self.assertEqual(
+            declared - classified,
+            set(),
+            "sonde del profilo che nessun inventario del runner classifica",
+        )
+        self.assertEqual(
+            classified - declared,
+            set(),
+            "il runner pretende sonde che la misura non produce piu",
+        )
 
     def test_the_runner_verifies_the_image_it_measured(self) -> None:
         """Digest dichiarato e digest in esecuzione devono coincidere.

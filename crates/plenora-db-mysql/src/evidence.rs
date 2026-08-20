@@ -11,7 +11,9 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use crate::MysqlConfig;
-use plenora_database_core::provider::SecretString;
+use plenora_database_core::plan::FilterExpression;
+use plenora_database_core::provider::{ParameterBag, ParameterValue, SecretString};
+use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 
 use serde_json::json;
 
@@ -214,6 +216,304 @@ pub(crate) fn server_code_in_message(message: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
+/// Quante righe mette la tabella su cui si misurano lettura e filtri.
+///
+/// `DEFAULT_BATCH_ROWS + 1`, cioe la tabella piu piccola che **non** puo stare
+/// in un batch solo: e il taglio del lettore, quindi una lettura che ne
+/// consegna due sta streammando e una che ne consegna uno ha ignorato il
+/// proprio limite.
+pub(crate) const STREAMING_ROWS: usize = crate::DEFAULT_BATCH_ROWS + 1;
+
+/// Lo stesso numero con segno, per i parametri legati e per le attese sul
+/// primo valore.
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) const STREAMING_ROWS_I64: i64 = STREAMING_ROWS as i64;
+
+/// Ogni terza riga ha `label` nulla: e cio che rende `IS NULL` e `IS NOT NULL`
+/// due domande con due risposte diverse invece di due modi di dire "tutte".
+pub(crate) const UNLABELLED_ROWS: usize = STREAMING_ROWS / 3;
+pub(crate) const LABELLED_ROWS: usize = STREAMING_ROWS - UNLABELLED_ROWS;
+
+/// I nomi delle forme di filtro qualificate, nell'ordine in cui la tabella le
+/// dichiara.
+///
+/// L'elenco vive separato dalla tabella perche una sonda aggregata non si
+/// accorge di una voce mancante: toglierne una cambierebbe soltanto il
+/// dettaglio testuale, e la sonda resterebbe verde su tutti e tre i server.
+/// Qui invece un test puro confronta i due, e la differenza si vede prima di
+/// accendere un server.
+pub(crate) const QUALIFIED_FILTER_FORMS: &[&str] = &[
+    "eq",
+    "ne",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "is_null",
+    "is_not_null",
+    "in",
+    "between",
+    "like",
+    "and",
+    "or",
+];
+
+/// Una forma di filtro qualificata, con cosa deve rendere.
+pub(crate) struct FilterCase {
+    pub(crate) name: &'static str,
+    pub(crate) expression: FilterExpression,
+    pub(crate) rows: usize,
+    pub(crate) first: i64,
+    pub(crate) parameters: ParameterBag,
+}
+
+/// Le forme di filtro che il renderer qualifica, con cosa devono rendere.
+///
+/// I numeri non sono calcolati dall'harness: sono scritti qui, derivati dalla
+/// definizione della fixture. Calcolarli con lo stesso codice che li misura
+/// farebbe passare per verificata una formula sbagliata due volte allo stesso
+/// modo.
+///
+/// Ogni riga porta anche il **primo** valore atteso, perche il conteggio da
+/// solo non distingue `id < 100` da `id > 8093`: sono novantanove righe
+/// entrambi.
+///
+/// E ogni riga porta i **propri** parametri. Non e una comodita: il provider
+/// rifiuta un `ParameterBag` che contenga voci che il piano non lega, e ha
+/// ragione — un parametro non usato e quasi sempre un filtro scritto male. La
+/// prima stesura ne passava dieci a ogni forma, e le ha viste rifiutare tutte.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn qualified_filter_forms() -> Vec<FilterCase> {
+    let bag = |pairs: Vec<(&str, ParameterValue)>| {
+        ParameterBag::new(
+            pairs
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        )
+    };
+    let integer = |name: &'static str, value: i64| (name, ParameterValue::I64(value));
+    let field = |name: &str| name.to_owned();
+    let penultimate = STREAMING_ROWS_I64 - 3;
+    vec![
+        FilterCase {
+            name: "eq",
+            expression: FilterExpression::Eq {
+                field: field("id"),
+                parameter: field("sette"),
+            },
+            rows: 1,
+            first: 7,
+            parameters: bag(vec![integer("sette", 7)]),
+        },
+        FilterCase {
+            name: "ne",
+            expression: FilterExpression::Ne {
+                field: field("id"),
+                parameter: field("sette"),
+            },
+            rows: STREAMING_ROWS - 1,
+            first: 1,
+            parameters: bag(vec![integer("sette", 7)]),
+        },
+        FilterCase {
+            name: "lt",
+            expression: FilterExpression::Lt {
+                field: field("id"),
+                parameter: field("cento"),
+            },
+            rows: 99,
+            first: 1,
+            parameters: bag(vec![integer("cento", 100)]),
+        },
+        FilterCase {
+            name: "lte",
+            expression: FilterExpression::Lte {
+                field: field("id"),
+                parameter: field("cento"),
+            },
+            rows: 100,
+            first: 1,
+            parameters: bag(vec![integer("cento", 100)]),
+        },
+        FilterCase {
+            name: "gt",
+            expression: FilterExpression::Gt {
+                field: field("id"),
+                parameter: field("penultime"),
+            },
+            rows: 3,
+            first: penultimate + 1,
+            parameters: bag(vec![integer("penultime", penultimate)]),
+        },
+        FilterCase {
+            name: "gte",
+            expression: FilterExpression::Gte {
+                field: field("id"),
+                parameter: field("penultime"),
+            },
+            rows: 4,
+            first: penultimate,
+            parameters: bag(vec![integer("penultime", penultimate)]),
+        },
+        FilterCase {
+            name: "is_null",
+            expression: FilterExpression::IsNull {
+                field: field("label"),
+            },
+            rows: UNLABELLED_ROWS,
+            first: 3,
+            parameters: ParameterBag::default(),
+        },
+        FilterCase {
+            name: "is_not_null",
+            expression: FilterExpression::IsNotNull {
+                field: field("label"),
+            },
+            rows: LABELLED_ROWS,
+            first: 1,
+            parameters: ParameterBag::default(),
+        },
+        FilterCase {
+            name: "in",
+            expression: FilterExpression::In {
+                field: field("id"),
+                parameters: vec![field("uno"), field("due"), field("tre")],
+            },
+            rows: 3,
+            first: 1,
+            parameters: bag(vec![
+                integer("uno", 1),
+                integer("due", 2),
+                integer("tre", 3),
+            ]),
+        },
+        FilterCase {
+            name: "between",
+            expression: FilterExpression::Between {
+                field: field("id"),
+                lower_parameter: field("dieci"),
+                upper_parameter: field("venti"),
+            },
+            rows: 11,
+            first: 10,
+            parameters: bag(vec![integer("dieci", 10), integer("venti", 20)]),
+        },
+        FilterCase {
+            name: "like",
+            expression: FilterExpression::Like {
+                field: field("payload"),
+                parameter: field("coda_sette"),
+                case_insensitive: false,
+            },
+            rows: 1,
+            first: 7,
+            parameters: bag(vec![(
+                "coda_sette",
+                ParameterValue::String("%0007".to_owned()),
+            )]),
+        },
+        FilterCase {
+            name: "and",
+            expression: FilterExpression::And {
+                args: vec![
+                    FilterExpression::Gt {
+                        field: field("id"),
+                        parameter: field("penultime"),
+                    },
+                    FilterExpression::Lt {
+                        field: field("id"),
+                        parameter: field("ultima"),
+                    },
+                ],
+            },
+            rows: 2,
+            first: penultimate + 1,
+            parameters: bag(vec![
+                integer("penultime", penultimate),
+                integer("ultima", STREAMING_ROWS_I64),
+            ]),
+        },
+        FilterCase {
+            name: "or",
+            expression: FilterExpression::Or {
+                args: vec![
+                    FilterExpression::Eq {
+                        field: field("id"),
+                        parameter: field("uno"),
+                    },
+                    FilterExpression::Eq {
+                        field: field("id"),
+                        parameter: field("due"),
+                    },
+                ],
+            },
+            rows: 2,
+            first: 1,
+            parameters: bag(vec![integer("uno", 1), integer("due", 2)]),
+        },
+    ]
+}
+
+/// Il rifiuto che una sonda si aspetta, per intero.
+///
+/// Esiste perche "ha dato errore" non e una misura. Una forma di filtro che
+/// il renderer rifiuta **per scelta** e indistinguibile, dal solo `Err`, da
+/// una rifiutata perche la colonna non esiste o il parametro e del tipo
+/// sbagliato: il giorno in cui quella scelta cambiasse, la sonda resterebbe
+/// verde per la ragione sbagliata e il fail-close sembrerebbe ancora
+/// verificato.
+///
+/// La quaterna categoria/fase/effetto/retry e cio che il chiamante usa per
+/// decidere cosa fare dopo; il frammento di messaggio e cio che identifica
+/// **quale** rifiuto deliberato sia.
+#[derive(Debug)]
+pub(crate) struct RefusalContract {
+    pub(crate) category: ErrorCategory,
+    pub(crate) phase: ErrorPhase,
+    pub(crate) remote_effect: RemoteEffect,
+    pub(crate) retry: RetryDisposition,
+    pub(crate) message_contains: &'static str,
+}
+
+/// Cosa non torna fra il rifiuto atteso e quello osservato, o `None`.
+pub(crate) fn refusal_mismatch(
+    contract: &RefusalContract,
+    error: &plenora_database_core::DatabaseError,
+) -> Option<String> {
+    if error.category != contract.category {
+        return Some(format!(
+            "categoria attesa {:?}, osservata {:?}",
+            contract.category, error.category
+        ));
+    }
+    if error.phase != contract.phase {
+        return Some(format!(
+            "fase attesa {:?}, osservata {:?}",
+            contract.phase, error.phase
+        ));
+    }
+    if error.remote_effect != contract.remote_effect {
+        return Some(format!(
+            "effetto remoto atteso {:?}, osservato {:?}",
+            contract.remote_effect, error.remote_effect
+        ));
+    }
+    if error.retry != contract.retry {
+        return Some(format!(
+            "retry atteso {:?}, osservato {:?}",
+            contract.retry, error.retry
+        ));
+    }
+    if !error.message.contains(contract.message_contains) {
+        return Some(format!(
+            "il messaggio non porta {:?}: {}",
+            contract.message_contains, error.message
+        ));
+    }
+    None
+}
+
 /// Cosa una lettura ha prodotto, per intero.
 ///
 /// Il conteggio dei batch e il digest esistono per la stessa ragione: una
@@ -315,8 +615,166 @@ pub(crate) fn read_mismatch(contract: &ReadContract, outcome: &ReadOutcome) -> O
 #[cfg(test)]
 mod tests {
     use super::{
-        read_mismatch, server_code_in_message, sql_assignments, ReadContract, ReadOutcome,
+        qualified_filter_forms, read_mismatch, refusal_mismatch, server_code_in_message,
+        sql_assignments, ReadContract, ReadOutcome, RefusalContract, QUALIFIED_FILTER_FORMS,
     };
+    use plenora_database_core::plan::FilterExpression;
+    use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
+
+    #[test]
+    fn the_qualified_filter_forms_are_the_thirteen_declared() {
+        // L'elenco e la tabella devono coincidere nome per nome e in ordine.
+        // Senza, togliere una voce dalla tabella lascerebbe la sonda aggregata
+        // verde: cambierebbe solo la stringa di dettaglio, e nessuno dei tre
+        // server avrebbe niente da dire.
+        let observed: Vec<&str> = qualified_filter_forms()
+            .iter()
+            .map(|case| case.name)
+            .collect();
+        assert_eq!(observed, QUALIFIED_FILTER_FORMS);
+        assert_eq!(observed.len(), 13, "le forme qualificate sono tredici");
+
+        // E nessuna delle due forme che il renderer rifiuta compare qui: se
+        // ci finissero, `filter` si aprirebbe su una superficie che il flag
+        // non sostiene.
+        for closed in ["like_case_insensitive", "spatial"] {
+            assert!(!observed.contains(&closed), "{closed} non e qualificata");
+        }
+
+        // Ogni forma porta i parametri che lega, e nessun altro: il provider
+        // rifiuta un bag con voci che il piano non usa.
+        for case in qualified_filter_forms() {
+            let bound = bound_parameters(&case.expression);
+            let provided: Vec<String> = case
+                .parameters
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect();
+            let mut expected = bound;
+            expected.sort();
+            expected.dedup();
+            let mut observed = provided;
+            observed.sort();
+            assert_eq!(observed, expected, "parametri della forma {}", case.name);
+        }
+    }
+
+    /// I nomi dei parametri che un'espressione lega, in profondita.
+    fn bound_parameters(expression: &FilterExpression) -> Vec<String> {
+        match expression {
+            FilterExpression::And { args } | FilterExpression::Or { args } => {
+                args.iter().flat_map(bound_parameters).collect()
+            }
+            FilterExpression::Eq { parameter, .. }
+            | FilterExpression::Ne { parameter, .. }
+            | FilterExpression::Lt { parameter, .. }
+            | FilterExpression::Lte { parameter, .. }
+            | FilterExpression::Gt { parameter, .. }
+            | FilterExpression::Gte { parameter, .. }
+            | FilterExpression::Like { parameter, .. } => vec![parameter.clone()],
+            FilterExpression::In { parameters, .. } => parameters.clone(),
+            FilterExpression::Between {
+                lower_parameter,
+                upper_parameter,
+                ..
+            } => vec![lower_parameter.clone(), upper_parameter.clone()],
+            FilterExpression::IsNull { .. } | FilterExpression::IsNotNull { .. } => Vec::new(),
+            FilterExpression::Spatial {
+                geometry_parameter,
+                distance_parameter,
+                ..
+            } => geometry_parameter
+                .iter()
+                .chain(distance_parameter)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn deliberate() -> RefusalContract {
+        RefusalContract {
+            category: ErrorCategory::Unsupported,
+            phase: ErrorPhase::Prepare,
+            remote_effect: RemoteEffect::None,
+            retry: RetryDisposition::Never,
+            message_contains: "filtro spatial richiede",
+        }
+    }
+
+    fn refused() -> plenora_database_core::DatabaseError {
+        plenora_database_core::DatabaseError {
+            category: ErrorCategory::Unsupported,
+            phase: ErrorPhase::Prepare,
+            remote_effect: RemoteEffect::None,
+            retry: RetryDisposition::Never,
+            provider: None,
+            execution_id: None,
+            message: "filtro spatial richiede validazione WKB e SRID".to_owned(),
+            diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn the_deliberate_refusal_is_recognised() {
+        assert_eq!(refusal_mismatch(&deliberate(), &refused()), None);
+    }
+
+    #[test]
+    fn a_refusal_for_another_reason_is_not_the_one_expected() {
+        // E il caso che conta: la sonda sul fail-close riceve un `Err` anche
+        // quando la colonna non esiste o il parametro e del tipo sbagliato, e
+        // senza questo confronto lo scambierebbe per la prova che cercava.
+        for (what, error, expected) in [
+            (
+                "colonna inesistente",
+                plenora_database_core::DatabaseError {
+                    category: ErrorCategory::Schema,
+                    message: "colonna non trovata".to_owned(),
+                    ..refused()
+                },
+                "categoria attesa",
+            ),
+            (
+                "rifiuto in lettura invece che in prepare",
+                plenora_database_core::DatabaseError {
+                    phase: ErrorPhase::Read,
+                    ..refused()
+                },
+                "fase attesa",
+            ),
+            (
+                "effetto remoto ignoto",
+                plenora_database_core::DatabaseError {
+                    remote_effect: RemoteEffect::Unknown,
+                    ..refused()
+                },
+                "effetto remoto atteso",
+            ),
+            (
+                "rifiuto dichiarato ritentabile",
+                plenora_database_core::DatabaseError {
+                    retry: RetryDisposition::Safe,
+                    ..refused()
+                },
+                "retry atteso",
+            ),
+            (
+                "altro rifiuto della stessa famiglia",
+                plenora_database_core::DatabaseError {
+                    message: "parametro spatial non valido".to_owned(),
+                    ..refused()
+                },
+                "il messaggio non porta",
+            ),
+        ] {
+            let reported = refusal_mismatch(&deliberate(), &error)
+                .unwrap_or_else(|| panic!("{what}: scambiato per il rifiuto atteso"));
+            assert!(
+                reported.contains(expected),
+                "{what}: il verdetto non dice cosa non torna — {reported}"
+            );
+        }
+    }
 
     fn observed() -> ReadOutcome {
         ReadOutcome {
