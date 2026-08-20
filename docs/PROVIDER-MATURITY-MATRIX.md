@@ -20,7 +20,11 @@ Legenda:
 | MySQL | MySQL 9.7 LTS (baseline v1.2), 8.4.11 e 8.0.46 (matrice retrocompat), immagini fissate per digest | `python scripts/check_mysql_matrix.py` e `python scripts/check_mysql_reference.py` |
 
 MariaDB non è dedotto come compatibile con MySQL e non appartiene al riferimento
-MySQL.
+MySQL. Il crate contiene un profilo di prodotto per MariaDB, costruito sulle
+sole divergenze misurate in `docs/mariadb/EVIDENCE.md`, ma **nessun provider lo
+seleziona**: non è raggiungibile da alcun percorso di produzione, dichiara
+chiuse le capability che nessuna misura ha attraversato, e una guardia
+verifica che resti così. Il gate MySQL non cambia superficie.
 
 ## Capability e assurance
 
@@ -134,7 +138,7 @@ Dopo Blocchi B/A/C + upgrade 9.7:
   esposto: spatial predicates + `SpatialReference`.
 
 Inventario corrente del provider MySQL, verificato contro la sorgente da
-`scripts/mysql_inventory.py` a ogni esecuzione del gate: **170 unit**,
+`scripts/mysql_inventory.py` a ogni esecuzione del gate: **171 unit**,
 **37 live default** (test live senza `#[ignore]`) e
 **25 live reference** (test live `#[ignore]`). I conteggi
 non vanno aggiornati a mano: il gate fallisce se divergono.

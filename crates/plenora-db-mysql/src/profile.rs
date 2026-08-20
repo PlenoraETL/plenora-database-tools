@@ -1197,6 +1197,15 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
 /// attribuzione e `Mysql` e nessun test puo dire se viene dal profilo o da
 /// un literal sopravvissuto. Delega tutto a `MYSQL_PROFILE` tranne
 /// l'identita, che e esattamente cio che si vuole vedere cambiare.
+///
+/// Resta necessario anche ora che `MARIADB_PROFILE` esiste, e per una ragione
+/// che i due profili reali non possono coprire: dove `MySQL` e `MariaDB`
+/// **coincidono** — la categoria di un codice di errore, per dirne una — un
+/// confronto fra loro non distingue una decisione presa dal profilo da una
+/// ereditata per caso. Questo profilo diverge li apposta, su una divergenza
+/// che nessun prodotto reale gli impone, ed e cio che rende visibile il
+/// dispatch. Un test differenziale fra i due profili veri prova che le
+/// divergenze misurate ci sono; questo prova che passano dal profilo.
 #[cfg(test)]
 pub(crate) struct SecondProductProfile;
 
@@ -2076,6 +2085,39 @@ mod tests {
         ("types.rs", include_str!("types.rs")),
         ("write.rs", include_str!("write.rs")),
     ];
+
+    #[test]
+    fn no_production_module_selects_the_mariadb_profile() {
+        // La fase e questa: il profilo esiste, nessun provider lo sceglie.
+        // Detta cosi e un'intenzione; qui diventa una proprieta verificabile,
+        // e il momento in cui smettera di valere sara un test che fallisce e
+        // non un provider comparso per gradi.
+        //
+        // Il vincolo non e estetico. `MariadbProfile` dichiara chiuse quasi
+        // tutte le capability e rifiuta ogni colonna geometrica: un percorso
+        // che ci arrivasse oggi non aprirebbe MariaDB, la farebbe fallire in
+        // posti scelti a caso. La selezione arriva quando arriva il provider,
+        // insieme alle misure che oggi mancano.
+        let marker = format!("{}mod tests {{", '\n');
+        for (module, source) in GUARDED_MODULES {
+            // Tranne questo file, che e dove il profilo e definito: cercarlo
+            // qui vorrebbe dire vietarne l'esistenza. Cio che si vieta e la
+            // **selezione**, e chi sceglie il profilo di un provider sta in
+            // `lib.rs` e in `provider.rs`, che l'elenco copre entrambi.
+            if *module == "profile.rs" {
+                continue;
+            }
+            let production = source
+                .split_once(marker.as_str())
+                .map_or(*source, |(head, _)| head);
+            for needle in ["MARIADB_PROFILE", "MariadbProfile"] {
+                assert!(
+                    !production.contains(needle),
+                    "{module} seleziona il profilo MariaDB, che nessun provider deve ancora usare"
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_guarded_module_list_covers_every_production_module() {

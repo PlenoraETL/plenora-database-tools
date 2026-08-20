@@ -92,6 +92,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::no_module_signs_an_error_with_a_hardcoded_product",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",
+    "profile::tests::no_production_module_selects_the_mariadb_profile",
     "profile::tests::no_production_path_uses_a_profileless_entry_point",
     "profile::tests::the_capability_table_is_built_only_by_the_profile",
     "profile::tests::the_catalog_derived_specs_always_carry_a_profile",
