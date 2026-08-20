@@ -956,24 +956,16 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
 
         campaign = self.campaign()
         lifecycle = self.lifecycle()
-        healthy = {
-            "results": [
-                {
-                    "probe": probe,
-                    "observations": {
-                        server: {"outcome": outcome}
-                        for server in ("mysql", "mariadb-12", "mariadb-11")
-                    },
-                }
-                for probe, outcome in self.expected_outcomes().items()
-            ],
-            "capability_violations": [],
-        }
-        regressed = {
-            "results": [dict(entry) for entry in healthy["results"]],
-            "capability_violations": [],
-        }
-        regressed["results"][0]["observations"] = {
+        # L'inventario intero, nell'ordine dichiarato: da quando il gate lo
+        # verifica, un documento con le sole sonde necessarie e gia una
+        # regressione — ed e giusto che lo sia.
+        healthy = {"results": self.full_results()}
+        regressed = {"results": [dict(entry) for entry in healthy["results"]]}
+        from scripts.check_mariadb_driver import REQUIRED_ACCEPTED_PROBES
+
+        broken = sorted(REQUIRED_ACCEPTED_PROBES)[0]
+        entry = next(item for item in regressed["results"] if item["probe"] == broken)
+        entry["observations"] = {
             server: {"outcome": "not_measured"}
             for server in ("mysql", "mariadb-12", "mariadb-11")
         }
@@ -1007,15 +999,102 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
             for verb in ("config", "down", "up"):
                 self.assertIn((file, verb), calls)
 
-    def expected_outcomes(self) -> dict[str, str]:
+    def full_results(self) -> list[dict[str, object]]:
+        """La matrice intera con gli esiti che il gate pretende."""
+
         from scripts.check_mariadb_driver import (
-            REQUIRED_ACCEPTED_PROBES,
+            EXPECTED_PROBES,
             REQUIRED_REJECTED_PROBES,
         )
 
-        outcomes = {probe: "accepted" for probe in REQUIRED_ACCEPTED_PROBES}
-        outcomes.update({probe: "rejected" for probe in REQUIRED_REJECTED_PROBES})
-        return outcomes
+        return [
+            {
+                "probe": probe,
+                "observations": {
+                    server: {
+                        "outcome": "rejected"
+                        if probe in REQUIRED_REJECTED_PROBES
+                        else "accepted"
+                    }
+                    for server in ("mysql", "mariadb-12", "mariadb-11")
+                },
+            }
+            for probe in EXPECTED_PROBES
+        ]
+
+    def test_a_probe_that_disappears_makes_the_gate_red(self) -> None:
+        """Le violazioni di capability non vedono una sonda sparita.
+
+        Se una `raw.*` o una osservativa smettesse di essere prodotta su tutti
+        e tre i server, il totale scenderebbe di uno e l'uscita resterebbe
+        zero: la matrice racconterebbe una superficie in meno senza che nulla
+        lo dica. L'inventario esatto e cio che lo dice.
+        """
+
+        from scripts.check_mariadb_driver import (
+            EXPECTED_PROBES,
+            gate_violations,
+            inventory_violations,
+        )
+
+        self.assertEqual(inventory_violations({"results": self.full_results()}), [])
+
+        # Una sonda in meno, e non e fra quelle che sostengono una capability:
+        # e proprio il caso che prima passava.
+        observational = "raw.tls_cipher"
+        self.assertIn(observational, EXPECTED_PROBES)
+        without = [
+            entry for entry in self.full_results() if entry["probe"] != observational
+        ]
+        violations = inventory_violations({"results": without})
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("sparita", violations[0])
+        self.assertIn(observational, violations[0])
+        self.assertTrue(gate_violations({"results": without}))
+
+        # Una sonda in piu che nessuno ha dichiarato.
+        extra = self.full_results() + [{"probe": "raw.inventata", "observations": {}}]
+        violations = inventory_violations({"results": extra})
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("non dichiarata", violations[0])
+
+        # E lo stesso insieme in un altro ordine: una sonda spostata e quasi
+        # sempre una sonda riscritta.
+        reordered = self.full_results()
+        reordered[0], reordered[1] = reordered[1], reordered[0]
+        violations = inventory_violations({"results": reordered})
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("un altro ordine", violations[0])
+
+    def test_the_declared_inventory_matches_the_measure(self) -> None:
+        """L'inventario e la misura non possono divergere in silenzio.
+
+        Una sonda aggiunta e non dichiarata farebbe fallire la campagna al
+        primo giro — il che va bene — ma solo **dopo** aver acceso tre server.
+        Qui la differenza si vede prima, e senza server.
+        """
+
+        from scripts.check_mariadb_driver import EXPECTED_PROBES
+
+        source = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
+        ).read_text(encoding="utf-8")
+        declared = set(re.findall(r'"((?:raw|provider)\.[a-z_]+)"', source))
+        self.assertEqual(
+            declared - set(EXPECTED_PROBES),
+            set(),
+            "sonde prodotte dalla misura e non dichiarate nell'inventario",
+        )
+        self.assertEqual(
+            set(EXPECTED_PROBES) - declared,
+            set(),
+            "sonde dichiarate nell'inventario che la misura non produce piu",
+        )
+        self.assertEqual(
+            len(EXPECTED_PROBES),
+            len(set(EXPECTED_PROBES)),
+            "l'inventario ripete una sonda",
+        )
 
 
 if __name__ == "__main__":

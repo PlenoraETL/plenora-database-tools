@@ -151,11 +151,13 @@ def campaign(
     # Raises
 
     Qualunque cosa sollevino `preflight` o `measure`, dopo aver raccolto la
-    diagnostica e tentato la pulizia. E `RuntimeError` se la misura riesce ma
-    la pulizia no: li il `down` fallito **e** l'errore.
+    diagnostica e tentato la pulizia. `RuntimeError` se il preflight ripetuto
+    alla fine non da lo stesso esito di quello iniziale — il repository e
+    cambiato mentre si misurava. E `RuntimeError` se la misura riesce ma la
+    pulizia no: li il `down` fallito **e** l'errore.
     """
 
-    preflight()
+    started_at = preflight()
 
     started: list[str] = []
     try:
@@ -170,6 +172,18 @@ def campaign(
             for failure in stop_fixtures(started):
                 print(f"pulizia incompleta: {failure}", file=sys.stderr)
         raise
+
+    # Il preflight si ripete, e il suo esito si confronta con quello iniziale.
+    # Senza, il documento attribuiva tutte le misure all'ultimo `HEAD` letto —
+    # che e quello di **dopo** la corsa: un commit fatto mentre i server
+    # rispondevano, o un file toccato a meta, sarebbero rimasti invisibili e la
+    # misura avrebbe dichiarato un codice che non e quello che l'ha prodotta.
+    ended_at = preflight()
+    if ended_at != started_at:
+        raise RuntimeError(
+            f"il repository e cambiato durante la misura: {started_at} -> {ended_at} "
+            "— le sonde non parlano tutte dello stesso codice"
+        )
 
     if not keep_fixtures:
         failures = stop_fixtures(started)

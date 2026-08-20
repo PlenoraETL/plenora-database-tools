@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.check_mariadb_driver import (  # noqa: E402
-    capability_violations,
+    gate_violations,
     repository_state,
     verdict,
 )
@@ -93,11 +93,11 @@ def main(arguments: list[str]) -> int:
     # misura — ma l'uscita dice se cio che il profilo dichiara ha ancora una
     # prova sotto. E la stessa regola del runner, applicata dove la campagna
     # decide se il gate e verde.
-    violations = capability_violations(document)
+    violations = gate_violations(document)
     if violations:
         print(
-            "mariadb evidence campaign FAILED: una capability pubblicata non ha piu "
-            "la sua prova",
+            "mariadb evidence campaign FAILED: l'inventario delle sonde o una prova "
+            "necessaria non regge piu",
             file=sys.stderr,
         )
         for violation in violations:

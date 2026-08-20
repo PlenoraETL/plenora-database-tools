@@ -152,6 +152,105 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 }
 
 
+# L'inventario esatto delle sonde, nell'ordine in cui la misura le produce.
+#
+# Le violazioni di capability dicono se una prova necessaria ha cambiato esito;
+# non dicono se una sonda e **sparita**. Se una `raw.*` o una osservativa
+# smettesse di essere prodotta su tutti e tre i server, il totale scenderebbe
+# da 56 a 55 e l'uscita resterebbe zero: la matrice
+# racconterebbe una superficie in meno senza che nulla lo dica.
+#
+# L'ordine e parte del contratto perche e cio che rende leggibile il documento
+# — le famiglie stanno insieme — e perche una sonda spostata e quasi sempre una
+# sonda riscritta.
+EXPECTED_PROBES: tuple[str, ...] = (
+    "raw.tls_cipher",
+    "raw.type_table",
+    "raw.type_row",
+    "raw.geometry_table",
+    "raw.prepare_metadata_geometry",
+    "raw.prepare_metadata",
+    "raw.prepare_parameters",
+    "raw.column_srid",
+    "raw.spatial_functions",
+    "raw.max_execution_time",
+    "raw.statistics_expression",
+    "provider.test_connection",
+    "provider.capabilities",
+    "provider.describe_object",
+    "provider.query_schema",
+    "provider.query_values",
+    "provider.read",
+    "provider.read_geometry",
+    "provider.transaction",
+    "provider.cancellation_inflight",
+    "provider.session_quarantine",
+    "provider.session_reuse",
+    "provider.ambiguous_commit",
+    "raw.error_unknown_column",
+    "raw.error_unknown_table",
+    "raw.error_unknown_database",
+    "raw.error_duplicate_key",
+    "raw.error_not_null",
+    "raw.error_foreign_key",
+    "raw.error_check_violation",
+    "raw.error_privilege",
+    "raw.error_statement_timeout",
+    "raw.error_lock_wait",
+    "raw.error_deadlock",
+    "raw.error_access_denied",
+    "provider.profile_probe",
+    "provider.profile_describe_object",
+    "provider.profile_describe_geometry",
+    "raw.functional_index_ddl",
+    "provider.profile_functional_index",
+    "provider.profile_read_schema",
+    "provider.profile_read_values",
+    "provider.profile_read_namespace",
+    "provider.profile_read_projection",
+    "provider.profile_read_filter_forms",
+    "provider.profile_read_filter_closed_like",
+    "provider.profile_read_filter_closed_spatial",
+    "provider.profile_read_ordering_asc",
+    "provider.profile_read_ordering_desc",
+    "provider.profile_read_streaming",
+    "raw.generated_column_catalog",
+    "provider.profile_generated_index",
+    "provider.profile_upsert_on_primary_key",
+    "provider.profile_upsert_on_generated_key",
+    "provider.profile_upsert_generated_anchor",
+    "provider.profile_timeout",
+)
+
+
+def inventory_violations(document: dict[str, object]) -> list[str]:
+    """Cosa manca, cosa avanza, e cosa si e spostato.
+
+    Pura: prende il documento e ne guarda i nomi, cosi il giudizio si prova
+    senza accendere un server.
+    """
+
+    observed = tuple(entry["probe"] for entry in document["results"])
+    if observed == EXPECTED_PROBES:
+        return []
+    missing = [probe for probe in EXPECTED_PROBES if probe not in observed]
+    unexpected = [probe for probe in observed if probe not in EXPECTED_PROBES]
+    violations = [f"sonda sparita dalla misura: {probe}" for probe in missing]
+    violations += [f"sonda non dichiarata nell'inventario: {probe}" for probe in unexpected]
+    if not violations:
+        violations.append(
+            "le sonde sono quelle attese ma in un altro ordine: "
+            f"atteso {EXPECTED_PROBES[:3]}..., osservato {observed[:3]}..."
+        )
+    return violations
+
+
+def gate_violations(document: dict[str, object]) -> list[str]:
+    """Tutto cio che rende rossa la campagna: inventario e prove necessarie."""
+
+    return inventory_violations(document) + capability_violations(document)
+
+
 def duplicate_probes(names: Iterable[str]) -> list[str]:
     """I nomi che compaiono piu di una volta, in ordine.
 
@@ -524,8 +623,8 @@ def verdict() -> dict[str, object]:
         "results": results,
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
-    document["capability_violations"] = capability_violations(document)
-    document["status"] = "regressed" if document["capability_violations"] else "observed"
+    document["violations"] = gate_violations(document)
+    document["status"] = "regressed" if document["violations"] else "observed"
     return document
 
 
@@ -577,11 +676,11 @@ def main() -> int:
     # Il verdetto si stampa comunque — anche una corsa che fallisce e una
     # misura, e nasconderla renderebbe il fallimento illeggibile — ma l'uscita
     # dice se cio che il profilo dichiara ha ancora una prova sotto.
-    violations = document["capability_violations"]
+    violations = document["violations"]
     if violations:
         print(
-            "mariadb driver evidence FAILED: una capability pubblicata non ha piu "
-            "la sua prova",
+            "mariadb driver evidence FAILED: l'inventario delle sonde o una prova "
+            "necessaria non regge piu",
             file=sys.stderr,
         )
         for violation in violations:
