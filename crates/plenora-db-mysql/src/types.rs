@@ -168,7 +168,12 @@ impl MysqlReadPlan {
             sql.push_str(&limit.to_string());
         }
         sql.push(';');
-        let schema = contract_schema(columns.iter().map(MysqlColumnSpec::arrow_field).collect());
+        let schema = contract_schema(
+            columns
+                .iter()
+                .map(|column| column.arrow_field_with_profile(profile))
+                .collect(),
+        );
         Ok(Self {
             columns,
             schema,
@@ -188,6 +193,7 @@ impl MysqlReadPlan {
         sql: String,
         bind_names: Vec<String>,
         columns: Vec<MysqlColumnSpec>,
+        profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
         if columns.is_empty() {
             return Err(prepare_error(
@@ -195,7 +201,12 @@ impl MysqlReadPlan {
                 "QueryOperation priva di colonne risultanti",
             ));
         }
-        let schema = contract_schema(columns.iter().map(MysqlColumnSpec::arrow_field).collect());
+        let schema = contract_schema(
+            columns
+                .iter()
+                .map(|column| column.arrow_field_with_profile(profile))
+                .collect(),
+        );
         Ok(Self {
             columns,
             schema,
@@ -301,8 +312,25 @@ impl MysqlColumnSpec {
         }
     }
 
+    /// Il campo Arrow di questa colonna, con i metadata di `MySQL`.
+    ///
+    /// Resta l'API pubblica del crate, che serve `MySQL`: il namespace dei
+    /// metadata e il suo. La variante con il profilo e cio che un secondo
+    /// prodotto usa, ed e da li che passano tutti i percorsi interni.
     #[must_use]
     pub fn arrow_field(&self) -> Field {
+        self.arrow_field_with_profile(&crate::profile::MYSQL_PROFILE)
+    }
+
+    /// Come [`Self::arrow_field`], con il namespace del prodotto che ha
+    /// risposto.
+    #[must_use]
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn arrow_field_with_profile(
+        &self,
+        profile: &dyn crate::profile::ProductProfile,
+    ) -> Field {
+        let keys = profile.metadata_keys();
         let data_type = match self.kind {
             MysqlColumnKind::Bool => DataType::Boolean,
             MysqlColumnKind::I8 => DataType::Int8,
@@ -323,18 +351,15 @@ impl MysqlColumnSpec {
             MysqlColumnKind::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
             MysqlColumnKind::Decimal { precision, scale } => DataType::Decimal128(precision, scale),
         };
-        let mut metadata = HashMap::from([(
-            protocol::MYSQL_NATIVE_TYPE.to_owned(),
-            self.native_type.clone(),
-        )]);
+        let mut metadata = HashMap::from([(keys.native_type.to_owned(), self.native_type.clone())]);
         if !self.native_declaration.is_empty() {
             metadata.insert(
-                protocol::MYSQL_NATIVE_DECLARATION.to_owned(),
+                keys.native_declaration.to_owned(),
                 self.native_declaration.clone(),
             );
         }
         if let Some(collation) = &self.collation {
-            metadata.insert(protocol::MYSQL_COLLATION.to_owned(), collation.clone());
+            metadata.insert(keys.collation.to_owned(), collation.clone());
         }
         if self.kind == MysqlColumnKind::Geometry {
             metadata.extend([

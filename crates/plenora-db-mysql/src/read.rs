@@ -203,7 +203,7 @@ pub(crate) async fn query_operation_with_profile(
     }
     let metadata = statement.columns();
     let columns = crate::query::query_result_columns_with_profile(&metadata, profile)?;
-    let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns)?;
+    let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns, profile)?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;

@@ -237,6 +237,16 @@ pub(crate) async fn probe_server_with_profile(
         {
             return Err(rejection);
         }
+        // Riconosciuto il prodotto, resta la seconda domanda: quella versione
+        // e stata misurata? Il profilo che non dichiara un elenco non rifiuta
+        // nulla, quindi per MySQL qui non cambia niente; per un profilo che lo
+        // dichiara, il rifiuto scatta prima di qualunque decisione presa su
+        // una misura che non lo riguarda.
+        if let Some(rejection) =
+            crate::profile::unqualified_version_rejection(profile, &product_version)
+        {
+            return Err(rejection);
+        }
     }
 
     Ok(MysqlProbe {

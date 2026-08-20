@@ -56,4 +56,25 @@ pub const MYSQL_NATIVE_TYPE: &str = "plenora.mysql.native_type";
 pub const MYSQL_NATIVE_DECLARATION: &str = "plenora.mysql.native_declaration";
 pub const MYSQL_COLLATION: &str = "plenora.mysql.collation";
 
+/// Come [`MYSQL_NATIVE_TYPE`], per `MariaDB`.
+///
+/// Namespace proprio, e non e una formalita. Il contratto usa gia un
+/// namespace per prodotto — `plenora.postgres.*`, `plenora.sqlserver.*` — e
+/// un consumatore che leggesse `plenora.mysql.native_type` da un server
+/// `MariaDB` dovrebbe indovinare, da un metadato che non lo dice, quale delle
+/// due tabelle di tipi applicare. Sono tabelle che divergono davvero: dalla
+/// stessa DDL `document JSON` esce `json` da `MySQL` e `text` da `MariaDB`.
+///
+/// Il protocollo condiviso non e un argomento per condividere il namespace:
+/// un metadato dichiara chi ha risposto, non come gli si e parlato.
+pub const MARIADB_NATIVE_TYPE: &str = "plenora.mariadb.native_type";
+
+/// Come [`MYSQL_NATIVE_DECLARATION`], per `MariaDB`. Vedi
+/// [`MARIADB_NATIVE_TYPE`] per la scelta del namespace.
+pub const MARIADB_NATIVE_DECLARATION: &str = "plenora.mariadb.native_declaration";
+
+/// Come [`MYSQL_COLLATION`], per `MariaDB`. Vedi [`MARIADB_NATIVE_TYPE`] per
+/// la scelta del namespace.
+pub const MARIADB_COLLATION: &str = "plenora.mariadb.collation";
+
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";

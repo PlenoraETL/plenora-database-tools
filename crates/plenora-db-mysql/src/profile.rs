@@ -43,6 +43,7 @@ use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
     TransactionCapabilities, TransactionScope, WriteCapabilities,
 };
+use plenora_database_core::protocol;
 use plenora_database_core::{
     plan::ProviderKind, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
@@ -59,6 +60,20 @@ const BINARY_CHARACTER_SET: u16 = 63;
 /// sullo stato del server, e chi conosce i codici e il profilo. Lasciarla
 /// fuori voleva dire che un profilo poteva ridefinire la categoria di un
 /// codice ma non se quel codice avesse gia rollbackato — e la seconda decide
+/// Le tre chiavi con cui il prodotto annota una colonna nello schema Arrow.
+///
+/// Stanno insieme perche sono un namespace solo: pubblicarne due di un
+/// prodotto e una dell'altro darebbe uno schema che dichiara due origini per
+/// la stessa colonna. Il consumatore legge queste chiavi per sapere cosa
+/// fosse la colonna sul server, e quale tabella di tipi applicare per
+/// interpretarne il nome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MetadataKeys {
+    pub(crate) native_type: &'static str,
+    pub(crate) native_declaration: &'static str,
+    pub(crate) collation: &'static str,
+}
+
 /// se il chiamante debba ripulire.
 pub(crate) struct ServerCodeVerdict {
     pub(crate) category: ErrorCategory,
@@ -91,6 +106,21 @@ pub(crate) trait ProductProfile: Send + Sync {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError>;
+
+    /// Le versioni del prodotto su cui il profilo e qualificato, se il profilo
+    /// dichiara un limite.
+    ///
+    /// Sono due domande diverse, e tenerle in due metodi e la ragione per cui
+    /// esiste questo. `foreign_product_rejection` chiede **quale prodotto** sta
+    /// rispondendo; questo chiede **se quella versione** e stata misurata. Un
+    /// riconoscimento che rispondesse a entrambe accetterebbe qualunque server che
+    /// si chiama `MariaDB`, comprese major che nessuno ha mai acceso.
+    ///
+    /// `None` significa "nessun limite dichiarato", e non "tutte qualificate": e
+    /// lo stato in cui il profilo `MySQL` si trova oggi, e cambiarlo
+    /// rifiuterebbe server che il provider serve da sempre. Dichiararlo qui,
+    /// invece di lasciarlo implicito, e cio che rende visibile l'asimmetria.
+    fn qualified_versions(&self) -> Option<&'static [(u32, u32)]>;
 
     /// Lo statement che impone il timeout di statement sulla sessione.
     ///
@@ -152,6 +182,16 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Fallisce chiuso per colonne senza nome utilizzabile, decimal oltre
     /// `Decimal128` e tipi wire non ancora qualificati.
     fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec>;
+
+    /// Il namespace dei metadata che il prodotto pubblica nello schema Arrow.
+    ///
+    /// E contratto pubblico, non decorazione: un consumer che trova
+    /// `plenora.mysql.native_type` su un batch letto da `MariaDB` dovrebbe
+    /// dedurre da un metadato che non lo dice quale tabella di tipi
+    /// applicare — e le due tabelle divergono, `json` contro `text` dalla
+    /// stessa DDL. Il profilo lo decide perche e la sola cosa che sa **chi**
+    /// ha risposto.
+    fn metadata_keys(&self) -> MetadataKeys;
 
     /// Se un tipo dichiarato nel catalogo e una geometria.
     fn is_spatial_native_type(&self, native_type: &str) -> bool;
@@ -380,6 +420,17 @@ impl ProductProfile for MysqlProfile {
         })
     }
 
+    fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
+        // Nessun limite, ed e lo stato di oggi scritto invece che sottinteso.
+        // La matrice qualifica 9.7, 8.4 e 8.0, ma il provider non ha mai
+        // rifiutato una versione diversa: trasformare quella matrice in un
+        // rifiuto cambierebbe il comportamento di un provider qualificato —
+        // un 9.8 che oggi funziona smetterebbe di connettersi — e non e una
+        // decisione che si prende di passaggio mentre si aggiunge un secondo
+        // profilo. Resta aperta, e visibile perche dichiarata.
+        None
+    }
+
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
         // `MAX_EXECUTION_TIME` e session-scoped e si misura in millisecondi,
         // la stessa unita del contratto: qui la conversione e l'identita, e
@@ -522,6 +573,14 @@ impl ProductProfile for MysqlProfile {
         crate::write::geometry_type_is_writable(name)
     }
 
+    fn metadata_keys(&self) -> MetadataKeys {
+        MetadataKeys {
+            native_type: protocol::MYSQL_NATIVE_TYPE,
+            native_declaration: protocol::MYSQL_NATIVE_DECLARATION,
+            collation: protocol::MYSQL_COLLATION,
+        }
+    }
+
     fn is_spatial_native_type(&self, native_type: &str) -> bool {
         matches!(
             native_type,
@@ -632,6 +691,18 @@ impl ProductProfile for MariadbProfile {
         })
     }
 
+    fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
+        // Le due che ADR 0014 ha misurato, e nessun'altra. Non e prudenza
+        // eccessiva: cio che il profilo afferma — quali colonne di catalogo
+        // esistono, quale variabile regge il timeout, con quale codice arriva
+        // — e stato osservato su queste due, e una major che non c'era ancora
+        // quando la misura e stata fatta non e coperta da quella misura.
+        //
+        // La riga che rende il rifiuto onesto e il messaggio: dice che la
+        // versione non e stata misurata, non che non funzioni.
+        Some(&[(11, 8), (12, 3)])
+    }
+
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
         // `MAX_EXECUTION_TIME` non esiste su MariaDB: ADR 0014 l'ha vista
         // rifiutare con 1193 su entrambi i riferimenti. L'equivalente e
@@ -679,7 +750,7 @@ impl ProductProfile for MariadbProfile {
         CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name, \
         NUMERIC_PRECISION AS numeric_precision, NUMERIC_SCALE AS numeric_scale, \
         DATETIME_PRECISION AS datetime_precision, NULL AS srs_id, \
-        EXTRA AS extra, GENERATION_EXPRESSION AS generation_expression \
+        EXTRA AS extra, COALESCE(GENERATION_EXPRESSION, '') AS generation_expression \
         FROM information_schema.columns \
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
     }
@@ -725,6 +796,18 @@ impl ProductProfile for MariadbProfile {
         // contratto pubblicato resta percio quello del filo, ed e cio che
         // `MYSQL_NATIVE_TYPE` dichiara.
         wire_column_spec_for(self.product(), column)
+    }
+
+    fn metadata_keys(&self) -> MetadataKeys {
+        // Namespace proprio, deciso qui e non ereditato. E la domanda che un
+        // `MariadbProvider` non potrebbe piu porsi dopo aver pubblicato il
+        // primo batch: i metadata sono contratto, e un contratto si cambia
+        // una volta sola senza rompere chi lo legge.
+        MetadataKeys {
+            native_type: protocol::MARIADB_NATIVE_TYPE,
+            native_declaration: protocol::MARIADB_NATIVE_DECLARATION,
+            collation: protocol::MARIADB_COLLATION,
+        }
     }
 
     fn is_spatial_native_type(&self, native_type: &str) -> bool {
@@ -855,26 +938,46 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn classify_server_code(&self, code: u16) -> ServerCodeVerdict {
-        // Tabella condivisa, attribuzione propria: i codici vengono dal
-        // protocollo che i due prodotti parlano, e i due che ADR 0014 ha
-        // osservato divergere — 1193 e 1054 — divergono per **quando**
-        // arrivano, non per cosa significano. Il nome nel messaggio invece
-        // deve essere questo, o chi legge cerca sul server sbagliato.
-        classify_shared_code(self.product(), code)
+        let product = self.product();
+        // `ER_STATEMENT_TIMEOUT`, che su MySQL non esiste: e il codice con cui
+        // arriva il timeout che **questo** profilo applica, misurato su
+        // entrambi i riferimenti dopo `SET SESSION max_statement_time`.
+        //
+        // Senza questa riga il profilo emetteva l'istruzione giusta e poi
+        // classificava il suo esito nel ramo generico: il chiamante leggeva
+        // "errore server MariaDB redatto (codice 1969)" invece di un timeout,
+        // cioe non poteva distinguere un limite che ha fatto il suo lavoro da
+        // un guasto. Era il difetto che l'istruzione corretta nascondeva.
+        if code == MARIADB_STATEMENT_TIMEOUT {
+            return ServerCodeVerdict {
+                category: ErrorCategory::Timeout,
+                retry: RetryDisposition::Never,
+                message: format!("timeout {product} (codice {MARIADB_STATEMENT_TIMEOUT})"),
+                remote_effect: None,
+            };
+        }
+        // Gli altri codici passano dalla tabella condivisa **solo** se sono
+        // stati osservati su questo prodotto. Non e pignoleria: 1213 dichiara
+        // `retry: Safe` e `remote_effect: RolledBack`, cioe autorizza il
+        // chiamante a rifare l'operazione e gli dice che non ha nulla da
+        // ripulire. Ereditata senza misura, quella riga sarebbe una promessa
+        // fatta a nome di un motore che nessuno aveva interrogato.
+        if MEASURED_SERVER_CODES.contains(&code) {
+            return classify_shared_code(product, code);
+        }
+        generic_server_code(product, code)
     }
 
     fn row_rejection_cause(&self, code: u16) -> Option<&'static str> {
         match code {
-            // Tre codici invece di cinque. 1048, 1062 e 1452 hanno lo stesso
-            // significato sui due prodotti; i due codici del CHECK — 3819 su
-            // MySQL, 4025 su MariaDB — non sono stati misurati qui, e la
-            // documentazione di un fornitore non e una misura.
-            //
-            // Il verso del fail-closed e questo perche entrambi gli esiti sono
-            // diagnostici: un codice assente rende la causa meno precisa, un
-            // codice attribuito per analogia la rende **sbagliata**. La prima
-            // si corregge leggendo l'errore del server, la seconda no.
-            1_048 | 1_062 | 1_452 => {
+            // Quattro codici, e ciascuno misurato su entrambi i riferimenti.
+            // Il CHECK e l'unico che diverge davvero: su MySQL arriva 3819, su
+            // MariaDB 4025, dallo stesso `INSERT` che viola lo stesso vincolo.
+            // Il codice di MySQL non compare qui, e non per simmetria: su
+            // MariaDB non e mai arrivato, e attribuire una causa per analogia
+            // e l'unico dei due errori che non si corregge leggendo l'errore
+            // del server.
+            1_048 | 1_062 | 1_452 | 4_025 => {
                 Some(plenora_database_core::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION)
             }
             _ => None,
@@ -907,6 +1010,50 @@ const OBJECT_QUERY: &str = "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS t
     FROM information_schema.tables \
     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
 
+/// Il rifiuto di una versione che il profilo non dichiara qualificata.
+///
+/// Vive accanto al riconoscimento perche e la seconda meta della stessa
+/// domanda, e perche la lettura della stringa deve essere una sola: `VERSION()`
+/// porta `11.8.8-MariaDB-ubu2404` o `9.7.2`, e cio che conta sono le prime due
+/// componenti.
+///
+/// Una versione **illeggibile** viene rifiutata come una non qualificata, per
+/// il profilo che dichiara un elenco: non sapere quale versione risponde e
+/// esattamente la condizione da cui l'elenco protegge.
+pub(crate) fn unqualified_version_rejection(
+    profile: &dyn ProductProfile,
+    product_version: &str,
+) -> Option<DatabaseError> {
+    let qualified = profile.qualified_versions()?;
+    let mut parts = product_version.split('.');
+    let read = |part: Option<&str>| -> Option<u32> {
+        let digits: String = part?.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let observed = read(parts.next()).zip(read(parts.next()));
+    if observed.is_some_and(|version| qualified.contains(&version)) {
+        return None;
+    }
+    let product = profile.product();
+    let declared = qualified
+        .iter()
+        .map(|(major, minor)| format!("{major}.{minor}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(DatabaseError {
+        category: ErrorCategory::Unsupported,
+        phase: ErrorPhase::Probe,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(profile.kind()),
+        execution_id: None,
+        message: format!(
+            "versione {product} {product_version:?} non misurata: il profilo e              qualificato su {declared}. Non e un difetto del server — e una              versione su cui nessuna prova e stata fatta."
+        ),
+        diagnostics: None,
+    })
+}
+
 /// Se le stringhe che il server espone dicono `MariaDB`.
 ///
 /// Una sola lettura per due decisioni opposte: `MysqlProfile` rifiuta quando e
@@ -926,11 +1073,17 @@ fn looks_like_mariadb(product_version: &str, version_comment: &str) -> bool {
 /// La tabella dei codici che i due prodotti condividono, attribuita a chi
 /// li ha emessi.
 ///
-/// I numeri vengono dal protocollo `MySQL`, che `MariaDB` parla: 1045, 1062,
-/// 1213 significano la stessa cosa su entrambi, e ADR 0014 ha osservato
-/// proprio 1054 e 1193 arrivare identici dai tre riferimenti. Duplicare la
-/// tabella per prodotto avrebbe dato due copie da tenere allineate senza una
-/// sola divergenza misurata a giustificarle.
+/// I numeri vengono dal protocollo `MySQL`, che `MariaDB` parla, e la quarta
+/// tranche di ADR 0014 li ha osservati uno per uno: 1045, 1048, 1054, 1062,
+/// 1146, 1205, 1213 e 1452 sono arrivati **dagli stessi tentativi** su tutti
+/// e tre i riferimenti. Duplicare la tabella per quelli avrebbe dato due copie
+/// da tenere allineate senza una divergenza che le giustifichi.
+///
+/// Non tutti pero sono stati misurati ovunque, ed e la ragione per cui questa
+/// funzione non e il punto d'ingresso di nessun profilo: 1044 e 1049 non sono
+/// mai arrivati da `MariaDB`, 3024 e il timeout di `MySQL` e 1969 quello di
+/// `MariaDB`. Chi chiama sceglie **quali** codici passare di qui; questa
+/// tabella dice solo cosa significano quelli che ci passano.
 ///
 /// Cio che **non** e condiviso e il nome: un messaggio che dice `MySQL`
 /// mentre a rifiutare e stato `MariaDB` manda chi legge a cercare sul server
@@ -983,14 +1136,43 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
             message: format!("timeout {product} (codice {code})"),
             remote_effect: None,
         },
-        native => ServerCodeVerdict {
-            category: ErrorCategory::Execution,
-            retry: RetryDisposition::Never,
-            message: format!("errore server {product} redatto (codice {native})"),
-            remote_effect: None,
-        },
+        native => generic_server_code(product, native),
     }
 }
+
+/// Il verdetto di un codice che nessuna misura ha qualificato.
+///
+/// `Execution` e `Never` non sono un "non so" travestito: dicono che
+/// l'operazione e fallita sul server e che ritentarla non ha ragione di
+/// riuscire. E la risposta giusta per un codice che non si conosce, ed e per
+/// questo che esiste una funzione sola — un profilo che se la riscrivesse
+/// potrebbe farla diventare, senza volerlo, un permesso di ritentare.
+fn generic_server_code(product: &str, code: u16) -> ServerCodeVerdict {
+    ServerCodeVerdict {
+        category: ErrorCategory::Execution,
+        retry: RetryDisposition::Never,
+        message: format!("errore server {product} redatto (codice {code})"),
+        remote_effect: None,
+    }
+}
+
+/// Il codice con cui `MariaDB` interrompe uno statement oltre
+/// `max_statement_time` (`ER_STATEMENT_TIMEOUT`).
+///
+/// Su `MySQL` lo stesso evento arriva come 3024, e i due numeri non si
+/// incrociano: e la seconda meta della divergenza sul timeout, quella che
+/// l'istruzione corretta da sola non chiude.
+pub(crate) const MARIADB_STATEMENT_TIMEOUT: u16 = 1_969;
+
+/// I codici osservati su **entrambi** i riferimenti `MariaDB`, con lo stesso
+/// significato che hanno su `MySQL`.
+///
+/// L'elenco e corto apposta. Ogni voce viene da un tentativo registrato nella
+/// quarta tranche di `docs/mariadb/EVIDENCE.md`: una password sbagliata, una
+/// colonna che non esiste, una chiave duplicata, una tabella assente,
+/// un'attesa di lock scaduta, un deadlock con la vittima annullata. Cio che
+/// non c'e non e negato: e non misurato, e finisce nel verdetto generico.
+pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[1_045, 1_054, 1_062, 1_146, 1_205, 1_213];
 
 /// Il mapper dei metadata wire, condiviso fra i prodotti che parlano il
 /// protocollo `MySQL`.
@@ -1230,6 +1412,10 @@ impl ProductProfile for SecondProductProfile {
         MYSQL_PROFILE.foreign_product_rejection(product_version, version_comment)
     }
 
+    fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
+        MYSQL_PROFILE.qualified_versions()
+    }
+
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
         // Diverge per nome **e** per unita, che e la forma della divergenza
         // che ADR 0014 ha misurato su MariaDB. Se la conversione tornasse a
@@ -1275,6 +1461,10 @@ impl ProductProfile for SecondProductProfile {
 
     fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec> {
         MYSQL_PROFILE.wire_column_spec(column)
+    }
+
+    fn metadata_keys(&self) -> MetadataKeys {
+        MYSQL_PROFILE.metadata_keys()
     }
 
     fn is_spatial_native_type(&self, native_type: &str) -> bool {
@@ -1338,8 +1528,9 @@ impl ProductProfile for SecondProductProfile {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProductProfile, COLUMN_ALIASES, INDEX_PART_ALIASES, MARIADB_PROFILE, MYSQL_PROFILE,
-        OBJECT_ALIASES, SCHEMA_ALIASES, SECOND_PRODUCT_PROFILE,
+        ProductProfile, COLUMN_ALIASES, INDEX_PART_ALIASES, MARIADB_PROFILE,
+        MARIADB_STATEMENT_TIMEOUT, MEASURED_SERVER_CODES, MYSQL_PROFILE, OBJECT_ALIASES,
+        SCHEMA_ALIASES, SECOND_PRODUCT_PROFILE,
     };
     use crate::types::MysqlColumnKind;
     use crate::MysqlConfig;
@@ -1356,7 +1547,9 @@ mod tests {
     };
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
     use plenora_database_core::CancellationToken;
-    use plenora_database_core::{plan::ProviderKind, ErrorCategory, ErrorPhase, RemoteEffect};
+    use plenora_database_core::{
+        plan::ProviderKind, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+    };
 
     #[test]
     fn the_profile_accepts_mysql_and_rejects_mariadb_from_either_string() {
@@ -2449,6 +2642,93 @@ mod tests {
     }
 
     #[test]
+    fn the_version_is_a_second_question_after_the_product() {
+        // Riconoscere il prodotto e qualificarne la versione sono due
+        // domande, e la prima non risponde alla seconda: `contains("mariadb")`
+        // e vero anche per una major che nessuno ha mai acceso, e sulla quale
+        // tutto cio che il profilo afferma — quali colonne di catalogo
+        // esistono, con quale codice arriva il timeout — non e stato misurato.
+        //
+        // La qualifica e per serie minor, che e la granularita con cui il
+        // repository dichiara i riferimenti: `11.8` LTS e `12.3`, fissate per
+        // digest e aggiornate di patch in patch.
+        for qualified in [
+            "11.8.8-MariaDB-ubu2404",
+            "12.3.2-MariaDB-ubu2404",
+            "11.8.0",
+            "12.3.19-MariaDB",
+        ] {
+            assert!(
+                super::unqualified_version_rejection(&MARIADB_PROFILE, qualified).is_none(),
+                "{qualified} e una versione misurata"
+            );
+        }
+        for unqualified in [
+            "10.11.5-MariaDB",
+            "13.0.0-MariaDB",
+            "12.4.0-MariaDB",
+            "",
+            "MariaDB",
+        ] {
+            let rejection = super::unqualified_version_rejection(&MARIADB_PROFILE, unqualified)
+                .unwrap_or_else(|| panic!("{unqualified} non e fra le versioni misurate"));
+            assert_eq!(rejection.category, ErrorCategory::Unsupported);
+            assert_eq!(rejection.phase, ErrorPhase::Probe);
+            assert_eq!(rejection.remote_effect, RemoteEffect::None);
+            assert_eq!(rejection.provider, Some(ProviderKind::Mariadb));
+            // Il messaggio deve dire cosa e successo davvero: non "questo
+            // server non va", ma "su questo server non e stata fatta nessuna
+            // prova". Sono due affermazioni diverse, e solo la seconda e vera.
+            assert!(
+                rejection.message.contains("non misurata")
+                    && rejection.message.contains("11.8")
+                    && rejection.message.contains("12.3"),
+                "il rifiuto non dice cosa manca: {}",
+                rejection.message
+            );
+        }
+
+        // MySQL non dichiara un elenco, e qui non rifiuta nulla: la matrice
+        // qualifica 9.7, 8.4 e 8.0, ma il provider non ha mai rifiutato le
+        // altre, e trasformare quella matrice in un rifiuto e una modifica al
+        // comportamento di un provider qualificato — non un effetto collaterale
+        // dell'aggiunta di un secondo profilo.
+        assert!(MYSQL_PROFILE.qualified_versions().is_none());
+        for version in ["9.7.2", "8.4.11", "8.0.46", "9.8.0", "sconosciuta"] {
+            assert!(
+                super::unqualified_version_rejection(&MYSQL_PROFILE, version).is_none(),
+                "{version}: il profilo MySQL non dichiara un limite di versione"
+            );
+        }
+
+        // E le due domande restano separate: una MariaDB 10.11 e riconosciuta
+        // come MariaDB da entrambi i profili — il primo la rifiuta perche non
+        // e sua, il secondo la accetta come prodotto — e viene fermata dalla
+        // qualifica, non dal riconoscimento.
+        assert!(MYSQL_PROFILE
+            .foreign_product_rejection("10.11.5-MariaDB", "mariadb.org binary distribution")
+            .is_some());
+        assert!(MARIADB_PROFILE
+            .foreign_product_rejection("10.11.5-MariaDB", "mariadb.org binary distribution")
+            .is_none());
+    }
+
+    #[test]
+    fn the_probe_asks_the_version_question_too() {
+        // Il gate vive nel profilo, ma serve a qualcosa solo se il percorso
+        // che apre una connessione lo attraversa. Senza questa riga il
+        // profilo dichiarerebbe un elenco di versioni che nessuno consulta,
+        // ed e la forma di fail-closed che non chiude niente.
+        let production = include_str!("catalog.rs")
+            .split_once(format!("{}mod tests {{", '\n').as_str())
+            .map_or(include_str!("catalog.rs"), |(head, _)| head);
+        assert!(
+            production.contains("unqualified_version_rejection"),
+            "la probe non verifica la qualifica della versione"
+        );
+    }
+
+    #[test]
     fn the_mariadb_timeout_diverges_in_name_and_in_unit() {
         // Le due meta della divergenza misurata: `MAX_EXECUTION_TIME` non
         // esiste su MariaDB (1193), e cio che la sostituisce non prende la
@@ -2487,41 +2767,65 @@ mod tests {
         );
     }
 
+    /// Le differenze **ammesse** fra le due query del catalogo, e la misura da
+    /// cui ciascuna discende.
+    ///
+    /// La guardia sotto sostituisce questi frammenti nella query di `MySQL` e
+    /// pretende che ne esca, carattere per carattere, quella di `MariaDB`. Ogni
+    /// riga qui e percio una divergenza dichiarata: chi ne aggiunge una senza
+    /// passare da questa tabella fa fallire il confronto, ed e l'unico modo
+    /// perche il catalogo non si sdoppi in silenzio.
+    const DECLARED_CATALOG_DIVERGENCES: &[(&str, &str)] = &[
+        // `SRS_ID` non esiste su MariaDB: 1054, misurato su entrambi i
+        // riferimenti. La colonna si dichiara nulla, non si omette.
+        ("SRS_ID AS srs_id", "NULL AS srs_id"),
+        // `GENERATION_EXPRESSION` esiste, ma su MariaDB e **NULL** per le
+        // colonne non generate, dove MySQL manda la stringa vuota. Il lettore
+        // pretende una stringa, e "nessuna espressione" e la stringa vuota su
+        // entrambi: la differenza e nella rappresentazione, non nel fatto.
+        //
+        // Non e una deduzione: la prima corsa di `provider.profile_describe_object`
+        // sui due riferimenti falliva qui, con "campo catalogo
+        // generation_expression non convertibile". Nessun test offline poteva
+        // vederlo, perche la query compilava.
+        (
+            "GENERATION_EXPRESSION AS generation_expression",
+            "COALESCE(GENERATION_EXPRESSION, '') AS generation_expression",
+        ),
+        // `EXPRESSION` non esiste su MariaDB: 1054, misurato su entrambi.
+        ("EXPRESSION AS expression", "NULL AS expression"),
+    ];
+
     #[test]
-    fn the_mariadb_catalog_differs_only_where_the_column_does_not_exist() {
-        // Le due query divergono per le due colonne che ADR 0014 ha visto
-        // rifiutare con 1054, e per nient'altro. Scritta cosi, la guardia
-        // regge anche le modifiche future: chi aggiunge un filtro o una
-        // colonna a una sola delle due la fa fallire, che e l'unico modo
-        // perche il catalogo non si sdoppi in silenzio.
-        assert_eq!(
-            MYSQL_PROFILE
-                .object_columns_query()
-                .replace("SRS_ID AS srs_id", "NULL AS srs_id"),
-            MARIADB_PROFILE.object_columns_query(),
-        );
-        assert_eq!(
-            MYSQL_PROFILE
-                .object_indexes_query()
-                .replace("EXPRESSION AS expression", "NULL AS expression"),
-            MARIADB_PROFILE.object_indexes_query(),
-        );
-        // E la divergenza c'e davvero: senza questa coppia, le due
-        // asserzioni sopra passerebbero anche con due query identiche.
-        assert_ne!(
-            MYSQL_PROFILE.object_columns_query(),
-            MARIADB_PROFILE.object_columns_query()
-        );
-        assert_ne!(
-            MYSQL_PROFILE.object_indexes_query(),
-            MARIADB_PROFILE.object_indexes_query()
-        );
-        // Le colonne che non esistono non compaiono da nessuna parte nella
+    fn the_mariadb_catalog_differs_only_where_the_measure_says_so() {
+        // Le due query divergono per le divergenze dichiarate, e per nient'altro.
+        // Scritta cosi, la guardia regge anche le modifiche future: chi aggiunge
+        // un filtro o una colonna a una sola delle due la fa fallire.
+        for (mysql, mariadb) in [
+            (
+                MYSQL_PROFILE.object_columns_query(),
+                MARIADB_PROFILE.object_columns_query(),
+            ),
+            (
+                MYSQL_PROFILE.object_indexes_query(),
+                MARIADB_PROFILE.object_indexes_query(),
+            ),
+        ] {
+            let mut translated = mysql.to_owned();
+            for (from, to) in DECLARED_CATALOG_DIVERGENCES {
+                translated = translated.replace(from, to);
+            }
+            assert_eq!(translated, mariadb);
+            // E la divergenza c'e davvero: senza questa riga le due
+            // asserzioni sopra passerebbero anche con due query identiche.
+            assert_ne!(mysql, mariadb);
+        }
+        // Le colonne che non esistono non compaiono da nessuna parte nelle
         // query di MariaDB, nemmeno in un filtro o in un ORDER BY.
-        assert!(!MARIADB_PROFILE.object_columns_query().contains("SRS_ID"));
+        assert!(!MARIADB_PROFILE.object_columns_query().contains("SRS_ID AS"));
         assert!(!MARIADB_PROFILE
             .object_indexes_query()
-            .contains("EXPRESSION"));
+            .contains("EXPRESSION AS"));
     }
 
     #[test]
@@ -2562,6 +2866,90 @@ mod tests {
             MARIADB_PROFILE.objects_query()
         );
         assert_eq!(MYSQL_PROFILE.object_query(), MARIADB_PROFILE.object_query());
+    }
+
+    #[test]
+    fn the_two_profiles_publish_distinct_metadata_namespaces() {
+        // I metadata sono contratto pubblico: dicono al consumer cosa fosse la
+        // colonna sul server. Con un namespace solo, un batch letto da MariaDB
+        // arriverebbe annotato `plenora.mysql.*`, e chi lo legge dovrebbe
+        // dedurre da un metadato che non lo dice quale tabella di tipi
+        // applicare — mentre le due divergono davvero, `json` contro `text`
+        // dalla stessa DDL.
+        let mysql = MYSQL_PROFILE.metadata_keys();
+        let mariadb = MARIADB_PROFILE.metadata_keys();
+        assert_ne!(mysql.native_type, mariadb.native_type);
+        assert_ne!(mysql.native_declaration, mariadb.native_declaration);
+        assert_ne!(mysql.collation, mariadb.collation);
+        for (profile, prefix) in [
+            (&MYSQL_PROFILE as &dyn ProductProfile, "plenora.mysql."),
+            (&MARIADB_PROFILE, "plenora.mariadb."),
+        ] {
+            let keys = profile.metadata_keys();
+            for key in [keys.native_type, keys.native_declaration, keys.collation] {
+                assert!(
+                    key.starts_with(prefix),
+                    "{}: la chiave {key} non e nel namespace del prodotto",
+                    profile.product()
+                );
+            }
+        }
+
+        // E la scelta arriva fino allo schema: dalla stessa colonna escono due
+        // annotazioni con lo stesso valore e chiavi diverse.
+        let spec = crate::MysqlColumnSpec {
+            name: "document".to_owned(),
+            native_type: "text".to_owned(),
+            native_declaration: String::new(),
+            nullable: true,
+            collation: None,
+            kind: MysqlColumnKind::Utf8,
+            spatial_srid: None,
+        };
+        let by_mysql = spec.arrow_field_with_profile(&MYSQL_PROFILE);
+        let by_mariadb = spec.arrow_field_with_profile(&MARIADB_PROFILE);
+        assert_eq!(by_mysql.data_type(), by_mariadb.data_type());
+        assert_eq!(
+            by_mysql.metadata().get(mysql.native_type),
+            by_mariadb.metadata().get(mariadb.native_type)
+        );
+        assert!(by_mariadb.metadata().get(mysql.native_type).is_none());
+        assert!(by_mysql.metadata().get(mariadb.native_type).is_none());
+        // L'API pubblica resta quella di MySQL, che e il prodotto che il crate
+        // serve: cambiarla sarebbe una rottura per chi la legge oggi.
+        assert_eq!(
+            spec.arrow_field().metadata().get(mysql.native_type),
+            by_mysql.metadata().get(mysql.native_type)
+        );
+    }
+
+    #[test]
+    fn no_production_module_writes_the_metadata_namespace_itself() {
+        // Il namespace si sceglie in un posto solo. Un modulo che scrivesse
+        // direttamente `protocol::MYSQL_NATIVE_TYPE` annoterebbe con MySQL
+        // anche cio che ha letto da un altro prodotto, e lo farebbe in un
+        // punto dove nessuno pensa di guardare: lo schema esce corretto nei
+        // tipi e sbagliato nell'origine.
+        let marker = format!("{}mod tests {{", '\n');
+        for (module, source) in GUARDED_MODULES {
+            if *module == "profile.rs" {
+                continue;
+            }
+            let production = source
+                .split_once(marker.as_str())
+                .map_or(*source, |(head, _)| head);
+            for needle in [
+                "MYSQL_NATIVE_TYPE",
+                "MYSQL_NATIVE_DECLARATION",
+                "MYSQL_COLLATION",
+                "MARIADB_NATIVE_TYPE",
+            ] {
+                assert!(
+                    !production.contains(needle),
+                    "{module} sceglie il namespace dei metadata invece di chiederlo al profilo"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2714,14 +3102,12 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_code_table_keeps_the_verdict_and_changes_the_name() {
-        // I numeri vengono dal protocollo che i due prodotti parlano: 1054 e
-        // 1193 sono arrivati identici dai tre riferimenti, e ADR 0014 non ha
-        // misurato un solo codice che significhi due cose diverse. Cio che
-        // cambia e chi lo ha emesso.
-        for code in [1_045_u16, 1_044, 1_049, 1_054, 1_062, 1_213, 1_205, 1_193] {
-            let mysql = MYSQL_PROFILE.classify_server_code(code);
-            let mariadb = MARIADB_PROFILE.classify_server_code(code);
+    fn the_shared_verdicts_are_shared_only_where_they_were_measured() {
+        // Dove il codice e stato osservato su entrambi i prodotti, il verdetto
+        // e lo stesso e cambia solo il nome di chi ha risposto.
+        for code in MEASURED_SERVER_CODES {
+            let mysql = MYSQL_PROFILE.classify_server_code(*code);
+            let mariadb = MARIADB_PROFILE.classify_server_code(*code);
             assert_eq!(mysql.category, mariadb.category, "codice {code}");
             assert_eq!(mysql.retry, mariadb.retry, "codice {code}");
             assert_eq!(mysql.remote_effect, mariadb.remote_effect, "codice {code}");
@@ -2731,11 +3117,72 @@ mod tests {
             );
             assert_ne!(mysql.message, mariadb.message, "codice {code}");
         }
+
+        // Dove non lo e, MariaDB non eredita. 1044 e 1049 non sono mai
+        // arrivati dai due riferimenti — la quarta tranche ci ha provato, e ha
+        // ricevuto 1142 al loro posto — e 3024 e il timeout dell'altro motore.
+        //
+        // La differenza non e cosmetica: su 1213 la tabella condivisa dichiara
+        // `retry: Safe` e `remote_effect: RolledBack`. Un codice ereditato con
+        // quelle due promesse direbbe al chiamante di rifare l'operazione, e
+        // che non c'e niente da ripulire, su un motore che nessuno aveva
+        // interrogato.
+        for unmeasured in [1_044_u16, 1_049, 3_024] {
+            let mysql = MYSQL_PROFILE.classify_server_code(unmeasured);
+            let mariadb = MARIADB_PROFILE.classify_server_code(unmeasured);
+            assert_ne!(
+                mysql.category, mariadb.category,
+                "codice {unmeasured}: MariaDB eredita una categoria che non ha misurato"
+            );
+            assert_eq!(mariadb.category, ErrorCategory::Execution);
+            assert_eq!(mariadb.retry, RetryDisposition::Never);
+            assert_eq!(mariadb.remote_effect, None);
+            assert!(mariadb.message.contains("redatto"));
+        }
+        assert!(!MEASURED_SERVER_CODES.contains(&1_044));
+        assert!(!MEASURED_SERVER_CODES.contains(&1_049));
+        assert!(!MEASURED_SERVER_CODES.contains(&3_024));
+    }
+
+    #[test]
+    fn the_statement_timeout_is_classified_as_a_timeout_on_both_products() {
+        // Le due meta della stessa divergenza. L'istruzione giusta senza la
+        // classificazione giusta era il difetto peggiore dei due, perche
+        // invisibile: il limite scattava davvero, e il chiamante leggeva
+        // "errore server redatto" invece di "timeout" — cioe non poteva
+        // distinguere un limite che aveva fatto il suo lavoro da un guasto.
+        let mysql = MYSQL_PROFILE.classify_server_code(3_024);
+        let mariadb = MARIADB_PROFILE.classify_server_code(MARIADB_STATEMENT_TIMEOUT);
+        for (product, verdict) in [("MySQL", &mysql), ("MariaDB", &mariadb)] {
+            assert_eq!(verdict.category, ErrorCategory::Timeout, "{product}");
+            assert_eq!(verdict.retry, RetryDisposition::Never, "{product}");
+            assert!(verdict.message.contains("timeout"), "{product}");
+            assert!(verdict.message.contains(product), "{product}");
+        }
+        // E i due numeri non si incrociano: il codice di un motore non
+        // significa niente sull'altro, ed e la ragione per cui la riga vive
+        // nel profilo e non nella tabella condivisa.
+        assert_eq!(
+            MYSQL_PROFILE
+                .classify_server_code(MARIADB_STATEMENT_TIMEOUT)
+                .category,
+            ErrorCategory::Execution
+        );
+        assert_eq!(
+            MARIADB_PROFILE.classify_server_code(3_024).category,
+            ErrorCategory::Execution
+        );
+        // La conversione e il codice sono la stessa decisione vista due volte:
+        // se l'istruzione tornasse a essere quella di MySQL, il codice 1969
+        // non arriverebbe mai e questa riga sarebbe morta.
+        assert!(MARIADB_PROFILE
+            .statement_timeout_statement(200)
+            .contains("max_statement_time"));
     }
 
     #[test]
     fn mariadb_attributes_only_the_row_causes_it_did_not_infer() {
-        // I tre codici che significano la stessa cosa sui due prodotti.
+        // I tre codici che i due prodotti mandano dallo stesso tentativo.
         for shared in [1_048_u16, 1_062, 1_452] {
             assert_eq!(
                 MYSQL_PROFILE.row_rejection_cause(shared),
@@ -2744,17 +3191,15 @@ mod tests {
             );
             assert!(MARIADB_PROFILE.row_rejection_cause(shared).is_some());
         }
-        // I due codici del CHECK non sono stati misurati su MariaDB, e la
-        // documentazione di un fornitore non e una misura. Entrambi gli esiti
-        // qui sono diagnostici: una causa assente rende il messaggio meno
-        // preciso, una causa attribuita per analogia lo rende sbagliato.
-        for unmeasured in [3_819_u16, 4_025] {
-            assert!(MYSQL_PROFILE.row_rejection_cause(unmeasured).is_some());
-            assert!(
-                MARIADB_PROFILE.row_rejection_cause(unmeasured).is_none(),
-                "codice {unmeasured}: attribuito senza misura"
-            );
-        }
+        // Il CHECK diverge, e la quarta tranche l'ha visto: lo stesso INSERT
+        // che viola lo stesso vincolo arriva come 3819 da MySQL e come 4025 da
+        // MariaDB. Ciascun profilo attribuisce il codice che ha ricevuto.
+        assert!(MARIADB_PROFILE.row_rejection_cause(4_025).is_some());
+        assert!(MYSQL_PROFILE.row_rejection_cause(3_819).is_some());
+        assert!(
+            MARIADB_PROFILE.row_rejection_cause(3_819).is_none(),
+            "codice 3819: attribuito senza essere mai arrivato da MariaDB"
+        );
     }
 
     #[test]

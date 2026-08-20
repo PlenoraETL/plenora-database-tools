@@ -36,14 +36,15 @@
 use crate::evidence::{
     condense, config, environment, secret, server_code, truncate, Observation, Recorder,
 };
-use crate::{MysqlProvider, MysqlSession};
+use crate::profile::{ProductProfile, MARIADB_PROFILE, MYSQL_PROFILE};
+use crate::{MysqlConfig, MysqlProvider, MysqlSession};
 use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::query::{
     ColumnRef, QueryExpression, QueryOperation, QueryOrdering, QueryProjection, QuerySource,
 };
-use plenora_database_core::transaction::TransactionOptions;
+use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
 use plenora_database_core::{CancellationToken, ResourceBudget, ResourceLimits};
 use serde_json::json;
 
@@ -59,6 +60,18 @@ const SCRATCH: &str = "plenora_driver_evidence";
 /// lettura di quella tabella. Tenendole insieme, la sonda sul mapping wire
 /// misurava quella regola invece dei tipi.
 const SCRATCH_GEO: &str = "plenora_driver_evidence_geo";
+
+/// La tabella delle sonde sugli errori: vincoli da violare e righe da bloccare.
+const SCRATCH_LOCK: &str = "plenora_driver_evidence_lock";
+
+/// Una query che il timer del server interrompe davvero.
+///
+/// `SELECT SLEEP(1)` non va bene, e non e una supposizione: la prima corsa di
+/// questa tranche l'ha misurato. Su `MySQL` 9.7 `MAX_EXECUTION_TIME` era
+/// applicato e la `SLEEP` finiva indisturbata — "nessun errore" dove ci si
+/// aspettava un codice — perche il controllo del tempo non passa di li. Una
+/// scansione incrociata ci passa, e i due motori la interrompono entrambi.
+const INTERRUPTIBLE_QUERY: &str = "SELECT COUNT(*) FROM information_schema.columns a,      information_schema.columns b, information_schema.columns c";
 
 // --------------------------------------------------------------------------
 // Famiglia `raw`: il driver contro il server, senza provider in mezzo.
@@ -1062,6 +1075,665 @@ async fn cancellation_probes(
 // Punto d'ingresso
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Famiglia `raw`, superficie `errori`: quale codice manda il server dove la
+// classificazione del profilo deve riconoscerlo.
+// --------------------------------------------------------------------------
+
+/// Il profilo del prodotto che sta rispondendo, scelto come lo sceglierebbe
+/// un provider: chiedendo al profilo `MySQL` se quel server e suo.
+///
+/// Non e una comodita dell'harness. Le sonde di questa tranche misurano cio
+/// che **il profilo** emette — l'istruzione di timeout, le query di catalogo —
+/// e sceglierlo con un `if` sulla stringa qui dentro vorrebbe dire misurare
+/// una decisione che l'harness ha preso al posto del codice.
+fn profile_for(product_version: &str, version_comment: &str) -> &'static dyn ProductProfile {
+    if MYSQL_PROFILE
+        .foreign_product_rejection(product_version, version_comment)
+        .is_some()
+    {
+        &MARIADB_PROFILE
+    } else {
+        &MYSQL_PROFILE
+    }
+}
+
+/// Una connessione in piu per le sonde che ne pretendono due, o che sporcano
+/// le variabili di sessione.
+///
+/// # Panics
+///
+/// Se non si apre: e un guasto dell'harness, non una divergenza.
+async fn open_connection() -> mysql_async::Conn {
+    mysql_async::Conn::new(
+        config()
+            .driver_opts("MySQL")
+            .expect("opzioni driver della misura: harness, non divergenza"),
+    )
+    .await
+    .expect("connessione della misura: harness, non divergenza")
+}
+
+/// Esegue lo statement e registra **il codice**, non l'esito che ci si
+/// aspetta.
+///
+/// Il verso conta: queste sonde chiedono "cosa manda il server quando questa
+/// cosa va storta", quindi l'errore e la misura riuscita e il successo e la
+/// notizia. Registrare il contrario — `accepted` quando il server rifiuta —
+/// renderebbe illeggibile la colonna del confronto.
+async fn record_server_code(
+    recorder: &mut Recorder,
+    connection: &mut mysql_async::Conn,
+    probe: &'static str,
+    question: &'static str,
+    statement: String,
+) {
+    match connection.query_drop(statement).await {
+        Ok(()) => recorder.accepted(
+            probe,
+            "raw",
+            "errori",
+            question,
+            "nessun errore: il server ha accettato".to_owned(),
+        ),
+        Err(error) => recorder.rejected(
+            probe,
+            "raw",
+            "errori",
+            question,
+            condense(&error.to_string()),
+            server_code(&error),
+        ),
+    }
+}
+
+/// I codici che la tabella di classificazione traduce in categoria, retry ed
+/// effetto remoto.
+///
+/// Sono la superficie che il profilo di un secondo prodotto non puo
+/// ereditare: la categoria decide cosa il chiamante legge, il retry decide se
+/// ritenta, e l'effetto remoto decide se deve ripulire. Un codice che
+/// significasse altro sull'altro motore trasformerebbe una di queste tre
+/// risposte nel suo contrario, in silenzio.
+#[allow(clippy::too_many_lines)]
+async fn error_code_probes(recorder: &mut Recorder, profile: &'static dyn ProductProfile) {
+    let mut connection = open_connection().await;
+    // La tabella porta con se tutti i vincoli che le sonde violano: NOT NULL,
+    // chiave primaria, CHECK e una chiave esterna su se stessa. Una tabella
+    // per vincolo avrebbe reso le sonde indipendenti e la preparazione tre
+    // volte piu lunga, senza misurare nulla di piu.
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_LOCK}"),
+        format!(
+            "CREATE TABLE {SCRATCH_LOCK} (\
+             id INT PRIMARY KEY, \
+             v INT NOT NULL, \
+             positive INT NULL CHECK (positive > 0), \
+             parent INT NULL, \
+             CONSTRAINT fk_parent FOREIGN KEY (parent) REFERENCES {SCRATCH_LOCK}(id)\
+             ) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO {SCRATCH_LOCK} (id, v) VALUES (1, 0), (2, 0)"),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("preparazione delle sonde sugli errori: harness, non divergenza");
+    }
+
+    for (probe, question, statement) in [
+        (
+            "raw.error_unknown_column",
+            "quale codice manda una colonna che non esiste",
+            format!("SELECT plenora_missing_column FROM {SCRATCH_LOCK}"),
+        ),
+        (
+            "raw.error_unknown_table",
+            "quale codice manda una tabella che non esiste",
+            "SELECT 1 FROM plenora_missing_table".to_owned(),
+        ),
+        (
+            "raw.error_unknown_database",
+            "cosa risponde una tabella in uno schema che non esiste",
+            "SELECT 1 FROM plenora_missing_schema.plenora_missing_table".to_owned(),
+        ),
+        (
+            "raw.error_duplicate_key",
+            "quale codice manda una chiave duplicata",
+            format!("INSERT INTO {SCRATCH_LOCK} (id, v) VALUES (1, 0)"),
+        ),
+        (
+            "raw.error_not_null",
+            "quale codice manda un NULL in colonna non nullable",
+            format!("INSERT INTO {SCRATCH_LOCK} (id, v) VALUES (10, NULL)"),
+        ),
+        (
+            "raw.error_foreign_key",
+            "quale codice manda una chiave esterna violata",
+            format!("INSERT INTO {SCRATCH_LOCK} (id, v, parent) VALUES (11, 0, 999)"),
+        ),
+        (
+            "raw.error_check_violation",
+            "quale codice manda un CHECK violato",
+            format!("INSERT INTO {SCRATCH_LOCK} (id, v, positive) VALUES (12, 0, -1)"),
+        ),
+        (
+            "raw.error_privilege",
+            "quale codice manda una lettura senza privilegio",
+            "SELECT 1 FROM mysql.user".to_owned(),
+        ),
+    ] {
+        record_server_code(recorder, &mut connection, probe, question, statement).await;
+    }
+
+    // Il timeout: prima si applica cio che **il profilo** emette, poi si
+    // esegue qualcosa che lo supera. Le due meta stanno insieme, perche un
+    // timeout applicato e mai fatto scattare non dice quale codice il
+    // chiamante vedra — ed e quel codice a decidere se legge "timeout" o
+    // "errore del server redatto".
+    let applied = connection
+        .query_drop(profile.statement_timeout_statement(200))
+        .await;
+    match applied {
+        Ok(()) => {
+            record_server_code(
+                recorder,
+                &mut connection,
+                "raw.error_statement_timeout",
+                "quale codice manda lo statement che supera il timeout del profilo",
+                INTERRUPTIBLE_QUERY.to_owned(),
+            )
+            .await;
+        }
+        Err(error) => recorder.rejected(
+            "raw.error_statement_timeout",
+            "raw",
+            "errori",
+            "quale codice manda lo statement che supera il timeout del profilo",
+            condense(&format!(
+                "timeout non applicato dal profilo {}: {error}",
+                profile.product()
+            )),
+            server_code(&error),
+        ),
+    }
+    // La connessione muore qui, ma il timeout resta scritto nella sessione
+    // finche vive: spegnerlo evita che una sonda aggiunta domani sotto questa
+    // riga misuri il timeout invece di cio che voleva.
+    let _ = connection
+        .query_drop(profile.statement_timeout_statement(0))
+        .await;
+
+    lock_probes(recorder).await;
+
+    // Autenticazione: l'unico codice che si osserva senza una sessione
+    // aperta, e quindi con una connessione sua.
+    let wrong = MysqlConfig::new(
+        environment("PLENORA_MYSQL_HOST", "127.0.0.1"),
+        environment("PLENORA_MYSQL_DATABASE", "dataflow_test"),
+        environment("PLENORA_MYSQL_USER", "dataflow"),
+        plenora_database_core::provider::SecretString::new("password_sbagliata_della_misura"),
+    )
+    .with_port(
+        environment("PLENORA_MYSQL_PORT", "3306")
+            .parse()
+            .expect("porta MySQL della misura"),
+    )
+    .with_private_ca_certificate(
+        std::env::var("PLENORA_MYSQL_CA").expect("PLENORA_MYSQL_CA obbligatoria"),
+    );
+    match mysql_async::Conn::new(
+        wrong
+            .driver_opts("MySQL")
+            .expect("opzioni driver della misura: harness, non divergenza"),
+    )
+    .await
+    {
+        Ok(_) => recorder.accepted(
+            "raw.error_access_denied",
+            "raw",
+            "errori",
+            "quale codice manda una password sbagliata",
+            "nessun errore: il server ha accettato".to_owned(),
+        ),
+        Err(error) => recorder.rejected(
+            "raw.error_access_denied",
+            "raw",
+            "errori",
+            "quale codice manda una password sbagliata",
+            condense(&error.to_string()),
+            server_code(&error),
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_LOCK}"))
+        .await;
+}
+
+/// I due codici che nascono dalla contesa, e che nessuna sessione sola puo
+/// produrre.
+///
+/// Il deadlock e il piu importante dei due: e l'unico codice della tabella
+/// che dichiara `retry: Safe` e `remote_effect: RolledBack`, cioe l'unico che
+/// autorizza il chiamante a rifare l'operazione. Ereditarlo senza misura
+/// significherebbe autorizzare un ritentativo su un motore dove quel codice
+/// potrebbe non voler dire "la transazione vittima e gia annullata".
+async fn lock_probes(recorder: &mut Recorder) {
+    let mut holder = open_connection().await;
+    let mut waiter = open_connection().await;
+
+    holder
+        .query_drop("BEGIN")
+        .await
+        .expect("transazione della misura: harness, non divergenza");
+    holder
+        .query_drop(format!(
+            "SELECT v FROM {SCRATCH_LOCK} WHERE id = 1 FOR UPDATE"
+        ))
+        .await
+        .expect("lock della misura: harness, non divergenza");
+    // Un secondo, non il default: il default e cinquanta, e una sonda che
+    // aspetta cinquanta secondi non e una sonda.
+    waiter
+        .query_drop("SET SESSION innodb_lock_wait_timeout = 1")
+        .await
+        .expect("timeout di lock della misura: harness, non divergenza");
+    waiter
+        .query_drop("BEGIN")
+        .await
+        .expect("transazione della misura: harness, non divergenza");
+    record_server_code(
+        recorder,
+        &mut waiter,
+        "raw.error_lock_wait",
+        "quale codice manda l'attesa di un lock che scade",
+        format!("UPDATE {SCRATCH_LOCK} SET v = v + 1 WHERE id = 1"),
+    )
+    .await;
+    for connection in [&mut holder, &mut waiter] {
+        let _ = connection.query_drop("ROLLBACK").await;
+    }
+
+    // Il deadlock pretende che le due UPDATE incrociate siano in volo
+    // insieme: eseguite in sequenza, la prima aspetta e basta. E l'unica
+    // sonda concorrente della misura, e la concorrenza e la sonda.
+    // Le due righe ripartono da zero: e il valore finale a dire se la vittima
+    // e stata annullata, e una somma che porta i resti delle sonde precedenti
+    // non direbbe niente.
+    holder
+        .query_drop(format!("UPDATE {SCRATCH_LOCK} SET v = 0"))
+        .await
+        .expect("azzeramento del deadlock: harness, non divergenza");
+    for (connection, id) in [(&mut holder, 1), (&mut waiter, 2)] {
+        connection
+            .query_drop("BEGIN")
+            .await
+            .expect("transazione della misura: harness, non divergenza");
+        connection
+            .query_drop(format!(
+                "UPDATE {SCRATCH_LOCK} SET v = v + 1 WHERE id = {id}"
+            ))
+            .await
+            .expect("prologo del deadlock: harness, non divergenza");
+    }
+    let (first, second) = tokio::join!(
+        holder.query_drop(format!("UPDATE {SCRATCH_LOCK} SET v = v + 1 WHERE id = 2")),
+        waiter.query_drop(format!("UPDATE {SCRATCH_LOCK} SET v = v + 1 WHERE id = 1")),
+    );
+    // Il codice da solo non basta, ed e il punto della sonda. `1213` porta con
+    // se le uniche due promesse della tabella che cambiano cosa il chiamante
+    // **fa**: che possa ritentare, e che non abbia nulla da ripulire. Reggono
+    // solo se la transazione della vittima e sparita davvero, e questo si
+    // osserva dopo il commit del superstite: il prologo ha applicato due
+    // incrementi, la coppia incrociata ne aggiunge uno solo — l'altra meta e
+    // la vittima — quindi due e la somma di una vittima annullata per intero.
+    for connection in [&mut holder, &mut waiter] {
+        let _ = connection.query_drop("COMMIT").await;
+    }
+    let effect = match holder
+        .query_first::<i64, _>(format!("SELECT SUM(v) FROM {SCRATCH_LOCK}"))
+        .await
+    {
+        Ok(Some(2)) => "vittima annullata".to_owned(),
+        Ok(Some(other)) => format!("vittima conservata in parte (somma={other})"),
+        Ok(None) | Err(_) => "somma non leggibile".to_owned(),
+    };
+    let question =
+        "quale codice manda la vittima di un deadlock, e cosa resta della sua transazione";
+    match (first, second) {
+        (Err(error), _) | (Ok(()), Err(error)) => recorder.rejected(
+            "raw.error_deadlock",
+            "raw",
+            "errori",
+            question,
+            condense(&format!("{error} effetto={effect}")),
+            server_code(&error),
+        ),
+        (Ok(()), Ok(())) => recorder.accepted(
+            "raw.error_deadlock",
+            "raw",
+            "errori",
+            question,
+            format!("nessun errore: le due transazioni incrociate sono passate ({effect})"),
+        ),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Famiglia `provider`, superficie `profilo`: le stesse superfici, attraversate
+// con il profilo del prodotto che sta rispondendo.
+// --------------------------------------------------------------------------
+
+/// Cio che un `MariadbProvider` farebbe, senza che esista.
+///
+/// Le sonde `provider` di sopra attraversano il provider `MySQL` con il suo
+/// profilo: su `MariaDB` si fermano dove il profilo `MySQL` le porta a
+/// fermarsi — `SRS_ID` che non esiste, `MAX_EXECUTION_TIME` nemmeno — e quindi
+/// misurano il vecchio codice, non il nuovo. Queste attraversano le stesse
+/// superfici con `MARIADB_PROFILE`, che e l'unico modo di sapere se le query
+/// che dichiarano `NULL AS srs_id` e `NULL AS expression` **girano** invece
+/// di limitarsi a compilare.
+///
+/// Il provider pubblico non entra: il pool si costruisce con il profilo, che
+/// e il seam gia esistente, e nessun percorso di produzione cambia.
+#[allow(clippy::too_many_lines)]
+async fn profile_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    cancellation: &CancellationToken,
+) {
+    let schema_name = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let pool = crate::MysqlPool::new_with_profile(&config(), 2, profile)
+        .expect("pool della misura: harness, non divergenza");
+
+    // Il catalogo, con le query che il profilo decide. Su MariaDB e la prima
+    // volta che `NULL AS srs_id` e `NULL AS expression` arrivano al server.
+    match pool.checkout(cancellation).await {
+        Ok(mut session) => {
+            match crate::catalog::describe_object_with_profile(
+                &mut session,
+                &schema_name,
+                SCRATCH,
+                profile,
+                cancellation,
+            )
+            .await
+            {
+                Ok(description) => recorder.accepted(
+                    "provider.profile_describe_object",
+                    "provider",
+                    "profilo",
+                    "descrive un oggetto con le query del profilo del prodotto",
+                    format!(
+                        "colonne={} indici={}",
+                        description.columns.len(),
+                        description.indexes.len()
+                    ),
+                ),
+                Err(error) => recorder.rejected(
+                    "provider.profile_describe_object",
+                    "provider",
+                    "profilo",
+                    "descrive un oggetto con le query del profilo del prodotto",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_describe_object",
+            "provider",
+            "profilo",
+            "descrive un oggetto con le query del profilo del prodotto",
+            condense(&format!("sessione non aperta: {:?}", error.category)),
+            None,
+        ),
+    }
+
+    // La geometria: la regola dell'SRID dichiarato e la stessa sui due
+    // profili, ma su MariaDB `srs_id` arriva sempre nullo, quindi il rifiuto
+    // e la sola risposta possibile. Qui si osserva quale rifiuto sia.
+    match pool.checkout(cancellation).await {
+        Ok(mut session) => {
+            match crate::catalog::describe_object_with_profile(
+                &mut session,
+                &schema_name,
+                SCRATCH_GEO,
+                profile,
+                cancellation,
+            )
+            .await
+            {
+                // Descrivere non basta: la regola dell'SRID vive nel
+                // mapping, non nel catalogo, e una sonda che si fermasse alla
+                // descrizione direbbe "accettata" di una tabella che il
+                // provider non sa leggere. La prima stesura si fermava li, e
+                // registrava "colonne=2" su tutti e tre.
+                Ok(description) => {
+                    let mapped = description
+                        .columns
+                        .iter()
+                        .map(|column| {
+                            crate::MysqlColumnSpec::from_catalog_with_profile(column, profile)
+                        })
+                        .collect::<Result<Vec<_>, _>>();
+                    match mapped {
+                        Ok(specs) => recorder.accepted(
+                            "provider.profile_describe_geometry",
+                            "provider",
+                            "profilo",
+                            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
+                            format!("colonne={}", specs.len()),
+                        ),
+                        Err(error) => recorder.rejected(
+                            "provider.profile_describe_geometry",
+                            "provider",
+                            "profilo",
+                            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
+                            condense(&format!("{:?}: {}", error.category, error.message)),
+                            crate::evidence::server_code_in_message(&error.message),
+                        ),
+                    }
+                }
+                Err(error) => recorder.rejected(
+                    "provider.profile_describe_geometry",
+                    "provider",
+                    "profilo",
+                    "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_describe_geometry",
+            "provider",
+            "profilo",
+            "descrive e mappa una tabella con colonna geometry, con il profilo del prodotto",
+            condense(&format!("sessione non aperta: {:?}", error.category)),
+            None,
+        ),
+    }
+
+    functional_index_probes(recorder, profile, &pool, &schema_name, cancellation).await;
+    profile_timeout_probe(recorder, profile, &pool, cancellation).await;
+}
+
+/// L'indice funzionale: prima si prova a crearlo, poi si guarda come il
+/// catalogo lo descrive.
+///
+/// Le due sonde stanno insieme perche la seconda non si legge senza la prima.
+/// Il profilo di `MariaDB` dichiara di non pubblicare le parti funzionali, e
+/// da li discende un rifiuto; se pero su quel motore un indice su espressione
+/// non si puo nemmeno creare, quel rifiuto e una difesa contro un caso che il
+/// server non produce — che e una cosa diversa da un difetto, e va scritta.
+async fn functional_index_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    pool: &crate::MysqlPool,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let mut connection = open_connection().await;
+    let _ = connection
+        .query_drop(format!("DROP INDEX plenora_idx_expression ON {SCRATCH}"))
+        .await;
+    record_server_code(
+        recorder,
+        &mut connection,
+        "raw.functional_index_ddl",
+        "accetta un indice su espressione, che e cio che popola EXPRESSION",
+        format!("CREATE INDEX plenora_idx_expression ON {SCRATCH} ((LOWER(text_utf8)))"),
+    )
+    .await;
+
+    match pool.checkout(cancellation).await {
+        Ok(mut session) => {
+            match crate::catalog::describe_object_with_profile(
+                &mut session,
+                schema_name,
+                SCRATCH,
+                profile,
+                cancellation,
+            )
+            .await
+            {
+                Ok(description) => {
+                    // Cio che conta non e il numero: e se esista una parte che
+                    // il catalogo non sa attribuire a una colonna, e come
+                    // l'indice che la contiene venga descritto.
+                    let described = description
+                        .indexes
+                        .iter()
+                        .map(|index| {
+                            format!(
+                                "{}:colonne={} confrontabile={}",
+                                index.name,
+                                index.columns.len(),
+                                index.column_backed
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    recorder.accepted(
+                        "provider.profile_functional_index",
+                        "provider",
+                        "profilo",
+                        "come il catalogo descrive gli indici dopo il tentativo su espressione",
+                        truncate(&described, 160),
+                    );
+                }
+                Err(error) => recorder.rejected(
+                    "provider.profile_functional_index",
+                    "provider",
+                    "profilo",
+                    "come il catalogo descrive gli indici dopo il tentativo su espressione",
+                    condense(&format!("{:?}: {}", error.category, error.message)),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_functional_index",
+            "provider",
+            "profilo",
+            "come il catalogo descrive gli indici dopo il tentativo su espressione",
+            condense(&format!("sessione non aperta: {:?}", error.category)),
+            None,
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP INDEX plenora_idx_expression ON {SCRATCH}"))
+        .await;
+}
+
+/// Il timeout attraversato per intero: applicato dal profilo dentro una
+/// transazione vera, e fatto scattare.
+///
+/// E la sonda che chiude la distanza fra "il profilo emette la variabile
+/// giusta" e "il chiamante legge la cosa giusta quando scatta". Le due
+/// affermazioni si erano gia separate una volta: l'istruzione era corretta e
+/// il codice che ne usciva finiva nel ramo generico della classificazione.
+// La sessione vive quanto la sonda per costruzione: e la transazione che si
+// sta misurando, e rilasciarla prima renderebbe la misura piu corta della
+// domanda.
+#[allow(clippy::significant_drop_tightening)]
+async fn profile_timeout_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    pool: &crate::MysqlPool,
+    cancellation: &CancellationToken,
+) {
+    let options = TransactionOptions {
+        statement_timeout_ms: Some(200),
+        ..TransactionOptions::default()
+    };
+    let question = "cosa legge il chiamante quando scatta il timeout applicato dal profilo";
+    let session = match pool.checkout(cancellation).await {
+        Ok(session) => session,
+        Err(error) => {
+            recorder.rejected(
+                "provider.profile_timeout",
+                "provider",
+                "profilo",
+                question,
+                condense(&format!("sessione non aperta: {:?}", error.category)),
+                None,
+            );
+            return;
+        }
+    };
+    let mut transaction =
+        match crate::transaction::MysqlTransaction::begin(session, &options, cancellation).await {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                recorder.rejected(
+                    "provider.profile_timeout",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "timeout non applicato dal profilo {}: {:?}: {}",
+                        profile.product(),
+                        error.category,
+                        error.message
+                    )),
+                    crate::evidence::server_code_in_message(&error.message),
+                );
+                return;
+            }
+        };
+    match transaction
+        .query(&Statement::new(INTERRUPTIBLE_QUERY), cancellation)
+        .await
+    {
+        Ok(_) => recorder.accepted(
+            "provider.profile_timeout",
+            "provider",
+            "profilo",
+            question,
+            "nessun errore: il timeout applicato non ha interrotto".to_owned(),
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_timeout",
+            "provider",
+            "profilo",
+            question,
+            // La quaterna, non il solo messaggio: categoria, retry ed effetto
+            // remoto sono cio che il chiamante usa per decidere, e sono le tre
+            // cose che una classificazione ereditata sbaglia insieme.
+            condense(&format!(
+                "{:?}/{:?}/{:?}: {}",
+                error.category, error.retry, error.remote_effect, error.message
+            )),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+    let _ = Box::new(transaction).rollback(cancellation).await;
+}
+
 /// Il punto d'ingresso della misura.
 ///
 /// Il nome **non** ha il prefisso `live_` di proposito: quel prefisso e cio
@@ -1112,11 +1784,17 @@ async fn run_driver_evidence() {
         .expect("identita del server: harness, non divergenza")
         .expect("identita del server presente");
 
+    // Il profilo del prodotto che risponde: da qui in poi le sonde misurano
+    // cio che **quel** profilo emette, non cio che l'harness ha deciso.
+    let profile = profile_for(&identity.0, &identity.1);
+
     let mut recorder = Recorder(Vec::new());
     raw_probes(&mut recorder, &mut connection).await;
     provider_probes(&mut recorder).await;
+    error_code_probes(&mut recorder, profile).await;
+    profile_probes(&mut recorder, profile, &CancellationToken::new()).await;
 
-    for table in [SCRATCH, SCRATCH_GEO] {
+    for table in [SCRATCH, SCRATCH_GEO, SCRATCH_LOCK] {
         let _ = connection
             .query_drop(format!("DROP TABLE IF EXISTS {table}"))
             .await;

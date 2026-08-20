@@ -358,3 +358,118 @@ e bootstrappata — la proprieta su cui il provider poggia — mentre la
 riapplicazione del bootstrap su una connessione **riusata** non e esercitata
 da questa configurazione. Resta non misurata, ed e scritto qui invece di
 essere sottinteso da una sonda verde.
+
+## Quarta tranche: i codici di errore, e il profilo attraversato davvero
+
+Le prime tre tranche hanno misurato cosa i motori fanno. Questa misura due
+cose che nessuna delle tre poteva vedere, e che una review ha nominato per
+prima: **quali codici** arrivano dalle superfici che la classificazione
+traduce in categoria, retry ed effetto remoto; e cosa succede quando le stesse
+superfici vengono attraversate con il **profilo di MariaDB** invece che con
+quello di MySQL.
+
+La seconda domanda non e teorica. Fino a qui il profilo nuovo era esercitato
+solo da test offline: le sue query di catalogo compilavano, nessuno le aveva
+mai mandate a un server. La prima corsa di questa tranche le ha bocciate.
+
+Gira con lo stesso comando della seconda tranche, che ora include anche queste
+sonde:
+
+    python scripts/check_mariadb_driver.py --markdown
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | errori | `raw.error_access_denied` | 1045 | 1045 | 1045 |
+| raw | errori | `raw.error_unknown_column` | 1054 | 1054 | 1054 |
+| raw | errori | `raw.error_unknown_table` | 1146 | 1146 | 1146 |
+| raw | errori | `raw.error_unknown_database` | 1142 — `SELECT command denied` | 1142 — `SELECT command denied` | 1142 — `SELECT command denied` |
+| raw | errori | `raw.error_duplicate_key` | 1062 | 1062 | 1062 |
+| raw | errori | `raw.error_not_null` | 1048 | 1048 | 1048 |
+| raw | errori | `raw.error_foreign_key` | 1452 | 1452 | 1452 |
+| raw | errori | `raw.error_check_violation` | **3819** | **4025** | **4025** |
+| raw | errori | `raw.error_privilege` | 1142 | 1142 | 1142 |
+| raw | errori | `raw.error_lock_wait` | 1205 | 1205 | 1205 |
+| raw | errori | `raw.error_deadlock` | 1213 — effetto=vittima annullata | 1213 — effetto=vittima annullata | 1213 — effetto=vittima annullata |
+| raw | errori | `raw.error_statement_timeout` | **3024** | **1969** | **1969** |
+| raw | errori | `raw.functional_index_ddl` | accettato | **rifiutato** — ERROR 1064: sintassi | **rifiutato** — ERROR 1064: sintassi |
+| provider | profilo | `provider.profile_describe_object` | colonne=14 indici=1 | colonne=14 indici=1 | colonne=14 indici=1 |
+| provider | profilo | `provider.profile_describe_geometry` | **no** Crs: colonna spatial MySQL senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato |
+| provider | profilo | `provider.profile_functional_index` | `plenora_idx_expression`:colonne=0 confrontabile=false, `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true |
+| provider | profilo | `provider.profile_timeout` | Timeout/Never/None — timeout MySQL (codice 3024) | Timeout/Never/None — timeout MariaDB (codice 1969) | Timeout/Never/None — timeout MariaDB (codice 1969) |
+
+### Cosa dice
+
+**Il timeout diverge due volte, e la seconda era invisibile.** Che
+`max_statement_time` sostituisca `MAX_EXECUTION_TIME` lo sapeva gia la prima
+tranche. Che lo statement interrotto arrivi come **1969** invece che come
+**3024** non lo sapeva nessuno, e la tabella dei codici non conosce 1969: il
+limite scattava davvero e il chiamante leggeva "errore server redatto" invece
+di un timeout, cioe non poteva distinguere un limite che aveva fatto il suo
+lavoro da un guasto. Un'istruzione corretta con una classificazione ereditata
+e peggio di un'istruzione sbagliata, perche non fallisce.
+
+`SELECT SLEEP(1)` non serviva a misurarlo. Su MySQL 9.7 il timer non
+interrompe la `SLEEP`, e la prima corsa registrava "nessun errore" dove ci si
+aspettava un codice. La sonda usa ora una scansione incrociata di
+`information_schema`, che i due motori interrompono entrambi.
+
+**Otto codici su undici coincidono**, e per quelli la tabella condivisa regge:
+1045, 1048, 1054, 1062, 1146, 1205, 1213, 1452 sono arrivati dagli stessi
+tentativi sui tre server. Il piu importante e 1213, l'unico della tabella che
+dichiara `retry: Safe` e `remote_effect: RolledBack` — cioe autorizza a
+rifare l'operazione e afferma che non c'e nulla da ripulire. La sonda non si
+ferma al codice: dopo il deadlock verifica, dal commit del superstite, che
+della transazione della vittima non sia rimasto niente. `vittima annullata`
+sui tre server e cio che rende quelle due promesse una misura invece di una
+citazione.
+
+**Il CHECK diverge:** lo stesso `INSERT` che viola lo stesso vincolo arriva
+come 3819 da MySQL e come 4025 da MariaDB. Sono i due codici che la
+diagnostica di riga traduce in "vincolo violato", e ciascun profilo attribuisce
+il proprio.
+
+**Due codici della tabella non sono mai arrivati.** 1044 e 1049 — autorizzazione
+e schema inesistente — non si osservano da questa configurazione: entrambi i
+tentativi ricevono **1142** prima di arrivarci, perche il permesso manca prima
+che il nome venga risolto. Restano `not_measured` e finiscono nel verdetto
+generico del profilo MariaDB, che e `Execution`/`Never`. Vale la pena notare
+che **1142 non e nella tabella di nessuno dei due prodotti**: anche su MySQL,
+oggi, un errore di privilegio si classifica come esecuzione generica. E una
+lacuna del provider qualificato, non una divergenza, e sta qui perche questa
+misura l'ha vista.
+
+**Su MariaDB un indice su espressione non si crea nemmeno.** `CREATE INDEX ...
+((LOWER(col)))` e un errore di sintassi (1064). Il profilo dichiara di non
+pubblicare le parti funzionali e rifiuta una parte senza colonna ne
+espressione: quel rifiuto resta la risposta giusta — una parte che non si sa
+leggere non e un indice su nessuna colonna — ma va letto per quello che e, una
+difesa contro un caso che questi due server non producono per quella via.
+Come MariaDB indicizzi una colonna generata, e come `statistics` la descriva,
+non e misurato.
+
+**Il profilo, attraversato davvero, funziona — dopo una correzione.** Le query
+di catalogo che dichiarano `NULL AS srs_id` e `NULL AS expression` girano sui
+due riferimenti e descrivono l'oggetto come su MySQL: colonne=14, indici=1. La
+prima corsa pero falliva, con `DataMapping: campo catalogo
+generation_expression non convertibile`: su MariaDB `GENERATION_EXPRESSION` e
+**NULL** per le colonne non generate, dove MySQL manda la stringa vuota. Il
+profilo la normalizza ora con `COALESCE`, ed e una divergenza che nessun test
+offline poteva trovare — la query compilava, ed era sbagliata.
+
+E la geometria si ferma dove deve: `Crs: colonna spatial MariaDB senza SRID
+dichiarato`, con il nome del prodotto che ha rifiutato. Su MariaDB quel
+rifiuto e strutturale, perche `srs_id` arriva sempre nullo.
+
+### Cosa resta not_measured
+
+* **1044 e 1049** su tutti e tre i server, per la ragione detta sopra: il
+  privilegio manca prima del nome. Servirebbe un utente con grant diversi.
+* **1142** e misurato ma non classificato da nessun profilo: chiuderlo
+  cambierebbe il comportamento del provider MySQL qualificato, e non e una
+  modifica che questa fase puo fare di passaggio.
+* **Come MariaDB pubblica un indice su colonna generata**, che e l'unica forma
+  di indice non su colonna semplice che quel motore accetta.
+* **Le scritture attraverso il profilo**: nessun piano di scrittura e stato
+  eseguito con `MARIADB_PROFILE`. Le capability di scrittura restano chiuse.
