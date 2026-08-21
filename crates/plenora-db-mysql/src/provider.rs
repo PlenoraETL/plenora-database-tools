@@ -60,6 +60,20 @@ impl std::fmt::Debug for MysqlProvider {
     }
 }
 
+/// Il profilo che il costruttore pubblico seleziona.
+///
+/// Questa riga e la fonte: `new` la usa, `the_published_profile_is_the_one_the_
+/// constructor_selects` verifica che il provider costruito sia davvero quello,
+/// e `docs/STATO.md` la legge per sapere quali dichiarazioni di capability un
+/// consumatore puo raggiungere.
+///
+/// Gli altri profili del crate esistono per la misura e restano interni:
+/// `with_profile` e `pub(crate)`, e finche questa costante non cambia non c'e
+/// modo pubblico di ottenerli.
+///
+/// Sta in questo modulo e non oltre: la usa il costruttore, che e qui.
+const PUBLISHED_PROFILE: &dyn ProductProfile = &MYSQL_PROFILE;
+
 impl MysqlProvider {
     /// Costruisce un provider con pool lazy e configurazione validata.
     ///
@@ -67,7 +81,7 @@ impl MysqlProvider {
     ///
     /// Fallisce se configurazione o limiti del pool non sono validi.
     pub fn new(config: MysqlConfig, max_connections: usize) -> Result<Self> {
-        Self::with_profile(config, max_connections, &MYSQL_PROFILE)
+        Self::with_profile(config, max_connections, PUBLISHED_PROFILE)
     }
 
     /// Il costruttore reale: nessun `MysqlProvider` esiste senza un profilo.
@@ -1126,6 +1140,33 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Il provider che il costruttore pubblico restituisce e quello dichiarato.
+    ///
+    /// La dichiarazione da sola non prova niente: `PUBLISHED_PROFILE` potrebbe
+    /// dire una cosa e `new` sceglierne un'altra. Qui si costruisce davvero, e
+    /// si confronta il prodotto servito con quello promesso.
+    ///
+    /// E il lato Rust di una garanzia che `docs/STATO.md` riporta: quali
+    /// dichiarazioni di capability un consumatore puo raggiungere. Dedurlo
+    /// leggendo il sorgente da fuori non reggeva — una costante intermedia o
+    /// una delega bastavano a far sbagliare la deduzione.
+    #[test]
+    fn the_published_profile_is_the_one_the_constructor_selects() {
+        let config = MysqlConfig::new(
+            "mysql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MysqlProvider::new(config, 1).expect("provider");
+        assert_eq!(provider.kind(), PUBLISHED_PROFILE.kind());
+        assert_eq!(provider.profile.product(), PUBLISHED_PROFILE.product());
+        assert_eq!(
+            provider.profile.product(),
+            crate::profile::MYSQL_PROFILE.product()
+        );
+    }
     use plenora_database_core::plan::{ComparisonOperator, ObjectRef};
     use plenora_database_core::provider::ParameterValue;
     use plenora_database_core::query::{

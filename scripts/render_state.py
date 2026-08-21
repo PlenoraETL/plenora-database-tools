@@ -83,14 +83,14 @@ CAPABILITY_SOURCES = (
 )
 CAPABILITY_GROUPS = (("reads", "ReadCapabilities"), ("writes", "WriteCapabilities"))
 PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
-# Il nome che segue `fn `.
-NAME = r'([a-z_][a-z0-9_]*)'
-# Una funzione pubblica dichiarata in un `impl`, nelle sue tre forme.
-PUBLIC_FN = r'\bpub (?:async |const )?fn ([a-z_][a-z0-9_]*)'
 # Un tipo che implementa il trait dei provider.
 PROVIDER_IMPL = r'\bimpl Provider for ([A-Za-z][A-Za-z0-9_]*)'
-# Una chiamata, qualunque sia il percorso con cui e scritta.
-CALLED_FN = r'\b([a-z_][a-z0-9_]*)\s*\('
+# Un `pub use` della radice del crate.
+REEXPORT = r'pub use ([^;]+);'
+# La dichiarazione del profilo pubblicato.
+PUBLISHED_DECLARATION = (
+    r"const PUBLISHED_PROFILE: &\s*(?:'static \s*)?dyn ProductProfile = &([A-Z][A-Z0-9_]*);"
+)
 # Una voce del catalogo: nome, e la feature che lo compila se ce n'e una.
 COMMAND_ENTRY = r'\("([a-z][a-z0-9-]+)", (?:Some\("([a-z]+)"\)|None)\)'
 
@@ -154,132 +154,63 @@ def crate_sources(crate: str) -> list[tuple[str, str]]:
     ]
 
 
-def function_bodies(source: str) -> dict[str, str]:
-    """Nome e corpo di ogni funzione del file, qualunque sia la visibilita.
-
-    Anche quelle private: e il punto. Un costruttore pubblico che delega a un
-    helper privato raggiunge cio che l'helper raggiunge, e fermarsi al primo
-    livello direbbe che non raggiunge niente.
-    """
-    bodies: dict[str, str] = {}
-    start = 0
-    while True:
-        found = source.find("fn ", start)
-        if found < 0:
-            break
-        start = found + 3
-        if found > 0 and (source[found - 1].isalnum() or source[found - 1] == "_"):
-            continue
-        rest = source[found + 3 :]
-        name = re.match(NAME, rest)
-        if not name:
-            continue
-        opening = source.find("{", found)
-        semicolon = source.find(";", found)
-        if opening < 0 or (0 <= semicolon < opening):
-            # Firma senza corpo: un metodo di trait.
-            continue
-        try:
-            bodies[name.group(1)] = braced_body(source, opening)
-        except RenderError:
-            continue
-    return bodies
-
-
-def public_constructors(source: str, type_name: str) -> set[str]:
-    """Le funzioni pubbliche dichiarate in un `impl` di quel tipo.
-
-    `pub fn`, `pub async fn` e `pub const fn`: tutte e tre, perche tutte e tre
-    sono chiamabili da fuori. `pub(crate)` no — quella e la porta di servizio,
-    ed e esattamente la differenza che questo controllo deve vedere.
-    """
-    names: set[str] = set()
-    for marker in (f"impl {type_name} ", f"impl {type_name}{{"):
-        start = 0
-        while True:
-            found = source.find(marker, start)
-            if found < 0:
-                break
-            start = found + 1
-            opening = source.find("{", found)
-            if opening < 0:
-                break
-            block = braced_body(source, opening)
-            names.update(re.findall(PUBLIC_FN, block))
-    return names
+def provider_types(crate: str) -> set[str]:
+    """I tipi che implementano il trait dei provider."""
+    found: set[str] = set()
+    for _, source in crate_sources(crate):
+        found.update(re.findall(PROVIDER_IMPL, source))
+    return found
 
 
 def exported_providers(crate: str) -> set[str]:
-    """I tipi che implementano `Provider` e che il crate esporta davvero.
+    """I provider che il crate esporta dalla propria radice.
 
-    Un tipo con un `impl Provider` ma dichiarato `pub(crate)` non e un
-    provider che qualcuno possa istanziare: e un dettaglio interno.
+    Non basta `pub struct`: un tipo pubblico dentro un modulo privato non
+    esce dal crate, e chiamarlo esportato sarebbe la stessa promessa
+    eccessiva di prima. La radice e `lib.rs`, e conta cio che ci passa —
+    dichiarato li, oppure riesportato con un `pub use`.
     """
+    root = (ROOT / crate / "src" / "lib.rs").read_text(encoding="utf-8")
     exported: set[str] = set()
-    for _, source in crate_sources(crate):
-        for name in re.findall(PROVIDER_IMPL, source):
-            declaration = f"pub struct {name}"
-            if any(declaration in other for _, other in crate_sources(crate)):
-                exported.add(name)
+    for name in provider_types(crate):
+        declared = f"pub struct {name}" in root
+        reexported = any(
+            name in line
+            for line in re.findall(REEXPORT, root, re.DOTALL)
+        )
+        if declared or reexported:
+            exported.add(name)
     return exported
 
 
-def reachable_profiles(crate: str) -> set[str]:
-    """I profili raggiungibili da un costruttore pubblico di un provider.
+def declared_profile(crate: str) -> str | None:
+    """Il profilo che il crate dichiara pubblicato, se ne dichiara uno.
 
-    I corpi si tengono **per file**, e una chiamata si risolve prima nel file
-    da cui parte: `new` esiste in mezza dozzina di moduli di questo crate, e
-    un dizionario unico per l'intero crate faceva vincere l'ultimo letto —
-    la visita partiva dal corpo sbagliato e non trovava niente.
-
-    La risoluzione resta un'approssimazione: non e il resolver di Rust, e un
-    nome che esiste in piu file oltre a quello di partenza viene seguito in
-    tutti. L'approssimazione allarga cio che si raggiunge, mai il contrario,
-    quindi puo dire "pubblicato" di troppo e mai "interno" di troppo — ed e il
-    verso giusto per una guardia che deve accorgersi di una superficie aperta
-    per sbaglio.
+    La dichiarazione e una riga sola, e il renderer si limita a leggerla: che
+    il costruttore la usi davvero lo prova un test Rust, non un'analisi del
+    sorgente fatta da qui.
     """
-    sources = crate_sources(crate)
-    bodies: dict[str, dict[str, str]] = {
-        name: function_bodies(source) for name, source in sources
-    }
-    providers = exported_providers(crate)
-
-    frontier: list[tuple[str, str]] = []
-    for type_name in providers:
-        for name, source in sources:
-            frontier.extend(
-                (name, function) for function in public_constructors(source, type_name)
-            )
-
-    seen: set[tuple[str, str]] = set()
-    found: set[str] = set()
-    while frontier:
-        where, function = frontier.pop()
-        if (where, function) in seen:
-            continue
-        seen.add((where, function))
-        body = bodies.get(where, {}).get(function)
-        if body is None:
-            continue
-        found.update(re.findall(PROFILE_STATIC, body))
-        for called in re.findall(CALLED_FN, body):
-            if called in bodies.get(where, {}):
-                frontier.append((where, called))
-                continue
-            frontier.extend(
-                (other, called) for other in bodies if called in bodies[other]
-            )
-    return found
+    for _, source in crate_sources(crate):
+        match = re.search(PUBLISHED_DECLARATION, source)
+        if match:
+            return match.group(1)
+    return None
 
 
 def capability_matrix() -> dict[str, dict[str, object]]:
     matrix: dict[str, dict[str, object]] = {}
     for provider, crate, source, marker, profile in CAPABILITY_SOURCES:
-        reachable = reachable_profiles(crate)
-        published = bool(exported_providers(crate)) and (
-            profile is None or profile in reachable
-        )
+        exported = bool(exported_providers(crate))
+        if profile is None:
+            published = exported
+        else:
+            declared = declared_profile(crate)
+            if declared is None:
+                raise RenderError(
+                    f"{crate} ha piu profili ma non dichiara "
+                    f"PUBLISHED_PROFILE: quale sia pubblicato non si indovina"
+                )
+            published = exported and profile == declared
         matrix[provider] = {
             "published": published,
             "groups": {

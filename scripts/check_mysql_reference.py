@@ -148,6 +148,7 @@ EXPECTED_UNIT_TESTS = {
     "provider::tests::query_keeps_unqualified_ast_fail_closed_before_the_network",
     "provider::tests::query_renders_and_binds_before_reaching_the_network",
     "provider::tests::the_provider_is_always_built_through_a_profile",
+    "provider::tests::the_published_profile_is_the_one_the_constructor_selects",
     "provider::tests::write_rejects_a_budget_that_did_not_prepare_it",
     "provider::tests::write_rejects_a_stream_schema_different_from_prepare",
     "query::tests::aggregate_windows_render_without_an_order_but_a_frame_requires_one",
