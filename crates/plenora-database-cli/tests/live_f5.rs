@@ -215,8 +215,7 @@ fn f5_5_postgres_query_returns_schema_and_row_count() {
             "object": {
                 "catalog": null,
                 "schema": "public",
-                "object": "spatial_ref_sys",
-                "layer_id": null
+                "object": "spatial_ref_sys"
             },
             "alias": null
         },
@@ -458,8 +457,7 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
         "target": {
             "catalog": null,
             "schema": "public",
-            "object": "_never_touched",
-            "layer_id": null
+            "object": "_never_touched"
         },
         "mode": "create",
         "mapping_policy": "strict",

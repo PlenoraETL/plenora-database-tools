@@ -193,6 +193,26 @@ def main() -> int:
             capture=True,
         )
         validate_live_row_diagnostics(provider_output)
+        # Le fixture live del CLI: `#[ignore]` per default, quindi invisibili
+        # a `cargo test`. Finche nessun gate le lanciava, una di esse poteva
+        # restare rotta per una campagna intera senza che niente lo dicesse.
+        for suite in ("live_f5", "contract_snapshot"):
+            run(
+                cargo(
+                    [
+                        "test",
+                        "-p",
+                        "plenora-database-cli",
+                        "--test",
+                        suite,
+                        "--",
+                        "--include-ignored",
+                        "--test-threads=1",
+                    ],
+                    dsn,
+                    insecure_local=True,
+                )
+            )
         ipc_materialization = check_ipc_materialization(dsn)
         output = run(
             cargo([
@@ -263,6 +283,7 @@ def main() -> int:
             "fault_after_commit_unknown",
             "copy_text_binary_prepared_differential",
             "postgres_read_ipc_materialization_and_readback",
+            "cli_live_fixtures_and_contract_snapshots",
         ],
         "benchmark": benchmark,
         "ipc_materialization": ipc_materialization,

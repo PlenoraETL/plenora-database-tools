@@ -340,8 +340,7 @@ fn snapshot_bulk_write_dry_run_shape() {
 
     let write_op = serde_json::json!({
         "target": {
-            "catalog": null, "schema": "public", "object": "_snap_never",
-            "layer_id": null
+            "catalog": null, "schema": "public", "object": "_snap_never"
         },
         "mode": "create",
         "mapping_policy": "strict",
