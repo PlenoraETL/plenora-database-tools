@@ -818,28 +818,35 @@ pool MySQL. Finche non lo fa, la sonda dice quello che vede.
 prodotto nel messaggio della cancellazione, che e attribuzione corretta e non
 divergenza.
 
-### Perche `writes.append` resta chiusa
+### Cosa ne segue per le capability
 
-Le tre sonde sono verdi, e la capability resta `false`. Non e prudenza: la
-bandiera non significa "Append". L'engine la consulta anche per
-`TruncateInsert` — `validate_write_capability` mappa le due mode sullo stesso
-flag — e `TruncateInsert` questo crate la rifiuta di proposito. Aprirla
-autorizzerebbe una mode deliberatamente non qualificata, che verrebbe fermata
-piu avanti dal provider: il contratto prometterebbe cio che il codice nega.
+`writes.append` si apre: e la prima capability di scrittura di MariaDB, e la
+sostengono le tre sonde di questa tranche.
 
-Sono due bandiere in una, e finche lo sono la tranche "una mode alla volta"
-non ha modo di esprimersi. O il contratto separa `truncate_insert`, e allora
-`append` puo aprirsi con la propria evidenza, oppure resta chiusa. La prima e
-una modifica al core che riguarda tutti e tre i provider — e chiude anche
-un'incoerenza che c'era **prima** di questa tranche: MySQL pubblica
-`append = true` e poi rifiuta `TruncateInsert`, quindi il suo contratto
-promette gia piu di quanto il provider faccia.
+Non e stato immediato, e la ragione vale la pena di restare scritta. La
+bandiera non significava "Append": l'engine la consultava anche per
+`TruncateInsert` — `validate_write_capability` mappava le due mode sullo
+stesso flag — e `TruncateInsert` questo crate la rifiuta di proposito, perche
+su MySQL e MariaDB `TRUNCATE` e DDL con commit implicito. Aprirla avrebbe
+autorizzato una mode deliberatamente non qualificata.
 
-Le tre sonde restano intanto bloccanti, in un inventario loro: il runner
-distingue le prove che sostengono una capability **pubblicata** da quelle che
-**qualificano** una superficie non ancora aperta. Sono ugualmente vincolanti —
-una prova che cambia esito e una prova persa — ma dirlo allo stesso modo
-farebbe leggere al verdetto una promessa che il contratto non fa.
+Non era un difetto di questa tranche: c'era prima, e riguardava MySQL, che
+pubblica `append = true` e poi rifiuta `TruncateInsert` in prepare. Il
+contratto le ha separate — `writes.truncate_insert` e ora un campo suo,
+`true` su PostgreSQL e SQL Server, `false` sui due motori dove `TRUNCATE`
+commette da solo — e questo ha chiuso l'incoerenza per tutti.
+
+Le tre sonde restano bloccanti in un inventario loro: il runner distingue le
+prove che sostengono una capability **pubblicata** da quelle che
+**qualificano** una superficie. Ora che `append` e aperta la distinzione conta
+meno per queste tre, ma resta per le mode che verranno: ciascuna avra le
+proprie prove prima della propria bandiera.
+
+`rollback_on_failure` resta chiusa, e non per dimenticanza: il flag parla
+delle **righe** di qualunque scrittura — il residuo DDL lo descrive
+`transactional_ddl`, gia false — e quella promessa globale non e qualificata.
+La cancellazione, per giunta, dichiara l'effetto remoto `Unknown`: e la
+rilettura a mostrare che le righe erano tornate indietro, non il provider.
 
 `rollback_on_failure` resta chiusa per una ragione sua, ed e diversa da quella
 che avevo scritto: il flag parla delle **righe** di qualunque scrittura — il

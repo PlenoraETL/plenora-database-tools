@@ -895,9 +895,13 @@ impl ProductProfile for MariadbProfile {
                 ordering: true,
                 resumable: false,
             },
-            // `append` resta chiusa in questo commit: la bandiera e ora sua
-            // soltanto — `truncate_insert` ha la propria — ma aprirla e una
-            // decisione a se, che arriva con la sua evidenza.
+            // `append` e la prima write mode aperta, e ora la bandiera e sua
+            // soltanto: `truncate_insert` ha la propria, e resta chiusa. Le
+            // tre sonde della settima tranche la sostengono, verdi su
+            // entrambi i riferimenti e bloccanti nella campagna — le righe
+            // arrivano e si rileggono da un'altra sessione, un secondo batch
+            // rifiutato dal server annulla anche il primo, una cancellazione
+            // a meta scrittura non lascia righe e il provider resta usabile.
             //
             // `rollback_on_failure` resta chiusa per una ragione diversa: il
             // flag parla delle **righe** di qualunque scrittura — il residuo
@@ -907,7 +911,7 @@ impl ProductProfile for MariadbProfile {
             // che le righe erano tornate indietro, non il provider.
             writes: WriteCapabilities {
                 create: false,
-                append: false,
+                append: true,
                 // Chiusa per la stessa ragione di MySQL — `TRUNCATE` con
                 // commit implicito — e non solo perche non misurata.
                 truncate_insert: false,
@@ -3208,11 +3212,12 @@ mod tests {
         // La scrittura no: nessun piano e mai stato eseguito con questo
         // profilo, ed e la differenza che rende leggibile la tabella — non
         // "tutto chiuso", ma "chiuso cio che non e stato attraversato".
-        // Tutte chiuse, `append` compresa: le sue tre sonde sono verdi, ma la
-        // bandiera vale anche per `TruncateInsert`, che questo crate rifiuta.
-        // Una capability che ne autorizza due non puo dichiararne una sola.
+        // `append` e l'unica aperta, e le sue tre sonde la sostengono. Le
+        // altre restano chiuse: nessun piano le ha eseguite.
         let writes = &published.writes;
-        assert!(!writes.create && !writes.append && !writes.update);
+        assert!(writes.append);
+        assert!(!writes.create && !writes.update && !writes.upsert);
+        assert!(!writes.replace && !writes.delete_by_keys && !writes.bulk);
         // E `rollback_on_failure` resta chiusa perche parla delle righe di
         // **ogni** scrittura, e quella promessa non e qualificata: la
         // cancellazione dichiara l'effetto remoto ignoto, ed e la rilettura a
