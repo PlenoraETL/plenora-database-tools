@@ -9,6 +9,7 @@ questi test fissano che non possa dichiararlo senza averli visti passare.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import check_postgres_reference as gate
@@ -133,6 +134,60 @@ class ComposeNetworkDiscovery(unittest.TestCase):
             command = gate.cargo(["clippy"])
         discovery.assert_not_called()
         self.assertNotIn("--network", command)
+class CliLiveFixtures(unittest.TestCase):
+    """Le suite live del CLI devono restare nel gate, e restare eseguibili.
+
+    Sono marcate `#[ignore]`: senza `--include-ignored` `cargo test` le salta
+    e il gate resta verde avendo eseguito zero fixture. E la forma di falso
+    verde che le ha lasciate rotte per una campagna intera, con tre di esse
+    che costruivano un riferimento a un oggetto con un campo che il contratto
+    non ha piu.
+    """
+
+    SUITES = ("live_f5", "contract_snapshot")
+
+    def source(self) -> str:
+        return (
+            Path(gate.__file__).resolve().parent / "check_postgres_reference.py"
+        ).read_text(encoding="utf-8")
+
+    def test_both_cli_suites_are_named_by_the_gate(self) -> None:
+        source = self.source()
+        for suite in self.SUITES:
+            self.assertIn(
+                f'"{suite}"', source, f"il gate non nomina la suite {suite}"
+            )
+
+    def test_the_ignored_fixtures_are_included(self) -> None:
+        self.assertIn(
+            '"--include-ignored"',
+            self.source(),
+            "senza --include-ignored le fixture live vengono saltate",
+        )
+
+    def test_the_cli_suites_run_against_the_reference(self) -> None:
+        """Con il DSN, quindi sulla rete del fixture.
+
+        Una suite live lanciata senza DSN non fallisce: si limita a non
+        misurare niente, ed e di nuovo un verde che non significa nulla.
+        """
+        source = self.source()
+        start = source.index('for suite in ("live_f5"')
+        block = source[start : source.index("ipc_materialization =", start)]
+        self.assertIn("dsn,", block, "le suite CLI non ricevono il DSN")
+        self.assertIn(
+            "insecure_local=True",
+            block,
+            "il riferimento di questo gate e plaintext: senza l'interruttore "
+            "il CLI rifiuta la connessione",
+        )
+
+    def test_the_declared_check_names_the_cli_fixtures(self) -> None:
+        self.assertIn(
+            '"cli_live_fixtures_and_contract_snapshots"',
+            self.source(),
+            "il gate esegue le fixture ma non lo dichiara fra i check",
+        )
 
 
 if __name__ == "__main__":

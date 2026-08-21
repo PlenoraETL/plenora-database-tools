@@ -25,10 +25,10 @@ class Phase0HarnessTests(unittest.TestCase):
     def test_manifest_reads_the_mutating_flag(self) -> None:
         """La bandiera si legge da un manifest costruito qui.
 
-        Prima l'unico caso che mutava era `arcgis.write.apply_edits`, e il
-        test lo nominava. Uscito quel dominio, nessun caso della suite muta
-        piu: legare la prova a un caso reale la renderebbe di nuovo fragile
-        alla prima suite che cambia. Quello che si verifica e il parsing.
+        L'unico caso che mutava apparteneva a un dominio uscito da questo
+        repository, e il test lo nominava. Ora nessun caso della suite muta:
+        legare la prova a un caso reale la renderebbe di nuovo fragile alla
+        prima suite che cambia. Quello che si verifica e il parsing.
         """
         document = {
             "schema_version": 1,

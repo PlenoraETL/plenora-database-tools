@@ -52,13 +52,26 @@ CAPABILITIES_SCHEMA = ACTIVE_CONTRACT_ROOT / "capabilities.schema.json"
 # un altro dominio e una superficie che rientra dalla finestra: il controllo e
 # strutturale — cerca la stringa nei file — invece di fidarsi di una frase in
 # un documento che dice che non c'e piu.
+# Il confronto avviene sul testo minuscolo, quindi i termini stanno qui in
+# minuscolo — inclusi i nomi di tipo, che nel codice sono in CamelCase.
 FOREIGN_DOMAIN_TERMS = (
+    # Il dominio, e cio che lo nomina apertamente.
     "arcgis",
     "feature_service",
     "apply_edits",
     "global_id",
+    # Gli identificatori rimossi che **non** portano il nome del dominio.
+    # Sono quelli che rientrano piu facilmente, proprio perche non si leggono
+    # come stranieri: `layer_id` sembra un campo qualunque finche non si
+    # ricorda che un database non ha layer.
     "object_id_windows",
     "layer_outcomes",
+    "layeroutcome",
+    "layerstatus",
+    "layer_id",
+    "max_record_count",
+    "edit_request",
+    "commit_or_edit_requested",
 )
 # Dove si cerca. Non solo i contratti, per due ragioni imparate una alla volta:
 # un artefatto di misura committato qui dentro porta con se cio che ha
@@ -80,9 +93,18 @@ DOMAIN_SCOPES = (
 DOMAIN_SUFFIXES = frozenset(
     {".json", ".jsonl", ".md", ".yml", ".yaml", ".rs", ".py", ".pyi", ".toml"}
 )
-# Il gate nomina i termini per poterli cercare, e i test provano che la ricerca
-# funziona: sono gli unici due posti dove comparire e legittimo.
-DOMAIN_EXEMPT = ("scripts/phase0_validate.py", "tests/phase0/")
+# I due file dove un termine puo comparire, e nessun altro: qui e dove i
+# termini vengono elencati per poterli cercare, e dove si prova che il
+# contratto li rifiuta. L'esenzione e per percorso esatto — copriva
+# `tests/phase0/` intera, cioe tre file per coprirne uno, e bastava che un
+# termine ricomparisse in un test qualsiasi di quella cartella perche la
+# guardia lo lasciasse passare.
+DOMAIN_EXEMPT = frozenset(
+    {
+        "scripts/phase0_validate.py",
+        "tests/phase0/test_phase0_validate.py",
+    }
+)
 
 
 def harness_runners() -> tuple[str, ...]:
@@ -251,7 +273,7 @@ def validate_active_domain() -> int:
             if not path.is_file() or path.suffix not in DOMAIN_SUFFIXES:
                 continue
             where = path.relative_to(REPO_ROOT).as_posix()
-            if where.startswith(DOMAIN_EXEMPT):
+            if where in DOMAIN_EXEMPT:
                 continue
             if "target" in path.relative_to(REPO_ROOT).parts:
                 continue

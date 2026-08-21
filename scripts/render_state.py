@@ -83,6 +83,14 @@ CAPABILITY_SOURCES = (
 )
 CAPABILITY_GROUPS = (("reads", "ReadCapabilities"), ("writes", "WriteCapabilities"))
 PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
+# Il nome che segue `fn `.
+NAME = r'([a-z_][a-z0-9_]*)'
+# Una funzione pubblica dichiarata in un `impl`, nelle sue tre forme.
+PUBLIC_FN = r'\bpub (?:async |const )?fn ([a-z_][a-z0-9_]*)'
+# Un tipo che implementa il trait dei provider.
+PROVIDER_IMPL = r'\bimpl Provider for ([A-Za-z][A-Za-z0-9_]*)'
+# Una chiamata, qualunque sia il percorso con cui e scritta.
+CALLED_FN = r'\b([a-z_][a-z0-9_]*)\s*\('
 # Una voce del catalogo: nome, e la feature che lo compila se ce n'e una.
 COMMAND_ENTRY = r'\("([a-z][a-z0-9-]+)", (?:Some\("([a-z]+)"\)|None)\)'
 
@@ -139,37 +147,141 @@ def capability_fields(
     return fields
 
 
-def public_profiles(crate: str) -> set[str]:
-    """I profili che un costruttore **pubblico** del crate seleziona.
+def crate_sources(crate: str) -> list[tuple[str, str]]:
+    return [
+        (path.as_posix(), path.read_text(encoding="utf-8"))
+        for path in sorted((ROOT / crate / "src").rglob("*.rs"))
+    ]
 
-    E la differenza fra una dichiarazione di capability che qualcuno puo
-    ottenere e una che vive solo dentro il crate. Si leggono i corpi delle
-    `pub fn` — non delle `pub(crate) fn`, e non delle funzioni di test, che
-    pubbliche non sono — e si raccolgono i profili che nominano.
+
+def function_bodies(source: str) -> dict[str, str]:
+    """Nome e corpo di ogni funzione del file, qualunque sia la visibilita.
+
+    Anche quelle private: e il punto. Un costruttore pubblico che delega a un
+    helper privato raggiunge cio che l'helper raggiunge, e fermarsi al primo
+    livello direbbe che non raggiunge niente.
     """
-    selected: set[str] = set()
-    for path in sorted((ROOT / crate / "src").rglob("*.rs")):
-        source = path.read_text(encoding="utf-8")
+    bodies: dict[str, str] = {}
+    start = 0
+    while True:
+        found = source.find("fn ", start)
+        if found < 0:
+            break
+        start = found + 3
+        if found > 0 and (source[found - 1].isalnum() or source[found - 1] == "_"):
+            continue
+        rest = source[found + 3 :]
+        name = re.match(NAME, rest)
+        if not name:
+            continue
+        opening = source.find("{", found)
+        semicolon = source.find(";", found)
+        if opening < 0 or (0 <= semicolon < opening):
+            # Firma senza corpo: un metodo di trait.
+            continue
+        try:
+            bodies[name.group(1)] = braced_body(source, opening)
+        except RenderError:
+            continue
+    return bodies
+
+
+def public_constructors(source: str, type_name: str) -> set[str]:
+    """Le funzioni pubbliche dichiarate in un `impl` di quel tipo.
+
+    `pub fn`, `pub async fn` e `pub const fn`: tutte e tre, perche tutte e tre
+    sono chiamabili da fuori. `pub(crate)` no — quella e la porta di servizio,
+    ed e esattamente la differenza che questo controllo deve vedere.
+    """
+    names: set[str] = set()
+    for marker in (f"impl {type_name} ", f"impl {type_name}{{"):
         start = 0
         while True:
-            found = source.find("pub fn ", start)
+            found = source.find(marker, start)
             if found < 0:
                 break
             start = found + 1
             opening = source.find("{", found)
             if opening < 0:
                 break
-            selected.update(
-                re.findall(PROFILE_STATIC, braced_body(source, opening))
+            block = braced_body(source, opening)
+            names.update(re.findall(PUBLIC_FN, block))
+    return names
+
+
+def exported_providers(crate: str) -> set[str]:
+    """I tipi che implementano `Provider` e che il crate esporta davvero.
+
+    Un tipo con un `impl Provider` ma dichiarato `pub(crate)` non e un
+    provider che qualcuno possa istanziare: e un dettaglio interno.
+    """
+    exported: set[str] = set()
+    for _, source in crate_sources(crate):
+        for name in re.findall(PROVIDER_IMPL, source):
+            declaration = f"pub struct {name}"
+            if any(declaration in other for _, other in crate_sources(crate)):
+                exported.add(name)
+    return exported
+
+
+def reachable_profiles(crate: str) -> set[str]:
+    """I profili raggiungibili da un costruttore pubblico di un provider.
+
+    I corpi si tengono **per file**, e una chiamata si risolve prima nel file
+    da cui parte: `new` esiste in mezza dozzina di moduli di questo crate, e
+    un dizionario unico per l'intero crate faceva vincere l'ultimo letto —
+    la visita partiva dal corpo sbagliato e non trovava niente.
+
+    La risoluzione resta un'approssimazione: non e il resolver di Rust, e un
+    nome che esiste in piu file oltre a quello di partenza viene seguito in
+    tutti. L'approssimazione allarga cio che si raggiunge, mai il contrario,
+    quindi puo dire "pubblicato" di troppo e mai "interno" di troppo — ed e il
+    verso giusto per una guardia che deve accorgersi di una superficie aperta
+    per sbaglio.
+    """
+    sources = crate_sources(crate)
+    bodies: dict[str, dict[str, str]] = {
+        name: function_bodies(source) for name, source in sources
+    }
+    providers = exported_providers(crate)
+
+    frontier: list[tuple[str, str]] = []
+    for type_name in providers:
+        for name, source in sources:
+            frontier.extend(
+                (name, function) for function in public_constructors(source, type_name)
             )
-    return selected
+
+    seen: set[tuple[str, str]] = set()
+    found: set[str] = set()
+    while frontier:
+        where, function = frontier.pop()
+        if (where, function) in seen:
+            continue
+        seen.add((where, function))
+        body = bodies.get(where, {}).get(function)
+        if body is None:
+            continue
+        found.update(re.findall(PROFILE_STATIC, body))
+        for called in re.findall(CALLED_FN, body):
+            if called in bodies.get(where, {}):
+                frontier.append((where, called))
+                continue
+            frontier.extend(
+                (other, called) for other in bodies if called in bodies[other]
+            )
+    return found
 
 
 def capability_matrix() -> dict[str, dict[str, object]]:
     matrix: dict[str, dict[str, object]] = {}
     for provider, crate, source, marker, profile in CAPABILITY_SOURCES:
+        reachable = reachable_profiles(crate)
+        published = bool(exported_providers(crate)) and (
+            profile is None or profile in reachable
+        )
         matrix[provider] = {
-            "published": profile is None or profile in public_profiles(crate),
+            "published": published,
             "groups": {
                 name: capability_fields(source, name, kind, marker)
                 for name, kind in CAPABILITY_GROUPS
