@@ -171,7 +171,6 @@ pub(crate) fn make_read_operation(
             catalog: None,
             schema: Some(schema.to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         projection,
         order_by: order_by_parsed,

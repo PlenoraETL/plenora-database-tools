@@ -142,12 +142,6 @@ impl SqlServerProvider {
     }
 
     fn validate_source(&self, source: &ObjectRef) -> Result<()> {
-        if source.layer_id.is_some() {
-            return Err(unsupported(
-                ErrorPhase::Prepare,
-                "layer_id non appartiene al provider SQL Server",
-            ));
-        }
         if source
             .catalog
             .as_deref()
@@ -276,7 +270,6 @@ impl Provider for SqlServerProvider {
                     streaming: true,
                     server_cursor: false,
                     pagination: true,
-                    object_id_windows: false,
                     projection: true,
                     filter: true,
                     ordering: true,
@@ -293,9 +286,7 @@ impl Provider for SqlServerProvider {
                     bulk: true,
                     array_binding: false,
                     returning: false,
-                    apply_edits: false,
                     rollback_on_failure: true,
-                    use_global_ids: false,
                 },
                 transactions: TransactionCapabilities {
                     single_transaction: true,
@@ -331,7 +322,6 @@ impl Provider for SqlServerProvider {
                     max_statement_bytes: None,
                     max_batch_rows: Some(MAX_CONFIGURED_BATCH_ROWS as u64),
                     max_payload_bytes: None,
-                    max_record_count: None,
                 },
             })
         })

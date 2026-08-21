@@ -407,7 +407,6 @@ async fn live_common_provider_contract_read_and_write() {
                 catalog: None,
                 schema: Some("plenora_test".to_owned()),
                 object: String::new(),
-                layer_id: None,
             }),
         },
         Operation::DatabaseDescribeObject {
@@ -415,7 +414,6 @@ async fn live_common_provider_contract_read_and_write() {
                 catalog: None,
                 schema: Some("plenora_test".to_owned()),
                 object: "catalog_probe".to_owned(),
-                layer_id: None,
             },
         },
     ];
@@ -423,7 +421,7 @@ async fn live_common_provider_contract_read_and_write() {
         &provider,
         &secret,
         &supported,
-        Some(&Operation::ArcgisTestConnection),
+        Some(&Operation::DatabaseTestConnection),
     )
     .await
     .expect("common provider conformance");
@@ -442,11 +440,8 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("provider capabilities");
     assert!(!capabilities.reads.server_cursor);
     assert!(!capabilities.reads.resumable);
-    assert!(!capabilities.reads.object_id_windows);
     assert!(!capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
-    assert!(!capabilities.writes.apply_edits);
-    assert!(!capabilities.writes.use_global_ids);
     assert!(!capabilities.transactions.savepoints);
 
     let bounded_operation = ReadOperation {
@@ -454,7 +449,6 @@ async fn live_common_provider_contract_read_and_write() {
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: "stream_probe".to_owned(),
-            layer_id: None,
         },
         projection: vec!["id".to_owned(), "label".to_owned()],
         order_by: vec![OrderBy {
@@ -665,7 +659,6 @@ async fn live_common_provider_contract_read_and_write() {
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: "stream_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: Vec::new(),
@@ -750,7 +743,6 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -759,7 +751,6 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
             catalog: None,
             schema: None,
             object: name.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -1247,7 +1238,6 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
                     catalog: None,
                     schema: Some("plenora_test".to_owned()),
                     object: "stream_probe".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("source".to_owned()),
             }),
@@ -1393,7 +1383,6 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
                     catalog: None,
                     schema: Some("plenora_test".to_owned()),
                     object: "spatial_output_probe".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("source".to_owned()),
             }),
@@ -1592,7 +1581,6 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
                     catalog: None,
                     schema: Some("plenora_test".to_owned()),
                     object: "spatial_processing_probe".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("source".to_owned()),
             }),
@@ -1737,7 +1725,6 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
                     catalog: None,
                     schema: Some("plenora_test".to_owned()),
                     object: "spatial_join_left".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("left".to_owned()),
             }),
@@ -1756,7 +1743,6 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
                         catalog: None,
                         schema: Some("plenora_test".to_owned()),
                         object: "spatial_join_right".to_owned(),
-                        layer_id: None,
                     },
                     alias: Some("right".to_owned()),
                 }),
@@ -1873,7 +1859,6 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: "spatial_scope_probe".to_owned(),
-            layer_id: None,
         },
         alias: Some("base".to_owned()),
     };
@@ -1882,7 +1867,6 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
             catalog: None,
             schema: None,
             object: name.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -2155,7 +2139,6 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: "spatial_advanced_scope".to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -2164,7 +2147,6 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
             catalog: None,
             schema: None,
             object: name.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -2513,7 +2495,6 @@ fn locking_spatial_operation() -> QueryOperation {
                 catalog: None,
                 schema: Some("plenora_test".to_owned()),
                 object: "stream_probe".to_owned(),
-                layer_id: None,
             },
             alias: Some("locked".to_owned()),
         }),
@@ -4114,7 +4095,6 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
                 catalog: None,
                 schema: Some("plenora_test".to_owned()),
                 object: "stream_probe".to_owned(),
-                layer_id: None,
             },
             projection: columns,
             order_by: Vec::new(),
@@ -6014,7 +5994,6 @@ fn write_operation(object: &str, mode: WriteMode) -> WriteOperation {
             catalog: None,
             schema: Some("plenora_test".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         mode,
         mapping_policy: MappingPolicy::Strict,

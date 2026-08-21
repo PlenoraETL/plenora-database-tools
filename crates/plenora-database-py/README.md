@@ -206,7 +206,7 @@ Mapping policy: `compatible` (default) / `strict` / `lossy` / `native`.
 pyarrow tipici (dove i campi sono nullable per default).
 
 L'outcome è un dict con struttura `WriteOutcome` del core (status,
-rows.confirmed / .inserted / .failed / .skipped, layer_outcomes, recovery).
+rows.confirmed / .inserted / .failed / .skipped, recovery).
 
 ## Observability
 

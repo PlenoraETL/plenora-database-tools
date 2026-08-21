@@ -20,7 +20,7 @@ use std::time::Instant;
 
 /// Piano di riferimento del contratto v1: la forma che la CLI vede piu' spesso.
 const CONTRACT_READ_PLAN: &[u8] =
-    include_bytes!("../../../contracts/v1/examples/plan-postgres-read.json");
+    include_bytes!("../../../contracts/v2/examples/plan-postgres-read.json");
 
 /// Costruisce un piano di lettura con `columns` proiezioni e `terms` termini
 /// di filtro, per osservare come scala il costo con la larghezza del piano.
@@ -38,7 +38,7 @@ fn wide_read_plan(columns: usize, terms: usize) -> Vec<u8> {
         })
         .collect();
     let plan = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "connection_ref": "env:PLENORA_DATABASE_DSN",
         "provider": "postgres",
         "operation": {

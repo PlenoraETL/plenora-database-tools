@@ -23,7 +23,9 @@ pub struct ProviderConformanceReport {
 ///
 /// Le operazioni in `supported_inspections` devono essere realmente
 /// disponibili nell'ambiente di prova. `unsupported_inspection`, quando
-/// presente, deve appartenere intenzionalmente a un altro perimetro.
+/// presente, deve essere un'operazione che `inspect` non serve — non
+/// un'ispezione mal formata, ma una che appartiene a un'altra superficie del
+/// provider.
 ///
 /// # Errors
 ///
@@ -223,7 +225,6 @@ pub fn validate_capabilities(
         limits.max_statement_bytes,
         limits.max_batch_rows,
         limits.max_payload_bytes,
-        limits.max_record_count,
     ];
     if bounded_limits.into_iter().flatten().any(|limit| limit == 0) {
         return Err(contract_error(
@@ -258,20 +259,12 @@ pub fn validate_inspection(operation: &Operation, inspection: &Inspection) -> Re
 pub const fn operation_id(operation: &Operation) -> &'static str {
     match operation {
         Operation::DatabaseTestConnection => "database.test_connection",
-        Operation::ArcgisTestConnection => "arcgis.test_connection",
         Operation::DatabaseListCatalogs => "database.list_catalogs",
         Operation::DatabaseListSchemas { .. } => "database.list_schemas",
         Operation::DatabaseListObjects { .. } => "database.list_objects",
         Operation::DatabaseDescribeObject { .. } => "database.describe_object",
-        Operation::ArcgisListFolders => "arcgis.list_folders",
-        Operation::ArcgisListItems { .. } => "arcgis.list_items",
-        Operation::ArcgisListServices { .. } => "arcgis.list_services",
-        Operation::ArcgisListLayers { .. } => "arcgis.list_layers",
-        Operation::ArcgisDescribeLayer { .. } => "arcgis.describe_layer",
         Operation::DatabaseRead { .. } => "database.read",
-        Operation::ArcgisRead { .. } => "arcgis.read",
         Operation::DatabaseWrite { .. } => "database.write",
-        Operation::ArcgisWrite { .. } => "arcgis.write",
     }
 }
 
@@ -351,7 +344,6 @@ mod tests {
                 streaming: true,
                 server_cursor: true,
                 pagination: true,
-                object_id_windows: false,
                 projection: true,
                 filter: true,
                 ordering: true,
@@ -368,9 +360,7 @@ mod tests {
                 bulk: true,
                 array_binding: false,
                 returning: true,
-                apply_edits: false,
                 rollback_on_failure: true,
-                use_global_ids: false,
             },
             transactions: TransactionCapabilities {
                 single_transaction: true,
@@ -395,7 +385,6 @@ mod tests {
                 max_statement_bytes: None,
                 max_batch_rows: None,
                 max_payload_bytes: None,
-                max_record_count: None,
             },
         }
     }

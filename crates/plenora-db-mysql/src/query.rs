@@ -881,9 +881,6 @@ fn matches_projection(expression: &QueryExpression, query: &QueryOperation) -> b
 }
 
 fn ensure_source(source: &QuerySource, database: &str) -> Result<()> {
-    if source.object.layer_id.is_some() {
-        return Err(unsupported("layer_id non appartiene al provider"));
-    }
     if source
         .object
         .catalog
@@ -974,7 +971,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: object.to_owned(),
-                layer_id: None,
             },
             alias: None,
         }
@@ -1157,7 +1153,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: object.to_owned(),
-                layer_id: None,
             },
             alias: Some(alias.to_owned()),
         }
@@ -1379,7 +1374,6 @@ mod tests {
                 catalog: None,
                 schema: Some("other".to_owned()),
                 object: "actors".to_owned(),
-                layer_id: None,
             },
             alias: Some("a".to_owned()),
         });
@@ -1395,7 +1389,6 @@ mod tests {
                 catalog: Some("warehouse".to_owned()),
                 schema: Some("warehouse".to_owned()),
                 object: "actors".to_owned(),
-                layer_id: None,
             },
             alias: Some("a".to_owned()),
         });
@@ -2109,7 +2102,6 @@ mod tests {
                 catalog: Some("other".to_owned()),
                 schema: None,
                 object: "events".to_owned(),
-                layer_id: None,
             },
             alias: None,
         });
@@ -2126,7 +2118,6 @@ mod tests {
                 catalog: None,
                 schema: Some("other".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             alias: None,
         });
@@ -2143,7 +2134,6 @@ mod tests {
                 catalog: Some("warehouse".to_owned()),
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             alias: None,
         });

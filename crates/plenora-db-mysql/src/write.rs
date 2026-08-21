@@ -884,7 +884,7 @@ impl MysqlWritePlan {
             }
         }
         Ok(LossReport {
-            schema_version: 1,
+            schema_version: 2,
             policy: MappingPolicy::Strict,
             losses: Vec::new(),
         })
@@ -981,12 +981,11 @@ pub fn committed_outcome_for_mode(
         },
     };
     let outcome = WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::Committed,
         execution_id,
         provider: crate::profile::PROVISIONAL_KIND,
         rows,
-        layer_outcomes: Vec::new(),
         recovery: None,
     };
     outcome.validate().map_err(|mut error| {
@@ -1020,7 +1019,7 @@ pub fn commit_failure(
         return Err(error);
     }
     let outcome = WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: crate::profile::PROVISIONAL_KIND,
@@ -1033,9 +1032,8 @@ pub fn commit_failure(
             failed: 0,
             skipped: 0,
         },
-        layer_outcomes: Vec::new(),
         recovery: Some(Recovery {
-            last_certain_phase: CertainPhase::CommitOrEditRequested,
+            last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
             staging_object: None,
@@ -1409,9 +1407,6 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
             "creazione indice spatial non ancora qualificata",
         ));
     }
-    if operation.target.layer_id.is_some() {
-        return Err(unsupported("layer_id non appartiene al provider"));
-    }
     if operation
         .target
         .catalog
@@ -1783,7 +1778,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -2223,17 +2217,6 @@ mod tests {
         )
         .expect_err("target cross-database");
         assert_eq!(error.category, ErrorCategory::Unsupported);
-
-        let mut layer = append_operation();
-        layer.target.layer_id = Some(plenora_database_core::plan::LayerId::Number(1));
-        let error = MysqlWritePlan::compile_with_profile(
-            &input,
-            &layer,
-            "warehouse",
-            &crate::profile::MYSQL_PROFILE,
-        )
-        .expect_err("layer MySQL");
-        assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 
     #[test]
@@ -2531,7 +2514,7 @@ mod tests {
                 &crate::profile::MYSQL_PROFILE,
             )
             .expect("preflight compatibile");
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.policy, MappingPolicy::Strict);
         assert!(report.losses.is_empty());
         assert!(report.permits_execution());
@@ -2678,10 +2661,7 @@ mod tests {
         assert_eq!(outcome.rows.confirmed, 0);
         let recovery = outcome.recovery.expect("recovery obbligatoria");
         assert!(!recovery.automatic_retry_allowed);
-        assert_eq!(
-            recovery.last_certain_phase,
-            CertainPhase::CommitOrEditRequested
-        );
+        assert_eq!(recovery.last_certain_phase, CertainPhase::CommitRequested);
     }
 
     /// Il deadlock e l'unico esito che il server dichiara annullato: resta

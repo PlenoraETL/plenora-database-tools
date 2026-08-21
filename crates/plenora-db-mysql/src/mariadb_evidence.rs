@@ -545,7 +545,6 @@ async fn provider_surface_probes(
             catalog: None,
             schema: Some(schema_name.clone()),
             object: SCRATCH.to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -698,7 +697,6 @@ async fn query_probes(
                 catalog: None,
                 schema: Some(schema_name.to_owned()),
                 object: SCRATCH.to_owned(),
-                layer_id: None,
             },
             alias: None,
         }),
@@ -924,7 +922,6 @@ async fn read_probes(
             catalog: None,
             schema: operation.source.schema.clone(),
             object: SCRATCH_GEO.to_owned(),
-            layer_id: None,
         },
         ..operation.clone()
     };
@@ -1304,7 +1301,6 @@ async fn profile_read_probes(
         catalog: None,
         schema: Some(schema_name.to_owned()),
         object: object.to_owned(),
-        layer_id: None,
     };
     let ordered = |object: &str| ReadOperation {
         source: source(object),
@@ -1482,7 +1478,6 @@ async fn streaming_read_probes(
             catalog: None,
             schema: Some(schema_name.to_owned()),
             object: SCRATCH_ROWS.to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -2014,7 +2009,6 @@ async fn upsert_preflight_probes(
                 catalog: None,
                 schema: Some(schema_name.to_owned()),
                 object: object.to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Upsert,
             mapping_policy: MappingPolicy::Strict,
@@ -2203,15 +2197,9 @@ fn outcome_mismatch(
     if outcome.recovery.is_some() {
         return Some("l'esito porta un recovery che una scrittura riuscita non ha".to_owned());
     }
-    if !outcome.layer_outcomes.is_empty() {
+    if outcome.schema_version != 2 {
         return Some(format!(
-            "{} esiti di layer su una scrittura che non ne ha",
-            outcome.layer_outcomes.len()
-        ));
-    }
-    if outcome.schema_version != 1 {
-        return Some(format!(
-            "schema_version {} invece di 1",
+            "schema_version {} invece di 2",
             outcome.schema_version
         ));
     }
@@ -2323,7 +2311,6 @@ async fn append_write_probes(
             catalog: None,
             schema: Some(schema_name.to_owned()),
             object: SCRATCH_APPEND.to_owned(),
-            layer_id: None,
         },
         mode: WriteMode::Append,
         mapping_policy: MappingPolicy::Strict,

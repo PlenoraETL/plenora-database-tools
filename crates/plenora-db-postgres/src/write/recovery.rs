@@ -143,7 +143,7 @@ pub(super) fn unknown_write_outcome(
     verification_action: &str,
 ) -> WriteOutcome {
     WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: ProviderKind::Postgres,
@@ -156,9 +156,8 @@ pub(super) fn unknown_write_outcome(
             failed: 0,
             skipped: 0,
         },
-        layer_outcomes: Vec::new(),
         recovery: Some(Recovery {
-            last_certain_phase: CertainPhase::CommitOrEditRequested,
+            last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
             staging_object: None,

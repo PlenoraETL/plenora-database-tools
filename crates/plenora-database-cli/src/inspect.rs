@@ -155,7 +155,6 @@ pub(crate) async fn inspect_objects(args: &mut impl Iterator<Item = String>) -> 
                     catalog: None,
                     schema: Some(schema),
                     object: String::new(),
-                    layer_id: None,
                 }),
             },
             &cancel,

@@ -117,7 +117,6 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
             catalog: None,
             schema: Some("public".into()),
             object: "spatial_ref_sys".into(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: Vec::new(),

@@ -825,7 +825,6 @@ const fn object_ref(schema: String, object: String) -> ObjectRef {
         catalog: None,
         schema: Some(schema),
         object,
-        layer_id: None,
     }
 }
 
@@ -848,7 +847,6 @@ fn parse_provider_kind(value: &str) -> CliResult<ProviderKind> {
         "db2" => Ok(ProviderKind::Db2),
         "sqlite" => Ok(ProviderKind::Sqlite),
         "duckdb" => Ok(ProviderKind::Duckdb),
-        "arcgis" => Ok(ProviderKind::Arcgis),
         _ => Err("provider sconosciuto".into()),
     }
 }
@@ -2132,7 +2130,6 @@ mod tests {
             ("db2", ProviderKind::Db2),
             ("sqlite", ProviderKind::Sqlite),
             ("duckdb", ProviderKind::Duckdb),
-            ("arcgis", ProviderKind::Arcgis),
         ] {
             assert_eq!(parse_provider_kind(name).expect("known provider"), expected);
         }

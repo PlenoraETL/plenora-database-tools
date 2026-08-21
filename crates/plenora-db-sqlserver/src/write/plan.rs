@@ -303,7 +303,7 @@ impl WritePlan {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(LossReport {
-            schema_version: 1,
+            schema_version: 2,
             policy,
             losses,
         })
@@ -754,13 +754,10 @@ pub(super) fn validate_operation(operation: &WriteOperation) -> Result<()> {
         ));
     }
     validate_mutation_shape(operation)?;
-    if operation.target.catalog.is_some()
-        || operation.target.schema.is_none()
-        || operation.target.layer_id.is_some()
-    {
+    if operation.target.catalog.is_some() || operation.target.schema.is_none() {
         return Err(plan_error(
             ErrorCategory::InvalidPlan,
-            "target SQL Server richiede schema, senza catalog/layer",
+            "target SQL Server richiede schema, senza catalog",
         ));
     }
     Ok(())
@@ -1089,7 +1086,6 @@ mod tests {
                 catalog: None,
                 schema: Some("dbo".to_owned()),
                 object: "target".to_owned(),
-                layer_id: None,
             },
             mode,
             mapping_policy: MappingPolicy::Strict,

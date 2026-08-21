@@ -1735,7 +1735,6 @@ mod tests {
                 catalog: None,
                 schema: None,
                 object: object.to_owned(),
-                layer_id: None,
             },
             alias: Some(alias.to_owned()),
         }

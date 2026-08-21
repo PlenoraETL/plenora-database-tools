@@ -338,7 +338,6 @@ impl Session {
             catalog: None,
             schema: Some(schema.to_owned()),
             object: String::new(),
-            layer_id: None,
         });
         let doc = self.run_inspect(py, Operation::DatabaseListObjects { source })?;
         json_to_pylist_of_dicts(py, &doc, "objects")
@@ -357,7 +356,6 @@ impl Session {
             catalog: None,
             schema: Some(schema.to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         };
         let doc = self.run_inspect(py, Operation::DatabaseDescribeObject { source })?;
         json_value_to_pydict(py, &doc)
@@ -417,7 +415,6 @@ impl Session {
     ///       "execution_id": "...",
     ///       "provider": "postgres",
     ///       "rows": {"received": N, "confirmed": N, "inserted": N, ...},
-    ///       "layer_outcomes": [...],
     ///       "recovery": None,
     ///     }
     #[pyo3(signature = (

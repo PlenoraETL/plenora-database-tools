@@ -118,7 +118,6 @@ fn operation(object: &str, mode: WriteMode) -> WriteOperation {
             catalog: None,
             schema: Some("plenora_perf".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         mode,
         mapping_policy: MappingPolicy::Strict,

@@ -781,7 +781,6 @@ mod tests {
                 catalog: None,
                 schema: Some("data".to_owned()),
                 object: "items".to_owned(),
-                layer_id: None,
             },
             projection: Vec::new(),
             order_by: Vec::new(),

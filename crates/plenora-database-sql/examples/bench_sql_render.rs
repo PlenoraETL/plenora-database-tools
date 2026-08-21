@@ -117,7 +117,6 @@ fn rich_query() -> QueryOperation {
             catalog: None,
             schema: Some("public".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };

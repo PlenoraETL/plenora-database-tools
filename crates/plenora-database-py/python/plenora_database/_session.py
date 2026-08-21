@@ -161,7 +161,6 @@ class Session:
               "execution_id": "...",
               "provider": "postgres",
               "rows": {"received": N, "confirmed": N, "inserted": N, ...},
-              "layer_outcomes": [...],
               "recovery": None,
             }
 

@@ -456,7 +456,7 @@ fn committed_outcome(
         WriteMode::DeleteByKeys => (Some(0), Some(0), Some(confirmed)),
     };
     WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::Committed,
         execution_id: execution_id.to_owned(),
         provider: ProviderKind::Postgres,
@@ -469,7 +469,6 @@ fn committed_outcome(
             failed: 0,
             skipped: received.saturating_sub(confirmed),
         },
-        layer_outcomes: Vec::new(),
         recovery: None,
     }
 }

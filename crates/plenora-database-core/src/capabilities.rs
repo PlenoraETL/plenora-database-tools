@@ -14,7 +14,6 @@ pub struct ReadCapabilities {
     pub streaming: bool,
     pub server_cursor: bool,
     pub pagination: bool,
-    pub object_id_windows: bool,
     pub projection: bool,
     pub filter: bool,
     pub ordering: bool,
@@ -53,7 +52,6 @@ pub struct WriteCapabilities {
     pub bulk: bool,
     pub array_binding: bool,
     pub returning: bool,
-    pub apply_edits: bool,
     /// Un fallimento prima del commit annulla **le righe** scritte
     /// dall'operazione.
     ///
@@ -78,7 +76,6 @@ pub struct WriteCapabilities {
     /// [`crate::error::RetryDisposition::RequiresRecovery`], perche un retry
     /// cieco troverebbe il target gia esistente.
     pub rollback_on_failure: bool,
-    pub use_global_ids: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,9 +84,6 @@ pub enum TransactionScope {
     None,
     Statement,
     Transaction,
-    EditRequest,
-    Layer,
-    Service,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +109,7 @@ pub struct SpatialCapabilities {
     /// Sottoinsieme garantito per ogni semantica spatial pubblicizzata.
     ///
     /// Un provider con capability native asimmetriche deve sotto-dichiarare
-    /// l'intersezione; il contratto v1 non consente di attribuire una funzione
+    /// l'intersezione; il contratto non consente di attribuire una funzione
     /// soltanto a `geometry` o soltanto a `geography`.
     #[serde(default)]
     pub functions: Vec<SpatialFunction>,
@@ -129,7 +123,6 @@ pub struct ProviderLimits {
     pub max_statement_bytes: Option<u64>,
     pub max_batch_rows: Option<u64>,
     pub max_payload_bytes: Option<u64>,
-    pub max_record_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -195,7 +195,7 @@ pub async fn write(
         }
     }
     let report = LossReport {
-        schema_version: 1,
+        schema_version: 2,
         policy: operation.mapping_policy,
         losses,
     };

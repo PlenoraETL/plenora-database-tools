@@ -269,7 +269,6 @@ fn object(table: impl Into<String>) -> ObjectRef {
         catalog: None,
         schema: Some("plenora_perf".to_owned()),
         object: table.into(),
-        layer_id: None,
     }
 }
 

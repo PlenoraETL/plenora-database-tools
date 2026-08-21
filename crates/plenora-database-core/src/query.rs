@@ -1157,7 +1157,6 @@ mod validation_tests {
                     catalog: None,
                     schema: Some("public".to_owned()),
                     object: "events".to_owned(),
-                    layer_id: None,
                 },
                 alias: None,
             }),

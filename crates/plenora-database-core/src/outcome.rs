@@ -31,7 +31,7 @@ pub enum CertainPhase {
     StagingPrepared,
     Writing,
     Finalizing,
-    CommitOrEditRequested,
+    CommitRequested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,24 +44,6 @@ pub struct Recovery {
     pub verification_action: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LayerStatus {
-    Committed,
-    RolledBack,
-    Partial,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LayerOutcome {
-    pub layer: String,
-    pub status: LayerStatus,
-    pub confirmed: Option<u64>,
-    pub failed: Option<u64>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WriteOutcome {
@@ -70,8 +52,6 @@ pub struct WriteOutcome {
     pub execution_id: String,
     pub provider: ProviderKind,
     pub rows: RowCounts,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub layer_outcomes: Vec<LayerOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Recovery>,
 }
@@ -156,19 +136,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_arcgis_unknown_example() {
-        let input = include_str!("../../../contracts/v1/examples/outcome-unknown.json");
+    fn parses_the_unknown_outcome_example() {
+        let input = include_str!("../../../contracts/v2/examples/outcome-unknown.json");
         let outcome: WriteOutcome = serde_json::from_str(input).expect("outcome example");
         outcome.validate().expect("valid outcome");
+        assert_eq!(outcome.schema_version, 2);
         assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);
-        assert_eq!(outcome.layer_outcomes.len(), 1);
+        assert_eq!(
+            outcome
+                .recovery
+                .as_ref()
+                .expect("recovery")
+                .last_certain_phase,
+            CertainPhase::CommitRequested
+        );
         assert_eq!(outcome.remote_effect(), RemoteEffect::Unknown);
     }
 
     #[test]
     fn row_accounting_overflow_is_rejected_without_panicking() {
         let outcome = WriteOutcome {
-            schema_version: 1,
+            schema_version: 2,
             status: WriteStatus::Committed,
             execution_id: "overflow".to_owned(),
             provider: ProviderKind::Postgres,
@@ -181,7 +169,6 @@ mod tests {
                 failed: 1,
                 skipped: 0,
             },
-            layer_outcomes: Vec::new(),
             recovery: None,
         };
         assert!(outcome.validate().is_err());
@@ -190,7 +177,7 @@ mod tests {
     #[test]
     fn unknown_outcome_cannot_authorize_automatic_retry() {
         let mut outcome: WriteOutcome = serde_json::from_str(include_str!(
-            "../../../contracts/v1/examples/outcome-unknown.json"
+            "../../../contracts/v2/examples/outcome-unknown.json"
         ))
         .expect("outcome example");
         outcome

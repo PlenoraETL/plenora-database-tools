@@ -9,8 +9,7 @@ pub use retry::{retry_with_policy, RetryPolicy};
 
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::plan::{
-    FilterExpression, ObjectRef, Operation, Plan, ProviderKind, TransactionProfile, WriteMode,
-    WriteOperation,
+    FilterExpression, ObjectRef, Operation, Plan, WriteMode, WriteOperation,
 };
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::{DatabaseError, Result};
@@ -79,19 +78,13 @@ pub fn parse_and_validate(input: &[u8]) -> Result<ValidatedPlan> {
 /// Restituisce `InvalidPlan` per versioni, limiti, riferimenti, operazioni o
 /// profili incompatibili.
 pub fn validate(plan: Plan) -> Result<ValidatedPlan> {
-    if plan.schema_version != 1 {
+    if plan.schema_version != 2 {
         return Err(DatabaseError::invalid_plan(
             "schema_version del piano non supportata",
         ));
     }
     plan.limits.validate()?;
     validate_connection_ref(&plan.connection_ref)?;
-    let operation_is_arcgis = plan.operation.is_arcgis();
-    if (plan.provider == ProviderKind::Arcgis) != operation_is_arcgis {
-        return Err(DatabaseError::invalid_plan(
-            "provider e operation appartengono a famiglie diverse",
-        ));
-    }
     validate_operation(&plan)?;
     let canonical = serde_json::to_vec(&plan)
         .map_err(|_| DatabaseError::invalid_plan("piano non serializzabile"))?;
@@ -120,7 +113,7 @@ pub fn prepare(
         ));
     }
     match &validated.plan.operation {
-        Operation::DatabaseRead { .. } | Operation::ArcgisRead { .. } => {
+        Operation::DatabaseRead { .. } => {
             if !capabilities.reads.streaming {
                 return Err(DatabaseError::unsupported(
                     capabilities.provider,
@@ -129,7 +122,7 @@ pub fn prepare(
                 ));
             }
         }
-        Operation::DatabaseWrite { write } | Operation::ArcgisWrite { write } => {
+        Operation::DatabaseWrite { write } => {
             validate_write_capability(write.mode, &capabilities)?;
         }
         _ => {}
@@ -154,20 +147,15 @@ fn validate_connection_ref(connection_ref: &str) -> Result<()> {
 
 fn validate_operation(plan: &Plan) -> Result<()> {
     match &plan.operation {
-        Operation::DatabaseDescribeObject { source }
-        | Operation::ArcgisListLayers { source }
-        | Operation::ArcgisDescribeLayer { source } => {
+        Operation::DatabaseDescribeObject { source } => {
             validate_object(source, &plan.limits)?;
         }
-        Operation::DatabaseListSchemas { source }
-        | Operation::DatabaseListObjects { source }
-        | Operation::ArcgisListItems { source }
-        | Operation::ArcgisListServices { source } => {
+        Operation::DatabaseListSchemas { source } | Operation::DatabaseListObjects { source } => {
             if let Some(source) = source {
                 validate_object(source, &plan.limits)?;
             }
         }
-        Operation::DatabaseRead { read } | Operation::ArcgisRead { read } => {
+        Operation::DatabaseRead { read } => {
             validate_object(&read.source, &plan.limits)?;
             for field in &read.projection {
                 validate_identifier(field, plan.limits.max_identifier_bytes)?;
@@ -180,13 +168,10 @@ fn validate_operation(plan: &Plan) -> Result<()> {
                 validate_filter(filter, 1, &mut nodes, &plan.limits)?;
             }
         }
-        Operation::DatabaseWrite { write } | Operation::ArcgisWrite { write } => {
+        Operation::DatabaseWrite { write } => {
             validate_write(write, plan)?;
         }
-        Operation::DatabaseTestConnection
-        | Operation::ArcgisTestConnection
-        | Operation::DatabaseListCatalogs
-        | Operation::ArcgisListFolders => {}
+        Operation::DatabaseTestConnection | Operation::DatabaseListCatalogs => {}
     }
     Ok(())
 }
@@ -211,12 +196,6 @@ fn validate_write(write: &WriteOperation, plan: &Plan) -> Result<()> {
     if write.mode == WriteMode::Update && write.update_columns.is_empty() {
         return Err(DatabaseError::invalid_plan(
             "update richiede update_columns",
-        ));
-    }
-    let arcgis_profile = write.transaction_profile == TransactionProfile::ArcgisApplyEdits;
-    if (plan.provider == ProviderKind::Arcgis) != arcgis_profile {
-        return Err(DatabaseError::invalid_plan(
-            "transaction_profile incompatibile con il provider",
         ));
     }
     Ok(())
@@ -381,15 +360,18 @@ mod tests {
 
     #[test]
     fn parses_the_postgres_contract_example() {
-        let bytes = include_bytes!("../../../contracts/v1/examples/plan-postgres-read.json");
+        let bytes = include_bytes!("../../../contracts/v2/examples/plan-postgres-read.json");
         let validated = parse_and_validate(bytes).expect("valid plan");
         assert_eq!(validated.fingerprint().len(), 64);
-        assert_eq!(validated.plan().provider, ProviderKind::Postgres);
+        assert_eq!(
+            validated.plan().provider,
+            plenora_database_core::plan::ProviderKind::Postgres
+        );
     }
 
     #[test]
     fn fingerprint_is_stable() {
-        let bytes = include_bytes!("../../../contracts/v1/examples/plan-arcgis-write.json");
+        let bytes = include_bytes!("../../../contracts/v2/examples/plan-postgres-read.json");
         let first = parse_and_validate(bytes).expect("first");
         let second = parse_and_validate(bytes).expect("second");
         assert_eq!(first.fingerprint(), second.fingerprint());
@@ -398,7 +380,7 @@ mod tests {
     #[test]
     fn rejects_inline_dsn() {
         let bytes = br#"{
-          "schema_version": 1,
+          "schema_version": 2,
           "connection_ref": "postgres://user:password@host/db",
           "provider": "postgres",
           "operation": {"id": "database.test_connection"}

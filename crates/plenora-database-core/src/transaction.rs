@@ -133,7 +133,7 @@ impl CommitOutcome {
 #[must_use]
 pub fn outcome_unknown_recovery() -> Recovery {
     Recovery {
-        last_certain_phase: CertainPhase::CommitOrEditRequested,
+        last_certain_phase: CertainPhase::CommitRequested,
         automatic_retry_allowed: false,
         idempotency_key: None,
         staging_object: None,
@@ -345,10 +345,7 @@ mod tests {
     fn outcome_unknown_recovery_forbids_automatic_retry() {
         let recovery = outcome_unknown_recovery();
         assert!(!recovery.automatic_retry_allowed);
-        assert_eq!(
-            recovery.last_certain_phase,
-            CertainPhase::CommitOrEditRequested
-        );
+        assert_eq!(recovery.last_certain_phase, CertainPhase::CommitRequested);
     }
 
     #[test]

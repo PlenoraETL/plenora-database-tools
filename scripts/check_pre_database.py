@@ -130,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "plenora-database-cli",
                     "--",
                     "validate-plan",
-                    "contracts/v1/examples/plan-postgres-read.json",
+                    "contracts/v2/examples/plan-postgres-read.json",
                 ]
             ),
         ),

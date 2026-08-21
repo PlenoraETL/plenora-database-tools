@@ -37,7 +37,6 @@ pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
         ProviderKind::Db2 => "Db2",
         ProviderKind::Sqlite => "SQLite",
         ProviderKind::Duckdb => "DuckDB",
-        ProviderKind::Arcgis => "ArcGIS",
     };
     DatabaseError {
         category: ErrorCategory::Internal,

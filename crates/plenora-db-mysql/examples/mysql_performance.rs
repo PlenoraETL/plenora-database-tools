@@ -191,7 +191,6 @@ fn read_operation_plan(database: &str, table: &str) -> ReadOperation {
             catalog: None,
             schema: Some(database.to_owned()),
             object: table.to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -212,7 +211,6 @@ fn append_operation(database: &str) -> WriteOperation {
             catalog: None,
             schema: Some(database.to_owned()),
             object: TARGET_TABLE.to_owned(),
-            layer_id: None,
         },
         mode: WriteMode::Append,
         mapping_policy: MappingPolicy::Strict,

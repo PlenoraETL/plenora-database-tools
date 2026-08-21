@@ -1927,13 +1927,6 @@ fn validate_expression_sources(expression: &QueryExpression, database: &str) -> 
 }
 
 fn validate_source(source: &ObjectRef, database: &str) -> Result<()> {
-    if source.layer_id.is_some() {
-        return Err(DatabaseError::unsupported(
-            ProviderKind::Sqlserver,
-            ErrorPhase::Prepare,
-            "layer_id non appartiene al provider SQL Server",
-        ));
-    }
     if source
         .catalog
         .as_deref()
@@ -2080,7 +2073,6 @@ mod tests {
                 catalog: None,
                 schema: Some("dbo".to_owned()),
                 object: object.to_owned(),
-                layer_id: None,
             },
             alias: Some(alias.to_owned()),
         }
@@ -2172,7 +2164,6 @@ mod tests {
                 catalog: None,
                 schema: None,
                 object: "filtered".to_owned(),
-                layer_id: None,
             },
             alias: Some("scope".to_owned()),
         });

@@ -228,7 +228,7 @@ fn commit_unknown_error(
 
 const fn committed_outcome(execution_id: String, received: u64, inserted: u64) -> WriteOutcome {
     WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::Committed,
         execution_id,
         provider: ProviderKind::Postgres,
@@ -241,7 +241,6 @@ const fn committed_outcome(execution_id: String, received: u64, inserted: u64) -
             failed: 0,
             skipped: received.saturating_sub(inserted),
         },
-        layer_outcomes: Vec::new(),
         recovery: None,
     }
 }
@@ -588,7 +587,6 @@ mod tests {
                 catalog: None,
                 schema: Some("public".to_owned()),
                 object: "parcels".to_owned(),
-                layer_id: None,
             },
             mode,
             mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
@@ -745,7 +743,6 @@ mod tests {
             TransactionProfile::StagedSwap,
             TransactionProfile::ChunkCommitted,
             TransactionProfile::BestEffortDdl,
-            TransactionProfile::ArcgisApplyEdits,
         ] {
             assert!(validate_input(
                 &schema,

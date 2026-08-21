@@ -197,7 +197,6 @@ mod tests {
                 catalog: None,
                 schema: Some("dbo".to_owned()),
                 object: "target".to_owned(),
-                layer_id: None,
             },
             mode,
             mapping_policy: MappingPolicy::Strict,

@@ -13,14 +13,6 @@ pub enum ProviderKind {
     Db2,
     Sqlite,
     Duckdb,
-    Arcgis,
-}
-
-impl ProviderKind {
-    #[must_use]
-    pub fn is_sql(self) -> bool {
-        self != Self::Arcgis
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,14 +21,6 @@ pub struct ObjectRef {
     pub catalog: Option<String>,
     pub schema: Option<String>,
     pub object: String,
-    pub layer_id: Option<LayerId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum LayerId {
-    Number(u64),
-    Name(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,7 +141,6 @@ pub enum TransactionProfile {
     StagedSwap,
     ChunkCommitted,
     BestEffortDdl,
-    ArcgisApplyEdits,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,8 +174,6 @@ pub struct WriteOperation {
 pub enum Operation {
     #[serde(rename = "database.test_connection")]
     DatabaseTestConnection,
-    #[serde(rename = "arcgis.test_connection")]
-    ArcgisTestConnection,
     #[serde(rename = "database.list_catalogs")]
     DatabaseListCatalogs,
     #[serde(rename = "database.list_schemas")]
@@ -201,23 +182,8 @@ pub enum Operation {
     DatabaseListObjects { source: Option<ObjectRef> },
     #[serde(rename = "database.describe_object")]
     DatabaseDescribeObject { source: ObjectRef },
-    #[serde(rename = "arcgis.list_folders")]
-    ArcgisListFolders,
-    #[serde(rename = "arcgis.list_items")]
-    ArcgisListItems { source: Option<ObjectRef> },
-    #[serde(rename = "arcgis.list_services")]
-    ArcgisListServices { source: Option<ObjectRef> },
-    #[serde(rename = "arcgis.list_layers")]
-    ArcgisListLayers { source: ObjectRef },
-    #[serde(rename = "arcgis.describe_layer")]
-    ArcgisDescribeLayer { source: ObjectRef },
     #[serde(rename = "database.read")]
     DatabaseRead {
-        #[serde(flatten)]
-        read: ReadOperation,
-    },
-    #[serde(rename = "arcgis.read")]
-    ArcgisRead {
         #[serde(flatten)]
         read: ReadOperation,
     },
@@ -226,28 +192,6 @@ pub enum Operation {
         #[serde(flatten)]
         write: WriteOperation,
     },
-    #[serde(rename = "arcgis.write")]
-    ArcgisWrite {
-        #[serde(flatten)]
-        write: WriteOperation,
-    },
-}
-
-impl Operation {
-    #[must_use]
-    pub const fn is_arcgis(&self) -> bool {
-        matches!(
-            self,
-            Self::ArcgisTestConnection
-                | Self::ArcgisListFolders
-                | Self::ArcgisListItems { .. }
-                | Self::ArcgisListServices { .. }
-                | Self::ArcgisListLayers { .. }
-                | Self::ArcgisDescribeLayer { .. }
-                | Self::ArcgisRead { .. }
-                | Self::ArcgisWrite { .. }
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

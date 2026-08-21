@@ -248,7 +248,6 @@ async fn live_provider_read_rejects_a_hostname_mismatch() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "catalog_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: Vec::new(),
@@ -471,7 +470,6 @@ async fn live_provider_connection_capabilities_and_inspect() {
     // Nessuna delle tre e implementata: il contratto non le promette.
     assert!(!capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
-    assert!(!capabilities.writes.apply_edits);
     assert!(capabilities.transactions.single_transaction);
     assert!(!capabilities.transactions.transactional_ddl);
     // Lo swap staged non esiste piu su MySQL: Replace e DELETE + insert
@@ -498,7 +496,6 @@ async fn live_provider_connection_capabilities_and_inspect() {
                     catalog: None,
                     schema: Some("dataflow_test".to_owned()),
                     object: "catalog_probe".to_owned(),
-                    layer_id: None,
                 },
             },
             &cancellation,
@@ -530,7 +527,6 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "stream_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -612,7 +608,6 @@ async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "variable_stream_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -717,7 +712,6 @@ async fn live_default_limits_batch_many_rows_over_four_columns() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "wide_stream_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -780,7 +774,6 @@ async fn live_read_projection_filter_order_and_default_schema() {
             catalog: None,
             schema: None,
             object: "catalog_probe".to_owned(),
-            layer_id: None,
         },
         projection: vec!["id".to_owned(), "name".to_owned()],
         order_by: vec![OrderBy {
@@ -860,7 +853,6 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "catalog_probe".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -1149,7 +1141,6 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
                 object: "catalog_probe".to_owned(),
-                layer_id: None,
             },
             alias: None,
         }),
@@ -1417,7 +1408,6 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         alias: None,
     };
@@ -1699,7 +1689,6 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: object.to_owned(),
-            layer_id: None,
         },
         alias: Some(alias.to_owned()),
     };
@@ -2163,7 +2152,6 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
                 object: "stream_probe".to_owned(),
-                layer_id: None,
             },
             alias: Some("s".to_owned()),
         }),
@@ -2349,7 +2337,6 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
                 object: "stream_probe".to_owned(),
-                layer_id: None,
             },
             alias: Some("s".to_owned()),
         }),
@@ -2552,7 +2539,6 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
                     catalog: None,
                     schema: Some("dataflow_test".to_owned()),
                     object: "slow_query_probe".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("slow".to_owned()),
             }),
@@ -3106,7 +3092,6 @@ fn append_operation(table: &str) -> plenora_database_core::plan::WriteOperation 
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: table.to_owned(),
-            layer_id: None,
         },
         mode: plenora_database_core::plan::WriteMode::Append,
         mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
@@ -3204,7 +3189,6 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: table.to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {
@@ -4430,7 +4414,6 @@ fn write_op_scalar(
             catalog: None,
             schema: Some(schema.to_owned()),
             object: table.to_owned(),
-            layer_id: None,
         },
         mode,
         mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
@@ -5140,7 +5123,6 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
                 object: "_v12_spatial".to_owned(),
-                layer_id: None,
             },
             alias: None,
         }),
@@ -5277,7 +5259,6 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
                 catalog: None,
                 schema: Some("dataflow_test".to_owned()),
                 object: "_v12_spatial_pred".to_owned(),
-                layer_id: None,
             },
             alias: None,
         }),

@@ -131,11 +131,6 @@ impl MysqlProvider {
 
     fn validate_source(&self, source: &plenora_database_core::plan::ObjectRef) -> Result<()> {
         let product = self.profile.product();
-        if source.layer_id.is_some() {
-            return Err(unsupported(format!(
-                "layer_id non appartiene al provider {product}"
-            )));
-        }
         if source
             .catalog
             .as_deref()
@@ -410,7 +405,7 @@ impl Provider for MysqlProvider {
                     // In entrambi i casi LossReport vuoto (schema matcha per
                     // costruzione).
                     plenora_database_core::loss::LossReport {
-                        schema_version: 1,
+                        schema_version: 2,
                         policy: operation.mapping_policy,
                         losses: Vec::new(),
                     }
@@ -1150,7 +1145,6 @@ mod tests {
                     catalog: None,
                     schema: Some("warehouse".to_owned()),
                     object: "events".to_owned(),
-                    layer_id: None,
                 },
                 alias: None,
             }),
@@ -1383,7 +1377,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             alias: Some("e".to_owned()),
         });
@@ -1398,7 +1391,6 @@ mod tests {
                     catalog: None,
                     schema: Some("warehouse".to_owned()),
                     object: "actors".to_owned(),
-                    layer_id: None,
                 },
                 alias: Some("a".to_owned()),
             }),
@@ -1456,7 +1448,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             mode: plenora_database_core::plan::WriteMode::Append,
             mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
@@ -1535,7 +1526,7 @@ mod tests {
             operation: append_write_operation(),
             input_schema,
             loss_report: plenora_database_core::loss::LossReport {
-                schema_version: 1,
+                schema_version: 2,
                 policy: plenora_database_core::loss::MappingPolicy::Strict,
                 losses: Vec::new(),
             },

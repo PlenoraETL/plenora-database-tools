@@ -74,7 +74,7 @@ mod tests {
     use plenora_database_core::loss::MappingPolicy;
     use plenora_database_core::outcome::WriteStatus;
     use plenora_database_core::plan::{
-        ComparisonOperator, FilterExpression, LayerId, OrderBy, SortDirection, SridPolicy,
+        ComparisonOperator, FilterExpression, OrderBy, SortDirection, SridPolicy,
         TransactionProfile, WriteMode,
     };
     use plenora_database_core::provider::ParameterValue;
@@ -105,7 +105,6 @@ mod tests {
                     catalog: None,
                     schema: Some("plenora_fixture".to_owned()),
                     object: "conformance_scope".to_owned(),
-                    layer_id: None,
                 }),
             },
             Operation::DatabaseDescribeObject {
@@ -113,7 +112,6 @@ mod tests {
                     catalog: None,
                     schema: Some("plenora_fixture".to_owned()),
                     object: "events".to_owned(),
-                    layer_id: None,
                 },
             },
         ];
@@ -121,7 +119,7 @@ mod tests {
             &provider,
             &secret,
             &operations,
-            Some(&Operation::ArcgisListFolders),
+            Some(&Operation::DatabaseTestConnection),
         )
         .await
         .expect("provider conformance");
@@ -328,7 +326,6 @@ mod tests {
                     catalog: None,
                     schema: Some("public".to_owned()),
                     object: "never_reached".to_owned(),
-                    layer_id: None,
                 },
                 mode: WriteMode::Append,
                 mapping_policy: MappingPolicy::Strict,
@@ -341,7 +338,7 @@ mod tests {
             },
             input_schema: Arc::clone(&schema),
             loss_report: plenora_database_core::loss::LossReport {
-                schema_version: 1,
+                schema_version: 2,
                 policy: MappingPolicy::Strict,
                 losses: Vec::new(),
             },
@@ -622,7 +619,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "events".to_owned(),
-                        layer_id: None,
                     },
                     projection: Vec::new(),
                     order_by: Vec::new(),
@@ -674,7 +670,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
@@ -736,7 +731,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["geom".to_owned()],
             order_by: Vec::new(),
@@ -793,7 +787,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "deadline_slow_events".to_owned(),
-                layer_id: None,
             },
             projection: Vec::new(),
             order_by: Vec::new(),
@@ -864,7 +857,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "crs_validation_never_created".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Create,
             mapping_policy: MappingPolicy::Strict,
@@ -972,7 +964,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "mtls_slow_events".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec!["event_id".to_owned()],
                     order_by: Vec::new(),
@@ -1040,7 +1031,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None::<LayerId>,
             },
             projection: vec![
                 "event_id".to_owned(),
@@ -1707,7 +1697,6 @@ mod tests {
             catalog: None,
             schema: Some("plenora_fixture".to_owned()),
             object: "advanced_types".to_owned(),
-            layer_id: None,
         };
         let advanced_description = provider
             .inspect(
@@ -1753,7 +1742,6 @@ mod tests {
             catalog: None,
             schema: Some("plenora_fixture".to_owned()),
             object: "spatial_dimensions".to_owned(),
-            layer_id: None,
         };
         let dimensions_description = provider
             .inspect(
@@ -1836,7 +1824,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "secure_events".to_owned(),
-                        layer_id: None,
                     },
                 },
                 &cancellation,
@@ -1886,7 +1873,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "event_region_summary".to_owned(),
-                        layer_id: None,
                     },
                 },
                 &cancellation,
@@ -2026,7 +2012,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec!["id".to_owned()],
                     order_by: Vec::new(),
@@ -2074,7 +2059,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec!["id".to_owned()],
                     order_by: Vec::new(),
@@ -2156,7 +2140,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "slow_events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
@@ -2217,7 +2200,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "Quoted Table".to_owned(),
-                layer_id: None,
             },
             projection: vec![
                 "select".to_owned(),
@@ -2284,7 +2266,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "events".to_owned(),
-                        layer_id: None,
                     },
                     projection,
                     order_by: vec![OrderBy {
@@ -2318,7 +2299,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "events".to_owned(),
-                        layer_id: None,
                     },
                     projection: Vec::new(),
                     order_by: vec![OrderBy {
@@ -2344,7 +2324,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "write_reference".to_owned(),
-                layer_id: None,
             },
             mode,
             mapping_policy: MappingPolicy::Strict,
@@ -2424,7 +2403,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "write_row_diagnostics_probe".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -2541,7 +2519,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "write_row_diagnostics_lost_ack_probe".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -2633,7 +2610,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "write_row_diagnostics_commit_unknown_probe".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -2723,7 +2699,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec![
                         "status".to_owned(),
@@ -2751,7 +2726,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "advanced_roundtrip".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Create,
             mapping_policy: MappingPolicy::Strict,
@@ -2806,7 +2780,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec![
                         "external_id".to_owned(),
@@ -2889,7 +2862,6 @@ mod tests {
                         catalog: None,
                         schema: Some("plenora_fixture".to_owned()),
                         object: "events".to_owned(),
-                        layer_id: None,
                     },
                     projection: vec![
                         "event_id".to_owned(),
@@ -2913,7 +2885,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "evolution_target".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -3012,7 +2983,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "slow_write_target".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -3141,7 +3111,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "failing_write_target".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -3386,7 +3355,6 @@ mod tests {
             catalog: None,
             schema: Some("plenora_fixture".to_owned()),
             object: "schema_cache_probe".to_owned(),
-            layer_id: None,
         };
         let operation = ReadOperation {
             source: source.clone(),
@@ -3511,7 +3479,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
@@ -3629,7 +3596,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["event_id".to_owned(), "name".to_owned()],
             order_by: vec![OrderBy {
@@ -3729,7 +3695,6 @@ mod tests {
                 catalog: None,
                 schema: Some("plenora_fixture".to_owned()),
                 object: "hardening_slow_events".to_owned(),
-                layer_id: None,
             },
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),

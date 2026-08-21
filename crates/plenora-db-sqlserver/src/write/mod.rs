@@ -601,7 +601,7 @@ async fn write_prepared_inner(
             }
         };
         let outcome = WriteOutcome {
-            schema_version: 1,
+            schema_version: 2,
             status: WriteStatus::Committed,
             execution_id,
             provider: ProviderKind::Sqlserver,
@@ -614,7 +614,6 @@ async fn write_prepared_inner(
                 failed: 0,
                 skipped: received.saturating_sub(mutations.confirmed),
             },
-            layer_outcomes: Vec::new(),
             recovery: None,
         };
         outcome.validate()?;
@@ -715,7 +714,7 @@ fn unknown_commit_outcome(
     received: u64,
 ) -> Result<WriteOutcome> {
     let outcome = WriteOutcome {
-        schema_version: 1,
+        schema_version: 2,
         status: WriteStatus::OutcomeUnknown,
         execution_id,
         provider: ProviderKind::Sqlserver,
@@ -728,9 +727,8 @@ fn unknown_commit_outcome(
             failed: 0,
             skipped: 0,
         },
-        layer_outcomes: Vec::new(),
         recovery: Some(Recovery {
-            last_certain_phase: CertainPhase::CommitOrEditRequested,
+            last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
             // Il DDL e i rename sono nella stessa transazione: dopo una

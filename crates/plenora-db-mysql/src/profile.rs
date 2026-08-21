@@ -487,7 +487,6 @@ impl ProductProfile for MysqlProfile {
                 streaming: true,
                 server_cursor: false,
                 pagination: false,
-                object_id_windows: false,
                 projection: true,
                 filter: true,
                 ordering: true,
@@ -522,9 +521,7 @@ impl ProductProfile for MysqlProfile {
                 bulk: true,
                 array_binding: false,
                 returning: false,
-                apply_edits: false,
                 rollback_on_failure: true,
-                use_global_ids: false,
             },
             transactions: TransactionCapabilities {
                 single_transaction: true,
@@ -554,7 +551,6 @@ impl ProductProfile for MysqlProfile {
                 max_statement_bytes: None,
                 max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
                 max_payload_bytes: None,
-                max_record_count: None,
             },
         }
     }
@@ -889,7 +885,6 @@ impl ProductProfile for MariadbProfile {
                 streaming: true,
                 server_cursor: false,
                 pagination: false,
-                object_id_windows: false,
                 projection: true,
                 filter: true,
                 ordering: true,
@@ -922,9 +917,7 @@ impl ProductProfile for MariadbProfile {
                 bulk: false,
                 array_binding: false,
                 returning: false,
-                apply_edits: false,
                 rollback_on_failure: false,
-                use_global_ids: false,
             },
             // L'unica famiglia con dei `true`, e sono quelli che la terza
             // tranche ha misurato: tredici sonde di sessione su tredici danno
@@ -959,7 +952,6 @@ impl ProductProfile for MariadbProfile {
                 max_statement_bytes: None,
                 max_batch_rows: Some(crate::MAX_BATCH_ROWS as u64),
                 max_payload_bytes: None,
-                max_record_count: None,
             },
         }
     }
@@ -1918,7 +1910,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "x".repeat(crate::MAX_IDENTIFIER_CHARACTERS + 1),
-                layer_id: None,
             },
             alias: None,
         });
@@ -2043,7 +2034,6 @@ mod tests {
                     catalog: None,
                     schema: Some("warehouse".to_owned()),
                     object: "events".to_owned(),
-                    layer_id: None,
                 },
                 alias: None,
             }),
@@ -2173,7 +2163,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             mode: WriteMode::Append,
             mapping_policy: MappingPolicy::Strict,
@@ -2195,7 +2184,6 @@ mod tests {
                 catalog: None,
                 schema: Some("warehouse".to_owned()),
                 object: "events".to_owned(),
-                layer_id: None,
             },
             alias: None,
         });
@@ -3199,14 +3187,13 @@ mod tests {
         // fallite.
         let reads = &published.reads;
         assert!(reads.streaming && reads.projection && reads.filter && reads.ordering);
-        assert!(!reads.server_cursor && !reads.pagination && !reads.object_id_windows);
+        assert!(!reads.server_cursor && !reads.pagination);
         assert!(!reads.resumable);
         // E dove il crate non offre niente, i due prodotti dicono la stessa
         // cosa: una bandiera chiusa qui non e una divergenza di prodotto.
         let mysql_reads = &MYSQL_PROFILE.capabilities("9.7.2".to_owned()).reads;
         assert_eq!(reads.server_cursor, mysql_reads.server_cursor);
         assert_eq!(reads.pagination, mysql_reads.pagination);
-        assert_eq!(reads.object_id_windows, mysql_reads.object_id_windows);
         assert_eq!(reads.resumable, mysql_reads.resumable);
 
         // La scrittura no: nessun piano e mai stato eseguito con questo
@@ -3257,7 +3244,7 @@ mod tests {
         );
         assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
         assert!(!writes.bulk && !writes.array_binding && !writes.returning);
-        assert!(!writes.apply_edits && !writes.rollback_on_failure && !writes.use_global_ids);
+        assert!(!writes.rollback_on_failure);
 
         // Spatial: la lettura del WKB non e stata provata attraverso il
         // provider, la scrittura nemmeno, e la lista delle funzioni verified

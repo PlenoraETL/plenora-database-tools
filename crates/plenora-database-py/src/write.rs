@@ -33,7 +33,7 @@ use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, Sec
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyDict;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -148,21 +148,6 @@ fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<B
     rows.set_item("skipped", outcome.rows.skipped)?;
     d.set_item("rows", rows)?;
 
-    if outcome.layer_outcomes.is_empty() {
-        d.set_item("layer_outcomes", PyList::empty(py))?;
-    } else {
-        let list = PyList::empty(py);
-        for l in &outcome.layer_outcomes {
-            let ld = PyDict::new(py);
-            ld.set_item("layer", l.layer.clone())?;
-            ld.set_item("status", format!("{:?}", l.status).to_lowercase())?;
-            ld.set_item("confirmed", l.confirmed)?;
-            ld.set_item("failed", l.failed)?;
-            list.append(ld)?;
-        }
-        d.set_item("layer_outcomes", list)?;
-    }
-
     if let Some(recovery) = &outcome.recovery {
         let rd = PyDict::new(py);
         rd.set_item(
@@ -227,7 +212,6 @@ pub(crate) fn make_operation(
             catalog: None,
             schema: Some(schema.to_owned()),
             object: table.to_owned(),
-            layer_id: None,
         },
         mode,
         mapping_policy,

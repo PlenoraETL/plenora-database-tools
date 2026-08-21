@@ -53,7 +53,6 @@ fn public_ref(object: &str) -> ObjectRef {
         catalog: None,
         schema: Some("public".to_owned()),
         object: object.to_owned(),
-        layer_id: None,
     }
 }
 

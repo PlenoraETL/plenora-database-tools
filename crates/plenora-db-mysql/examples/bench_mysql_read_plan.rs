@@ -77,7 +77,6 @@ fn read_operation(terms: usize) -> ReadOperation {
             catalog: None,
             schema: Some("dataflow_test".to_owned()),
             object: "events".to_owned(),
-            layer_id: None,
         },
         projection: Vec::new(),
         order_by: vec![OrderBy {

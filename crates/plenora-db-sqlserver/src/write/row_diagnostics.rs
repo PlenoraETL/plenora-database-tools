@@ -377,7 +377,6 @@ mod tests {
                 catalog: None,
                 schema: Some("dbo".to_owned()),
                 object: "parcels".to_owned(),
-                layer_id: None,
             },
             mode,
             mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
@@ -466,7 +465,6 @@ mod tests {
             TransactionProfile::StagedSwap,
             TransactionProfile::ChunkCommitted,
             TransactionProfile::BestEffortDdl,
-            TransactionProfile::ArcgisApplyEdits,
         ] {
             assert!(validate_input(
                 &schema,

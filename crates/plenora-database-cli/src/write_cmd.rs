@@ -113,7 +113,6 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
             catalog: None,
             schema: Some(schema),
             object,
-            layer_id: None,
         },
         mode,
         mapping_policy: MappingPolicy::Strict,

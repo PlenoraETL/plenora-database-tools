@@ -447,7 +447,7 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
 
 #[test]
 fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
-    for provider in ["mariadb", "oracle", "db2", "sqlite", "duckdb", "arcgis"] {
+    for provider in ["mariadb", "oracle", "db2", "sqlite", "duckdb"] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);
         assert_eq!(envelope["error"]["category"], "unsupported");

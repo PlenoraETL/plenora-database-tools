@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-pub const GOLDEN_V1: &str = include_str!("../../../golden/v1/cases.json");
+pub const GOLDEN_SUITE: &str = include_str!("../../../golden/v2/cases.json");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,21 +42,24 @@ pub struct GoldenCase {
 
 /// Carica e verifica il catalogo golden incorporato nel binario di test.
 ///
+/// E la suite della major attiva: `golden/v1` resta come la sua major di
+/// contratto, ritirata, e nessuno la carica piu.
+///
 /// # Errors
 ///
 /// Restituisce `InvalidPlan` se il JSON è invalido, vuoto o contiene ID
 /// duplicati.
-pub fn golden_v1() -> Result<GoldenSuite> {
-    let suite: GoldenSuite = serde_json::from_str(GOLDEN_V1)
-        .map_err(|_| DatabaseError::invalid_plan("golden v1 non valido"))?;
+pub fn golden_suite() -> Result<GoldenSuite> {
+    let suite: GoldenSuite = serde_json::from_str(GOLDEN_SUITE)
+        .map_err(|_| DatabaseError::invalid_plan("golden non valido"))?;
     let mut ids = BTreeSet::new();
-    if suite.schema_version != 1
-        || suite.suite != "golden-v1"
+    if suite.schema_version != 2
+        || suite.suite != "golden-v2"
         || suite.cases.is_empty()
         || !suite.cases.iter().all(|case| ids.insert(case.id.clone()))
     {
         return Err(DatabaseError::invalid_plan(
-            "golden v1 incoerente o con id duplicati",
+            "golden incoerente o con id duplicati",
         ));
     }
     Ok(suite)
@@ -92,8 +95,8 @@ mod tests {
 
     #[test]
     fn embedded_golden_suite_is_valid() {
-        let suite = golden_v1().expect("golden");
-        assert_eq!(suite.cases.len(), 20);
+        let suite = golden_suite().expect("golden");
+        assert_eq!(suite.cases.len(), 17);
     }
 
     #[test]

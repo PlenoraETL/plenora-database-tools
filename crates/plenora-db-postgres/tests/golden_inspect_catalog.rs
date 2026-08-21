@@ -45,7 +45,6 @@ fn public_ref(object: &str) -> ObjectRef {
         catalog: None,
         schema: Some("public".to_owned()),
         object: object.to_owned(),
-        layer_id: None,
     }
 }
 
@@ -136,7 +135,6 @@ async fn h7c_list_objects_returns_relations_of_the_schema() {
                     catalog: None,
                     schema: Some("public".to_owned()),
                     object: String::new(),
-                    layer_id: None,
                 }),
             },
             &cancel,

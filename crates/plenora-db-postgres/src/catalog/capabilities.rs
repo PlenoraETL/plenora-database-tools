@@ -43,7 +43,6 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             // cursore server nominato o riprendibile.
             server_cursor: false,
             pagination: true,
-            object_id_windows: false,
             projection: true,
             filter: true,
             ordering: true,
@@ -63,9 +62,7 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             array_binding: false,
             // WriteOutcome non trasporta ancora righe restituite.
             returning: false,
-            apply_edits: false,
             rollback_on_failure: true,
-            use_global_ids: false,
         },
         transactions: TransactionCapabilities {
             single_transaction: true,
@@ -105,7 +102,6 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             max_statement_bytes: None,
             max_batch_rows: None,
             max_payload_bytes: None,
-            max_record_count: None,
         },
     })
 }
