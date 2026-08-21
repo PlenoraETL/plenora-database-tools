@@ -60,19 +60,37 @@ impl std::fmt::Debug for MysqlProvider {
     }
 }
 
-/// Il profilo che il costruttore pubblico seleziona.
+/// Il profilo che il costruttore pubblico di un provider seleziona.
 ///
-/// Questa riga e la fonte: `new` la usa, `the_published_profile_is_the_one_the_
-/// constructor_selects` verifica che il provider costruito sia davvero quello,
-/// e `docs/STATO.md` la legge per sapere quali dichiarazioni di capability un
-/// consumatore puo raggiungere.
+/// La dichiarazione appartiene al **tipo**, non al crate, e la ragione e la
+/// cardinalita che arriva: questo crate pubblichera due provider, e una
+/// costante sola non potrebbe descriverli entrambi. Con l'associazione al
+/// tipo, `MariadbProvider` portera la propria il giorno che esiste, senza che
+/// niente qui debba cambiare.
+///
+/// Chi la legge, e per cosa:
+///
+/// * il costruttore pubblico, che usa `Self::PROFILE` invece di scegliere;
+/// * `the_published_profile_is_the_one_the_constructor_selects`, che verifica
+///   che il provider costruito sia davvero quello — la dichiarazione da sola
+///   potrebbe dire una cosa e il costruttore farne un'altra;
+/// * `docs/STATO.md`, che da qui sa quali dichiarazioni di capability un
+///   consumatore puo raggiungere.
 ///
 /// Gli altri profili del crate esistono per la misura e restano interni:
-/// `with_profile` e `pub(crate)`, e finche questa costante non cambia non c'e
-/// modo pubblico di ottenerli.
-///
-/// Sta in questo modulo e non oltre: la usa il costruttore, che e qui.
-const PUBLISHED_PROFILE: &dyn ProductProfile = &MYSQL_PROFILE;
+/// `with_profile` e `pub(crate)`, e finche nessun tipo esportato li dichiara
+/// non c'e modo pubblico di ottenerli.
+// `pub(crate)` e non privato al modulo, e non e ridondante come sembra: il
+// secondo provider di questo crate lo implementera, e non e detto che nasca
+// qui dentro. Un tratto che vale per il crate si dichiara per il crate.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) trait PublishedProfile {
+    const PROFILE: &'static dyn ProductProfile;
+}
+
+impl PublishedProfile for MysqlProvider {
+    const PROFILE: &'static dyn ProductProfile = &MYSQL_PROFILE;
+}
 
 impl MysqlProvider {
     /// Costruisce un provider con pool lazy e configurazione validata.
@@ -81,7 +99,7 @@ impl MysqlProvider {
     ///
     /// Fallisce se configurazione o limiti del pool non sono validi.
     pub fn new(config: MysqlConfig, max_connections: usize) -> Result<Self> {
-        Self::with_profile(config, max_connections, PUBLISHED_PROFILE)
+        Self::with_profile(config, max_connections, Self::PROFILE)
     }
 
     /// Il costruttore reale: nessun `MysqlProvider` esiste senza un profilo.
@@ -1143,8 +1161,8 @@ mod tests {
 
     /// Il provider che il costruttore pubblico restituisce e quello dichiarato.
     ///
-    /// La dichiarazione da sola non prova niente: `PUBLISHED_PROFILE` potrebbe
-    /// dire una cosa e `new` sceglierne un'altra. Qui si costruisce davvero, e
+    /// La dichiarazione da sola non prova niente: `PublishedProfile::PROFILE`
+    /// potrebbe dire una cosa e `new` sceglierne un'altra. Qui si costruisce davvero, e
     /// si confronta il prodotto servito con quello promesso.
     ///
     /// E il lato Rust di una garanzia che `docs/STATO.md` riporta: quali
@@ -1160,8 +1178,9 @@ mod tests {
             SecretString::new("unique-secret"),
         );
         let provider = MysqlProvider::new(config, 1).expect("provider");
-        assert_eq!(provider.kind(), PUBLISHED_PROFILE.kind());
-        assert_eq!(provider.profile.product(), PUBLISHED_PROFILE.product());
+        let declared = <MysqlProvider as PublishedProfile>::PROFILE;
+        assert_eq!(provider.kind(), declared.kind());
+        assert_eq!(provider.profile.product(), declared.product());
         assert_eq!(
             provider.profile.product(),
             crate::profile::MYSQL_PROFILE.product()

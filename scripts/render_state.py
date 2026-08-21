@@ -51,12 +51,23 @@ TARGET = ROOT / "docs" / "STATO.md"
 # `impl` seleziona il blocco quando un file ne contiene piu d'uno: il profilo
 # MySQL e quello MariaDB stanno nello stesso modulo, e il terzo profilo di quel
 # file esiste solo per i test.
+# Ogni riga: come si chiama il prodotto, il crate, dove sta la dichiarazione
+# di capability, come selezionarla se il file ne contiene piu d'una, il tipo
+# provider che dovrebbe pubblicarla, e il profilo che quel tipo deve
+# dichiarare — `None` per i crate che non hanno profili.
+#
+# `MariadbProvider` non esiste ancora, ed e scritto lo stesso: e cio che rende
+# la riga una domanda invece che un'affermazione. Finche quel tipo non esiste,
+# non e esportato e non dichiara niente, il prodotto risulta non pubblicato; il
+# giorno che esiste, con il suo `impl PublishedProfile`, la risposta cambia da
+# sola.
 CAPABILITY_SOURCES = (
     (
         "PostgreSQL",
         "crates/plenora-db-postgres",
         "crates/plenora-db-postgres/src/catalog/capabilities.rs",
         None,
+        "PostgresProvider",
         None,
     ),
     (
@@ -64,6 +75,7 @@ CAPABILITY_SOURCES = (
         "crates/plenora-db-mysql",
         "crates/plenora-db-mysql/src/profile.rs",
         "impl ProductProfile for MysqlProfile",
+        "MysqlProvider",
         "MYSQL_PROFILE",
     ),
     (
@@ -71,6 +83,7 @@ CAPABILITY_SOURCES = (
         "crates/plenora-db-mysql",
         "crates/plenora-db-mysql/src/profile.rs",
         "impl ProductProfile for MariadbProfile",
+        "MariadbProvider",
         "MARIADB_PROFILE",
     ),
     (
@@ -78,6 +91,7 @@ CAPABILITY_SOURCES = (
         "crates/plenora-db-sqlserver",
         "crates/plenora-db-sqlserver/src/provider.rs",
         None,
+        "SqlServerProvider",
         None,
     ),
 )
@@ -87,9 +101,15 @@ PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
 PROVIDER_IMPL = r'\bimpl Provider for ([A-Za-z][A-Za-z0-9_]*)'
 # Un `pub use` della radice del crate.
 REEXPORT = r'pub use ([^;]+);'
-# La dichiarazione del profilo pubblicato.
-PUBLISHED_DECLARATION = (
-    r"const PUBLISHED_PROFILE: &\s*(?:'static \s*)?dyn ProductProfile = &([A-Z][A-Z0-9_]*);"
+# La dichiarazione del profilo pubblicato da un tipo provider, in due meta
+# che si concatenano attorno al nome del tipo: la dichiarazione appartiene
+# a lui, non al crate.
+DECLARATION_HEAD = r"impl PublishedProfile for "
+DECLARATION_TAIL = (
+    r"\s*\{\s*const PROFILE: &\s*(?:'static\s*)?dyn "
+    # Il profilo puo essere nominato per intero — `crate::profile::X` — e si
+    # cattura comunque il nome, che e cio che identifica la dichiarazione.
+    r"ProductProfile = &(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]*);"
 )
 # Una voce del catalogo: nome, e la feature che lo compila se ce n'e una.
 COMMAND_ENTRY = r'\("([a-z][a-z0-9-]+)", (?:Some\("([a-z]+)"\)|None)\)'
@@ -183,15 +203,23 @@ def exported_providers(crate: str) -> set[str]:
     return exported
 
 
-def declared_profile(crate: str) -> str | None:
-    """Il profilo che il crate dichiara pubblicato, se ne dichiara uno.
+def declared_profile(crate: str, provider_type: str) -> str | None:
+    """Il profilo che **quel tipo** dichiara pubblicato, se lo dichiara.
+
+    Associata al tipo e non al crate, perche questo crate pubblichera due
+    provider: una dichiarazione per crate ne descriverebbe uno solo, e due
+    costanti in moduli diversi si sarebbero risolte prendendo la prima
+    trovata — cioe a caso.
 
     La dichiarazione e una riga sola, e il renderer si limita a leggerla: che
     il costruttore la usi davvero lo prova un test Rust, non un'analisi del
     sorgente fatta da qui.
     """
+    declaration = re.compile(
+        DECLARATION_HEAD + re.escape(provider_type) + DECLARATION_TAIL
+    )
     for _, source in crate_sources(crate):
-        match = re.search(PUBLISHED_DECLARATION, source)
+        match = declaration.search(source)
         if match:
             return match.group(1)
     return None
@@ -199,18 +227,12 @@ def declared_profile(crate: str) -> str | None:
 
 def capability_matrix() -> dict[str, dict[str, object]]:
     matrix: dict[str, dict[str, object]] = {}
-    for provider, crate, source, marker, profile in CAPABILITY_SOURCES:
-        exported = bool(exported_providers(crate))
+    for provider, crate, source, marker, provider_type, profile in CAPABILITY_SOURCES:
+        exported = provider_type in exported_providers(crate)
         if profile is None:
             published = exported
         else:
-            declared = declared_profile(crate)
-            if declared is None:
-                raise RenderError(
-                    f"{crate} ha piu profili ma non dichiara "
-                    f"PUBLISHED_PROFILE: quale sia pubblicato non si indovina"
-                )
-            published = exported and profile == declared
+            published = exported and profile == declared_profile(crate, provider_type)
         matrix[provider] = {
             "published": published,
             "groups": {
@@ -218,7 +240,37 @@ def capability_matrix() -> dict[str, dict[str, object]]:
                 for name, kind in CAPABILITY_GROUPS
             },
         }
+    verify_every_exported_provider_declares_its_profile()
     return matrix
+
+
+def verify_every_exported_provider_declares_its_profile() -> None:
+    """Un provider esportato senza dichiarazione non e descrivibile.
+
+    Il caso si presenta appena qualcuno esporta un provider nuovo e si
+    dimentica l'`impl PublishedProfile`: senza questa riga il renderer lo
+    tratterebbe come non pubblicato, cioe direbbe una cosa falsa in silenzio.
+    Meglio fermarsi e chiedere la dichiarazione.
+    """
+    profiled = {
+        crate for _, crate, _, _, _, profile in CAPABILITY_SOURCES if profile
+    }
+    known = {
+        (crate, provider_type)
+        for _, crate, _, _, provider_type, _ in CAPABILITY_SOURCES
+    }
+    for crate in sorted(profiled):
+        for provider_type in sorted(exported_providers(crate)):
+            if (crate, provider_type) not in known:
+                raise RenderError(
+                    f"{crate} esporta {provider_type}, che non compare fra i "
+                    f"prodotti descritti"
+                )
+            if declared_profile(crate, provider_type) is None:
+                raise RenderError(
+                    f"{provider_type} e esportato ma non dichiara un "
+                    f"PublishedProfile: quale profilo pubblichi non si indovina"
+                )
 
 
 def workspace_version() -> str:
@@ -304,7 +356,7 @@ def table(header: list[str], rows: list[list[str]]) -> list[str]:
 
 def render() -> str:
     matrix = capability_matrix()
-    providers = [name for name, _, _, _, _ in CAPABILITY_SOURCES]
+    providers = [name for name, *_ in CAPABILITY_SOURCES]
     unpublished = [
         name for name in providers if not matrix[name]["published"]
     ]
