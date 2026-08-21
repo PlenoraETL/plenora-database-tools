@@ -202,17 +202,55 @@ pub(super) async fn publish_replacement(
         schema: Some(schema_id),
         object: backup_id,
     })?;
-    let mut query = Query::new(format!(
-        "EXEC sys.sp_rename @P1, @P2, N'OBJECT'; \
-         EXEC sys.sp_rename @P3, @P4, N'OBJECT'; \
-         DROP TABLE {backup};"
-    ));
-    query.bind(original);
-    query.bind(backup_object.to_owned());
-    query.bind(staging);
-    query.bind(object.to_owned());
+    let publish = PublishStatement::new(&original, &staging, &backup, object, backup_object);
+    let mut query = Query::new(publish.sql);
+    for value in publish.binds {
+        query.bind(value);
+    }
     session.execute_write_query(query, cancellation).await?;
     Ok(())
+}
+
+/// Lo statement che pubblica una `Replace`, con i suoi parametri in ordine.
+///
+/// Il ciclo e uno solo, e questa struttura e il posto dove si legge per
+/// intero: il target prende il nome del backup, lo staging prende il nome del
+/// target, e il backup — che a quel punto porta i dati vecchi — viene
+/// eliminato. Non c'e un istante in cui il nome del target non esiste, e non
+/// c'e un percorso in cui il `DROP` colpisce qualcosa di diverso dal backup.
+///
+/// Vive separata da [`publish_replacement`] perche quella chiede una sessione:
+/// una garanzia che si puo verificare solo con un server acceso e una garanzia
+/// che nessuno verifica.
+struct PublishStatement {
+    sql: String,
+    binds: Vec<String>,
+}
+
+impl PublishStatement {
+    fn new(
+        original_quoted: &str,
+        staging_quoted: &str,
+        backup_quoted: &str,
+        object: &str,
+        backup_object: &str,
+    ) -> Self {
+        Self {
+            sql: format!(
+                "EXEC sys.sp_rename @P1, @P2, N'OBJECT'; \
+                 EXEC sys.sp_rename @P3, @P4, N'OBJECT'; \
+                 DROP TABLE {backup_quoted};"
+            ),
+            // `sp_rename` vuole il nome vecchio qualificato e quello nuovo
+            // nudo: il secondo e un nome, non un riferimento.
+            binds: vec![
+                original_quoted.to_owned(),
+                backup_object.to_owned(),
+                staging_quoted.to_owned(),
+                object.to_owned(),
+            ],
+        }
+    }
 }
 
 fn one_row(mut results: Vec<Vec<Row>>, context: &str, phase: ErrorPhase) -> Result<Row> {
@@ -315,5 +353,75 @@ mod tests {
         let current = replace_external_state_sql(true, true);
         assert!(current.contains("ledger_type"));
         assert!(current.contains("xml_compression"));
+    }
+
+    /// Il ciclo di publish di una `Replace`, per intero e nell'ordine.
+    ///
+    /// SQL Server non rinomina in un colpo solo: il target diventa il backup,
+    /// lo staging diventa il target, e il backup sparisce. Ogni passo dipende
+    /// dal precedente, e invertirne due lascerebbe il target con i dati
+    /// vecchi o senza dati affatto. La garanzia stava in una frase di un
+    /// documento — per giunta imprecisa, perche diceva "publish invece di
+    /// RENAME" mentre il publish e fatto di due `sp_rename` — e quel
+    /// documento non c'e piu.
+    #[test]
+    fn the_replace_publish_renames_twice_and_drops_only_the_backup() {
+        let publish = PublishStatement::new(
+            "[dbo].[assets]",
+            "[dbo].[assets__pln_stage_1_2]",
+            "[dbo].[assets__pln_backup_1_2]",
+            "assets",
+            "assets__pln_backup_1_2",
+        );
+
+        // Due rinomine, e in quest'ordine.
+        assert_eq!(publish.sql.matches("sp_rename").count(), 2);
+        let first = publish.sql.find("sp_rename").expect("prima rinomina");
+        let second = publish.sql[first + 1..]
+            .find("sp_rename")
+            .expect("seconda rinomina")
+            + first
+            + 1;
+        let drop = publish.sql.find("DROP TABLE").expect("drop del backup");
+        assert!(first < second && second < drop, "{}", publish.sql);
+
+        // I quattro parametri dicono chi diventa cosa.
+        assert_eq!(
+            publish.binds,
+            vec![
+                // 1. il target di oggi prende il nome del backup
+                "[dbo].[assets]".to_owned(),
+                "assets__pln_backup_1_2".to_owned(),
+                // 2. lo staging prende il nome del target
+                "[dbo].[assets__pln_stage_1_2]".to_owned(),
+                "assets".to_owned(),
+            ]
+        );
+
+        // 3. e sparisce il backup, non il target.
+        assert!(publish
+            .sql
+            .contains("DROP TABLE [dbo].[assets__pln_backup_1_2];"));
+        assert!(!publish.sql.contains("DROP TABLE [dbo].[assets];"));
+    }
+
+    /// Il nome nuovo passato a `sp_rename` non e qualificato.
+    ///
+    /// `sp_rename` interpreta il secondo argomento come il nome che l'oggetto
+    /// deve assumere, non come un riferimento: passarlo qualificato produce un
+    /// oggetto il cui nome contiene le parentesi quadre.
+    #[test]
+    fn the_new_names_are_bare_and_the_old_ones_qualified() {
+        let publish = PublishStatement::new(
+            "[dbo].[assets]",
+            "[dbo].[assets__pln_stage_1_2]",
+            "[dbo].[assets__pln_backup_1_2]",
+            "assets",
+            "assets__pln_backup_1_2",
+        );
+        assert!(publish.binds[0].starts_with('['));
+        assert!(!publish.binds[1].contains('['));
+        assert!(publish.binds[2].starts_with('['));
+        assert!(!publish.binds[3].contains('['));
     }
 }
