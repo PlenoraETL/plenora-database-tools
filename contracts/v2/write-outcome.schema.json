@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/write-outcome.schema.json",
+  "title": "Canonical write outcome",
+  "oneOf": [
+    {"$ref": "#/$defs/committed"},
+    {"$ref": "#/$defs/rolled_back"},
+    {"$ref": "#/$defs/partial"},
+    {"$ref": "#/$defs/unknown"}
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "execution_id",
+        "provider",
+        "rows"
+      ],
+      "properties": {
+        "schema_version": {"const": 2},
+        "status": {"type": "string"},
+        "execution_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "provider": {
+          "$ref": "common.schema.json#/$defs/provider_kind"
+        },
+        "rows": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["received", "confirmed", "failed", "skipped"],
+          "properties": {
+            "received": {"type": "integer", "minimum": 0},
+            "confirmed": {"type": "integer", "minimum": 0},
+            "inserted": {"type": ["integer", "null"], "minimum": 0},
+            "updated": {"type": ["integer", "null"], "minimum": 0},
+            "deleted": {"type": ["integer", "null"], "minimum": 0},
+            "failed": {"type": "integer", "minimum": 0},
+            "skipped": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "committed": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "properties": {"status": {"const": "committed"}}
+        }
+      ]
+    },
+    "rolled_back": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "properties": {"status": {"const": "rolled_back"}}
+        }
+      ]
+    },
+    "partial": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["recovery"],
+          "properties": {
+            "status": {"const": "partially_committed"},
+            "recovery": {"$ref": "#/$defs/recovery"}
+          }
+        }
+      ]
+    },
+    "unknown": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "required": ["recovery"],
+          "properties": {
+            "status": {"const": "outcome_unknown"},
+            "recovery": {"$ref": "#/$defs/recovery"}
+          }
+        }
+      ]
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["last_certain_phase", "automatic_retry_allowed"],
+      "properties": {
+        "last_certain_phase": {
+          "enum": [
+            "session_ready",
+            "transaction_begun",
+            "staging_prepared",
+            "writing",
+            "finalizing",
+            "commit_requested"
+          ]
+        },
+        "automatic_retry_allowed": {"type": "boolean"},
+        "idempotency_key": {"type": ["string", "null"], "maxLength": 256},
+        "staging_object": {"type": ["string", "null"], "maxLength": 512},
+        "verification_action": {"type": ["string", "null"], "maxLength": 1024}
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "policy": "strict",
+  "losses": [
+    {
+      "field_id": 3,
+      "category": "srid",
+      "severity": "data_loss",
+      "reason": "Il target non dichiara un SRID compatibile; il piano deve essere rifiutato.",
+      "source_type": "geoarrow.wkb;srid=4326",
+      "target_type": "geometry;srid=unknown"
+    }
+  ]
+}

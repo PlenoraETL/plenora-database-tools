@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": {"const": 2},
     "provider": {
-      "$ref": "https://plenora.local/database-tools/v1/common.schema.json#/$defs/provider_kind"
+      "$ref": "common.schema.json#/$defs/provider_kind"
     },
     "provider_version": {
       "type": "string",
@@ -37,7 +37,6 @@
         "streaming": {"type": "boolean"},
         "server_cursor": {"type": "boolean"},
         "pagination": {"type": "boolean"},
-        "object_id_windows": {"type": "boolean"},
         "projection": {"type": "boolean"},
         "filter": {"type": "boolean"},
         "ordering": {"type": "boolean"},
@@ -59,12 +58,10 @@
         "bulk": {"type": "boolean"},
         "array_binding": {"type": "boolean"},
         "returning": {"type": "boolean"},
-        "apply_edits": {"type": "boolean"},
         "rollback_on_failure": {
           "type": "boolean",
           "description": "Un fallimento prima del commit annulla le RIGHE scritte dall'operazione. Non riguarda lo schema: il DDL con cui una mode prepara il target (Create, su alcuni provider Replace) puo sopravvivere al rollback quando transactions.transactional_ddl e false. In quel caso l'esito dell'operazione lo dichiara con remote_effect=partial e retry=requires_recovery."
-        },
-        "use_global_ids": {"type": "boolean"}
+        }
       }
     },
     "transactions": {
@@ -76,7 +73,7 @@
         "transactional_ddl": {"type": "boolean"},
         "staged_swap": {"type": "boolean"},
         "scope": {
-          "enum": ["none", "statement", "transaction", "edit_request", "layer", "service"]
+          "enum": ["none", "statement", "transaction"]
         }
       }
     },
@@ -130,8 +127,7 @@
         "max_bind_parameters": {"type": ["integer", "null"], "minimum": 1},
         "max_statement_bytes": {"type": ["integer", "null"], "minimum": 1},
         "max_batch_rows": {"type": ["integer", "null"], "minimum": 1},
-        "max_payload_bytes": {"type": ["integer", "null"], "minimum": 1},
-        "max_record_count": {"type": ["integer", "null"], "minimum": 1}
+        "max_payload_bytes": {"type": ["integer", "null"], "minimum": 1}
       }
     }
   }

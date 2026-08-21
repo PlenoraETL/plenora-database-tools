@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/plan.schema.json",
+  "title": "Validated input envelope for plenora-database-tools",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "connection_ref",
+    "provider",
+    "operation"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "connection_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "provider": {
+      "$ref": "common.schema.json#/$defs/provider_kind"
+    },
+    "operation": {
+      "oneOf": [
+        {"$ref": "#/$defs/test_connection"},
+        {"$ref": "#/$defs/inspect"},
+        {"$ref": "#/$defs/read"},
+        {"$ref": "#/$defs/write"}
+      ]
+    },
+    "limits": {"$ref": "#/$defs/limits"}
+  },
+  "$defs": {
+    "test_connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "const": "database.test_connection"
+        }
+      }
+    },
+    "inspect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "enum": [
+            "database.list_catalogs",
+            "database.list_schemas",
+            "database.list_objects",
+            "database.describe_object"
+          ]
+        },
+        "source": {
+          "$ref": "common.schema.json#/$defs/object_ref"
+        }
+      }
+    },
+    "read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source"],
+      "properties": {
+        "id": {"const": "database.read"},
+        "source": {
+          "$ref": "common.schema.json#/$defs/object_ref"
+        },
+        "projection": {
+          "type": "array",
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/identifier"
+          }
+        },
+        "order_by": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "direction"],
+            "properties": {
+              "field": {
+                "$ref": "common.schema.json#/$defs/identifier"
+              },
+              "direction": {"enum": ["asc", "desc"]}
+            }
+          }
+        },
+        "row_limit": {"type": "integer", "minimum": 0},
+        "filter": {"$ref": "#/$defs/expression"}
+      }
+    },
+    "write": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "target", "mode", "mapping_policy", "transaction_profile"],
+      "properties": {
+        "id": {"const": "database.write"},
+        "target": {
+          "$ref": "common.schema.json#/$defs/object_ref"
+        },
+        "mode": {
+          "enum": [
+            "create",
+            "append",
+            "replace",
+            "truncate_insert",
+            "update",
+            "upsert",
+            "delete_by_keys"
+          ]
+        },
+        "mapping_policy": {
+          "$ref": "common.schema.json#/$defs/mapping_policy"
+        },
+        "transaction_profile": {
+          "$ref": "common.schema.json#/$defs/transaction_profile"
+        },
+        "keys": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/identifier"
+          }
+        },
+        "update_columns": {
+          "type": "array",
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/identifier"
+          }
+        },
+        "srid_policy": {
+          "enum": ["require_match", "allow_unknown", "reject_spatial"]
+        },
+        "create_spatial_index": {"type": "boolean"},
+        "allow_partial": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": ["update", "upsert", "delete_by_keys"]
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["keys"],
+            "properties": {
+              "keys": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"mode": {"const": "update"}},
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["update_columns"],
+            "properties": {
+              "update_columns": {"minItems": 1}
+            }
+          }
+        }
+      ]
+    },
+    "expression": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "args"],
+          "properties": {
+            "op": {"enum": ["and", "or"]},
+            "args": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {"$ref": "#/$defs/expression"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "parameter"],
+          "properties": {
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "lt",
+                "lte",
+                "gt",
+                "gte"
+              ]
+            },
+            "field": {
+              "$ref": "common.schema.json#/$defs/identifier"
+            },
+            "parameter": {
+              "$ref": "common.schema.json#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field"],
+          "properties": {
+            "op": {"enum": ["is_null", "is_not_null"]},
+            "field": {
+              "$ref": "common.schema.json#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "parameters"],
+          "properties": {
+            "op": {"const": "in"},
+            "field": {"$ref": "common.schema.json#/$defs/identifier"},
+            "parameters": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1024,
+              "items": {"$ref": "common.schema.json#/$defs/identifier"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "lower_parameter", "upper_parameter"],
+          "properties": {
+            "op": {"const": "between"},
+            "field": {"$ref": "common.schema.json#/$defs/identifier"},
+            "lower_parameter": {"$ref": "common.schema.json#/$defs/identifier"},
+            "upper_parameter": {"$ref": "common.schema.json#/$defs/identifier"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "field", "parameter"],
+          "properties": {
+            "op": {"const": "like"},
+            "field": {"$ref": "common.schema.json#/$defs/identifier"},
+            "parameter": {"$ref": "common.schema.json#/$defs/identifier"},
+            "case_insensitive": {"type": "boolean"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "function", "field"],
+          "properties": {
+            "op": {"const": "spatial"},
+            "function": {
+              "enum": [
+                "is_empty", "is_valid", "intersects", "contains", "within",
+                "covers", "touches", "crosses", "overlaps", "disjoint",
+                "d_within"
+              ]
+            },
+            "field": {"$ref": "common.schema.json#/$defs/identifier"},
+            "geometry_parameter": {"$ref": "common.schema.json#/$defs/identifier"},
+            "distance_parameter": {"$ref": "common.schema.json#/$defs/identifier"}
+          }
+        }
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_rows": {"type": "integer", "minimum": 0},
+        "max_batches": {"type": "integer", "minimum": 1},
+        "max_memory_bytes": {"type": "integer", "minimum": 1},
+        "max_batch_bytes": {"type": "integer", "minimum": 1},
+        "max_wkb_cell_bytes": {"type": "integer", "minimum": 1},
+        "timeout_ms": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

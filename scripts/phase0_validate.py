@@ -29,23 +29,33 @@ except ImportError as exc:  # pragma: no cover - dipendenza del tooling
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_ROOT = REPO_ROOT / "contracts" / "v1"
-# Le major di contratto presenti. La `v1` resta immutabile; la `v2` contiene
-# solo il messaggio che ha cambiato major — le capability — e referenzia per
-# `$id` le definizioni comuni della v1 invece di duplicarle. Il registry le
-# tiene tutte, altrimenti un `$ref` fra versioni non risolverebbe.
+# Le major di contratto presenti. Il registry le tiene tutte, perche gli schemi
+# vanno comunque validati; ma una sola e **attiva**, ed e quella che il codice
+# emette e che i gate misurano. Le altre sono ritirate: restano leggibili per
+# chi deve interpretare un documento vecchio, e nessuno le referenzia.
+ACTIVE_MAJOR = "v2"
 CONTRACT_ROOTS = tuple(
     sorted(
         (path for path in (REPO_ROOT / "contracts").iterdir() if path.is_dir()),
         key=lambda path: path.name,
     )
 )
-GOLDEN_PATH = REPO_ROOT / "golden" / "v1" / "cases.json"
+ACTIVE_CONTRACT_ROOT = REPO_ROOT / "contracts" / ACTIVE_MAJOR
+RETIRED_CONTRACT_ROOTS = tuple(
+    root for root in CONTRACT_ROOTS if root.name != ACTIVE_MAJOR
+)
+GOLDEN_ROOT = REPO_ROOT / "golden"
 BENCHMARK_MANIFEST = (
     REPO_ROOT / "benchmarks" / "manifests" / "phase0-smoke.json"
 )
 SPATIAL_CATALOG = REPO_ROOT / "catalog" / "spatial-functions.v1.json"
-CAPABILITIES_SCHEMA = CONTRACT_ROOT / "capabilities.schema.json"
+CAPABILITIES_SCHEMA = ACTIVE_CONTRACT_ROOT / "capabilities.schema.json"
+# Il dominio di questi contratti sono i database. Un termine che appartiene a
+# un altro dominio, dentro la major attiva, e una superficie che rientra dalla
+# finestra: il controllo e strutturale — cerca la stringa negli schemi, negli
+# esempi e nella suite golden attivi — invece di fidarsi di una frase in un
+# documento che dice che non c'e piu.
+FOREIGN_DOMAIN_TERMS = ("arcgis", "feature_service", "apply_edits", "global_id")
 
 
 class ValidationError(RuntimeError):
@@ -157,35 +167,95 @@ def validate_examples(
     return validated
 
 
+def validate_active_domain() -> int:
+    """La major attiva parla di database, e non dipende da una ritirata.
+
+    Due controlli, entrambi sul testo dei file e non su cio che un documento
+    dichiara di aver rimosso:
+
+    1. nessun termine di un dominio estraneo compare negli schemi, negli
+       esempi o nella suite golden attivi;
+    2. nessun `$ref` della major attiva punta all'`$id` di una major ritirata.
+
+    Il secondo e il piu importante: un contratto puo essere ripulito e
+    continuare a referenziare, per una definizione comune, il file da cui
+    quella superficie e stata tolta. In quel caso la superficie e ancora li,
+    raggiungibile, e chi valida non se ne accorge.
+    """
+    inspected = 0
+    retired_ids = tuple(
+        f"https://plenora.local/database-tools/{root.name}/"
+        for root in RETIRED_CONTRACT_ROOTS
+    )
+    active_paths = sorted(ACTIVE_CONTRACT_ROOT.rglob("*.json"))
+    if not active_paths:
+        raise ValidationError(f"major attiva assente: {ACTIVE_MAJOR}")
+    active_suite = sorted((GOLDEN_ROOT / ACTIVE_MAJOR).glob("*.json"))
+    if not active_suite:
+        # Senza questa riga il gate resterebbe verde con la suite attiva
+        # cancellata: gli schemi ci sarebbero ancora, e `validate_golden`
+        # continuerebbe a controllare soltanto le suite ritirate.
+        raise ValidationError(f"suite golden attiva assente: {ACTIVE_MAJOR}")
+    active_paths += active_suite
+    for path in active_paths:
+        text = path.read_text(encoding="utf-8")
+        lowered = text.lower()
+        for term in FOREIGN_DOMAIN_TERMS:
+            if term in lowered:
+                raise ValidationError(
+                    f"dominio estraneo nella major attiva: '{term}' in "
+                    f"{path.relative_to(REPO_ROOT).as_posix()}"
+                )
+        for retired in retired_ids:
+            if retired in text:
+                raise ValidationError(
+                    f"la major attiva referenzia una ritirata: {retired} in "
+                    f"{path.relative_to(REPO_ROOT).as_posix()}"
+                )
+        inspected += 1
+    return inspected
+
+
 def validate_golden(
     schemas: Mapping[Path, Mapping[str, Any]],
     registry: Registry,
 ) -> int:
-    schema_path = (CONTRACT_ROOT / "golden-manifest.schema.json").resolve()
-    golden = load_json(GOLDEN_PATH)
-    validate_instance(golden, schemas[schema_path], registry, "golden")
-    cases = golden["cases"]
-    ids = [case["id"] for case in cases]
-    if len(ids) != len(set(ids)):
-        raise ValidationError("golden case id duplicato")
-    required_categories = {
-        "scalar",
-        "temporal",
-        "binary",
-        "schema",
-        "geometry",
-        "write",
-        "outcome",
-        "arcgis",
-        "security",
-    }
-    actual_categories = {case["category"] for case in cases}
-    missing = sorted(required_categories - actual_categories)
-    if missing:
-        raise ValidationError(
-            f"categorie golden mancanti: {', '.join(missing)}"
+    # Una suite per major, validata contro il manifest della **propria**
+    # major. Le categorie richieste non sono piu un elenco scritto qui: sono
+    # quelle che lo schema dichiara. Cosi togliere una categoria dal dominio la
+    # toglie da entrambi i lati in un colpo solo, e nessuna delle due liste puo
+    # restare indietro rispetto all'altra.
+    total = 0
+    suites = sorted(GOLDEN_ROOT.glob("*/cases.json"))
+    if not suites:
+        raise ValidationError("nessuna suite golden trovata")
+    for suite_path in suites:
+        major = suite_path.parent.name
+        schema_path = (
+            REPO_ROOT / "contracts" / major / "golden-manifest.schema.json"
+        ).resolve()
+        try:
+            schema = schemas[schema_path]
+        except KeyError as exc:
+            raise ValidationError(
+                f"suite golden senza manifest della propria major: {major}"
+            ) from exc
+        golden = load_json(suite_path)
+        validate_instance(golden, schema, registry, f"golden {major}")
+        cases = golden["cases"]
+        ids = [case["id"] for case in cases]
+        if len(ids) != len(set(ids)):
+            raise ValidationError(f"golden case id duplicato: {major}")
+        declared = set(
+            schema["$defs"]["case"]["properties"]["category"]["enum"]
         )
-    return len(cases)
+        missing = sorted(declared - {case["category"] for case in cases})
+        if missing:
+            raise ValidationError(
+                f"categorie golden mancanti in {major}: {', '.join(missing)}"
+            )
+        total += len(cases)
+    return total
 
 
 def validate_benchmark_manifest() -> int:
@@ -291,6 +361,11 @@ def run_gate() -> dict[str, Any]:
             "id": "contract-examples",
             "status": "passed",
             "count": validate_examples(schemas, registry),
+        },
+        {
+            "id": "active-contract-domain",
+            "status": "passed",
+            "count": validate_active_domain(),
         },
         {
             "id": "golden-cases",

@@ -1,4 +1,7 @@
-# Golden suite v1
+# Golden suite v1 — ritirata
+
+**Questa suite e ritirata**, come la major di contratto che la valida.
+La suite attiva e `golden/v2/`. Qui non cambia piu niente.
 
 `cases.json` è il catalogo macchina dei casi che Python e Rust dovranno
 eseguire sugli stessi target isolati.

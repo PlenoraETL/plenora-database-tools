@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/loss-report.schema.json",
+  "title": "Type and spatial mapping loss report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy", "losses"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "policy": {
+      "$ref": "common.schema.json#/$defs/mapping_policy"
+    },
+    "losses": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field_id", "category", "severity", "reason"],
+        "properties": {
+          "field_id": {
+            "$ref": "common.schema.json#/$defs/field_id"
+          },
+          "category": {
+            "enum": [
+              "precision",
+              "scale",
+              "range",
+              "timezone",
+              "encoding",
+              "collation",
+              "native_type",
+              "geometry_type",
+              "dimensions",
+              "srid",
+              "crs",
+              "nullability",
+              "default",
+              "generated"
+            ]
+          },
+          "severity": {"enum": ["information", "warning", "data_loss"]},
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "source_type": {"type": "string", "maxLength": 512},
+          "target_type": {"type": "string", "maxLength": 512}
+        }
+      }
+    }
+  }
+}

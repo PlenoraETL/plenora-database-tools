@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/golden-manifest.schema.json",
+  "title": "Golden cases for semantic compatibility",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite", "cases"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "suite": {"const": "golden-v2"},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "dataset",
+        "category",
+        "classification",
+        "providers",
+        "status",
+        "input",
+        "expected"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[a-z0-9][a-z0-9._-]+$"
+        },
+        "dataset": {
+          "enum": [
+            "empty_v1",
+            "scalars_v1",
+            "wide_rows_v1",
+            "geometry_v1",
+            "keys_conflicts_v1"
+          ]
+        },
+        "category": {
+          "enum": [
+            "scalar",
+            "temporal",
+            "binary",
+            "schema",
+            "geometry",
+            "write",
+            "outcome",
+            "security"
+          ]
+        },
+        "classification": {
+          "enum": ["normative", "corrected", "legacy_compatible", "new"]
+        },
+        "providers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "common.schema.json#/$defs/provider_kind"}
+        },
+        "status": {"enum": ["offline_ready", "database_required"]},
+        "tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        },
+        "input": {"type": "object"},
+        "expected": {"type": "object"},
+        "notes": {"type": "string", "maxLength": 1024}
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from scripts.phase0_validate import (
-    CONTRACT_ROOT,
+    ACTIVE_CONTRACT_ROOT,
     ValidationError,
     build_registry,
     discover_schemas,
@@ -15,8 +15,11 @@ from scripts.phase0_validate import (
 class Phase0ValidateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.schemas = discover_schemas(CONTRACT_ROOT)
+        cls.schemas = discover_schemas(ACTIVE_CONTRACT_ROOT)
         cls.registry = build_registry(cls.schemas.values())
+
+    def plan_schema(self) -> dict:
+        return self.schemas[(ACTIVE_CONTRACT_ROOT / "plan.schema.json").resolve()]
 
     def test_repository_gate_passes(self) -> None:
         report = run_gate()
@@ -27,9 +30,8 @@ class Phase0ValidateTests(unittest.TestCase):
         )
 
     def test_plan_rejects_inline_unknown_properties(self) -> None:
-        schema = self.schemas[(CONTRACT_ROOT / "plan.schema.json").resolve()]
         invalid = {
-            "schema_version": 1,
+            "schema_version": 2,
             "connection_ref": "env:TEST_DSN",
             "provider": "postgres",
             "password": "must-not-be-here",
@@ -37,18 +39,18 @@ class Phase0ValidateTests(unittest.TestCase):
         }
         with self.assertRaises(ValidationError):
             validate_instance(
-                invalid, schema, self.registry, "invalid plan"
+                invalid, self.plan_schema(), self.registry, "invalid plan"
             )
 
     def test_outcome_unknown_requires_recovery(self) -> None:
         schema = self.schemas[
-            (CONTRACT_ROOT / "write-outcome.schema.json").resolve()
+            (ACTIVE_CONTRACT_ROOT / "write-outcome.schema.json").resolve()
         ]
         invalid = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "outcome_unknown",
             "execution_id": "test",
-            "provider": "arcgis",
+            "provider": "postgres",
             "rows": {
                 "received": 1,
                 "confirmed": 0,
@@ -61,26 +63,48 @@ class Phase0ValidateTests(unittest.TestCase):
                 invalid, schema, self.registry, "invalid outcome"
             )
 
-    def test_plan_rejects_provider_operation_mismatch(self) -> None:
-        schema = self.schemas[(CONTRACT_ROOT / "plan.schema.json").resolve()]
+    def test_plan_rejects_an_operation_outside_the_domain(self) -> None:
+        """Le operazioni non-database non sono piu una famiglia separata.
+
+        Nella v1 `arcgis.read` era un'operazione valida, e lo schema si
+        limitava a impedire di abbinarla a un provider database. Qui non e
+        valida affatto: l'`id` non esiste nel contratto.
+        """
         invalid = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "connection_ref": "env:TEST_DSN",
+            "provider": "postgres",
+            "operation": {"id": "arcgis.read", "source": {"object": "events"}},
+        }
+        with self.assertRaises(ValidationError):
+            validate_instance(
+                invalid, self.plan_schema(), self.registry, "operazione estranea"
+            )
+
+    def test_object_ref_rejects_layer_id(self) -> None:
+        """Un database non ha layer, e il riferimento non li indirizza.
+
+        La prova sta qui e non in un documento: `object_ref` chiude le
+        proprieta impreviste, quindi se `layer_id` rientrasse nello schema
+        questo test tornerebbe verde da solo.
+        """
+        invalid = {
+            "schema_version": 2,
             "connection_ref": "env:TEST_DSN",
             "provider": "postgres",
             "operation": {
-                "id": "arcgis.read",
-                "source": {"object": "layer", "layer_id": 0},
+                "id": "database.read",
+                "source": {"object": "events", "layer_id": 0},
             },
         }
         with self.assertRaises(ValidationError):
             validate_instance(
-                invalid, schema, self.registry, "provider mismatch"
+                invalid, self.plan_schema(), self.registry, "layer_id nel piano"
             )
 
     def test_upsert_requires_keys(self) -> None:
-        schema = self.schemas[(CONTRACT_ROOT / "plan.schema.json").resolve()]
         invalid = {
-            "schema_version": 1,
+            "schema_version": 2,
             "connection_ref": "env:TEST_DSN",
             "provider": "postgres",
             "operation": {
@@ -93,7 +117,7 @@ class Phase0ValidateTests(unittest.TestCase):
         }
         with self.assertRaises(ValidationError):
             validate_instance(
-                invalid, schema, self.registry, "upsert without keys"
+                invalid, self.plan_schema(), self.registry, "upsert without keys"
             )
 
 
