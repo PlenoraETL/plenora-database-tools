@@ -2086,6 +2086,548 @@ async fn upsert_preflight_probes(
     }
 }
 
+/// La tabella su cui si misura la scrittura in Append.
+const SCRATCH_APPEND: &str = "plenora_driver_evidence_append";
+
+/// Uno stream di batch che sa anche interrompere la corsa.
+///
+/// La cancellazione ha bisogno di una **barriera osservabile**, non di un
+/// timeout: un `cancel()` dopo N millisecondi cade in un punto diverso a ogni
+/// corsa, e una sonda che misura un punto diverso ogni volta non misura
+/// niente. Qui il punto e dichiarato — la richiesta del batch numero `at` — e
+/// a quel momento il primo batch e gia sul server, dentro la transazione
+/// ancora aperta.
+struct ScriptedBatches {
+    schema: plenora_database_core::arrow::SchemaRef,
+    batches: std::collections::VecDeque<plenora_database_core::arrow::RecordBatch>,
+    declared: u64,
+    /// Quale richiesta cancella la corsa, e quale token cancellare.
+    cancel_at: Option<(usize, CancellationToken)>,
+    served: usize,
+}
+
+impl plenora_database_core::provider::BatchStream for ScriptedBatches {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        std::sync::Arc::clone(&self.schema)
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        self.served += 1;
+        if let Some((at, token)) = &self.cancel_at {
+            if self.served == *at {
+                token.cancel();
+            }
+        }
+        Box::pin(async move { Ok(self.batches.pop_front()) })
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.declared)
+    }
+}
+
+/// Lo schema di ingresso della scrittura: due colonne, nessuna generata.
+fn append_schema() -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    std::sync::Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("payload", DataType::Utf8, false),
+    ]))
+}
+
+/// Un batch con gli id dati, e un payload derivato da ciascuno.
+fn append_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+    use plenora_database_core::arrow::array::{Int32Array, StringArray};
+    let payloads: Vec<String> = ids.iter().map(|id| format!("riga-{id}")).collect();
+    plenora_database_core::arrow::RecordBatch::try_new(
+        append_schema(),
+        vec![
+            std::sync::Arc::new(Int32Array::from(ids.to_vec())),
+            std::sync::Arc::new(StringArray::from(payloads)),
+        ],
+    )
+    .expect("batch della misura: harness, non divergenza")
+}
+
+/// Cosa non torna nell'esito pubblicato da una scrittura riuscita.
+///
+/// L'outcome e contratto: chi lo riceve ci legge lo stato, il prodotto che ha
+/// scritto e la contabilita delle righe. Verificarne due campi lascerebbe
+/// passare un `Committed` che dichiara zero righe ricevute, o un esito
+/// attribuito al prodotto sbagliato — e sono proprio le cose su cui il
+/// chiamante costruisce la propria.
+fn outcome_mismatch(
+    outcome: &plenora_database_core::outcome::WriteOutcome,
+    profile: &dyn ProductProfile,
+    expected: u64,
+) -> Option<String> {
+    use plenora_database_core::outcome::WriteStatus;
+    if outcome.status != WriteStatus::Committed {
+        return Some(format!("stato {:?} invece di Committed", outcome.status));
+    }
+    if outcome.provider != profile.kind() {
+        return Some(format!(
+            "esito attribuito a {:?} invece che a {:?}",
+            outcome.provider,
+            profile.kind()
+        ));
+    }
+    let rows = &outcome.rows;
+    if rows.received != expected || rows.confirmed != expected {
+        return Some(format!(
+            "ricevute {} e confermate {}, attese {expected}",
+            rows.received, rows.confirmed
+        ));
+    }
+    // `updated` e `deleted` sono `Option`, e `None` non e zero: significa "non
+    // pertinente". Per un Append lo sono, e devono dirlo — `None` passava per
+    // buono e nascondeva un esito che non sapeva cosa avesse fatto.
+    if rows.inserted != Some(expected) || rows.updated != Some(0) || rows.deleted != Some(0) {
+        return Some(format!(
+            "inserite {:?}, aggiornate {:?}, cancellate {:?}; attese {expected}, 0 e 0",
+            rows.inserted, rows.updated, rows.deleted
+        ));
+    }
+    if rows.failed != 0 || rows.skipped != 0 {
+        return Some(format!(
+            "fallite {} e saltate {}, attese zero",
+            rows.failed, rows.skipped
+        ));
+    }
+    if outcome.recovery.is_some() {
+        return Some("l'esito porta un recovery che una scrittura riuscita non ha".to_owned());
+    }
+    if !outcome.layer_outcomes.is_empty() {
+        return Some(format!(
+            "{} esiti di layer su una scrittura che non ne ha",
+            outcome.layer_outcomes.len()
+        ));
+    }
+    if outcome.schema_version != 1 {
+        return Some(format!(
+            "schema_version {} invece di 1",
+            outcome.schema_version
+        ));
+    }
+    if outcome.execution_id.is_empty() {
+        return Some("execution_id vuoto: l'esito non e rintracciabile".to_owned());
+    }
+    // E l'esito deve essere coerente con se stesso, secondo il core: e la
+    // stessa verifica che fa chi lo riceve.
+    if let Err(error) = outcome.validate() {
+        return Some(format!(
+            "esito non valido per il contratto: {}",
+            error.message
+        ));
+    }
+    None
+}
+
+/// Cosa c'e nella tabella, letto da **un'altra** connessione.
+///
+/// La rilettura non passa dalla sessione che ha scritto, e non e un dettaglio:
+/// una scrittura che dichiara sei righe e una tabella che ne contiene sei sono
+/// due affermazioni diverse, e la seconda si verifica solo da fuori — dopo il
+/// commit, con una connessione che non ha visto la transazione.
+async fn append_contents(connection: &mut mysql_async::Conn) -> String {
+    connection
+        .query_first::<(i64, Option<String>), _>(format!(
+            "SELECT COUNT(*), GROUP_CONCAT(CONCAT(id, ':', payload) ORDER BY id) \
+             FROM {SCRATCH_APPEND}"
+        ))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |row| {
+                row.map_or_else(
+                    || "rilettura senza righe".to_owned(),
+                    |(count, joined)| {
+                        format!("righe={count} contenuto={}", joined.unwrap_or_default())
+                    },
+                )
+            },
+        )
+}
+
+/// Esegue una scrittura Append con lo stream dato e restituisce l'esito.
+async fn append_write(
+    provider: &MysqlProvider,
+    operation: &WriteOperation,
+    batches: Vec<plenora_database_core::arrow::RecordBatch>,
+    declared: u64,
+    cancel_at: Option<(usize, CancellationToken)>,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::outcome::WriteOutcome, plenora_database_core::DatabaseError> {
+    let budget = read_budget();
+    let prepared = provider
+        .prepare_write(&secret(), operation, append_schema(), &budget, cancellation)
+        .await?;
+    let stream = ScriptedBatches {
+        schema: append_schema(),
+        batches: batches.into_iter().collect(),
+        declared,
+        cancel_at,
+        served: 0,
+    };
+    provider
+        .write(&secret(), prepared, Box::new(stream), &budget, cancellation)
+        .await
+}
+
+/// Riporta la tabella dell'append allo stato noto.
+async fn reset_append(connection: &mut mysql_async::Conn) {
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_APPEND}"),
+        format!(
+            "CREATE TABLE {SCRATCH_APPEND} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella dell'append: harness, non divergenza");
+    }
+}
+
+/// La mode `Append` attraversata con il profilo del prodotto, per intero.
+///
+/// Punto 3 della fase 3, una mode alla volta. `Append` e la piu semplice —
+/// nessun DDL, nessuna keys — e proprio per questo e quella su cui si decide
+/// **come** si misura una scrittura: la riuscita si verifica rileggendo da
+/// un'altra sessione, il rollback pretende due batch di cui il primo arrivato
+/// davvero al server, e la cancellazione una barriera dichiarata invece di un
+/// timeout.
+///
+/// `writes.append` resta chiusa finche le tre sonde non sono verdi su
+/// entrambi i riferimenti: la capability si apre nel commit che le vede
+/// passare, non in quello che le scrive.
+#[allow(clippy::too_many_lines)]
+async fn append_write_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let mut connection = open_connection().await;
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(schema_name.to_owned()),
+            object: SCRATCH_APPEND.to_owned(),
+            layer_id: None,
+        },
+        mode: WriteMode::Append,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+
+    // 1. La scrittura riuscita. Due batch, sei righe, e la verifica da
+    //    un'altra connessione **dopo** il commit: cio che il provider dichiara
+    //    di aver scritto e cio che la tabella contiene sono due affermazioni
+    //    diverse, e la seconda si legge solo da fuori.
+    reset_append(&mut connection).await;
+    let question = "scrive in Append, e le righe si rileggono da un'altra sessione";
+    let expected = "righe=6 contenuto=1:riga-1,2:riga-2,3:riga-3,4:riga-4,5:riga-5,6:riga-6";
+    match append_write(
+        &provider,
+        &operation,
+        vec![append_batch(&[1, 2, 3]), append_batch(&[4, 5, 6])],
+        6,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = append_contents(&mut connection).await;
+            // L'outcome e contratto pubblico: chi lo riceve ci legge lo stato,
+            // il prodotto che ha scritto e la contabilita delle righe. Due
+            // campi su otto non lo presidiano — un `Committed` che dichiarasse
+            // zero righe ricevute, o il prodotto sbagliato, sarebbe passato.
+            let accounting = outcome_mismatch(&outcome, profile, 6);
+            if accounting.is_none() && contents == expected {
+                recorder.accepted(
+                    "provider.profile_write_append",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!("dichiarate={} {contents}", outcome.rows.confirmed),
+                );
+            } else {
+                recorder.rejected(
+                    "provider.profile_write_append",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "contratto non soddisfatto: {}; atteso [{expected}], \
+                         osservato [{contents}]",
+                        accounting.unwrap_or_else(|| "contabilita in ordine".to_owned())
+                    )),
+                    None,
+                );
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_append",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback. Due batch: il primo arriva al server e ci resta finche
+    //    la transazione e aperta, il secondo duplica una chiave primaria e la
+    //    fa abortire. Un errore di mapping o di preflight non proverebbe
+    //    niente — non avrebbe mai scritto nulla da annullare.
+    reset_append(&mut connection).await;
+    let question = "un secondo batch rifiutato dal server annulla anche il primo";
+    // La quaterna misurata, non quella attesa a tavolino: la chiave duplicata
+    // non arriva come conflitto ma come **rifiuto di riga** — il piano di
+    // scrittura la classifica cosi — e l'effetto dichiarato e `RolledBack`,
+    // che e cio che la rilettura conferma.
+    let contract = RefusalContract {
+        category: ErrorCategory::DataMapping,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::RolledBack,
+        retry: RetryDisposition::Never,
+        message_contains: "riga sorgente rifiutata",
+    };
+    match append_write(
+        &provider,
+        &operation,
+        vec![append_batch(&[10, 11, 12]), append_batch(&[10])],
+        4,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_append_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la chiave duplicata e passata, righe={}",
+                outcome.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = append_contents(&mut connection).await;
+            let mismatch = refusal_mismatch(&contract, &error).or_else(|| {
+                (contents != "righe=0 contenuto=")
+                    .then(|| format!("il primo batch non e stato annullato: {contents}"))
+            });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_append_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — {contents}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+                // Il quadro osservato entra nel dettaglio: senza, il verdetto
+                // dice cosa non torna ma non cosa e successo, e la correzione
+                // del contratto diventa un'altra corsa.
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_append_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "il rollback non e stato osservato — {reason}; osservato \
+                          {:?}/{:?}/{:?}/{:?}: {} — {contents}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+
+    append_cancellation_probe(
+        recorder,
+        &provider,
+        profile,
+        &operation,
+        &mut connection,
+        cancellation,
+    )
+    .await;
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_APPEND}"))
+        .await;
+}
+
+/// La cancellazione a meta scrittura, su una barriera dichiarata.
+///
+/// Il token si annulla quando il provider chiede il **secondo** batch: a quel
+/// punto il primo e gia sul server, dentro la transazione ancora aperta. Un
+/// timeout cadrebbe ogni volta in un punto diverso, e una sonda che misura un
+/// punto diverso ogni volta non misura niente.
+///
+/// Cio che si verifica non e solo l'errore: le righe residue lette da
+/// un'altra connessione, e il fatto che il provider **resti usabile** — la
+/// scrittura successiva scrive le sue righe, e la tabella contiene quelle e
+/// nient'altro. Una sessione riusata con una transazione residua committerebbe
+/// anche le righe di prima, e il solo conteggio dichiarato non lo direbbe.
+///
+/// Che la connessione sia stata **chiusa e sostituita** questa sonda non lo
+/// osserva: lo dichiara il messaggio del provider, che e cosa afferma e non
+/// cosa e successo. Osservarlo vorrebbe dire guardare l'identita della
+/// sessione in `information_schema.processlist`, come fa il test live sulla
+/// quarantena del pool `MySQL`. Finche non lo fa, la sonda dice quello che
+/// vede.
+async fn append_cancellation_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    outer: &CancellationToken,
+) {
+    reset_append(connection).await;
+    let question =
+        "una cancellazione a meta scrittura non lascia righe, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    // L'effetto e **ignoto**, e non e una lacuna: da quel lato il provider non
+    // puo sapere se il server avesse applicato, e dichiararlo `RolledBack`
+    // sarebbe una promessa che non e in grado di mantenere. Cosa sia successo
+    // davvero lo dice la rilettura da un'altra connessione, ed e per questo
+    // che la sonda la fa. `RequiresRecovery` e la conseguenza: il chiamante
+    // deve ripulire, non ritentare.
+    let contract = RefusalContract {
+        category: ErrorCategory::Cancelled,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::RequiresRecovery,
+        // Il frammento non nomina il prodotto: il messaggio lo porta gia, e
+        // ciascun profilo ci mette il proprio.
+        message_contains: "quarantinata",
+    };
+    let outcome = append_write(
+        provider,
+        operation,
+        vec![append_batch(&[20, 21, 22]), append_batch(&[23, 24, 25])],
+        6,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await;
+    match outcome {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_append_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, righe={}",
+                written.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = append_contents(connection).await;
+            // Il provider si riprende? La scrittura successiva usa lo stesso
+            // pool: se la sessione cancellata fosse tornata dentro senza
+            // quarantena, questa erediterebbe una transazione aperta.
+            let recovered = append_write(
+                provider,
+                operation,
+                vec![append_batch(&[30, 31])],
+                2,
+                None,
+                outer,
+            )
+            .await;
+            let after = append_contents(connection).await;
+            let mismatch = refusal_mismatch(&contract, &error)
+                .or_else(|| {
+                    (contents != "righe=0 contenuto=")
+                        .then(|| format!("la cancellazione ha lasciato righe: {contents}"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, 2)
+                        .or_else(|| {
+                            // La tabella, non il conteggio dichiarato: una
+                            // sessione riusata con una transazione residua
+                            // committerebbe le tre righe di prima **piu** le
+                            // due nuove, e il conteggio direbbe comunque due.
+                            (after != "righe=2 contenuto=30:riga-30,31:riga-31")
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_append_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — dopo la cancellazione [{contents}], \
+                         dopo la ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    None,
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_append_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "la cancellazione non e stata osservata per intero — {reason}; \
+                         osservato {:?}/{:?}/{:?}/{:?}: {} — dopo \
+                         [{contents}], ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+}
+
 /// Il profilo del prodotto che sta rispondendo, scelto come lo sceglierebbe
 /// un provider: chiedendo al profilo `MySQL` se quel server e suo.
 ///
@@ -2672,6 +3214,7 @@ async fn profile_probes(
     functional_index_probes(recorder, profile, &pool, &schema_name, cancellation).await;
     profile_read_probes(recorder, profile, &schema_name, cancellation).await;
     generated_column_probes(recorder, profile, &schema_name, cancellation).await;
+    append_write_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
 }
 

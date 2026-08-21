@@ -749,3 +749,116 @@ senza contratto: `OBSERVATION_ONLY_PROBES` oggi e vuoto.
   il punto 3.
 * **come MariaDB descriva un indice su colonna generata `PERSISTENT`**: qui e
   `VIRTUAL`, che e la forma piu comune e la sola misurata.
+
+## Settima tranche: la prima write mode, Append
+
+Il punto 3 procede una mode alla volta. `Append` e la piu semplice — nessun
+DDL, nessuna keys — e proprio per questo e quella su cui si decide **come** si
+misura una scrittura. Tre paletti, che valgono anche per le mode successive:
+
+* la riuscita si verifica **rileggendo da un'altra sessione**, dopo il commit:
+  cio che il provider dichiara di aver scritto e cio che la tabella contiene
+  sono due affermazioni diverse, e la seconda si legge solo da fuori;
+* il rollback pretende **due batch**, di cui il primo arrivato davvero al
+  server: un errore di mapping o di preflight non proverebbe niente, perche
+  non avrebbe mai scritto nulla da annullare;
+* la cancellazione pretende una **barriera dichiarata**, non un timeout: il
+  token si annulla quando il provider chiede il secondo batch, cioe con il
+  primo gia sul server e la transazione ancora aperta. Un timeout cadrebbe
+  ogni volta in un punto diverso, e una sonda che misura un punto diverso ogni
+  volta non misura niente.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_write_append` | dichiarate=6, righe=6, contenuto verificato | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_append_rollback` | **rifiutato** — DataMapping/Write/RolledBack/Never, e righe=0 | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_append_cancellation` | **rifiutato** — Cancelled/Write/Unknown/RequiresRecovery, righe=0, ripresa righe=2 | **identico**, con il proprio nome | **identico**, con il proprio nome |
+
+### Cosa dice
+
+**Le righe arrivano, e si rileggono da fuori.** Due batch, sei righe, stesso
+contenuto sui tre riferimenti — letto da una connessione che non ha visto la
+transazione, dopo il commit. E l'esito pubblicato si verifica per intero:
+`status`, il prodotto che ha scritto, ricevute, confermate, inserite, fallite,
+saltate, e l'assenza di un recovery. Due campi su otto lascerebbero passare un
+`Committed` che dichiara zero righe ricevute, o un esito attribuito all'altro
+prodotto — che sono le cose su cui il chiamante costruisce la propria
+contabilita.
+
+**Il rollback annulla anche il primo batch.** La chiave duplicata del secondo
+batch fa abortire la transazione, e la tabella resta vuota: `righe=0`. Il
+codice 1062 non arriva pero come conflitto ma come **rifiuto di riga** —
+`DataMapping`, effetto `RolledBack`, retry `Never` — perche e il piano di
+scrittura a classificarlo, e la diagnostica di riga e la strada che quel
+codice prende. La quaterna e stata misurata, non prevista: la prima stesura si
+aspettava `Conflict` e la sonda ha detto che non era quello.
+
+**La cancellazione dichiara l'effetto ignoto, ed e la risposta onesta.**
+`Cancelled/Write/Unknown/RequiresRecovery`: da quel lato il provider non puo
+sapere se il server avesse applicato, e dichiarare `RolledBack` sarebbe una
+promessa che non e in grado di mantenere. Cosa sia successo davvero lo dice la
+rilettura — `righe=0` — ed e per questo che la sonda la fa. `RequiresRecovery`
+e la conseguenza per il chiamante: ripulire, non ritentare.
+
+E il provider resta usabile: la scrittura successiva sullo stesso provider
+scrive le sue due righe, e la tabella contiene quelle **e nient'altro** —
+confrontata riga per riga, perche una sessione riusata con una transazione
+residua committerebbe anche le righe di prima e il solo conteggio dichiarato
+non lo direbbe.
+
+Che la connessione sia stata chiusa e sostituita, invece, questa tranche non
+lo **osserva**: lo dichiara il messaggio del provider, che e cosa afferma e non
+cosa e successo. Osservarlo vorrebbe dire guardare l'identita della sessione in
+`information_schema.processlist`, come fa il test live sulla quarantena del
+pool MySQL. Finche non lo fa, la sonda dice quello che vede.
+
+**Nessuna delle tre distingue i tre server.** L'unica differenza e il nome del
+prodotto nel messaggio della cancellazione, che e attribuzione corretta e non
+divergenza.
+
+### Perche `writes.append` resta chiusa
+
+Le tre sonde sono verdi, e la capability resta `false`. Non e prudenza: la
+bandiera non significa "Append". L'engine la consulta anche per
+`TruncateInsert` — `validate_write_capability` mappa le due mode sullo stesso
+flag — e `TruncateInsert` questo crate la rifiuta di proposito. Aprirla
+autorizzerebbe una mode deliberatamente non qualificata, che verrebbe fermata
+piu avanti dal provider: il contratto prometterebbe cio che il codice nega.
+
+Sono due bandiere in una, e finche lo sono la tranche "una mode alla volta"
+non ha modo di esprimersi. O il contratto separa `truncate_insert`, e allora
+`append` puo aprirsi con la propria evidenza, oppure resta chiusa. La prima e
+una modifica al core che riguarda tutti e tre i provider — e chiude anche
+un'incoerenza che c'era **prima** di questa tranche: MySQL pubblica
+`append = true` e poi rifiuta `TruncateInsert`, quindi il suo contratto
+promette gia piu di quanto il provider faccia.
+
+Le tre sonde restano intanto bloccanti, in un inventario loro: il runner
+distingue le prove che sostengono una capability **pubblicata** da quelle che
+**qualificano** una superficie non ancora aperta. Sono ugualmente vincolanti —
+una prova che cambia esito e una prova persa — ma dirlo allo stesso modo
+farebbe leggere al verdetto una promessa che il contratto non fa.
+
+`rollback_on_failure` resta chiusa per una ragione sua, ed e diversa da quella
+che avevo scritto: il flag parla delle **righe** di qualunque scrittura — il
+residuo DDL lo descrive `transactional_ddl`, gia false — e quella promessa
+globale non e qualificata. La cancellazione, per giunta, dichiara l'effetto
+remoto `Unknown`: e la rilettura a mostrare che le righe erano tornate
+indietro, non il provider.
+
+### Cosa resta not_measured
+
+* **le altre cinque write mode**: `Create`, `Update`, `Upsert`, `Replace`,
+  `DeleteByKeys`. Ciascuna aggiunge una superficie che `Append` non ha — DDL
+  da ripulire, keys da confrontare, una tabella che puo sopravvivere a un
+  fallimento — e ciascuna arriva con le proprie tre sonde.
+* **il commit ambiguo**, che resta il punto 4 e non si deduce da qui: la
+  cancellazione dichiara l'effetto ignoto **prima** del commit, che e una cosa
+  diversa da un commit interrotto a meta.
+* **`allow_partial`**: tutte le sonde di questa tranche usano il default, cioe
+  il fallimento totale. Cosa succeda quando il chiamante accetta un esito
+  parziale non e stato osservato.
+* **la quarantena della connessione**, per la ragione detta sopra: serve
+  l'identita della sessione, non il messaggio che la dichiara.

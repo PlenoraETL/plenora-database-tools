@@ -553,6 +553,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         """
 
         from scripts.check_mariadb_driver import (
+            QUALIFICATION_PROBES,
             REQUIRED_ACCEPTED_PROBES,
             REQUIRED_REJECTED_PROBES,
             capability_violations,
@@ -574,6 +575,11 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
         healthy = {probe: "accepted" for probe in REQUIRED_ACCEPTED_PROBES}
         healthy.update({probe: "rejected" for probe in REQUIRED_REJECTED_PROBES})
+        # La terza famiglia: qualifica una superficie non ancora pubblicata, e
+        # ciascuna sonda dichiara da se cosa deve rendere.
+        healthy.update(
+            {probe: expected for probe, (_, expected) in QUALIFICATION_PROBES.items()}
+        )
         self.assertEqual(capability_violations(document(healthy)), [])
 
         # Una prova positiva che diventa un rifiuto, su un server solo.
@@ -678,6 +684,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
         from scripts.check_mariadb_driver import (
             OBSERVATION_ONLY_PROBES,
+            QUALIFICATION_PROBES,
             REQUIRED_ACCEPTED_PROBES,
             REQUIRED_REJECTED_PROBES,
         )
@@ -690,6 +697,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             "accettate": set(REQUIRED_ACCEPTED_PROBES),
             "rifiutate": set(REQUIRED_REJECTED_PROBES),
             "osservative": set(OBSERVATION_ONLY_PROBES),
+            "di qualifica": set(QUALIFICATION_PROBES),
         }
         classified = set().union(*inventories.values())
         self.assertEqual(
@@ -1089,18 +1097,20 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
 
         from scripts.check_mariadb_driver import (
             EXPECTED_PROBES,
+            QUALIFICATION_PROBES,
             REQUIRED_REJECTED_PROBES,
         )
+
+        def outcome(probe: str) -> str:
+            if probe in QUALIFICATION_PROBES:
+                return QUALIFICATION_PROBES[probe][1]
+            return "rejected" if probe in REQUIRED_REJECTED_PROBES else "accepted"
 
         return [
             {
                 "probe": probe,
                 "observations": {
-                    server: {
-                        "outcome": "rejected"
-                        if probe in REQUIRED_REJECTED_PROBES
-                        else "accepted"
-                    }
+                    server: {"outcome": outcome(probe)}
                     for server in ("mysql", "mariadb-12", "mariadb-11")
                 },
             }

@@ -219,6 +219,9 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_upsert_on_primary_key",
     "provider.profile_upsert_on_generated_key",
     "provider.profile_upsert_generated_anchor",
+    "provider.profile_write_append",
+    "provider.profile_write_append_rollback",
+    "provider.profile_write_append_cancellation",
     "provider.profile_timeout",
 )
 
@@ -267,6 +270,33 @@ def duplicate_probes(names: Iterable[str]) -> list[str]:
     return sorted(duplicated)
 
 
+# Le sonde che **qualificano** una superficie non ancora pubblicata.
+#
+# Sono bloccanti come le altre — una prova che cambia esito e una prova persa —
+# ma dicono un'altra cosa: non "una capability dichiarata ha perso la sua
+# prova", bensi "la qualifica di una superficie che non e ancora aperta non
+# regge piu". La differenza conta perche `writes.append` e chiusa: attribuire
+# queste tre a una capability pubblicata farebbe leggere al verdetto una
+# promessa che il contratto non fa.
+#
+# La `chiave` e la superficie qualificata; il valore dice cosa la sonda deve
+# rendere.
+QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
+    "provider.profile_write_append": (
+        "Append",
+        "accepted",
+    ),
+    "provider.profile_write_append_rollback": (
+        "Append: il rollback annulla anche il primo batch",
+        "rejected",
+    ),
+    "provider.profile_write_append_cancellation": (
+        "Append: la cancellazione non lascia righe e il provider resta usabile",
+        "rejected",
+    ),
+}
+
+
 def capability_violations(document: dict[str, object]) -> list[str]:
     """Le prove che una capability pubblicata non ha piu, o non ha mai avuto.
 
@@ -282,24 +312,32 @@ def capability_violations(document: dict[str, object]) -> list[str]:
         )
     entries = {entry["probe"]: entry for entry in document["results"]}
     violations: list[str] = []
-    for required, expected in (
-        (REQUIRED_ACCEPTED_PROBES, "accepted"),
-        (REQUIRED_REJECTED_PROBES, "rejected"),
-    ):
-        for probe, capability in sorted(required.items()):
-            entry = entries.get(probe)
-            if entry is None:
+    # Una lista sola, con accanto a ogni sonda cosa deve rendere e cosa si
+    # perde se non lo rende. Le prime due famiglie sostengono una capability
+    # **pubblicata**; la terza qualifica una superficie che il contratto non
+    # promette ancora, ed e altrettanto bloccante — ma dirlo allo stesso modo
+    # farebbe leggere al verdetto una promessa che non esiste.
+    checks: list[tuple[str, str, str, str]] = []
+    for probe, capability in sorted(REQUIRED_ACCEPTED_PROBES.items()):
+        checks.append((probe, "accepted", capability, "resta dichiarata senza prova"))
+    for probe, capability in sorted(REQUIRED_REJECTED_PROBES.items()):
+        checks.append((probe, "rejected", capability, "resta dichiarata senza prova"))
+    for probe, (surface, expected) in sorted(QUALIFICATION_PROBES.items()):
+        checks.append((probe, expected, surface, "perde la sua qualifica"))
+
+    for probe, expected, subject, consequence in checks:
+        entry = entries.get(probe)
+        if entry is None:
+            violations.append(
+                f"{probe}: sonda assente dalla matrice — {subject} {consequence}"
+            )
+            continue
+        for server, observation in sorted(entry["observations"].items()):
+            if observation["outcome"] != expected:
                 violations.append(
-                    f"{probe}: sonda assente dalla matrice — {capability} resta "
-                    "dichiarata senza prova"
+                    f"{probe} su {server}: atteso {expected}, osservato "
+                    f"{observation['outcome']} — {subject} {consequence}"
                 )
-                continue
-            for server, observation in sorted(entry["observations"].items()):
-                if observation["outcome"] != expected:
-                    violations.append(
-                        f"{probe} su {server}: atteso {expected}, osservato "
-                        f"{observation['outcome']} — {capability}"
-                    )
     return violations
 
 

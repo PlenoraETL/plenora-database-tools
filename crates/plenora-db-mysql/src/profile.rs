@@ -887,6 +887,32 @@ impl ProductProfile for MariadbProfile {
                 ordering: true,
                 resumable: false,
             },
+            // `append` resta chiusa, e la settima tranche spiega perche non
+            // basta averla misurata.
+            //
+            // Le tre sonde ci sono e sono verdi: le righe arrivano e si
+            // rileggono da un'altra sessione, un secondo batch rifiutato dal
+            // server annulla anche il primo, una cancellazione a meta
+            // scrittura non lascia righe. Ma `writes.append` non significa
+            // "Append": l'engine la consulta anche per `TruncateInsert`
+            // (`validate_write_capability`), che questo crate rifiuta di
+            // proposito. Aprirla autorizzerebbe una mode deliberatamente non
+            // qualificata, che verrebbe fermata piu avanti dal provider —
+            // cioe farebbe promettere al contratto qualcosa che il codice poi
+            // nega.
+            //
+            // Sono due bandiere in una, e finche lo sono la tranche "una mode
+            // alla volta" non ha modo di esprimersi: o il contratto separa
+            // `truncate_insert`, e allora `append` puo aprirsi, oppure resta
+            // chiusa. La prima e una modifica al core che riguarda tutti e tre
+            // i provider, e non si prende di passaggio.
+            //
+            // `rollback_on_failure` resta chiusa per una ragione sua: il flag
+            // parla delle **righe** di qualunque scrittura — il residuo DDL lo
+            // descrive `transactional_ddl`, che e gia false — e quella
+            // promessa globale non e qualificata. La cancellazione, per giunta,
+            // dichiara l'effetto remoto `Unknown`: e la rilettura a mostrare
+            // che le righe erano tornate indietro, non il provider.
             writes: WriteCapabilities {
                 create: false,
                 append: false,
@@ -3187,8 +3213,33 @@ mod tests {
         // La scrittura no: nessun piano e mai stato eseguito con questo
         // profilo, ed e la differenza che rende leggibile la tabella — non
         // "tutto chiuso", ma "chiuso cio che non e stato attraversato".
+        // Tutte chiuse, `append` compresa: le sue tre sonde sono verdi, ma la
+        // bandiera vale anche per `TruncateInsert`, che questo crate rifiuta.
+        // Una capability che ne autorizza due non puo dichiararne una sola.
         let writes = &published.writes;
         assert!(!writes.create && !writes.append && !writes.update);
+        // E `rollback_on_failure` resta chiusa perche parla delle righe di
+        // **ogni** scrittura, e quella promessa non e qualificata: la
+        // cancellazione dichiara l'effetto remoto ignoto, ed e la rilettura a
+        // mostrare che le righe erano tornate indietro.
+        assert!(!writes.rollback_on_failure);
+        // La ragione della chiusura sta accanto alla bandiera, non da qualche
+        // parte nel file: `TruncateInsert` compare in questo sorgente anche
+        // altrove, quindi cercarlo ovunque lasciava passare la cancellazione
+        // del commento che spiega perche `append` non si puo aprire.
+        let source = include_str!("profile.rs");
+        let at = source
+            .find("                append: false,")
+            .expect("la bandiera chiusa e in questo file");
+        let preceding = &source[source[..at]
+            .rfind("writes: WriteCapabilities")
+            .map_or(0, |start| {
+                source[..start].rfind("// `append`").unwrap_or(start)
+            })..at];
+        assert!(
+            preceding.contains("TruncateInsert"),
+            "accanto alla bandiera non c'e scritto perche append resta chiusa"
+        );
         assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
         assert!(!writes.bulk && !writes.array_binding && !writes.returning);
         assert!(!writes.apply_edits && !writes.rollback_on_failure && !writes.use_global_ids);
