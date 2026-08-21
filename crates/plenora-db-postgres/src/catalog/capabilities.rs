@@ -33,7 +33,7 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         extensions.insert("postgis".to_owned(), postgis_version);
     }
     Ok(ProviderCapabilities {
-        schema_version: 1,
+        schema_version: 2,
         provider: ProviderKind::Postgres,
         provider_version: server_version,
         extension_versions: extensions,
@@ -52,6 +52,9 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         writes: WriteCapabilities {
             create: true,
             append: true,
+            // Su PostgreSQL `TRUNCATE` e transazionale: le righe tornano
+            // indietro insieme a tutto il resto se qualcosa fallisce dopo.
+            truncate_insert: true,
             update: true,
             upsert: true,
             replace: true,

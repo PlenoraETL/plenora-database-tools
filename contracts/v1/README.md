@@ -13,6 +13,13 @@ Gli esempi validi sono registrati in `examples/index.json`. I `$id` usano il
 namespace non instradabile `https://plenora.local/database-tools/v1/`; il
 validatore costruisce un registry locale e non effettua accessi di rete.
 
+## Stato
+
+Il contratto **capability** ha una major successiva in `contracts/v2/`: la
+separazione di `writes.truncate_insert` da `writes.append` e una modifica
+incompatibile, e questa cartella resta com'era. Gli altri messaggi di questa
+versione non sono cambiati, e la v2 li referenzia invece di duplicarli.
+
 ## Versionamento
 
 - campi aggiuntivi non previsti sono rifiutati nei messaggi canonici;

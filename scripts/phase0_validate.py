@@ -30,6 +30,16 @@ except ImportError as exc:  # pragma: no cover - dipendenza del tooling
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_ROOT = REPO_ROOT / "contracts" / "v1"
+# Le major di contratto presenti. La `v1` resta immutabile; la `v2` contiene
+# solo il messaggio che ha cambiato major — le capability — e referenzia per
+# `$id` le definizioni comuni della v1 invece di duplicarle. Il registry le
+# tiene tutte, altrimenti un `$ref` fra versioni non risolverebbe.
+CONTRACT_ROOTS = tuple(
+    sorted(
+        (path for path in (REPO_ROOT / "contracts").iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+    )
+)
 GOLDEN_PATH = REPO_ROOT / "golden" / "v1" / "cases.json"
 BENCHMARK_MANIFEST = (
     REPO_ROOT / "benchmarks" / "manifests" / "phase0-smoke.json"
@@ -52,7 +62,9 @@ def load_json(path: Path) -> Any:
 def discover_schemas(root: Path) -> dict[Path, Mapping[str, Any]]:
     schemas: dict[Path, Mapping[str, Any]] = {}
     ids: set[str] = set()
-    for path in sorted(root.glob("*.schema.json")):
+    # Ricorsivo: gli schemi vivono una cartella per major, e cercarli solo al
+    # primo livello ne trovava zero appena la radice e diventata `contracts/`.
+    for path in sorted(root.rglob("*.schema.json")):
         raw = load_json(path)
         if not isinstance(raw, dict):
             raise ValidationError(f"schema non object: {path}")
@@ -102,35 +114,47 @@ def validate_examples(
     schemas: Mapping[Path, Mapping[str, Any]],
     registry: Registry,
 ) -> int:
-    index_path = CONTRACT_ROOT / "examples" / "index.json"
-    index = load_json(index_path)
-    entries = index.get("examples", [])
+    # Ogni major ha il proprio indice, e i suoi esempi non possono uscire dalla
+    # propria cartella: un esempio della v2 validato contro lo schema della v1
+    # direbbe che le due versioni sono intercambiabili, che e cio che una nuova
+    # major nega.
+    validated = 0
     seen: set[Path] = set()
-    for entry in entries:
-        example_path = (index_path.parent / entry["file"]).resolve()
-        schema_path = (index_path.parent / entry["schema"]).resolve()
-        if not example_path.is_relative_to(CONTRACT_ROOT.resolve()):
-            raise ValidationError("example path fuori da contracts/v1")
-        if not schema_path.is_relative_to(CONTRACT_ROOT.resolve()):
-            raise ValidationError("schema path fuori da contracts/v1")
-        if example_path in seen:
-            raise ValidationError(f"example duplicato: {entry['file']}")
-        seen.add(example_path)
-        try:
-            schema = schemas[schema_path]
-        except KeyError as exc:
-            raise ValidationError(
-                f"schema non registrato: {entry['schema']}"
-            ) from exc
-        validate_instance(
-            load_json(example_path),
-            schema,
-            registry,
-            f"example {entry['file']}",
-        )
-    if not entries:
-        raise ValidationError("examples index vuoto")
-    return len(entries)
+    for root in CONTRACT_ROOTS:
+        index_path = root / "examples" / "index.json"
+        if not index_path.is_file():
+            # Saltarlo era un falso verde: una major senza indice non veniva
+            # validata, e il gate passava avendo controllato niente. Se una
+            # cartella di contratti esiste, i suoi esempi si validano.
+            raise ValidationError(f"major senza indice degli esempi: {root.name}")
+        index = load_json(index_path)
+        entries = index.get("examples", [])
+        for entry in entries:
+            example_path = (index_path.parent / entry["file"]).resolve()
+            schema_path = (index_path.parent / entry["schema"]).resolve()
+            if not example_path.is_relative_to(root.resolve()):
+                raise ValidationError(f"example path fuori da {root.name}")
+            if not schema_path.is_relative_to(root.resolve()):
+                raise ValidationError(f"schema path fuori da {root.name}")
+            if example_path in seen:
+                raise ValidationError(f"example duplicato: {entry['file']}")
+            seen.add(example_path)
+            try:
+                schema = schemas[schema_path]
+            except KeyError as exc:
+                raise ValidationError(
+                    f"schema non registrato: {entry['schema']}"
+                ) from exc
+            validate_instance(
+                load_json(example_path),
+                schema,
+                registry,
+                f"example {root.name}/{entry['file']}",
+            )
+        if not entries:
+            raise ValidationError(f"examples index vuoto: {root.name}")
+        validated += len(entries)
+    return validated
 
 
 def validate_golden(
@@ -259,7 +283,7 @@ def validate_documents() -> int:
 
 
 def run_gate() -> dict[str, Any]:
-    schemas = discover_schemas(CONTRACT_ROOT)
+    schemas = discover_schemas(REPO_ROOT / "contracts")
     registry = build_registry(schemas.values())
     checks = [
         {"id": "json-schemas", "status": "passed", "count": len(schemas)},

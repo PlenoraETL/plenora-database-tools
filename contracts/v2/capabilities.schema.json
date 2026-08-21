@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/capabilities.schema.json",
+  "title": "Runtime provider capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "provider_version",
+    "reads",
+    "writes",
+    "transactions",
+    "spatial",
+    "limits"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "provider": {
+      "$ref": "https://plenora.local/database-tools/v1/common.schema.json#/$defs/provider_kind"
+    },
+    "provider_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "extension_versions": {
+      "type": "object",
+      "propertyNames": {"maxLength": 128},
+      "additionalProperties": {"type": "string", "maxLength": 256}
+    },
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streaming", "projection", "filter", "ordering"],
+      "properties": {
+        "streaming": {"type": "boolean"},
+        "server_cursor": {"type": "boolean"},
+        "pagination": {"type": "boolean"},
+        "object_id_windows": {"type": "boolean"},
+        "projection": {"type": "boolean"},
+        "filter": {"type": "boolean"},
+        "ordering": {"type": "boolean"},
+        "resumable": {"type": "boolean"}
+      }
+    },
+    "writes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "append", "truncate_insert", "update", "upsert", "replace"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "append": {"type": "boolean"},
+        "truncate_insert": {"type": "boolean"},
+        "update": {"type": "boolean"},
+        "upsert": {"type": "boolean"},
+        "replace": {"type": "boolean"},
+        "delete_by_keys": {"type": "boolean"},
+        "bulk": {"type": "boolean"},
+        "array_binding": {"type": "boolean"},
+        "returning": {"type": "boolean"},
+        "apply_edits": {"type": "boolean"},
+        "rollback_on_failure": {
+          "type": "boolean",
+          "description": "Un fallimento prima del commit annulla le RIGHE scritte dall'operazione. Non riguarda lo schema: il DDL con cui una mode prepara il target (Create, su alcuni provider Replace) puo sopravvivere al rollback quando transactions.transactional_ddl e false. In quel caso l'esito dell'operazione lo dichiara con remote_effect=partial e retry=requires_recovery."
+        },
+        "use_global_ids": {"type": "boolean"}
+      }
+    },
+    "transactions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "single_transaction": {"type": "boolean"},
+        "savepoints": {"type": "boolean"},
+        "transactional_ddl": {"type": "boolean"},
+        "staged_swap": {"type": "boolean"},
+        "scope": {
+          "enum": ["none", "statement", "transaction", "edit_request", "layer", "service"]
+        }
+      }
+    },
+    "spatial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read_wkb", "write_wkb", "dimensions"],
+      "properties": {
+        "read_wkb": {"type": "boolean"},
+        "write_wkb": {"type": "boolean"},
+        "geometry": {"type": "boolean"},
+        "geography": {"type": "boolean"},
+        "spatial_index": {"type": "boolean"},
+        "mixed_geometry_types": {"type": "boolean"},
+        "dimensions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["xy", "xyz", "xym", "xyzm"]}
+        },
+        "functions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "geometry_type", "srid", "dimensions", "x", "y", "z", "m",
+              "n_points", "n_rings", "start_point", "end_point", "point_n",
+              "is_empty", "is_valid", "is_simple", "is_closed", "intersects",
+              "contains", "contains_properly", "within", "covers", "covered_by",
+              "touches", "crosses", "overlaps", "disjoint", "equals", "relate",
+              "d_within", "set_srid", "transform", "force_2d", "force_3d",
+              "force_3dm", "force_4d", "buffer", "offset_curve", "intersection",
+              "difference", "sym_difference", "union", "unary_union", "simplify",
+              "simplify_preserve_topology", "make_valid", "centroid",
+              "point_on_surface", "envelope", "convex_hull",
+              "oriented_envelope", "boundary", "line_merge", "reverse",
+              "subdivide", "snap_to_grid", "distance", "distance_3d",
+              "max_distance", "hausdorff_distance", "frechet_distance",
+              "azimuth", "area", "length", "perimeter", "collect", "extent",
+              "as_geo_json", "as_mvt_geom", "as_mvt", "as_geobuf",
+              "cluster_dbscan", "cluster_k_means"
+            ]
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_identifier_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_bind_parameters": {"type": ["integer", "null"], "minimum": 1},
+        "max_statement_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_batch_rows": {"type": ["integer", "null"], "minimum": 1},
+        "max_payload_bytes": {"type": ["integer", "null"], "minimum": 1},
+        "max_record_count": {"type": ["integer", "null"], "minimum": 1}
+      }
+    }
+  }
+}

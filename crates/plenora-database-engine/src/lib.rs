@@ -357,7 +357,8 @@ fn validate_parameter(value: &str) -> Result<()> {
 fn validate_write_capability(mode: WriteMode, capabilities: &ProviderCapabilities) -> Result<()> {
     let supported = match mode {
         WriteMode::Create => capabilities.writes.create,
-        WriteMode::Append | WriteMode::TruncateInsert => capabilities.writes.append,
+        WriteMode::Append => capabilities.writes.append,
+        WriteMode::TruncateInsert => capabilities.writes.truncate_insert,
         WriteMode::Replace => capabilities.writes.replace,
         WriteMode::Update => capabilities.writes.update,
         WriteMode::Upsert => capabilities.writes.upsert,

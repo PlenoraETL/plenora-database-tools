@@ -26,6 +26,26 @@ pub struct ReadCapabilities {
 pub struct WriteCapabilities {
     pub create: bool,
     pub append: bool,
+    /// Se il provider qualifica `TruncateInsert`, che **non** e un `Append`.
+    ///
+    /// Le due mode hanno condiviso una bandiera fino al contratto v1, e per
+    /// `MySQL` quella bandiera diceva gia il falso: pubblica `append = true` e
+    /// rifiuta `TruncateInsert` in prepare, perche li `TRUNCATE TABLE` e DDL
+    /// con commit implicito — le righe sparirebbero prima dell'INSERT e nessun
+    /// rollback le riporterebbe indietro. Il contratto prometteva percio cio
+    /// che il provider negava, e il consumatore lo scopriva a piano gia
+    /// compilato.
+    ///
+    /// L'alias e emerso qualificando `MariaDB`, che un provider pubblico non
+    /// ce l'ha ancora: e stato il tentativo di aprire il suo `append` a far
+    /// guardare **chi legge** la bandiera. La sovradichiarazione era di
+    /// `MySQL`, e c'era da prima.
+    ///
+    /// Separarle non e una formalita: sono due promesse diverse su cosa
+    /// succede alle righe che c'erano prima. `Append` le lascia, questa le
+    /// toglie — e il modo in cui le toglie decide se un fallimento e
+    /// recuperabile.
+    pub truncate_insert: bool,
     pub update: bool,
     pub upsert: bool,
     pub replace: bool,

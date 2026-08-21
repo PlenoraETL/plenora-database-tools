@@ -130,7 +130,10 @@ pub fn validate_capabilities(
     expected_provider: ProviderKind,
     capabilities: &ProviderCapabilities,
 ) -> Result<()> {
-    if capabilities.schema_version != 1 {
+    // La major del **documento capability**, che dalla separazione di
+    // `truncate_insert` e la 2. Gli altri messaggi restano alla 1, e ciascuno
+    // porta la propria.
+    if capabilities.schema_version != 2 {
         return Err(contract_error(
             "documento capability con schema_version non supportata",
         ));
@@ -340,7 +343,7 @@ mod tests {
 
     fn valid_capabilities() -> ProviderCapabilities {
         ProviderCapabilities {
-            schema_version: 1,
+            schema_version: 2,
             provider: ProviderKind::Postgres,
             provider_version: "16.9".to_owned(),
             extension_versions: BTreeMap::from([("postgis".to_owned(), "3.5.2".to_owned())]),
@@ -357,6 +360,7 @@ mod tests {
             writes: WriteCapabilities {
                 create: true,
                 append: true,
+                truncate_insert: true,
                 update: true,
                 upsert: true,
                 replace: true,

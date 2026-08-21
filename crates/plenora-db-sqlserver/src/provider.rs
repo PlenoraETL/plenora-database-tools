@@ -268,7 +268,7 @@ impl Provider for SqlServerProvider {
             let probe = probe_server(pooled.session_mut()?, cancellation).await?;
             drop(pooled);
             Ok(ProviderCapabilities {
-                schema_version: 1,
+                schema_version: 2,
                 provider: ProviderKind::Sqlserver,
                 provider_version: probe.product_version,
                 extension_versions: BTreeMap::new(),
@@ -285,6 +285,7 @@ impl Provider for SqlServerProvider {
                 writes: WriteCapabilities {
                     create: true,
                     append: true,
+                    truncate_insert: true,
                     update: true,
                     upsert: true,
                     replace: true,

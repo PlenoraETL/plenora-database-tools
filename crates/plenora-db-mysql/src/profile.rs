@@ -479,7 +479,7 @@ impl ProductProfile for MysqlProfile {
 
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
         ProviderCapabilities {
-            schema_version: 1,
+            schema_version: 2,
             provider: self.kind(),
             provider_version,
             extension_versions: BTreeMap::new(),
@@ -507,6 +507,14 @@ impl ProductProfile for MysqlProfile {
             writes: WriteCapabilities {
                 create: true,
                 append: true,
+                // `TruncateInsert` e chiusa, e ora puo dirlo. Su MySQL
+                // `TRUNCATE TABLE` e DDL con commit implicito: le righe
+                // sparirebbero prima dell'INSERT e nessun rollback le
+                // riporterebbe indietro. Il provider la rifiuta in prepare da
+                // sempre; fino alla separazione di questa bandiera il
+                // contratto diceva il contrario, perche `append` valeva per
+                // tutt'e due.
+                truncate_insert: false,
                 update: true,
                 upsert: true,
                 replace: true,
@@ -869,7 +877,7 @@ impl ProductProfile for MariadbProfile {
         // Le scritture no: nessun piano di scrittura e mai stato eseguito con
         // questo profilo, e restano chiuse per intero.
         ProviderCapabilities {
-            schema_version: 1,
+            schema_version: 2,
             provider: self.kind(),
             provider_version,
             extension_versions: BTreeMap::new(),
@@ -887,35 +895,22 @@ impl ProductProfile for MariadbProfile {
                 ordering: true,
                 resumable: false,
             },
-            // `append` resta chiusa, e la settima tranche spiega perche non
-            // basta averla misurata.
+            // `append` resta chiusa in questo commit: la bandiera e ora sua
+            // soltanto — `truncate_insert` ha la propria — ma aprirla e una
+            // decisione a se, che arriva con la sua evidenza.
             //
-            // Le tre sonde ci sono e sono verdi: le righe arrivano e si
-            // rileggono da un'altra sessione, un secondo batch rifiutato dal
-            // server annulla anche il primo, una cancellazione a meta
-            // scrittura non lascia righe. Ma `writes.append` non significa
-            // "Append": l'engine la consulta anche per `TruncateInsert`
-            // (`validate_write_capability`), che questo crate rifiuta di
-            // proposito. Aprirla autorizzerebbe una mode deliberatamente non
-            // qualificata, che verrebbe fermata piu avanti dal provider —
-            // cioe farebbe promettere al contratto qualcosa che il codice poi
-            // nega.
-            //
-            // Sono due bandiere in una, e finche lo sono la tranche "una mode
-            // alla volta" non ha modo di esprimersi: o il contratto separa
-            // `truncate_insert`, e allora `append` puo aprirsi, oppure resta
-            // chiusa. La prima e una modifica al core che riguarda tutti e tre
-            // i provider, e non si prende di passaggio.
-            //
-            // `rollback_on_failure` resta chiusa per una ragione sua: il flag
-            // parla delle **righe** di qualunque scrittura — il residuo DDL lo
-            // descrive `transactional_ddl`, che e gia false — e quella
+            // `rollback_on_failure` resta chiusa per una ragione diversa: il
+            // flag parla delle **righe** di qualunque scrittura — il residuo
+            // DDL lo descrive `transactional_ddl`, che e gia false — e quella
             // promessa globale non e qualificata. La cancellazione, per giunta,
             // dichiara l'effetto remoto `Unknown`: e la rilettura a mostrare
             // che le righe erano tornate indietro, non il provider.
             writes: WriteCapabilities {
                 create: false,
                 append: false,
+                // Chiusa per la stessa ragione di MySQL — `TRUNCATE` con
+                // commit implicito — e non solo perche non misurata.
+                truncate_insert: false,
                 update: false,
                 upsert: false,
                 replace: false,
@@ -3223,22 +3218,37 @@ mod tests {
         // cancellazione dichiara l'effetto remoto ignoto, ed e la rilettura a
         // mostrare che le righe erano tornate indietro.
         assert!(!writes.rollback_on_failure);
-        // La ragione della chiusura sta accanto alla bandiera, non da qualche
-        // parte nel file: `TruncateInsert` compare in questo sorgente anche
-        // altrove, quindi cercarlo ovunque lasciava passare la cancellazione
-        // del commento che spiega perche `append` non si puo aprire.
-        let source = include_str!("profile.rs");
-        let at = source
-            .find("                append: false,")
-            .expect("la bandiera chiusa e in questo file");
-        let preceding = &source[source[..at]
-            .rfind("writes: WriteCapabilities")
-            .map_or(0, |start| {
-                source[..start].rfind("// `append`").unwrap_or(start)
-            })..at];
+        // `truncate_insert` e chiusa su **entrambi** i profili, e per una
+        // ragione che non e "non misurata": su questi due motori `TRUNCATE` e
+        // DDL con commit implicito, quindi le righe sparirebbero prima
+        // dell'INSERT e nessun rollback le riporterebbe indietro. E una
+        // chiusura permanente finche quello resta vero, e va detta accanto
+        // alla bandiera — non da qualche parte nel file, dove `TRUNCATE`
+        // compare anche altrove.
+        assert!(!published.writes.truncate_insert);
         assert!(
-            preceding.contains("TruncateInsert"),
-            "accanto alla bandiera non c'e scritto perche append resta chiusa"
+            !MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .writes
+                .truncate_insert
+        );
+        // Solo la produzione: questo stesso test nomina la bandiera chiusa
+        // per cercarla, e contando tutto il file conterebbe anche se stesso.
+        let source = include_str!("profile.rs")
+            .split_once(format!("{}mod tests {{", '\n').as_str())
+            .map_or_else(|| include_str!("profile.rs"), |(head, _)| head);
+        let closed = "truncate_insert: false,";
+        for (at, _) in source.match_indices(closed) {
+            let start = source[..at].rfind("writes: WriteCapabilities").unwrap_or(0);
+            assert!(
+                source[start..at].contains("commit implicito"),
+                "accanto alla bandiera chiusa non c'e scritto perche lo resta"
+            );
+        }
+        assert_eq!(
+            source.matches(closed).count(),
+            2,
+            "i due profili devono dichiararla entrambi, e chiusa"
         );
         assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
         assert!(!writes.bulk && !writes.array_binding && !writes.returning);
