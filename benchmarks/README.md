@@ -25,11 +25,6 @@ Questa cartella contiene due famiglie di misure, con regole diverse.
 
 ## Harness
 
-```powershell
-python scripts\phase0_harness.py inventory `
-  --output benchmarks\raw\phase0-inventory.jsonl
-```
-
 PostgreSQL/PostGIS:
 
 ```powershell
@@ -38,17 +33,6 @@ python scripts\phase0_harness.py postgres `
   --warmup 2 `
   --repeat 10 `
   --output benchmarks\raw\phase0-postgres-smoke.jsonl
-```
-
-ArcGIS:
-
-```powershell
-$env:PLENORA_PHASE0_ARCGIS_URL = "http://127.0.0.1:58080"
-$env:PLENORA_PHASE0_ARCGIS_TOKEN = "<token fixture>"
-python scripts\phase0_harness.py arcgis `
-  --warmup 2 `
-  --repeat 10 `
-  --output benchmarks\raw\phase0-arcgis-smoke.jsonl
 ```
 
 Le variabili d'ambiente non vengono copiate nei risultati. Gli errori
@@ -64,16 +48,13 @@ Ogni file è JSONL:
 4. tempi monotonic in nanosecondi;
 5. RSS osservato prima/dopo.
 
-L’inventario statico viene sempre misurato una sola volta; `--repeat` e
-`--warmup` si applicano ai casi di provider.
+`--repeat` e `--warmup` si applicano a tutti i casi.
 
 ## Aggregazione
 
 ```powershell
 python scripts\phase0_report.py `
-  benchmarks\raw\phase0-inventory.jsonl `
   benchmarks\raw\phase0-postgres-smoke.jsonl `
-  benchmarks\raw\phase0-arcgis-smoke.jsonl `
   --json benchmarks\baseline\phase0-smoke-report.json `
   --markdown benchmarks\baseline\phase0-smoke-report.md
 ```
@@ -81,13 +62,11 @@ python scripts\phase0_report.py `
 Il report calcola mediana, p95 nearest-rank, min/max, delta RSS e stabilità del
 digest semantico. I raw iniziali hanno un solo campione e restano smoke di
 convalida; non vanno presentati come baseline statistica. La baseline
-definitiva segue `docs/history/phase-0/baseline-plan.md`.
+definitiva richiede piu campioni di questi.
 
 ## Raw iniziali
 
-- `raw/phase0-inventory.jsonl`;
-- `raw/phase0-postgres-smoke.jsonl`;
-- `raw/phase0-arcgis-smoke.jsonl`.
+- `raw/phase0-postgres-smoke.jsonl`.
 
 Nessun comando viene eseguito automaticamente contro un target. Endpoint e
 segreti sono richiesti solo quando viene esplicitamente aperto il gate
@@ -138,7 +117,8 @@ baseline `baseline/postgres16-postgis34-query-fast-path.json` congela acquire,
 totale, p95 e i contatori `query_typed_fast_paths`/
 `query_prepared_fallbacks`.
 
-La specifica completa è in `docs/postgres/PERFORMANCE.md`.
+La soglia e la forma del confronto vivono in `scripts/check_postgres_performance.py`,
+che e anche cio che le applica.
 
 ## SQL Server
 
@@ -155,4 +135,4 @@ python scripts\check_sqlserver_performance.py `
 
 Read, prepared, TDS bulk, create e replace vengono misurati sul provider reale;
 ogni scrittura deve confermare tutte le righe e il differenziale SQL deve
-restare a zero. La specifica è in `docs/sqlserver/PERFORMANCE.md`.
+restare a zero. La soglia e in `scripts/check_sqlserver_performance.py`.

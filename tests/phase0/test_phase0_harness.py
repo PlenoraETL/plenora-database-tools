@@ -18,14 +18,37 @@ from scripts.phase0_harness import (
 class Phase0HarnessTests(unittest.TestCase):
     def test_manifest_has_unique_registered_cases(self) -> None:
         manifest = Manifest(DEFAULT_MANIFEST)
-        self.assertGreaterEqual(len(manifest.cases), 10)
-        self.assertTrue(manifest.cases["arcgis.write.apply_edits"].mutates)
+        self.assertGreaterEqual(len(manifest.cases), 5)
+        self.assertEqual(len(manifest.cases), len(set(manifest.cases)))
         self.assertFalse(manifest.cases["postgres.read.events_stream"].mutates)
+
+    def test_manifest_reads_the_mutating_flag(self) -> None:
+        """La bandiera si legge da un manifest costruito qui.
+
+        Prima l'unico caso che mutava era `arcgis.write.apply_edits`, e il
+        test lo nominava. Uscito quel dominio, nessun caso della suite muta
+        piu: legare la prova a un caso reale la renderebbe di nuovo fragile
+        alla prima suite che cambia. Quello che si verifica e il parsing.
+        """
+        document = {
+            "schema_version": 1,
+            "suite": "test",
+            "cases": [
+                {"id": "a.read", "provider": "p", "runner": "r", "mutates": False},
+                {"id": "a.write", "provider": "p", "runner": "r", "mutates": True},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "manifest.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            manifest = Manifest(path)
+            self.assertFalse(manifest.cases["a.read"].mutates)
+            self.assertTrue(manifest.cases["a.write"].mutates)
 
     def test_manifest_rejects_wrong_runner(self) -> None:
         manifest = Manifest(DEFAULT_MANIFEST)
         with self.assertRaises(HarnessError):
-            manifest.require("arcgis.read.features", "postgres")
+            manifest.require("postgres.read.events_stream", "altro-runner")
 
     def test_digest_is_order_stable_for_objects(self) -> None:
         self.assertEqual(
@@ -41,7 +64,7 @@ class Phase0HarnessTests(unittest.TestCase):
             raise ValueError("password=secret-token")
 
         with self.assertRaises(HarnessError):
-            recorder.run("backend.static_inventory", "inventory", fail)
+            recorder.run("postgres.read.events_stream", "postgres", fail)
         encoded = json.dumps(recorder.records)
         self.assertNotIn("secret-token", encoded)
         self.assertEqual(
@@ -58,7 +81,7 @@ class Phase0HarnessTests(unittest.TestCase):
             calls += 1
             return {"calls": calls}
 
-        recorder.run("backend.static_inventory", "inventory", count)
+        recorder.run("postgres.read.events_stream", "postgres", count)
         self.assertEqual(calls, 5)
         self.assertEqual(len(recorder.records), 3)
         self.assertEqual(

@@ -3,13 +3,6 @@
   "suite": "phase0-smoke",
   "cases": [
     {
-      "id": "backend.static_inventory",
-      "provider": "backend-python",
-      "runner": "inventory",
-      "mutates": false,
-      "required": true
-    },
-    {
       "id": "postgres.connection.version",
       "provider": "postgres",
       "runner": "postgres",
@@ -43,35 +36,6 @@
       "runner": "postgres",
       "mutates": false,
       "required": true
-    },
-    {
-      "id": "arcgis.connection.portal",
-      "provider": "arcgis",
-      "runner": "arcgis",
-      "mutates": false,
-      "required": true
-    },
-    {
-      "id": "arcgis.introspection.layer",
-      "provider": "arcgis",
-      "runner": "arcgis",
-      "mutates": false,
-      "required": true
-    },
-    {
-      "id": "arcgis.read.features",
-      "provider": "arcgis",
-      "runner": "arcgis",
-      "mutates": false,
-      "required": true
-    },
-    {
-      "id": "arcgis.write.apply_edits",
-      "provider": "arcgis",
-      "runner": "arcgis",
-      "mutates": true,
-      "required": true,
-      "isolation": "fake-rest-reset-header"
     }
   ]
 }

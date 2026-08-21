@@ -32,7 +32,6 @@ DEFAULT_MANIFEST = (
     / "manifests"
     / "phase0-smoke.json"
 )
-DEFAULT_BACKEND = Path(r"C:\Users\Marco\Desktop\plenora\backend")
 INVENTORY_ROOTS = (
     "app/core/connections",
     "app/core/estrai",
@@ -54,6 +53,12 @@ class CaseSpec:
     runner: str
     mutates: bool
     required: bool
+
+
+# I runner che questo harness sa eseguire. Il gate offline importa questo
+# elenco invece di riscriverlo: due copie della stessa lista divergono, e
+# quella del gate ammetteva ancora un runner che qui non esiste piu.
+RUNNERS = ("postgres",)
 
 
 class Manifest:
@@ -306,39 +311,6 @@ def _source_symbols(path: Path) -> dict[str, Any]:
     }
 
 
-def run_inventory(recorder: Recorder, backend: Path) -> None:
-    def operation() -> Mapping[str, Any]:
-        if not backend.is_dir():
-            raise HarnessError("backend path non disponibile")
-        files: dict[str, Any] = {}
-        test_files = 0
-        for root_name in INVENTORY_ROOTS:
-            root = backend / Path(root_name)
-            if not root.is_dir():
-                continue
-            for path in sorted(root.rglob("*.py")):
-                relative = path.relative_to(backend).as_posix()
-                files[relative] = _source_symbols(path)
-        tests_root = backend / "tests2"
-        if tests_root.is_dir():
-            test_files = sum(1 for _ in tests_root.rglob("test_*.py"))
-        return {
-            "backend_path_redacted": backend.name,
-            "source_files": len(files),
-            "test_files": test_files,
-            "symbols_digest": stable_json_digest(files),
-            "files": files,
-        }
-
-    recorder.run(
-        "backend.static_inventory",
-        "inventory",
-        operation,
-        repeat=1,
-        warmup=0,
-    )
-
-
 def _postgres_connect() -> Any:
     dsn = os.environ.get("PLENORA_PHASE0_PG_DSN")
     if not dsn:
@@ -499,186 +471,14 @@ def run_postgres(recorder: Recorder) -> None:
         connection.close()
 
 
-def _arcgis_request(
-    base_url: str,
-    path: str,
-    token: str,
-    *,
-    method: str = "GET",
-    query: Mapping[str, Any] | None = None,
-    form: Mapping[str, Any] | None = None,
-    headers: Mapping[str, str] | None = None,
-) -> tuple[dict[str, Any], int]:
-    params = {"f": "json", "token": token}
-    if query:
-        params.update(query)
-    url = (
-        base_url.rstrip("/")
-        + path
-        + "?"
-        + urllib.parse.urlencode(params, doseq=True)
-    )
-    body = None
-    request_headers = dict(headers or {})
-    if form is not None:
-        encoded = {
-            key: json.dumps(value, ensure_ascii=False)
-            if isinstance(value, (list, dict))
-            else str(value)
-            for key, value in form.items()
-        }
-        body = urllib.parse.urlencode(encoded).encode("utf-8")
-        request_headers["Content-Type"] = "application/x-www-form-urlencoded"
-    request = urllib.request.Request(
-        url, data=body, headers=request_headers, method=method
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = response.read()
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise HarnessError("richiesta ArcGIS fallita") from exc
-    try:
-        decoded = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise HarnessError("risposta ArcGIS non JSON") from exc
-    if not isinstance(decoded, dict):
-        raise HarnessError("risposta ArcGIS non-object")
-    if "error" in decoded:
-        error = decoded.get("error") or {}
-        code = error.get("code") if isinstance(error, dict) else None
-        raise HarnessError(f"ArcGIS error code {code!r}")
-    return decoded, len(payload)
-
-
-def run_arcgis(recorder: Recorder) -> None:
-    base_url = os.environ.get(
-        "PLENORA_PHASE0_ARCGIS_URL", "http://127.0.0.1:58080"
-    )
-    token = os.environ.get("PLENORA_PHASE0_ARCGIS_TOKEN")
-    if not token:
-        raise HarnessError("PLENORA_PHASE0_ARCGIS_TOKEN non configurata")
-
-    recorder.run(
-        "arcgis.connection.portal",
-        "arcgis",
-        lambda: _arcgis_portal(base_url, token),
-    )
-
-    def layer() -> Mapping[str, Any]:
-        payload, size = _arcgis_request(
-            base_url, "/services/Phase0/FeatureServer/0", token
-        )
-        fields = payload.get("fields") or []
-        return {
-            "geometry_type": payload.get("geometryType"),
-            "fields": len(fields),
-            "object_id_field": payload.get("objectIdField"),
-            "payload_bytes": size,
-            "digest": stable_json_digest(payload),
-        }
-
-    recorder.run("arcgis.introspection.layer", "arcgis", layer)
-
-    def read_features() -> Mapping[str, Any]:
-        payload, size = _arcgis_request(
-            base_url,
-            "/services/Phase0/FeatureServer/0/query",
-            token,
-            query={"where": "1=1", "outFields": "*", "returnGeometry": "true"},
-        )
-        features = payload.get("features") or []
-        return {
-            "features": len(features),
-            "exceeded_transfer_limit": bool(
-                payload.get("exceededTransferLimit", False)
-            ),
-            "payload_bytes": size,
-            "digest": stable_json_digest(features),
-        }
-
-    recorder.run("arcgis.read.features", "arcgis", read_features)
-
-    def apply_edits() -> Mapping[str, Any]:
-        add = {
-            "attributes": {
-                "id": 900001,
-                "region_id": 1,
-                "name": "phase0-smoke",
-                "population": 1,
-            },
-            "geometry": {
-                "x": 9.19,
-                "y": 45.4642,
-                "spatialReference": {"wkid": 4326},
-            },
-        }
-        payload, size = _arcgis_request(
-            base_url,
-            "/services/Phase0/FeatureServer/0/applyEdits",
-            token,
-            method="POST",
-            form={"adds": [add], "updates": [], "deletes": []},
-            headers={"X-Test-Reset": "1"},
-        )
-        results = payload.get("addResults") or []
-        if len(results) != 1 or results[0].get("success") is not True:
-            raise HarnessError("ArcGIS add non riuscito")
-        count_payload, count_size = _arcgis_request(
-            base_url,
-            "/services/Phase0/FeatureServer/0/query",
-            token,
-            query={"where": "1=1", "returnCountOnly": "true"},
-        )
-        return {
-            "add_success": True,
-            "object_id_assigned": isinstance(results[0].get("objectId"), int),
-            "count_after": int(count_payload["count"]),
-            "request_payload_bytes": size,
-            "count_payload_bytes": count_size,
-        }
-
-    try:
-        recorder.run("arcgis.write.apply_edits", "arcgis", apply_edits)
-    finally:
-        try:
-            _arcgis_request(
-                base_url,
-                "/services/Phase0/FeatureServer/0/applyEdits",
-                token,
-                method="POST",
-                form={"adds": [], "updates": [], "deletes": []},
-                headers={"X-Test-Reset": "1"},
-            )
-        except Exception:
-            pass
-
-
-def _arcgis_portal(base_url: str, token: str) -> Mapping[str, Any]:
-    payload, size = _arcgis_request(
-        base_url, "/sharing/rest/portals/self", token
-    )
-    return {
-        "portal_id_present": bool(payload.get("id")),
-        "user_present": bool((payload.get("user") or {}).get("username")),
-        "payload_bytes": size,
-    }
-
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
-        choices=("inventory", "postgres", "arcgis", "all"),
+        choices=(*RUNNERS, "all"),
     )
     parser.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST
-    )
-    parser.add_argument(
-        "--backend",
-        type=Path,
-        default=Path(
-            os.environ.get("PLENORA_PHASE0_BACKEND", str(DEFAULT_BACKEND))
-        ),
     )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
@@ -704,12 +504,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         recorder = Recorder(
             manifest, repeat=args.repeat, warmup=args.warmup
         )
-        if args.command in ("inventory", "all"):
-            run_inventory(recorder, args.backend.resolve())
         if args.command in ("postgres", "all"):
             run_postgres(recorder)
-        if args.command in ("arcgis", "all"):
-            run_arcgis(recorder)
     except HarnessError as exc:
         print(f"phase0 harness: {exc}", file=sys.stderr)
         if recorder is not None and args.output and recorder.records:
