@@ -35,20 +35,26 @@ La major attiva e `contracts/v2/`, e contiene:
 - `plan.schema.json`
 - `write-outcome.schema.json`
 
-Le major precedenti restano leggibili ma sono ritirate: nessuno le
-referenzia, e il gate offline fallisce se la major attiva torna a
-farlo.
+E l'unica nel worktree: le major precedenti stanno in Git, e nessun
+file qui dentro le referenzia. Il gate offline fallisce se una di esse
+torna nell'albero di lavoro, o se un riferimento la nomina.
 
-## Capability pubblicate
+## Capability dichiarate
 
-Cio che ciascun provider dichiara, letto dalla sua dichiarazione. Un
-valore che non e un letterale — `spatial` su PostgreSQL dipende dalla
-presenza di PostGIS — resta l'espressione sorgente: risolverla qui
-sarebbe un'affermazione che il codice non fa.
+Cio che ciascuna dichiarazione di capability contiene, letto da dove
+e scritta. Un valore che non e un letterale — `spatial` su PostgreSQL
+dipende dalla presenza di PostGIS — resta l'espressione sorgente:
+risolverla qui sarebbe un'affermazione che il codice non fa.
+
+**Non tutte sono raggiungibili.** `MariaDB` ha una dichiarazione nel crate ma nessun costruttore pubblico
+la seleziona: e un profilo interno, e non esiste un provider che
+un consumatore possa istanziare. La colonna e qui perche la
+dichiarazione esiste, non perche la si possa usare — ed e marcata
+nell'intestazione.
 
 ### `reads`
 
-| reads | PostgreSQL | MySQL | MariaDB | SQL Server |
+| reads | PostgreSQL | MySQL | MariaDB (non pubblicato) | SQL Server |
 | --- | --- | --- | --- | --- |
 | `streaming` | `true` | `true` | `true` | `true` |
 | `server_cursor` | `false` | `false` | `false` | `false` |
@@ -60,7 +66,7 @@ sarebbe un'affermazione che il codice non fa.
 
 ### `writes`
 
-| writes | PostgreSQL | MySQL | MariaDB | SQL Server |
+| writes | PostgreSQL | MySQL | MariaDB (non pubblicato) | SQL Server |
 | --- | --- | --- | --- | --- |
 | `create` | `true` | `true` | `false` | `true` |
 | `append` | `true` | `true` | `true` | `true` |
@@ -76,60 +82,59 @@ sarebbe un'affermazione che il codice non fa.
 
 ## Sub-comandi del CLI
 
-- `benchmark-oltp`
-- `benchmark-read`
-- `benchmark-spatial`
-- `benchmark-write`
-- `bulk-write`
-- `conditional-update`
-- `database-probe`
-- `db2`
-- `diagnose`
-- `doctor`
-- `duckdb`
-- `execute-ddl`
-- `execute-scalar`
-- `execute-sql`
-- `explain`
-- `inspect-catalogs`
-- `inspect-database`
-- `inspect-dataset`
-- `inspect-objects`
-- `inspect-schemas`
-- `inspect-tables`
-- `mariadb`
-- `mysql`
-- `mysql-conditional-update`
-- `mysql-describe`
-- `mysql-execute-ddl`
-- `mysql-execute-scalar`
-- `mysql-execute-sql`
-- `mysql-inspect-schemas`
-- `mysql-inspect-tables`
-- `mysql-probe`
-- `mysql-transaction-test`
-- `oracle`
-- `pool-status`
-- `portable-compile`
-- `portable-execute`
-- `postgres`
-- `postgres-describe`
-- `postgres-probe`
-- `postgres-query`
-- `postgres-read-ipc`
-- `postgres-read-summary`
-- `postgres-write-ipc`
-- `profile-check`
-- `profile-list`
-- `session-context-test`
-- `sqlite`
-- `sqlserver`
-- `test-cancellation`
-- `test-concurrency`
-- `test-spatial`
-- `test-streaming`
-- `transaction-test`
-- `validate-plan`
+Dal catalogo che il binario espone. La feature e quella che li
+compila: un comando la cui feature non e stata compilata esiste nel
+progetto ma non in quel binario, e il CLI lo dice invece di stampare
+l'aiuto.
+
+| comando | feature |
+| --- | --- |
+| `benchmark-oltp` | `postgres` |
+| `benchmark-read` | `postgres` |
+| `benchmark-spatial` | `postgres` |
+| `benchmark-write` | `postgres` |
+| `bulk-write` | `postgres` |
+| `conditional-update` | `postgres` |
+| `database-probe` | `sempre` |
+| `diagnose` | `postgres` |
+| `doctor` | `postgres` |
+| `execute-ddl` | `postgres` |
+| `execute-scalar` | `postgres` |
+| `execute-sql` | `postgres` |
+| `explain` | `postgres` |
+| `inspect-catalogs` | `postgres` |
+| `inspect-database` | `postgres` |
+| `inspect-dataset` | `sempre` |
+| `inspect-objects` | `postgres` |
+| `inspect-schemas` | `postgres` |
+| `inspect-tables` | `postgres` |
+| `mysql-conditional-update` | `mysql` |
+| `mysql-describe` | `mysql` |
+| `mysql-execute-ddl` | `mysql` |
+| `mysql-execute-scalar` | `mysql` |
+| `mysql-execute-sql` | `mysql` |
+| `mysql-inspect-schemas` | `mysql` |
+| `mysql-inspect-tables` | `mysql` |
+| `mysql-probe` | `mysql` |
+| `mysql-transaction-test` | `mysql` |
+| `pool-status` | `postgres` |
+| `portable-compile` | `postgres` |
+| `portable-execute` | `postgres` |
+| `postgres-describe` | `postgres` |
+| `postgres-probe` | `postgres` |
+| `postgres-query` | `postgres` |
+| `postgres-read-ipc` | `postgres` |
+| `postgres-read-summary` | `postgres` |
+| `postgres-write-ipc` | `postgres` |
+| `profile-check` | `postgres` |
+| `profile-list` | `postgres` |
+| `session-context-test` | `postgres` |
+| `test-cancellation` | `postgres` |
+| `test-concurrency` | `postgres` |
+| `test-spatial` | `postgres` |
+| `test-streaming` | `postgres` |
+| `transaction-test` | `postgres` |
+| `validate-plan` | `sempre` |
 
 ## Inventario dei test MySQL
 

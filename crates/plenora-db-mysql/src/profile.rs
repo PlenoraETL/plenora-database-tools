@@ -878,10 +878,10 @@ impl ProductProfile for MariadbProfile {
             provider_version,
             extension_versions: BTreeMap::new(),
             reads: ReadCapabilities {
-                // Le quattro misurate. `server_cursor`, `pagination`,
-                // `object_id_windows` e `resumable` restano false perche il
-                // crate non li offre a nessuno dei due prodotti: sono chiusi
-                // anche per MySQL, e qui non c'e niente da qualificare.
+                // Le quattro misurate. `server_cursor`, `pagination` e
+                // `resumable` restano false perche il crate non li offre a
+                // nessuno dei due prodotti: sono chiusi anche per MySQL, e
+                // qui non c'e niente da qualificare.
                 streaming: true,
                 server_cursor: false,
                 pagination: false,

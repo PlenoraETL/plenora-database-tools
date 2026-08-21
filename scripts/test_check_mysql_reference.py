@@ -48,6 +48,7 @@ SDK_SPEC.loader.exec_module(sdk)
 
 from scripts import compose_network as compose_network_module  # noqa: E402
 from scripts import sdk_wheel_probe as probe  # noqa: E402
+from scripts import render_state  # noqa: E402
 from scripts.mysql_inventory import collect  # noqa: E402
 from scripts.mysql_references import (  # noqa: E402
     BASELINE,
@@ -120,9 +121,6 @@ RUNNER_FAMILIES_INTERNAL = (
 )
 
 
-# Il dispatch del CLI: una stringa seguita da `=>` dentro il match dei
-# sub-comandi.
-SUBCOMMAND_DISPATCH = r'\n\s+"([a-z][a-z0-9-]+)" => '
 # Un comando **invocato** in un documento porta davanti il nome del
 # binario. Senza quel vincolo qualunque parola con un trattino — una
 # dipendenza, un container — finirebbe per essere cercata nel dispatch.
@@ -950,14 +948,14 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         comando citato ma inesistente manda il lettore contro un `usage()`, e
         nessun documento generato puo impedirlo.
 
-        L'autorita e il dispatch, non una frase.
+        L'autorita e `COMMAND_CATALOGUE`, non una frase e nemmeno i rami del
+        match: fra quelli ci sono anche gli arm che traducono il nome di un
+        provider, e con quelli `plenora-database sqlite` sarebbe passato per
+        un comando legittimo.
         """
 
-        main = (
-            ROOT / "crates" / "plenora-database-cli" / "src" / "main.rs"
-        ).read_text(encoding="utf-8")
-        implemented = set(re.findall(SUBCOMMAND_DISPATCH, main))
-        self.assertGreaterEqual(len(implemented), 40, "dispatch CLI non trovato")
+        implemented = {name for name, _ in render_state.cli_subcommands()}
+        self.assertGreaterEqual(len(implemented), 40, "catalogo CLI non trovato")
 
         for document in current_surfaces():
             text = document.read_text(encoding="utf-8")

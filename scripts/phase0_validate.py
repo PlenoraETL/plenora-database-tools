@@ -52,12 +52,37 @@ CAPABILITIES_SCHEMA = ACTIVE_CONTRACT_ROOT / "capabilities.schema.json"
 # un altro dominio e una superficie che rientra dalla finestra: il controllo e
 # strutturale — cerca la stringa nei file — invece di fidarsi di una frase in
 # un documento che dice che non c'e piu.
-FOREIGN_DOMAIN_TERMS = ("arcgis", "feature_service", "apply_edits", "global_id")
-# Dove si cerca. Non solo i contratti: un artefatto di misura committato qui
-# dentro porta con se cio che ha misurato, e un inventario di un'altra base di
-# codice ha rimesso ArcGIS nel repository per una campagna intera senza che
-# nessuna guardia lo vedesse.
-DOMAIN_SCOPES = ("contracts", "golden", "benchmarks", "catalog", "docs")
+FOREIGN_DOMAIN_TERMS = (
+    "arcgis",
+    "feature_service",
+    "apply_edits",
+    "global_id",
+    "object_id_windows",
+    "layer_outcomes",
+)
+# Dove si cerca. Non solo i contratti, per due ragioni imparate una alla volta:
+# un artefatto di misura committato qui dentro porta con se cio che ha
+# misurato — un inventario di un'altra base di codice ha tenuto ArcGIS nel
+# repository per una campagna intera — e il codice e il posto dove un nome
+# sopravvive piu a lungo, perche nessuno rilegge i commenti. `profile.rs`
+# elencava `object_id_windows` fra le capability chiuse tre commit dopo che
+# quella capability non esisteva piu.
+DOMAIN_SCOPES = (
+    "contracts",
+    "golden",
+    "benchmarks",
+    "catalog",
+    "docs",
+    "crates",
+    "scripts",
+    "tests",
+)
+DOMAIN_SUFFIXES = frozenset(
+    {".json", ".jsonl", ".md", ".yml", ".yaml", ".rs", ".py", ".pyi", ".toml"}
+)
+# Il gate nomina i termini per poterli cercare, e i test provano che la ricerca
+# funziona: sono gli unici due posti dove comparire e legittimo.
+DOMAIN_EXEMPT = ("scripts/phase0_validate.py", "tests/phase0/")
 
 
 def harness_runners() -> tuple[str, ...]:
@@ -190,7 +215,7 @@ def validate_active_domain() -> int:
     dichiara di aver rimosso:
 
     1. nessun termine di un dominio estraneo compare in contratti, suite
-       golden, benchmark, cataloghi o documenti;
+       golden, benchmark, cataloghi, documenti, codice o script;
     2. nessun riferimento punta a una major diversa da quella attiva.
 
     Il secondo e il piu importante: un contratto puo essere ripulito e
@@ -198,10 +223,12 @@ def validate_active_domain() -> int:
     quella superficie e stata tolta. In quel caso la superficie e ancora li,
     raggiungibile, e chi valida non se ne accorge.
 
-    Il primo copre i benchmark e non solo i contratti, perche l'ha imparato
-    nel modo difficile: un raw di inventario di un'altra base di codice ha
-    tenuto ArcGIS dentro il repository per una campagna intera, e la guardia
-    di allora non guardava li.
+    Il primo copre i benchmark e il codice, non solo i contratti, perche
+    l'ha imparato due volte: un raw di inventario di un'altra base di codice ha
+    tenuto ArcGIS nel repository per una campagna intera, e un commento in
+    `profile.rs` ha continuato a elencare una capability tre commit dopo che
+    era stata tolta dal contratto. La guardia di allora non guardava ne l'uno
+    ne l'altro.
     """
     if not any(ACTIVE_CONTRACT_ROOT.rglob("*.json")):
         raise ValidationError(f"major attiva assente: {ACTIVE_MAJOR}")
@@ -221,16 +248,16 @@ def validate_active_domain() -> int:
     inspected = 0
     for scope in DOMAIN_SCOPES:
         for path in sorted((REPO_ROOT / scope).rglob("*")):
-            if not path.is_file() or path.suffix not in {
-                ".json",
-                ".jsonl",
-                ".md",
-                ".yml",
-                ".yaml",
-            }:
+            if not path.is_file() or path.suffix not in DOMAIN_SUFFIXES:
+                continue
+            where = path.relative_to(REPO_ROOT).as_posix()
+            if where.startswith(DOMAIN_EXEMPT):
+                continue
+            if "target" in path.relative_to(REPO_ROOT).parts:
+                continue
+            if "__pycache__" in path.relative_to(REPO_ROOT).parts:
                 continue
             text = path.read_text(encoding="utf-8")
-            where = path.relative_to(REPO_ROOT).as_posix()
             lowered = text.lower()
             for term in FOREIGN_DOMAIN_TERMS:
                 if term in lowered:

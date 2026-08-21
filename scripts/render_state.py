@@ -52,12 +52,39 @@ TARGET = ROOT / "docs" / "STATO.md"
 # MySQL e quello MariaDB stanno nello stesso modulo, e il terzo profilo di quel
 # file esiste solo per i test.
 CAPABILITY_SOURCES = (
-    ("PostgreSQL", "crates/plenora-db-postgres/src/catalog/capabilities.rs", None),
-    ("MySQL", "crates/plenora-db-mysql/src/profile.rs", "impl ProductProfile for MysqlProfile"),
-    ("MariaDB", "crates/plenora-db-mysql/src/profile.rs", "impl ProductProfile for MariadbProfile"),
-    ("SQL Server", "crates/plenora-db-sqlserver/src/provider.rs", None),
+    (
+        "PostgreSQL",
+        "crates/plenora-db-postgres",
+        "crates/plenora-db-postgres/src/catalog/capabilities.rs",
+        None,
+        None,
+    ),
+    (
+        "MySQL",
+        "crates/plenora-db-mysql",
+        "crates/plenora-db-mysql/src/profile.rs",
+        "impl ProductProfile for MysqlProfile",
+        "MYSQL_PROFILE",
+    ),
+    (
+        "MariaDB",
+        "crates/plenora-db-mysql",
+        "crates/plenora-db-mysql/src/profile.rs",
+        "impl ProductProfile for MariadbProfile",
+        "MARIADB_PROFILE",
+    ),
+    (
+        "SQL Server",
+        "crates/plenora-db-sqlserver",
+        "crates/plenora-db-sqlserver/src/provider.rs",
+        None,
+        None,
+    ),
 )
 CAPABILITY_GROUPS = (("reads", "ReadCapabilities"), ("writes", "WriteCapabilities"))
+PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
+# Una voce del catalogo: nome, e la feature che lo compila se ce n'e una.
+COMMAND_ENTRY = r'\("([a-z][a-z0-9-]+)", (?:Some\("([a-z]+)"\)|None)\)'
 
 
 class RenderError(RuntimeError):
@@ -112,12 +139,41 @@ def capability_fields(
     return fields
 
 
-def capability_matrix() -> dict[str, dict[str, dict[str, str]]]:
-    matrix: dict[str, dict[str, dict[str, str]]] = {}
-    for provider, source, marker in CAPABILITY_SOURCES:
+def public_profiles(crate: str) -> set[str]:
+    """I profili che un costruttore **pubblico** del crate seleziona.
+
+    E la differenza fra una dichiarazione di capability che qualcuno puo
+    ottenere e una che vive solo dentro il crate. Si leggono i corpi delle
+    `pub fn` — non delle `pub(crate) fn`, e non delle funzioni di test, che
+    pubbliche non sono — e si raccolgono i profili che nominano.
+    """
+    selected: set[str] = set()
+    for path in sorted((ROOT / crate / "src").rglob("*.rs")):
+        source = path.read_text(encoding="utf-8")
+        start = 0
+        while True:
+            found = source.find("pub fn ", start)
+            if found < 0:
+                break
+            start = found + 1
+            opening = source.find("{", found)
+            if opening < 0:
+                break
+            selected.update(
+                re.findall(PROFILE_STATIC, braced_body(source, opening))
+            )
+    return selected
+
+
+def capability_matrix() -> dict[str, dict[str, object]]:
+    matrix: dict[str, dict[str, object]] = {}
+    for provider, crate, source, marker, profile in CAPABILITY_SOURCES:
         matrix[provider] = {
-            name: capability_fields(source, name, kind, marker)
-            for name, kind in CAPABILITY_GROUPS
+            "published": profile is None or profile in public_profiles(crate),
+            "groups": {
+                name: capability_fields(source, name, kind, marker)
+                for name, kind in CAPABILITY_GROUPS
+            },
         }
     return matrix
 
@@ -165,14 +221,29 @@ def contract_messages() -> list[str]:
     return names
 
 
-def cli_subcommands() -> list[str]:
+def cli_subcommands() -> list[tuple[str, str]]:
+    """I sub-comandi, dal catalogo che il CLI espone.
+
+    Non da tutti i rami `"..." =>` del sorgente: quella lettura prendeva anche
+    gli arm che traducono il nome di un provider, e produceva sei comandi che
+    il binario non ha. `COMMAND_CATALOGUE` e l'elenco che l'aiuto stampa e che
+    il dispatch riconosce, e porta con se la feature che li compila.
+    """
     main = (ROOT / "crates" / "plenora-database-cli" / "src" / "main.rs").read_text(
         encoding="utf-8"
     )
-    names = sorted(set(re.findall(r'\n\s+"([a-z][a-z0-9-]+)" => ', main)))
-    if not names:
-        raise RenderError("dispatch del CLI non riconosciuto")
-    return names
+    marker = "const COMMAND_CATALOGUE"
+    if marker not in main:
+        raise RenderError("catalogo dei comandi del CLI non trovato")
+    body = main[main.index("[", main.index(marker)) :]
+    body = body[: body.index("];") + 1]
+    found = [
+        (name, feature or "sempre")
+        for name, feature in re.findall(COMMAND_ENTRY, body)
+    ]
+    if not found:
+        raise RenderError("catalogo dei comandi del CLI vuoto")
+    return sorted(found)
 
 
 def test_inventory() -> list[tuple[str, int]]:
@@ -190,7 +261,10 @@ def table(header: list[str], rows: list[list[str]]) -> list[str]:
 
 def render() -> str:
     matrix = capability_matrix()
-    providers = [name for name, _, _ in CAPABILITY_SOURCES]
+    providers = [name for name, _, _, _, _ in CAPABILITY_SOURCES]
+    unpublished = [
+        name for name in providers if not matrix[name]["published"]
+    ]
     lines = [
         "# Stato del codice",
         "",
@@ -220,36 +294,65 @@ def render() -> str:
     lines += [f"- `{name}`" for name in contract_messages()]
     lines += [
         "",
-        "Le major precedenti restano leggibili ma sono ritirate: nessuno le",
-        "referenzia, e il gate offline fallisce se la major attiva torna a",
-        "farlo.",
+        "E l'unica nel worktree: le major precedenti stanno in Git, e nessun",
+        "file qui dentro le referenzia. Il gate offline fallisce se una di esse",
+        "torna nell'albero di lavoro, o se un riferimento la nomina.",
         "",
-        "## Capability pubblicate",
+        "## Capability dichiarate",
         "",
-        "Cio che ciascun provider dichiara, letto dalla sua dichiarazione. Un",
-        "valore che non e un letterale — `spatial` su PostgreSQL dipende dalla",
-        "presenza di PostGIS — resta l'espressione sorgente: risolverla qui",
-        "sarebbe un'affermazione che il codice non fa.",
+        "Cio che ciascuna dichiarazione di capability contiene, letto da dove",
+        "e scritta. Un valore che non e un letterale — `spatial` su PostgreSQL",
+        "dipende dalla presenza di PostGIS — resta l'espressione sorgente:",
+        "risolverla qui sarebbe un'affermazione che il codice non fa.",
         "",
+    ]
+    if unpublished:
+        lines += [
+            "**Non tutte sono raggiungibili.** "
+            + ", ".join(f"`{name}`" for name in unpublished)
+            + " ha una dichiarazione nel crate ma nessun costruttore pubblico",
+            "la seleziona: e un profilo interno, e non esiste un provider che",
+            "un consumatore possa istanziare. La colonna e qui perche la",
+            "dichiarazione esiste, non perche la si possa usare — ed e marcata",
+            "nell'intestazione.",
+            "",
+        ]
+    header = [
+        name if matrix[name]["published"] else f"{name} (non pubblicato)"
+        for name in providers
     ]
     for group, _ in CAPABILITY_GROUPS:
         names: list[str] = []
         for provider in providers:
-            for field in matrix[provider][group]:
+            for field in matrix[provider]["groups"][group]:
                 if field not in names:
                     names.append(field)
         lines += [f"### `{group}`", ""]
         lines += table(
-            [group] + providers,
+            [group] + header,
             [
                 [f"`{field}`"]
-                + [f"`{matrix[provider][group].get(field, '—')}`" for provider in providers]
+                + [
+                    f"`{matrix[provider]['groups'][group].get(field, '—')}`"
+                    for provider in providers
+                ]
                 for field in names
             ],
         )
         lines.append("")
-    lines += ["## Sub-comandi del CLI", ""]
-    lines += [f"- `{name}`" for name in cli_subcommands()]
+    lines += [
+        "## Sub-comandi del CLI",
+        "",
+        "Dal catalogo che il binario espone. La feature e quella che li",
+        "compila: un comando la cui feature non e stata compilata esiste nel",
+        "progetto ma non in quel binario, e il CLI lo dice invece di stampare",
+        "l'aiuto.",
+        "",
+    ]
+    lines += table(
+        ["comando", "feature"],
+        [[f"`{name}`", f"`{feature}`"] for name, feature in cli_subcommands()],
+    )
     lines += [
         "",
         "## Inventario dei test MySQL",
