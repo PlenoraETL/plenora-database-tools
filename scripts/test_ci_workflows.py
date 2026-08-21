@@ -263,8 +263,15 @@ class CiWorkflowTests(unittest.TestCase):
             "scripts/test_check_postgres_hardening.py",
             "scripts/test_check_session_matrix.py",
             "scripts/test_check_sqlserver_reference.py",
+            "scripts/phase0_validate.py",
+            "scripts/render_state.py --check",
         ):
             self.assertIn(f"python3 {suite}", static, f"{suite} non eseguito")
+        self.assertIn(
+            "python3 -m unittest discover -s tests/phase0 -t .",
+            static,
+            "tests/phase0 non eseguito",
+        )
 
         # La duplicazione con `sqlserver-assurance` e voluta e dichiarata:
         # senza la nota, il prossimo lettore la toglie credendola una svista.

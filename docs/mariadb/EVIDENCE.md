@@ -639,8 +639,9 @@ Quattro bandiere di lettura si aprono per MariaDB — `streaming`, `projection`,
 `filter`, `ordering` — e ciascuna ha le proprie sonde, con attese esatte.
 `filter` copre le tredici forme qualificate e nessuna delle due chiuse. Le altre quattro
 restano chiuse perche il crate **non le offre a nessuno dei due prodotti**:
-`server_cursor`, `pagination`, `object_id_windows` e `resumable` sono false
-anche per MySQL, quindi qui non c'e niente da qualificare.
+`server_cursor`, `pagination` e `resumable` sono false anche per MySQL, quindi
+qui non c'e niente da qualificare. La quarta di allora indirizzava per finestre
+di objectId e non appartiene piu al contratto.
 
 Le scritture restano chiuse per intero: nessun piano di scrittura e mai stato
 eseguito con questo profilo. E lo spatial resta chiuso in lettura, perche su

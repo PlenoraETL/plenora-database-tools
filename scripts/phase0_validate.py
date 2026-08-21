@@ -13,6 +13,7 @@ import ast
 import json
 import os
 import platform
+import re
 import tempfile
 from importlib.metadata import version
 from datetime import datetime, timezone
@@ -29,20 +30,17 @@ except ImportError as exc:  # pragma: no cover - dipendenza del tooling
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Le major di contratto presenti. Il registry le tiene tutte, perche gli schemi
-# vanno comunque validati; ma una sola e **attiva**, ed e quella che il codice
-# emette e che i gate misurano. Le altre sono ritirate: restano leggibili per
-# chi deve interpretare un documento vecchio, e nessuno le referenzia.
+# Una sola major di contratto vive nel worktree, ed e quella che il codice
+# emette. Le versioni precedenti stanno in Git, che e dove sta la storia: un
+# archivio dentro l'albero di lavoro e una seconda copia che si legge come se
+# fosse ancora valida.
 ACTIVE_MAJOR = "v2"
+ACTIVE_CONTRACT_ROOT = REPO_ROOT / "contracts" / ACTIVE_MAJOR
 CONTRACT_ROOTS = tuple(
     sorted(
         (path for path in (REPO_ROOT / "contracts").iterdir() if path.is_dir()),
         key=lambda path: path.name,
     )
-)
-ACTIVE_CONTRACT_ROOT = REPO_ROOT / "contracts" / ACTIVE_MAJOR
-RETIRED_CONTRACT_ROOTS = tuple(
-    root for root in CONTRACT_ROOTS if root.name != ACTIVE_MAJOR
 )
 GOLDEN_ROOT = REPO_ROOT / "golden"
 BENCHMARK_MANIFEST = (
@@ -50,12 +48,30 @@ BENCHMARK_MANIFEST = (
 )
 SPATIAL_CATALOG = REPO_ROOT / "catalog" / "spatial-functions.v1.json"
 CAPABILITIES_SCHEMA = ACTIVE_CONTRACT_ROOT / "capabilities.schema.json"
-# Il dominio di questi contratti sono i database. Un termine che appartiene a
-# un altro dominio, dentro la major attiva, e una superficie che rientra dalla
-# finestra: il controllo e strutturale — cerca la stringa negli schemi, negli
-# esempi e nella suite golden attivi — invece di fidarsi di una frase in un
-# documento che dice che non c'e piu.
+# Il dominio di questo repository sono i database. Un termine che appartiene a
+# un altro dominio e una superficie che rientra dalla finestra: il controllo e
+# strutturale — cerca la stringa nei file — invece di fidarsi di una frase in
+# un documento che dice che non c'e piu.
 FOREIGN_DOMAIN_TERMS = ("arcgis", "feature_service", "apply_edits", "global_id")
+# Dove si cerca. Non solo i contratti: un artefatto di misura committato qui
+# dentro porta con se cio che ha misurato, e un inventario di un'altra base di
+# codice ha rimesso ArcGIS nel repository per una campagna intera senza che
+# nessuna guardia lo vedesse.
+DOMAIN_SCOPES = ("contracts", "golden", "benchmarks", "catalog", "docs")
+
+
+def harness_runners() -> tuple[str, ...]:
+    """I runner ammessi sono quelli che l'harness sa eseguire.
+
+    Importato invece che riscritto: l'elenco che stava qui ammetteva ancora un
+    runner che l'harness non ha piu, e nessuno se ne sarebbe accorto finche un
+    caso non fosse rimasto nel manifest senza nessuno che lo eseguisse.
+    """
+    try:
+        from scripts.phase0_harness import RUNNERS
+    except ModuleNotFoundError:  # esecuzione diretta: python scripts\...
+        from phase0_harness import RUNNERS
+    return RUNNERS
 
 
 class ValidationError(RuntimeError):
@@ -168,51 +184,71 @@ def validate_examples(
 
 
 def validate_active_domain() -> int:
-    """La major attiva parla di database, e non dipende da una ritirata.
+    """Il repository parla di database, e ha una sola major di contratto.
 
     Due controlli, entrambi sul testo dei file e non su cio che un documento
     dichiara di aver rimosso:
 
-    1. nessun termine di un dominio estraneo compare negli schemi, negli
-       esempi o nella suite golden attivi;
-    2. nessun `$ref` della major attiva punta all'`$id` di una major ritirata.
+    1. nessun termine di un dominio estraneo compare in contratti, suite
+       golden, benchmark, cataloghi o documenti;
+    2. nessun riferimento punta a una major diversa da quella attiva.
 
     Il secondo e il piu importante: un contratto puo essere ripulito e
     continuare a referenziare, per una definizione comune, il file da cui
     quella superficie e stata tolta. In quel caso la superficie e ancora li,
     raggiungibile, e chi valida non se ne accorge.
+
+    Il primo copre i benchmark e non solo i contratti, perche l'ha imparato
+    nel modo difficile: un raw di inventario di un'altra base di codice ha
+    tenuto ArcGIS dentro il repository per una campagna intera, e la guardia
+    di allora non guardava li.
     """
-    inspected = 0
-    retired_ids = tuple(
-        f"https://plenora.local/database-tools/{root.name}/"
-        for root in RETIRED_CONTRACT_ROOTS
-    )
-    active_paths = sorted(ACTIVE_CONTRACT_ROOT.rglob("*.json"))
-    if not active_paths:
+    if not any(ACTIVE_CONTRACT_ROOT.rglob("*.json")):
         raise ValidationError(f"major attiva assente: {ACTIVE_MAJOR}")
-    active_suite = sorted((GOLDEN_ROOT / ACTIVE_MAJOR).glob("*.json"))
-    if not active_suite:
+    if not any((GOLDEN_ROOT / ACTIVE_MAJOR).glob("*.json")):
         # Senza questa riga il gate resterebbe verde con la suite attiva
-        # cancellata: gli schemi ci sarebbero ancora, e `validate_golden`
-        # continuerebbe a controllare soltanto le suite ritirate.
+        # cancellata: gli schemi ci sarebbero ancora, e `validate_golden` non
+        # avrebbe niente da confrontare.
         raise ValidationError(f"suite golden attiva assente: {ACTIVE_MAJOR}")
-    active_paths += active_suite
-    for path in active_paths:
-        text = path.read_text(encoding="utf-8")
-        lowered = text.lower()
-        for term in FOREIGN_DOMAIN_TERMS:
-            if term in lowered:
-                raise ValidationError(
-                    f"dominio estraneo nella major attiva: '{term}' in "
-                    f"{path.relative_to(REPO_ROOT).as_posix()}"
-                )
-        for retired in retired_ids:
-            if retired in text:
-                raise ValidationError(
-                    f"la major attiva referenzia una ritirata: {retired} in "
-                    f"{path.relative_to(REPO_ROOT).as_posix()}"
-                )
-        inspected += 1
+    others = tuple(
+        root.name for root in CONTRACT_ROOTS if root.name != ACTIVE_MAJOR
+    )
+    if others:
+        raise ValidationError(
+            f"major oltre a quella attiva nel worktree: {', '.join(others)}"
+        )
+    namespace = "https://plenora.local/database-tools/"
+    inspected = 0
+    for scope in DOMAIN_SCOPES:
+        for path in sorted((REPO_ROOT / scope).rglob("*")):
+            if not path.is_file() or path.suffix not in {
+                ".json",
+                ".jsonl",
+                ".md",
+                ".yml",
+                ".yaml",
+            }:
+                continue
+            text = path.read_text(encoding="utf-8")
+            where = path.relative_to(REPO_ROOT).as_posix()
+            lowered = text.lower()
+            for term in FOREIGN_DOMAIN_TERMS:
+                if term in lowered:
+                    raise ValidationError(
+                        f"dominio estraneo: '{term}' in {where}"
+                    )
+            start = 0
+            while True:
+                found = text.find(namespace, start)
+                if found < 0:
+                    break
+                major = text[found + len(namespace) :].split("/", 1)[0]
+                if major != ACTIVE_MAJOR:
+                    raise ValidationError(
+                        f"riferimento a una major non attiva: {major} in {where}"
+                    )
+                start = found + len(namespace)
+            inspected += 1
     return inspected
 
 
@@ -266,7 +302,7 @@ def validate_benchmark_manifest() -> int:
     ids = [case.get("id") for case in cases]
     if not cases or len(ids) != len(set(ids)):
         raise ValidationError("benchmark manifest vuoto o con id duplicati")
-    runners = {"inventory", "postgres", "arcgis"}
+    runners = set(harness_runners())
     invalid = sorted(
         {
             str(case.get("runner"))
@@ -328,28 +364,90 @@ def validate_python_sources() -> int:
     return len(paths)
 
 
-def validate_documents() -> int:
-    required = [
-        REPO_ROOT / "Architetture.md",
-        REPO_ROOT / "Prestazioni.md",
-        REPO_ROOT / "docs" / "history" / "phase-0" / "README.md",
-        REPO_ROOT / "docs" / "history" / "phase-0" / "pre-database-gate.md",
-        REPO_ROOT / "docs" / "history" / "phase-0" / "open-decisions.md",
-        REPO_ROOT / "docs" / "history" / "phase-1" / "README.md",
-        REPO_ROOT / "docs" / "postgres" / "README.md",
-        REPO_ROOT / "docs" / "postgres" / "HARDENING.md",
-        REPO_ROOT / "docs" / "postgres" / "SAFETY-CASE.md",
-        REPO_ROOT / "docs" / "postgres" / "COMPATIBILITY.md",
-        REPO_ROOT / "docs" / "postgres" / "PERFORMANCE.md",
+def markdown_documents() -> list[Path]:
+    """Tutti i Markdown versionati, senza artefatti di build."""
+    skip = {"target", "node_modules", ".git", "__pycache__"}
+    found = [
+        path
+        for path in sorted(REPO_ROOT.rglob("*.md"))
+        if not skip & set(path.relative_to(REPO_ROOT).parts)
     ]
-    required += sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
-    for path in required:
-        if not path.is_file():
-            raise ValidationError(f"documento assente: {path}")
-        text = path.read_text(encoding="utf-8")
+    if not found:
+        raise ValidationError("nessun documento trovato")
+    return found
+
+
+def validate_documents() -> int:
+    """Ogni documento e leggibile e ha i fence bilanciati.
+
+    Qui c'era un elenco di undici percorsi scritti a mano, e il controllo era
+    che esistessero. Presidiava documenti scelti una volta sola: due di quei
+    percorsi non esistevano piu, e degli altri — la maggioranza — non diceva
+    niente. Un elenco che va aggiornato a mano non e una guardia, e un secondo
+    posto dove la verita puo restare indietro.
+    """
+    for path in markdown_documents():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValidationError(f"documento illeggibile: {path}") from exc
         if text.count("```") % 2:
             raise ValidationError(f"code fence non bilanciato: {path}")
-    return len(required)
+    return len(markdown_documents())
+
+
+def validate_document_links() -> int:
+    """Un link interno deve puntare a qualcosa che esiste.
+
+    E il modo in cui una riorganizzazione si accorge di aver rotto qualcosa:
+    spostare un file lascia dietro di se i riferimenti, e chi li segue trova
+    un 404 molto dopo che chi ha spostato ha finito.
+
+    Nessuna esenzione: non ci sono documenti congelati nel worktree.
+    """
+    pattern = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+    checked = 0
+    for path in markdown_documents():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        for target in pattern.findall(text):
+            if target.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            destination = target.split("#", 1)[0].strip()
+            if not destination:
+                continue
+            checked += 1
+            if not (path.parent / destination).resolve().exists():
+                raise ValidationError(
+                    f"link morto in {relative}: {target}"
+                )
+    return checked
+
+
+def validate_generated_documents() -> int:
+    """I documenti generati sono allineati alla loro sorgente.
+
+    Un documento generato che nessuno rigenera e peggio di uno scritto a mano:
+    ha l'aria di essere sempre vero.
+    """
+    try:
+        from scripts.render_state import TARGET, render
+    except ModuleNotFoundError:  # esecuzione diretta
+        from render_state import TARGET, render
+
+    generated = ((TARGET, render),)
+    for path, renderer in generated:
+        if not path.is_file():
+            raise ValidationError(
+                f"documento generato assente: {path.relative_to(REPO_ROOT)}"
+            )
+        if path.read_text(encoding="utf-8") != renderer():
+            raise ValidationError(
+                f"documento generato disallineato: "
+                f"{path.relative_to(REPO_ROOT).as_posix()}; rigeneralo con "
+                f"python scripts/render_state.py"
+            )
+    return len(generated)
 
 
 def run_gate() -> dict[str, Any]:
@@ -388,9 +486,19 @@ def run_gate() -> dict[str, Any]:
             "count": validate_python_sources(),
         },
         {
-            "id": "required-documents",
+            "id": "markdown-documents",
             "status": "passed",
             "count": validate_documents(),
+        },
+        {
+            "id": "document-links",
+            "status": "passed",
+            "count": validate_document_links(),
+        },
+        {
+            "id": "generated-documents",
+            "status": "passed",
+            "count": validate_generated_documents(),
         },
     ]
     return {

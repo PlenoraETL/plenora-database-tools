@@ -42,8 +42,7 @@ pub struct GoldenCase {
 
 /// Carica e verifica il catalogo golden incorporato nel binario di test.
 ///
-/// E la suite della major attiva: `golden/v1` resta come la sua major di
-/// contratto, ritirata, e nessuno la carica piu.
+/// E l'unica suite nel worktree: le precedenti stanno in Git.
 ///
 /// # Errors
 ///

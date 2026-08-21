@@ -35,7 +35,10 @@ from scripts.mariadb_references import (  # noqa: E402
     validate_compose_pins_the_references,
 )
 
-ADR = ROOT / "docs" / "adr" / "0014-mariadb-evidence-first.md"
+# La decisione che governa questa campagna sta con la campagna, non
+# nell'archivio: le altre ADR registrano scelte concluse, questa e
+# ancora in corso di esecuzione.
+ADR = ROOT / "docs" / "mariadb" / "ADR-0014-evidence-first.md"
 CATALOG = ROOT / "crates" / "plenora-db-mysql" / "src" / "catalog.rs"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
 SERVER_EXT = ROOT / "docker" / "mariadb" / "tls" / "server.ext"
@@ -204,8 +207,6 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
             "provider MariaDB disponibile",
         )
         for document in documents:
-            if "/docs/history/" in document.as_posix():
-                continue
             text = document.read_text(encoding="utf-8")
             for claim in claims:
                 self.assertNotIn(

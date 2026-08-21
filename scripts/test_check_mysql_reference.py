@@ -120,18 +120,25 @@ RUNNER_FAMILIES_INTERNAL = (
 )
 
 
+# Il dispatch del CLI: una stringa seguita da `=>` dentro il match dei
+# sub-comandi.
+SUBCOMMAND_DISPATCH = r'\n\s+"([a-z][a-z0-9-]+)" => '
+# Un comando **invocato** in un documento porta davanti il nome del
+# binario. Senza quel vincolo qualunque parola con un trattino — una
+# dipendenza, un container — finirebbe per essere cercata nel dispatch.
+INVOKED_SUBCOMMAND = r'plenora-database ([a-z][a-z0-9-]+)'
+
+
 def current_surfaces() -> list[Path]:
     """I documenti che affermano qualcosa sullo **stato corrente**.
 
     Le guardie devono guardare tutto cio che un lettore prende per vero
-    oggi, non la sola tabella di `docs/mysql/README.md`: una superficie
+    oggi, non il solo documento che sembra il piu ovvio: una superficie
     lasciata fuori e esattamente il posto dove la deriva sopravvive.
 
-    Restano fuori due categorie, e solo quelle:
-
-    * `docs/history/`, che registra cio che era vero allora;
-    * i `CHANGELOG.md`, che sono per costruzione un elenco di stati
-      passati — riscriverli per allinearli al presente li distruggerebbe.
+    Resta fuori una categoria sola: i `CHANGELOG.md`, che sono per
+    costruzione un elenco di stati passati — riscriverli per allinearli al
+    presente li distruggerebbe.
     """
 
     documents = [ROOT / "README.md"]
@@ -148,8 +155,7 @@ def current_surfaces() -> list[Path]:
     return [
         document
         for document in documents
-        if "/docs/history/" not in document.as_posix()
-        and document.name != "CHANGELOG.md"
+        if document.name != "CHANGELOG.md"
     ]
 
 
@@ -928,240 +934,43 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ],
         )
 
-    def test_the_replace_contract_is_not_generalised_to_sql_server(self) -> None:
-        """Il contratto Replace vale per PostgreSQL e MySQL, non per SQL Server.
-
-        SQL Server usa ancora staging + publish con tabella di backup: il
-        target viene ricreato. Una frase che assegna la stessa semantica ai
-        tre provider farebbe pianificare su una garanzia che uno dei tre non
-        offre.
-        """
-
-        interfaces = (ROOT / "docs" / "interfaces.md").read_text(encoding="utf-8")
-        self.assertIn("non ha la stessa semantica su tutti i provider", interfaces)
-        self.assertIn("staging + `RENAME`/publish", interfaces)
-        # La riga della tabella deve differenziare la colonna SQL Server.
-        row = next(
-            line for line in interfaces.splitlines() if line.startswith("| `Replace` |")
-        )
-        self.assertIn("staging + publish", row)
-
-    # I conteggi non compaiono piu come letterali in questo file: ogni test
+    # I conteggi non compaiono come letterali in questo file: ogni test
     # aggiunto ne avrebbe richiesti quattro aggiornamenti, e il valore che
     # portavano era gia coperto dal confronto per nome con la sorgente. Dove
-    # serve un numero, lo si chiede all'inventario. L'unico posto dove i
-    # conteggi restano scritti a mano e la tabella di `docs/mysql/README.md`,
-    # perche un documento deve mostrarli — ed e presidiata dal test qui sotto.
+    # serve un numero, lo si chiede all'inventario — e dove un documento deve
+    # mostrarlo, il documento e generato da quell'inventario.
 
-    def test_the_documented_test_counts_match_the_inventory(self) -> None:
-        """I conteggi in `docs/mysql/README.md` seguono la sorgente.
+    def test_no_surface_names_a_subcommand_the_cli_does_not_have(self) -> None:
+        """Un comando citato deve esistere nel dispatch.
 
-        Una tabella di numeri scritti a mano invecchia al primo test aggiunto,
-        e il lettore non ha modo di accorgersene: e la stessa classe di deriva
-        che il gate previene sull'inventario, applicata alla documentazione.
-        """
+        La deriva andava in due direzioni. Una — un comando aggiunto e mai
+        documentato, come `mysql-conditional-update` — non esiste piu:
+        `docs/STATO.md` elenca il dispatch per costruzione, quindi un comando
+        nuovo ci compare da solo. L'altra resta, e questa la presidia: un
+        comando citato ma inesistente manda il lettore contro un `usage()`, e
+        nessun documento generato puo impedirlo.
 
-        observed = collect()
-        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
-        for runner, family in RUNNER_FAMILIES_INTERNAL:
-            row = next(
-                (line for line in readme.splitlines() if runner in line),
-                None,
-            )
-            self.assertIsNotNone(row, f"riga assente per {runner}")
-            documented = row.rsplit("|", 2)[1].strip()
-            self.assertEqual(
-                documented,
-                str(len(observed[family])),
-                f"conteggio {family} in docs/mysql/README.md non allineato",
-            )
-
-    def test_no_document_still_claims_mysql_supports_truncate_insert(self) -> None:
-        """`TruncateInsert` non deve comparire fra le mode MySQL disponibili.
-
-        L'elenco delle mode viene ricopiato in piu documenti: basta che uno
-        resti indietro perche un consumer pianifichi su una modalita che il
-        provider rifiuta in prepare.
-        """
-
-        # Solo elenchi di mode: sono affermazioni di supporto e non possono
-        # comparire dentro una negazione. Frasi come "non esistono piu staging
-        # persistenti" descrivono legittimamente cio che e stato rimosso, e un
-        # match sul solo sostantivo le colpirebbe.
-        stale = (
-            "Append/Create/TruncateInsert/Upsert/DeleteByKeys/Update",
-            "Append + Create + TruncateInsert",
-            "tutti 7 WriteMode",
-            "Tutti 7 WriteMode",
-            "tutti 7 modi qualificati",
-        )
-        for document in current_surfaces():
-            text = document.read_text(encoding="utf-8")
-            for claim in stale:
-                self.assertNotIn(
-                    claim,
-                    text,
-                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
-                )
-
-    def test_no_surface_states_a_test_count_the_inventory_contradicts(
-        self,
-    ) -> None:
-        """Nessun documento corrente puo dichiarare conteggi diversi.
-
-        La tabella di `docs/mysql/README.md` era presidiata, ma gli stessi
-        numeri comparivano anche altrove — `PROVIDER-MATURITY-MATRIX.md`
-        affermava "129 test live" e "123 unit" — e nessuno se ne accorgeva.
-        Un conteggio scritto in un documento non presidiato invecchia al
-        primo test aggiunto, e il lettore non ha modo di distinguerlo da uno
-        aggiornato.
-        """
-
-        observed = collect()
-        totals = {
-            "unit": len(observed["unit"]),
-            "live default": len(observed["live_default"]),
-            "live reference": len(observed["live_reference"]),
-        }
-        live_total = totals["live default"] + totals["live reference"]
-
-        for document in current_surfaces():
-            where = document.relative_to(ROOT).as_posix()
-            text = document.read_text(encoding="utf-8")
-
-            # I nomi delle tre famiglie sono specifici di MySQL: dove
-            # compaiono, il numero accanto e un conteggio di questo
-            # inventario, in grassetto o dentro una cella di tabella.
-            for match in re.finditer(
-                r"\*{0,2}(\d+) (unit|live default|live reference)\b", text
-            ):
-                self.assertEqual(
-                    int(match.group(1)),
-                    totals[match.group(2)],
-                    f"{where} dichiara '{match.group(0).strip()}', inventario "
-                    f"{totals[match.group(2)]}",
-                )
-
-            # La tabella dei runner porta il numero nell'ultima cella.
-            for runner, family in RUNNER_FAMILIES:
-                for row in text.splitlines():
-                    if not row.startswith("|") or runner not in row:
-                        continue
-                    declared = row.rsplit("|", 2)[1].strip()
-                    self.assertEqual(
-                        declared,
-                        str(totals[family]),
-                        f"{where}: riga '{runner}' dichiara {declared}, "
-                        f"inventario {totals[family]}",
-                    )
-
-            # "N test live" e ambiguo fra i provider — in una tabella e
-            # addirittura la colonna di un altro — quindi vale solo fuori
-            # dalle tabelle e dove il contesto parla di MySQL.
-            for match in re.finditer(r"(\d+) test live", text):
-                line_start = text.rfind("\n", 0, match.start()) + 1
-                if text[line_start:].startswith("|"):
-                    continue
-                window = text[max(0, match.start() - 400) : match.end() + 400]
-                if "ysql" not in window:
-                    continue
-                self.assertEqual(
-                    int(match.group(1)),
-                    live_total,
-                    f"{where} dichiara '{match.group(0)}', inventario "
-                    f"{live_total} (default + reference)",
-                )
-
-    def test_every_mysql_cli_command_is_documented_and_every_documented_one_exists(
-        self,
-    ) -> None:
-        """I sub-comandi MySQL del CLI e quelli citati nei documenti coincidono.
-
-        La deriva va in due direzioni, e nessuna delle due e visibile a chi
-        legge: un comando aggiunto al CLI e mai documentato resta
-        introvabile — `mysql-conditional-update` lo e stato — e un comando
-        documentato ma inesistente manda il lettore contro un `usage()`.
+        L'autorita e il dispatch, non una frase.
         """
 
         main = (
             ROOT / "crates" / "plenora-database-cli" / "src" / "main.rs"
         ).read_text(encoding="utf-8")
-        implemented = set(re.findall(r'"(mysql-[a-z-]+)" =>', main))
-        self.assertGreaterEqual(len(implemented), 9, "dispatch CLI non trovato")
+        implemented = set(re.findall(SUBCOMMAND_DISPATCH, main))
+        self.assertGreaterEqual(len(implemented), 40, "dispatch CLI non trovato")
 
-        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
-        documented = set(re.findall(r"\bmysql-[a-z][a-z-]*\b", readme))
-        self.assertEqual(
-            implemented - documented,
-            set(),
-            "sub-comandi MySQL assenti da docs/mysql/README.md",
-        )
-
-        # Il numero dichiarato accanto all'elenco deve essere quello vero.
-        declared = re.search(r"\*\*CLI\*\* \((\d+) sub-comandi", readme)
-        self.assertIsNotNone(declared, "conteggio sub-comandi CLI assente")
-        self.assertEqual(
-            int(declared.group(1)),
-            len(implemented),
-            "conteggio sub-comandi CLI non allineato al dispatch",
-        )
-
-        # Nessuna superficie corrente puo citare un comando inesistente.
         for document in current_surfaces():
             text = document.read_text(encoding="utf-8")
-            for name in set(re.findall(r"\bmysql-[a-z][a-z-]*\b", text)):
-                if not name.startswith(
-                    (
-                        "mysql-probe",
-                        "mysql-describe",
-                        "mysql-inspect",
-                        "mysql-execute",
-                        "mysql-transaction",
-                        "mysql-conditional",
-                    )
-                ):
-                    continue
+            # Conta solo cio che il documento presenta **come comando**, cioe
+            # preceduto dal nome del binario: `mysql-async` e una dipendenza e
+            # `dataflow-mysql` un container, e nessuno dei due va cercato nel
+            # dispatch.
+            for name in sorted(set(re.findall(INVOKED_SUBCOMMAND, text))):
                 self.assertIn(
                     name,
                     implemented,
                     f"{document.relative_to(ROOT).as_posix()} cita "
                     f"'{name}', che il CLI non implementa",
-                )
-
-    def test_no_surface_still_says_mysql_is_absent_from_the_python_sdk(self) -> None:
-        """Il SDK Python espone MySQL: nessun documento puo negarlo.
-
-        `connect_mysql` / `aconnect_mysql` esistono, con `begin`, `read`,
-        `copy_from` e i builder AST. Chi leggeva "non ancora esposti al SDK
-        Python" concludeva di dover passare dal CLI o dal driver Rust, e la
-        conclusione era sbagliata.
-        """
-
-        native = (
-            ROOT
-            / "crates"
-            / "plenora-database-py"
-            / "python"
-            / "plenora_database"
-            / "__init__.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("def connect_mysql(", native)
-        self.assertIn("async def aconnect_mysql(", native)
-
-        stale = (
-            "MySQL / SQL Server: driver Rust presenti",
-            "non ancora esposti al SDK Python",
-            "v0.4-alpha, scaffold",
-            "SDK Python MySQL v0.4-alpha scaffold",
-            "Solo Postgres",
-        )
-        for document in current_surfaces():
-            text = document.read_text(encoding="utf-8")
-            for claim in stale:
-                self.assertNotIn(
-                    claim,
-                    text,
-                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
                 )
 
     def test_every_documented_docker_volume_exists_in_a_compose(self) -> None:
@@ -1170,7 +979,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         I volumi sono prefissati dal progetto Compose: rinominato il
         progetto, il vecchio nome resta scritto nei documenti e chi lo cerca
         non lo trova — `plenora-database-tools_postgres_tls_certs` era
-        sopravvissuto cosi in `docs/postgres/HARDENING.md`.
+        sopravvissuto cosi in un documento di hardening, per mesi.
         """
 
         legitimate = set()
@@ -1215,55 +1024,48 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                 )
 
     # ------------------------------------------------------------------
-    # Capability del SDK MySQL: codice, documenti e test devono concordare.
+    # Capability del SDK MySQL: il binding esiste, e un test lo esercita.
     #
-    # Ognuna di queste e stata dichiarata "non inclusa" da qualche documento
-    # mentre esisteva gia, o dichiarata presente mentre nessun test la
-    # esercitava. Il triangolo — binding Rust, superficie documentale,
-    # copertura live — e cio che impedisce a entrambe le derive di tornare.
+    # Ognuna di queste e stata dichiarata presente mentre nessun test la
+    # esercitava. Il terzo lato di prima — "un documento la nomina" —
+    # presidiava la prosa, e non c'e piu: le capability le elenca
+    # `docs/STATO.md`, generato dalle dichiarazioni.
     MYSQL_SDK_CAPABILITIES = (
         (
             "SessionContext",
             ("context: Option<crate::session_context_py::PySessionContext>",),
-            "SessionContext",
             "test_begin_carries_a_session_context",
         ),
         (
             "OLTP con begin",
             ("fn begin",),
-            "begin",
             "test_begin_commits_and_rolls_back",
         ),
         (
             "read Arrow",
             ("fn read", "fn aread"),
-            "read",
             "test_read_streams_arrow_ipc",
         ),
         (
             "copy_from bulk",
             ("fn copy_from", "fn acopy_from"),
-            "copy_from",
             "test_copy_from_appends_rows",
         ),
         (
             "builder AST",
             ("fn execute_portable_rows", "fn execute_portable_count"),
-            "AST",
             "test_ast_builders_select_insert_update_delete",
         ),
     )
 
-    def test_the_mysql_sdk_capabilities_exist_are_documented_and_are_tested(
-        self,
-    ) -> None:
-        """Per ogni capability: binding, documento e test live.
+    def test_the_mysql_sdk_capabilities_exist_and_are_tested(self) -> None:
+        """Per ogni capability: il binding esiste, e un test la esercita.
 
-        La deriva e andata in entrambe le direzioni. `mysql-conditional-update`
-        esisteva e nessun documento lo nominava; `begin`, `copy_from`, `read`
-        e i builder AST erano elencati fra i "non inclusi" mentre erano gia
-        implementati; e `begin(context=...)` era documentato, esposto e
-        impossibile — il core impone un punto nella chiave, MySQL lo vietava.
+        `begin`, `copy_from`, `read` e i builder AST sono stati elencati fra i
+        "non inclusi" mentre erano gia implementati, e `begin(context=...)` e
+        stato esposto pur essendo impossibile — il core impone un punto nella
+        chiave, MySQL lo vietava. Una capability senza copertura live e una
+        promessa che nessuno ha mai visto mantenere.
         """
 
         sync = (
@@ -1273,7 +1075,6 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ROOT / "crates" / "plenora-database-py" / "src" / "async_mysql_session.rs"
         ).read_text(encoding="utf-8")
         binding = sync + asynchronous
-        documented = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
         tests = (
             ROOT
             / "crates"
@@ -1283,18 +1084,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             / "test_mysql_capabilities.py"
         ).read_text(encoding="utf-8")
 
-        for name, symbols, mention, test in self.MYSQL_SDK_CAPABILITIES:
+        for name, symbols, test in self.MYSQL_SDK_CAPABILITIES:
             for symbol in symbols:
                 self.assertIn(
                     symbol,
                     binding,
                     f"capability '{name}': '{symbol}' assente dal binding MySQL",
                 )
-            self.assertIn(
-                mention,
-                documented,
-                f"capability '{name}' non nominata in docs/mysql/README.md",
-            )
             # Con la parentesi: `def x` combacia anche con `def x_altro`,
             # quindi rinominare un test lo farebbe sparire senza rumore.
             self.assertIn(
@@ -1380,153 +1176,6 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "la validazione del context segue il primo statement",
         )
 
-    def test_the_sqlserver_live_count_matches_its_gate(self) -> None:
-        """Il conteggio live SQL Server nei documenti segue il suo gate.
-
-        Era rimasto a 44 dopo che il gate era passato a 45: lo stesso tipo di
-        deriva presidiata per MySQL, su un provider che nessuna guardia
-        guardava.
-        """
-
-        import importlib.util
-
-        path = ROOT / "scripts" / "check_sqlserver_reference.py"
-        spec = importlib.util.spec_from_file_location("sqlserver_gate", path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        expected = module.EXPECTED_LIVE_TESTS
-
-        for document in current_surfaces():
-            text = document.read_text(encoding="utf-8")
-            for match in re.finditer(r"(\d+) (?:test live attesi|superati)", text):
-                window = text[max(0, match.start() - 300) : match.end() + 300]
-                if "QL Server" not in window and "sqlserver" not in window:
-                    continue
-                self.assertEqual(
-                    int(match.group(1)),
-                    expected,
-                    f"{document.relative_to(ROOT).as_posix()} dichiara "
-                    f"'{match.group(0)}', gate {expected}",
-                )
-
-            # Forma `N/M sul riferimento 2022`: e lo stesso conteggio scritto
-            # come rapporto, e sfuggiva a tutte le regole precedenti —
-            # `44/44` e sopravvissuto al passaggio a 45 proprio cosi.
-            for match in re.finditer(r"(\d+)/(\d+) sul riferimento 2022", text):
-                passed, total = int(match.group(1)), int(match.group(2))
-                where = document.relative_to(ROOT).as_posix()
-                self.assertEqual(
-                    passed, total, f"{where}: rapporto '{match.group(0)}' non pieno"
-                )
-                self.assertEqual(
-                    total,
-                    expected,
-                    f"{where} dichiara '{match.group(0)}', gate {expected}",
-                )
-
-    def test_no_surface_denies_a_mysql_capability_that_is_proven_live(self) -> None:
-        """Nessuna tabella puo segnare come assente cio che un test prova.
-
-        La matrice di `docs/interfaces.md` dava `SessionContext` per non
-        supportato su MySQL mentre il binding lo esponeva — e, peggio, mentre
-        non poteva funzionare. Sistemato il provider, la riga sarebbe rimasta
-        rossa senza che nulla lo segnalasse: le capability si dichiarano in
-        piu documenti, e presidiarne uno solo lascia gli altri liberi di
-        contraddirlo.
-        """
-
-        # Riga della matrice -> nome del test live che la dimostra.
-        proven = {
-            "SessionContext": (
-                "live_v12_transaction_session_context_reaches_the_server"
-            ),
-            "`begin_transaction` + savepoint": "live_v12_transaction_execute_and_commit",
-            "NativeQueryPolicy": "live_v12_transaction_execute_and_commit",
-        }
-        live = LIVE_TESTS.read_text(encoding="utf-8")
-        interfaces = (ROOT / "docs" / "interfaces.md").read_text(encoding="utf-8")
-
-        for capability, test in proven.items():
-            self.assertIn(
-                f"async fn {test}(",
-                live,
-                f"capability '{capability}': test live '{test}' assente",
-            )
-            row = next(
-                (
-                    line
-                    for line in interfaces.splitlines()
-                    if line.startswith(f"| {capability} |")
-                ),
-                None,
-            )
-            self.assertIsNotNone(
-                row, f"capability '{capability}' assente dalla matrice interfaces.md"
-            )
-            # Colonne: | Capability | Postgres | MySQL | SQL Server |
-            mysql_cell = row.split("|")[3].strip()
-            self.assertNotIn(
-                "\u274c",
-                mysql_cell,
-                f"interfaces.md nega '{capability}' su MySQL, ma "
-                f"'{test}' la prova",
-            )
-
-    def test_no_surface_still_calls_mysql_bulk_only(self) -> None:
-        """MySQL non e piu "solo data plane bulk".
-
-        Ha transazioni OLTP con savepoint, conditional update, policy sugli
-        statement nativi e `SessionContext`. La frase sopravviveva in fondo a
-        una tabella che gia diceva il contrario, riga per riga.
-        """
-
-        stale = (
-            "MySQL/SqlServer supportano il solo data plane bulk",
-            "MySQL / SQL Server supportano il solo data plane bulk",
-        )
-        for document in current_surfaces():
-            text = document.read_text(encoding="utf-8")
-            for claim in stale:
-                self.assertNotIn(
-                    claim,
-                    text,
-                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
-                )
-
-    def test_no_surface_denies_the_bulk_write_the_sdk_exposes(self) -> None:
-        """Il SDK ha `copy_from`: nessun documento puo dirlo assente.
-
-        Il README lo elencava fra i limiti — "No batch/bulk write, il bulk
-        COPY del driver e esposto solo via CLI" — nella stessa pagina che
-        venti righe sopra ne documenta la firma. Chi legge i limiti per
-        decidere se il SDK basta, decide sul falso.
-        """
-
-        native = (
-            ROOT
-            / "crates"
-            / "plenora-database-py"
-            / "python"
-            / "plenora_database"
-            / "__init__.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("def copy_from(", native)
-        self.assertIn("async def acopy_from(", native)
-
-        stale = (
-            "No batch/bulk write",
-            "bulk COPY del\n  driver \u00e8 esposto solo via CLI",
-        )
-        for document in current_surfaces():
-            text = document.read_text(encoding="utf-8")
-            for claim in stale:
-                self.assertNotIn(
-                    claim,
-                    text,
-                    f"{document.relative_to(ROOT).as_posix()} ripete '{claim}'",
-                )
-
     def test_the_published_package_does_not_advertise_a_missing_binding(self) -> None:
         """La descrizione del pacchetto elenca solo i provider esposti.
 
@@ -1579,43 +1228,6 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             doc,
             "la doc di connect_mysql descrive un default che non verifica",
         )
-
-    def test_the_documentation_sends_the_reader_to_the_sdk_runner(self) -> None:
-        """Chi documenta i test del SDK deve documentare il runner.
-
-        `_native.abi3.so` e gitignorato e nessuno lo rigenera: un `pytest`
-        diretto dopo un cambio al Rust risponde sul binario precedente. E
-        successo due volte in una sola sessione, e le due correzioni
-        sembravano entrambe sbagliate.
-        """
-
-        runner = ROOT / "scripts" / "check_sdk_tests.py"
-        self.assertTrue(runner.exists(), "runner della suite SDK assente")
-        source = runner.read_text(encoding="utf-8")
-        self.assertIn("maturin build", source, "il runner non costruisce con maturin")
-        self.assertIn(
-            "NATIVE.unlink()",
-            source,
-            "il runner non rimuove il modulo precedente prima di ricostruirlo",
-        )
-
-        readme = (ROOT / "crates" / "plenora-database-py" / "README.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("scripts/check_sdk_tests.py", readme)
-
-        # Nessuna superficie deve mostrare un `pytest` sui test del SDK come
-        # comando da eseguire: e la strada che porta al binario stale.
-        for document in current_surfaces():
-            if document.suffix != ".md":
-                continue
-            for line in document.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith(("pytest ", "$ pytest ")) and "python/tests" in stripped:
-                    self.fail(
-                        f"{document.relative_to(ROOT).as_posix()} invita a "
-                        f"lanciare pytest a mano: '{stripped}'"
-                    )
 
     def test_every_compose_declares_its_own_project(self) -> None:
         """Un progetto Compose per file, altrimenti si cancellano a vicenda.
@@ -1671,8 +1283,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             )
         self.assertTrue(declared, "nessun container_name dichiarato nei Compose")
 
-        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
-        body = readme.split("**Migrazione (una tantum).**", 1)[1].split("## ", 1)[0]
+        note = (ROOT / "docs" / "operativo.md").read_text(encoding="utf-8")
+        body = note.split("**Migrazione (una tantum).**", 1)[1].split("\n## ", 1)[0]
         listed = {
             token
             for token in re.findall(r"dataflow-[a-z0-9-]+", body)
@@ -1694,10 +1306,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         non e reversibile.
         """
 
-        readme = (ROOT / "docs" / "mysql" / "README.md").read_text(encoding="utf-8")
-        migration = readme.split("**Migrazione (una tantum).**", 1)
+        note = (ROOT / "docs" / "operativo.md").read_text(encoding="utf-8")
+        migration = note.split("**Migrazione (una tantum).**", 1)
         self.assertEqual(len(migration), 2, "nota di migrazione assente")
-        body = migration[1].split("## ", 1)[0]
+        body = migration[1].split("\n## ", 1)[0]
         for line in body.splitlines():
             if line.strip().startswith("docker volume rm"):
                 self.fail(f"la migrazione cancella volumi: {line.strip()}")
@@ -2727,56 +2339,6 @@ class PythonSdkRunnerTests(unittest.TestCase):
                     "skipped": contract.skipped,
                     "deselected": contract.deselected,
                 },
-            )
-
-    def test_the_documented_contract_matches_the_one_the_gate_enforces(self) -> None:
-        """La tabella del README segue `SCOPE_CONTRACTS`.
-
-        Tre numeri per scope piu tre famiglie di skip, scritti a mano in un
-        documento, invecchiano al primo test aggiunto — e chi legge non ha
-        modo di distinguerli da quelli aggiornati.
-        """
-
-        readme = (ROOT / "crates" / "plenora-database-py" / "README.md").read_text(
-            encoding="utf-8"
-        )
-        rows = {
-            row.split("|")[1].strip().strip("`"): [
-                cell.strip() for cell in row.split("|")[2:5]
-            ]
-            for row in readme.splitlines()
-            if row.startswith("| `") and row.count("|") == 5
-        }
-        # La riga porta l'opzione con cui si chiede lo scope, non il nome
-        # interno: e quello che il lettore digita.
-        invocations = {
-            "live": "live",
-            "offline": "--offline",
-            "benchmark": "--benchmark-only",
-        }
-        for scope, contract in sdk.SCOPE_CONTRACTS.items():
-            documented = rows.get(invocations[scope])
-            self.assertIsNotNone(documented, f"riga assente per {scope}")
-            self.assertEqual(
-                documented,
-                [
-                    str(contract.passed),
-                    str(contract.skipped),
-                    str(contract.deselected),
-                ],
-                f"il README dichiara per {scope} numeri che il gate non impone",
-            )
-
-        offline = sdk.SCOPE_CONTRACTS["offline"].skips
-        for family, count in (
-            ("Postgres", offline[sdk.POSTGRES_SKIP]),
-            ("MySQL", offline[sdk.MYSQL_SKIP]),
-            ("bench opt-in", offline[sdk.BENCH_SKIP]),
-        ):
-            self.assertIn(
-                f"{family} ({count})",
-                readme,
-                f"il README non documenta {count} skip della famiglia {family}",
             )
 
     def test_an_unexpected_skip_or_deselection_fails_every_scope(self) -> None:

@@ -18,8 +18,8 @@ stesso documento.
 Oggi MariaDB e nel repository in tre forme, e nessuna e un supporto:
 
 * `ProviderKind::Mariadb` esiste nel core, il CLI lo accetta come nome di
-  provider, e compare in `contracts/v1/*.schema.json` e in
-  `golden/v1/cases.json` — cioe nei contratti, dove un valore enumerato non
+  provider, e compariva nei contratti e nella suite golden di allora — cioe
+  dove un valore enumerato non
   implica un'implementazione;
 * nessun crate lo implementa;
 * il provider `mysql` fa **fail-close alla probe**: riconosce MariaDB da
@@ -90,8 +90,9 @@ aggiungono al documento, che e gia la sola fonte letta da compose e script.
 
 * Il repository guadagna due fixture MariaDB avviabili e fissate, e un
   documento che dice cosa sono: evidenza, non supporto.
-* Nessuna promessa cambia. `docs/PROVIDER-MATURITY-MATRIX.md`,
-  `docs/mysql/README.md` e il messaggio di fail-close continuano a dire che
+* Nessuna promessa cambia. La matrice di maturita e il README MySQL di allora
+  — entrambi cancellati da allora, e reperibili in Git — e il messaggio di
+  fail-close continuano a dire che
   MariaDB non e qualificata, e restano veri.
 * Il costo dell'evidenza e reale: ogni divergenza va osservata su una fixture
   viva e registrata. E il prezzo per non scoprire in produzione che il fork
