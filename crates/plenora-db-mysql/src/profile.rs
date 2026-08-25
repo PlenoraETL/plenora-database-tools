@@ -1143,10 +1143,19 @@ impl ProductProfile for MariadbProfile {
                 // `geography` non esiste su questo prodotto, e non e una
                 // lacuna di misura.
                 geography: false,
+                // Misurato che il server accetta `SPATIAL INDEX` su una
+                // colonna non vincolata — l'unica forma che questo prodotto
+                // ammette — ma il piano di scrittura rifiuta ancora
+                // `create_spatial_index` in prepare: la capability descrive cio
+                // che il provider sa fare, non cio che il server saprebbe.
                 spatial_index: false,
-                // Non misurata: la tabella delle sonde porta soltanto punti, e
-                // una colonna con tipi geometrici misti non e mai stata letta.
-                mixed_geometry_types: false,
+                // Aperta dalla diciassettesima tranche: un punto e un poligono
+                // scritti nella stessa colonna e riletti per tipo, identici sui
+                // tre riferimenti. Le sonde di scrittura precedenti portavano
+                // soltanto punti, quindi `mixed` era una dichiarazione che
+                // nessuna misura attraversava — la colonna avrebbe retto anche
+                // se il prodotto avesse ammesso un tipo solo.
+                mixed_geometry_types: true,
                 // Solo XY, che e cio che le sonde hanno attraversato — e cio
                 // che la proiezione condivisa produce.
                 dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
@@ -3693,7 +3702,18 @@ mod tests {
         // Cio che resta chiuso, resta chiuso: `geography` non esiste su questo
         // prodotto, e i tipi misti non sono mai stati letti.
         assert!(!spatial.geography);
-        assert!(!spatial.spatial_index && !spatial.mixed_geometry_types);
+        assert!(!spatial.spatial_index);
+        // I tipi misti si aprono con la diciassettesima tranche, e coincidono
+        // con MySQL: e la stessa colonna `GEOMETRY` che regge tipi diversi, e
+        // le sonde lo misurano con lo stesso punto e lo stesso poligono.
+        assert!(spatial.mixed_geometry_types);
+        assert_eq!(
+            spatial.mixed_geometry_types,
+            MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .spatial
+                .mixed_geometry_types
+        );
 
         // Le funzioni si aprono con la sedicesima tranche, e **non** sono
         // quelle di MySQL: quattordici invece di quindici. La differenza e

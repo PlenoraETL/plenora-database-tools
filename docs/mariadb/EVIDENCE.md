@@ -1708,3 +1708,56 @@ quella costante non e piu una.
   `MySQL`, quindi misura al piu quella. Se `MariaDB` avesse funzioni che `MySQL`
   non ha, questo documento non lo saprebbe — ed e una domanda diversa, che
   comincia dal catalogo del prodotto e non dalla lista dell'altro.
+
+## Diciassettesima tranche: i tipi misti, e un indice che il server accetta e il provider no
+
+Due superfici che il documento non aveva mai toccato, ed erano le ultime dello
+spatial.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_write_spatial_mixed` | Committed — `7:POINT,8:POLYGON` | **identico** | **identico** |
+| raw | scrittura | `raw.spatial_index_forms` | senza_srid=ok, con_srid=ok | senza_srid=ok, **con_srid=1064** | **identico a MariaDB 12** |
+
+### Cosa dice
+
+**Una colonna `GEOMETRY` regge tipi diversi, su tutti e tre.** Un punto e un
+poligono scritti nella stessa colonna, riletti per tipo da un'altra connessione:
+`7:POINT,8:POLYGON`, identico ovunque.
+
+Perche serviva una sonda apposta: le due scritture spatial della quindicesima
+tranche portavano **soltanto punti**. `mixed` era una dichiarazione che nessuna
+misura attraversava, e la colonna avrebbe retto identica anche se il prodotto
+avesse ammesso un tipo solo. Una capability sostenuta da una prova che non la
+distingue dal suo contrario non e sostenuta.
+
+**`SPATIAL INDEX` funziona su tutti e tre**, sulla forma di colonna che ciascun
+prodotto ammette. Il `1064` di `MariaDB` sulla variante `con_srid` non riguarda
+l'indice: e il vincolo `SRID 4326` che quel prodotto non accetta comunque, e che
+la quindicesima tranche aveva gia misurato. Tolto il vincolo, l'indice si crea.
+
+### Cosa ne segue per le capability
+
+`SpatialCapabilities::mixed_geometry_types` passa a `true` su `MariaDB`, e
+coincide con `MySQL`: e la stessa colonna che regge tipi diversi, misurata con
+lo stesso punto e lo stesso poligono.
+
+`SpatialCapabilities::spatial_index` resta chiusa su **entrambi** i profili, e
+qui la ragione cambia forma rispetto a prima. Non e piu «non misurata»: il
+server lo accetta, ed e scritto qui sopra. E' che il piano di scrittura rifiuta
+`create_spatial_index` in prepare — «non ancora qualificata» — e una capability
+descrive cio che il **provider** sa fare, non cio che il server saprebbe.
+
+La distinzione conta perche cambia cosa costerebbe aprirla: non una campagna
+nuova, ma l'emissione della clausola nella DDL e una sonda che la attraversi.
+
+### Cosa resta not_measured
+
+* **l'indice spaziale attraverso il provider**: vedi sopra. Il fatto del server
+  c'e, il percorso no.
+* **la dichiarazione `exact` in scrittura**: invariata dalla quindicesima — le
+  sonde girano su `mixed`, ed e proprio la dichiarazione che questa tranche ha
+  finito di qualificare.
+* **le dimensioni oltre XY**: invariata.
