@@ -2084,3 +2084,153 @@ della tenuta del pool.
   sfuggirebbe.
 * **la contesa fra letture e scritture insieme**: le due sonde separano i due
   carichi, e un pool puo sbagliare proprio dove si mescolano.
+
+---
+
+## Ventiquattresima tranche: il carico misto, la durata, e una riga in piu nella matrice
+
+La ventitreesima aveva lasciato scritte due cose come non misurate: **un soak
+vero** e **la contesa fra letture e scritture insieme**. Questa tranche le
+chiude, e chiude con esse l'elenco: non resta piu nulla di aperto su questo
+profilo che non sia una decisione dichiarata.
+
+Nel farlo la matrice guadagna un quarto riferimento, e quel riferimento ha
+prodotto subito un difetto.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS | MariaDB 10.11 LTS |
+|---|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_mixed_load` | giri=12 lettori=6 scrittori=6 pool=4 lette=540 scritte=288 attribuzioni_errate=0 connessioni=2→2 tetto=7 | **identico** | **identico** | **identico** |
+| provider | profilo | `provider.profile_probe` | versione=9.7.2 qualificata=nessun elenco dichiarato | versione=12.3.2 qualificata=10.11 11.8 12.3 | versione=11.8.8 **identico** | versione=10.11.19 **identico** |
+
+### Il carico misto, e perche e anche il soak
+
+Le due sonde precedenti separano i carichi: dodici lettori in una, dodici
+scrittori nell'altra. Un pool puo sbagliare proprio dove si mescolano, e
+nessuna delle due poteva dirlo — una connessione che torna dal path di
+scrittura con la transazione non chiusa e **innocua** fra scrittori, che ne
+aprono un'altra subito, ed e velenosa per un lettore che la trova con un
+`BEGIN` implicito addosso.
+
+Sei lettori e sei scrittori partono insieme, a ogni giro, sullo **stesso** pool
+da quattro. Che sia lo stesso e il punto: la transazione dei lettori si apre
+dal provider e non da un pool costruito nella sonda, perche `pool_for` e
+cachato per segreto e con lo stesso segreto degli scrittori la lettura esce
+dalla medesima riserva di connessioni. Due pool separati riprodurrebbero le due
+sonde che gia esistono.
+
+**Le fette dei lettori hanno lunghezze diverse**, e non e un dettaglio. Con
+fette uguali, due lettori che si scambiassero la connessione a meta stream
+renderebbero comunque il conteggio giusto. Cinque righe per uno, sei per il
+successivo, sette per quello dopo: lo scambio cambia il totale, e il conteggio
+diventa da solo la prova che ciascuno ha visto la propria.
+
+Per gli scrittori la stessa domanda ha un'altra forma e serve un'altra
+risposta. Le chiavi non si ripetono fra i giri — un `Append` che trovasse la
+propria riga gia scritta fallirebbe sul primario, e la sonda leggerebbe come
+contesa cio che e aritmetica — e il payload di ogni riga porta il numero di chi
+l'ha scritta, cosi il conteggio coglie una perdita e il confronto coglie
+un'attribuzione sbagliata.
+
+Il secondo residuo era la durata, e si chiude con lo **stesso codice**. Non e
+un risparmio: e la ragione per cui il soak vale qualcosa. Un soak che
+esercitasse un percorso diverso da quello del gate misurerebbe la tenuta di
+codice che nessuno attraversa mai. Qui la corsa lunga e la corsa breve sono la
+stessa, e cambia solo `PLENORA_MIXED_ROUNDS`. Il gate ne fa pochi, perche un
+gate che dura ore non lo esegue nessuno — e una sonda che nessuno esegue non e
+una sonda.
+
+La corsa lunga e stata fatta, e il documento ne porta la riga accanto a quella
+del gate:
+
+| corsa | giri | letture | scritture | attribuzioni errate | connessioni |
+|---|---|---|---|---|---|
+| gate | 12 | 540 | 288 | 0 | 2 → 2 |
+| soak | 6000 | 270.000 | 144.000 | 0 | 2 → 2 |
+
+**Duecentosettantamila letture e centoquarantaquattromila scritture in contesa,
+per riferimento**, e il numero di connessioni che il server vede alla fine e lo
+stesso che vedeva all'inizio. E' cio che la sonda corta non poteva dire: coglie
+una perdita sistematica — una connessione ogni giro — e non una lenta. Una
+perdita di una connessione ogni mille giri sarebbe invisibile a dodici giri e
+qui varrebbe sei connessioni sopra il tetto.
+
+Il conteggio arriva da `Threads_connected` del **server**, letto da un'altra
+connessione: e cio che il motore vede, non cio che il pool crede. Le due
+divergono esattamente nel caso che la sonda cerca.
+
+### La riga in piu: 10.11 LTS
+
+Le tre righe che c'erano rispondevano a una domanda sola — se una divergenza
+appartiene al fork o a una sua release — confrontando versioni vicine. 10.11 ne
+pone un'altra: e la LTS supportata fino al 2028, quella che piu gente ha
+davvero in produzione, e piu vecchia della riga di evidenza di due cicli. Cio
+che le altre misurano vale per il server piu recente, non per quello che il
+lettore di questo documento ha sotto le mani.
+
+Ha prodotto un fatto al primo giro, e non era quello che sembrava.
+
+**La probe rifiutava 10.11 con il codice 1193 redatto.** Il primo sospetto era
+una divergenza di prodotto. La misura diretta dice altro: `transaction_isolation`
+non esiste su MariaDB prima della 11.1 — fino a li si chiama `tx_isolation` — e
+la probe la chiedeva nella **stessa query** di `VERSION()`. La query moriva
+prima di arrivare al riconoscimento del prodotto e alla qualifica della
+versione.
+
+Il difetto non e la variabile mancante. Il profilo dichiara di essere
+qualificato su un elenco, e accanto a quell'elenco c'era scritto che «la riga
+che rende il rifiuto onesto e il messaggio: dice che la versione non e stata
+misurata, non che non funzioni». Quel messaggio era **irraggiungibile
+esattamente sulle versioni per cui era stato scritto**: chi arrivava con una
+10.11 leggeva un errore server redatto e andava a cercare un guasto che non
+c'era, mentre il repository sapeva benissimo cosa rispondergli e non riusciva a
+dirlo.
+
+Da qui la regola: **una query di capability puo fallire per la stessa ragione
+che l'identita avrebbe spiegato, quindi l'identita si stabilisce prima.** La
+probe fa ora due query — `VERSION()` e `@@version_comment`, poi le variabili di
+sessione — con il riconoscimento e la qualifica in mezzo. Il costo e un
+round-trip per probe, ed e il prezzo di un rifiuto che si sa leggere.
+
+### Da rifiuto onesto a qualifica
+
+Con il messaggio giusto, la ragione era chiara — ed era **nostra**, non sua.
+
+`tx_isolation` risponde su tutte e tre le versioni MariaDB misurate;
+`transaction_isolation` solo dalla 11.1 in su. Su MySQL vale l'opposto:
+`tx_isolation` e stata rimossa nella 8.0. Non c'e un nome che vada bene per
+entrambi i prodotti, e dentro MariaDB ce n'e uno solo che vada bene per tutte
+le versioni. Il nome appartiene percio al profilo, esattamente come vi
+appartiene gia quello del timeout di statement.
+
+Fra i due non si sceglie il piu moderno: si sceglie quello che copre l'intera
+matrice, perche un nome che copre meta delle righe fa fallire l'altra meta
+prima ancora che la probe possa spiegarsi.
+
+Con quella riga al suo posto, **cento sonde su 10.11 danno lo stesso esito che
+danno su 11.8 e 12.3** — protocollo, tipi wire, valori decodificati, catalogo,
+scritture, spatial, savepoint, contesa, carico misto. Le sole tre in cui 10.11
+e l'unica a divergere sono `provider.test_connection`,
+`provider.capabilities` e `provider.session_reuse`, cioe le sonde del provider
+**MySQL** puntato su MariaDB: la misura del fail-close, non del prodotto.
+Divergono perche il profilo MySQL chiede una variabile che 10.11 non ha, ed e
+esattamente il comportamento che deve avere.
+
+Restava dunque una cosa sola a tenerla fuori dall'elenco qualificato, ed era
+una lista scritta prima che qualcuno la accendesse. L'elenco resta chiuso su
+cio che e stato misurato — una major che non c'era quando la misura e stata
+fatta continua a non essere coperta — e cambia solo che le versioni misurate
+ora sono tre.
+
+### Cosa resta not_measured
+
+* **le ventotto funzioni geometriche non caratterizzate**: la ventesima tranche
+  ha misurato le tre che coprono i tre esiti possibili e ha stabilito quanto
+  costerebbe la regola per funzione. Il resto ha senso il giorno in cui
+  qualcuno decida di volerla. E' una decisione dichiarata, non una lacuna.
+
+E nient'altro. I due residui che la ventitreesima aveva lasciati aperti sono
+chiusi, ogni bandiera di questo profilo e aperta con una misura o chiusa con
+una ragione misurata, e le versioni su cui quelle misure valgono sono scritte
+nell'elenco qualificato invece di essere sottintese.
