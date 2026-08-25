@@ -307,6 +307,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_crs_undeclared",
     "provider.profile_crs_declared",
     "provider.profile_crs_mismatched",
+    "provider.profile_savepoint_partial_rollback",
+    "provider.profile_savepoint_unknown_name",
 )
 
 
@@ -366,6 +368,25 @@ def duplicate_probes(names: Iterable[str]) -> list[str]:
 # La `chiave` e la superficie qualificata; il valore dice cosa la sonda deve
 # rendere.
 QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
+    # I savepoint. `transactions.savepoints` e chiusa su questo profilo, e la
+    # ragione accanto alla bandiera non e «il prodotto non li ha» ma «nessuna
+    # sonda li ha toccati»: un savepoint dichiarato e non provato si scopre
+    # rotto durante un rollback parziale, cioe nel momento peggiore.
+    #
+    # Necessarie e non osservative, a differenza delle sonde del CRS: qui
+    # l'esito atteso e lo **stesso** sui tre riferimenti — entrambi i prodotti
+    # i savepoint ce l'hanno, e il crate li implementa una volta sola.
+    "provider.profile_savepoint_partial_rollback": (
+        "savepoints: il rollback parziale annulla solo cio che e venuto dopo",
+        "accepted",
+    ),
+    # Il rifiuto **e** la prova. Senza, la prima passerebbe anche su un motore
+    # che dice di si a qualunque `ROLLBACK TO`, e il chiamante crederebbe di
+    # aver annullato qualcosa che e ancora li.
+    "provider.profile_savepoint_unknown_name": (
+        "savepoints: un nome mai creato viene rifiutato",
+        "rejected",
+    ),
     "provider.profile_write_append": (
         "Append",
         "accepted",

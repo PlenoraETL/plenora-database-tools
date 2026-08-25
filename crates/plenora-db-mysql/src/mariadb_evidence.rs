@@ -5590,6 +5590,204 @@ async fn profile_probes(
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
     portable_returning_probe(recorder, &pool, cancellation).await;
     declared_crs_probe(recorder, profile, &schema_name, cancellation).await;
+    savepoint_probes(recorder, &pool, cancellation).await;
+}
+
+/// La tabella su cui si misurano i savepoint.
+const SCRATCH_SAVEPOINT: &str = "plenora_driver_evidence_savepoint";
+
+/// I savepoint, attraversati con il profilo del prodotto che risponde.
+///
+/// `transactions.savepoints` e chiusa su questo profilo da sempre, e la
+/// ragione scritta accanto alla bandiera e precisa: «nessuna sonda li ha
+/// toccati, e un savepoint dichiarato e non provato e esattamente il genere di
+/// promessa che si scopre rotta durante un rollback parziale». La chiusura non
+/// diceva che il prodotto non li abbia — diceva che nessuno lo aveva
+/// verificato.
+///
+/// # Due domande, e la seconda impedisce alla prima di mentire
+///
+/// La prima misura cosa il savepoint promette: un rollback parziale annulla
+/// **solo** cio che e venuto dopo, e il commit che segue rende durevole cio
+/// che e venuto prima. Si rilegge da un'altra connessione, perche l'esito che
+/// il provider dichiara e cio che crede, e la tabella sul server e cio che e
+/// successo.
+///
+/// La seconda chiede un rollback a un savepoint che non esiste. Serve perche
+/// la prima, da sola, passerebbe anche su un motore che ignora la clausola in
+/// silenzio: `ROLLBACK TO` che non fa niente lascerebbe le righe successive al
+/// loro posto, e il conteggio finale sarebbe... diverso, quindi la prima le
+/// coglierebbe. Ma un motore che accettasse **qualunque** nome direbbe di si a
+/// un rollback che non ha eseguito, e il chiamante crederebbe di aver
+/// annullato qualcosa. Il rifiuto e la prova che il nome conta.
+async fn savepoint_probes(
+    recorder: &mut Recorder,
+    pool: &crate::MysqlPool,
+    cancellation: &CancellationToken,
+) {
+    let mut connection = open_connection().await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_SAVEPOINT}"),
+        format!(
+            "CREATE TABLE {SCRATCH_SAVEPOINT} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella dei savepoint: harness, non divergenza");
+    }
+
+    savepoint_partial_rollback_probe(recorder, pool, &mut connection, cancellation).await;
+    let _ = connection
+        .query_drop(format!("DELETE FROM {SCRATCH_SAVEPOINT}"))
+        .await;
+    savepoint_unknown_name_probe(recorder, pool, cancellation).await;
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SAVEPOINT}"))
+        .await;
+}
+
+/// L'istruzione che scrive una riga della sonda.
+fn savepoint_insert(id: i32) -> plenora_database_core::transaction::Statement {
+    plenora_database_core::transaction::Statement {
+        sql: format!("INSERT INTO {SCRATCH_SAVEPOINT} (id, payload) VALUES ({id}, 'p{id}')"),
+        params: Vec::new(),
+    }
+}
+
+/// Il rollback parziale: annulla cio che e venuto dopo, e nient'altro.
+///
+/// La transazione vive fino al `commit` che la consuma, ed e proprio quello che
+/// il lint vorrebbe accorciare.
+#[allow(clippy::significant_drop_tightening)]
+async fn savepoint_partial_rollback_probe(
+    recorder: &mut Recorder,
+    pool: &crate::MysqlPool,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::TransactionOptions;
+
+    let insert = savepoint_insert;
+    let question = "un rollback al savepoint annulla solo cio che e venuto dopo";
+    let partial = async {
+        let session = pool.checkout(cancellation).await?;
+        let mut transaction = Box::new(
+            crate::transaction::MysqlTransaction::begin(
+                session,
+                &TransactionOptions::default(),
+                cancellation,
+            )
+            .await?,
+        );
+        transaction.execute(&insert(1), cancellation).await?;
+        transaction.savepoint("misura", cancellation).await?;
+        transaction.execute(&insert(2), cancellation).await?;
+        transaction.execute(&insert(3), cancellation).await?;
+        transaction
+            .rollback_to_savepoint("misura", cancellation)
+            .await?;
+        transaction
+            .release_savepoint("misura", cancellation)
+            .await?;
+        transaction.commit(cancellation).await
+    }
+    .await;
+
+    let contents = table_contents(connection, SCRATCH_SAVEPOINT).await;
+    match partial {
+        Ok(outcome) if outcome.is_committed() && contents == "righe=1 contenuto=1:p1" => recorder
+            .accepted(
+                "provider.profile_savepoint_partial_rollback",
+                "provider",
+                "profilo",
+                question,
+                format!("commit=Committed — {contents}"),
+            ),
+        Ok(outcome) => recorder.rejected(
+            "provider.profile_savepoint_partial_rollback",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "atteso il solo id 1 dopo il commit, misurato {outcome:?} — {contents}"
+            )),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_savepoint_partial_rollback",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {} — {contents}",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+    }
+}
+
+/// Il nome che non esiste: il rifiuto e la prova che il nome conta.
+///
+/// Senza, la prima sonda passerebbe anche su un motore che dice di si a
+/// qualunque `ROLLBACK TO`: il chiamante crederebbe di aver annullato
+/// qualcosa, e nessuno lo smentirebbe.
+#[allow(clippy::significant_drop_tightening)]
+async fn savepoint_unknown_name_probe(
+    recorder: &mut Recorder,
+    pool: &crate::MysqlPool,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::TransactionOptions;
+
+    let insert = savepoint_insert;
+    let question = "un rollback a un savepoint mai creato viene rifiutato";
+    let unknown = async {
+        let session = pool.checkout(cancellation).await?;
+        let mut transaction = Box::new(
+            crate::transaction::MysqlTransaction::begin(
+                session,
+                &TransactionOptions::default(),
+                cancellation,
+            )
+            .await?,
+        );
+        transaction.execute(&insert(1), cancellation).await?;
+        transaction.savepoint("misura", cancellation).await?;
+        let refused = transaction
+            .rollback_to_savepoint("mai_creato", cancellation)
+            .await;
+        // La transazione si chiude comunque: lasciarla aperta restituirebbe al
+        // pool una sessione con una transazione in volo.
+        let _ = transaction.rollback(cancellation).await;
+        refused
+    }
+    .await;
+
+    match unknown {
+        Err(error) => recorder.rejected(
+            "provider.profile_savepoint_unknown_name",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {}",
+                error.category, error.phase, error.message
+            )),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+        Ok(()) => recorder.accepted(
+            "provider.profile_savepoint_unknown_name",
+            "provider",
+            "profilo",
+            question,
+            "il rollback a un nome mai creato e riuscito".to_owned(),
+        ),
+    }
 }
 
 /// La tabella su cui si misura il CRS dichiarato.
