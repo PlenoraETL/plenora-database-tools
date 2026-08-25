@@ -157,7 +157,7 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 # Le violazioni di capability dicono se una prova necessaria ha cambiato esito;
 # non dicono se una sonda e **sparita**. Se una `raw.*` o una osservativa
 # smettesse di essere prodotta su tutti e tre i server, il totale scenderebbe
-# da 56 a 55 e l'uscita resterebbe zero: la matrice
+# da 62 a 61 e l'uscita resterebbe zero: la matrice
 # racconterebbe una superficie in meno senza che nulla lo dica.
 #
 # L'ordine e parte del contratto perche e cio che rende leggibile il documento
@@ -222,6 +222,9 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_append",
     "provider.profile_write_append_rollback",
     "provider.profile_write_append_cancellation",
+    "provider.profile_write_create",
+    "provider.profile_write_create_rollback",
+    "provider.profile_write_create_cancellation",
     "provider.profile_timeout",
 )
 
@@ -292,6 +295,18 @@ QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
     ),
     "provider.profile_write_append_cancellation": (
         "Append: la cancellazione non lascia righe e il provider resta usabile",
+        "rejected",
+    ),
+    "provider.profile_write_create": (
+        "Create",
+        "accepted",
+    ),
+    "provider.profile_write_create_rollback": (
+        "Create: le righe tornano indietro e la tabella resta, dichiarate Partial",
+        "rejected",
+    ),
+    "provider.profile_write_create_cancellation": (
+        "Create: la cancellazione non lascia righe, lascia la tabella, e il provider resta usabile",
         "rejected",
     ),
 }

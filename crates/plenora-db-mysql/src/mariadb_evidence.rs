@@ -2127,7 +2127,7 @@ impl plenora_database_core::provider::BatchStream for ScriptedBatches {
 }
 
 /// Lo schema di ingresso della scrittura: due colonne, nessuna generata.
-fn append_schema() -> plenora_database_core::arrow::SchemaRef {
+fn scratch_schema() -> plenora_database_core::arrow::SchemaRef {
     use plenora_database_core::arrow::schema::{DataType, Field, Schema};
     std::sync::Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
@@ -2136,11 +2136,11 @@ fn append_schema() -> plenora_database_core::arrow::SchemaRef {
 }
 
 /// Un batch con gli id dati, e un payload derivato da ciascuno.
-fn append_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+fn scratch_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
     use plenora_database_core::arrow::array::{Int32Array, StringArray};
     let payloads: Vec<String> = ids.iter().map(|id| format!("riga-{id}")).collect();
     plenora_database_core::arrow::RecordBatch::try_new(
-        append_schema(),
+        scratch_schema(),
         vec![
             std::sync::Arc::new(Int32Array::from(ids.to_vec())),
             std::sync::Arc::new(StringArray::from(payloads)),
@@ -2223,11 +2223,11 @@ fn outcome_mismatch(
 /// una scrittura che dichiara sei righe e una tabella che ne contiene sei sono
 /// due affermazioni diverse, e la seconda si verifica solo da fuori — dopo il
 /// commit, con una connessione che non ha visto la transazione.
-async fn append_contents(connection: &mut mysql_async::Conn) -> String {
+async fn table_contents(connection: &mut mysql_async::Conn, table: &str) -> String {
     connection
         .query_first::<(i64, Option<String>), _>(format!(
             "SELECT COUNT(*), GROUP_CONCAT(CONCAT(id, ':', payload) ORDER BY id) \
-             FROM {SCRATCH_APPEND}"
+             FROM {table}"
         ))
         .await
         .map_or_else(
@@ -2244,7 +2244,7 @@ async fn append_contents(connection: &mut mysql_async::Conn) -> String {
 }
 
 /// Esegue una scrittura Append con lo stream dato e restituisce l'esito.
-async fn append_write(
+async fn scripted_write(
     provider: &MysqlProvider,
     operation: &WriteOperation,
     batches: Vec<plenora_database_core::arrow::RecordBatch>,
@@ -2254,10 +2254,16 @@ async fn append_write(
 ) -> Result<plenora_database_core::outcome::WriteOutcome, plenora_database_core::DatabaseError> {
     let budget = read_budget();
     let prepared = provider
-        .prepare_write(&secret(), operation, append_schema(), &budget, cancellation)
+        .prepare_write(
+            &secret(),
+            operation,
+            scratch_schema(),
+            &budget,
+            cancellation,
+        )
         .await?;
     let stream = ScriptedBatches {
-        schema: append_schema(),
+        schema: scratch_schema(),
         batches: batches.into_iter().collect(),
         declared,
         cancel_at,
@@ -2329,10 +2335,10 @@ async fn append_write_probes(
     reset_append(&mut connection).await;
     let question = "scrive in Append, e le righe si rileggono da un'altra sessione";
     let expected = "righe=6 contenuto=1:riga-1,2:riga-2,3:riga-3,4:riga-4,5:riga-5,6:riga-6";
-    match append_write(
+    match scripted_write(
         &provider,
         &operation,
-        vec![append_batch(&[1, 2, 3]), append_batch(&[4, 5, 6])],
+        vec![scratch_batch(&[1, 2, 3]), scratch_batch(&[4, 5, 6])],
         6,
         None,
         cancellation,
@@ -2340,7 +2346,7 @@ async fn append_write_probes(
     .await
     {
         Ok(outcome) => {
-            let contents = append_contents(&mut connection).await;
+            let contents = table_contents(&mut connection, SCRATCH_APPEND).await;
             // L'outcome e contratto pubblico: chi lo riceve ci legge lo stato,
             // il prodotto che ha scritto e la contabilita delle righe. Due
             // campi su otto non lo presidiano — un `Committed` che dichiarasse
@@ -2396,10 +2402,10 @@ async fn append_write_probes(
         retry: RetryDisposition::Never,
         message_contains: "riga sorgente rifiutata",
     };
-    match append_write(
+    match scripted_write(
         &provider,
         &operation,
-        vec![append_batch(&[10, 11, 12]), append_batch(&[10])],
+        vec![scratch_batch(&[10, 11, 12]), scratch_batch(&[10])],
         4,
         None,
         cancellation,
@@ -2417,7 +2423,7 @@ async fn append_write_probes(
             ),
         ),
         Err(error) => {
-            let contents = append_contents(&mut connection).await;
+            let contents = table_contents(&mut connection, SCRATCH_APPEND).await;
             let mismatch = refusal_mismatch(&contract, &error).or_else(|| {
                 (contents != "righe=0 contenuto=")
                     .then(|| format!("il primo batch non e stato annullato: {contents}"))
@@ -2521,10 +2527,10 @@ async fn append_cancellation_probe(
         // ciascun profilo ci mette il proprio.
         message_contains: "quarantinata",
     };
-    let outcome = append_write(
+    let outcome = scripted_write(
         provider,
         operation,
-        vec![append_batch(&[20, 21, 22]), append_batch(&[23, 24, 25])],
+        vec![scratch_batch(&[20, 21, 22]), scratch_batch(&[23, 24, 25])],
         6,
         Some((2, interrupted.clone())),
         &interrupted,
@@ -2542,20 +2548,20 @@ async fn append_cancellation_probe(
             ),
         ),
         Err(error) => {
-            let contents = append_contents(connection).await;
+            let contents = table_contents(connection, SCRATCH_APPEND).await;
             // Il provider si riprende? La scrittura successiva usa lo stesso
             // pool: se la sessione cancellata fosse tornata dentro senza
             // quarantena, questa erediterebbe una transazione aperta.
-            let recovered = append_write(
+            let recovered = scripted_write(
                 provider,
                 operation,
-                vec![append_batch(&[30, 31])],
+                vec![scratch_batch(&[30, 31])],
                 2,
                 None,
                 outer,
             )
             .await;
-            let after = append_contents(connection).await;
+            let after = table_contents(connection, SCRATCH_APPEND).await;
             let mismatch = refusal_mismatch(&contract, &error)
                 .or_else(|| {
                     (contents != "righe=0 contenuto=")
@@ -2603,6 +2609,418 @@ async fn append_cancellation_probe(
                         "la cancellazione non e stata osservata per intero — {reason}; \
                          osservato {:?}/{:?}/{:?}/{:?}: {} — dopo \
                          [{contents}], ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+}
+
+/// La tabella che `Create` deve costruire da sola.
+///
+/// A differenza di quella dell'Append, l'harness non la crea: crearla e cio
+/// che la mode fa, e trovarla gia li misurerebbe un'altra cosa.
+const SCRATCH_CREATE: &str = "plenora_driver_evidence_create";
+
+/// Cosa il catalogo dice della tabella creata: il contratto, e la resa.
+///
+/// Due stringhe e non una, perche dicono due cose diverse. Nomi, ordine,
+/// nullability e chiave primaria sono cio che `Create` promette, e devono
+/// coincidere sui tre server. I tipi nativi no: sono la resa del catalogo, e
+/// `INT` esce `int` da `MySQL` e `int(11)` da `MariaDB` — la stessa divergenza
+/// che la quinta tranche ha gia registrato su `bigint(20)`. Metterli nel
+/// contratto renderebbe rossa una sonda per una differenza gia misurata e
+/// capita; tenerli fuori dal dettaglio la nasconderebbe.
+///
+/// La tabella assente non e una stringa vuota: e detto, altrimenti
+/// «nessuna colonna» e «nessuna tabella» si leggerebbero uguale, e sono i due
+/// esiti che le sonde del residuo devono distinguere.
+async fn create_shape(connection: &mut mysql_async::Conn) -> (String, String) {
+    let columns = connection
+        .query_first::<(Option<String>, Option<String>), _>(format!(
+            "SELECT GROUP_CONCAT(CONCAT(COLUMN_NAME, '/', IS_NULLABLE) \
+                      ORDER BY ORDINAL_POSITION), \
+                    GROUP_CONCAT(CONCAT(COLUMN_NAME, ':', COLUMN_TYPE) \
+                      ORDER BY ORDINAL_POSITION) \
+             FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{SCRATCH_CREATE}'"
+        ))
+        .await
+        .ok()
+        .flatten();
+    let primary = connection
+        .query_first::<Option<String>, _>(format!(
+            "SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) \
+             FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{SCRATCH_CREATE}' \
+               AND INDEX_NAME = 'PRIMARY'"
+        ))
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    match columns {
+        Some((Some(shape), types)) => (
+            format!("colonne={shape} pk={}", primary.unwrap_or_default()),
+            format!("tipi={}", types.unwrap_or_default()),
+        ),
+        _ => ("tabella assente".to_owned(), "tipi=".to_owned()),
+    }
+}
+
+/// Toglie di mezzo la tabella di `Create`, che nessuna sonda deve trovare.
+async fn drop_create(connection: &mut mysql_async::Conn) {
+    connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_CREATE}"))
+        .await
+        .expect("pulizia della tabella di Create: harness, non divergenza");
+}
+
+/// La mode `Create` attraversata con il profilo del prodotto.
+///
+/// Ottava tranche, seconda write mode. `Create` aggiunge ad `Append` una
+/// superficie sola, e da quella discende tutto il resto: **il DDL**. Su
+/// `MySQL` e su `MariaDB` il DDL fa commit implicito, quindi la tabella creata
+/// nella preparazione non appartiene alla transazione che segue e nessun
+/// `ROLLBACK` la annulla.
+///
+/// Ne segue che il fallimento di una riga qui non e il fallimento di un
+/// Append. Le righe tornano indietro, lo schema no, e cio che il chiamante
+/// riceve non e `RolledBack` ma `Partial` con recupero richiesto — che e la
+/// differenza fra «il server e come prima» e «il server ha una tabella vuota
+/// in piu». Le tre sonde verificano percio, ciascuna, anche **cosa e
+/// rimasto**.
+#[allow(clippy::too_many_lines)]
+async fn create_write_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let mut connection = open_connection().await;
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(schema_name.to_owned()),
+            object: SCRATCH_CREATE.to_owned(),
+        },
+        mode: WriteMode::Create,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        // Le keys di `Create` diventano la PRIMARY KEY. Servono: senza, la
+        // tabella non ha vincoli e la sonda del rollback non avrebbe modo di
+        // far rifiutare una riga dal server.
+        keys: vec!["id".to_owned()],
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    // Cio che il DDL deve produrre, e che deve coincidere sui tre server.
+    let expected_shape = "colonne=id/NO,payload/NO pk=id";
+
+    // 1. La creazione riuscita. La tabella non c'e, la mode la costruisce e ci
+    //    scrive; si rilegge da un'altra connessione dopo il commit, e si
+    //    guarda anche la **forma** — una `Create` che scrivesse le righe
+    //    giuste in una tabella sbagliata sarebbe verde su un conteggio.
+    drop_create(&mut connection).await;
+    let question = "crea la tabella dal piano e ci scrive, e la si rilegge da un'altra sessione";
+    let expected = "righe=6 contenuto=1:riga-1,2:riga-2,3:riga-3,4:riga-4,5:riga-5,6:riga-6";
+    match scripted_write(
+        &provider,
+        &operation,
+        vec![scratch_batch(&[1, 2, 3]), scratch_batch(&[4, 5, 6])],
+        6,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = table_contents(&mut connection, SCRATCH_CREATE).await;
+            let (shape, types) = create_shape(&mut connection).await;
+            let accounting = outcome_mismatch(&outcome, profile, 6)
+                .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")))
+                .or_else(|| {
+                    (shape != expected_shape)
+                        .then(|| format!("forma attesa [{expected_shape}], osservata [{shape}]"))
+                });
+            match accounting {
+                None => recorder.accepted(
+                    "provider.profile_write_create",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!(
+                        "dichiarate={} {contents} {shape} {types}",
+                        outcome.rows.confirmed
+                    ),
+                ),
+                Some(reason) => recorder.rejected(
+                    "provider.profile_write_create",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("contratto non soddisfatto: {reason}")),
+                    None,
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_create",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback, che qui annulla le righe e **non** la tabella. La
+    //    quaterna e diversa da quella dell'Append per una ragione sola, e sta
+    //    nel motore: la `CREATE TABLE` ha gia committato per conto suo, quindi
+    //    dichiarare `RolledBack` direbbe al chiamante che il server e come
+    //    prima mentre una tabella vuota e rimasta. `Partial` con
+    //    `RequiresRecovery` e cio che il provider dichiara, e la rilettura e
+    //    cio che lo verifica: righe zero, tabella presente.
+    drop_create(&mut connection).await;
+    let question = "un secondo batch rifiutato annulla le righe e lascia la tabella";
+    // `Conflict`, non `DataMapping` — ed e la differenza piu istruttiva fra
+    // questa mode e l'Append, misurata e non prevista: la prima stesura si
+    // aspettava la stessa categoria della settima tranche e la sonda ha detto
+    // di no.
+    //
+    // La ragione non e del motore ma di questo crate, ed e scritta nel punto
+    // in cui si decide: la diagnostica per riga si attiva **solo** per
+    // `Append` (`provider.rs`, «row-scoped diagnostics ha semantica valida
+    // SOLO per Append»). Fuori di li la scrittura e un bulk INSERT, e il 1062
+    // torna come il verdetto del codice server — `Conflict`, «vincolo univoco
+    // violato». Lo stesso duplicato, quindi, arriva al chiamante in due
+    // categorie diverse a seconda della mode, su tutti e tre i server.
+    //
+    // Gli altri tre assi sono quelli attesi, e il terzo e la superficie nuova:
+    // l'effetto non e `RolledBack` ma `Partial`, perche il `ROLLBACK` ha
+    // annullato le righe e non la tabella.
+    let contract = RefusalContract {
+        category: ErrorCategory::Conflict,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::Partial,
+        retry: RetryDisposition::RequiresRecovery,
+        message_contains: "la tabella creata da mode='create' e rimasta",
+    };
+    match scripted_write(
+        &provider,
+        &operation,
+        vec![scratch_batch(&[10, 11, 12]), scratch_batch(&[10])],
+        4,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_create_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la chiave duplicata e passata, righe={}",
+                outcome.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(&mut connection, SCRATCH_CREATE).await;
+            let (shape, _) = create_shape(&mut connection).await;
+            let mismatch = refusal_mismatch(&contract, &error)
+                .or_else(|| {
+                    (contents != "righe=0 contenuto=")
+                        .then(|| format!("le righe non sono state annullate: {contents}"))
+                })
+                // Il residuo si osserva, non si deduce dal messaggio: e il
+                // messaggio ad affermare che la tabella e rimasta, e questa e
+                // la riga che lo verifica sul server.
+                .or_else(|| {
+                    (shape != expected_shape)
+                        .then(|| format!("la tabella non e rimasta come creata: [{shape}]"))
+                });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_create_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — {contents}, {shape}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_create_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "il rollback non e stato osservato — {reason}; osservato \
+                          {:?}/{:?}/{:?}/{:?}: {} — {contents}, {shape}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+
+    create_cancellation_probe(
+        recorder,
+        &provider,
+        profile,
+        &operation,
+        &mut connection,
+        expected_shape,
+        cancellation,
+    )
+    .await;
+
+    drop_create(&mut connection).await;
+}
+
+/// La cancellazione a meta `Create`, sulla stessa barriera dichiarata.
+///
+/// Il token si annulla quando il provider chiede il secondo batch. Rispetto
+/// all'Append cambia cosa resta: la tabella, che il DDL ha gia committato.
+/// L'effetto remoto resta `Unknown` — non sapere se le righe siano state
+/// applicate e piu grave che sapere che lo schema e rimasto, e il provider non
+/// declassa la prima incertezza per annunciare la seconda.
+///
+/// La ripresa non puo essere un secondo `Create`: la tabella c'e, e la mode
+/// fallirebbe per una ragione che non riguarda la quarantena della sessione.
+/// Si toglie di mezzo dall'altra connessione, come farebbe chi recupera, e poi
+/// si rifa — che e anche il modo in cui si verifica che il residuo fosse
+/// davvero solo la tabella.
+///
+/// Lunga come la sua gemella dell'Append, e per la stessa ragione: cio che
+/// verifica sono sei cose in fila — la quaterna del rifiuto, le righe, il
+/// residuo, la ripresa e cosa la tabella contiene dopo — e spezzarla
+/// separerebbe l'attesa dal confronto.
+#[allow(clippy::too_many_lines)]
+async fn create_cancellation_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    expected_shape: &str,
+    outer: &CancellationToken,
+) {
+    drop_create(connection).await;
+    let question =
+        "una cancellazione a meta Create non lascia righe, lascia la tabella, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    let contract = RefusalContract {
+        category: ErrorCategory::Cancelled,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::RequiresRecovery,
+        message_contains: "la tabella creata da mode='create' e rimasta",
+    };
+    let outcome = scripted_write(
+        provider,
+        operation,
+        vec![scratch_batch(&[20, 21, 22]), scratch_batch(&[23, 24, 25])],
+        6,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await;
+    match outcome {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_create_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, righe={}",
+                written.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_CREATE).await;
+            let (shape, _) = create_shape(connection).await;
+            // Il recupero che il contratto chiede al chiamante, fatto da fuori:
+            // la tabella residua se ne va, e la mode puo ricominciare.
+            drop_create(connection).await;
+            let recovered = scripted_write(
+                provider,
+                operation,
+                vec![scratch_batch(&[30, 31])],
+                2,
+                None,
+                outer,
+            )
+            .await;
+            let after = table_contents(connection, SCRATCH_CREATE).await;
+            let mismatch = refusal_mismatch(&contract, &error)
+                .or_else(|| {
+                    (contents != "righe=0 contenuto=")
+                        .then(|| format!("la cancellazione ha lasciato righe: {contents}"))
+                })
+                .or_else(|| {
+                    (shape != expected_shape)
+                        .then(|| format!("il residuo non e la tabella creata: [{shape}]"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, 2)
+                        .or_else(|| {
+                            (after != "righe=2 contenuto=30:riga-30,31:riga-31")
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_create_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — dopo la cancellazione [{contents}], \
+                         residuo [{shape}], dopo la ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    None,
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_create_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "la cancellazione non e stata osservata per intero — {reason}; \
+                         osservato {:?}/{:?}/{:?}/{:?}: {} — dopo [{contents}], \
+                         residuo [{shape}], ripresa [{after}]",
                         error.category,
                         error.phase,
                         error.remote_effect,
@@ -3202,6 +3620,7 @@ async fn profile_probes(
     profile_read_probes(recorder, profile, &schema_name, cancellation).await;
     generated_column_probes(recorder, profile, &schema_name, cancellation).await;
     append_write_probes(recorder, profile, &schema_name, cancellation).await;
+    create_write_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
 }
 

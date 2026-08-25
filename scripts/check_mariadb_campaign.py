@@ -3,7 +3,7 @@
 
 Il runner `check_mariadb_driver.py` sa misurare e sa giudicare, ma pretende
 tre server gia accesi: in locale li ha, su un runner pulito no. Finche e stato
-cosi, cinquantasei sonde — e i contratti che le rendono prove — erano
+cosi, sessantadue sonde — e i contratti che le rendono prove — erano
 presidiate solo da chi si ricordava di lanciarle.
 
 Il punto 3 della fase 3 comincia ad aprire capability di **scrittura**. Ogni

@@ -68,7 +68,7 @@ nell'intestazione.
 
 | writes | PostgreSQL | MySQL | MariaDB (non pubblicato) | SQL Server |
 | --- | --- | --- | --- | --- |
-| `create` | `true` | `true` | `false` | `true` |
+| `create` | `true` | `true` | `true` | `true` |
 | `append` | `true` | `true` | `true` | `true` |
 | `truncate_insert` | `true` | `false` | `false` | `true` |
 | `update` | `true` | `true` | `false` | `true` |

@@ -919,8 +919,17 @@ impl ProductProfile for MariadbProfile {
             // pubblica `true` e ha lo stesso esito ignoto a commit interrotto.
             // Tenendola chiusa, MariaDB rifiutava in `prepare` esattamente il
             // piano su cui la campagna aveva raccolto le prove.
+            // `create` si apre con l'ottava tranche, e le tre sonde che la
+            // sostengono verificano una cosa che quelle dell'Append non
+            // potevano: cosa resta sul server. Su questi due motori
+            // `CREATE TABLE` fa commit implicito, quindi la tabella non
+            // appartiene alla transazione che segue — un batch rifiutato
+            // annulla le righe e lascia lo schema, e cio che il chiamante
+            // riceve non e `RolledBack` ma `Partial` con recupero richiesto.
+            // Misurato uguale sui tre riferimenti, righe rilette da un'altra
+            // sessione e catalogo interrogato per la forma.
             writes: WriteCapabilities {
-                create: false,
+                create: true,
                 append: true,
                 // Chiusa per la stessa ragione di MySQL — `TRUNCATE` con
                 // commit implicito — e non solo perche non misurata.
@@ -3213,20 +3222,27 @@ mod tests {
         assert_eq!(reads.pagination, mysql_reads.pagination);
         assert_eq!(reads.resumable, mysql_reads.resumable);
 
-        // La scrittura no: nessun piano e mai stato eseguito con questo
-        // profilo, ed e la differenza che rende leggibile la tabella — non
-        // "tutto chiuso", ma "chiuso cio che non e stato attraversato".
-        // `append` e l'unica aperta, e le sue tre sonde la sostengono. Le
-        // altre restano chiuse: nessun piano le ha eseguite.
+        // La scrittura procede una mode alla volta, ed e la differenza che
+        // rende leggibile la tabella: non "tutto chiuso", ma "chiuso cio che
+        // non e stato attraversato". `append` dalla settima tranche, `create`
+        // dall'ottava, ciascuna con le proprie tre sonde. Le altre restano
+        // chiuse: nessun piano le ha eseguite.
         let writes = &published.writes;
-        assert!(writes.append);
-        assert!(!writes.create && !writes.update && !writes.upsert);
+        assert!(writes.append && writes.create);
+        assert!(!writes.update && !writes.upsert);
         assert!(!writes.replace && !writes.delete_by_keys && !writes.bulk);
-        // `rollback_on_failure` e aperta: parla delle righe di ogni
-        // scrittura che il profilo ammette, e ne ammette una — `Append` — le
-        // cui tre sonde girano con `allow_partial: false` e misurano proprio
-        // quell'esito.
+        // `rollback_on_failure` e aperta: parla delle **righe** di ogni
+        // scrittura che il profilo ammette, e le righe tornano indietro in
+        // entrambe le mode aperte — le sonde girano con `allow_partial:
+        // false` e lo misurano rileggendo da un'altra sessione.
         assert!(writes.rollback_on_failure);
+        // Che il rollback non riporti indietro anche lo **schema** non lo
+        // dice quel flag: lo dice `transactional_ddl`, chiuso, e l'ottava
+        // tranche e la misura che lo sostiene — la tabella creata da `Create`
+        // sopravvive al rollback su tutti e tre i riferimenti. Le due
+        // bandiere parlano di due cose, e questa riga esiste perche restino
+        // distinte.
+        assert!(!published.transactions.transactional_ddl);
         // `truncate_insert` e chiusa su **entrambi** i profili, e per una
         // ragione che non e "non misurata": su questi due motori `TRUNCATE` e
         // DDL con commit implicito, quindi le righe sparirebbero prima

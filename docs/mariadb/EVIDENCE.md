@@ -864,7 +864,8 @@ l'unico `allow_partial` misurato.
 * **le altre cinque write mode**: `Create`, `Update`, `Upsert`, `Replace`,
   `DeleteByKeys`. Ciascuna aggiunge una superficie che `Append` non ha — DDL
   da ripulire, keys da confrontare, una tabella che puo sopravvivere a un
-  fallimento — e ciascuna arriva con le proprie tre sonde.
+  fallimento — e ciascuna arriva con le proprie tre sonde. La prima, `Create`,
+  e l'ottava tranche.
 * **il commit ambiguo**, che resta il punto 4 e non si deduce da qui: la
   cancellazione dichiara l'effetto ignoto **prima** del commit, che e una cosa
   diversa da un commit interrotto a meta.
@@ -873,3 +874,123 @@ l'unico `allow_partial` misurato.
   parziale non e stato osservato.
 * **la quarantena della connessione**, per la ragione detta sopra: serve
   l'identita della sessione, non il messaggio che la dichiara.
+
+## Ottava tranche: la seconda write mode, Create
+
+`Append` ha deciso **come** si misura una scrittura. `Create` aggiunge una
+superficie sola, e da quella discende tutto il resto: il **DDL**. Su MySQL e
+su MariaDB `CREATE TABLE` fa commit implicito, quindi la tabella che la mode
+costruisce nella preparazione non appartiene alla transazione che segue, e
+nessun `ROLLBACK` la annulla.
+
+Ne segue che un fallimento qui non e il fallimento di un Append. Le righe
+tornano indietro, lo schema no, e la differenza fra le due cose e la
+differenza fra «il server e come prima» e «il server ha una tabella vuota in
+piu». Le tre sonde verificano percio, ciascuna, anche **cosa e rimasto**: non
+solo il conteggio delle righe, ma la forma della tabella letta dal catalogo.
+
+Gira con lo stesso comando delle tranche precedenti:
+
+    python scripts/check_mariadb_driver.py --markdown
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_write_create` | dichiarate=6, righe=6, `colonne=id/NO,payload/NO pk=id`, `tipi=id:int,payload:text` | **identico**, salvo `tipi=id:int(11)` | **identico**, salvo `tipi=id:int(11)` |
+| provider | profilo | `provider.profile_write_create_rollback` | **rifiutato** — Conflict/Write/**Partial**/RequiresRecovery, righe=0, tabella rimasta | **identico**, con il proprio nome | **identico**, con il proprio nome |
+| provider | profilo | `provider.profile_write_create_cancellation` | **rifiutato** — Cancelled/Write/Unknown/RequiresRecovery, righe=0, tabella rimasta, ripresa righe=2 | **identico**, con il proprio nome | **identico**, con il proprio nome |
+
+### Cosa dice
+
+**La tabella che nasce e la stessa sui tre server.** Nomi, ordine,
+nullability e chiave primaria coincidono — `colonne=id/NO,payload/NO pk=id` —
+e le sei righe si rileggono da un'altra connessione dopo il commit, con lo
+stesso contenuto. La sonda guarda la forma **e** il contenuto, non uno dei
+due: una `Create` che scrivesse le righe giuste in una tabella sbagliata
+sarebbe verde su un conteggio.
+
+**I tipi nativi divergono, e non e una novita.** Dalla stessa `CREATE TABLE`
+il catalogo rende `id:int` su MySQL e `id:int(11)` su MariaDB: e la larghezza
+di visualizzazione che MySQL ha tolto dalla 8.0.19 e MariaDB pubblica ancora,
+gia registrata dalla quinta tranche su `bigint(20)`. Sta nel dettaglio della
+sonda ma non nel suo contratto: farne una condizione renderebbe rossa una
+prova per una differenza gia misurata e capita, toglierla dal dettaglio la
+nasconderebbe.
+
+**Il rollback annulla le righe e lascia la tabella, e il provider lo
+dichiara.** `righe=0` letto da un'altra connessione, la tabella ancora li con
+la sua forma, e l'effetto remoto **`Partial`** invece di `RolledBack`, con
+`RequiresRecovery`. E' la risposta corretta: dichiarare `RolledBack` direbbe
+al chiamante che il server e come prima mentre una tabella vuota e rimasta, e
+il messaggio lo scrive per esteso — «la tabella creata da mode='create' e
+rimasta: il DDL fa commit implicito e non e annullato dal rollback». La sonda
+non si fida del messaggio: rilegge il catalogo e verifica che quella tabella
+ci sia davvero, perche un messaggio e cosa il provider afferma, non cosa e
+successo.
+
+**Lo stesso duplicato arriva in due categorie diverse a seconda della mode.**
+Nell'Append il 1062 e un rifiuto di riga — `DataMapping`, «riga sorgente
+rifiutata» — e qui e un `Conflict`, «vincolo univoco violato (codice 1062)».
+La quaterna e stata misurata, non prevista: la prima stesura di questa sonda
+si aspettava la categoria della settima tranche, e la misura ha detto di no.
+
+La ragione non e del motore — i tre server si comportano identici — ma di
+questo crate, ed e scritta nel punto in cui si decide: la diagnostica per riga
+si attiva **solo** per `Append`, perche per le altre mode il conteggio
+per-riga non regge (l'Upsert MySQL rende `affected_rows=2` per un UPDATE) e il
+bulk INSERT e preferibile. Fuori dall'Append il codice server arriva al
+chiamante come verdetto del profilo.
+
+Registrata, non risolta: un consumer che ramifica sulla categoria vede due
+cose diverse per la stessa causa, e decidere quale delle due sia quella giusta
+non e una domanda su MariaDB.
+
+**La cancellazione dichiara l'effetto ignoto, e il residuo non lo declassa.**
+`Cancelled/Write/Unknown/RequiresRecovery`: `Unknown` resta `Unknown` e non
+diventa `Partial`, perche non sapere se le righe siano state applicate e piu
+grave che sapere che lo schema e rimasto — il provider non declassa la prima
+incertezza per annunciare la seconda. La rilettura dice cosa e successo
+davvero: `righe=0`, tabella presente.
+
+E il provider resta usabile. La ripresa qui non puo essere un secondo
+`Create` — la tabella c'e, e la mode fallirebbe per una ragione che non
+riguarda la quarantena della sessione: si toglie di mezzo dall'altra
+connessione, **come farebbe chi recupera**, e poi si rifa. Le due righe della
+seconda scrittura sono le uniche che la tabella contiene, confrontate una per
+una: una sessione riusata con una transazione residua committerebbe anche le
+righe di prima, e il conteggio dichiarato non lo direbbe.
+
+**Nessuna delle tre distingue i tre server.** Le uniche differenze sono il
+nome del prodotto nei messaggi, che e attribuzione corretta, e la larghezza di
+visualizzazione dei tipi.
+
+### Cosa ne segue per le capability
+
+`writes.create` si apre per MariaDB: e la seconda capability di scrittura, e
+la sostengono le tre sonde di questa tranche, bloccanti nella campagna come
+quelle dell'Append.
+
+`transactional_ddl` resta `false`, e questa tranche e la misura che lo
+sostiene invece di lasciarlo dichiarato: la tabella sopravvive al rollback su
+tutti e tre i server, che e esattamente cio che quel flag nega.
+
+`rollback_on_failure` resta `true` e non cambia significato. Il flag parla
+delle **righe**, e le righe tornano indietro anche qui — `righe=0` dopo un
+fallimento a meta. Il residuo dello schema e cio che `transactional_ddl`
+descrive, e le due bandiere dicono due cose che questa tranche ha visto
+insieme senza confonderle.
+
+### Cosa resta not_measured
+
+* **`Create` su un target che esiste gia**. Il piano non lo incontra qui,
+  perche ogni sonda parte da una tabella assente, e non e una lacuna di
+  MariaDB: il provider MySQL qualificato pubblica `create = true` con la
+  stessa superficie non misurata.
+* **le altre quattro write mode**: `Update`, `Upsert`, `Replace`,
+  `DeleteByKeys`. Le prime tre portano keys da confrontare e un target che
+  sopravvive a un fallimento; `TruncateInsert` resta fuori per decisione, non
+  per assenza di misura.
+* **`allow_partial`**, come nella settima tranche: tutte le sonde usano il
+  default, cioe il fallimento totale.
+* **il commit ambiguo**, che resta il punto 4.
