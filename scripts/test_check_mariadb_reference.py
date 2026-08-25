@@ -90,13 +90,29 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         divergenza dal comportamento MySQL appartiene a MariaDB o a una sua
         release. Toglierla lascerebbe una sola osservazione e nessun modo di
         attribuirla.
+
+        Le righe di compatibilita sono piu d'una da quando 10.11 e entrata, e
+        questa guardia pretende **almeno** la LTS precedente invece di
+        esattamente una: l'ADR prevedeva il caso � "se il ciclo mostrera che
+        servono altre righe, si aggiungono al documento" � e una guardia che
+        contasse esattamente uno impedirebbe cio che l'ADR permette.
+
+        Cio che resta preteso per ognuna e la sostanza: che sia piu vecchia
+        della riga di evidenza, e che abbia il **proprio** volume TLS. Due
+        riferimenti che condividessero il volume condividerebbero il
+        certificato, e il certificato porta il nome host: il secondo server
+        risponderebbe con l'identita del primo, e la prova TLS misurerebbe
+        un'altra macchina.
         """
 
-        self.assertEqual(len(COMPATIBILITY), 1)
-        previous = COMPATIBILITY[0]
-        self.assertEqual(previous.exact_version, "11.8.8")
-        self.assertLess(previous.major, EVIDENCE.major)
-        self.assertNotEqual(previous.tls_volume, EVIDENCE.tls_volume)
+        self.assertGreaterEqual(len(COMPATIBILITY), 1)
+        versions = {entry.exact_version for entry in COMPATIBILITY}
+        self.assertIn("11.8.8", versions)
+        volumes = {EVIDENCE.tls_volume}
+        for previous in COMPATIBILITY:
+            self.assertLess(previous.major, EVIDENCE.major)
+            self.assertNotIn(previous.tls_volume, volumes)
+            volumes.add(previous.tls_volume)
 
     def test_the_fixture_declares_itself_evidence_and_not_a_baseline(self) -> None:
         """Il ruolo e `evidence`, e non e una sfumatura lessicale.

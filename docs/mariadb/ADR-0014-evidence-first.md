@@ -74,6 +74,21 @@ fissa per SQL Server: capability atomiche dopo evidenza riproducibile.
 |---|---|---|
 | `evidence` | MariaDB 12.3.2 | `sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d` |
 | `compatibility` | MariaDB 11.8.8 LTS | `sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf` |
+| `compatibility` | MariaDB 10.11.19 LTS | `sha256:ce66c7be32a03aabe7241d0a10993a2db827ef652a35d25727d92a832ac8ef73` |
+
+**Aggiunta (2026-08-25): 10.11 LTS.** Le due righe precedenti rispondono a una
+domanda sola — se una divergenza appartiene al fork o a una sua release — e la
+rispondono confrontando due versioni vicine, separate da un ciclo di sviluppo.
+
+10.11 ne pone un'altra. E' la LTS supportata fino al 2028, ed e quella che piu
+gente ha davvero in produzione oggi: cio che le altre due misurano vale per il
+server piu recente, non per quello che il lettore di questo documento ha sotto
+le mani. La distanza e il punto — piu vecchia di 11.8 di un intero ciclo — ed
+e la ragione per cui la riga vale piu di una terza osservazione ravvicinata.
+
+L'ADR prevedeva il caso: «se il ciclo mostrera che servono altre righe, si
+aggiungono al documento, che e gia la sola fonte letta da compose e script».
+Questa e la prima volta che succede.
 
 **Correzione (2026-08-17).** La prima stesura di questa ADR dichiarava 11.8.8
 "l'ultima LTS". Non lo e: il tag `lts` di Docker Hub risolve 12.3.2, cioe lo
