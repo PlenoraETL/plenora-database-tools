@@ -1157,8 +1157,11 @@ impl ProductProfile for MariadbProfile {
                 // nessuna misura attraversava — la colonna avrebbe retto anche
                 // se il prodotto avesse ammesso un tipo solo.
                 mixed_geometry_types: true,
-                // Solo XY, che e cio che le sonde hanno attraversato — e cio
-                // che la proiezione condivisa produce.
+                // Solo XY, e non perche le altre non siano state provate:
+                // `raw.geometry_dimensions` ha chiesto al parser `POINT Z` nelle
+                // due sintassi WKT e ha avuto `NULL` qui e 3037 su `MySQL`, e
+                // `ST_Z` e `ST_M` sono assenti da entrambi. Non c'e una terza
+                // dimensione da dichiarare.
                 dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
                 // Quattordici, misurate da `provider.profile_spatial_functions`
                 // attraversando il percorso di query su entrambe le major. La

@@ -1942,3 +1942,56 @@ calcolata senza un CRS dimostrabile», che e cio che e stato misurato.
   lavoro che ha senso il giorno in cui qualcuno decida di volerla.
 * **la dichiarazione `exact` in scrittura** e **le dimensioni oltre XY**:
   invariate.
+
+## Ventunesima tranche: le ultime due, e una DDL che diceva meno del contratto
+
+Restavano due bandiere chiuse per ragioni diverse, e nessuna delle due era stata
+guardata.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | scrittura | `raw.exact_geometry_column` | point=ok polygon=ok, tipo sbagliato **1416** | point=ok polygon=ok, tipo sbagliato **1366** | **identico a MariaDB 12** |
+| raw | spatial | `raw.geometry_dimensions` | xy=0, xyz/xym **3037** | xy=0, xyz/xym **null** | **identico a MariaDB 12** |
+
+### Cosa dice
+
+**La colonna tipata funziona, e rifiuta il tipo sbagliato.** Una colonna `POINT`
+accetta un punto e respinge un poligono su tutti e tre — con codici diversi,
+1416 e 1366, e lo stesso comportamento. E' la terza riga della sonda quella che
+conta: una colonna `POINT` che accettasse un poligono non sarebbe `exact` in
+nessun senso utile.
+
+**Le dimensioni oltre XY non esistono su questi prodotti.** Il parser rifiuta il
+WKT `POINT Z(1 2 3)` in entrambe le sintassi: `MySQL` con 3037 — WKT non valido
+— e `MariaDB` parsando a `NULL`. Sommato a `ST_Z` e `ST_M` gia risultate
+assenti, la chiusura smette di essere «non misurata» e diventa un **fatto del
+prodotto**: non c'e una terza dimensione da scrivere, non che non sia stata
+provata.
+
+### Il difetto che la misura ha fatto emergere
+
+Il piano supporta la dichiarazione `exact` da sempre, e il preflight la fa
+rispettare: un contratto `mixed` non puo scrivere in una colonna tipata. Ma la
+**DDL** della mode `Create` emetteva `GEOMETRY` anche per un contratto `exact`.
+
+Cioe: creava una colonna che accetta qualunque geometria per dati che ne
+contengono una sola. Il contratto diceva una cosa piu forte di quella che la
+tabella faceva rispettare, e il primo a scriverci un poligono dentro — con un
+altro strumento, o con un piano `mixed` su una colonna che il preflight
+lasciava passare — non avrebbe trovato nessuno a fermarlo.
+
+Ora la DDL emette il tipo dichiarato, e il vincolo di SRID gli si attacca
+accanto dove il prodotto lo ammette: `POINT SRID 4326` su `MySQL`, `POINT` su
+`MariaDB`.
+
+### Cosa resta not_measured
+
+* **le ventotto funzioni geometriche non caratterizzate**: la ventesima tranche
+  ha misurato le tre che coprono i tre esiti possibili e ha stabilito quanto
+  costerebbe la regola per funzione. Il resto ha senso il giorno in cui qualcuno
+  decida di volerla.
+
+E nient'altro. Ogni altra bandiera di questo profilo e aperta con una misura o
+chiusa con una ragione misurata.

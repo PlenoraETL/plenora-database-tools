@@ -92,6 +92,15 @@ fn compile_write_column(
                 "write spatial {product} richiede geometry GeoArrow WKB Binary"
             )));
         }
+        // XY e l'unico profilo dimensionale che questi motori hanno, e da oggi
+        // e misurato invece che atteso: `raw.geometry_dimensions` ha chiesto al
+        // **parser** `POINT Z(1 2 3)` nelle due sintassi WKT, e `MySQL` risponde
+        // 3037 — WKT non valido — mentre `MariaDB` lo parsa a `NULL`. Anche
+        // `ST_Z` e `ST_M` sono assenti da entrambi.
+        //
+        // La chiusura smette percio di essere «non qualificata» e diventa un
+        // fatto del prodotto: non c'e una Z da scrivere, non che non sia stata
+        // provata.
         if contract.dimensions != Some("xy") {
             return Err(unsupported(format!(
                 "write spatial {product} qualifica soltanto geometrie XY"
@@ -1601,6 +1610,7 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
 fn mysql_column_ddl(
     kind: &MysqlColumnKind,
     spatial_srid: Option<u32>,
+    exact_geometry_type: Option<&str>,
     profile: &dyn crate::profile::ProductProfile,
 ) -> String {
     match kind {
@@ -1628,10 +1638,38 @@ fn mysql_column_ddl(
         MysqlColumnKind::Decimal { precision, scale } => {
             format!("DECIMAL({precision},{scale})")
         }
-        MysqlColumnKind::Geometry => match spatial_srid {
-            Some(srid) => profile.geometry_column_ddl(srid),
-            None => "GEOMETRY".to_owned(),
-        },
+        // Il tipo **esatto** quando il contratto lo dichiara. La DDL emetteva
+        // `GEOMETRY` anche per un contratto `exact`, cioe creava una colonna
+        // che accetta qualunque geometria per dati che ne contengono una sola:
+        // il contratto diceva una cosa piu forte di quella che la tabella
+        // faceva rispettare, e il primo a scriverci un poligono dentro non
+        // avrebbe trovato nessuno a fermarlo.
+        //
+        // `raw.exact_geometry_column` ha misurato che entrambi i prodotti
+        // reggono la colonna tipata e **rifiutano** il tipo sbagliato — 1366 su
+        // `MariaDB`, 1416 su `MySQL`.
+        MysqlColumnKind::Geometry => {
+            let base = exact_geometry_type.map_or("GEOMETRY", |exact| match exact {
+                "point" => "POINT",
+                "linestring" => "LINESTRING",
+                "polygon" => "POLYGON",
+                "multipoint" => "MULTIPOINT",
+                "multilinestring" => "MULTILINESTRING",
+                "multipolygon" => "MULTIPOLYGON",
+                "geometrycollection" => "GEOMETRYCOLLECTION",
+                // Il piano ammette solo i sette di sopra — lo decide
+                // `writable_geometry_type` — e un nome fuori da quell'insieme
+                // non arriva qui. Se ci arrivasse, la colonna generica e
+                // l'unica scelta che non inventa un tipo SQL.
+                _ => "GEOMETRY",
+            });
+            match spatial_srid {
+                Some(srid) => profile
+                    .geometry_column_ddl(srid)
+                    .replacen("GEOMETRY", base, 1),
+                None => base.to_owned(),
+            }
+        }
     }
 }
 
@@ -1670,7 +1708,12 @@ pub(crate) fn build_create_table_sql(
 
     let mut lines = Vec::with_capacity(columns.len() + 1);
     for col in &columns {
-        let type_decl = mysql_column_ddl(&col.kind, col.spatial_srid, profile);
+        let type_decl = mysql_column_ddl(
+            &col.kind,
+            col.spatial_srid,
+            col.exact_geometry_type.as_deref(),
+            profile,
+        );
         let null_decl = if col.nullable { "NULL" } else { "NOT NULL" };
         lines.push(format!("    {} {} {}", col.quoted, type_decl, null_decl));
     }
@@ -1751,7 +1794,12 @@ pub(crate) fn build_temp_staging_sql(
     let lines: Vec<String> = columns
         .iter()
         .map(|c| {
-            let ty = mysql_column_ddl(&c.kind, c.spatial_srid, profile);
+            let ty = mysql_column_ddl(
+                &c.kind,
+                c.spatial_srid,
+                c.exact_geometry_type.as_deref(),
+                profile,
+            );
             let null = if c.nullable { "NULL" } else { "NOT NULL" };
             format!("    {} {} {}", c.quoted, ty, null)
         })
