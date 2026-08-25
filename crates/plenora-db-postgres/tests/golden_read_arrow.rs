@@ -28,11 +28,13 @@
     clippy::redundant_closure_for_method_calls
 )]
 
-use plenora_database_core::plan::{ObjectRef, ReadOperation};
+use plenora_database_core::plan::{ObjectRef, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
-use plenora_database_core::CancellationToken;
+use plenora_database_core::{
+    CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+};
 use plenora_db_postgres::PostgresProvider;
 
 const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
@@ -360,28 +362,30 @@ async fn h7b_read_handles_null_values_across_columns() {
 }
 
 // ============================================================================
-//  H7b.6 — Stream + cancellation: documenta il contratto ATTUALE del trait
-//  `BatchStream`.
+//  H7b.6 — Stream + cancellation: il contratto, dopo che la limitazione e
+//  caduta.
 //
-//  Finding H7b (2026-08-12): il metodo pubblico `BatchStream::next_batch()`
-//  NON accetta un `CancellationToken` in firma e NON è cancel-aware. La
-//  cancellazione a livello di consumer Arrow (via il token passato a
-//  `Provider::read`) non interrompe un batch in-flight né batch successivi.
-//  Esiste `PostgresBatchStream::next_batch` ma è
-//  pub-crate, usata solo dai path interni (write/row_diagnostics).
+//  Il finding H7b (2026-08-12) diceva che `BatchStream::next_batch` non era
+//  cancel-aware: la cancellazione passata a `Provider::read` non interrompeva
+//  ne il batch in volo ne quelli successivi, e il consumer Arrow continuava a
+//  ricevere righe da una lettura che aveva chiesto di fermare.
 //
-//  Per la Fase 3 Python SDK: se il consumer richiede cancel su Arrow read,
-//  serve estendere il trait `BatchStream::next_batch(&CancellationToken)`
-//  o esporre `next_batch` pubblicamente.
+//  Il test che lo documentava si chiudeva con una previsione — «se dovesse
+//  cambiare, il test fallirebbe e andra aggiornato con la nuova asserzione» —
+//  ed e andata cosi: la passata sullo scheduler delle deadline ha reso la
+//  cancellazione osservabile lungo tutto il percorso, e la prima corsa del
+//  gate live dopo quella passata ha fatto rosso qui.
 //
-//  Questo test verifica che il comportamento attuale sia "continua a
-//  produrre batch anche dopo cancel" — se dovesse cambiare, il test
-//  fallirebbe e andrà aggiornato con la nuova asserzione.
+//  Cio che il test asserisce ora e il contratto nuovo, e non «non e piu come
+//  prima»: dopo la cancellazione il batch successivo e un rifiuto, con la
+//  quaterna che il chiamante usa per decidere cosa fare. `RemoteEffect::None`
+//  e la meta che conta — una lettura interrotta non lascia niente da ripulire,
+//  ed e la differenza fra questo caso e una scrittura cancellata.
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
-async fn h7b_read_stream_batchstream_trait_is_not_cancel_aware_finding() {
+async fn h7b_read_stream_is_cancel_aware() {
     let table = "_h7b_bigstream";
     create_persistent_fixture(
         table,
@@ -402,16 +406,25 @@ async fn h7b_read_stream_batchstream_trait_is_not_cancel_aware_finding() {
         )
         .await
         .expect("read");
-    let _ = stream.next_batch(&cancel).await.expect("batch1");
+    let first = stream.next_batch(&cancel).await.expect("batch1");
+    assert!(
+        first.is_some(),
+        "il primo batch arriva prima della cancellazione"
+    );
     cancel.cancel();
 
-    // Contratto attuale: continua a produrre. Il test **documenta** questo.
-    let post = stream.next_batch(&cancel).await.expect("batch post-cancel");
-    assert!(
-        post.is_some(),
-        "regressione desiderata: BatchStream::next_batch è diventato cancel-aware; \
-         aggiornare test + docs"
-    );
+    let error = stream
+        .next_batch(&cancel)
+        .await
+        .expect_err("dopo la cancellazione il batch successivo e un rifiuto");
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    assert_eq!(error.phase, ErrorPhase::Read);
+    // Una lettura non lascia residui: chi la interrompe non ha nulla da
+    // ripulire, e dichiararlo diversamente manderebbe a cercare uno stato che
+    // non esiste.
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    assert_eq!(error.provider, Some(ProviderKind::Postgres));
 
     drop_fixture(table).await;
 }
