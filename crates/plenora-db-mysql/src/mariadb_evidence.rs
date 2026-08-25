@@ -107,6 +107,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     raw_type_probes(recorder, connection).await;
     returning_form_probe(recorder, connection).await;
     spatial_write_probe(recorder, connection).await;
+    spatial_index_probe(recorder, connection).await;
 }
 
 /// La tabella su cui si misura la scrittura spatial.
@@ -5728,6 +5729,60 @@ async fn profile_probes(
     }
 }
 
+/// Quali forme di `SPATIAL INDEX` il server accetta.
+///
+/// `SpatialCapabilities::spatial_index` e chiusa su **entrambi** i profili, e il
+/// piano rifiuta `create_spatial_index` in prepare — «non ancora qualificata».
+/// Non e una divergenza fra prodotti: e una superficie che nessuno ha
+/// attraversato, e questa sonda e il primo passo per sapere cosa costerebbe
+/// aprirla.
+///
+/// Due forme, e la differenza sta nella colonna. `MySQL` documenta che un
+/// indice spaziale vuole una colonna vincolata a un SRID; `MariaDB` una colonna
+/// vincolata non puo nemmeno averla — la quindicesima tranche lo ha misurato —
+/// quindi se anche li l'indice pretendesse il vincolo, la superficie sarebbe
+/// chiusa **per costruzione** su quel prodotto, non per mancanza di prove.
+async fn spatial_index_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    let table = "plenora_driver_evidence_spatial_index";
+    let mut measured = Vec::new();
+    for (name, ddl) in [
+        (
+            "senza_srid",
+            format!(
+                "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL, SPATIAL INDEX(shape)) ENGINE = InnoDB"
+            ),
+        ),
+        (
+            "con_srid",
+            format!(
+                "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL SRID 4326, SPATIAL INDEX(shape)) ENGINE = InnoDB"
+            ),
+        ),
+    ] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+        let verdict = match connection.query_drop(ddl).await {
+            Ok(()) => "ok".to_owned(),
+            Err(error) => {
+                server_code(&error).map_or_else(|| "rifiutata".to_owned(), |code| code.to_string())
+            }
+        };
+        measured.push(format!("{name}={verdict}"));
+    }
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await;
+
+    recorder.accepted(
+        "raw.spatial_index_forms",
+        "raw",
+        "scrittura",
+        "quali forme di SPATIAL INDEX il server accetta",
+        measured.join(" "),
+    );
+}
+
 /// Le forme legate: un segnaposto non e un'espressione tipata.
 ///
 /// Le tre domande di sopra usano `ST_GeomFromWKB(ST_AsBinary(...), 4326)`, cioe
@@ -6039,6 +6094,59 @@ fn point_wkb(x: f64, y: f64) -> Vec<u8> {
     bytes
 }
 
+/// Un `POLYGON` quadrato in WKB XY little-endian, senza SRID incapsulato.
+///
+/// Serve a una domanda sola: se una colonna dichiarata `mixed` regga davvero
+/// due tipi geometrici diversi. Un secondo punto non la porrebbe.
+fn polygon_wkb(side: f64) -> Vec<u8> {
+    let mut bytes = vec![1_u8];
+    bytes.extend_from_slice(&3_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&5_u32.to_le_bytes());
+    for (x, y) in [
+        (0.0, 0.0),
+        (0.0, side),
+        (side, side),
+        (side, 0.0),
+        (0.0, 0.0),
+    ] {
+        bytes.extend_from_slice(&f64::to_le_bytes(x));
+        bytes.extend_from_slice(&f64::to_le_bytes(y));
+    }
+    bytes
+}
+
+/// Un batch con due righe di **tipo diverso**: un punto e un poligono.
+fn mixed_geometry_batch(srid: u32) -> plenora_database_core::arrow::RecordBatch {
+    use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int32Array};
+    use plenora_database_core::arrow::RecordBatch;
+
+    let point = point_wkb(7.0, 7.0);
+    let polygon = polygon_wkb(3.0);
+    let shapes: Vec<&[u8]> = vec![point.as_slice(), polygon.as_slice()];
+    RecordBatch::try_new(
+        spatial_write_schema(srid),
+        vec![
+            std::sync::Arc::new(Int32Array::from(vec![7, 8])) as ArrayRef,
+            std::sync::Arc::new(BinaryArray::from(shapes)) as ArrayRef,
+        ],
+    )
+    .expect("batch misto: harness, non divergenza")
+}
+
+/// I tipi geometrici scritti, riletti da un'altra connessione.
+async fn spatial_types(connection: &mut mysql_async::Conn) -> String {
+    connection
+        .query_first::<Option<String>, _>(format!(
+            "SELECT GROUP_CONCAT(CONCAT(id, ':', ST_GeometryType(shape)) ORDER BY id) FROM {SCRATCH_SPATIAL}"
+        ))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |row| row.flatten().unwrap_or_else(|| "nessuna riga".to_owned()),
+        )
+}
+
 /// Un batch con una riga per id, ciascuna con il proprio punto.
 fn spatial_write_batch(srid: u32, ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
     use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int32Array};
@@ -6160,6 +6268,55 @@ async fn spatial_write_probes(
         cancellation,
     )
     .await;
+
+    // La terza domanda: due tipi geometrici nella stessa colonna. Le due sonde
+    // di sopra scrivono soltanto punti, quindi `mixed` era una dichiarazione
+    // che nessuna misura attraversava — la colonna avrebbe retto anche se il
+    // prodotto avesse ammesso un tipo solo.
+    let question = "una colonna dichiarata mixed regge due tipi geometrici diversi";
+    let mixed = scripted_write(
+        &provider,
+        &operation(WriteMode::Append),
+        spatial_write_schema(4_326),
+        vec![mixed_geometry_batch(4_326)],
+        2,
+        None,
+        cancellation,
+    )
+    .await;
+    let types = spatial_types(connection).await;
+    let expected_types = "1:POINT,2:POINT,3:POINT,4:POINT,7:POINT,8:POLYGON";
+    match mixed {
+        Ok(outcome) if types == expected_types => recorder.accepted(
+            "provider.profile_write_spatial_mixed",
+            "provider",
+            "profilo",
+            question,
+            format!("{:?} — tipi={types}", outcome.status),
+        ),
+        Ok(outcome) => recorder.rejected(
+            "provider.profile_write_spatial_mixed",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "atteso {expected_types}, misurato {:?} — tipi={types}",
+                outcome.status
+            )),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_write_spatial_mixed",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {} — tipi={types}",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+    }
 
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL}"))

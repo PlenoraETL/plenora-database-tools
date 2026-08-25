@@ -130,6 +130,7 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_savepoint_partial_rollback": "transactions.savepoints: il rollback parziale annulla solo cio che e venuto dopo",
     "provider.profile_write_spatial_create": "spatial.write_wkb: il piano crea la colonna geometrica e ci scrive dentro",
     "provider.profile_write_spatial_append": "spatial.write_wkb: una append conserva il CRS di ogni riga",
+    "provider.profile_write_spatial_mixed": "spatial.mixed_geometry_types: due tipi geometrici nella stessa colonna",
     "provider.profile_write_append": "writes.append: Append",
     "provider.profile_write_create": "writes.create: Create",
     "provider.profile_write_delete_by_keys": "writes.delete_by_keys: cancella cio che trova e salta cio che non trova",
@@ -208,6 +209,12 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # analogia con PostgreSQL. Ereditarla su un secondo prodotto sarebbe lo
     # stesso errore, un prodotto piu in la.
     "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
+    # `SpatialCapabilities::spatial_index` e chiusa su entrambi i profili e il
+    # piano rifiuta `create_spatial_index` in prepare. Non e una divergenza: e
+    # una superficie che nessuno ha attraversato, e questa sonda e il primo
+    # passo per sapere cosa costerebbe aprirla. Osservativa perche non sostiene
+    # nulla — ancora.
+    "raw.spatial_index_forms": "quali forme di SPATIAL INDEX il server accetta",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -279,6 +286,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.statistics_expression",
     "raw.returning_forms",
     "raw.spatial_write_forms",
+    "raw.spatial_index_forms",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",
@@ -353,6 +361,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_spatial_create",
     "provider.profile_write_spatial_append",
     "provider.profile_spatial_functions",
+    "provider.profile_write_spatial_mixed",
 )
 
 
