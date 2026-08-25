@@ -90,9 +90,53 @@ mod tests {
     use std::sync::OnceLock;
     use tokio_postgres::types::Type;
 
+    /// La DSN della misura, oppure il permesso di non misurare nulla.
+    ///
+    /// Quindici prove live cominciavano con un `let Ok(dsn) = env::var(..)
+    /// else { return; }`: senza DSN si concludevano subito, e `cargo test` le
+    /// contava fra quelle passate. Una prova che non ha toccato nessun server
+    /// e indistinguibile, nel resoconto, da una che lo ha attraversato.
+    ///
+    /// # Perche non basta che i gate impostino la variabile
+    ///
+    /// La impostano, tutti e tre — riferimento, hardening e matrice — quindi
+    /// oggi quelle prove girano davvero. Il difetto non e attivo: e silenzioso.
+    /// Il giorno in cui il nome della variabile cambiasse, o la risoluzione del
+    /// nome del container saltasse, la matrice delle versioni direbbe «cinque
+    /// major su cinque, tutto passato» avendo misurato soltanto i test unitari,
+    /// che non aprono una connessione.
+    ///
+    /// E' la stessa forma del difetto corretto oggi sul gate di riferimento di
+    /// questo crate, dove una prova passata veniva dichiarata «non eseguita»:
+    /// li il gate almeno **leggeva** quali prove avessero girato, e qui non
+    /// puo, perche una prova che rientra subito stampa `... ok` come le altre.
+    /// Il runner non ha modo di vedere la differenza, quindi la differenza va
+    /// dichiarata da dentro.
+    ///
+    /// # La forma
+    ///
+    /// Chi pretende la misura lo dice: con `PLENORA_REQUIRE_LIVE_POSTGRES`
+    /// acceso, una DSN assente non e piu un permesso di saltare ma un
+    /// fallimento, e arriva dove serve — nel gate, non in produzione.
+    ///
+    /// Senza quel segnale il salto resta, ed e voluto: `cargo test` su una
+    /// macchina senza `PostgreSQL` deve continuare a funzionare, o la suite
+    /// unitaria diventa eseguibile solo con Docker acceso.
+    fn live_dsn_or_skip() -> Option<String> {
+        let declared = std::env::var("PLENORA_TEST_POSTGRES_DSN").ok();
+        if declared.is_none() {
+            assert!(
+                std::env::var("PLENORA_REQUIRE_LIVE_POSTGRES").is_err(),
+                "PLENORA_REQUIRE_LIVE_POSTGRES e acceso ma PLENORA_TEST_POSTGRES_DSN \
+                 manca: questa prova avrebbe saltato la misura dichiarandosi passata"
+            );
+        }
+        declared
+    }
+
     #[tokio::test]
     async fn live_provider_conformance_contract() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local();
@@ -604,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_adaptive_read_batches_when_dsn_is_available() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(10_000)
@@ -653,7 +697,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_read_budget_fails_closed_before_exceeding_rows() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let limits = plenora_database_core::resource::ResourceLimits {
@@ -715,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_geometry_component_budget_rejects_before_emission() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let limits = plenora_database_core::resource::ResourceLimits {
@@ -766,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_read_duration_budget_cancels_backend() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let secret = SecretString::new(dsn);
@@ -823,7 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_resolved_crs_must_match_spatial_ref_sys() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let metadata = HashMap::from([
@@ -1016,7 +1060,7 @@ mod tests {
     // Un'unica sessione live condivide setup e credenziali fra tutte le
     // asserzioni di conformità read, quoting e redazione.
     async fn live_postgis_read_when_dsn_is_available() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(777);
@@ -2414,7 +2458,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
         const INPUT_TOTAL: u64 = 5_200;
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(7)
@@ -2530,7 +2574,7 @@ mod tests {
     #[tokio::test]
     async fn live_provider_row_diagnostics_lost_rollback_ack_is_quarantined() {
         const INPUT_TOTAL: u64 = 5_200;
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(7)
@@ -2621,7 +2665,7 @@ mod tests {
     #[tokio::test]
     async fn live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown() {
         const INPUT_TOTAL: u64 = 3;
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(7)
@@ -2713,7 +2757,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn live_postgis_write_modes_when_dsn_is_available() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(7);
@@ -3373,7 +3417,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn live_postgres_schema_cache_detects_external_ddl_when_dsn_is_available() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let secret = SecretString::new(dsn);
@@ -3552,7 +3596,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_postgres_startup_defaults_and_single_reset_when_dsn_is_available() {
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let provider = PostgresProvider::insecure_local_with_batch_rows(8)
@@ -3634,7 +3678,7 @@ mod tests {
         const WORKERS: u64 = 12;
         const ROUNDS: u64 = 10;
         const ROWS_PER_READ: u64 = 5;
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
 
@@ -3721,7 +3765,7 @@ mod tests {
     #[tokio::test]
     async fn live_postgres_concurrent_cancellation_recovers_pool() {
         const WORKERS: usize = 4;
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+        let Some(dsn) = live_dsn_or_skip() else {
             return;
         };
         let secret = Arc::new(SecretString::new(dsn));

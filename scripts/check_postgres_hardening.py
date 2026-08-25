@@ -82,7 +82,13 @@ def cargo(
     if dsn is not None:
         command += [
             "-e",
+            # Il gate pretende che le prove live **misurino**. Quindici di esse
+            # saltavano in silenzio quando la DSN mancava, dichiarandosi passate: con
+            # questo segnale acceso una DSN assente e un fallimento, e arriva qui
+            # invece che in produzione.
             f"PLENORA_TEST_POSTGRES_DSN={dsn}",
+            "-e",
+            "PLENORA_REQUIRE_LIVE_POSTGRES=1",
         ]
     if tls_dsn is not None:
         command += [

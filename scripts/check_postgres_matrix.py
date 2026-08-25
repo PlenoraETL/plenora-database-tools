@@ -129,7 +129,13 @@ def cargo_test(container: str) -> None:
             "--network",
             NETWORK,
             "-e",
+            # Il gate pretende che le prove live **misurino**. Quindici di esse
+            # saltavano in silenzio quando la DSN mancava, dichiarandosi passate: con
+            # questo segnale acceso una DSN assente e un fallimento, e arriva qui
+            # invece che in produzione.
             f"PLENORA_TEST_POSTGRES_DSN={dsn}",
+            "-e",
+            "PLENORA_REQUIRE_LIVE_POSTGRES=1",
             "-v",
             f"{ROOT}:/workspace",
             "-v",

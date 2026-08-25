@@ -8,6 +8,7 @@ questi test fissano che non possa dichiararlo senza averli visti passare.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -415,6 +416,70 @@ class LiveInventory(unittest.TestCase):
             f"transaction::tests::{name}",
             live_inventory.EXECUTED.findall(f"test transaction::tests::{name} ... ok"),
         )
+
+
+class LiveTestsMustMeasure(unittest.TestCase):
+    """Una prova live che salta in silenzio si dichiara passata.
+
+    Quindici prove di `test_suite.rs` cominciavano cosi:
+
+        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
+            return;
+        };
+
+    Senza DSN si concludevano subito, e `cargo test` le contava fra quelle
+    passate. Una prova che non ha toccato nessun server e indistinguibile, nel
+    resoconto, da una che lo ha attraversato — e il runner non puo vedere la
+    differenza, perche una prova che rientra subito stampa `... ok` come le
+    altre.
+
+    Il difetto non era attivo: i tre gate la DSN la impostano, quindi quelle
+    prove giravano. Era silenzioso, che e peggio. Il giorno in cui il nome
+    della variabile cambiasse, o la risoluzione del nome del container
+    saltasse, la matrice delle versioni direbbe «cinque major su cinque, tutto
+    passato» avendo misurato soltanto i test unitari, che non aprono una
+    connessione.
+
+    Queste due guardie tengono ferme le due meta del rimedio: che nessuna prova
+    torni alla forma silenziosa, e che i gate continuino a dichiarare di
+    pretendere la misura.
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    SUITE = ROOT / "crates" / "plenora-db-postgres" / "src" / "test_suite.rs"
+    GATES = (
+        "scripts/check_postgres_reference.py",
+        "scripts/check_postgres_hardening.py",
+        "scripts/check_postgres_matrix.py",
+    )
+
+    def test_no_live_test_reads_the_dsn_without_the_loud_helper(self) -> None:
+        source = self.SUITE.read_text(encoding="utf-8")
+        direct = re.findall(
+            r'let Ok\(\w+\) = std::env::var\("PLENORA_TEST_POSTGRES_DSN"\)',
+            source,
+        )
+        self.assertEqual(
+            direct,
+            [],
+            "una prova legge la DSN senza passare da live_dsn_or_skip: "
+            "tornerebbe a saltare in silenzio",
+        )
+        self.assertIn(
+            "fn live_dsn_or_skip",
+            source,
+            "l'helper che rende rumoroso il salto e sparito",
+        )
+        self.assertIn("PLENORA_REQUIRE_LIVE_POSTGRES", source)
+
+    def test_every_gate_demands_the_measure(self) -> None:
+        for name in self.GATES:
+            source = (self.ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(
+                "PLENORA_REQUIRE_LIVE_POSTGRES=1",
+                source,
+                f"{name}: non pretende che le prove live misurino",
+            )
 
 
 if __name__ == "__main__":
