@@ -1030,7 +1030,9 @@ mod tests {
         assert!(capabilities.spatial.read_wkb);
         assert!(!capabilities.reads.server_cursor);
         assert!(!capabilities.writes.returning);
-        assert!(!capabilities.transactions.savepoints);
+        // I tre metodi del savepoint sono implementati e provati dal vivo:
+        // vedi `live_savepoint_rollback_preserves_prior_statements`.
+        assert!(capabilities.transactions.savepoints);
         let operation = ReadOperation {
             source: ObjectRef {
                 catalog: None,

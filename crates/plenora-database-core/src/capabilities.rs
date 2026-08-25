@@ -230,9 +230,11 @@ pub struct TransactionCapabilities {
     /// Il provider espone `SAVEPOINT` e `ROLLBACK TO` al chiamante.
     ///
     /// Non «il motore li supporta» — li supportano tutti — ma «il provider li
-    /// mette a disposizione»: `MySQL` si, attraverso lo scope transazionale
-    /// che il CLI esercita; `PostgreSQL` no, perche il suo scope esegue una
-    /// transazione atomica e non offre i due comandi.
+    /// mette a disposizione». `TransactionScope` non ha default per i tre
+    /// metodi, quindi chi implementa quel contratto li implementa: `MySQL` e
+    /// `PostgreSQL` li offrono entrambi. SQL Server no, e per una ragione a
+    /// monte — non espone affatto uno scope transazionale, quindi non c'e
+    /// niente su cui chiamarli.
     ///
     /// **Descrittivo.** L'engine non lo consulta perche un savepoint non si
     /// chiede in un piano: lo usa chi tiene lo scope in mano, e lo scopre dal

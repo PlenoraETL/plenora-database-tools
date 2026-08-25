@@ -71,9 +71,24 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         },
         transactions: TransactionCapabilities {
             single_transaction: true,
-            // Il Provider esegue una transazione atomica, ma non espone
-            // operazioni SAVEPOINT/ROLLBACK TO al chiamante.
-            savepoints: false,
+            // Il contratto `TransactionScope` non ha default per i tre
+            // metodi del savepoint: chi lo implementa li implementa, e questo
+            // provider li esegue davvero — `SAVEPOINT`, `ROLLBACK TO` e
+            // `RELEASE` sul client, con il nome validato.
+            //
+            // La bandiera diceva `false`, e accanto c'era scritto che il
+            // provider «non espone operazioni SAVEPOINT/ROLLBACK TO al
+            // chiamante». Non era vero, e la prova stava nel repository da
+            // prima: `live_savepoint_rollback_preserves_prior_statements`
+            // inserisce, mette il savepoint, inserisce ancora, torna indietro,
+            // rilascia e committa — e verifica che resti **una** riga. Non e
+            // uno smoke test: e il contratto del savepoint.
+            //
+            // Una capability sotto-dichiarata non e prudenza. Chi legge il
+            // documento decide di non usare una superficie che c'e, e la
+            // regola 1 parla di aprire senza prove — non di tenere chiuso
+            // cio che una prova sostiene.
+            savepoints: true,
             transactional_ddl: true,
             staged_swap: true,
             scope: TransactionScope::Transaction,

@@ -29,7 +29,7 @@
   },
   "transactions": {
     "single_transaction": true,
-    "savepoints": false,
+    "savepoints": true,
     "transactional_ddl": true,
     "staged_swap": true,
     "scope": "transaction"
