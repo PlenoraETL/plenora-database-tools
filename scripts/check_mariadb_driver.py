@@ -142,7 +142,20 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
 # all'ultima sonda che ne era priva. Resta perche la prossima sonda senza
 # contratto abbia dove stare **dichiarata**, invece di non stare da nessuna
 # parte.
-OBSERVATION_ONLY_PROBES: dict[str, str] = {}
+OBSERVATION_ONLY_PROBES: dict[str, str] = {
+    # La prima sonda a starci davvero, ed e per questo che l'elenco esisteva
+    # vuoto. `RETURNING` non sostiene oggi nessuna bandiera: il compilatore
+    # portable lo rifiuta su tutto il dialetto `Mysql`, e `writes.returning`
+    # parla di un'altra superficie ancora — l'esito di scrittura del percorso
+    # di piano, che conta righe e non le trasporta.
+    #
+    # La domanda si pone lo stesso, e prima di qualunque decisione: il rifiuto
+    # del compilatore e giusto per MySQL, che `RETURNING` non ce l'ha a nessuna
+    # versione, e troppo largo per MariaDB, che ce l'ha. I due prodotti
+    # condividono un solo `DialectKind`, e questa sonda misura la differenza
+    # invece di dedurla dalla documentazione.
+    "raw.returning_forms": "quali forme di RETURNING il server accetta",
+}
 
 # Le sonde il cui **rifiuto** e la prova.
 #
@@ -198,6 +211,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.spatial_functions",
     "raw.max_execution_time",
     "raw.statistics_expression",
+    "raw.returning_forms",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",

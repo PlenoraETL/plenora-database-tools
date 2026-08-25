@@ -105,6 +105,89 @@ const INTERRUPTIBLE_QUERY: &str = "SELECT COUNT(*) FROM information_schema.colum
 async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     raw_protocol_probes(recorder, connection).await;
     raw_type_probes(recorder, connection).await;
+    returning_form_probe(recorder, connection).await;
+}
+
+/// La tabella su cui si misura `RETURNING`.
+const SCRATCH_RETURNING: &str = "plenora_driver_evidence_returning";
+
+/// Quali forme di `RETURNING` il server accetta.
+///
+/// Il compilatore portable rifiuta `RETURNING` su tutto il dialetto `Mysql`, e
+/// il commento con cui lo rifiuta dice «`MySQL` non ha `RETURNING` universale
+/// (solo 8.0.20+ per `INSERT`)». La prima meta e vera, la seconda no: `MySQL`
+/// non ha `RETURNING` a nessuna versione, e la 8.0.20 che il commento cita non
+/// c'entra. A confondere le acque e che `MariaDB` **ce l'ha** — da 10.5 su
+/// `INSERT`, da molto prima su `DELETE` — e i due prodotti condividono un solo
+/// `DialectKind`.
+///
+/// Il rifiuto e quindi giusto per `MySQL` e troppo largo per `MariaDB`, e la
+/// differenza fra le due affermazioni non e deducibile da un commento: questa
+/// sonda la misura. Non pretende un esito — e la prima volta che qualcuno pone
+/// la domanda a questi riferimenti — ma lo registra per forma, con il codice
+/// del server accanto a ogni rifiuto. Una divergenza fra `MySQL` e `MariaDB`
+/// qui non e un difetto: e il fatto che serve per decidere se il compilatore
+/// possa smettere di trattarli come lo stesso prodotto.
+async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_RETURNING}"),
+        format!(
+            "CREATE TABLE {SCRATCH_RETURNING} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella di RETURNING: harness, non divergenza");
+    }
+
+    // Le quattro forme, ciascuna sulla propria riga: una forma che fallisse
+    // per la riga di un'altra misurerebbe l'ordine delle sonde invece del
+    // server.
+    let forms = [
+        (
+            "insert",
+            format!("INSERT INTO {SCRATCH_RETURNING} (id, payload) VALUES (1, 'a') RETURNING id"),
+        ),
+        (
+            "replace",
+            format!("REPLACE INTO {SCRATCH_RETURNING} (id, payload) VALUES (2, 'b') RETURNING id"),
+        ),
+        (
+            "update",
+            format!("UPDATE {SCRATCH_RETURNING} SET payload = 'c' WHERE id = 1 RETURNING id"),
+        ),
+        (
+            "delete",
+            format!("DELETE FROM {SCRATCH_RETURNING} WHERE id = 2 RETURNING id"),
+        ),
+    ];
+    let mut measured = Vec::with_capacity(forms.len());
+    for (name, sql) in forms {
+        // `query_drop` basta: la domanda e se il server accetta la forma, non
+        // quali valori renda. Le righe rese sono la domanda successiva, e ha
+        // senso porla solo dove la prima ha risposto di si.
+        let verdict = match connection.query_drop(sql).await {
+            Ok(()) => "ok".to_owned(),
+            Err(error) => {
+                server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
+            }
+        };
+        measured.push(format!("{name}={verdict}"));
+    }
+
+    recorder.accepted(
+        "raw.returning_forms",
+        "raw",
+        "scrittura",
+        "quali forme di RETURNING il server accetta",
+        measured.join(" "),
+    );
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_RETURNING}"))
+        .await;
 }
 
 async fn raw_protocol_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
