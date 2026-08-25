@@ -5717,6 +5717,14 @@ async fn profile_probes(
             cancellation,
         )
         .await;
+        spatial_function_probe(
+            recorder,
+            profile,
+            &schema_name,
+            &mut connection,
+            cancellation,
+        )
+        .await;
     }
 }
 
@@ -5774,6 +5782,187 @@ async fn spatial_bound_forms(connection: &mut mysql_async::Conn) -> (Vec<String>
             |row| row.flatten().unwrap_or_else(|| "nessuna".to_owned()),
         );
     (bound, srids)
+}
+
+/// La tabella su cui si attraversano le funzioni spatial.
+const SCRATCH_SPATIAL_FN: &str = "plenora_driver_evidence_spatial_fn";
+
+/// Le funzioni spatial pubblicate come verified, attraversate su questo
+/// prodotto.
+///
+/// `spatial.functions` e una lista vuota su `MariaDB`, e la ragione accanto e
+/// che nessuna sonda le ha eseguite. Non e prudenza generica: la lista di
+/// `MySQL` e scesa da ventisei a quindici il giorno in cui qualcuno l'ha
+/// attraversata davvero, e undici delle bocciate erano li per analogia con
+/// `PostgreSQL`. Ereditarla sarebbe lo stesso errore, un prodotto piu in la.
+///
+/// La sonda fa cio che fa la prova live di `MySQL`: costruisce per ogni
+/// funzione una `QueryOperation` con l'arieta che il contratto dichiara, la
+/// manda al provider, e **attraversa** il result set invece di limitarsi ad
+/// aprirlo — il prepare non e l'esecuzione, e un errore che arriva dopo
+/// sarebbe buttato via da un `drop`.
+///
+/// Due geometrie, una lineare e una areale, e basta che una passi: `ST_Area`
+/// su una linea risponde 3516, e chiuderla per quello sarebbe una falsa
+/// assenza.
+async fn spatial_function_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_FN}"),
+        format!(
+            "CREATE TABLE {SCRATCH_SPATIAL_FN} (id INT NOT NULL PRIMARY KEY, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE = InnoDB"
+        ),
+        format!(
+            "INSERT INTO {SCRATCH_SPATIAL_FN} VALUES (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella delle funzioni spatial: harness, non divergenza");
+    }
+
+    let mut executed = Vec::new();
+    let mut refused = Vec::new();
+    for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
+        match cross_spatial_function(&provider, *function, schema_name, cancellation).await {
+            Ok(()) => executed.push(format!("{function:?}")),
+            Err(reason) => refused.push(format!("{function:?}({reason})")),
+        }
+    }
+
+    let question = "quali funzioni della lista verified questo prodotto esegue";
+    let detail = format!(
+        "eseguite={}/{} rifiutate=[{}]",
+        executed.len(),
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        refused.join(" ")
+    );
+    recorder.accepted(
+        "provider.profile_spatial_functions",
+        "provider",
+        "profilo",
+        question,
+        condense(&detail),
+    );
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_FN}"))
+        .await;
+}
+
+/// Attraversa una funzione su entrambe le geometrie: basta che una passi.
+///
+/// `ST_Area` su una `LINESTRING` risponde 3516, e chiudere la funzione per
+/// quello sarebbe una falsa assenza — una capability chiusa per colpa del dato
+/// della sonda invece che del prodotto.
+async fn cross_spatial_function(
+    provider: &MysqlProvider,
+    function: plenora_database_core::query::SpatialFunction,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
+    };
+
+    let arity = (1..=4)
+        .find(|count| function.accepts_argument_count(*count))
+        .unwrap_or(1);
+    let mut reason = String::new();
+    for field in ["line", "poly"] {
+        let arguments: Vec<QueryExpression> = (0..arity)
+            .map(|index| {
+                if function.takes_geometry_at(index) {
+                    QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: None,
+                            field: field.to_owned(),
+                        },
+                    }
+                } else {
+                    QueryExpression::Parameter {
+                        name: "scalare".to_owned(),
+                    }
+                }
+            })
+            .collect();
+        let uses_scalar = arguments
+            .iter()
+            .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
+        let operation = QueryOperation {
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some(schema_name.to_owned()),
+                    object: SCRATCH_SPATIAL_FN.to_owned(),
+                },
+                alias: None,
+            }),
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function,
+                    arguments,
+                },
+                alias: Some("sonda".to_owned()),
+            }],
+            common_table_expressions: Vec::new(),
+            derived_source: None,
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+        let bag = if uses_scalar {
+            ParameterBag::new(std::collections::BTreeMap::from([(
+                "scalare".to_owned(),
+                plenora_database_core::provider::ParameterValue::I32(1),
+            )]))
+        } else {
+            ParameterBag::default()
+        };
+        match drain_spatial_function(provider, &operation, &bag, cancellation).await {
+            Ok(()) => return Ok(()),
+            Err(message) => reason = message,
+        }
+    }
+    Err(reason)
+}
+
+/// Apre lo stream e lo attraversa, riducendo l'esito a un `Ok` o a una ragione.
+async fn drain_spatial_function(
+    provider: &MysqlProvider,
+    operation: &plenora_database_core::query::QueryOperation,
+    parameters: &ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    let budget = read_budget();
+    let mut stream = provider
+        .query(&secret(), operation, parameters, &budget, cancellation)
+        .await
+        .map_err(|error| condense(&error.message))?;
+    let first = stream
+        .next_batch(cancellation)
+        .await
+        .map_err(|error| condense(&error.message))?;
+    if first.is_none_or(|batch| batch.num_rows() != 1) {
+        return Err("nessuna riga".to_owned());
+    }
+    Ok(())
 }
 
 /// La tabella su cui il provider scrive geometrie.

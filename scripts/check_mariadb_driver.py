@@ -197,6 +197,17 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     "provider.profile_crs_undeclared": "una geometria senza CRS dichiarato",
     "provider.profile_crs_declared": "una geometria con il CRS dichiarato giusto",
     "provider.profile_crs_mismatched": "un CRS dichiarato che i valori smentiscono",
+    # Quali funzioni della lista verified questo prodotto esegue davvero.
+    #
+    # Osservativa perche registra un **elenco**, non un si o un no: cio che
+    # sostiene una capability e la lista che ne esce, e quella si legge nel
+    # documento. Chiedere `accepted` direbbe soltanto che la sonda ha girato.
+    #
+    # La lista di MySQL e scesa da ventisei a quindici il giorno in cui
+    # qualcuno l'ha attraversata davvero, e undici delle bocciate erano li per
+    # analogia con PostgreSQL. Ereditarla su un secondo prodotto sarebbe lo
+    # stesso errore, un prodotto piu in la.
+    "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -341,6 +352,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_savepoint_unknown_name",
     "provider.profile_write_spatial_create",
     "provider.profile_write_spatial_append",
+    "provider.profile_spatial_functions",
 )
 
 
