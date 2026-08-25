@@ -2035,3 +2035,52 @@ scambio.
   scrivono, e questa sonda non lo dice.
 * **la durata**: la sonda dura secondi. Non e un soak, e non pretende di
   esserlo.
+
+## Ventitreesima tranche: gli scrittori e la tenuta
+
+La ventiduesima aveva lasciato scritte due cose come non misurate: la contesa in
+**scrittura** e la durata. Sono le due che la sonda dei lettori non poteva dire.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_concurrent_writers` | scrittori=12 pool=4 righe=48 attribuzioni_errate=0 | **identico** | **identico** |
+| provider | profilo | `provider.profile_pool_endurance` | giri=150 pool=3 connessioni=2→3 tetto=6 | **identico** | **identico** |
+
+### Cosa dice
+
+**Una connessione condivisa per sbaglio sbaglia in modo diverso a seconda di
+cosa ci passa.** Fra due letture mescola righe, e la sonda precedente lo
+coglieva. Fra due scritture fa altro: un commit su un filo che non e il suo,
+righe attribuite alla transazione sbagliata, un rollback che ne annulla una che
+non gli appartiene. Nessuna di quelle cose la sonda di lettura poteva vederla.
+
+Dodici scrittori su un pool di quattro, ciascuno con la propria fetta di chiavi
+e un payload che porta il **proprio** numero. La rilettura verifica due cose
+diverse: il conteggio coglie una perdita, il payload coglie un'attribuzione
+sbagliata — una riga scritta da un worker e finita sotto il nome di un altro
+renderebbe il totale giusto e questo confronto no.
+
+**Il pool regge centocinquanta cicli senza lasciarsi dietro niente.** Non e un
+soak — dura secondi — ma misura la cosa che un soak cerca: che il numero di
+connessioni non **cresca**, su abbastanza cicli perche una perdita di una ogni
+giro diventi visibile. Con centocinquanta giri su un pool da tre, una perdita
+sistematica sarebbe centocinquanta connessioni.
+
+Il conteggio arriva da `Threads_connected` del **server**, letto da un'altra
+connessione: e cio che il motore vede, non cio che il pool crede. Le due
+divergono esattamente nel caso che la sonda cerca — una sessione che il pool ha
+dimenticato e che il server tiene ancora aperta.
+
+Il tetto lascia il margine del pool stesso: pretendere l'uguaglianza esatta
+misurerebbe la velocita con cui il sistema operativo chiude un socket invece
+della tenuta del pool.
+
+### Cosa resta not_measured
+
+* **un soak vero**: ore, non secondi. Questa sonda coglie una perdita
+  sistematica, non una lenta — una connessione persa ogni mille giri le
+  sfuggirebbe.
+* **la contesa fra letture e scritture insieme**: le due sonde separano i due
+  carichi, e un pool puo sbagliare proprio dove si mescolano.
