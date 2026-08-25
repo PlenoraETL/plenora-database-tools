@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts import live_inventory  # noqa: E402
 from scripts.compose_network import (  # noqa: E402
     compose_network_arguments,
     compose_volume,
@@ -51,21 +52,6 @@ def run(command: list[str], *, capture: bool = False) -> str:
             sys.stderr.write(completed.stderr)
         raise RuntimeError(f"check fallito: {command[0]}")
     return completed.stdout if capture else ""
-
-
-def docker_value(arguments: list[str]) -> str:
-    completed = subprocess.run(
-        ["docker", *arguments],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
-    if completed.returncode:
-        sys.stderr.write(completed.stderr)
-        raise RuntimeError("interrogazione Docker PostgreSQL fallita")
-    return completed.stdout.strip()
 
 
 # I due riferimenti PostgreSQL — plaintext e TLS — vivono in progetti Compose
@@ -114,26 +100,66 @@ def cargo(
     return [*command, IMAGE, "cargo", *arguments]
 
 
-def run_live_cli_probes(tls_dsn: str) -> None:
-    output = run(
-        cargo(
-            [
-                "test",
-                "-p",
-                "plenora-database-cli",
-                "--test",
-                "live_probe",
-                "private_ca_mtls",
-                "--locked",
-                "--",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ],
-            tls_dsn=tls_dsn,
-        ),
-        capture=True,
+# Il test che **solo questo gate** puo qualificare.
+#
+# `live_private_ca_mtls_and_cancellation_when_configured` legge quattro
+# variabili — DSN TLS, CA privata, certificato e chiave del client — e senza di
+# esse ritorna subito, riportando comunque `ok`. Il gate del riferimento lo
+# dichiara percio non qualificante: il suo compose e plaintext. Qui le quattro
+# variabili ci sono tutte (vedi `cargo(..., tls_dsn)`), quindi il test prova
+# davvero mTLS su CA privata — e va preteso per nome, perche un `ok` da solo
+# non distingue la prova dal ritorno anticipato.
+REQUIRED_LIVE_TESTS = frozenset(
+    {
+        "live_private_ca_mtls_and_cancellation_when_configured",
+    }
+)
+
+
+def validate_required_live_tests(output: str) -> list[str]:
+    """I test che questo gate dichiara devono comparire fra gli eseguiti."""
+
+    executed = {
+        live_inventory.leaf(name) for name in live_inventory.executed_tests(output)
+    }
+    missing = sorted(REQUIRED_LIVE_TESTS - executed)
+    if missing:
+        raise RuntimeError(
+            f"test dichiarati dal gate hardening ma non eseguiti: {missing}"
+        )
+    return sorted(REQUIRED_LIVE_TESTS)
+
+
+def live_cli_probe_command(tls_dsn: str) -> list[str]:
+    """Il comando dei probe CLI mTLS. Eseguirlo spetta a chi registra i passi.
+
+    Prima questa funzione eseguiva **e** validava, e il passo veniva registrato
+    dal chiamante: un comando fuori dall'unico esecutore che tiene il conto.
+    Il verdetto restava corretto per costruzione, ma la garanzia che `steps`
+    fosse completa valeva solo finche nessuno aggiungeva un altro helper.
+    """
+
+    return cargo(
+        [
+            "test",
+            "-p",
+            "plenora-database-cli",
+            "--test",
+            "live_probe",
+            "private_ca_mtls",
+            "--locked",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ],
+        tls_dsn=tls_dsn,
     )
+
+
+def validate_live_cli_probes(output: str) -> None:
+    """I due probe devono essere passati, e devono essere quei due."""
+
     expected = {
         "live_database_probe_postgres_private_ca_mtls",
         "live_legacy_postgres_probe_private_ca_mtls",
@@ -152,69 +178,36 @@ def run_live_cli_probes(tls_dsn: str) -> None:
 def main() -> int:
     dsn = os.environ.get("PLENORA_TEST_POSTGRES_DSN", DEFAULT_DSN)
     tls_dsn = os.environ.get("PLENORA_TEST_POSTGRES_TLS_DSN", DEFAULT_TLS_DSN)
-    checks = [
-        "container_health",
-        "rustfmt",
-        "clippy_deny_warnings",
-        "provider_common_conformance",
-        "public_api_v0_1_compile_freeze",
-        "deterministic_numeric_codec_boundaries",
-        "strict_numeric_text_parser",
-        "strict_parameter_uuid_decimal_parser",
-        "range_composite_escaping",
-        "bounded_metrics_without_dynamic_labels",
-        "startup_session_defaults",
-        "single_strict_reset_on_reuse",
-        "parameterless_one_shot_read_fast_path",
-        "parameterized_typed_one_shot_fast_path",
-        "custom_type_prepared_fallback",
-        "query_operation_typed_one_shot",
-        "query_operation_empty_result_describe",
-        "bounded_iterative_query_operation_validation",
-        "advanced_query_semantic_validation",
-        "spatial_function_arity_and_boolean_context_validation",
-        "ewkb_header_contract_validation",
-        "spatial_catalog_renderer_lockstep",
-        "bounded_validated_schema_cache",
-        "external_ddl_schema_token_invalidation",
-        "write_target_schema_cache_invalidation",
-        "concurrent_pool_stress",
-        "concurrent_server_side_cancellation",
-        "invalid_session_exclusion",
-        "pool_recovery_after_cancellation",
-        "temporal_extremes_are_mapping_errors",
-        "poisoned_internal_mutex_recovery",
-        "commit_fault_recovery_semantics",
-        "four_axis_error_envelope",
-        "verified_rollback_on_write_cancellation",
-        "concrete_race_free_cancellation_token",
-        "canonical_arrow_postgis_metadata",
-        "legacy_metadata_dual_read_with_divergence_rejection",
-        "end_to_end_atomic_resource_budget",
-        "write_budget_identity_enforcement",
-        "verified_rollback_on_resource_exhaustion",
-        "iterative_bounded_ewkb_scanner",
-        "live_geometry_component_budget",
-        "spatial_ref_sys_authority_resolution",
-        "resolved_crs_preflight_verification",
-        "srs_in_structural_schema_token",
-        "monotonic_resource_deadline",
-        "read_deadline_server_side_cancellation",
-        "write_deadline_verified_rollback",
-        "commit_deadline_requires_recovery",
-        "explicit_rollback_for_all_precommit_errors",
-        "trigger_failure_verified_rollback",
-        "write_error_execution_id",
-        "tls_mode_cannot_be_weakened_by_dsn",
-        "private_ca_and_mtls_live",
-        "public_cli_private_ca_and_mtls_live",
-        "tls_hostname_and_chain_verification",
-        "server_side_cancellation_over_mtls",
-        "pool_recovery_over_mtls",
-    ]
+    # I passi che il gate ha **davvero** completato, registrati mentre
+    # accadono. La versione precedente pubblicava cinquantotto voci tematiche
+    # scritte a mano, nessuna legata al nome di un test: cancellare il test che
+    # sostiene `write_deadline_verified_rollback` non toglieva la voce e non
+    # faceva fallire niente, e l'artifact continuava a dichiarare `passed` su
+    # una prova che non esisteva piu.
+    steps: list[str] = []
+
+    def step(name: str, command: list[str], *, capture: bool = False) -> str:
+        """Esegue, e **solo dopo** registra il passo.
+
+        L'ordine non e un dettaglio di stile: una riga scritta prima del
+        comando resta vera anche quando il comando fallisce o sparisce, ed e
+        esattamente la forma delle cinquantotto attestazioni statiche che
+        questo verdetto pubblicava. Passare da qui per ogni comando rende
+        `steps` l'inventario completo di cio che il gate ha fatto, non di
+        alcuni suoi punti scelti a mano.
+        """
+
+        output = run(command, capture=capture)
+        steps.append(name)
+        return output
+
     try:
-        run([sys.executable, str(ROOT / "scripts" / "test_check_postgres_hardening.py")])
-        run(
+        step(
+            "gate_self_test",
+            [sys.executable, str(ROOT / "scripts" / "test_check_postgres_hardening.py")],
+        )
+        step(
+            "tls_reference_started",
             [
                 "docker",
                 "compose",
@@ -223,7 +216,7 @@ def main() -> int:
                 "up",
                 "-d",
                 "--wait",
-            ]
+            ],
         )
         state = run(
             [
@@ -237,6 +230,7 @@ def main() -> int:
         ).strip()
         if state != "running|healthy":
             raise RuntimeError("container PostgreSQL non healthy")
+        steps.append("container_health")
         tls_state = run(
             [
                 "docker",
@@ -249,8 +243,10 @@ def main() -> int:
         ).strip()
         if tls_state != "running|healthy":
             raise RuntimeError("container PostgreSQL mTLS non healthy")
-        run(cargo(["fmt", "--all", "--", "--check"]))
-        run(
+        steps.append("tls_container_health")
+        step("rustfmt", cargo(["fmt", "--all", "--", "--check"]))
+        step(
+            "clippy_deny_warnings",
             cargo(
                 [
                     "clippy",
@@ -261,9 +257,10 @@ def main() -> int:
                     "-D",
                     "warnings",
                 ]
-            )
+            ),
         )
-        run(
+        step(
+            "core_and_sql_unit_tests",
             cargo(
                 [
                     "test",
@@ -272,9 +269,10 @@ def main() -> int:
                     "-p",
                     "plenora-database-sql",
                 ]
-            )
+            ),
         )
-        run(
+        provider_output = step(
+            "provider_suite_against_plaintext_and_tls",
             cargo(
                 [
                     "test",
@@ -286,9 +284,18 @@ def main() -> int:
                 ],
                 dsn,
                 tls_dsn,
+            ),
+            capture=True,
+        )
+        validate_required_live_tests(provider_output)
+        steps.append("private_ca_mtls_test_observed")
+        validate_live_cli_probes(
+            step(
+                "public_cli_probes_against_private_ca",
+                live_cli_probe_command(tls_dsn),
+                capture=True,
             )
         )
-        run_live_cli_probes(tls_dsn)
     except RuntimeError as error:
         print(f"postgres hardening gate: {error}", file=sys.stderr)
         return 1
@@ -301,7 +308,8 @@ def main() -> int:
         "database_connections_opened": True,
         "secrets_persisted": False,
         "reference_target": "PostgreSQL 16 / PostGIS 3.4",
-        "checks": checks,
+        "steps": steps,
+        "required_live_tests": sorted(REQUIRED_LIVE_TESTS),
         "remaining_external_matrix": [
             "public_ca_tls",
             "linux_arm64",

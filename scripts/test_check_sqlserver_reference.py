@@ -20,13 +20,31 @@ LIVE_ROW_DIAGNOSTICS = "live_provider_row_diagnostics_matches_confirmed_rollback
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "sqlserver-assurance.yml"
 
 
-def live_output(names: list[str], passed: int) -> str:
-    lines = [f"test live_tests::{name} ... ok" for name in names]
+def qualified(names) -> list[str]:
+    return [f"live_tests::{name}" for name in names]
+
+
+def listing(names) -> str:
+    return "\n".join(f"{name}: test" for name in qualified(names))
+
+
+def live_output(names, passed: int | None = None) -> str:
+    names = list(names)
+    lines = [f"test {name} ... ok" for name in qualified(names)]
     lines.append(
-        f"test result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; "
-        "3 filtered out"
+        f"test result: ok. {passed if passed is not None else len(names)} passed; "
+        "0 failed; 0 ignored; 0 measured; 3 filtered out"
     )
     return "\n".join(lines)
+
+
+def inventory() -> list[str]:
+    return sorted(gate.live_test_inventory())
+
+
+def executable() -> list[str]:
+    skipped = set(gate.SKIPPED_LIVE_TESTS)
+    return [name for name in inventory() if name not in skipped]
 
 
 class RequiredLiveTests(unittest.TestCase):
@@ -37,32 +55,82 @@ class RequiredLiveTests(unittest.TestCase):
     def test_row_diagnostics_oracle_is_pinned(self) -> None:
         self.assertIn(LIVE_ROW_DIAGNOSTICS, gate.REQUIRED_LIVE_TESTS)
 
-    def test_expected_count_covers_the_row_diagnostics_oracle(self) -> None:
-        self.assertEqual(gate.EXPECTED_LIVE_TESTS, 45)
+    def test_the_inventory_comes_from_the_sources_and_holds_the_oracle(self) -> None:
+        """Non un conteggio: i nomi.
+
+        Il gate verificava soltanto che quarantacinque test fossero passati, e
+        un totale non distingue un test da un altro: sostituirne uno lasciava
+        la matrice piena e il gate verde.
+        """
+
+        names = inventory()
+        self.assertIn(LIVE_ROW_DIAGNOSTICS, names)
+        self.assertGreater(len(names), len(gate.SKIPPED_LIVE_TESTS))
+        self.assertNotIn("live_config", names, "un helper non e un test")
+
+    def test_the_skipped_tests_carry_their_reason_from_the_code(self) -> None:
+        reasons = gate.skipped_with_reasons()
+        self.assertEqual(set(reasons), set(gate.SKIPPED_LIVE_TESTS))
+        for name, reason in reasons.items():
+            self.assertTrue(reason.startswith("richiede"), f"{name}: {reason}")
 
     def test_a_complete_matrix_passes(self) -> None:
-        gate.validate_live_result(
-            live_output([LIVE_ROW_DIAGNOSTICS], gate.EXPECTED_LIVE_TESTS)
+        names = executable()
+        self.assertEqual(
+            gate.validate_live_result(live_output(names), listing(inventory())),
+            sorted(qualified(names)),
         )
 
     def test_a_missing_row_diagnostics_test_fails_the_gate(self) -> None:
         """Il caso che il gate deve impedire: matrice piena, oracolo assente."""
+        names = [name for name in executable() if name != LIVE_ROW_DIAGNOSTICS]
         with self.assertRaises(RuntimeError) as raised:
+            # Il totale resta quello di prima: solo il nome lo smaschera.
             gate.validate_live_result(
-                live_output(["live_reference_probe_and_catalog"], gate.EXPECTED_LIVE_TESTS)
+                live_output(names, len(executable())), listing(inventory())
             )
         self.assertIn(LIVE_ROW_DIAGNOSTICS, str(raised.exception))
+
+    def test_a_substituted_test_fails_the_gate(self) -> None:
+        """Il difetto che il conteggio non vedeva: uno tolto, uno aggiunto."""
+
+        names = executable()[:-1] + ["live_test_inventato_che_non_esiste"]
+        with self.assertRaises(RuntimeError) as raised:
+            gate.validate_live_result(live_output(names), listing(inventory()))
+        self.assertIn(executable()[-1], str(raised.exception))
+
+    def test_a_test_missing_from_the_compiled_suite_fails_the_gate(self) -> None:
+        names = executable()
+        with self.assertRaisesRegex(RuntimeError, "assenti dalla suite"):
+            gate.validate_live_result(
+                live_output(names), listing(inventory()[1:])
+            )
 
     def test_a_shrunken_matrix_fails_the_gate(self) -> None:
         with self.assertRaises(RuntimeError):
             gate.validate_live_result(
-                live_output([LIVE_ROW_DIAGNOSTICS], gate.EXPECTED_LIVE_TESTS - 1)
+                live_output(executable()[:-1]), listing(inventory())
             )
 
     def test_a_skipped_matrix_fails_the_gate(self) -> None:
         with self.assertRaises(RuntimeError):
             gate.validate_live_result(
-                "test result: ok. 0 passed; 0 failed; 45 ignored; 0 measured; 0 filtered out"
+                "test result: ok. 0 passed; 0 failed; 45 ignored; 0 measured; 0 filtered out",
+                listing(inventory()),
+            )
+
+    def test_the_cargo_skips_come_from_the_declaration(self) -> None:
+        """Due elenchi separati sarebbero andati alla deriva."""
+
+        source = (
+            Path(gate.__file__).resolve().parent / "check_sqlserver_reference.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'for name in SKIPPED_LIVE_TESTS for argument in ("--skip", name)', source
+        )
+        for name in gate.SKIPPED_LIVE_TESTS:
+            self.assertEqual(
+                source.count(f'"{name}"'), 1, f"{name} nominato piu di una volta"
             )
 
 

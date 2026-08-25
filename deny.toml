@@ -10,6 +10,13 @@
 # ha una data di revisione (`expires-at` come nota in comment): quando si
 # passa a Fase 2 (provider parity), le eccezioni vanno rimosse insieme
 # all'upgrade upstream.
+#
+# Un'eccezione vale finche il suo presupposto regge, e il presupposto qui e
+# sempre "upstream non ha ancora rilasciato". Verificarlo e il senso della data
+# di revisione: senza qualcuno che la esegue, la nota invecchia e l'eccezione
+# resta per inerzia. Questo file e ora eseguito da `.github/workflows/
+# supply-chain.yml`, anche a calendario, cosi un'advisory nuova non aspetta
+# che qualcuno lanci `cargo deny` a mano.
 
 # ============================================================================
 #  advisories
@@ -40,7 +47,11 @@ ignore = [
     #   di CRL malformate — path non attivo nel probe standard.
     #
     # Rimuovere quando tiberius rilascia con rustls ≥ 0.23.
-    # Rivedere al 2026-Q2.
+    #
+    # Revisione 2026-08-23 (la scadenza 2026-Q2 era passata senza che nessuno
+    # la eseguisse): tiberius e ancora fermo a 0.12.3, ultimo rilascio
+    # 2024-07-19. Il presupposto dell'eccezione regge invariato.
+    # Prossima revisione: 2027-Q1.
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
@@ -49,9 +60,47 @@ ignore = [
     # Il codice è stabile e limitato al parsing PEM. Path: sia tokio-rustls
     # (opzionale via mysql/sqlserver) sia direttamente per la nostra
     # gestione TLS. Rivalutare quando esiste una migrazione pulita.
-    # Rivedere al 2026-Q3.
+    #
+    # Revisione 2026-08-23: rustls-pemfile e ancora 2.2.0, ultimo rilascio
+    # 2024-09-30. Nessuna migrazione pulita disponibile.
+    # Prossima revisione: 2027-Q1.
     "RUSTSEC-2025-0134",
+    # RUSTSEC-2026-0176, RUSTSEC-2026-0177 → pyo3 < 0.29.0. Emerse alla prima
+    # esecuzione reale di questo file: nessuna delle due era nota finche il
+    # gate non e esistito, ed e la ragione per cui esiste.
+    #   * 0176: lettura fuori dai limiti in `nth`/`nth_back` degli iteratori
+    #     di `PyList` e `PyTuple`
+    #   * 0177: manca il bound `Sync` sulle closure di
+    #     `PyCFunction::new_closure`
+    #
+    # Non raggiungibili da questo codice, verificato per simbolo:
+    # - `PyCFunction` non compare in nessun crate del workspace;
+    # - i soli `.nth(` presenti sono su `str::split_whitespace()` nei tre
+    #   esempi di performance, cioe iteratori Rust, non sequenze Python.
+    #
+    # La verifica non resta un commento: `scripts/test_ci_workflows.py`
+    # contiene una guardia che rilegge i sorgenti e fallisce se uno di quei
+    # simboli compare mentre queste advisory sono ancora ignorate. Senza,
+    # bastava una riga nuova per rendere il percorso raggiungibile lasciando
+    # `cargo deny` verde.
+    #
+    # Perche un'eccezione e non l'aggiornamento: entrambe sono corrette solo
+    # dalla 0.29.0, e il salto dalla 0.24 comporta la migrazione
+    # `with_gil` -> `attach` e `allow_threads` -> `detach` piu la rimozione di
+    # `PyObject` — 79 errori di compilazione. La suite **offline** sul wheel
+    # ora gira (`.github/workflows/python-wheel.yml`), ma quella live no:
+    # nessun workflow esercita il SDK contro un database. Finche quella
+    # copertura manca, una migrazione di cinque minor version validata dal
+    # solo compilatore porta piu rischio delle due letture che chiude.
+    #
+    # Rimuovere insieme alla migrazione a pyo3 0.29.
+    # Prossima revisione: 2027-Q1.
+    "RUSTSEC-2026-0176",
+    "RUSTSEC-2026-0177",
 ]
+# RUSTSEC-2025-0020 (pyo3 < 0.24.1) non e in questo elenco: e stata risolta
+# aggiornando a 0.24.2, non ignorata. Vedi
+# crates/plenora-database-py/Cargo.toml.
 
 # ============================================================================
 #  licenses

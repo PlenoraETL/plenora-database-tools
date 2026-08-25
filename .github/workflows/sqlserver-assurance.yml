@@ -38,6 +38,13 @@ on:
       - "scripts/check_sqlserver_reference.py"
       - "scripts/test_check_sqlserver_reference.py"
       - "scripts/check_sqlserver_performance.py"
+      # Dipendenze che questo workflow **esegue** e che i trigger non
+      # nominavano: l'inventario condiviso, importato dal gate di
+      # riferimento, e il self-test prestazionale, che il job lancia da
+      # se. Una PR che toccava solo quelli non avviava la campagna, e il
+      # difetto si scopriva dopo il merge.
+      - "scripts/live_inventory.py"
+      - "tests/test_sqlserver_performance.py"
       - "scripts/compose_network.py"
       - "benchmarks/manifests/sqlserver-performance-reference.json"
       - "benchmarks/baseline/sqlserver-performance-budget.json"
@@ -69,8 +76,8 @@ jobs:
       PLENORA_SQLSERVER_USER: dataflow
       PLENORA_SQLSERVER_PASSWORD: DataFlow_Test_2026!
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -92,16 +99,36 @@ jobs:
           python3 scripts/check_sqlserver_reference.py 2>&1 \
             | tee assurance-results/sqlserver-reference.log
 
+      # Il self-test del gate in un passo suo: un suo rosso e un difetto
+      # della guardia, non della misura, e i due vanno distinti nel
+      # verdetto. Serve anche a lasciare il gate come primo comando del
+      # proprio `run`.
+      - name: self-test del gate prestazionale
+        run: python3 -m unittest tests.test_sqlserver_performance
+
       - name: check_sqlserver_performance.py
         run: |
-          python3 -m unittest tests.test_sqlserver_performance
           python3 scripts/check_sqlserver_performance.py \
             --baseline benchmarks/baseline/sqlserver2022-performance-reference.json \
             --output assurance-results/sqlserver-performance.json 2>&1 \
             | tee assurance-results/sqlserver-performance.log
 
+      # `git diff` vede solo i file gia tracciati: un file *nuovo* lasciato nel
+      # worktree da un gate passava inosservato, e "il candidato non e
+      # cambiato" risultava vero anche quando non lo era. `git status
+      # --porcelain=v1 -uall` elenca anche gli untracked, uno per riga.
+      #
+      # Gli artefatti in `assurance-results/` restano invisibili a entrambi
+      # perche `.gitignore` li esclude: e voluto, sono l'output del gate.
       - name: il candidato non e cambiato
-        run: git diff --exit-code -- .
+        run: |
+          residuo="$(git status --porcelain=v1 -uall)"
+          if [ -n "$residuo" ]; then
+            echo "::error::il gate ha lasciato modifiche o file nuovi nel worktree"
+            printf '%s\n' "$residuo"
+            git diff -- . || true
+            exit 1
+          fi
 
       - name: diagnostica
         if: failure()
@@ -112,7 +139,7 @@ jobs:
 
       - name: verdetto
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sqlserver-assurance-${{ github.sha }}
           path: assurance-results/

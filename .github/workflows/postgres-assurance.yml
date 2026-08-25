@@ -1,0 +1,199 @@
+name: postgres-assurance
+
+# Il gate del riferimento PostgreSQL/PostGIS esisteva — `scripts/
+# check_postgres_reference.py`, con la sua rete Compose, il suo inventario di
+# test live e un report che dichiara decine di verifiche — e **nessun workflow
+# lo eseguiva**. Girava a mano, quando qualcuno si ricordava, su una macchina
+# che non e quella del rilascio.
+#
+# La conseguenza non e teorica: PostgreSQL e il provider di default del
+# workspace (`default-members` lo include, MySQL e SQL Server no), quindi era
+# proprio il percorso piu esercitato ad avere la prova meno automatica. Gli
+# altri due provider un workflow di campagna ce l'hanno da tempo.
+#
+# Il gate avvia il proprio fixture e lancia cargo **dentro** un container sulla
+# rete Compose: qui non serve installare Rust, serve Docker e Python.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/postgres-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "catalog/spatial-functions.v1.json"
+      - "contracts/v2/**"
+      - "crates/plenora-database-cli/**"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "crates/plenora-database-sql/**"
+      - "crates/plenora-database-testkit/**"
+      - "crates/plenora-db-postgres/**"
+      - "docker-compose.postgres.yml"
+      - "docker/postgres/init/**"
+      - "scripts/check_postgres_reference.py"
+      - "scripts/test_check_postgres_reference.py"
+      - "scripts/check_postgres_hardening.py"
+      - "scripts/test_check_postgres_hardening.py"
+      - "scripts/compose_network.py"
+      - "scripts/live_inventory.py"
+      - "docker-compose.postgres-tls.yml"
+      - "docker/postgres-tls/**"
+  workflow_dispatch:
+
+# Sola lettura: la campagna non scrive sul repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  postgres:
+    name: gate riferimento PostgreSQL + PostGIS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # Prima il self-test del gate: una guardia rotta non deve essere scoperta
+      # dopo trenta minuti di container.
+      - name: self-test del gate
+        run: python3 scripts/test_check_postgres_reference.py
+
+      - name: avvia il riferimento
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.postgres.yml config --quiet
+          docker compose -f docker-compose.postgres.yml up -d --wait
+
+      # Il gate monta questa directory come cache del registry cargo: se non
+      # esiste, `docker run -v` la creerebbe come root e il cargo dentro il
+      # container non potrebbe scriverci.
+      - name: cache del registry cargo
+        run: mkdir -p "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache"
+
+      - name: check_postgres_reference.py
+        run: |
+          python3 scripts/check_postgres_reference.py 2>&1 \
+            | tee assurance-results/postgres-reference.log
+
+      # `git diff` vede solo i file gia tracciati: un file nuovo lasciato nel
+      # worktree passerebbe inosservato. Gli artefatti in `assurance-results/`
+      # restano invisibili perche `.gitignore` li esclude, ed e voluto.
+      - name: il candidato non e cambiato
+        run: |
+          residuo="$(git status --porcelain=v1 -uall)"
+          if [ -n "$residuo" ]; then
+            echo "::error::il gate ha lasciato modifiche o file nuovi nel worktree"
+            printf '%s\n' "$residuo"
+            git diff -- . || true
+            exit 1
+          fi
+
+      - name: diagnostica
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/postgres-containers.txt
+          docker compose -f docker-compose.postgres.yml logs --no-color \
+            > assurance-results/postgres-compose.log 2>&1 || true
+
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: postgres-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      # Niente `--remove-orphans`: i compose del repository dichiarano progetti
+      # distinti, e su una macchina con piu riferimenti attivi quel flag
+      # cancella i container degli altri provider. In CI sarebbe innocuo, ma il
+      # comando viene copiato in locale.
+      - name: ferma il riferimento
+        if: always()
+        run: docker compose -f docker-compose.postgres.yml down --volumes || true
+
+  # Il secondo gate PostgreSQL aveva lo stesso difetto del primo, scoperto un
+  # giro dopo: `check_postgres_hardening.py` esisteva, aveva il proprio
+  # self-test in `rust-ci`, e **nessun workflow eseguiva il gate**. E' il solo
+  # che prova TLS privato, mTLS, verifica dell'hostname e recovery sul fixture
+  # cifrato: tutto quel percorso poteva rompersi senza far diventare rosso
+  # niente.
+  #
+  # Job separato dal riferimento: avvia due compose invece di uno, dura di piu,
+  # e un suo rosso deve restare distinguibile da un rosso del gate del
+  # riferimento.
+  hardening:
+    name: gate hardening PostgreSQL (TLS privato + mTLS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: self-test del gate
+        run: python3 scripts/test_check_postgres_hardening.py
+
+      # Il gate ispeziona **entrambi** i container: il riferimento plaintext lo
+      # avvia questo passo, quello TLS lo avvia il gate stesso.
+      - name: avvia il riferimento plaintext
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.postgres.yml config --quiet
+          docker compose -f docker-compose.postgres-tls.yml config --quiet
+          docker compose -f docker-compose.postgres.yml up -d --wait
+
+      - name: cache del registry cargo
+        run: mkdir -p "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache"
+
+      - name: check_postgres_hardening.py
+        run: |
+          python3 scripts/check_postgres_hardening.py 2>&1 \
+            | tee assurance-results/postgres-hardening.log
+
+      - name: il candidato non e cambiato
+        run: |
+          residuo="$(git status --porcelain=v1 -uall)"
+          if [ -n "$residuo" ]; then
+            echo "::error::il gate ha lasciato modifiche o file nuovi nel worktree"
+            printf '%s\n' "$residuo"
+            git diff -- . || true
+            exit 1
+          fi
+
+      - name: diagnostica
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/hardening-containers.txt
+          docker compose -f docker-compose.postgres-tls.yml logs --no-color \
+            > assurance-results/hardening-compose.log 2>&1 || true
+
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: postgres-hardening-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: ferma i riferimenti
+        if: always()
+        run: |
+          docker compose -f docker-compose.postgres-tls.yml down --volumes || true
+          docker compose -f docker-compose.postgres.yml down --volumes || true

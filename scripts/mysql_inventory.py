@@ -18,8 +18,16 @@ Le tre famiglie hanno runner diversi e vanno tenute distinte:
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+# Import piatto, come `render_state` fa con questo modulo: `scripts` non e un
+# pacchetto installato, e importarlo per nome funziona solo quando la radice e
+# gia sul path — cioe non sempre.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import live_inventory  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,10 +35,61 @@ SOURCE_DIR = ROOT / "crates" / "plenora-db-mysql" / "src"
 LIVE_MODULE = "live_tests"
 
 ATTRIBUTE = re.compile(r"^\s*#\[")
-TEST_ATTRIBUTE = re.compile(r"^\s*#\[(tokio::)?test\]\s*$")
+# Un attributo completo a inizio riga, con cio che segue sulla stessa riga.
+INLINE_ATTRIBUTE = re.compile(r"^\s*#\[[^\]]*\]\s*(?=\S)")
+# Qualunque attributo il cui ultimo segmento sia `test`, non i soli
+# `#[test]` e `#[tokio::test]`: la forma stretta non e una convenzione che
+# questo modulo verifica, e un runner diverso avrebbe smesso di essere
+# visto.
+TEST_ATTRIBUTE = re.compile(
+    r"^\s*#\[\s*(?:\w+\s*::\s*)*test\s*(?:\([^)]*\))?\]\s*$"
+)
 IGNORE_ATTRIBUTE = re.compile(r"^\s*#\[ignore\b")
-FUNCTION = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*\(")
-TEST_MODULE = re.compile(r"^\s*mod\s+tests\s*\{\s*$")
+# `pub(crate)` e `pub(super)` sono visibilita valide: la forma precedente
+# accettava solo `pub` nudo e avrebbe perso il test in silenzio.
+# `r#` e il prefisso degli identificatori raw e **non** fa parte del nome:
+# `fn r#type()` si chiama `type`. Non accettarlo faceva sparire il test senza
+# dire niente, ed e la stessa correzione gia fatta nell'inventario condiviso.
+FUNCTION = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(?:r\#)?([^\s(),;:]+)\s*\("
+)
+
+# Un `mod` annidato dentro `mod tests`. Il percorso che questo modulo
+# costruisce ha due soli segmenti — `file::tests::nome` — quindi un livello in
+# piu non e rappresentabile: meglio fallire che inventare un nome che cargo
+# non stampera mai.
+TEST_MODULE = re.compile(r"^[ 	]*mod[ 	]+tests[ 	]*\{[ 	]*$")
+
+
+def nested_module_name(line: str) -> str | None:
+    """Il nome del `mod` dichiarato su questa riga, se ce n'e uno.
+
+    Letto con operazioni su stringhe e non con una regex: la versione con i
+    gruppi opzionali e le classi negate faceva esplodere il backtracking del
+    motore fino a `internal error in regular expression engine`, e il
+    fallimento compariva o no a seconda di quanto stack aveva gia consumato il
+    chiamante. Un difetto che dipende dal chiamante non e un difetto che si
+    corregge stringendo la regex.
+
+    La visibilita fa parte della dichiarazione — `pub mod`, `pub(crate) mod` —
+    e il prefisso `r#` non appartiene al nome.
+    """
+
+    head = line.strip()
+    if not head.endswith("{"):
+        return None
+    head = head[:-1].strip()
+    if head.startswith("pub"):
+        rest = head[3:]
+        if rest.startswith("("):
+            if ")" not in rest:
+                return None
+            rest = rest.split(")", 1)[1]
+        head = rest.strip()
+    if not head.startswith("mod "):
+        return None
+    name = head[4:].strip().removeprefix("r#")
+    return name if name.isidentifier() else None
 
 
 @dataclass(frozen=True)
@@ -63,27 +122,76 @@ def _scan(source: Path) -> list[MysqlTest]:
     """
 
     stem = source.stem
-    lines = source.read_text(encoding="utf-8").splitlines()
+    # Commenti e stringhe vengono svuotati prima di guardare le righe: un test
+    # dentro `/* ... */` o dentro una fixture testuale non e un test, e una
+    # scansione per righe non ha modo di accorgersene da sola. Lo svuotamento
+    # conserva le righe, quindi gli indici restano quelli del file.
+    # `flatten_attributes` porta su una riga sola gli attributi spezzati su
+    # piu righe: una scansione per righe non li vedrebbe, e il test sparirebbe
+    # dall'inventario in silenzio.
+    lines = live_inventory.flatten_attributes(
+        live_inventory.strip_noncode(source.read_text(encoding="utf-8"))
+    ).splitlines()
     module_line = next(
         (index for index, line in enumerate(lines) if TEST_MODULE.match(line)), None
     )
+    # Dove il modulo **finisce**: un test scritto dopo la sua parentesi chiusa
+    # non sta in `mod tests`, e attribuirgli quel percorso avrebbe fatto
+    # pretendere a cargo un nome che non esiste.
+    module_end = len(lines)
+    if module_line is not None:
+        depth = 0
+        for index in range(module_line, len(lines)):
+            depth += lines[index].count("{") - lines[index].count("}")
+            if depth == 0 and index > module_line:
+                module_end = index
+                break
     found: list[MysqlTest] = []
     attributes: list[str] = []
+    # La discovery e ricorsiva (`rglob`), ma il percorso si costruisce dal solo
+    # `stem`: un file in una sottodirectory avrebbe un modulo intermedio che
+    # nessuno rappresenta. Oggi non ce ne sono, e se ne comparisse uno questo
+    # controllo lo direbbe invece di lasciare che il gate chieda a cargo un
+    # nome inesistente.
+    if source.parent != SOURCE_DIR:
+        raise RuntimeError(
+            f"{source.relative_to(SOURCE_DIR)}: un sorgente in una "
+            "sottodirectory ha un percorso di modulo che questo inventario non "
+            "sa costruire"
+        )
     for index, line in enumerate(lines):
+        # Un attributo puo stare sulla stessa riga della firma: si stacca il
+        # prefisso e si guarda cio che resta, invece di scartare la riga.
+        while (inline := INLINE_ATTRIBUTE.match(line)) is not None:
+            attributes.append(inline.group(0).strip())
+            line = line[inline.end() :]
         if ATTRIBUTE.match(line):
             attributes.append(line)
             continue
         match = FUNCTION.match(line)
         if match is None:
+            # Una riga vuota non spezza il blocco: e cio in cui si trasforma un
+            # commento fra gli attributi e la firma, e spezzarlo toglieva dal
+            # gate un test vero.
             if line.strip():
                 attributes.clear()
             continue
-        is_test = any(TEST_ATTRIBUTE.match(entry) for entry in attributes)
+        # Lo stesso predicato dell'inventario condiviso: riconosce anche
+        # `#[cfg_attr(<pred>, tokio::test)]`, che la forma stretta perdeva.
+        is_test = any(
+            TEST_ATTRIBUTE.match(entry) for entry in attributes
+        ) or live_inventory.declares_a_test("\n".join(attributes))
         ignored = any(IGNORE_ATTRIBUTE.match(entry) for entry in attributes)
         attributes.clear()
         if not is_test:
             continue
         name = match.group(1)
+        if not name.isidentifier():
+            # Lo stesso criterio dell'inventario condiviso: Rust usa le regole
+            # XID, che `str.isidentifier()` segue. Un `\w` piu stretto perdeva
+            # identificatori validi — e li perdeva **solo qui**, quindi il
+            # confronto con cargo divergeva invece di restare coerente.
+            continue
         if stem == LIVE_MODULE:
             if not name.startswith("live_"):
                 raise RuntimeError(
@@ -97,7 +205,22 @@ def _scan(source: Path) -> list[MysqlTest]:
                 f"{source.name}: il test {name} usa il prefisso live_ fuori da "
                 f"{LIVE_MODULE}.rs e verrebbe escluso dai runner offline"
             )
-        if module_line is None or index < module_line:
+        nested = next(
+            (
+                nested_module_name(lines[position])
+                for position in range(module_line + 1, module_end)
+                if module_line is not None
+                and nested_module_name(lines[position]) is not None
+            ),
+            None,
+        )
+        if nested is not None:
+            raise RuntimeError(
+                f"{source.name}: `mod {nested}` annidato dentro "
+                "`mod tests`: il percorso stampato da cargo avrebbe un segmento "
+                "in piu di quelli che questo inventario sa costruire"
+            )
+        if module_line is None or not module_line < index < module_end:
             raise RuntimeError(
                 f"{source.name}: il test {name} non e dentro `mod tests`, "
                 "il percorso stampato da cargo non sarebbe derivabile"
@@ -136,7 +259,10 @@ def collect() -> dict[str, frozenset[str]]:
         "live_default": set(),
         "live_reference": set(),
     }
-    for source in sorted(SOURCE_DIR.glob("*.rs")):
+    # `rglob`: il docstring dice `src/**.rs` e la glob piatta si fermava al
+    # primo livello. Un test in un sottomodulo sarebbe rimasto fuori
+    # dall'inventario senza che niente lo dicesse.
+    for source in sorted(SOURCE_DIR.rglob("*.rs")):
         if source.name in EXCLUDED_SOURCES:
             continue
         for test in _scan(source):

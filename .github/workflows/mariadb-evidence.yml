@@ -63,8 +63,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -75,16 +75,24 @@ jobs:
       # sporcherebbe l'albero, e il preflight della campagna — che pretende un
       # albero pulito — rifiuterebbe proprio quel file: un gate che non puo
       # passare per costruzione.
+      # La directory di diagnostica e preparazione, non misura: sta in un
+      # passo suo perche un gate qualificante deve essere il **primo**
+      # comando del proprio `run`. E la convenzione che rende verificabile
+      # "questo workflow esegue quel gate" senza dover interpretare una
+      # shell — e interpretarla era il difetto che questa guardia si
+      # portava dietro.
+      - name: directory di diagnostica
+        run: mkdir -p "$RUNNER_TEMP/mariadb-evidence"
+
       - name: campagna live sui tre riferimenti
         run: |
-          mkdir -p "$RUNNER_TEMP/mariadb-evidence"
           python3 scripts/check_mariadb_campaign.py \
             --diagnostics "$RUNNER_TEMP/mariadb-evidence" 2>&1 \
             | tee "$RUNNER_TEMP/mariadb-evidence/mariadb-evidence.log"
 
       - name: diagnostica
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mariadb-evidence-results
           path: ${{ runner.temp }}/mariadb-evidence/

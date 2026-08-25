@@ -1,0 +1,13 @@
+# Dipendenze dei self-test statici, quelli che `rust-ci` esegue nel job
+# `static-self-tests`.
+#
+# Il gate offline della Fase 0 gira nello stesso job, quindi i suoi pin
+# valgono anche qui invece di essere ripetuti.
+-r requirements-phase0.txt
+
+# La lettura dei workflow era scritta a mano, per non dipendere da un parser
+# che poteva mancare proprio nel job che la esegue. Quattro cicli di review
+# hanno mostrato che quella lettura arrivava a reimplementare male YAML — e
+# che una dipendenza necessaria e non dichiarata e un problema di packaging
+# del gate, non un motivo per riscrivere un parser. Qui e dichiarata.
+PyYAML==6.0.3

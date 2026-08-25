@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import check_postgres_reference as gate
 from scripts import compose_network as compose_network_module
+from scripts import live_inventory
 
 
 ROW_DIAGNOSTICS = (
@@ -182,11 +183,237 @@ class CliLiveFixtures(unittest.TestCase):
             "il CLI rifiuta la connessione",
         )
 
-    def test_the_declared_check_names_the_cli_fixtures(self) -> None:
+    def test_the_declared_step_is_recorded_after_the_fixture_runs(self) -> None:
+        """Il passo si registra **dopo** l'esecuzione, non prima.
+
+        Una dichiarazione scritta prima del comando resta vera anche quando il
+        comando sparisce: e la forma esatta della lista tematica che questo
+        gate pubblicava.
+        """
+
+        source = self.source()
+        start = source.index('for suite in ("live_f5"')
+        block = source[start : source.index("ipc_materialization =", start)]
+        self.assertIn('steps.append(f"cli_live_fixture_{suite}")', block)
+        self.assertLess(
+            block.index("run("),
+            block.index("steps.append"),
+            "il passo e dichiarato prima di essere eseguito",
+        )
+
+    def test_the_report_publishes_the_steps_it_ran(self) -> None:
+        """Nessuna lista tematica scritta a mano nel verdetto."""
+
+        source = self.source()
+        self.assertIn('"steps": steps,', source)
+        self.assertNotIn('"checks": [', source)
+
+    def test_the_provider_suite_includes_the_ignored_tests(self) -> None:
+        """I `#[ignore]` del provider devono entrare nella corsa.
+
+        Senza `--include-ignored` restavano fuori, e il report li dichiarava
+        eseguiti lo stesso.
+        """
+        source = self.source()
+        start = source.index('"-p",\n                    "plenora-db-postgres",')
+        block = source[start : source.index("validate_live_row_diagnostics", start)]
+        self.assertIn("--include-ignored", block)
+
+
+class LiveInventory(unittest.TestCase):
+    """L'inventario dei test live si deriva dai sorgenti, non si scrive."""
+
+    def test_the_inventory_is_read_from_the_sources_and_is_not_empty(self) -> None:
+        inventory = gate.live_test_inventory()
+        self.assertGreater(
+            len(inventory),
+            len(gate.REQUIRED_LIVE_TESTS),
+            "l'inventario derivato deve coprire piu dei tre nomi pinnati",
+        )
+        for name in gate.REQUIRED_LIVE_TESTS:
+            self.assertIn(name, inventory)
+        for name in inventory:
+            self.assertTrue(name.startswith("live_"), name)
+
+    def test_a_helper_named_like_a_live_test_stays_out(self) -> None:
+        """Il prefisso non basta: serve l'attributo di test.
+
+        `fn live_dsn()` esiste in due moduli del provider ed e un helper, non
+        un test: nessuna corsa puo riportarlo `ok`. Raccoglierlo rendeva il
+        gate impossibile da superare — dopo l'intera suite live falliva sempre
+        nominando `live_dsn`, e i test di questo file restavano verdi perche
+        verificavano solo il prefisso.
+        """
+
+        self.assertNotIn("live_dsn", gate.live_test_inventory())
+
+    def test_only_annotated_functions_enter_the_inventory(self) -> None:
+        source = (
+            "    fn live_dsn() -> String {\n"
+            "        String::new()\n"
+            "    }\n"
+            "\n"
+            "    // Un helper con un commento sopra resta un helper.\n"
+            "    fn live_helper_commentato() -> String {\n"
+            "        String::new()\n"
+            "    }\n"
+            "\n"
+            "    #[tokio::test]\n"
+            "    #[ignore]\n"
+            "    async fn live_vero_test() {}\n"
+            "\n"
+            "    #[tokio::test]\n"
+            "    #[allow(clippy::too_many_lines)]\n"
+            "    // Un commento fra gli attributi e la firma non toglie il test.\n"
+            "    async fn live_test_commentato() {}\n"
+        )
+        self.assertEqual(
+            set(live_inventory.annotated_tests(source)),
+            {"live_vero_test", "live_test_commentato"},
+        )
+
+    def test_a_test_with_comments_between_attributes_and_signature_is_kept(self) -> None:
+        """La forma reale che una prima versione della regex aveva escluso."""
+
         self.assertIn(
-            '"cli_live_fixtures_and_contract_snapshots"',
-            self.source(),
-            "il gate esegue le fixture ma non lo dichiara fra i check",
+            "live_postgis_read_when_dsn_is_available", gate.live_test_inventory()
+        )
+
+    @staticmethod
+    def qualified(names: list[str]) -> list[str]:
+        return [f"qualche::modulo::tests::{name}" for name in names]
+
+    def listing(self, names: list[str]) -> str:
+        return "\n".join(f"{name}: test" for name in self.qualified(names))
+
+    def run_output(self, names: list[str]) -> str:
+        return "\n".join(f"test {name} ... ok" for name in self.qualified(names))
+
+    def test_a_complete_run_returns_the_observed_names(self) -> None:
+        inventory = sorted(gate.live_test_inventory())
+        self.assertEqual(
+            gate.validate_live_inventory(
+                self.run_output(inventory), self.listing(inventory)
+            ),
+            self.qualified(inventory),
+        )
+
+    def test_a_missing_live_test_fails_the_gate(self) -> None:
+        """Il caso che il report non sapeva vedere: un test mai eseguito."""
+        inventory = sorted(gate.live_test_inventory())
+        omitted = inventory[0]
+        with self.assertRaises(RuntimeError) as raised:
+            gate.validate_live_inventory(
+                self.run_output(inventory[1:]), self.listing(inventory)
+            )
+        self.assertIn(omitted, str(raised.exception))
+
+    def test_a_test_missing_from_the_compiled_suite_fails_the_gate(self) -> None:
+        """Definito nei sorgenti ma non nel binario: sparito in silenzio.
+
+        E il caso che il confronto fra cargo e cargo non vedrebbe mai — un
+        modulo non incluso, un `cfg` che lo esclude — e la ragione per cui
+        l'inventario dai sorgenti resta.
+        """
+
+        inventory = sorted(gate.live_test_inventory())
+        absent = inventory[0]
+        with self.assertRaises(RuntimeError) as raised:
+            gate.validate_live_inventory(
+                self.run_output(inventory[1:]), self.listing(inventory[1:])
+            )
+        self.assertIn(absent, str(raised.exception))
+        self.assertIn("assenti dalla suite", str(raised.exception))
+
+    def test_a_failed_live_test_does_not_count_as_executed(self) -> None:
+        inventory = sorted(gate.live_test_inventory())
+        observed = self.run_output(inventory[1:])
+        observed += f"\ntest qualche::modulo::tests::{inventory[0]} ... FAILED"
+        with self.assertRaises(RuntimeError):
+            gate.validate_live_inventory(observed, self.listing(inventory))
+
+    def test_homonymous_tests_do_not_satisfy_each_other(self) -> None:
+        """Due test con lo stesso nome foglia sono due prove, non una.
+
+        Il confronto avviene sui nomi completi: eseguirne uno non puo bastare
+        per entrambi. Con un `set` di nomi foglia bastava.
+        """
+
+        listing = "primo::tests::live_omonimo: test\nsecondo::tests::live_omonimo: test"
+        listed = gate.listed_live_tests(listing)
+        self.assertEqual(len(listed), 2)
+        executed = set(live_inventory.EXECUTED.findall("test primo::tests::live_omonimo ... ok"))
+        self.assertEqual(sorted(listed - executed), ["secondo::tests::live_omonimo"])
+
+    def test_the_listing_ignores_what_is_not_a_live_test(self) -> None:
+        listing = (
+            "arrow::tests::decimal_parser_is_exact_and_checked: test\n"
+            "test_suite::tests::live_vero: test\n"
+        )
+        self.assertEqual(gate.listed_live_tests(listing), {"test_suite::tests::live_vero"})
+
+    def test_an_empty_listing_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "non ha elencato"):
+            gate.listed_live_tests("arrow::tests::qualcosa: test")
+
+    def test_the_tests_the_reference_cannot_qualify_are_declared(self) -> None:
+        """Girano e riportano `ok`, ma non provano niente: vanno dichiarati.
+
+        PF.2 e PF.3 leggono `POSTGRES_URL_BARE` — un PostgreSQL senza PostGIS
+        — e senza quella variabile stampano una riga di skip e ritornano.
+        `cargo test` li conta comunque fra i passati, quindi il report li
+        avrebbe presentati come prove del ramo negativo della probe.
+
+        La lista sta nel gate e finisce nel verdetto: toglierla di li
+        significa aver aggiunto il fixture bare, non aver risolto il problema.
+        """
+
+        self.assertEqual(
+            set(gate.NON_QUALIFYING_LIVE_TESTS),
+            {
+                "preflight_pf2_capability_negative_reports_no_postgis",
+                "preflight_pf3_spatial_query_without_postgis_fails_cleanly",
+                "live_private_ca_mtls_and_cancellation_when_configured",
+            },
+        )
+        # Ogni voce deve dire **quale** fixture manca: una dichiarazione senza
+        # motivo e una scusa.
+        for reason in gate.NON_QUALIFYING_LIVE_TESTS.values():
+            self.assertTrue(
+                "POSTGRES_URL_BARE" in reason or "TLS" in reason,
+                reason,
+            )
+
+        source = (
+            Path(gate.__file__).resolve().parent / "check_postgres_reference.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"declared_not_qualifying"',
+            source,
+            "il verdetto non dichiara i test che non qualificano",
+        )
+
+    def test_the_declared_names_exist_in_the_sources(self) -> None:
+        """Una dichiarazione su un test che non esiste piu non dichiara nulla."""
+
+        # I nomi possono stare sia negli integration test sia nei moduli di
+        # `src/`: il test TLS vive li.
+        paths = list((gate.ROOT / "crates" / "plenora-db-postgres" / "tests").rglob("*.rs"))
+        paths += list((gate.ROOT / "crates" / "plenora-db-postgres" / "src").rglob("*.rs"))
+        source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+        for name in gate.NON_QUALIFYING_LIVE_TESTS:
+            self.assertIn(f"fn {name}(", source, name)
+
+    def test_the_observed_name_is_matched_outside_test_suite_too(self) -> None:
+        """La forma precedente ancorava a `test_suite::tests::`.
+
+        I test live degli altri moduli non erano nemmeno osservabili: qualunque
+        inventario costruito su quel pattern li avrebbe dichiarati mancanti.
+        """
+        name = sorted(gate.live_test_inventory())[0]
+        self.assertIn(
+            f"transaction::tests::{name}",
+            live_inventory.EXECUTED.findall(f"test transaction::tests::{name} ... ok"),
         )
 
 

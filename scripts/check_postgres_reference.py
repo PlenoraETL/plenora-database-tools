@@ -16,6 +16,7 @@ from pathlib import Path
 # radice del repository deve restare importabile in entrambi i casi.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts import live_inventory  # noqa: E402
 from scripts.compose_network import compose_network  # noqa: E402
 
 
@@ -150,6 +151,96 @@ def check_ipc_materialization(dsn: str) -> dict[str, object]:
         }
 
 
+PROVIDER_SOURCES = ROOT / "crates" / "plenora-db-postgres" / "src"
+
+# Test live che **questo** riferimento non puo qualificare, e perche.
+#
+# PF.2 e PF.3 verificano il ramo negativo della probe capability: un
+# PostgreSQL **senza** PostGIS, che il compose di questo gate non avvia. I due
+# test leggono `POSTGRES_URL_BARE`, e senza quella variabile stampano una riga
+# di skip e ritornano — ma `cargo test` li conta comunque come `ok`.
+#
+# Sono elencati qui perche il report smetta di lasciarli passare per prove.
+# Dichiararli non qualificanti non li fa girare: li rende visibili. Toglierli
+# da questa lista significa aver aggiunto il fixture bare al gate.
+NON_QUALIFYING_LIVE_TESTS = {
+    "preflight_pf2_capability_negative_reports_no_postgis": "richiede POSTGRES_URL_BARE: PostgreSQL senza PostGIS, non avviato da questo compose",
+    "preflight_pf3_spatial_query_without_postgis_fails_cleanly": "richiede POSTGRES_URL_BARE: PostgreSQL senza PostGIS, non avviato da questo compose",
+    "live_private_ca_mtls_and_cancellation_when_configured": "richiede le quattro variabili TLS di una CA privata: il compose di questo gate e plaintext, e il test ritorna subito riportando comunque `ok`",
+}
+
+# L'inventario e condiviso con il gate SQL Server: vedi `scripts/live_inventory`.
+# Portarne due copie significava correggerne una sola, che e esattamente cio
+# che era successo.
+def live_test_inventory() -> set[str]:
+    """I test live che i sorgenti del provider definiscono, ora.
+
+    Resta derivato dai sorgenti perche copre un caso che il binario non copre:
+    un test che esiste nel codice ma non arriva nella suite — modulo non
+    incluso, `cfg` che lo esclude — sparisce anche dalla lista di `cargo`, e
+    confrontare cargo con cargo non lo vedrebbe mai.
+
+    Il prefisso `live_` non basta a fare di una funzione un test: i sorgenti
+    contengono anche `fn live_dsn()` in due moduli, e raccoglierlo rendeva il
+    gate impossibile da superare — dopo l'intera suite falliva sempre nominando
+    un helper che nessuna corsa puo riportare `ok`.
+    """
+
+    return live_inventory.source_inventory(
+        list(PROVIDER_SOURCES.rglob("*.rs")),
+        keep=lambda name: name.startswith("live_"),
+    )
+
+
+def listed_live_tests(output: str) -> set[str]:
+    """I test live che il binario compilato contiene, con il nome completo.
+
+    `cargo test -- --list` enumera cio che la suite eseguirebbe, ignorati
+    compresi: e la stessa vista che produce le righe `... ok`, quindi il
+    confronto e fra nomi omogenei e nessuna forma sintattica del sorgente puo
+    falsarlo.
+    """
+
+    return live_inventory.listed_tests(
+        output, keep=lambda name: live_inventory.leaf(name).startswith("live_")
+    )
+
+
+def validate_live_inventory(output: str, listing: str) -> list[str]:
+    """Ogni test live deve essere nella suite, ed essere passato.
+
+    Il report elencava quarantatre voci tematiche — `read_write_spatial_live`,
+    `advanced_catalog_introspection`, ... — scritte a mano e legate a niente:
+    affermavano una copertura che nessun passo verificava, e restavano vere
+    anche se il test corrispondente veniva cancellato.
+
+    Le prove qui sono due, e servono a cose diverse. La prima confronta i
+    sorgenti con la suite compilata: un test che esiste nel codice ma non
+    arriva nel binario e sparito senza che nessuno lo dica. La seconda
+    confronta la suite con l'esecuzione, sui **nomi completi**: un test
+    presente e non passato non puo scomparire dietro un omonimo di un altro
+    modulo. Restituisce i nomi eseguiti, che entrano nel report: cosi il
+    documento dice cosa e successo, non cosa doveva.
+    """
+
+    listed = listed_live_tests(listing)
+    declared = live_test_inventory()
+    absent = sorted(declared - {live_inventory.leaf(name) for name in listed})
+    if absent:
+        raise RuntimeError(
+            f"test live PostgreSQL definiti nei sorgenti ma assenti dalla suite "
+            f"compilata ({len(absent)} su {len(declared)}): {absent}"
+        )
+    executed = live_inventory.executed_tests(output)
+    missing = sorted(listed - executed)
+    if missing:
+        raise RuntimeError(
+            f"test live PostgreSQL nella suite ma non eseguiti ({len(missing)} su "
+            f"{len(listed)}): {missing}"
+        )
+    return sorted(listed)
+
+
 def validate_live_row_diagnostics(output: str) -> None:
     """Verifica che i test live row diagnostics siano nella matrice eseguita.
 
@@ -174,6 +265,13 @@ def validate_live_row_diagnostics(output: str) -> None:
 
 def main() -> int:
     dsn = os.environ.get("PLENORA_TEST_POSTGRES_DSN", DEFAULT_DSN)
+    # I passi che il gate ha **davvero** completato, registrati uno alla volta
+    # mentre accadono. La versione precedente pubblicava una lista di
+    # quarantatre voci tematiche scritta a mano: restava identica se un passo
+    # veniva tolto, e un artifact `passed` attestava verifiche di cui non
+    # esisteva piu la prova. Un passo che non gira non compare, perche la riga
+    # che lo nomina sta dopo la riga che lo esegue.
+    steps: list[str] = []
     try:
         state = run(
             ["docker", "inspect", "--format",
@@ -182,17 +280,48 @@ def main() -> int:
         ).strip()
         if state != "running|healthy":
             raise RuntimeError("container PostgreSQL non healthy")
+        steps.append("container_health")
         run(cargo(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
+        steps.append("clippy_deny_warnings")
         run(cargo([
             "test",
             "-p", "plenora-database-core",
             "-p", "plenora-database-sql",
         ]))
+        steps.append("core_and_sql_unit_tests")
+        # `--include-ignored`: senza, i test marcati `#[ignore]` del provider
+        # non entravano nella corsa, e il report li dichiarava lo stesso. Un
+        # test che non gira non prova niente, e dichiararlo eseguito e peggio
+        # che non averlo.
         provider_output = run(
-            cargo(["test", "-p", "plenora-db-postgres", "--", "--nocapture"], dsn),
+            cargo(
+                [
+                    "test",
+                    "-p",
+                    "plenora-db-postgres",
+                    "--",
+                    "--include-ignored",
+                    "--nocapture",
+                ],
+                dsn,
+            ),
             capture=True,
         )
+        steps.append("provider_live_suite_with_ignored")
         validate_live_row_diagnostics(provider_output)
+        steps.append("required_live_tests_observed")
+        # La suite compilata, chiesta a cargo: e la sola vista omogenea a
+        # quella che produce le righe `... ok`, e regge dove una regex sui
+        # sorgenti si romperebbe su una forma sintattica nuova.
+        listing = run(
+            cargo(
+                ["test", "-p", "plenora-db-postgres", "--", "--list", "--include-ignored"],
+                dsn,
+            ),
+            capture=True,
+        )
+        executed_live_tests = validate_live_inventory(provider_output, listing)
+        steps.append("live_inventory_matches_sources_and_run")
         # Le fixture live del CLI: `#[ignore]` per default, quindi invisibili
         # a `cargo test`. Finche nessun gate le lanciava, una di esse poteva
         # restare rotta per una campagna intera senza che niente lo dicesse.
@@ -213,7 +342,9 @@ def main() -> int:
                     insecure_local=True,
                 )
             )
+            steps.append(f"cli_live_fixture_{suite}")
         ipc_materialization = check_ipc_materialization(dsn)
+        steps.append("postgres_read_ipc_materialization_and_readback")
         output = run(
             cargo([
                 "test", "-p", "plenora-db-postgres",
@@ -231,6 +362,7 @@ def main() -> int:
         if not matches:
             raise RuntimeError("risultato benchmark non trovato")
         benchmark = json.loads(matches[-1])
+        steps.append("copy_text_binary_prepared_differential")
     except RuntimeError as error:
         print(f"postgres reference gate: {error}", file=sys.stderr)
         return 1
@@ -241,50 +373,14 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "database_connections_opened": True,
         "secrets_persisted": False,
-        "checks": [
-            "container_health",
-            "clippy_deny_warnings",
-            "public_api_v0_1_compile_freeze",
-            "provider_common_conformance",
-            "read_write_spatial_live",
-            "query_ast_cte_join_group_having",
-            "bounded_shared_pool_and_session_reset",
-            "startup_defaults_without_configuration_query",
-            "parameterless_one_shot_read_fast_path",
-            "parameterized_typed_one_shot_fast_path",
-            "custom_type_prepared_fallback",
-            "query_operation_typed_one_shot",
-            "query_operation_empty_result_describe",
-            "bounded_iterative_query_operation_validation",
-            "advanced_query_cte_derived_lateral_window_set_locking",
-            "dialect_correct_query_limit_rendering",
-            "spatial_wkb_constructor_rendering",
-            "spatial_catalog_72_renderer_lockstep",
-            "spatial_bbox_knn_gist_plan",
-            "spatial_xy_xyz_xym_xyzm_roundtrip",
-            "spatial_curve_surface_collection_introspection",
-            "ewkb_header_contract_validation",
-            "bounded_validated_schema_cache",
-            "external_ddl_schema_token_invalidation",
-            "server_side_read_write_cancellation",
-            "tcp_keepalive_and_connect_timeouts",
-            "advanced_catalog_introspection",
-            "partition_rls_policy_acl_materialized_view_introspection",
-            "advanced_type_read_write_roundtrip",
-            "binary_array_uuid_range_composite_interval_roundtrip",
-            "portable_interval_text_encoding",
-            "negative_scale_numeric_and_typed_parameters",
-            "temporal_extremes_are_mapping_errors",
-            "poisoned_internal_mutex_recovery",
-            "transactional_additive_schema_evolution",
-            "write_preflight_crs_authority_and_loss_report",
-            "byte_limits",
-            "fault_before_commit_rollback",
-            "fault_after_commit_unknown",
-            "copy_text_binary_prepared_differential",
-            "postgres_read_ipc_materialization_and_readback",
-            "cli_live_fixtures_and_contract_snapshots",
-        ],
+        "steps": steps,
+        "executed_live_tests": executed_live_tests,
+        # Non "eseguiti": *qualificanti*. I due test del ramo negativo girano
+        # e riportano `ok`, ma senza il riferimento bare non asseriscono
+        # niente, e un report che li contasse direbbe il falso.
+        "declared_not_qualifying": {
+            name: reason for name, reason in sorted(NON_QUALIFYING_LIVE_TESTS.items())
+        },
         "benchmark": benchmark,
         "ipc_materialization": ipc_materialization,
         "freeze_scope": "postgres-postgis-data-path-v3",

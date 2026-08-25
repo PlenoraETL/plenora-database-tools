@@ -16,6 +16,7 @@ from pathlib import Path
 # radice del repository deve restare importabile in entrambi i casi.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts import live_inventory  # noqa: E402
 from scripts.compose_network import compose_network  # noqa: E402
 
 
@@ -25,7 +26,17 @@ CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
-EXPECTED_LIVE_TESTS = 45
+LIVE_TEST_SOURCE = ROOT / "crates" / "plenora-db-sqlserver" / "src" / "live_tests.rs"
+
+# I due test che **questa** matrice non puo eseguire. Il motivo non e scritto
+# qui: viene dal loro `#[ignore = "..."]`, cosi non puo divergere dal codice.
+# Sono anche gli unici due `--skip` passati a cargo, derivati da questa lista:
+# due elenchi separati sarebbero andati alla deriva.
+SKIPPED_LIVE_TESTS = (
+    "polybase_external_catalog_is_structural_and_not_implicit",
+    "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
+)
+
 # Test live che il gate non può dichiarare e poi non eseguire. Il conteggio da
 # solo non basta: una matrice piena può comunque avere sostituito un test con
 # un altro. Il nome va verificato.
@@ -34,6 +45,34 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
     }
 )
+
+
+def live_test_inventory() -> set[str]:
+    """I test live che `live_tests.rs` definisce, ora.
+
+    Il gate contava soltanto **quanti** test erano passati — quarantacinque su
+    quarantacinque — e un totale non distingue un test da un altro: sostituirne
+    uno lasciava la matrice piena e il gate verde. E la stessa classe di
+    difetto corretta nel gate PostgreSQL, e la regola 5 di AGENTS.md dice di
+    cercarla altrove.
+    """
+
+    return live_inventory.source_inventory([LIVE_TEST_SOURCE])
+
+
+def skipped_with_reasons() -> dict[str, str]:
+    """I test saltati, con il motivo che portano nel codice."""
+
+    reasons = live_inventory.ignore_reasons(
+        LIVE_TEST_SOURCE.read_text(encoding="utf-8")
+    )
+    missing = [name for name in SKIPPED_LIVE_TESTS if name not in reasons]
+    if missing:
+        raise RuntimeError(
+            f"test SQL Server dichiarati saltati ma senza `#[ignore = \"...\"]` "
+            f"nei sorgenti: {missing}"
+        )
+    return {name: reasons[name] for name in SKIPPED_LIVE_TESTS}
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
@@ -311,24 +350,51 @@ def server_identity() -> dict[str, str]:
     }
 
 
-def validate_live_result(output: str) -> None:
-    expected = re.compile(
-        rf"test result: ok\. {EXPECTED_LIVE_TESTS} passed; "
-        r"0 failed; 0 ignored; \d+ measured; \d+ filtered out"
+def validate_live_result(output: str, listing: str) -> list[str]:
+    """Ogni test live definito deve essere nella suite, ed essere passato.
+
+    Il controllo precedente era un conteggio — quarantacinque passati su
+    quarantacinque — e un totale non distingue un test da un altro: toglierne
+    uno e aggiungerne un altro lasciava la matrice piena e il gate verde. Ora
+    le prove sono due e sono per nome: i sorgenti contro la suite compilata, e
+    la suite contro l'esecuzione. I due test che questo riferimento non puo
+    eseguire sono dichiarati, con il motivo che portano nel codice.
+
+    Restituisce i nomi eseguiti, che entrano nel verdetto.
+    """
+
+    declared = live_test_inventory()
+    listed = live_inventory.listed_tests(
+        listing, keep=lambda name: name.startswith("live_tests::")
     )
-    if not expected.search(output):
+    absent = sorted(declared - {live_inventory.leaf(name) for name in listed})
+    if absent:
         raise RuntimeError(
-            f"matrice live SQL Server diversa da {EXPECTED_LIVE_TESTS}/"
-            f"{EXPECTED_LIVE_TESTS}"
+            f"test live SQL Server definiti nei sorgenti ma assenti dalla suite "
+            f"compilata ({len(absent)} su {len(declared)}): {absent}"
         )
-    executed = set(
-        re.findall(r"^test live_tests::([^ ]+) \.\.\. ok$", output, re.MULTILINE)
-    )
-    missing = sorted(REQUIRED_LIVE_TESTS - executed)
+    skipped = set(skipped_with_reasons())
+    unknown = sorted(skipped - declared)
+    if unknown:
+        raise RuntimeError(
+            f"test SQL Server dichiarati saltati ma inesistenti: {unknown}"
+        )
+    expected = {name for name in listed if live_inventory.leaf(name) not in skipped}
+    executed = live_inventory.executed_tests(output)
+    missing = sorted(expected - executed)
     if missing:
         raise RuntimeError(
-            f"test live SQL Server dichiarati ma non eseguiti: {missing}"
+            f"test live SQL Server nella suite ma non eseguiti ({len(missing)} su "
+            f"{len(expected)}): {missing}"
         )
+    if not re.search(r"test result: ok\. \d+ passed; 0 failed;", output):
+        raise RuntimeError("matrice live SQL Server con fallimenti")
+    unmet = sorted(REQUIRED_LIVE_TESTS - {live_inventory.leaf(name) for name in executed})
+    if unmet:
+        raise RuntimeError(
+            f"test live SQL Server dichiarati ma non eseguiti: {unmet}"
+        )
+    return sorted(expected)
 
 
 def run_live_cli_probe() -> None:
@@ -363,6 +429,11 @@ def run_live_cli_probe() -> None:
 
 
 def main() -> int:
+    # I passi che il gate ha **davvero** completato, registrati mentre
+    # accadono. La lista tematica scritta a mano restava identica se un passo
+    # veniva tolto: un artifact `passed` attestava verifiche di cui non
+    # esisteva piu la prova.
+    steps: list[str] = []
     try:
         state = docker_value(
             [
@@ -374,9 +445,13 @@ def main() -> int:
         )
         if state != "running|healthy":
             raise RuntimeError("container SQL Server non healthy")
+        steps.append("container_health")
         image_identity = validate_image_pin()
+        steps.append("immutable_image_digest")
         identity = server_identity()
+        steps.append("server_identity")
         materialize_private_ca()
+        steps.append("private_ca_materialized")
         run_cargo(
             [
                 "clippy",
@@ -389,6 +464,7 @@ def main() -> int:
                 "warnings",
             ]
         )
+        steps.append("clippy_deny_warnings")
         run_cargo(
             [
                 "test",
@@ -398,6 +474,7 @@ def main() -> int:
                 "--locked",
             ]
         )
+        steps.append("offline_unit_tests")
         live_output = run_cargo(
             [
                 "test",
@@ -408,16 +485,32 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
-                "--skip",
-                "polybase_external_catalog_is_structural_and_not_implicit",
-                "--skip",
-                "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
+                # Dalla dichiarazione, non da una seconda lista scritta a mano:
+                # due elenchi separati sarebbero andati alla deriva, e il gate
+                # avrebbe saltato un test che diceva di eseguire.
+                *[argument for name in SKIPPED_LIVE_TESTS for argument in ("--skip", name)],
             ],
             capture=True,
         )
-        validate_live_result(live_output)
+        listing = run_cargo(
+            [
+                "test",
+                "-p",
+                "plenora-db-sqlserver",
+                "live_",
+                "--locked",
+                "--",
+                "--list",
+                "--ignored",
+            ],
+            capture=True,
+        )
+        executed_live_tests = validate_live_result(live_output, listing)
+        steps.append("live_inventory_matches_sources_and_run")
         run_live_cli_probe()
+        steps.append("public_cli_probe_against_private_ca")
         tls_rotation = rotate_server_certificate()
+        steps.append("tls_certificate_rotation")
     except RuntimeError as error:
         print(f"sqlserver reference gate: {error}", file=sys.stderr)
         return 1
@@ -433,49 +526,15 @@ def main() -> int:
         "server": identity,
         "tls_rotation": tls_rotation,
         "live_tests": {
-            "expected": EXPECTED_LIVE_TESTS,
-            "passed": EXPECTED_LIVE_TESTS,
+            "expected": len(executed_live_tests),
+            "passed": len(executed_live_tests),
             "failed": 0,
         },
-        "checks": [
-            "container_health",
-            "immutable_image_digest",
-            "server_identity",
-            "clippy_deny_warnings",
-            "offline_unit_tests",
-            "provider_common_conformance",
-            "bounded_arrow_read",
-            "geometry_geography_xy_z_m_zm_roundtrip",
-            "typed_spatial_ast_semantics_and_srid_preflight",
-            "native_scalar_spatial_methods_geometry_and_geography",
-            "native_spatial_output_wkb_zm_contract",
-            "native_spatial_processing_geometry_and_geography",
-            "spatial_join_column_resolution_and_multi_source_schema_guard",
-            "spatial_cte_derived_uncorrelated_subquery_contract_and_srid_guard",
-            "spatial_recursive_set_cross_apply_and_local_correlated_subquery",
-            "spatial_lock_nowait_timeout_and_release",
-            "curved_spatial_read_bounded_wkb_geometry_and_geography",
-            "circular_string_write_lossless_geometry_and_geography",
-            "prepared_write_reference_types",
-            "keyed_update_upsert_delete",
-            "tds_bulk_differential",
-            "rich_query_cte_join_aggregate_window_set_offset",
-            "empty_result_schema_description",
-            "schema_drift_guard",
-            "submicrosecond_temporal_fail_closed",
-            "tls_verify_default",
-            "private_ca_chain_hostname_and_rotation",
-            "transaction_rollback",
-            "physical_tds_cut",
-            "physical_tds_blackhole",
-            "temporary_total_packet_loss_and_latency",
-            "unknown_commit_outcome",
-            "atomic_create",
-            "staged_replace_publish",
-            "staged_replace_rollback_cleanup_dependencies_and_visibility",
-            "create_replace_reference_type_profile",
-            "spatial_index_create_replace_catalog_access_path_and_rollback",
-        ],
+        "executed_live_tests": executed_live_tests,
+        # Non "eseguiti": *non eseguibili qui*, con il motivo che portano nel
+        # codice. Dichiararli non li fa girare: li rende visibili.
+        "declared_not_executed": skipped_with_reasons(),
+        "steps": steps,
         "open_non_blocking": [
             "azure_sql_live_qualification",
             "spatial_fullglobe_lossless_not_supported",

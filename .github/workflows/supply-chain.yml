@@ -1,0 +1,56 @@
+name: supply-chain
+
+# `deny.toml` esisteva, con una policy articolata — advisory negate, allowlist
+# di licenze, sorgenti ristrette, eccezioni datate — e nessun workflow la
+# eseguiva. Una policy che nessuno applica non e una policy: e un documento
+# che descrive un controllo immaginario, e le sue eccezioni scadono senza che
+# nessuno se ne accorga (la revisione 2026-Q2 di deny.toml e passata cosi).
+#
+# Il gate legge `Cargo.lock`, che e uno solo per tutto il workspace: comprende
+# anche tiberius, mysql_async e pyo3, che `default-members` esclude dal build
+# ma non dalla risoluzione. E' voluto — la superficie da controllare e quella
+# che il repository dichiara, non quella che `cargo build` tocca per default.
+#
+# Gira anche a calendario perche il rischio qui non arriva da un commit: una
+# advisory pubblicata domani riguarda il codice fermo di oggi, e senza corsa
+# schedulata resterebbe invisibile fino alla PR successiva.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Lunedi 05:17 UTC. Minuto non tondo: gli orari tondi sono i piu
+    # congestionati su Actions e le corse schedulate vengono rimandate.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo deny (${{ matrix.check }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Nessun fail-fast: se le advisory sono rosse si vuole sapere lo stesso
+      # se anche le licenze lo sono, senza due giri.
+      fail-fast: false
+      matrix:
+        check:
+          - advisories
+          - bans licenses sources
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check ${{ matrix.check }}
+          # `advisories` dipende dal database RustSec, che cambia sotto i
+          # piedi: un rosso li e una notizia, non una regressione del commit.
+          # Gli altri check dipendono solo dal lockfile e da deny.toml.
+          command-arguments: --hide-inclusion-graph
