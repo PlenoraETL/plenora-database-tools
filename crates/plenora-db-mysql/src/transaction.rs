@@ -44,6 +44,24 @@ use std::sync::Arc;
 pub struct MysqlTransaction {
     session: MysqlSession,
     open: bool,
+    /// Uno stream di righe e stato lasciato a meta, e la connessione non e
+    /// piu utilizzabile.
+    ///
+    /// Su `MySQL` un result set non consumato fino in fondo lascia pacchetti
+    /// sul filo: la connessione non e sporca «in senso logico», e proprio fuori
+    /// sincrono. Il crate lo tratta gia cosi nel percorso Arrow, dove uno
+    /// stream abbandonato mette la sessione in quarantena.
+    ///
+    /// Qui la quarantena non puo avvenire dentro lo stream — finche vive, ha
+    /// in prestito la connessione, e nessun altro puo toccarla — quindi lo
+    /// stream alza questa bandiera e la transazione la raccoglie alla prima
+    /// operazione successiva. E' la stessa decisione, presa nel solo punto in
+    /// cui il prestito lo consente.
+    ///
+    /// E' anche la differenza vera da `PostgreSQL`, dove un cursore
+    /// abbandonato non costa niente: lo chiude il commit, e la connessione
+    /// resta buona.
+    stream_abandoned: bool,
     /// Policy di ammissione statement (Allow default, Deny per PFM).
     /// Persistito da `TransactionOptions::native_query_policy`; parity
     /// con `PostgresTransaction`. Fix P1 review `MySQL` 2026-08-15.
@@ -154,7 +172,36 @@ impl MysqlTransaction {
         Ok(Self {
             session,
             open: true,
+            stream_abandoned: false,
             native_query_policy: options.native_query_policy,
+        })
+    }
+
+    /// Raccoglie la bandiera che uno stream abbandonato ha lasciato.
+    ///
+    /// Da chiamare all'**inizio** di ogni operazione della transazione: e il
+    /// primo momento in cui la connessione non e piu in prestito allo stream,
+    /// quindi il primo in cui si puo buttare. Proseguire senza sarebbe peggio
+    /// che fallire: lo statement successivo leggerebbe i pacchetti del result
+    /// set precedente e ne farebbe quel che puo.
+    async fn collect_abandoned_stream(&mut self, phase: ErrorPhase) -> Result<()> {
+        if !self.stream_abandoned {
+            return Ok(());
+        }
+        let kind = self.session.kind();
+        self.session.discard().await;
+        self.open = false;
+        self.stream_abandoned = false;
+        Err(DatabaseError {
+            category: ErrorCategory::Protocol,
+            phase,
+            remote_effect: RemoteEffect::Unknown,
+            retry: RetryDisposition::RequiresRecovery,
+            provider: Some(kind),
+            execution_id: None,
+            diagnostics: None,
+            message: "stream di righe lasciato a meta: la connessione e fuori sincrono ed e stata chiusa, la transazione non e stata committata"
+                .to_owned(),
         })
     }
 }
@@ -253,6 +300,103 @@ async fn raw_exec(
 /// binario). Senza consultarlo, un `BLOB` i cui byte formano per caso UTF-8
 /// valido — qualunque payload ASCII — diventava una stringa, e un `TEXT` in
 /// latin1 con byte non UTF-8 diventava un blob.
+/// Lo stream di righe di una query dentro la transazione.
+///
+/// # Perche non e un cursore
+///
+/// `PostgreSQL` dichiara un cursore nominato e fa `FETCH FORWARD n`: ogni
+/// batch e una query a se, e la connessione fra un batch e l'altro resta
+/// libera. `MySQL` non ha cursori fuori dalle stored procedure, e cio che
+/// offre e il result set che scorre sul filo: le righe arrivano man mano, e
+/// la connessione **resta occupata** finche non sono finite.
+///
+/// La differenza si vede in due punti, ed e per questo che sta scritta qui e
+/// non solo nel documento: il prestito esclusivo impedisce di usare la
+/// transazione mentre lo stream vive — che e giusto, e il compilatore lo
+/// impone da se — e uno stream lasciato a meta rende la connessione
+/// inutilizzabile, perche i pacchetti non letti restano in coda.
+///
+/// `reads.server_cursor` resta percio `false` su questo prodotto, e la
+/// bandiera dice il vero: questo e uno stream, non un cursore che qualcuno
+/// possa nominare e riprendere.
+struct MysqlRowStream<'a> {
+    result: mysql_async::QueryResult<'a, 'static, mysql_async::BinaryProtocol>,
+    columns: Arc<[String]>,
+    batch_size: usize,
+    exhausted: bool,
+    /// La bandiera della transazione, alzata se lo stream finisce male.
+    ///
+    /// Non c'e alternativa a una bandiera: mettere in quarantena la sessione
+    /// da qui vorrebbe dire prenderla in prestito mutabile mentre `result` ce
+    /// l'ha gia. Chi puo farlo e la transazione, alla prima operazione dopo
+    /// che lo stream e stato lasciato andare.
+    abandoned: &'a mut bool,
+    kind: ProviderKind,
+    profile: &'static dyn crate::profile::ProductProfile,
+    timeout: std::time::Duration,
+}
+
+impl RowStream for MysqlRowStream<'_> {
+    fn next_batch<'b>(
+        &'b mut self,
+        cancellation: &'b CancellationToken,
+    ) -> ProviderFuture<'b, Option<Vec<Row>>> {
+        Box::pin(async move {
+            if self.exhausted {
+                return Ok(None);
+            }
+            let mut batch = Vec::with_capacity(self.batch_size);
+            while batch.len() < self.batch_size {
+                let next = tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        // Il result set resta a meta: la connessione non e
+                        // recuperabile, e lo stream lo dichiara invece di
+                        // lasciarlo scoprire allo statement successivo.
+                        self.exhausted = true;
+                        *self.abandoned = true;
+                        return Err(interruption_error(
+                            self.profile,
+                            cancellation,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    result = tokio::time::timeout(self.timeout, self.result.next()) => result,
+                };
+                match next {
+                    Ok(Ok(Some(row))) => batch.push(decode_row(row, &self.columns, self.kind)?),
+                    Ok(Ok(None)) => {
+                        // Il result set e finito: la connessione e pulita, e
+                        // la transazione puo ancora committare.
+                        self.exhausted = true;
+                        break;
+                    }
+                    Ok(Err(error)) => {
+                        self.exhausted = true;
+                        *self.abandoned = true;
+                        return Err(driver_error(
+                            self.profile,
+                            &error,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    Err(_) => {
+                        self.exhausted = true;
+                        *self.abandoned = true;
+                        return Err(query_timeout_error(self.profile));
+                    }
+                }
+            }
+            if batch.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(batch))
+            }
+        })
+    }
+}
+
 fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Result<Row> {
     // I metadati si leggono prima: `take_opt` prende `&mut row` e non
     // convivrebbe col prestito immutabile di `columns_ref`.
@@ -479,6 +623,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Write).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
@@ -530,6 +675,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Read).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Read, self.session.kind()));
                 }
@@ -606,30 +752,106 @@ impl TransactionScope for MysqlTransaction {
 
     fn query_stream<'a>(
         &'a mut self,
-        _statement: &'a Statement,
-        _batch_size: u32,
-        _cancellation: &'a CancellationToken,
+        statement: &'a Statement,
+        batch_size: u32,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
         Box::pin(async move {
-            // Bordo della transazione: la policy nativa, la
-            // validazione dei savepoint e il binding costruiscono
-            // errori che non conoscono il prodotto — chi li riceve
-            // si', e li vedeva senza attribuzione o con il
-            // segnaposto.
+            // Bordo della transazione: cio che nasce prima del prestito
+            // esclusivo della sessione non conosce il prodotto, e chi riceve
+            // l'errore si'.
             let kind = self.session.kind();
             let outcome = async move {
-                Err(DatabaseError {
-                    category: ErrorCategory::Unsupported,
-                    phase: ErrorPhase::Prepare,
-                    remote_effect: RemoteEffect::None,
-                    retry: RetryDisposition::Never,
-                    provider: Some(self.session.kind()),
-                    execution_id: None,
-                    diagnostics: None,
-                    message: "query_stream non ancora implementato in v1 \
- (usa Provider::read per stream Arrow bulk)"
-                        .to_owned(),
-                })
+                self.collect_abandoned_stream(ErrorPhase::Read).await?;
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Read, kind));
+                }
+                if batch_size == 0 {
+                    return Err(DatabaseError::invalid_plan(
+                        "batch_size dello stream deve essere > 0",
+                    ));
+                }
+                plenora_database_core::native_query_policy::enforce_policy(
+                    self.native_query_policy,
+                    &statement.sql,
+                )?;
+                let params = bind_positional_params(&statement.params)?;
+                let profile = self.session.profile();
+                let timeout = self.session.operation_timeout();
+                // I campi si prendono separati: `connection_mut` prestera la
+                // sessione per tutta la vita dello stream, e la bandiera
+                // dell'abbandono vive accanto — sono due campi distinti, e il
+                // prestito disgiunto e cio che permette allo stream di
+                // segnalare senza poter toccare la connessione.
+                let Self {
+                    session,
+                    stream_abandoned,
+                    ..
+                } = self;
+                let connection = session
+                    .connection_mut()
+                    .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
+                // Lo statement viaggia **posseduto**, non in prestito: il result
+                // set che ne esce vive quanto lo stream, e mysql_async lega la
+                // sua vita a quella del testo. E' la stessa forma che il
+                // percorso Arrow usa gia in `pump_exec_rows`.
+                let sql = statement.sql.clone();
+                let open = connection.exec_iter(sql, params);
+                // La cancellazione vale anche **all'apertura**: un token gia
+                // scaduto non deve far partire una query che nessuno
+                // leggera. Qui la connessione non ha ancora un result set in
+                // volo, quindi non c'e niente da abbandonare e la bandiera
+                // resta abbassata — il caso e diverso da quello di
+                // `next_batch`, dove il filo e gia a meta.
+                let opened = tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        return Err(interruption_error(
+                            profile,
+                            cancellation,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    result = tokio::time::timeout(timeout, open) => result,
+                };
+                let result = match opened {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(error)) => {
+                        *stream_abandoned = true;
+                        return Err(driver_error(
+                            profile,
+                            &error,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
+                    }
+                    Err(_) => {
+                        *stream_abandoned = true;
+                        return Err(query_timeout_error(profile));
+                    }
+                };
+                // I nomi di colonna si leggono **una volta**, dai metadata del
+                // result set e non dalla prima riga: uno stream che non rende
+                // nemmeno una riga ha comunque uno schema, e prenderlo dalla
+                // riga lo renderebbe vuoto proprio nel caso in cui il
+                // chiamante non ha modo di ricavarlo altrimenti.
+                let columns: Arc<[String]> =
+                    Arc::from(result.columns().map_or_else(Vec::new, |columns| {
+                        columns
+                            .iter()
+                            .map(|column| column.name_str().to_string())
+                            .collect()
+                    }));
+                Ok(Box::new(MysqlRowStream {
+                    result,
+                    columns,
+                    batch_size: batch_size as usize,
+                    exhausted: false,
+                    abandoned: stream_abandoned,
+                    kind,
+                    profile,
+                    timeout,
+                }) as Box<dyn RowStream + Send + 'a>)
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -649,6 +871,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Prepare).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
@@ -679,6 +902,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Prepare).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
@@ -709,6 +933,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Prepare).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
@@ -738,6 +963,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Commit).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Commit, self.session.kind()));
                 }
@@ -780,6 +1006,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Read).await?;
                 if !self.open {
                     return Ok(());
                 }
@@ -812,6 +1039,7 @@ impl TransactionScope for MysqlTransaction {
             // segnaposto.
             let kind = self.session.kind();
             let outcome = async move {
+                self.collect_abandoned_stream(ErrorPhase::Write).await?;
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }

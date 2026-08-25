@@ -6440,7 +6440,7 @@ async fn live_v12_write_create_failure_leaves_the_table_and_reports_partial() {
     // lo schema no.
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
         ))
         .await,
         "1",
@@ -6488,7 +6488,7 @@ async fn live_v12_execute_ddl_accepts_statements_the_prepared_protocol_refuses()
 
     assert_eq!(
         replace_fixture_scalar(&format!(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '{table}'"
         ))
         .await,
         "1"
@@ -6606,7 +6606,7 @@ async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
     );
     assert_eq!(
         replace_fixture_scalar(
-            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n             WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '_v12_ddl_mai_creata'"
+            "SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.TABLES \n WHERE TABLE_SCHEMA = 'dataflow_test' AND TABLE_NAME = '_v12_ddl_mai_creata'"
         )
         .await,
         "0"
@@ -6677,4 +6677,324 @@ async fn live_v12_write_create_with_keys_declares_the_primary_key() {
     );
 
     replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
+}
+
+// === query_stream: lo streaming di una query dentro la transazione ===
+//
+// Sei prove, le stesse che il provider PostgreSQL ha da tempo: paginazione,
+// esaurimento, parametri, cancellazione a meta, `batch_size` zero, e la
+// connessione riusabile dopo un consumo completo.
+//
+// La settima e la differenza fra i due prodotti, e non ha controparte:
+// `PostgreSQL` dichiara un cursore nominato, quindi abbandonare uno stream a
+// meta non costa niente — lo chiude il commit. `MySQL` fa scorrere il result
+// set sul filo, e un consumo parziale lascia pacchetti in coda: la
+// connessione non e piu utilizzabile, e la transazione deve dirlo invece di
+// lasciarlo scoprire allo statement successivo.
+
+/// Prepara una tabella con `rows` righe numerate da 1.
+async fn seed_stream_table(table: &str, rows: u32) {
+    let cancellation = CancellationToken::new();
+    let mut setup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("setup connect");
+    let connection = setup.connection_mut().expect("connessione di setup");
+    connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await
+        .expect("drop");
+    connection
+        .query_drop(format!(
+            "CREATE TABLE {table} (n BIGINT NOT NULL PRIMARY KEY) ENGINE=InnoDB"
+        ))
+        .await
+        .expect("create");
+    // Un `INSERT` solo: mille round-trip renderebbero il test lento senza
+    // renderlo piu vero.
+    let values = (1..=rows)
+        .map(|n| format!("({n})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    connection
+        .query_drop(format!("INSERT INTO {table} (n) VALUES {values}"))
+        .await
+        .expect("seed");
+}
+
+fn stream_statement(sql: &str) -> plenora_database_core::transaction::Statement {
+    plenora_database_core::transaction::Statement {
+        sql: sql.to_owned(),
+        params: Vec::new(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_paginates_result_in_batches() {
+    let table = "_stream_paginates";
+    seed_stream_table(table, 250).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    let statement = stream_statement(&format!("SELECT n FROM {table} ORDER BY n"));
+    let mut sizes = Vec::new();
+    {
+        let mut stream = tx
+            .query_stream(&statement, 100, &cancellation)
+            .await
+            .expect("apre lo stream");
+        while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch") {
+            sizes.push(batch.len());
+        }
+    }
+    // 250 righe con batch da 100: tre batch, e l'ultimo corto. Il conteggio
+    // per batch e non il totale, perche un totale giusto uscirebbe anche da
+    // uno stream che consegna tutto in un colpo — cioe da uno stream che non
+    // strema.
+    assert_eq!(sizes, vec![100, 100, 50]);
+
+    // La connessione e pulita: il result set e stato consumato fino in fondo,
+    // quindi la transazione puo ancora committare.
+    assert!(tx
+        .commit(&cancellation)
+        .await
+        .expect("commit")
+        .is_committed());
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_exhausts_at_end() {
+    let table = "_stream_exhausts";
+    seed_stream_table(table, 3).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    let statement = stream_statement(&format!("SELECT n FROM {table} ORDER BY n"));
+    {
+        let mut stream = tx
+            .query_stream(&statement, 10, &cancellation)
+            .await
+            .expect("apre lo stream");
+        let first = stream.next_batch(&cancellation).await.expect("primo batch");
+        assert_eq!(first.map(|rows| rows.len()), Some(3));
+        // E poi `None`, non un batch vuoto: sono due cose diverse per chi
+        // scrive un ciclo, e la seconda lo farebbe girare per sempre.
+        assert!(stream
+            .next_batch(&cancellation)
+            .await
+            .expect("fine")
+            .is_none());
+        assert!(stream
+            .next_batch(&cancellation)
+            .await
+            .expect("fine, di nuovo")
+            .is_none());
+    }
+    assert!(tx
+        .commit(&cancellation)
+        .await
+        .expect("commit")
+        .is_committed());
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_respects_bound_parameters() {
+    let table = "_stream_params";
+    seed_stream_table(table, 20).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    // Il valore resta **fuori** dal testo: e la stessa regola di ogni altro
+    // percorso di questo provider, e uno stream non e un'eccezione.
+    let statement = plenora_database_core::transaction::Statement {
+        sql: format!("SELECT n FROM {table} WHERE n > ? ORDER BY n"),
+        params: vec![plenora_database_core::provider::ParameterValue::I64(17)],
+    };
+    let mut seen = Vec::new();
+    {
+        let mut stream = tx
+            .query_stream(&statement, 10, &cancellation)
+            .await
+            .expect("apre lo stream");
+        while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch") {
+            for row in batch {
+                seen.push(format!("{:?}", row.values()[0]));
+            }
+        }
+    }
+    assert_eq!(seen.len(), 3, "atteso n in (18, 19, 20): {seen:?}");
+    assert!(tx
+        .commit(&cancellation)
+        .await
+        .expect("commit")
+        .is_committed());
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_zero_batch_size_is_invalid_plan() {
+    let table = "_stream_zero";
+    seed_stream_table(table, 1).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    let statement = stream_statement(&format!("SELECT n FROM {table}"));
+    // `expect_err` non si puo usare: il ramo `Ok` porta uno stream, che non
+    // e `Debug`. Il `match` dice la stessa cosa e nomina il caso che non deve
+    // succedere.
+    let Err(error) = tx.query_stream(&statement, 0, &cancellation).await else {
+        panic!("un batch da zero righe non avanza mai, e va rifiutato");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    // Il rifiuto arriva **prima** di aprire il result set, quindi la
+    // connessione e intatta e la transazione resta usabile.
+    assert!(tx
+        .commit(&cancellation)
+        .await
+        .expect("commit")
+        .is_committed());
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
+    let table = "_stream_cancel";
+    seed_stream_table(table, 500).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    let statement = stream_statement(&format!("SELECT n FROM {table} ORDER BY n"));
+    let interrupted = CancellationToken::new();
+    {
+        let mut stream = tx
+            .query_stream(&statement, 10, &interrupted)
+            .await
+            .expect("apre lo stream");
+        assert!(stream
+            .next_batch(&interrupted)
+            .await
+            .expect("primo batch")
+            .is_some());
+        interrupted.cancel();
+        let error = stream
+            .next_batch(&interrupted)
+            .await
+            .expect_err("dopo la cancellazione il batch successivo e un rifiuto");
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+    }
+
+    // E qui la differenza da PostgreSQL, che e il motivo per cui questo test
+    // non si ferma al rifiuto: il result set e rimasto a meta, quindi la
+    // connessione e fuori sincrono. La transazione lo dichiara alla prima
+    // operazione successiva invece di provare a committare su un filo che non
+    // e piu il suo.
+    let error = tx
+        .commit(&cancellation)
+        .await
+        .expect_err("una transazione con uno stream abbandonato non committa");
+    assert_eq!(error.category, ErrorCategory::Protocol);
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+}
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_query_stream_abandoned_without_cancellation_is_refused_too() {
+    let table = "_stream_abandoned";
+    seed_stream_table(table, 500).await;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+
+    let statement = stream_statement(&format!("SELECT n FROM {table} ORDER BY n"));
+    {
+        let mut stream = tx
+            .query_stream(&statement, 10, &cancellation)
+            .await
+            .expect("apre lo stream");
+        // Un batch solo su cinquanta, e poi lo stream viene lasciato andare
+        // senza che nessuno abbia cancellato niente. E' il caso piu comune —
+        // un `break` dentro un ciclo — ed e quello che un test sulla sola
+        // cancellazione non coprirebbe.
+        assert!(stream
+            .next_batch(&cancellation)
+            .await
+            .expect("primo batch")
+            .is_some());
+    }
+
+    let error = tx
+        .commit(&cancellation)
+        .await
+        .expect_err("uno stream lasciato a meta rende la connessione inservibile");
+    assert_eq!(error.category, ErrorCategory::Protocol);
+    assert!(
+        error.message.contains("fuori sincrono"),
+        "il messaggio non dice cosa e successo: {}",
+        error.message
+    );
 }
