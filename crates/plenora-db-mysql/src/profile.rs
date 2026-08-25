@@ -1613,14 +1613,33 @@ fn wire_column_spec_for(product: &str, column: &Column) -> Result<MysqlColumnSpe
         ColumnType::MYSQL_TYPE_MEDIUM_BLOB => text_kind(binary, flags, "mediumtext", "mediumblob"),
         ColumnType::MYSQL_TYPE_LONG_BLOB => text_kind(binary, flags, "longtext", "longblob"),
         ColumnType::MYSQL_TYPE_BLOB => text_kind(binary, flags, "text", "blob"),
-        // Una geometria in uscita da una query non porta SRID ne profilo
-        // dimensionale dimostrati e il renderer non incapsula la colonna in
-        // ST_AsBinary: senza quel preflight il contratto GeoArrow sarebbe una
-        // dichiarazione non verificata.
+        // Una geometria in uscita da una query resta chiusa, e la ragione non
+        // e piu «manca un preflight»: e stata misurata, e non e la stessa che
+        // il percorso di lettura ha risolto.
+        //
+        // Li il CRS di una **colonna** puo essere dichiarato dal chiamante e
+        // verificato valore per valore, perche i valori lo portano. Qui la
+        // geometria e **calcolata**, e `raw.geometry_result_forms` dice cosa
+        // ne resta:
+        //
+        // * su `MySQL`, in un sistema di riferimento geografico — 4326, cioe
+        //   il caso comune — `ST_Envelope`, `ST_Centroid` e `ST_Buffer`
+        //   rispondono 3618: non sono implementate. Non c'e CRS da verificare
+        //   perche non c'e risultato;
+        // * su `MariaDB` funzionano, ma il CRS sopravvive **a seconda della
+        //   funzione**: `ST_Envelope` e `ST_Centroid` conservano 4326,
+        //   `ST_Buffer` rende 0;
+        // * in cartesiano entrambi rendono 0 ovunque, che e l'indefinito OGC:
+        //   pubblicarlo come CRS direbbe una cosa che nessuno ha dichiarato.
+        //
+        // Aprire questa superficie richiederebbe percio una regola di CRS per
+        // **funzione e per tipo di sistema di riferimento**, misurata una
+        // funzione alla volta — non un preflight. Finche quella regola non
+        // esiste, il contratto `GeoArrow` non ha un CRS da pubblicare, e
+        // pubblicarne uno inventato e l'unico esito peggiore del rifiuto.
         ColumnType::MYSQL_TYPE_GEOMETRY => {
             return Err(unsupported(format!(
-                "geometria {product} nel path query richiede il preflight SRID \
-                 non ancora qualificato"
+                "geometria calcolata {product} senza un CRS dimostrabile nel path query"
             )));
         }
         other => {

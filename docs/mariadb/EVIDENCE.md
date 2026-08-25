@@ -1819,3 +1819,126 @@ piano onorato a meta, e il chiamante crederebbe di avere un indice che non ha.
 * **le funzioni spatial che `MySQL` non ha**: la sonda attraversa la lista
   dell'altro prodotto, quindi misura al piu quella. E' una domanda che comincia
   dal catalogo di `MariaDB`, e questo documento non l'ha ancora posta.
+
+## Diciannovesima tranche: ventisei mai chieste, nove presenti
+
+La lista verified ne portava quindici su `MySQL` e quattordici qui. Il contratto
+ne dichiara settantadue, e quarantuno non restituiscono geometria — cioe
+quarantuno che il mapper del result set saprebbe consegnare. Le ventisei di
+mezzo non erano state **rifiutate**: non erano mai state chieste.
+
+La differenza non e sfumatura. Una capability chiusa perche misurata assente e
+una promessa che il prodotto non puo mantenere; una chiusa perche nessuno ha
+guardato e una promessa che il prodotto forse mantiene gia, e che il consumatore
+non puo usare.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | spatial | `raw.spatial_candidate_functions` | presenti 9/26 | presenti 9/26 | presenti **8/26** |
+| provider | profilo | `provider.profile_spatial_functions` | eseguite 24/24 | eseguite 21/21 | eseguite 21/21 |
+
+### Cosa dice
+
+**Nove funzioni su ventisei esistono, diciassette no.** Le diciassette assenti
+sono `PostGIS` — clustering, MVT, geobuf, azimuth, distanze 3D — e non sono
+lavoro rimasto: sono un fatto del prodotto.
+
+**Le due liste non sono piu una il sottoinsieme dell'altra.** `Relate` e
+`CoveredBy` esistono su `MariaDB` e non su `MySQL`; `HausdorffDistance` e
+`FrechetDistance` il contrario. La guardia del profilo verifica ora entrambe le
+direzioni: cercare solo cio che manca a `MariaDB` lascerebbe passare in silenzio
+il giorno in cui `MySQL` perdesse qualcosa che qui c'e.
+
+**`CoveredBy` e la seconda divergenza fra le due major**, dopo `IsValid`: la
+12.3 ce l'ha, la 11.8 LTS no. Vale la stessa regola — la lista e
+l'intersezione.
+
+**`Relate` esiste e non e utilizzabile**, che sono due cose diverse. La sonda
+delle candidate lo aveva trovato presente ed era entrato nella lista; il gate lo
+ha bocciato con `1582`, numero di parametri sbagliato, perche `MariaDB` lo vuole
+a tre argomenti — le due geometrie e il pattern DE-9IM — mentre il contratto ne
+ammette anche due. Una funzione e qualificata quando lo e a **ogni** arieta che
+il piano ammette, non quando ne esiste una che funziona: e la stessa regola che
+tolse `Union` dalla lista di `MySQL`.
+
+E' anche il caso che mostra perche le due sonde servono entrambe. Quella raw dice
+«il server ce l'ha» e basta — e il primo filtro, non il verdetto. Quella sul
+percorso dice se un piano scritto secondo il contratto arriva a destinazione.
+
+### Cosa ne segue per le capability
+
+`MySQL` passa a **ventiquattro** funzioni, `MariaDB` a **ventuno**. Il nome che
+la sonda chiede al server e quello che il renderer emetterebbe — glielo da
+`plenora_database_sql::spatial_function_name`, esposto per questo. Ricavarlo dal
+catalogo o a mano misurerebbe una funzione che il crate non scrive mai, ed e
+l'errore che aveva lasciato `ST_NDims` e `ST_NPoints` fra le verified di
+`MySQL`.
+
+### Cosa resta not_measured
+
+Niente di nuovo: le trentuno geometriche restano il blocco, ed e la tranche
+successiva a dire cosa le tiene chiuse.
+
+## Ventesima tranche: la leva che non c'era
+
+Il documento aveva contato trentuno funzioni del contratto che restituiscono
+geometria, chiuse tutte dalla stessa riga: il mapper del result set rifiuta
+`MYSQL_TYPE_GEOMETRY`. Sembrava una causa sola, e quindi la leva piu grossa
+rimasta — il percorso di lettura aveva appena risolto lo stesso problema con un
+CRS dichiarato dal chiamante e verificato valore per valore, e portare quella
+forma anche qui avrebbe aperto trentuno superfici in un colpo.
+
+La misura dice che quella leva non esiste.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | spatial | `raw.geometry_result_forms` | geo: envelope/centroid/buffer = **3618**; cart: 0 ovunque | geo: envelope=4326 centroid=4326 **buffer=0**; cart: 0 ovunque | **identico a MariaDB 12** |
+
+### Cosa dice
+
+**Su `MySQL`, in un sistema di riferimento geografico, quelle funzioni non
+esistono.** `ST_Envelope`, `ST_Centroid` e `ST_Buffer` su una geometria 4326
+rispondono `3618`: non sono implementate per SRS geografici. Non c'e un CRS da
+verificare perche non c'e un risultato — e 4326 e il caso comune, non un angolo.
+
+**Su `MariaDB` funzionano, ma il CRS sopravvive a seconda della funzione.**
+`ST_Envelope` e `ST_Centroid` conservano 4326; `ST_Buffer` rende **0**. Non e un
+errore: e che il risultato di un buffer, per quel motore, non appartiene piu a
+quel sistema di riferimento.
+
+**In cartesiano entrambi rendono 0 ovunque**, che e l'indefinito OGC.
+Pubblicarlo come CRS direbbe una cosa che nessuno ha dichiarato.
+
+E diverge perfino la **forma** del risultato: l'envelope di un punto occupa 93
+byte su `MariaDB` — un poligono degenere — e 21 su `MySQL`, che rende il punto.
+
+### Cosa ne segue
+
+La differenza col percorso di lettura e netta, e va detta perche e la ragione
+per cui la stessa soluzione non si applica. Li il CRS e di una **colonna**: il
+chiamante lo dichiara, i valori lo portano, e la verifica valore per valore lo
+conferma o lo smentisce. Qui la geometria e **calcolata**, e cio che ne esce non
+porta un CRS confrontabile: su un prodotto non esce affatto, sull'altro dipende
+dalla funzione.
+
+Aprire questa superficie richiederebbe una regola di CRS per **funzione e per
+tipo di sistema di riferimento**, misurata una funzione alla volta — trentuno
+per due — e su `MySQL` il ramo geografico resterebbe comunque chiuso dal
+prodotto.
+
+Il rifiuto resta, e cambia ragione. Diceva «richiede il preflight SRID non
+ancora qualificato», che suonava come una cosa da fare; ora dice «geometria
+calcolata senza un CRS dimostrabile», che e cio che e stato misurato.
+
+### Cosa resta not_measured
+
+* **le altre ventotto funzioni geometriche**: la sonda ne ha attraversate tre —
+  envelope, centroide, buffer — scelte perche coprono i tre esiti possibili.
+  Misurarle tutte servirebbe soltanto a costruire la regola per funzione, ed e
+  lavoro che ha senso il giorno in cui qualcuno decida di volerla.
+* **la dichiarazione `exact` in scrittura** e **le dimensioni oltre XY**:
+  invariate.
