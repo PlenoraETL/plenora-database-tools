@@ -93,6 +93,8 @@ EXPECTED_UNIT_TESTS = {
     "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
     "pool::tests::checkout_preserves_the_independent_acquire_budget",
     "pool::tests::zero_capacity_is_rejected_without_network",
+    "provider::tests::neither_provider_adapts_to_the_other_product",
+    "provider::tests::the_mariadb_constructor_selects_the_mariadb_profile",
     "profile::tests::a_diverging_profile_changes_timeout_classification_and_spatial",
     "profile::tests::a_privilege_error_is_authorization_on_both_products",
     "profile::tests::a_second_profile_changes_what_the_caller_observes",
@@ -104,7 +106,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::no_module_signs_an_error_with_a_hardcoded_product",
     "profile::tests::no_other_module_writes_the_geometry_projection",
     "profile::tests::no_other_module_writes_the_timeout_statement",
-    "profile::tests::no_production_module_selects_the_mariadb_profile",
+    "profile::tests::only_the_mariadb_provider_selects_the_mariadb_profile",
     "profile::tests::no_production_module_writes_the_metadata_namespace_itself",
     "profile::tests::no_production_path_uses_a_profileless_entry_point",
     "profile::tests::the_capability_table_is_built_only_by_the_profile",
@@ -218,6 +220,7 @@ EXPECTED_UNIT_TESTS = {
     "types::tests::mapping_preserves_signedness_and_rejects_wide_decimal",
     "types::tests::mysql_geomcollection_alias_produces_the_canonical_exact_type",
     "types::tests::spatial_projection_is_wkb_xy_with_declared_srid",
+    "types::tests::the_window_renders_with_and_without_a_ceiling",
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",
@@ -318,6 +321,16 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
     "live_tests::live_query_operation_cancellation_and_timeout_quarantine_the_session",
     "live_tests::live_query_operation_executes_once_holds_lease_and_stays_demand_bounded",
+    # `query_stream`: le sei prove del contratto dello stream dentro la
+    # transazione. Le prime cinque hanno una controparte su PostgreSQL; la
+    # sesta no, perche li un cursore abbandonato non costa niente e qui
+    # rende la connessione inservibile.
+    "live_tests::live_query_stream_abandoned_without_cancellation_is_refused_too",
+    "live_tests::live_query_stream_cancelled_mid_stream_returns_cancelled",
+    "live_tests::live_query_stream_exhausts_at_end",
+    "live_tests::live_query_stream_paginates_result_in_batches",
+    "live_tests::live_query_stream_respects_bound_parameters",
+    "live_tests::live_query_stream_zero_batch_size_is_invalid_plan",
     "live_tests::live_read_projection_filter_order_and_default_schema",
     "live_tests::live_reference_probe_catalog_and_spatial_metadata",
     "live_tests::live_scalar_single_source_query_uses_prepare_metadata_as_schema",

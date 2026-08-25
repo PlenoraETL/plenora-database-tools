@@ -50,6 +50,16 @@ jobs:
         run: python3 scripts/test_ci_workflows.py
       - name: scripts/test_check_mariadb_reference.py
         run: python3 scripts/test_check_mariadb_reference.py
+      # Novantaquattro test che nessun workflow eseguiva. Il gate MySQL gira
+      # in `mysql-static-gate`, il suo self-test no: e la stessa distinzione
+      # che aveva lasciato scoperto il gate PostgreSQL, e qui si vedeva anche
+      # meno — c'e un workflow con «mysql» nel nome, e sembra coprirlo.
+      #
+      # Non e teorico: due di quei test erano rossi quando li ho eseguiti la
+      # prima volta, uno per una rifattorizzazione del runner SDK di questa
+      # stessa sessione.
+      - name: scripts/test_check_mysql_reference.py
+        run: python3 scripts/test_check_mysql_reference.py
       - name: scripts/test_live_inventory.py
         run: python3 -m unittest scripts.test_live_inventory
       - name: scripts/test_check_postgres_reference.py

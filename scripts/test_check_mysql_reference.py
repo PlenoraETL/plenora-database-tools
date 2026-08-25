@@ -326,7 +326,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 25)
+        # Il numero e un fermo, non una misura: aggiungere un test live
+        # dev'essere un atto deliberato, e passare da qui e cio che lo rende
+        # tale. Le sei righe nuove sono le prove di `query_stream`.
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 31)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (
@@ -2293,10 +2296,34 @@ class PythonSdkRunnerTests(unittest.TestCase):
         """
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
-        self.assertLess(
-            source.index("declared_version()\n        validate_maturin_pin("),
-            source.index("artifact = build_artifacts("),
-        )
+        # Le due verifiche stanno in `preconditions`, che chi costruisce
+        # chiama prima. Il test cercava le due righe adiacenti dentro `main`,
+        # dove stavano finche non e esistita una campagna: la forma e
+        # cambiata, la proprieta no, e a presidiarla sono ora due
+        # affermazioni invece di una posizione.
+        head = source.index("def preconditions()")
+        tail = source.index("\ndef ", head + 1)
+        for check in ("declared_version()", "validate_maturin_pin("):
+            self.assertIn(
+                check,
+                source[head:tail],
+                f"{check} non e piu dentro preconditions",
+            )
+        # E chi costruisce le invoca: la posizione da sola non basterebbe,
+        # perche `preconditions` potrebbe esistere senza che nessuno la chiami.
+        for caller in ("def preflight()", "def main()"):
+            start = source.index(caller)
+            # `main` e l'ultima funzione del file: senza il ripiego la ricerca
+            # del prossimo `def` non trova niente, e il test fallirebbe per la
+            # forma del file invece che per cio che sorveglia.
+            end = source.find("\ndef ", start + 1)
+            if end == -1:
+                end = len(source)
+            self.assertIn(
+                "preconditions()",
+                source[start:end],
+                f"{caller} costruisce senza aver verificato le versioni",
+            )
 
     def test_every_scope_declares_what_a_correct_run_looks_like(self) -> None:
         """I tre contratti stanno in una struttura sola, e sono coerenti.
