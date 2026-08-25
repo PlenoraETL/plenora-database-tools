@@ -1155,6 +1155,175 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Il provider pubblico di `MariaDB`.
+///
+/// ADR 0014 aveva deciso la forma quando l'evidenza era due tranche: **un
+/// crate solo**, con un'implementazione interna condivisa e due provider
+/// pubblici distinti. Questo e il secondo, e arriva ora perche prima non
+/// avrebbe avuto niente da offrire: fino alla nona tranche il profilo
+/// `MariaDB` pubblicava una lettura e due write mode, e un provider che
+/// esponesse meta contratto sarebbe stato una promessa da ritirare. Oggi
+/// dichiara le stesse sei write mode di `MySQL`, e ciascuna ha le proprie tre
+/// sonde su tre riferimenti fissati per digest.
+///
+/// # Non c'e selezione automatica
+///
+/// `MysqlProvider` continua a rifiutare `MariaDB` alla probe, e questo rifiuta
+/// `MySQL` con la stessa simmetria. Un provider che si adattasse al server che
+/// trova sceglierebbe per il consumatore, e lo farebbe nel punto in cui il
+/// consumatore non sta guardando: chi dichiara `mysql` e finisce su `MariaDB`
+/// ha un problema di configurazione, non una comodita da assecondare.
+///
+/// # Perche un newtype e non una feature del primo
+///
+/// Il prodotto e un fatto del **tipo**, non un parametro: e cio che permette a
+/// `PublishedProfile` di dire quale profilo un costruttore pubblico seleziona,
+/// e a una guardia di verificare che il provider costruito sia davvero quello.
+/// Un parametro avrebbe rimesso la scelta a runtime, cioe dove nessuno la
+/// verifica.
+///
+/// La configurazione resta `MysqlConfig`: i due prodotti parlano lo stesso
+/// protocollo e la stessa connessione, e un tipo gemello che differisse solo
+/// nel nome divergerebbe alla prima correzione applicata a uno solo. Cio che
+/// diverge e nel profilo, che e il posto in cui questa ADR ha deciso di
+/// tenerlo.
+pub struct MariadbProvider(MysqlProvider);
+
+impl PublishedProfile for MariadbProvider {
+    const PROFILE: &'static dyn ProductProfile = &crate::profile::MARIADB_PROFILE;
+}
+
+impl std::fmt::Debug for MariadbProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Delega, ma con il proprio nome: il `Debug` e superficie osservata, e
+        // un `MariadbProvider` che si stampasse `MysqlProvider` direbbe il
+        // falso proprio nel punto in cui qualcuno sta cercando di capire quale
+        // dei due ha in mano.
+        formatter
+            .debug_tuple("MariadbProvider")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl MariadbProvider {
+    /// Costruisce il provider `MariaDB` con pool lazy e configurazione
+    /// validata.
+    ///
+    /// # Errors
+    ///
+    /// Come [`MysqlProvider::new`]: configurazione o limiti del pool non
+    /// validi. L'errore e attribuito a `MariaDB`, non al provider gemello.
+    pub fn new(config: MysqlConfig, max_connections: usize) -> Result<Self> {
+        Ok(Self(MysqlProvider::with_profile(
+            config,
+            max_connections,
+            Self::PROFILE,
+        )?))
+    }
+}
+
+// La delega e per intero e senza rami: se una sola operazione passasse da
+// un'altra parte, il provider pubblico e quello misurato sarebbero due cose
+// diverse, e la misura non direbbe piu niente su cio che il consumatore usa.
+impl Provider for MariadbProvider {
+    fn kind(&self) -> ProviderKind {
+        self.0.kind()
+    }
+
+    fn test_connection<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ConnectionInfo> {
+        self.0.test_connection(secret, cancellation)
+    }
+
+    fn probe_capabilities<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ProviderCapabilities> {
+        self.0.probe_capabilities(secret, cancellation)
+    }
+
+    fn inspect<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a Operation,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Inspection> {
+        self.0.inspect(secret, operation, cancellation)
+    }
+
+    fn read<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a ReadOperation,
+        parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        self.0
+            .read(secret, operation, parameters, budget, cancellation)
+    }
+
+    fn query<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a QueryOperation,
+        parameters: &'a ParameterBag,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
+        self.0
+            .query(secret, operation, parameters, budget, cancellation)
+    }
+
+    fn prepare_write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        operation: &'a WriteOperation,
+        input_schema: SchemaRef,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, PreparedWrite> {
+        self.0
+            .prepare_write(secret, operation, input_schema, budget, cancellation)
+    }
+
+    fn write<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        prepared: PreparedWrite,
+        input: Box<dyn BatchStream>,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, WriteOutcome> {
+        self.0.write(secret, prepared, input, budget, cancellation)
+    }
+
+    fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a plenora_database_core::transaction::TransactionOptions,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
+        self.0
+            .begin_transaction(secret, options, budget, cancellation)
+    }
+
+    fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        self.0.execute_ddl(secret, sql, cancellation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,6 +1353,73 @@ mod tests {
         assert_eq!(
             provider.profile.product(),
             crate::profile::MYSQL_PROFILE.product()
+        );
+    }
+
+    /// Lo stesso, per il secondo provider del crate.
+    ///
+    /// Il costruttore di `MariadbProvider` delega a `with_profile`, cioe passa
+    /// da un punto in cui il profilo e un argomento: la delega puo restare
+    /// giusta e l'argomento sbagliato, e il tipo non se ne accorgerebbe.
+    #[test]
+    fn the_mariadb_constructor_selects_the_mariadb_profile() {
+        let config = MysqlConfig::new(
+            "mariadb.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("unique-secret"),
+        );
+        let provider = MariadbProvider::new(config, 1).expect("provider");
+        let declared = <MariadbProvider as PublishedProfile>::PROFILE;
+        assert_eq!(provider.kind(), declared.kind());
+        assert_eq!(provider.kind(), ProviderKind::Mariadb);
+        assert_eq!(
+            declared.product(),
+            crate::profile::MARIADB_PROFILE.product()
+        );
+    }
+
+    /// I due provider si rifiutano a vicenda, e nessuno dei due si adatta.
+    ///
+    /// E la meta di ADR 0014 che il codice deve rendere vera: «nessuna
+    /// selezione automatica». Un provider che accettasse l'altro motore
+    /// sceglierebbe per il consumatore nel punto in cui il consumatore non sta
+    /// guardando.
+    ///
+    /// Il riconoscimento si esercita qui **senza rete**: e una funzione delle
+    /// due stringhe che il server manda, e chiedergliele dal vivo
+    /// misurerebbe anche la connessione. La corsa live che lo attraversa
+    /// davvero e `provider.profile_probe`, nella matrice dell'evidenza.
+    #[test]
+    fn neither_provider_adapts_to_the_other_product() {
+        let mysql = ("9.7.2", "MySQL Community Server - GPL");
+        let mariadb = ("11.8.8-MariaDB-ubu2404", "mariadb.org binary distribution");
+        let mysql_profile = <MysqlProvider as PublishedProfile>::PROFILE;
+        let mariadb_profile = <MariadbProvider as PublishedProfile>::PROFILE;
+
+        assert!(
+            mysql_profile
+                .foreign_product_rejection(mysql.0, mysql.1)
+                .is_none(),
+            "il profilo MySQL rifiuta MySQL"
+        );
+        assert!(
+            mariadb_profile
+                .foreign_product_rejection(mariadb.0, mariadb.1)
+                .is_none(),
+            "il profilo MariaDB rifiuta MariaDB"
+        );
+        assert!(
+            mysql_profile
+                .foreign_product_rejection(mariadb.0, mariadb.1)
+                .is_some(),
+            "il provider MySQL accetta MariaDB: e una selezione automatica"
+        );
+        assert!(
+            mariadb_profile
+                .foreign_product_rejection(mysql.0, mysql.1)
+                .is_some(),
+            "il provider MariaDB accetta MySQL: la simmetria non regge"
         );
     }
     use plenora_database_core::plan::{ComparisonOperator, ObjectRef};

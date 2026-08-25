@@ -468,7 +468,11 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
 
 #[test]
 fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
-    for provider in ["mariadb", "oracle", "db2", "sqlite", "duckdb"] {
+    // `mariadb` e uscito da questo elenco: l'adapter esiste da quando esiste
+    // `MariadbProvider`. Cio che resta e la sua meta simmetrica, qui sotto —
+    // il provider c'e se e solo se la feature che lo compila c'e, e la
+    // risposta deve dire quale delle due cose manca.
+    for provider in ["oracle", "db2", "sqlite", "duckdb"] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);
         assert_eq!(envelope["error"]["category"], "unsupported");
@@ -476,6 +480,48 @@ fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
         assert_eq!(envelope["error"]["remote_effect"], "none");
         assert_eq!(envelope["error"]["retry"]["kind"], "never");
         assert_eq!(envelope["error"]["provider"], provider);
+    }
+}
+
+/// `MariaDB` e raggiungibile se e solo se il crate che la porta e compilato.
+///
+/// Le due risposte non sono intercambiabili, ed e il motivo per cui il test
+/// esiste: «adapter non disponibile» si risolve ricostruendo il binario,
+/// «manca il secret» si risolve scrivendo un argomento. Prima della nascita di
+/// `MariadbProvider` il CLI dava sempre la prima, anche a chi aveva compilato
+/// tutto.
+#[test]
+fn every_provider_is_reachable_exactly_where_its_adapter_is_compiled() {
+    for (provider, compiled) in [
+        ("postgres", cfg!(feature = "postgres")),
+        ("mysql", cfg!(feature = "mysql")),
+        // Stesso crate di `mysql`, stessa feature, provider diverso.
+        ("mariadb", cfg!(feature = "mysql")),
+        ("sqlserver", cfg!(feature = "sqlserver")),
+    ] {
+        let output = run(&["database-probe", provider]);
+        let envelope = error_envelope(&output);
+        assert_eq!(output.status.code(), Some(1));
+        if compiled {
+            // Compilato: l'errore riguarda cio che manca sulla riga di
+            // comando, non l'adapter.
+            assert_ne!(
+                envelope["error"]["category"], "unsupported",
+                "{provider} e compilato ma il CLI lo dichiara assente: {envelope}"
+            );
+        } else {
+            assert_eq!(
+                envelope["error"]["category"], "unsupported",
+                "{provider} non e compilato e il CLI non lo dice: {envelope}"
+            );
+            assert_eq!(envelope["error"]["provider"], provider);
+            assert!(
+                envelope["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("ricostruire")),
+                "{provider}: il messaggio non dice come si risolve: {envelope}"
+            );
+        }
     }
 }
 

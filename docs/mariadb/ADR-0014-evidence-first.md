@@ -200,3 +200,55 @@ Il bypass di solo test resta cio che e — `#[cfg(test)]`, scoped, senza
 superficie pubblica — finche `MariadbProvider` non esiste. Quando esistera,
 sara quel provider a raggiungere le stesse superfici alla luce del sole, e il
 bypass avra esaurito il suo compito.
+
+## Realizzazione (2026-08-25): `MariadbProvider` esiste
+
+La decisione del 2026-08-18 diceva la forma; questa sezione registra quando e
+diventata codice, e cosa e cambiato rispetto a cio che prevedeva.
+
+**Cos'e stato fatto.** `plenora-db-mysql` esporta ora `MariadbProvider`
+accanto a `MysqlProvider`: un newtype che inoltra ogni operazione
+all'implementazione condivisa, costruito con `MARIADB_PROFILE` invece che con
+quello di `MySQL`. La configurazione resta `MysqlConfig` — i due prodotti
+parlano lo stesso protocollo, e un tipo gemello che differisse solo nel nome
+divergerebbe alla prima correzione applicata a uno solo. Il CLI accetta
+`mariadb` in tutta la famiglia generica `database-*`.
+
+**Perche ora e non prima.** Il provider non e arrivato con la decisione ma
+sette tranche dopo, e la ragione e la regola 1: fino alla nona tranche il
+profilo `MariaDB` pubblicava una lettura e due write mode, e un provider che
+esponesse meta contratto sarebbe stato una promessa da ritirare. Oggi dichiara
+le stesse sei write mode di `MySQL`, e ciascuna ha le proprie tre sonde sui
+tre riferimenti.
+
+**Cosa la realizzazione ha corretto.** Il CLI dichiarava disponibile un
+adapter che il binario poteva non aver compilato: il rifiuto arrivava piu
+avanti, dopo la lettura del nome della variabile secret, e a chi lo
+dimenticava rispondeva «manca il secret» invece di «adapter non compilato».
+Erano due rimedi diversi — scrivere un argomento, o ricostruire il binario — e
+la risposta sbagliata mandava a cercare dalla parte sbagliata. Non riguardava
+solo `MariaDB`: valeva per `mysql` e `sqlserver` in un binario di solo
+PostgreSQL, e c'era da prima. La disponibilita e ora legata alle feature
+compilate, e un test la verifica per tutti e quattro i provider.
+
+**Cosa non e cambiato.** Nessuna selezione automatica: `MysqlProvider`
+continua a rifiutare `MariaDB` alla probe e `MariadbProvider` rifiuta `MySQL`
+con la stessa simmetria, verificata da un test che esercita entrambi i
+riconoscimenti. La guardia che diceva «nessun modulo di produzione seleziona
+il profilo MariaDB» e stata riscritta invece che cancellata: ora pretende che
+la selezione sia **una sola** e dentro la dichiarazione che la pubblica,
+perche un secondo punto che scegliesse quel profilo sarebbe una selezione che
+nessuno ha deciso.
+
+**Cosa resta del bypass.** Il bypass `#[cfg(test)]` non e stato rimosso, e la
+previsione va corretta. Serviva a raggiungere `MariaDB` attraverso il provider
+`MySQL`, e quelle sonde — `provider.describe_object`, `provider.read`,
+`provider.transaction` — misurano cosa fa il provider **non qualificato**
+puntato sul motore sbagliato: sono la misura del fail-close, non del prodotto,
+e restano valide come tali. Cio che il bypass ha smesso di essere e l'unica
+via a `MariaDB`: le sonde `provider.profile_*` passano dal profilo, e il
+provider pubblico le rende raggiungibili anche fuori dai test.
+
+**Cosa resta aperto.** Il SDK Python non espone ancora `connect_mariadb`: il
+binding dipende da `plenora-db-mysql` e costruisce `MysqlProvider`, e la
+superficie esplicita che questa ADR nomina va aggiunta li.

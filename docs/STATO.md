@@ -46,15 +46,9 @@ e scritta. Un valore che non e un letterale — `spatial` su PostgreSQL
 dipende dalla presenza di PostGIS — resta l'espressione sorgente:
 risolverla qui sarebbe un'affermazione che il codice non fa.
 
-**Non tutte sono raggiungibili.** `MariaDB` ha una dichiarazione nel crate ma nessun costruttore pubblico
-la seleziona: e un profilo interno, e non esiste un provider che
-un consumatore possa istanziare. La colonna e qui perche la
-dichiarazione esiste, non perche la si possa usare — ed e marcata
-nell'intestazione.
-
 ### `reads`
 
-| reads | PostgreSQL | MySQL | MariaDB (non pubblicato) | SQL Server |
+| reads | PostgreSQL | MySQL | MariaDB | SQL Server |
 | --- | --- | --- | --- | --- |
 | `streaming` | `true` | `true` | `true` | `true` |
 | `server_cursor` | `false` | `false` | `false` | `false` |
@@ -66,7 +60,7 @@ nell'intestazione.
 
 ### `writes`
 
-| writes | PostgreSQL | MySQL | MariaDB (non pubblicato) | SQL Server |
+| writes | PostgreSQL | MySQL | MariaDB | SQL Server |
 | --- | --- | --- | --- | --- |
 | `create` | `true` | `true` | `true` | `true` |
 | `append` | `true` | `true` | `true` | `true` |
@@ -148,4 +142,4 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | --- | --- |
 | `live_default` | 38 |
 | `live_reference` | 25 |
-| `unit` | 199 |
+| `unit` | 201 |

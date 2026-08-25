@@ -27,7 +27,7 @@ use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
 use plenora_database_engine::parse_and_validate;
 #[cfg(feature = "mysql")]
-use plenora_db_mysql::{MysqlConfig, MysqlProvider};
+use plenora_db_mysql::{MariadbProvider, MysqlConfig, MysqlProvider};
 #[cfg(feature = "postgres")]
 use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
 #[cfg(feature = "sqlserver")]
@@ -458,16 +458,51 @@ fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
 /// nome e fallire dopo, alla connessione, direbbe al chiamante che il server
 /// non risponde quando il problema e che l'adapter non e stato compilato.
 fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
-    if matches!(
-        kind,
-        ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Sqlserver
-    ) {
+    // Una tabella e non un predicato, per la stessa ragione di
+    // `feature_is_compiled`: `cfg!` va valutato per **ogni** riga, altrimenti
+    // quella della feature assente sparisce insieme al ramo.
+    //
+    // Prima l'elenco era fisso, e diceva «disponibile» di un adapter che
+    // questo binario poteva non aver compilato: il rifiuto arrivava piu
+    // avanti, dopo aver letto il nome della variabile secret, e a chi lo
+    // dimenticava rispondeva «manca il secret» invece di «adapter non
+    // compilato». Sono due rimedi diversi — scrivere un argomento, o
+    // ricostruire il binario — e la risposta sbagliata manda a cercare dalla
+    // parte sbagliata.
+    let compiled = [
+        (ProviderKind::Postgres, cfg!(feature = "postgres")),
+        // `MariaDB` arriva con lo stesso crate di `MySQL`: chi ha compilato
+        // l'uno ha compilato l'altro, e sono due provider distinti dentro la
+        // stessa feature.
+        (ProviderKind::Mysql, cfg!(feature = "mysql")),
+        (ProviderKind::Mariadb, cfg!(feature = "mysql")),
+        (ProviderKind::Sqlserver, cfg!(feature = "sqlserver")),
+    ]
+    .into_iter()
+    .any(|(candidate, compiled)| candidate == kind && compiled);
+    if compiled {
         return Ok(());
     }
+    // Il testo distingue i due casi come li distingue `unknown_command` per i
+    // sotto-comandi: un adapter che nessun crate implementa non si risolve
+    // ricostruendo, uno non compilato si.
+    let message = if matches!(
+        kind,
+        ProviderKind::Postgres
+            | ProviderKind::Mysql
+            | ProviderKind::Mariadb
+            | ProviderKind::Sqlserver
+    ) {
+        "adapter non compilato in questo binario: ricostruire con la feature \
+         di quel provider (--features mysql per mysql e mariadb, \
+         --features sqlserver, oppure --features full per tutti)"
+    } else {
+        "provider dichiarato dal contratto ma adapter non disponibile"
+    };
     Err(CliError::Fatal(DatabaseError::unsupported(
         kind,
         ErrorPhase::Prepare,
-        "provider dichiarato dal contratto ma adapter non disponibile",
+        message,
     )))
 }
 
@@ -1162,6 +1197,22 @@ enum ProviderArguments {
         port: Option<u16>,
         tls: TlsPathEnvironments,
     },
+    /// `MariaDB`, che ha gli stessi argomenti di `MySQL` e un provider
+    /// diverso.
+    ///
+    /// Una variante sua e non un flag su quella di `MySQL`: la scelta del
+    /// prodotto e cio che decide quale provider viene costruito, e ADR 0014
+    /// vieta che sia il server a deciderlo. Un booleano dentro `Mysql`
+    /// avrebbe reso possibile costruire il provider sbagliato dimenticando di
+    /// leggerlo.
+    #[cfg(feature = "mysql")]
+    Mariadb {
+        host: String,
+        database: String,
+        username: String,
+        port: Option<u16>,
+        tls: TlsPathEnvironments,
+    },
     #[cfg(feature = "sqlserver")]
     Sqlserver {
         host: String,
@@ -1177,6 +1228,11 @@ enum PreparedProviderArguments {
     Postgres(PostgresProvider),
     #[cfg(feature = "mysql")]
     Mysql(MysqlConfig),
+    // Stessa configurazione, provider diverso: i due prodotti parlano lo
+    // stesso protocollo, e cio che li distingue vive nel profilo che il
+    // costruttore del provider seleziona.
+    #[cfg(feature = "mysql")]
+    Mariadb(MysqlConfig),
     #[cfg(feature = "sqlserver")]
     Sqlserver(SqlServerConfig),
 }
@@ -1221,7 +1277,7 @@ fn parse_provider_arguments(
             Ok(ProviderArguments::Postgres { tls })
         }
         #[cfg(any(feature = "mysql", feature = "sqlserver"))]
-        ProviderKind::Mysql | ProviderKind::Sqlserver => {
+        ProviderKind::Mysql | ProviderKind::Mariadb | ProviderKind::Sqlserver => {
             let host = args
                 .next()
                 .ok_or_else(|| "manca host provider".to_owned())?;
@@ -1249,6 +1305,14 @@ fn parse_provider_arguments(
             match kind {
                 #[cfg(feature = "mysql")]
                 ProviderKind::Mysql => Ok(ProviderArguments::Mysql {
+                    host,
+                    database,
+                    username,
+                    port,
+                    tls,
+                }),
+                #[cfg(feature = "mysql")]
+                ProviderKind::Mariadb => Ok(ProviderArguments::Mariadb {
                     host,
                     database,
                     username,
@@ -1309,17 +1373,19 @@ fn prepare_provider_arguments(
             username,
             port,
             tls,
-        } => {
-            let mut config = MysqlConfig::new(host, database, username, SecretString::new(""));
-            if let Some(port) = port {
-                config = config.with_port(port);
-            }
-            if let Some(pem) = prepare_private_ca_material(tls.ca.as_deref())? {
-                config = config.with_private_ca_certificate_pem(pem);
-            }
-            config.validate_without_password()?;
-            Ok(PreparedProviderArguments::Mysql(config))
-        }
+        } => Ok(PreparedProviderArguments::Mysql(mysql_family_config(
+            host, database, username, port, &tls,
+        )?)),
+        #[cfg(feature = "mysql")]
+        ProviderArguments::Mariadb {
+            host,
+            database,
+            username,
+            port,
+            tls,
+        } => Ok(PreparedProviderArguments::Mariadb(mysql_family_config(
+            host, database, username, port, &tls,
+        )?)),
         #[cfg(feature = "sqlserver")]
         ProviderArguments::Sqlserver {
             host,
@@ -1346,6 +1412,46 @@ fn prepare_provider_arguments(
 // nella costruzione del provider; con solo Postgres attivo il match è
 // infallibile ma la firma resta la stessa per uniformità.
 #[allow(clippy::unnecessary_wraps)]
+/// La configurazione comune ai due prodotti della famiglia `MySQL`.
+///
+/// Sta in un posto solo perche i due percorsi devono restare identici: la
+/// differenza fra `MysqlProvider` e `MariadbProvider` e il profilo che il
+/// costruttore seleziona, non come si legge la riga di comando. Due copie
+/// divergerebbero alla prima correzione applicata a una sola — ed e proprio il
+/// fail-close TLS a non poterselo permettere.
+#[cfg(feature = "mysql")]
+fn mysql_family_config(
+    host: String,
+    database: String,
+    username: String,
+    port: Option<u16>,
+    tls: &TlsPathEnvironments,
+) -> CliResult<MysqlConfig> {
+    let mut config = MysqlConfig::new(host, database, username, SecretString::new(""));
+    if let Some(port) = port {
+        config = config.with_port(port);
+    }
+    if let Some(pem) = prepare_private_ca_material(tls.ca.as_deref())? {
+        config = config.with_private_ca_certificate_pem(pem);
+    }
+    config.validate_without_password()?;
+    Ok(config)
+}
+
+// Il `Result` serve dove esiste un adapter che puo fallire a costruirsi —
+// `MysqlProvider`, `MariadbProvider`, `SqlServerProvider` validano pool e
+// configurazione — e in un binario di solo PostgreSQL non ne resta nessuno: li
+// il ramo unico restituisce un valore gia costruito. Togliere il `Result`
+// dalla firma lo toglierebbe anche dove serve; dichiarare qui in quale
+// configurazione non serve e la sola forma che non mente in nessuna delle
+// quattro.
+#[cfg_attr(
+    not(any(feature = "mysql", feature = "sqlserver")),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "senza altri adapter resta un solo ramo, e non puo fallire"
+    )
+)]
 fn build_provider_from_prepared_arguments(
     arguments: PreparedProviderArguments,
     #[cfg_attr(
@@ -1359,6 +1465,11 @@ fn build_provider_from_prepared_arguments(
         PreparedProviderArguments::Postgres(provider) => Ok(Box::new(provider)),
         #[cfg(feature = "mysql")]
         PreparedProviderArguments::Mysql(config) => Ok(Box::new(MysqlProvider::new(
+            config.with_password(secret.clone()),
+            8,
+        )?)),
+        #[cfg(feature = "mysql")]
+        PreparedProviderArguments::Mariadb(config) => Ok(Box::new(MariadbProvider::new(
             config.with_password(secret.clone()),
             8,
         )?)),
@@ -1698,6 +1809,11 @@ fn compiled_providers() -> Vec<&'static str> {
     }
     if cfg!(feature = "mysql") {
         names.push("mysql");
+        // Stesso crate, stessa feature, provider diverso: `plenora-db-mysql`
+        // pubblica `MysqlProvider` e `MariadbProvider`, e chi ha compilato
+        // l'uno ha compilato l'altro. Elencarne uno solo direbbe che l'altro
+        // va ricostruito, che e falso.
+        names.push("mariadb");
     }
     if cfg!(feature = "sqlserver") {
         names.push("sqlserver");
@@ -1837,7 +1953,9 @@ fn mysql_usage() -> String {
         "  mysql-execute-scalar <args...> <sql>  — SELECT scalare (1 riga × 1 colonna)",
         "  mysql-transaction-test <args...>   — smoke OLTP: begin + savepoint + rollback_to + commit",
         "  mysql-conditional-update <args...> <UPDATE_SQL> <EXPECTED_AFFECTED>  — pattern optimistic-lock",
-        "  nota: MariaDB non e qualificata — la probe la riconosce e la rifiuta (ADR 0014)",
+        "  nota: questi comandi sono di MySQL. MariaDB ha un provider suo, e",
+        "  `mysql-probe` la rifiuta: si raggiunge dalla famiglia generica,",
+        "  `database-probe mariadb <args...>` (ADR 0014, nessuna selezione automatica)",
     ]
     .join("\n")
 }

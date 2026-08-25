@@ -49,7 +49,7 @@ pub use catalog::{
 pub use config::{MysqlCertificatePolicy, MysqlConfig};
 pub use parameter::bind_parameters;
 pub use pool::MysqlPool;
-pub use provider::MysqlProvider;
+pub use provider::{MariadbProvider, MysqlProvider};
 pub use query::{query_result_columns, render_query};
 pub use read::{
     query_operation, read_operation, MysqlBatchStream, DEFAULT_BATCH_ROWS, MAX_BATCH_ROWS,

@@ -1896,11 +1896,26 @@ mod tests {
                 let block = &tail[..end];
                 let mut methods = 0;
                 for method in block.split(format!("{}    fn ", '\n').as_str()).skip(1) {
+                    let name = method.split(['(', '<']).next().unwrap_or("?");
+                    // Una delega pura non ristampa, e non deve: a ristampare e
+                    // il provider interno, costruito con il profilo del
+                    // prodotto. `MariadbProvider` e fatto cosi — un newtype
+                    // che inoltra tutto — e pretendere il timbro qui vorrebbe
+                    // dire timbrare due volte lo stesso bordo.
+                    //
+                    // L'eccezione e stretta apposta: vale solo se il corpo
+                    // inoltra **lo stesso metodo** al campo interno. Una
+                    // delega a un'operazione diversa, o a un altro oggetto,
+                    // non la soddisfa — e sarebbe proprio il caso in cui
+                    // l'attribuzione puo divergere senza che si veda.
+                    if method.contains(&format!("self.0{}{name}(", '.')) {
+                        methods += 1;
+                        continue;
+                    }
                     if !method.contains(boxed.as_str()) {
                         continue;
                     }
                     methods += 1;
-                    let name = method.split(['(', '<']).next().unwrap_or("?");
                     assert!(
                         method.contains(stamped.as_str()),
                         "{module}::{name} restituisce un futuro senza ristampare l'attribuzione"
@@ -2425,34 +2440,70 @@ mod tests {
     }
 
     #[test]
-    fn no_production_module_selects_the_mariadb_profile() {
-        // La fase e questa: il profilo esiste, nessun provider lo sceglie.
-        // Detta cosi e un'intenzione; qui diventa una proprieta verificabile,
-        // e il momento in cui smettera di valere sara un test che fallisce e
-        // non un provider comparso per gradi.
+    fn only_the_mariadb_provider_selects_the_mariadb_profile() {
+        // Questa guardia diceva un'altra cosa, ed e stata riscritta il giorno
+        // in cui ha smesso di essere vera — che era il suo scopo. Diceva:
+        // «il profilo esiste, nessun provider lo sceglie», perche allora
+        // `MariadbProfile` dichiarava chiuse quasi tutte le capability e un
+        // percorso che ci fosse arrivato non avrebbe aperto MariaDB, l'avrebbe
+        // fatta fallire in posti scelti a caso.
         //
-        // Il vincolo non e estetico. `MariadbProfile` dichiara chiuse quasi
-        // tutte le capability e rifiuta ogni colonna geometrica: un percorso
-        // che ci arrivasse oggi non aprirebbe MariaDB, la farebbe fallire in
-        // posti scelti a caso. La selezione arriva quando arriva il provider,
-        // insieme alle misure che oggi mancano.
+        // Ora il provider c'e e le capability sono misurate, quindi la
+        // proprieta da presidiare cambia ma non sparisce: la selezione deve
+        // restare **una sola**, e dichiarata. Un secondo punto che scegliesse
+        // quel profilo sarebbe una selezione che nessuno ha deciso, ed e
+        // esattamente cio che ADR 0014 esclude quando dice «nessuna selezione
+        // automatica».
         let marker = format!("{}mod tests {{", '\n');
+        // L'intestazione, non il blocco: il corpo comincia con un fine riga,
+        // che nel sorgente incluso puo essere `\n` o `\r\n` a seconda di come
+        // il checkout ha normalizzato il file. Una guardia che dipende da quel
+        // dettaglio fallisce su meta delle macchine per una ragione che non
+        // riguarda cio che sorveglia.
+        let declaration = format!("impl PublishedProfile for {}Provider", "Mariadb");
         for (module, source) in GUARDED_MODULES {
-            // Tranne questo file, che e dove il profilo e definito: cercarlo
-            // qui vorrebbe dire vietarne l'esistenza. Cio che si vieta e la
-            // **selezione**, e chi sceglie il profilo di un provider sta in
-            // `lib.rs` e in `provider.rs`, che l'elenco copre entrambi.
-            if *module == "profile.rs" {
-                continue;
-            }
             let production = source
                 .split_once(marker.as_str())
                 .map_or(*source, |(head, _)| head);
-            for needle in ["MARIADB_PROFILE", "MariadbProfile"] {
-                assert!(
-                    !production.contains(needle),
-                    "{module} seleziona il profilo MariaDB, che nessun provider deve ancora usare"
-                );
+            match *module {
+                // Dove il profilo e definito: cercarlo qui vorrebbe dire
+                // vietarne l'esistenza.
+                "profile.rs" => {}
+                // Dove e dichiarato, una volta sola e dentro l'`impl` che lo
+                // pubblica. Il conteggio e la meta che conta: senza, una
+                // seconda occorrenza altrove nel file passerebbe.
+                "provider.rs" => {
+                    assert_eq!(
+                        production.matches("MARIADB_PROFILE").count(),
+                        1,
+                        "provider.rs nomina il profilo MariaDB piu di una volta: \
+                         la selezione non e piu una sola"
+                    );
+                    let header = production
+                        .find(declaration.as_str())
+                        .expect("provider.rs non dichiara il profilo di MariadbProvider");
+                    let selection = production
+                        .find("MARIADB_PROFILE")
+                        .expect("occorrenza gia contata");
+                    // Dentro la dichiarazione, non da qualche parte dopo: fra
+                    // l'intestazione e la costante ci sono poche decine di
+                    // caratteri, e una selezione piu in la nel file sarebbe
+                    // un secondo punto travestito da primo.
+                    assert!(
+                        selection > header && selection - header < 200,
+                        "provider.rs nomina il profilo MariaDB fuori dalla \
+                         dichiarazione che lo pubblica"
+                    );
+                }
+                _ => {
+                    for needle in ["MARIADB_PROFILE", "MariadbProfile"] {
+                        assert!(
+                            !production.contains(needle),
+                            "{module} seleziona il profilo MariaDB, che solo \
+                             MariadbProvider deve dichiarare"
+                        );
+                    }
+                }
             }
         }
     }
