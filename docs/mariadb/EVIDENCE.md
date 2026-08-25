@@ -518,6 +518,8 @@ continui a dirlo.
 | provider | profilo | `provider.profile_read_ordering_asc` | primo=1 | primo=1 | primo=1 |
 | provider | profilo | `provider.profile_read_ordering_desc` | primo=8193 | primo=8193 | primo=8193 |
 | provider | profilo | `provider.profile_read_streaming` | batch=2 righe=8193 digest `21b5b708…` | **identico** | **identico** |
+| provider | profilo | `provider.transaction_row_stream` | batch=[4096, 4096, 1] commit=Committed | **identico** | **identico** |
+| provider | profilo | `provider.transaction_row_stream_abandoned` | commit=Committed — righe=1 | **identico** | **identico** |
 
 ### Cosa dice
 
@@ -542,6 +544,34 @@ proprio limite, e uno solo avrebbe significato che lo ignora. La prima
 stesura provava a spezzare il batch con un budget di memoria stretto e ha
 misurato altro — i budget sono **cumulativi**, non per batch, quindi la
 lettura moriva di `ResourceLimit` a meta invece di consegnare piu batch.
+
+**Lo stream in transazione e una seconda superficie sotto la stessa
+bandiera.** `provider.profile_read_streaming` misura il percorso Arrow — un
+lettore che riceve piu di un batch. `TransactionScope::query_stream` fa un'altra
+cosa: apre un result set sul filo e lo fa scorrere mentre la transazione e
+aperta. L'implementazione e condivisa con MySQL, e per questo la misura non lo
+e: «condivide il codice» non e un argomento che questo documento accetta per
+nessun'altra bandiera, e non c'e ragione di accettarlo qui. I batch si contano
+**uno per uno** — `[4096, 4096, 1]` sui tre server — perche un totale giusto
+uscirebbe anche da uno stream che consegna tutto in un colpo.
+
+**Una sonda che smentisce una dichiarazione, invece di sostenerla.** La prima
+stesura di `query_stream` affermava che abbandonare un result set a meta lascia i
+pacchetti in coda e rende la connessione inservibile: c'era una bandiera di
+stato, e la transazione rifiutava con `RequiresRecovery` ogni operazione
+successiva. Il riferimento MySQL ha risposto `Committed`, perche `mysql_async`
+drena i pacchetti pendenti prima dello statement dopo. La regola 1 non distingue
+fra il dedurre una capability e il dedurre un guasto — nessuna delle due si
+dichiara senza misura, e questa era dedotta da come funziona il protocollo sul
+filo, che e vero e irrilevante quando in mezzo c'e un driver che se ne occupa.
+
+`provider.transaction_row_stream_abandoned` tiene onesta la ritrattazione su
+questo prodotto: dopo un batch su mille lo stream viene lasciato andare, la
+transazione scrive, committa, e la riga si rilegge **da un'altra connessione** —
+che il commit dica `Committed` e cio che il provider crede, la riga sul server e
+cio che e successo. `commit=Committed — righe=1` sui tre riferimenti, nessuna
+divergenza. Senza questa sonda, una divergenza di MariaDB su questo punto si
+scoprirebbe quando un chiamante esce da un ciclo con un `break` in produzione.
 
 **Le tredici forme di filtro qualificate rendono cio che devono.**
 `filter = true` copriva una superficie dedotta da `id = ?`: ora ogni forma che
