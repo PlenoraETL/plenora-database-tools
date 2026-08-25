@@ -1995,3 +1995,43 @@ accanto dove il prodotto lo ammette: `POINT SRID 4326` su `MySQL`, `POINT` su
 
 E nient'altro. Ogni altra bandiera di questo profilo e aperta con una misura o
 chiusa con una ragione misurata.
+
+## Ventiduesima tranche: la contesa, che non era spatial
+
+Le ventuno tranche precedenti hanno misurato tipi, catalogo, sessione, errori,
+scritture, streaming, `RETURNING`, CRS, savepoint e l'intero spatial. Nessuna
+aveva chiesto a questo provider di servire **piu lettori insieme**.
+
+Non era una lacuna di contratto: era che un pool che sotto contesa mescolasse le
+righe, o ne perdesse, non avrebbe fatto fallire nessuna prova di questo
+documento. `PostgreSQL` ha una prova di contesa da tempo; `MySQL` l'ha avuta lo
+stesso giorno di questa.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_concurrent_readers` | lettori=12 pool=4 righe=60 | **identico** | **identico** |
+
+### Cosa dice
+
+**Dodici lettori su quattro connessioni, e ciascuno vede la propria fetta.** Il
+pool e volutamente piu piccolo del numero di lettori: uno abbondante non misura
+la contesa, e la contesa e cio che la sonda esiste per attraversare. Il batch e
+da due righe su cinque, cosi lo stream resta aperto per piu giri — e li che una
+connessione condivisa per sbaglio si farebbe sentire.
+
+**Il conteggio totale non basta, ed e la parte che vale la pena spiegare.** Un
+pool che consegnasse a due lettori la **stessa** connessione a meta stream
+renderebbe comunque sessanta righe, con quelle di uno finite nell'altro. Ogni
+worker chiede percio una fetta di id **disgiunta** dalle altre e verifica di
+aver visto la propria: il totale coglie una perdita, la fetta coglie uno
+scambio.
+
+### Cosa resta not_measured
+
+* **la contesa in scrittura**: dodici lettori, non dodici scrittori. Un pool
+  puo sbagliare in modo diverso quando le connessioni portano transazioni che
+  scrivono, e questa sonda non lo dice.
+* **la durata**: la sonda dura secondi. Non e un soak, e non pretende di
+  esserlo.

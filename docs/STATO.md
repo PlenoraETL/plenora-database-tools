@@ -141,5 +141,5 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | famiglia | test |
 | --- | --- |
 | `live_default` | 38 |
-| `live_reference` | 31 |
+| `live_reference` | 33 |
 | `unit` | 209 |
