@@ -934,10 +934,25 @@ impl ProductProfile for MariadbProfile {
                 // Chiusa per la stessa ragione di MySQL — `TRUNCATE` con
                 // commit implicito — e non solo perche non misurata.
                 truncate_insert: false,
-                update: false,
-                upsert: false,
-                replace: false,
-                delete_by_keys: false,
+                // Le ultime quattro, aperte dalla nona tranche con tre sonde
+                // ciascuna. Cio che distingue queste mode dalle due
+                // precedenti sono le keys — una chiave che non trova
+                // riscontro e saltata, non fallita — e cosa il rollback
+                // rimette: `Update` i valori di prima, `Replace` le righe che
+                // il proprio `DELETE` aveva tolto. Quest'ultima e la prova
+                // che conta di piu: un `Replace` fallito che non tornasse
+                // indietro lascerebbe il target vuoto.
+                update: true,
+                upsert: true,
+                replace: true,
+                delete_by_keys: true,
+                // `bulk` resta chiusa, e non per assenza di misura: nessun
+                // codice la consulta. `validate_write_capability` mappa sette
+                // mode su sette bandiere e `bulk` non e fra quelle, e nessun
+                // altro punto del workspace la legge. Aprirla pubblicherebbe
+                // una promessa che nessun controllo fa rispettare, che e
+                // l'opposto della regola 1 — e la stessa condizione di
+                // `array_binding` e `returning` qui sotto.
                 bulk: false,
                 array_binding: false,
                 returning: false,
@@ -3229,8 +3244,24 @@ mod tests {
         // chiuse: nessun piano le ha eseguite.
         let writes = &published.writes;
         assert!(writes.append && writes.create);
-        assert!(!writes.update && !writes.upsert);
-        assert!(!writes.replace && !writes.delete_by_keys && !writes.bulk);
+        assert!(writes.update && writes.upsert);
+        assert!(writes.replace && writes.delete_by_keys);
+        // Sei mode su sette, come `MySQL`: la settima e `TruncateInsert`, e
+        // resta chiusa su entrambi i profili per la stessa ragione
+        // permanente. Le due righe qui sotto lo verificano insieme, perche e
+        // proprio la coincidenza a dire che non e una lacuna di `MariaDB`.
+        assert!(!writes.truncate_insert);
+        assert!(
+            !MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .writes
+                .truncate_insert
+        );
+        // `bulk`, `array_binding` e `returning` restano chiuse perche nessun
+        // codice le consulta: aprirle sarebbe una promessa senza guardia. La
+        // riga sta qui e non solo accanto alla dichiarazione perche il test
+        // e il posto in cui una bandiera aperta per distrazione diventa rossa.
+        assert!(!writes.bulk && !writes.array_binding && !writes.returning);
         // `rollback_on_failure` e aperta: parla delle **righe** di ogni
         // scrittura che il profilo ammette, e le righe tornano indietro in
         // entrambe le mode aperte — le sonde girano con `allow_partial:
@@ -3275,8 +3306,7 @@ mod tests {
             2,
             "i due profili devono dichiararla entrambi, e chiusa"
         );
-        assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
-        assert!(!writes.bulk && !writes.array_binding && !writes.returning);
+        assert!(writes.upsert && writes.replace && writes.delete_by_keys);
 
         // Spatial: la lettura del WKB non e stata provata attraverso il
         // provider, la scrittura nemmeno, e la lista delle funzioni verified

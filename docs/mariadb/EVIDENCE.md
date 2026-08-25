@@ -987,10 +987,124 @@ insieme senza confonderle.
   perche ogni sonda parte da una tabella assente, e non e una lacuna di
   MariaDB: il provider MySQL qualificato pubblica `create = true` con la
   stessa superficie non misurata.
-* **le altre quattro write mode**: `Update`, `Upsert`, `Replace`,
-  `DeleteByKeys`. Le prime tre portano keys da confrontare e un target che
-  sopravvive a un fallimento; `TruncateInsert` resta fuori per decisione, non
-  per assenza di misura.
+* ~~**le altre quattro write mode**~~ **Chiuso**: `Update`, `Upsert`,
+  `Replace` e `DeleteByKeys` sono la nona tranche, qui sotto.
+  `TruncateInsert` resta fuori per decisione, non per assenza di misura.
 * **`allow_partial`**, come nella settima tranche: tutte le sonde usano il
   default, cioe il fallimento totale.
 * **il commit ambiguo**, che resta il punto 4.
+
+## Nona tranche: le ultime quattro write mode
+
+`Append` ha deciso come si misura una scrittura, `Create` cosa succede quando
+il DDL non torna indietro. Restavano `Update`, `Upsert`, `Replace` e
+`DeleteByKeys`, e arrivano insieme: dodici sonde, tre per mode, con le proprie
+tabelle, la propria contabilita attesa e la propria domanda. Insieme perche
+condividono l'unica cosa che le lega — il modo di provocare un rifiuto del
+**server**, che e cio che una sonda di rollback deve fare: un errore di
+mapping o di preflight non proverebbe niente, perche non avrebbe mai scritto
+nulla da annullare.
+
+Gira con lo stesso comando delle tranche precedenti:
+
+    python scripts/check_mariadb_driver.py --markdown
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_write_update` | aggiornate=5, saltate=1, contenuto atteso | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_update_rollback` | **rifiutato** — Conflict/Write/**RolledBack**/Never (1062), valori di prima tornati | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_update_cancellation` | **rifiutato** — Cancelled/Write/Unknown/RequiresRecovery, valori di prima, ripresa 2 | **identico**, col proprio nome | **identico**, col proprio nome |
+| provider | profilo | `provider.profile_write_upsert` | confermate=6, `inserite=None`, `aggiornate=None` | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_upsert_rollback` | **rifiutato** — Execution/Write/RolledBack/Never (1406), righe di prima tornate | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_upsert_cancellation` | **rifiutato** — Cancelled/…/RequiresRecovery, nulla applicato, ripresa 1 | **identico**, col proprio nome | **identico**, col proprio nome |
+| provider | profilo | `provider.profile_write_replace` | inserite=2, `cancellate=Some(0)`, target sostituito | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_replace_rollback` | **rifiutato** — Execution/Write/RolledBack/Never (1406), **target non vuoto** | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_replace_cancellation` | **rifiutato** — Cancelled/…/RequiresRecovery, target intatto, ripresa 1 | **identico**, col proprio nome | **identico**, col proprio nome |
+| provider | profilo | `provider.profile_write_delete_by_keys` | cancellate=2, saltate=1 | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_delete_by_keys_rollback` | **rifiutato** — batch intero tornato indietro | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_delete_by_keys_cancellation` | **rifiutato** — nessuna riga tolta, ripresa 1 | **identico**, col proprio nome | **identico**, col proprio nome |
+
+### Cosa dice
+
+**Il rollback di `Update` e pieno, e la differenza da `Create` e misurata.**
+Stesso vincolo violato, stessa mode di fallimento, ma qui l'effetto remoto e
+`RolledBack` e non `Partial`: `Update` accumula le righe in una `CREATE
+TEMPORARY TABLE` di staging, e su questi motori una temporary non provoca
+commit implicito. Il residuo di `Create` non c'e, e il contratto lo dice
+invece di lasciarlo dedurre dalla mode.
+
+**Una chiave che non trova riscontro e saltata, non fallita.** Sei righe in
+ingresso, cinque aggiornate e una — l'id che nella tabella non c'e — contata
+in `skipped`. E la promessa di idempotenza, e la sonda la verifica su tre
+fronti: la contabilita la distingue, il contenuto mostra che le altre cinque
+sono cambiate, e la tabella ha ancora sei righe — la chiave assente non e
+stata inserita. `DeleteByKeys` fa la stessa cosa dall'altro lato: due
+cancellate, una saltata.
+
+**`Upsert` dichiara di non sapere, e fa bene.** `inserted` e `updated`
+arrivano a `None` — «non pertinente» — perche su questi motori
+`affected_rows` vale 1 per un inserimento e 2 per un aggiornamento, e il
+totale non si scompone senza una seconda interrogazione. La sonda pretende
+quel `None`: un numero inventato sarebbe peggio di un'assenza dichiarata, e
+`Some(0)` avrebbe l'aria di una misura.
+
+**Il rollback di `Replace` e la prova piu importante della fase.** `Replace`
+svuota il target e lo riempie nella stessa transazione, quindi quando la
+scrittura fallisce il `DELETE` e gia passato. Se non tornasse indietro, un
+`Replace` fallito lascerebbe il target **vuoto**: distruggerebbe i dati che
+doveva sostituire. Le tre righe di partenza sono tutte li, su tutti e tre i
+riferimenti, e lo stesso vale sotto cancellazione.
+
+**`Replace` pubblica pero `deleted = 0`** avendo svuotato il target. Non e un
+difetto del motore ne una divergenza: e la forma che il contratto dichiara per
+quella mode — le righe finali sono esattamente quelle in ingresso, e il
+`DELETE` e considerato parte della sostituzione e non una cancellazione a se.
+Registrata perche un consumatore che sommasse `deleted` fra le mode
+conterebbe zero dove il target e stato svuotato.
+
+**`DeleteByKeys` vuole uno schema di sole chiavi**, e l'abbiamo scoperto
+venendo rifiutati: «colonna 'payload' non e una key — schema Arrow deve
+contenere solo le colonne key». Il rifiuto e giusto — una cancellazione non ha
+nulla da fare dei valori — ma le prime tre sonde ponevano una domanda diversa
+da quella che credevano, e sono state riscritte con lo schema che la mode
+chiede.
+
+**Il valore fuori misura arriva come errore generico.** 1406, «Data too long»,
+non e in nessuna tabella di classificazione: il profilo gli attribuisce il
+verdetto dei codici non qualificati — `Execution`/`Never`, messaggio redatto —
+identico sui tre server. Non e sbagliato: l'operazione e fallita sul server e
+ritentarla non ha ragione di riuscire. E pero la stessa forma della lacuna che
+la quarta tranche ha chiuso su 1142, dove un permesso mancante si presentava
+come guasto generico: un dato troppo lungo lo corregge chi chiama, un guasto
+no, e sono due rimedi diversi. Registrata qui e chiusa a parte, perche tocca
+anche il provider MySQL qualificato.
+
+**Nessuna delle dodici distingue i tre server.** Le uniche differenze sono i
+nomi dei prodotti nei messaggi.
+
+### Cosa ne segue per le capability
+
+Si aprono `writes.update`, `writes.upsert`, `writes.replace` e
+`writes.delete_by_keys`. Con `append` e `create` sono sei mode su sette: resta
+chiusa `truncate_insert`, e non per assenza di misura — su questi motori
+`TRUNCATE` e DDL con commit implicito, quindi le righe sparirebbero prima
+dell'`INSERT` e nessun rollback le riporterebbe indietro. E' la stessa
+chiusura permanente di MySQL.
+
+`writes.bulk` **non** si apre, e la ragione merita di essere scritta: nessun
+codice la consulta. `validate_write_capability` mappa sette mode su sette
+bandiere, e `bulk` non e fra quelle; nessun altro punto del workspace la
+legge. Aprirla significherebbe pubblicare una promessa che nessuna misura
+sostiene e che nessun controllo fa rispettare — cioe l'opposto della regola 1.
+Sta insieme a `array_binding`, `returning`, `server_cursor`, `pagination` e
+`resumable`, che sono nella stessa condizione.
+
+### Cosa resta not_measured
+
+* **`allow_partial`**, come nelle due tranche precedenti: tutte le sonde
+  usano il default, cioe il fallimento totale.
+* **il commit ambiguo**, che resta il punto 4.
+* **la quarantena della connessione**, che si osserva solo dall'identita
+  della sessione in `information_schema.processlist`.

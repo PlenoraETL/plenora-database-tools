@@ -157,7 +157,7 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 # Le violazioni di capability dicono se una prova necessaria ha cambiato esito;
 # non dicono se una sonda e **sparita**. Se una `raw.*` o una osservativa
 # smettesse di essere prodotta su tutti e tre i server, il totale scenderebbe
-# da 62 a 61 e l'uscita resterebbe zero: la matrice
+# da 74 a 73 e l'uscita resterebbe zero: la matrice
 # racconterebbe una superficie in meno senza che nulla lo dica.
 #
 # L'ordine e parte del contratto perche e cio che rende leggibile il documento
@@ -225,6 +225,18 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_create",
     "provider.profile_write_create_rollback",
     "provider.profile_write_create_cancellation",
+    "provider.profile_write_update",
+    "provider.profile_write_update_rollback",
+    "provider.profile_write_update_cancellation",
+    "provider.profile_write_upsert",
+    "provider.profile_write_upsert_rollback",
+    "provider.profile_write_upsert_cancellation",
+    "provider.profile_write_replace",
+    "provider.profile_write_replace_rollback",
+    "provider.profile_write_replace_cancellation",
+    "provider.profile_write_delete_by_keys",
+    "provider.profile_write_delete_by_keys_rollback",
+    "provider.profile_write_delete_by_keys_cancellation",
     "provider.profile_timeout",
 )
 
@@ -307,6 +319,54 @@ QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
     ),
     "provider.profile_write_create_cancellation": (
         "Create: la cancellazione non lascia righe, lascia la tabella, e il provider resta usabile",
+        "rejected",
+    ),
+    "provider.profile_write_update": (
+        "Update: aggiorna cio che trova, salta cio che non trova, non inserisce",
+        "accepted",
+    ),
+    "provider.profile_write_update_rollback": (
+        "Update: il rollback rimette i valori di prima",
+        "rejected",
+    ),
+    "provider.profile_write_update_cancellation": (
+        "Update: la cancellazione lascia i valori di prima, e il provider resta usabile",
+        "rejected",
+    ),
+    "provider.profile_write_upsert": (
+        "Upsert: aggiorna cio che c'e, inserisce cio che non c'e, e non scompone cio che non sa",
+        "accepted",
+    ),
+    "provider.profile_write_upsert_rollback": (
+        "Upsert: il rollback annulla anche gli aggiornamenti del primo batch",
+        "rejected",
+    ),
+    "provider.profile_write_upsert_cancellation": (
+        "Upsert: la cancellazione non applica nulla, e il provider resta usabile",
+        "rejected",
+    ),
+    "provider.profile_write_replace": (
+        "Replace: svuota il target e ci mette le righe in ingresso",
+        "accepted",
+    ),
+    "provider.profile_write_replace_rollback": (
+        "Replace: un fallimento non lascia il target vuoto",
+        "rejected",
+    ),
+    "provider.profile_write_replace_cancellation": (
+        "Replace: la cancellazione non lascia il target vuoto",
+        "rejected",
+    ),
+    "provider.profile_write_delete_by_keys": (
+        "DeleteByKeys: cancella cio che trova e salta cio che non trova",
+        "accepted",
+    ),
+    "provider.profile_write_delete_by_keys_rollback": (
+        "DeleteByKeys: una chiave trattenuta fa tornare indietro l'intero batch",
+        "rejected",
+    ),
+    "provider.profile_write_delete_by_keys_cancellation": (
+        "DeleteByKeys: la cancellazione non toglie righe, e il provider resta usabile",
         "rejected",
     ),
 }

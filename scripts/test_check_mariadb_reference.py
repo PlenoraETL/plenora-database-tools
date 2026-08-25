@@ -887,7 +887,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
 
 class MariadbEvidenceCampaignTests(unittest.TestCase):
-    """La campagna che porta le sessantadue sonde su un runner pulito.
+    """La campagna che porta le settantaquattro sonde su un runner pulito.
 
     Il runner sa gia giudicare, ma pretende tre server accesi: finche quello e
     stato l'unico modo di lanciarlo, le prove erano presidiate da chi si
@@ -909,7 +909,7 @@ class MariadbEvidenceCampaignTests(unittest.TestCase):
         return importlib.import_module("scripts.fixture_campaign")
 
     def test_the_campaign_runs_on_a_schedule_and_never_on_push(self) -> None:
-        """Sessantadue sonde e tre server non stanno su ogni commit.
+        """Settantaquattro sonde e tre server non stanno su ogni commit.
 
         E l'altra meta della stessa frase: se non girasse mai da sola, non
         sarebbe una garanzia. Quindi cadenza fissa piu esecuzione a mano, e

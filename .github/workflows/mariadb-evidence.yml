@@ -2,7 +2,7 @@ name: mariadb-evidence
 
 # Campagna live dell'evidenza MariaDB sui tre riferimenti.
 #
-# Sessantadue sonde, e i contratti che le rendono prove: quali codici arrivano
+# Settantaquattro sonde, e i contratti che le rendono prove: quali codici arrivano
 # dalle superfici che la classificazione traduce, cosa il catalogo pubblica
 # quando lo si legge con il profilo del prodotto, quali forme di filtro
 # decidono davvero quali righe escono, e quali rifiuti sono la prova che una
@@ -19,7 +19,7 @@ name: mariadb-evidence
 # runner puliti invece di recuperare la garanzia poco prima del provider
 # pubblico.
 #
-# Non gira su push: accende tre server e ne misura sessantadue superfici, che
+# Non gira su push: accende tre server e ne misura settantaquattro superfici, che
 # e troppo per ogni commit. Gira a cadenza fissa — dove scopre una regressione
 # introdotta dal codice o da un aggiornamento dell'immagine — e a mano, quando
 # qualcuno tocca il profilo e vuole saperlo prima della review.

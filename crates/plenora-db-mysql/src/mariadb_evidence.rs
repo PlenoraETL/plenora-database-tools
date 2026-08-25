@@ -2137,12 +2137,64 @@ fn scratch_schema() -> plenora_database_core::arrow::SchemaRef {
 
 /// Un batch con gli id dati, e un payload derivato da ciascuno.
 fn scratch_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+    scratch_batch_labelled("riga", ids)
+}
+
+/// Un batch il cui payload porta il prefisso dato.
+///
+/// `Update` ha bisogno di distinguere il valore di prima da quello di dopo:
+/// una sonda che riscrivesse lo stesso payload non misurerebbe niente, perche
+/// su questi motori `affected_rows` conta le righe **cambiate** e un
+/// aggiornamento che non cambia nulla dichiara zero.
+/// Lo schema di ingresso di `DeleteByKeys`: la sola colonna chiave.
+///
+/// Non e una semplificazione dell'harness, e il contratto della mode: il
+/// piano rifiuta uno schema che porti colonne non-key — «`DeleteByKeys`:
+/// colonna 'payload' non e una key» — e ha ragione, perche una cancellazione
+/// non ha nulla da fare dei valori. La prima stesura di queste tre sonde
+/// mandava lo schema comune a due colonne e veniva respinta in `prepare`: un
+/// rifiuto legittimo, ma di una domanda diversa da quella che la sonda
+/// poneva.
+fn key_schema() -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    std::sync::Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+}
+
+/// Un batch di sole chiavi, per `DeleteByKeys`.
+fn key_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+    use plenora_database_core::arrow::array::Int32Array;
+    plenora_database_core::arrow::RecordBatch::try_new(
+        key_schema(),
+        vec![std::sync::Arc::new(Int32Array::from(ids.to_vec()))],
+    )
+    .expect("batch della misura: harness, non divergenza")
+}
+
+fn scratch_batch_labelled(prefix: &str, ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+    let rows: Vec<(i32, String)> = ids
+        .iter()
+        .map(|id| (*id, format!("{prefix}-{id}")))
+        .collect();
+    scratch_batch_pairs(&rows)
+}
+
+/// Un batch in cui ogni riga porta il payload che la sonda le assegna.
+///
+/// Il prefisso non basta piu da quando una sonda deve costruire un conflitto:
+/// far collidere due righe vuol dire dare a un id il payload **di un'altra**, e
+/// un valore derivato dall'id non puo esprimerlo. La prima stesura della sonda
+/// di rollback dell'Update ci e cascata — assegnava all'id 4 il valore che
+/// aveva gia, quindi un no-op invece di un duplicato, e la scrittura riusciva
+/// dove doveva fallire. La misura l'ha detto, ed e per questo che esiste
+/// questa forma.
+fn scratch_batch_pairs(rows: &[(i32, String)]) -> plenora_database_core::arrow::RecordBatch {
     use plenora_database_core::arrow::array::{Int32Array, StringArray};
-    let payloads: Vec<String> = ids.iter().map(|id| format!("riga-{id}")).collect();
+    let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
+    let payloads: Vec<String> = rows.iter().map(|(_, payload)| payload.clone()).collect();
     plenora_database_core::arrow::RecordBatch::try_new(
         scratch_schema(),
         vec![
-            std::sync::Arc::new(Int32Array::from(ids.to_vec())),
+            std::sync::Arc::new(Int32Array::from(ids)),
             std::sync::Arc::new(StringArray::from(payloads)),
         ],
     )
@@ -2156,10 +2208,46 @@ fn scratch_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
 /// passare un `Committed` che dichiara zero righe ricevute, o un esito
 /// attribuito al prodotto sbagliato — e sono proprio le cose su cui il
 /// chiamante costruisce la propria.
+/// La contabilita che una mode deve pubblicare, dichiarata dalla sonda.
+///
+/// Era un numero solo, e bastava finche le mode misurate scrivevano righe
+/// nuove: `Append` e `Create` inseriscono cio che ricevono, quindi «sei» le
+/// descriveva per intero. `Update` no — aggiorna invece di inserire, e una
+/// chiave che non trova riscontro non e un errore ma una riga **saltata** —
+/// e con un numero solo l'attesa sarebbe stata scritta dentro il
+/// confronto invece che dalla sonda che sa cosa ha chiesto.
+///
+/// `inserted`, `updated` e `deleted` sono `Option` come nel contratto, dove
+/// `None` non e zero: significa «non pertinente». La sonda dichiara quale
+/// dei due intende, perche `None` passato per buono nasconde un esito che
+/// non sa cosa abbia fatto.
+struct ExpectedCounts {
+    received: u64,
+    confirmed: u64,
+    inserted: Option<u64>,
+    updated: Option<u64>,
+    deleted: Option<u64>,
+    skipped: u64,
+}
+
+impl ExpectedCounts {
+    /// La forma di una mode che inserisce cio che riceve: `Append`, `Create`.
+    const fn inserting(rows: u64) -> Self {
+        Self {
+            received: rows,
+            confirmed: rows,
+            inserted: Some(rows),
+            updated: Some(0),
+            deleted: Some(0),
+            skipped: 0,
+        }
+    }
+}
+
 fn outcome_mismatch(
     outcome: &plenora_database_core::outcome::WriteOutcome,
     profile: &dyn ProductProfile,
-    expected: u64,
+    expected: &ExpectedCounts,
 ) -> Option<String> {
     use plenora_database_core::outcome::WriteStatus;
     if outcome.status != WriteStatus::Committed {
@@ -2173,25 +2261,30 @@ fn outcome_mismatch(
         ));
     }
     let rows = &outcome.rows;
-    if rows.received != expected || rows.confirmed != expected {
+    if rows.received != expected.received || rows.confirmed != expected.confirmed {
         return Some(format!(
-            "ricevute {} e confermate {}, attese {expected}",
-            rows.received, rows.confirmed
+            "ricevute {} e confermate {}, attese {} e {}",
+            rows.received, rows.confirmed, expected.received, expected.confirmed
         ));
     }
-    // `updated` e `deleted` sono `Option`, e `None` non e zero: significa "non
-    // pertinente". Per un Append lo sono, e devono dirlo — `None` passava per
-    // buono e nascondeva un esito che non sapeva cosa avesse fatto.
-    if rows.inserted != Some(expected) || rows.updated != Some(0) || rows.deleted != Some(0) {
+    if rows.inserted != expected.inserted
+        || rows.updated != expected.updated
+        || rows.deleted != expected.deleted
+    {
         return Some(format!(
-            "inserite {:?}, aggiornate {:?}, cancellate {:?}; attese {expected}, 0 e 0",
-            rows.inserted, rows.updated, rows.deleted
+            "inserite {:?}, aggiornate {:?}, cancellate {:?}; attese {:?}, {:?} e {:?}",
+            rows.inserted,
+            rows.updated,
+            rows.deleted,
+            expected.inserted,
+            expected.updated,
+            expected.deleted
         ));
     }
-    if rows.failed != 0 || rows.skipped != 0 {
+    if rows.failed != 0 || rows.skipped != expected.skipped {
         return Some(format!(
-            "fallite {} e saltate {}, attese zero",
-            rows.failed, rows.skipped
+            "fallite {} e saltate {}, attese 0 e {}",
+            rows.failed, rows.skipped, expected.skipped
         ));
     }
     if outcome.recovery.is_some() {
@@ -2247,6 +2340,7 @@ async fn table_contents(connection: &mut mysql_async::Conn, table: &str) -> Stri
 async fn scripted_write(
     provider: &MysqlProvider,
     operation: &WriteOperation,
+    schema: plenora_database_core::arrow::SchemaRef,
     batches: Vec<plenora_database_core::arrow::RecordBatch>,
     declared: u64,
     cancel_at: Option<(usize, CancellationToken)>,
@@ -2254,16 +2348,10 @@ async fn scripted_write(
 ) -> Result<plenora_database_core::outcome::WriteOutcome, plenora_database_core::DatabaseError> {
     let budget = read_budget();
     let prepared = provider
-        .prepare_write(
-            &secret(),
-            operation,
-            scratch_schema(),
-            &budget,
-            cancellation,
-        )
+        .prepare_write(&secret(), operation, schema.clone(), &budget, cancellation)
         .await?;
     let stream = ScriptedBatches {
-        schema: scratch_schema(),
+        schema,
         batches: batches.into_iter().collect(),
         declared,
         cancel_at,
@@ -2338,6 +2426,7 @@ async fn append_write_probes(
     match scripted_write(
         &provider,
         &operation,
+        scratch_schema(),
         vec![scratch_batch(&[1, 2, 3]), scratch_batch(&[4, 5, 6])],
         6,
         None,
@@ -2351,7 +2440,7 @@ async fn append_write_probes(
             // il prodotto che ha scritto e la contabilita delle righe. Due
             // campi su otto non lo presidiano — un `Committed` che dichiarasse
             // zero righe ricevute, o il prodotto sbagliato, sarebbe passato.
-            let accounting = outcome_mismatch(&outcome, profile, 6);
+            let accounting = outcome_mismatch(&outcome, profile, &ExpectedCounts::inserting(6));
             if accounting.is_none() && contents == expected {
                 recorder.accepted(
                     "provider.profile_write_append",
@@ -2405,6 +2494,7 @@ async fn append_write_probes(
     match scripted_write(
         &provider,
         &operation,
+        scratch_schema(),
         vec![scratch_batch(&[10, 11, 12]), scratch_batch(&[10])],
         4,
         None,
@@ -2500,6 +2590,12 @@ async fn append_write_probes(
 /// sessione in `information_schema.processlist`, come fa il test live sulla
 /// quarantena del pool `MySQL`. Finche non lo fa, la sonda dice quello che
 /// vede.
+///
+/// Lunga come la gemella di `Create`, e per la stessa ragione: cio che
+/// verifica sono cinque cose in fila — la quaterna del rifiuto, le righe
+/// residue, la ripresa e cosa la tabella contiene dopo — e spezzarla
+/// separerebbe l'attesa dal confronto.
+#[allow(clippy::too_many_lines)]
 async fn append_cancellation_probe(
     recorder: &mut Recorder,
     provider: &MysqlProvider,
@@ -2530,6 +2626,7 @@ async fn append_cancellation_probe(
     let outcome = scripted_write(
         provider,
         operation,
+        scratch_schema(),
         vec![scratch_batch(&[20, 21, 22]), scratch_batch(&[23, 24, 25])],
         6,
         Some((2, interrupted.clone())),
@@ -2555,6 +2652,7 @@ async fn append_cancellation_probe(
             let recovered = scripted_write(
                 provider,
                 operation,
+                scratch_schema(),
                 vec![scratch_batch(&[30, 31])],
                 2,
                 None,
@@ -2568,16 +2666,19 @@ async fn append_cancellation_probe(
                         .then(|| format!("la cancellazione ha lasciato righe: {contents}"))
                 })
                 .or_else(|| match &recovered {
-                    Ok(written) => outcome_mismatch(written, profile, 2)
-                        .or_else(|| {
-                            // La tabella, non il conteggio dichiarato: una
-                            // sessione riusata con una transazione residua
-                            // committerebbe le tre righe di prima **piu** le
-                            // due nuove, e il conteggio direbbe comunque due.
-                            (after != "righe=2 contenuto=30:riga-30,31:riga-31")
-                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
-                        })
-                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Ok(written) => {
+                        outcome_mismatch(written, profile, &ExpectedCounts::inserting(2))
+                            .or_else(|| {
+                                // La tabella, non il conteggio dichiarato: una
+                                // sessione riusata con una transazione residua
+                                // committerebbe le tre righe di prima **piu** le
+                                // due nuove, e il conteggio direbbe comunque due.
+                                (after != "righe=2 contenuto=30:riga-30,31:riga-31").then(|| {
+                                    format!("dopo la ripresa la tabella contiene [{after}]")
+                                })
+                            })
+                            .map(|reason| format!("la ripresa non e quella attesa: {reason}"))
+                    }
                     Err(next) => Some(format!(
                         "il provider non e piu utilizzabile: {:?}: {}",
                         next.category, next.message
@@ -2736,6 +2837,7 @@ async fn create_write_probes(
     match scripted_write(
         &provider,
         &operation,
+        scratch_schema(),
         vec![scratch_batch(&[1, 2, 3]), scratch_batch(&[4, 5, 6])],
         6,
         None,
@@ -2746,7 +2848,7 @@ async fn create_write_probes(
         Ok(outcome) => {
             let contents = table_contents(&mut connection, SCRATCH_CREATE).await;
             let (shape, types) = create_shape(&mut connection).await;
-            let accounting = outcome_mismatch(&outcome, profile, 6)
+            let accounting = outcome_mismatch(&outcome, profile, &ExpectedCounts::inserting(6))
                 .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")))
                 .or_else(|| {
                     (shape != expected_shape)
@@ -2818,6 +2920,7 @@ async fn create_write_probes(
     match scripted_write(
         &provider,
         &operation,
+        scratch_schema(),
         vec![scratch_batch(&[10, 11, 12]), scratch_batch(&[10])],
         4,
         None,
@@ -2941,6 +3044,7 @@ async fn create_cancellation_probe(
     let outcome = scripted_write(
         provider,
         operation,
+        scratch_schema(),
         vec![scratch_batch(&[20, 21, 22]), scratch_batch(&[23, 24, 25])],
         6,
         Some((2, interrupted.clone())),
@@ -2967,6 +3071,7 @@ async fn create_cancellation_probe(
             let recovered = scripted_write(
                 provider,
                 operation,
+                scratch_schema(),
                 vec![scratch_batch(&[30, 31])],
                 2,
                 None,
@@ -2984,12 +3089,15 @@ async fn create_cancellation_probe(
                         .then(|| format!("il residuo non e la tabella creata: [{shape}]"))
                 })
                 .or_else(|| match &recovered {
-                    Ok(written) => outcome_mismatch(written, profile, 2)
-                        .or_else(|| {
-                            (after != "righe=2 contenuto=30:riga-30,31:riga-31")
-                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
-                        })
-                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Ok(written) => {
+                        outcome_mismatch(written, profile, &ExpectedCounts::inserting(2))
+                            .or_else(|| {
+                                (after != "righe=2 contenuto=30:riga-30,31:riga-31").then(|| {
+                                    format!("dopo la ripresa la tabella contiene [{after}]")
+                                })
+                            })
+                            .map(|reason| format!("la ripresa non e quella attesa: {reason}"))
+                    }
                     Err(next) => Some(format!(
                         "il provider non e piu utilizzabile: {:?}: {}",
                         next.category, next.message
@@ -3029,6 +3137,1226 @@ async fn create_cancellation_probe(
                     ),
                 ),
             }
+        }
+    }
+}
+
+/// La tabella su cui `Update` lavora: esiste gia, e ha righe da cambiare.
+const SCRATCH_UPDATE: &str = "plenora_driver_evidence_update";
+
+/// Il contenuto di partenza, che ogni sonda di `Update` ripristina.
+///
+/// Sei righe con un payload riconoscibile: cio che la sonda verifica non e
+/// «quante righe ci sono» ma **quali valori** ci sono dopo, e per dirlo serve
+/// sapere quali c'erano prima.
+///
+/// Il vincolo univoco su `payload` non e decorativo: e cio che rende
+/// possibile far fallire un `Update` dal server invece che dal mapping. Un
+/// rollback provocato dal preflight non proverebbe niente, perche non avrebbe
+/// mai aggiornato nulla da annullare.
+const UPDATE_INITIAL: &str =
+    "righe=6 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3,4:vecchio-4,5:vecchio-5,6:vecchio-6";
+
+async fn reset_update(connection: &mut mysql_async::Conn) {
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_UPDATE}"),
+        format!(
+            "CREATE TABLE {SCRATCH_UPDATE} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL, UNIQUE KEY uq_payload (payload)) \
+             ENGINE = InnoDB"
+        ),
+        format!(
+            "INSERT INTO {SCRATCH_UPDATE} (id, payload) VALUES \
+             (1,'vecchio-1'),(2,'vecchio-2'),(3,'vecchio-3'),\
+             (4,'vecchio-4'),(5,'vecchio-5'),(6,'vecchio-6')"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella dell'update: harness, non divergenza");
+    }
+}
+
+/// La mode `Update` attraversata con il profilo del prodotto.
+///
+/// Nona tranche, terza write mode. `Update` porta la superficie che nessuna
+/// delle due precedenti aveva: **le keys**. Non scrive righe nuove — le
+/// confronta con quelle che ci sono, e da quel confronto discendono due
+/// promesse che ne `Append` ne `Create` fanno.
+///
+/// La prima e la contabilita: una chiave che non trova riscontro non e un
+/// errore ma una riga **saltata**, e l'esito deve dirlo separando `updated`
+/// da `skipped`. La seconda e il rollback, che qui non annulla degli inserti
+/// ma **rimette i valori di prima**: e una cosa diversa, e si vede solo
+/// sapendo quali fossero.
+///
+/// Il piano accumula le righe in una `CREATE TEMPORARY TABLE` di staging e
+/// poi esegue un `UPDATE ... JOIN`. La temporary non e un residuo: su questi
+/// motori non provoca commit implicito, quindi qui — a differenza di `Create`
+/// — l'effetto remoto di un fallimento e `RolledBack` pieno.
+#[allow(clippy::too_many_lines)]
+async fn update_write_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let mut connection = open_connection().await;
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(schema_name.to_owned()),
+            object: SCRATCH_UPDATE.to_owned(),
+        },
+        mode: WriteMode::Update,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: vec!["id".to_owned()],
+        // Vuoto significa «tutte le colonne non-key», che qui e `payload`.
+        // Dichiararla esplicitamente misurerebbe la stessa cosa da una strada
+        // che il piano tratta a parte, e il default e la strada comune.
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+
+    // 1. L'aggiornamento riuscito, con una chiave che non c'e. Sei righe in
+    //    ingresso, cinque che trovano riscontro e una — l'id 99 — che no: il
+    //    contratto dice che quella e saltata, non fallita, e che non viene
+    //    inserita. Sono tre affermazioni diverse, e la sonda le verifica
+    //    tutte: la contabilita, il contenuto, e il fatto che la tabella abbia
+    //    ancora sei righe.
+    reset_update(&mut connection).await;
+    let question =
+        "aggiorna le righe che trovano riscontro, salta quelle che non c'e, e non ne inserisce";
+    let expected =
+        "righe=6 contenuto=1:nuovo-1,2:nuovo-2,3:nuovo-3,4:nuovo-4,5:nuovo-5,6:vecchio-6";
+    let accounting = ExpectedCounts {
+        received: 6,
+        confirmed: 5,
+        inserted: Some(0),
+        updated: Some(5),
+        deleted: Some(0),
+        skipped: 1,
+    };
+    match scripted_write(
+        &provider,
+        &operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            scratch_batch_labelled("nuovo", &[4, 5, 99]),
+        ],
+        6,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = table_contents(&mut connection, SCRATCH_UPDATE).await;
+            let mismatch = outcome_mismatch(&outcome, profile, &accounting)
+                .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")));
+            match mismatch {
+                None => recorder.accepted(
+                    "provider.profile_write_update",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!(
+                        "aggiornate={:?} saltate={} {contents}",
+                        outcome.rows.updated, outcome.rows.skipped
+                    ),
+                ),
+                Some(reason) => recorder.rejected(
+                    "provider.profile_write_update",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("contratto non soddisfatto: {reason}")),
+                    None,
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_update",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback, che qui rimette i valori di prima. Il primo batch
+    //    aggiorna davvero tre righe; il secondo prova a dare a una quarta il
+    //    payload di una riga che non ha toccato, e il vincolo univoco lo
+    //    rifiuta. Cio che si verifica non e «la tabella e vuota» — non lo era
+    //    mai — ma che le sei righe siano tornate esattamente quelle di
+    //    partenza.
+    reset_update(&mut connection).await;
+    let question = "un secondo batch rifiutato rimette i valori che il primo aveva cambiato";
+    // Nessun residuo DDL: la staging e una `TEMPORARY`, che su questi motori
+    // non fa commit implicito. L'effetto e percio `RolledBack` pieno, non il
+    // `Partial` di `Create` — ed e la differenza che questa sonda misura.
+    let contract = RefusalContract {
+        category: ErrorCategory::Conflict,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::RolledBack,
+        retry: RetryDisposition::Never,
+        // Il frammento non nomina il prodotto: il messaggio lo porta gia.
+        message_contains: "vincolo univoco",
+    };
+    match scripted_write(
+        &provider,
+        &operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            // All'id 4 il payload **della riga 5**, che il primo batch non ha
+            // toccato: e l'unico modo di far scattare il vincolo univoco. Dare
+            // a una riga il proprio valore sarebbe un no-op, e la scrittura
+            // riuscirebbe.
+            scratch_batch_pairs(&[(4, "vecchio-5".to_owned())]),
+        ],
+        4,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_update_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: il payload duplicato e passato, aggiornate={:?}",
+                outcome.rows.updated
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(&mut connection, SCRATCH_UPDATE).await;
+            let mismatch = refusal_mismatch(&contract, &error).or_else(|| {
+                (contents != UPDATE_INITIAL)
+                    .then(|| format!("i valori di prima non sono tornati: [{contents}]"))
+            });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_update_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — {contents}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    crate::evidence::server_code_in_message(&error.message),
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_update_rollback",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "il rollback non e stato osservato — {reason}; osservato \
+                          {:?}/{:?}/{:?}/{:?}: {} — {contents}",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+
+    update_cancellation_probe(
+        recorder,
+        &provider,
+        profile,
+        &operation,
+        &mut connection,
+        cancellation,
+    )
+    .await;
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_UPDATE}"))
+        .await;
+}
+
+/// La cancellazione a meta `Update`, sulla stessa barriera dichiarata.
+///
+/// Cio che cambia rispetto alle due mode precedenti e cosa vuol dire «non ha
+/// lasciato niente»: qui la tabella era piena prima e resta piena dopo, quindi
+/// la prova non e un conteggio a zero ma il **contenuto di partenza**, riga
+/// per riga. Un aggiornamento a meta che avesse committato il primo batch
+/// darebbe lo stesso numero di righe e un contenuto diverso.
+#[allow(clippy::too_many_lines)]
+async fn update_cancellation_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    outer: &CancellationToken,
+) {
+    reset_update(connection).await;
+    let question =
+        "una cancellazione a meta Update lascia i valori di prima, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    let contract = RefusalContract {
+        category: ErrorCategory::Cancelled,
+        phase: ErrorPhase::Write,
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::RequiresRecovery,
+        message_contains: "quarantinata",
+    };
+    let outcome = scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            scratch_batch_labelled("nuovo", &[4, 5, 6]),
+        ],
+        6,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await;
+    match outcome {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_update_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, aggiornate={:?}",
+                written.rows.updated
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_UPDATE).await;
+            let recovered = scripted_write(
+                provider,
+                operation,
+                scratch_schema(),
+                vec![scratch_batch_labelled("ripreso", &[1, 2])],
+                2,
+                None,
+                outer,
+            )
+            .await;
+            let after = table_contents(connection, SCRATCH_UPDATE).await;
+            let resumed = ExpectedCounts {
+                received: 2,
+                confirmed: 2,
+                inserted: Some(0),
+                updated: Some(2),
+                deleted: Some(0),
+                skipped: 0,
+            };
+            let expected_after = "righe=6 contenuto=1:ripreso-1,2:ripreso-2,3:vecchio-3,\
+                                  4:vecchio-4,5:vecchio-5,6:vecchio-6";
+            let mismatch = refusal_mismatch(&contract, &error)
+                .or_else(|| {
+                    (contents != UPDATE_INITIAL)
+                        .then(|| format!("la cancellazione ha lasciato valori nuovi: [{contents}]"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, &resumed)
+                        .or_else(|| {
+                            // Il contenuto, non il conteggio: una sessione
+                            // riusata con una transazione residua
+                            // committerebbe anche le righe di prima, e
+                            // «aggiornate=2» lo direbbe lo stesso.
+                            (after != expected_after)
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            match mismatch {
+                None => recorder.rejected(
+                    "provider.profile_write_update_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!(
+                        "{:?}/{:?}/{:?}/{:?}: {} — dopo la cancellazione [{contents}], \
+                         dopo la ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        error.message
+                    )),
+                    None,
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.profile_write_update_cancellation",
+                    "provider",
+                    "profilo",
+                    question,
+                    &format!(
+                        "la cancellazione non e stata osservata per intero — {reason}; \
+                         osservato {:?}/{:?}/{:?}/{:?}: {} — dopo [{contents}], \
+                         ripresa [{after}]",
+                        error.category,
+                        error.phase,
+                        error.remote_effect,
+                        error.retry,
+                        condense(&error.message)
+                    ),
+                ),
+            }
+        }
+    }
+}
+
+const SCRATCH_UPSERT: &str = "plenora_driver_evidence_upsert";
+const SCRATCH_REPLACE: &str = "plenora_driver_evidence_replace";
+const SCRATCH_DELETE: &str = "plenora_driver_evidence_delete";
+/// La figlia che tiene per il braccio una riga della tabella di `DeleteByKeys`.
+const SCRATCH_DELETE_CHILD: &str = "plenora_driver_evidence_delete_child";
+
+/// Un payload piu lungo della colonna, che il server rifiuta.
+///
+/// Serve dove il conflitto non e disponibile: `Upsert` non puo fallire su una
+/// chiave duplicata — e cio che la mode fa per mestiere — e il preflight
+/// rifiuta a monte una tabella con un secondo indice unico, quindi non esiste
+/// un'altra chiave su cui collidere. Un valore fuori misura e la via piu
+/// diretta a un rifiuto del **server**, che e cio che le sonde di rollback
+/// devono provocare: un errore di mapping o di preflight non proverebbe
+/// niente, perche non avrebbe mai scritto nulla da annullare.
+///
+/// `STRICT_TRANS_TABLES` e attivo su tutti e tre i riferimenti — misurato
+/// dalla prima tranche — quindi il troppo-lungo e un errore e non un
+/// troncamento silenzioso.
+const TOO_LONG: &str = "fuorimisura-fuorimisura-fuorimisura-fuorimisura";
+
+/// Ricrea una tabella di lavoro con lo schema comune e le righe date.
+async fn reset_scratch(
+    connection: &mut mysql_async::Conn,
+    table: &str,
+    extra: &str,
+    seed: &[(i32, &str)],
+) {
+    let mut statements = vec![
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL{extra}) ENGINE = InnoDB"
+        ),
+    ];
+    if !seed.is_empty() {
+        let values = seed
+            .iter()
+            .map(|(id, payload)| format!("({id},'{payload}')"))
+            .collect::<Vec<_>>()
+            .join(",");
+        statements.push(format!("INSERT INTO {table} (id, payload) VALUES {values}"));
+    }
+    for statement in statements {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella di lavoro: harness, non divergenza");
+    }
+}
+
+/// Le tre write mode che restavano, con le proprie tre sonde ciascuna.
+///
+/// Stanno in una funzione sola perche condividono l'unica cosa che le lega —
+/// il modo di provocare un rifiuto del server — e non perche siano la stessa
+/// misura: ognuna ha la propria tabella, la propria contabilita attesa e la
+/// propria domanda.
+///
+/// * `Upsert` non ha un rollback «che rimette i valori»: mescola inserimenti e
+///   aggiornamenti, e l'esito lo dichiara con `inserted` e `updated` a `None`
+///   — «non pertinente» — perche su questi motori `affected_rows` vale 1 per
+///   un inserimento e 2 per un aggiornamento, e il totale non si scompone
+///   senza una seconda interrogazione. La sonda pretende quel `None`: un
+///   numero inventato sarebbe peggio di un'assenza dichiarata.
+/// * `Replace` svuota il target e lo riempie **nella stessa transazione**. Il
+///   suo rollback e il piu importante di tutta la fase: un fallimento a meta
+///   non deve lasciare la tabella vuota.
+/// * `DeleteByKeys` cancella cio che trova e salta cio che non trova, come
+///   `Update`, ma dal lato opposto.
+#[allow(clippy::too_many_lines)]
+async fn remaining_write_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let mut connection = open_connection().await;
+    let target = |object: &str| ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: object.to_owned(),
+    };
+    let plan = |object: &str, mode: WriteMode, keys: Vec<String>| WriteOperation {
+        target: target(object),
+        mode,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys,
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+
+    upsert_probes(
+        recorder,
+        profile,
+        &provider,
+        &plan(SCRATCH_UPSERT, WriteMode::Upsert, vec!["id".to_owned()]),
+        &mut connection,
+        cancellation,
+    )
+    .await;
+    replace_probes(
+        recorder,
+        profile,
+        &provider,
+        &plan(SCRATCH_REPLACE, WriteMode::Replace, Vec::new()),
+        &mut connection,
+        cancellation,
+    )
+    .await;
+    delete_probes(
+        recorder,
+        profile,
+        &provider,
+        &plan(
+            SCRATCH_DELETE,
+            WriteMode::DeleteByKeys,
+            vec!["id".to_owned()],
+        ),
+        &mut connection,
+        cancellation,
+    )
+    .await;
+
+    for table in [
+        SCRATCH_DELETE_CHILD,
+        SCRATCH_DELETE,
+        SCRATCH_REPLACE,
+        SCRATCH_UPSERT,
+    ] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+    }
+}
+
+/// Il rifiuto che ogni sonda di rollback attende dal server.
+///
+/// `Execution`/`Never` non e un «non so» travestito: e il verdetto che il
+/// profilo attribuisce a un codice che nessuna misura ha qualificato, e dice
+/// che l'operazione e fallita sul server e che ritentarla non ha ragione di
+/// riuscire. Cio che la sonda verifica e che l'effetto sia `RolledBack` —
+/// nessuna di queste tre mode esegue DDL, quindi il rollback e pieno.
+const SERVER_REFUSAL: RefusalContract = RefusalContract {
+    category: ErrorCategory::Execution,
+    phase: ErrorPhase::Write,
+    remote_effect: RemoteEffect::RolledBack,
+    retry: RetryDisposition::Never,
+    message_contains: "errore server",
+};
+
+/// Il rifiuto di una cancellazione, uguale per le tre mode.
+const CANCELLED_REFUSAL: RefusalContract = RefusalContract {
+    category: ErrorCategory::Cancelled,
+    phase: ErrorPhase::Write,
+    remote_effect: RemoteEffect::Unknown,
+    retry: RetryDisposition::RequiresRecovery,
+    message_contains: "quarantinata",
+};
+
+/// Registra l'esito di una sonda il cui **rifiuto** e la prova.
+fn record_refusal(
+    recorder: &mut Recorder,
+    probe: &'static str,
+    // `'static` come il nome della sonda: la domanda che una misura pone e
+    // scritta nel sorgente, non composta a runtime, e il registro la conserva
+    // oltre la vita di questa chiamata.
+    question: &'static str,
+    error: &plenora_database_core::DatabaseError,
+    mismatch: Option<String>,
+    observed: &str,
+) {
+    let quartet = format!(
+        "{:?}/{:?}/{:?}/{:?}: {}",
+        error.category, error.phase, error.remote_effect, error.retry, error.message
+    );
+    match mismatch {
+        None => recorder.rejected(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{quartet} — {observed}")),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+        Some(reason) => recorder.not_measured(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            &condense(&format!(
+                "il rifiuto atteso non e stato osservato — {reason}; osservato \
+                 {quartet} — {observed}"
+            )),
+        ),
+    }
+}
+
+/// Tre sonde in fila, e restano insieme: condividono il seme della
+/// tabella, il contenuto di partenza con cui ciascuna si confronta e la
+/// forma della contabilita attesa. Spezzarle vorrebbe dire passare quei
+/// tre valori in giro, cioe separare l'attesa dal confronto.
+#[allow(clippy::too_many_lines)]
+async fn upsert_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    provider: &MysqlProvider,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    // La tabella non ha altri indici unici oltre alla chiave primaria: il
+    // preflight della sesta tranche rifiuta il caso contrario, e rifiutarlo e
+    // gia una prova sua.
+    let seed = [(1, "vecchio-1"), (2, "vecchio-2"), (3, "vecchio-3")];
+    let initial = "righe=3 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3";
+
+    // 1. Tre righe che esistono e tre che no, in due batch: la mode aggiorna
+    //    le prime e inserisce le seconde, e l'esito dichiara `inserted` e
+    //    `updated` come non pertinenti invece di inventarne la scomposizione.
+    reset_scratch(connection, SCRATCH_UPSERT, "", &seed).await;
+    let question = "aggiorna cio che c'e, inserisce cio che non c'e, e non scompone cio che non sa";
+    let expected = "righe=6 contenuto=1:nuovo-1,2:nuovo-2,3:nuovo-3,4:nuovo-4,5:nuovo-5,6:nuovo-6";
+    let accounting = ExpectedCounts {
+        received: 6,
+        confirmed: 6,
+        inserted: None,
+        updated: None,
+        deleted: Some(0),
+        skipped: 0,
+    };
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            scratch_batch_labelled("nuovo", &[4, 5, 6]),
+        ],
+        6,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = table_contents(connection, SCRATCH_UPSERT).await;
+            let mismatch = outcome_mismatch(&outcome, profile, &accounting)
+                .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")));
+            match mismatch {
+                None => recorder.accepted(
+                    "provider.profile_write_upsert",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!(
+                        "confermate={} inserite={:?} aggiornate={:?} {contents}",
+                        outcome.rows.confirmed, outcome.rows.inserted, outcome.rows.updated
+                    ),
+                ),
+                Some(reason) => recorder.rejected(
+                    "provider.profile_write_upsert",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("contratto non soddisfatto: {reason}")),
+                    None,
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_upsert",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback. Il primo batch aggiorna davvero, il secondo porta un
+    //    valore fuori misura e il server lo rifiuta: le tre righe di partenza
+    //    devono tornare com'erano, e non deve esserci traccia delle nuove.
+    reset_scratch(connection, SCRATCH_UPSERT, "", &seed).await;
+    let question = "un secondo batch rifiutato annulla anche gli aggiornamenti del primo";
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            scratch_batch_pairs(&[(4, TOO_LONG.to_owned())]),
+        ],
+        4,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_upsert_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: il valore fuori misura e passato, confermate={}",
+                outcome.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_UPSERT).await;
+            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+                (contents != initial)
+                    .then(|| format!("le righe di partenza non sono tornate: [{contents}]"))
+            });
+            record_refusal(
+                recorder,
+                "provider.profile_write_upsert_rollback",
+                question,
+                &error,
+                mismatch,
+                &contents,
+            );
+        }
+    }
+
+    // 3. La cancellazione: niente di applicato, e il provider ancora usabile.
+    reset_scratch(connection, SCRATCH_UPSERT, "", &seed).await;
+    let question = "una cancellazione a meta Upsert non applica nulla, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[1, 2, 3]),
+            scratch_batch_labelled("nuovo", &[4, 5, 6]),
+        ],
+        6,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await
+    {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_upsert_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, confermate={}",
+                written.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_UPSERT).await;
+            let resumed = ExpectedCounts {
+                received: 1,
+                confirmed: 1,
+                inserted: None,
+                updated: None,
+                deleted: Some(0),
+                skipped: 0,
+            };
+            let recovered = scripted_write(
+                provider,
+                operation,
+                scratch_schema(),
+                vec![scratch_batch_labelled("ripreso", &[9])],
+                1,
+                None,
+                cancellation,
+            )
+            .await;
+            let after = table_contents(connection, SCRATCH_UPSERT).await;
+            let expected_after =
+                "righe=4 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3,9:ripreso-9";
+            let mismatch = refusal_mismatch(&CANCELLED_REFUSAL, &error)
+                .or_else(|| {
+                    (contents != initial)
+                        .then(|| format!("la cancellazione ha lasciato righe: [{contents}]"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, &resumed)
+                        .or_else(|| {
+                            (after != expected_after)
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            record_refusal(
+                recorder,
+                "provider.profile_write_upsert_cancellation",
+                question,
+                &error,
+                mismatch,
+                &format!("dopo [{contents}], ripresa [{after}]"),
+            );
+        }
+    }
+}
+
+/// Tre sonde in fila, e restano insieme: condividono il seme della
+/// tabella, il contenuto di partenza con cui ciascuna si confronta e la
+/// forma della contabilita attesa. Spezzarle vorrebbe dire passare quei
+/// tre valori in giro, cioe separare l'attesa dal confronto.
+#[allow(clippy::too_many_lines)]
+async fn replace_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    provider: &MysqlProvider,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    let seed = [(1, "vecchio-1"), (2, "vecchio-2"), (3, "vecchio-3")];
+    let initial = "righe=3 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3";
+
+    // 1. Il target viene svuotato e riempito nella stessa transazione: cio che
+    //    resta sono **solo** le righe in ingresso. Il conteggio delle
+    //    cancellate resta zero, e la sonda lo pretende invece di ignorarlo: e
+    //    cio che il contratto dichiara, e un valore diverso vorrebbe dire che
+    //    l'esito ha cambiato significato.
+    reset_scratch(connection, SCRATCH_REPLACE, "", &seed).await;
+    let question = "svuota il target e ci mette le righe in ingresso, nella stessa transazione";
+    let expected = "righe=2 contenuto=7:nuovo-7,8:nuovo-8";
+    let accounting = ExpectedCounts {
+        received: 2,
+        confirmed: 2,
+        inserted: Some(2),
+        updated: Some(0),
+        deleted: Some(0),
+        skipped: 0,
+    };
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![scratch_batch_labelled("nuovo", &[7, 8])],
+        2,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = table_contents(connection, SCRATCH_REPLACE).await;
+            let mismatch = outcome_mismatch(&outcome, profile, &accounting)
+                .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")));
+            match mismatch {
+                None => recorder.accepted(
+                    "provider.profile_write_replace",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!(
+                        "inserite={:?} cancellate={:?} {contents}",
+                        outcome.rows.inserted, outcome.rows.deleted
+                    ),
+                ),
+                Some(reason) => recorder.rejected(
+                    "provider.profile_write_replace",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("contratto non soddisfatto: {reason}")),
+                    None,
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_replace",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback che conta piu di tutti. Il DELETE e gia passato quando la
+    //    scrittura fallisce: se non tornasse indietro, un `Replace` fallito
+    //    lascerebbe il target **vuoto** — cioe distruggerebbe i dati che
+    //    doveva sostituire. La sonda verifica che le tre righe di partenza
+    //    siano tutte li.
+    reset_scratch(connection, SCRATCH_REPLACE, "", &seed).await;
+    let question = "un Replace fallito non lascia il target vuoto: le righe di prima tornano";
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[7, 8]),
+            scratch_batch_pairs(&[(9, TOO_LONG.to_owned())]),
+        ],
+        3,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_replace_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: il valore fuori misura e passato, confermate={}",
+                outcome.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_REPLACE).await;
+            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+                (contents != initial)
+                    .then(|| format!("il DELETE non e stato annullato: [{contents}]"))
+            });
+            record_refusal(
+                recorder,
+                "provider.profile_write_replace_rollback",
+                question,
+                &error,
+                mismatch,
+                &contents,
+            );
+        }
+    }
+
+    // 3. La cancellazione, con la stessa posta in gioco del rollback.
+    reset_scratch(connection, SCRATCH_REPLACE, "", &seed).await;
+    let question =
+        "una cancellazione a meta Replace non lascia il target vuoto, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    match scripted_write(
+        provider,
+        operation,
+        scratch_schema(),
+        vec![
+            scratch_batch_labelled("nuovo", &[7, 8]),
+            scratch_batch_labelled("nuovo", &[9]),
+        ],
+        3,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await
+    {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_replace_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, confermate={}",
+                written.rows.confirmed
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_REPLACE).await;
+            let resumed = ExpectedCounts {
+                received: 1,
+                confirmed: 1,
+                inserted: Some(1),
+                updated: Some(0),
+                deleted: Some(0),
+                skipped: 0,
+            };
+            let recovered = scripted_write(
+                provider,
+                operation,
+                scratch_schema(),
+                vec![scratch_batch_labelled("ripreso", &[4])],
+                1,
+                None,
+                cancellation,
+            )
+            .await;
+            let after = table_contents(connection, SCRATCH_REPLACE).await;
+            let mismatch = refusal_mismatch(&CANCELLED_REFUSAL, &error)
+                .or_else(|| {
+                    (contents != initial)
+                        .then(|| format!("la cancellazione ha toccato il target: [{contents}]"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, &resumed)
+                        .or_else(|| {
+                            (after != "righe=1 contenuto=4:ripreso-4")
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            record_refusal(
+                recorder,
+                "provider.profile_write_replace_cancellation",
+                question,
+                &error,
+                mismatch,
+                &format!("dopo [{contents}], ripresa [{after}]"),
+            );
+        }
+    }
+}
+
+/// Tre sonde in fila, e restano insieme: condividono il seme della
+/// tabella, il contenuto di partenza con cui ciascuna si confronta e la
+/// forma della contabilita attesa. Spezzarle vorrebbe dire passare quei
+/// tre valori in giro, cioe separare l'attesa dal confronto.
+#[allow(clippy::too_many_lines)]
+async fn delete_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    provider: &MysqlProvider,
+    operation: &WriteOperation,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    let seed = [
+        (1, "vecchio-1"),
+        (2, "vecchio-2"),
+        (3, "vecchio-3"),
+        (4, "vecchio-4"),
+    ];
+    let initial = "righe=4 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3,4:vecchio-4";
+
+    // 1. Cancella cio che trova e salta cio che non trova. E la simmetrica
+    //    dell'Update: una chiave assente non e un errore, e la contabilita
+    //    deve distinguerla da una cancellata.
+    reset_scratch(connection, SCRATCH_DELETE, "", &seed).await;
+    let question = "cancella le chiavi che trova e salta quelle che non ci sono";
+    let expected = "righe=2 contenuto=3:vecchio-3,4:vecchio-4";
+    let accounting = ExpectedCounts {
+        received: 3,
+        confirmed: 2,
+        inserted: Some(0),
+        updated: Some(0),
+        deleted: Some(2),
+        skipped: 1,
+    };
+    match scripted_write(
+        provider,
+        operation,
+        key_schema(),
+        vec![key_batch(&[1, 2, 99])],
+        3,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let contents = table_contents(connection, SCRATCH_DELETE).await;
+            let mismatch = outcome_mismatch(&outcome, profile, &accounting)
+                .or_else(|| (contents != expected).then(|| format!("contenuto [{contents}]")));
+            match mismatch {
+                None => recorder.accepted(
+                    "provider.profile_write_delete_by_keys",
+                    "provider",
+                    "profilo",
+                    question,
+                    format!(
+                        "cancellate={:?} saltate={} {contents}",
+                        outcome.rows.deleted, outcome.rows.skipped
+                    ),
+                ),
+                Some(reason) => recorder.rejected(
+                    "provider.profile_write_delete_by_keys",
+                    "provider",
+                    "profilo",
+                    question,
+                    condense(&format!("contratto non soddisfatto: {reason}")),
+                    None,
+                ),
+            }
+        }
+        Err(error) => recorder.rejected(
+            "provider.profile_write_delete_by_keys",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            crate::evidence::server_code_in_message(&error.message),
+        ),
+    }
+
+    // 2. Il rollback. Una figlia con vincolo di integrita referenziale tiene
+    //    per il braccio la riga 2: il server rifiuta la cancellazione, e
+    //    nessuna delle chiavi dello stesso batch deve sparire — nemmeno la 1,
+    //    che di per se sarebbe cancellabile.
+    reset_scratch(connection, SCRATCH_DELETE, "", &seed).await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_DELETE_CHILD}"),
+        format!(
+            "CREATE TABLE {SCRATCH_DELETE_CHILD} (id INT NOT NULL PRIMARY KEY, \
+             parent INT NOT NULL, CONSTRAINT fk_parent FOREIGN KEY (parent) \
+             REFERENCES {SCRATCH_DELETE} (id)) ENGINE = InnoDB"
+        ),
+        format!("INSERT INTO {SCRATCH_DELETE_CHILD} (id, parent) VALUES (1, 2)"),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella figlia: harness, non divergenza");
+    }
+    let question = "una chiave trattenuta da un vincolo fa tornare indietro l'intero batch";
+    match scripted_write(
+        provider,
+        operation,
+        key_schema(),
+        vec![key_batch(&[1, 2])],
+        2,
+        None,
+        cancellation,
+    )
+    .await
+    {
+        Ok(outcome) => recorder.accepted(
+            "provider.profile_write_delete_by_keys_rollback",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: il vincolo non ha trattenuto, cancellate={:?}",
+                outcome.rows.deleted
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_DELETE).await;
+            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+                (contents != initial)
+                    .then(|| format!("il batch non e tornato indietro per intero: [{contents}]"))
+            });
+            record_refusal(
+                recorder,
+                "provider.profile_write_delete_by_keys_rollback",
+                question,
+                &error,
+                mismatch,
+                &contents,
+            );
+        }
+    }
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_DELETE_CHILD}"))
+        .await;
+
+    // 3. La cancellazione a meta.
+    reset_scratch(connection, SCRATCH_DELETE, "", &seed).await;
+    let question =
+        "una cancellazione a meta DeleteByKeys non toglie righe, e il provider resta usabile";
+    let interrupted = CancellationToken::new();
+    match scripted_write(
+        provider,
+        operation,
+        key_schema(),
+        vec![key_batch(&[1, 2]), key_batch(&[3])],
+        3,
+        Some((2, interrupted.clone())),
+        &interrupted,
+    )
+    .await
+    {
+        Ok(written) => recorder.accepted(
+            "provider.profile_write_delete_by_keys_cancellation",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "nessun errore: la cancellazione non ha interrotto, cancellate={:?}",
+                written.rows.deleted
+            ),
+        ),
+        Err(error) => {
+            let contents = table_contents(connection, SCRATCH_DELETE).await;
+            let resumed = ExpectedCounts {
+                received: 1,
+                confirmed: 1,
+                inserted: Some(0),
+                updated: Some(0),
+                deleted: Some(1),
+                skipped: 0,
+            };
+            let recovered = scripted_write(
+                provider,
+                operation,
+                key_schema(),
+                vec![key_batch(&[4])],
+                1,
+                None,
+                cancellation,
+            )
+            .await;
+            let after = table_contents(connection, SCRATCH_DELETE).await;
+            let mismatch = refusal_mismatch(&CANCELLED_REFUSAL, &error)
+                .or_else(|| {
+                    (contents != initial)
+                        .then(|| format!("la cancellazione ha tolto righe: [{contents}]"))
+                })
+                .or_else(|| match &recovered {
+                    Ok(written) => outcome_mismatch(written, profile, &resumed)
+                        .or_else(|| {
+                            (after != "righe=3 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3")
+                                .then(|| format!("dopo la ripresa la tabella contiene [{after}]"))
+                        })
+                        .map(|reason| format!("la ripresa non e quella attesa: {reason}")),
+                    Err(next) => Some(format!(
+                        "il provider non e piu utilizzabile: {:?}: {}",
+                        next.category, next.message
+                    )),
+                });
+            record_refusal(
+                recorder,
+                "provider.profile_write_delete_by_keys_cancellation",
+                question,
+                &error,
+                mismatch,
+                &format!("dopo [{contents}], ripresa [{after}]"),
+            );
         }
     }
 }
@@ -3621,6 +4949,8 @@ async fn profile_probes(
     generated_column_probes(recorder, profile, &schema_name, cancellation).await;
     append_write_probes(recorder, profile, &schema_name, cancellation).await;
     create_write_probes(recorder, profile, &schema_name, cancellation).await;
+    update_write_probes(recorder, profile, &schema_name, cancellation).await;
+    remaining_write_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
 }
 

@@ -71,10 +71,10 @@ nell'intestazione.
 | `create` | `true` | `true` | `true` | `true` |
 | `append` | `true` | `true` | `true` | `true` |
 | `truncate_insert` | `true` | `false` | `false` | `true` |
-| `update` | `true` | `true` | `false` | `true` |
-| `upsert` | `true` | `true` | `false` | `true` |
-| `replace` | `true` | `true` | `false` | `true` |
-| `delete_by_keys` | `true` | `true` | `false` | `true` |
+| `update` | `true` | `true` | `true` | `true` |
+| `upsert` | `true` | `true` | `true` | `true` |
+| `replace` | `true` | `true` | `true` | `true` |
+| `delete_by_keys` | `true` | `true` | `true` | `true` |
 | `bulk` | `true` | `true` | `false` | `true` |
 | `array_binding` | `false` | `false` | `false` | `false` |
 | `returning` | `false` | `false` | `false` | `false` |
