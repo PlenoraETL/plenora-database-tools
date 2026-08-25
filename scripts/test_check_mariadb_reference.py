@@ -333,6 +333,14 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
         # confronta solo cio che porta un prefisso del catalogo, altrimenti
         # la guardia chiederebbe di registrare come sonda ogni tabella
         # citata.
+        #
+        # Restano pero i **campi di capability**, che con `spatial` collidono
+        # davvero: `spatial.read_wkb` e `spatial.functions` hanno la forma di
+        # una sonda della superficie `spatial` e non lo sono. La convenzione
+        # del documento e scriverli per intero — `SpatialCapabilities::functions`
+        # — e questa guardia e cio che la fa rispettare. Tre tranche di fila ci
+        # sono inciampate: se ci inciampa una quarta, il messaggio qui sotto e
+        # quello che deve dirle cosa fare.
         surfaces = {name.split(".", 1)[0] for name in probes}
         self.assertEqual(
             {name for name in documented if name.split(".", 1)[0] in surfaces}

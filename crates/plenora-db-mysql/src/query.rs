@@ -124,6 +124,42 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Length,
 ];
 
+/// Le funzioni spatial qualificate su `MariaDB`.
+///
+/// **Quattordici**, e la differenza con le quindici di `MySQL` e una sola:
+/// `IsValid`. Non e una scelta di prudenza — e la prima divergenza misurata
+/// **fra le due major di `MariaDB`** in tutto il documento di evidenza, e vale
+/// pena dire come si presenta:
+///
+/// * `MariaDB 12.3` esegue tutte e quindici;
+/// * `MariaDB 11.8 LTS` risponde `1305` a `ST_IsValid` — la funzione non
+///   esiste.
+///
+/// Pubblicarne quindici funzionerebbe sulla 12.3 e romperebbe sulla LTS, che e
+/// la versione con piu installazioni. La lista e percio l'**intersezione** delle
+/// major supportate, che e la sola forma onesta quando il profilo e uno solo
+/// per il prodotto: una capability e una promessa a chi non sa su quale minor
+/// atterrera.
+///
+/// Il giorno in cui il profilo si sdoppiasse per major, `IsValid` tornerebbe
+/// sulla 12 — e allora questa lista sarebbe il posto in cui dirlo.
+pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
+    SpatialFunction::GeometryType,
+    SpatialFunction::Srid,
+    SpatialFunction::Dimensions,
+    SpatialFunction::NPoints,
+    SpatialFunction::IsEmpty,
+    SpatialFunction::IsClosed,
+    SpatialFunction::Intersects,
+    SpatialFunction::Contains,
+    SpatialFunction::Within,
+    SpatialFunction::Disjoint,
+    SpatialFunction::Equals,
+    SpatialFunction::Distance,
+    SpatialFunction::Area,
+    SpatialFunction::Length,
+];
+
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
 ///
 /// La validazione portabile del core viene applicata per prima, cosi la
@@ -136,8 +172,30 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
 /// 64 caratteri di `MySQL`, e `Unsupported` per ogni sottoinsieme dell'AST non
 /// ancora qualificato su `MySQL`.
 pub fn render_query(operation: &QueryOperation, database: &str) -> Result<RenderedSql> {
+    render_query_with_profile(operation, database, &crate::profile::MYSQL_PROFILE)
+}
+
+/// La resa di una query, con il profilo che dice quali funzioni spatial sono
+/// qualificate su **questo** prodotto.
+///
+/// La lista era una sola per entrambi, e la conseguenza era che il renderer
+/// ammetteva cio che `MySQL` aveva verificato anche dove non valeva: su
+/// `MariaDB 11.8` un piano con `ST_IsValid` sarebbe passato di qui e sarebbe
+/// morto sul server con 1305, mentre la capability pubblicata diceva —
+/// giustamente — che quella funzione non c'e. Il cancello e la promessa devono
+/// leggere la stessa lista, altrimenti una delle due mente.
+///
+/// # Errors
+///
+/// Come `render_query`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn render_query_with_profile(
+    operation: &QueryOperation,
+    database: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<RenderedSql> {
     validate_query_operation(operation, &Limits::default())?;
-    ensure_qualified_shape(operation, database)?;
+    ensure_qualified_shape(operation, database, profile)?;
     mysql_renderer().render_query(operation)
 }
 
@@ -265,7 +323,11 @@ fn ensure_window_interactions(query: &QueryOperation, grouped: bool) -> Result<(
     Ok(())
 }
 
-fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> {
+fn ensure_qualified_shape(
+    query: &QueryOperation,
+    database: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<()> {
     ensure_qualified_subset(query)?;
     if query.row_limit.is_some() && query.order_by.is_empty() {
         return Err(prepare_error(
@@ -273,7 +335,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
             "LIMIT richiede ORDER BY esplicito per un risultato deterministico",
         ));
     }
-    let relations = ensure_relations(query, database)?;
+    let relations = ensure_relations(query, database, profile)?;
 
     let aggregated = query
         .projection
@@ -303,7 +365,7 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
                 "parametro in GROUP BY: la chiave sarebbe ambigua",
             ));
         }
-        ensure_expression(key, Scope::RowOnly("in GROUP BY"), &relations)?;
+        ensure_expression(key, Scope::RowOnly("in GROUP BY"), &relations, profile)?;
     }
     for projection in &query.projection {
         if let Some(alias) = &projection.alias {
@@ -323,17 +385,17 @@ fn ensure_qualified_shape(query: &QueryOperation, database: &str) -> Result<()> 
                     ));
                 }
             }
-            expression => ensure_expression(expression, Scope::Projection, &relations)?,
+            expression => ensure_expression(expression, Scope::Projection, &relations, profile)?,
         }
     }
     if let Some(filter) = &query.filter {
-        ensure_expression(filter, Scope::RowOnly("in WHERE"), &relations)?;
+        ensure_expression(filter, Scope::RowOnly("in WHERE"), &relations, profile)?;
     }
     if let Some(having) = &query.having {
-        ensure_expression(having, Scope::Aggregable, &relations)?;
+        ensure_expression(having, Scope::Aggregable, &relations, profile)?;
     }
     for ordering in &query.order_by {
-        ensure_expression(&ordering.expression, Scope::Aggregable, &relations)?;
+        ensure_expression(&ordering.expression, Scope::Aggregable, &relations, profile)?;
     }
     if grouped {
         ensure_group_determinism(query)?;
@@ -358,7 +420,11 @@ fn relation_name(source: &QuerySource) -> &str {
 /// Il controllo di unicita precede la rete: due relazioni con lo stesso nome
 /// renderebbero ambigua ogni colonna qualificata e `MySQL` se ne accorgerebbe
 /// solo al prepare, con un messaggio che non identifica il piano.
-fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTreeSet<&'a str>> {
+fn ensure_relations<'a>(
+    query: &'a QueryOperation,
+    database: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<BTreeSet<&'a str>> {
     let source = query
         .source
         .as_ref()
@@ -420,7 +486,7 @@ fn ensure_relations<'a>(query: &'a QueryOperation, database: &str) -> Result<BTr
             // aggregato o una window function non hanno qui alcun gruppo su
             // cui essere definiti.
             (_, Some(on)) => {
-                ensure_expression(on, Scope::RowOnly("in ON"), &relations)?;
+                ensure_expression(on, Scope::RowOnly("in ON"), &relations, profile)?;
             }
         }
     }
@@ -458,6 +524,7 @@ fn ensure_expression(
     expression: &QueryExpression,
     scope: Scope,
     relations: &BTreeSet<&str>,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<()> {
     let mut stack = vec![(expression, scope)];
     while let Some((item, scope)) = stack.pop() {
@@ -530,6 +597,7 @@ fn ensure_expression(
                     order_by,
                     frame.as_ref(),
                     relations,
+                    profile,
                 )?;
             }
             QueryExpression::Window { .. } | QueryExpression::SpatialWindow { .. } => {
@@ -544,10 +612,10 @@ fn ensure_expression(
                 // v1.2: accetta funzioni ∈ VERIFIED_SPATIAL_FUNCTIONS.
                 // Le altre restano Unsupported finché non hanno un test
                 // live dedicato su MySQL 8.4.
-                if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
+                if !profile.verified_spatial_functions().contains(function) {
                     return Err(unsupported(format!(
-                        "funzione spatial '{function:?}' non ancora qualificata \
- (vedi VERIFIED_SPATIAL_FUNCTIONS per il subset verified v1.2)"
+                        "funzione spatial '{function:?}' non qualificata su {}",
+                        profile.product()
                     )));
                 }
                 stack.extend(arguments.iter().map(|argument| (argument, scope)));
@@ -582,6 +650,7 @@ fn ensure_window(
     order_by: &[QueryOrdering],
     frame: Option<&WindowFrame>,
     relations: &BTreeSet<&str>,
+    profile: &dyn crate::profile::ProductProfile,
 ) -> Result<()> {
     match function {
         ScalarFunction::Rank | ScalarFunction::DenseRank => {
@@ -618,14 +687,14 @@ fn ensure_window(
     }
     if !is_count_star(function, arguments) {
         for argument in arguments {
-            ensure_expression(argument, WINDOW_OPERAND, relations)?;
+            ensure_expression(argument, WINDOW_OPERAND, relations, profile)?;
         }
     }
     for partition in partition_by {
-        ensure_expression(partition, WINDOW_OPERAND, relations)?;
+        ensure_expression(partition, WINDOW_OPERAND, relations, profile)?;
     }
     for ordering in order_by {
-        ensure_expression(&ordering.expression, WINDOW_OPERAND, relations)?;
+        ensure_expression(&ordering.expression, WINDOW_OPERAND, relations, profile)?;
     }
     Ok(())
 }
@@ -1176,8 +1245,13 @@ mod tests {
             };
             assert_eq!(error.category, ErrorCategory::Unsupported, "{label}");
             assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
+            // «non ancora qualificat…» oppure «non qualificata su <prodotto>»:
+            // il secondo e il messaggio del cancello spatial, che da quando
+            // legge la lista del profilo nomina il prodotto invece di rinviare
+            // a una costante — su due prodotti quella costante non e piu una.
             assert!(
-                error.message.contains("non ancora qualificat"),
+                error.message.contains("non ancora qualificat")
+                    || error.message.contains("non qualificata su"),
                 "{label}: {}",
                 error.message
             );
@@ -1611,7 +1685,9 @@ mod tests {
             assert_eq!(core.category, ErrorCategory::InvalidPlan, "{label}");
             assert_eq!(core.phase, ErrorPhase::Validate, "{label}");
 
-            let provider = ensure_qualified_shape(&query, "warehouse").expect_err(label);
+            let provider =
+                ensure_qualified_shape(&query, "warehouse", &crate::profile::MYSQL_PROFILE)
+                    .expect_err(label);
             assert_eq!(provider.category, ErrorCategory::InvalidPlan, "{label}");
             assert_eq!(provider.phase, ErrorPhase::Prepare, "{label}");
             assert_eq!(provider.provider, Some(ProviderKind::Mysql), "{label}");
@@ -2961,8 +3037,13 @@ mod tests {
             };
             assert_eq!(error.category, ErrorCategory::Unsupported, "{label}");
             assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
+            // «non ancora qualificat…» oppure «non qualificata su <prodotto>»:
+            // il secondo e il messaggio del cancello spatial, che da quando
+            // legge la lista del profilo nomina il prodotto invece di rinviare
+            // a una costante — su due prodotti quella costante non e piu una.
             assert!(
-                error.message.contains("non ancora qualificat"),
+                error.message.contains("non ancora qualificat")
+                    || error.message.contains("non qualificata su"),
                 "{label}: {}",
                 error.message
             );
@@ -2998,7 +3079,9 @@ mod tests {
             assert_eq!(core.category, ErrorCategory::InvalidPlan, "{label}");
             assert_eq!(core.phase, ErrorPhase::Validate, "{label}");
 
-            let provider = ensure_qualified_shape(&query, "warehouse").expect_err(label);
+            let provider =
+                ensure_qualified_shape(&query, "warehouse", &crate::profile::MYSQL_PROFILE)
+                    .expect_err(label);
             assert_eq!(provider.category, ErrorCategory::InvalidPlan, "{label}");
             assert_eq!(provider.phase, ErrorPhase::Prepare, "{label}");
             assert_eq!(provider.provider, Some(ProviderKind::Mysql), "{label}");

@@ -176,7 +176,7 @@ pub(crate) async fn query_operation_with_profile(
             RemoteEffect::None,
         ));
     }
-    let rendered = crate::query::render_query(operation, database)?;
+    let rendered = crate::query::render_query_with_profile(operation, database, profile)?;
     let bind_names = rendered
         .binds
         .iter()

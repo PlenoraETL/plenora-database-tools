@@ -215,6 +215,17 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Come si proietta una colonna geometrica per ottenerne il WKB.
     fn geometry_projection(&self, quoted: &str) -> String;
 
+    /// Le funzioni spatial che **questo** prodotto ha attraversato.
+    ///
+    /// Non e una comodita per la tabella delle capability: e il cancello che il
+    /// renderer consulta. Le due cose erano separate — una lista sola per
+    /// entrambi i prodotti, e una capability che ne pubblicava un'altra — e la
+    /// conseguenza era che un piano poteva superare il cancello e morire sul
+    /// server, con la capability che diceva giustamente di no.
+    fn verified_spatial_functions(
+        &self,
+    ) -> &'static [plenora_database_core::query::SpatialFunction];
+
     /// La dichiarazione DDL di una colonna geometrica con il CRS dichiarato.
     ///
     /// `MySQL` ammette `GEOMETRY SRID <n>`, che vincola la colonna: ogni valore
@@ -662,6 +673,12 @@ impl ProductProfile for MysqlProfile {
         format!("ST_AsBinary({quoted}) AS {quoted}")
     }
 
+    fn verified_spatial_functions(
+        &self,
+    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS
+    }
+
     fn geometry_column_ddl(&self, srid: u32) -> String {
         // Il vincolo di colonna: questo prodotto lo ammette, e il catalogo lo
         // ripubblica in `information_schema.columns.SRS_ID`.
@@ -917,6 +934,12 @@ impl ProductProfile for MariadbProfile {
         MYSQL_PROFILE.geometry_projection(quoted)
     }
 
+    fn verified_spatial_functions(
+        &self,
+    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+        crate::query::MARIADB_VERIFIED_SPATIAL_FUNCTIONS
+    }
+
     fn geometry_column_ddl(&self, _srid: u32) -> String {
         // Senza vincolo, e non per prudenza: `raw.spatial_write_forms` ha
         // misurato 1064 su entrambe le major per `GEOMETRY SRID 4326`, e la
@@ -1127,10 +1150,12 @@ impl ProductProfile for MariadbProfile {
                 // Solo XY, che e cio che le sonde hanno attraversato — e cio
                 // che la proiezione condivisa produce.
                 dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-                // Le funzioni spatial restano una lista vuota: la lista
-                // verified di MySQL non si eredita, e su questo prodotto
-                // nessuna sonda l'ha attraversata.
-                functions: Vec::new(),
+                // Quattordici, misurate da `provider.profile_spatial_functions`
+                // attraversando il percorso di query su entrambe le major. La
+                // quindicesima di MySQL — `IsValid` — resta fuori: la 12.3 ce
+                // l'ha, la 11.8 LTS risponde 1305, e una capability e una
+                // promessa a chi non sa su quale minor atterrera.
+                functions: self.verified_spatial_functions().to_vec(),
                 requires_declared_crs: true,
             },
             // I limiti non sono capability: dicono quanto il crate manda, non
@@ -1818,6 +1843,12 @@ impl ProductProfile for SecondProductProfile {
 
     fn geometry_projection(&self, quoted: &str) -> String {
         MYSQL_PROFILE.geometry_projection(quoted)
+    }
+
+    fn verified_spatial_functions(
+        &self,
+    ) -> &'static [plenora_database_core::query::SpatialFunction] {
+        MYSQL_PROFILE.verified_spatial_functions()
     }
 
     fn geometry_column_ddl(&self, srid: u32) -> String {
@@ -3534,6 +3565,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
         let published = MARIADB_PROFILE.capabilities("11.8.8-MariaDB".to_owned());
         assert_eq!(published.provider, ProviderKind::Mariadb);
@@ -3659,11 +3691,33 @@ mod tests {
                 .requires_declared_crs
         );
         // Cio che resta chiuso, resta chiuso: `geography` non esiste su questo
-        // prodotto, i tipi misti non sono mai stati letti, e la lista verified
-        // di MySQL non si eredita.
+        // prodotto, e i tipi misti non sono mai stati letti.
         assert!(!spatial.geography);
         assert!(!spatial.spatial_index && !spatial.mixed_geometry_types);
-        assert!(spatial.functions.is_empty());
+
+        // Le funzioni si aprono con la sedicesima tranche, e **non** sono
+        // quelle di MySQL: quattordici invece di quindici. La differenza e
+        // `IsValid`, che la 12.3 esegue e la 11.8 LTS no — la prima divergenza
+        // misurata fra le due major di questo prodotto.
+        //
+        // La lista pubblicata e la stessa che il renderer consulta: le due
+        // erano separate, e un piano poteva superare il cancello di MySQL e
+        // morire sul server mentre la capability diceva giustamente di no.
+        assert_eq!(spatial.functions.len(), 14);
+        assert_eq!(
+            spatial.functions,
+            MARIADB_PROFILE.verified_spatial_functions().to_vec()
+        );
+        let mysql_functions = MYSQL_PROFILE.verified_spatial_functions();
+        assert_eq!(mysql_functions.len(), 15);
+        let missing: Vec<_> = mysql_functions
+            .iter()
+            .filter(|function| !spatial.functions.contains(function))
+            .collect();
+        assert_eq!(
+            missing,
+            vec![&plenora_database_core::query::SpatialFunction::IsValid]
+        );
         assert_eq!(
             spatial.write_wkb,
             MARIADB_PROFILE.write_spatial_is_qualified(),

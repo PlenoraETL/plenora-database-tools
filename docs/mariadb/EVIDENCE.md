@@ -1645,3 +1645,66 @@ con lei.
   self-test pretende che ogni identificatore con quel prefisso corrisponda a
   una sonda esistente.
 * **le dimensioni oltre XY**: invariato dalla tredicesima.
+
+## Sedicesima tranche: quattordici, non quindici — e le due major non coincidono
+
+`SpatialCapabilities::functions` era una lista vuota, e la ragione accanto era che nessuna
+sonda le aveva eseguite. Non era prudenza generica: la lista di `MySQL` e scesa
+da ventisei a quindici il giorno in cui qualcuno l'ha attraversata davvero, e
+undici delle bocciate erano li per analogia con `PostgreSQL`. Ereditarla su un
+secondo prodotto sarebbe stato lo stesso errore, un prodotto piu in la.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_spatial_functions` | eseguite=15/15 | eseguite=15/15 | **eseguite=14/15**, `IsValid` risponde 1305 |
+
+### Cosa dice
+
+**E' la prima divergenza fra le due major di `MariaDB` di tutto questo
+documento.** Quindici tranche hanno misurato tipi, catalogo, sessione, errori,
+scritture, streaming, `RETURNING`, CRS e savepoint, e su ogni riga le due
+versioni avevano risposto identico. Qui no: `ST_IsValid` esiste sulla 12.3 e
+non sulla 11.8 LTS, che risponde 1305 — «la funzione non esiste».
+
+**La lista pubblicata e quattordici, cioe l'intersezione.** Non e una
+sottodichiarazione prudente: e la sola forma onesta quando il profilo e uno solo
+per il prodotto. Una capability e una promessa fatta a chi **non sa** su quale
+minor atterrera, e pubblicarne quindici funzionerebbe sulla 12.3 e romperebbe
+sulla LTS — cioe sulla versione con piu installazioni.
+
+Il giorno in cui il profilo si sdoppiasse per major, `IsValid` tornerebbe sulla
+12, e la costante e il posto in cui dirlo.
+
+**La sonda attraversa, non apre.** Costruisce per ogni funzione una
+`QueryOperation` con l'arieta che il contratto dichiara, la manda al provider e
+consuma il primo batch: il prepare non e l'esecuzione, e un errore che arriva
+dopo verrebbe buttato via da un `drop`. Due geometrie, una lineare e una areale,
+e basta che una passi — `ST_Area` su una linea risponde 3516, e chiudere la
+funzione per quello sarebbe una falsa assenza.
+
+### Cosa ne segue per il codice
+
+**Il cancello e la promessa leggono ora la stessa lista.** Erano separati:
+`render_query` consultava la costante di `MySQL` qualunque fosse il prodotto,
+mentre la capability ne pubblicava un'altra. La conseguenza e concreta — su
+`MariaDB 11.8` un piano con `ST_IsValid` sarebbe passato dal renderer e sarebbe
+morto sul server con 1305, mentre la capability diceva giustamente che quella
+funzione non c'e. Una delle due mentiva, e non era la capability.
+
+Il profilo espone ora `verified_spatial_functions()`, e sia il renderer sia la
+tabella delle capability lo chiamano. Il messaggio del rifiuto nomina di
+conseguenza il **prodotto** invece di rinviare a una costante: su due prodotti
+quella costante non e piu una.
+
+### Cosa resta not_measured
+
+* **i tipi geometrici misti**: invariato: la tabella delle sonde porta un punto,
+  una linea e un poligono, ma mai due tipi diversi nella stessa colonna.
+* **`SpatialCapabilities::spatial_index`**: nessuna sonda ha creato un indice
+  spaziale, su nessuno dei due prodotti.
+* **le funzioni oltre le quindici di `MySQL`**: la sonda attraversa la lista di
+  `MySQL`, quindi misura al piu quella. Se `MariaDB` avesse funzioni che `MySQL`
+  non ha, questo documento non lo saprebbe — ed e una domanda diversa, che
+  comincia dal catalogo del prodotto e non dalla lista dell'altro.
