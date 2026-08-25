@@ -215,6 +215,36 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Come si proietta una colonna geometrica per ottenerne il WKB.
     fn geometry_projection(&self, quoted: &str) -> String;
 
+    /// La dichiarazione DDL di una colonna geometrica con il CRS dichiarato.
+    ///
+    /// `MySQL` ammette `GEOMETRY SRID <n>`, che vincola la colonna: ogni valore
+    /// che ci entra deve appartenere a quel sistema di riferimento, e il
+    /// catalogo lo pubblica. `MariaDB` rifiuta quella forma con 1064 — misurato
+    /// su entrambe le major, e non solo per `SRID`: anche `REF_SYSTEM_ID`, che
+    /// la sua documentazione indica al posto suo.
+    ///
+    /// Il CRS non sparisce: si sposta. `ST_GeomFromWKB(?, <n>)` e accettato da
+    /// entrambi i prodotti e su entrambi il valore memorizzato conserva l'SRID
+    /// — anche su `MariaDB`, dove la colonna non lo porta. E' la meta che rende
+    /// praticabile l'altra: la lettura verifica il CRS **valore per valore**,
+    /// quindi una colonna non vincolata resta descrivibile con onesta.
+    fn geometry_column_ddl(&self, srid: u32) -> String;
+
+    /// Se l'SRID che il catalogo descrive e compatibile con quello dichiarato.
+    ///
+    /// Sono due domande diverse a seconda del prodotto, e tenerle in una sola
+    /// riga di confronto le confondeva. Dove la colonna e vincolata — `MySQL` —
+    /// il catalogo porta l'SRID e deve essere **quello**: scrivere geometrie
+    /// 3003 in una colonna dichiarata 4326 e un errore che il server
+    /// rifiuterebbe comunque, ed e meglio dirlo in preflight.
+    ///
+    /// Dove la colonna non puo essere vincolata — `MariaDB` — il catalogo tace
+    /// per costruzione, e non c'e niente con cui confrontare. Il confronto
+    /// secco `catalogo == dichiarato` falliva **sempre**, quindi la scrittura
+    /// spatial era chiusa da una riga di codice prima ancora che dalla
+    /// bandiera: `None != Some(4326)`.
+    fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, declared: u32) -> bool;
+
     /// La proiezione che rende l'SRID di **ogni valore** geometrico.
     ///
     /// Sta accanto a `geometry_projection` perche e la sua controparte: quella
@@ -632,6 +662,21 @@ impl ProductProfile for MysqlProfile {
         format!("ST_AsBinary({quoted}) AS {quoted}")
     }
 
+    fn geometry_column_ddl(&self, srid: u32) -> String {
+        // Il vincolo di colonna: questo prodotto lo ammette, e il catalogo lo
+        // ripubblica in `information_schema.columns.SRS_ID`.
+        format!("GEOMETRY SRID {srid}")
+    }
+
+    fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, declared: u32) -> bool {
+        // La colonna e vincolata: il catalogo porta l'SRID, e deve essere
+        // quello dichiarato. Una colonna senza vincolo esiste anche qui — la
+        // DDL non lo impone — e li il catalogo tace: scriverci dentro senza
+        // che nessuno possa confermare il CRS e cio che questo confronto
+        // rifiuta.
+        catalog == Some(declared)
+    }
+
     fn geometry_srid_projection(&self, quoted: &str) -> String {
         // Senza alias: la colonna non compare in nessuno schema e si legge per
         // posizione. Un alias le darebbe un nome che qualcuno potrebbe
@@ -872,6 +917,31 @@ impl ProductProfile for MariadbProfile {
         MYSQL_PROFILE.geometry_projection(quoted)
     }
 
+    fn geometry_column_ddl(&self, _srid: u32) -> String {
+        // Senza vincolo, e non per prudenza: `raw.spatial_write_forms` ha
+        // misurato 1064 su entrambe le major per `GEOMETRY SRID 4326`, e la
+        // prima tranche aveva gia misurato lo stesso rifiuto per
+        // `REF_SYSTEM_ID`. Non esiste una DDL che vincoli una colonna
+        // geometrica a un sistema di riferimento su questo prodotto.
+        //
+        // L'SRID dichiarato non viene perso: lo porta ogni valore, perche
+        // `ST_GeomFromWKB(?, <n>)` e accettato e cio che resta memorizzato
+        // conserva l'SRID — misurato 4326 su entrambe le major.
+        "GEOMETRY".to_owned()
+    }
+
+    fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, _declared: u32) -> bool {
+        // Il catalogo tace per costruzione, e quel silenzio e la risposta
+        // giusta: `GEOMETRY_COLUMNS.SRID` vale sempre zero perche nessuna DDL
+        // puo farlo diventare altro. Con niente da confrontare, il confronto
+        // non e «fallito»: non si pone.
+        //
+        // Un SRID che comparisse sarebbe invece una sorpresa — vorrebbe dire
+        // che questo prodotto ha cominciato a vincolare le colonne, e la
+        // decisione qui sopra andrebbe rimisurata invece di essere aggirata.
+        catalog.is_none()
+    }
+
     fn geometry_srid_projection(&self, quoted: &str) -> String {
         // `ST_SRID` e nella lista che `raw.spatial_functions` ha attraversato
         // su tutti e tre i riferimenti. E' l'unico prodotto dei due che questa
@@ -1078,18 +1148,43 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn write_spatial_is_qualified(&self) -> bool {
-        // Nessuna geometria e mai stata scritta su MariaDB attraverso questo
-        // crate. Leggere un WKB che il server produce non dice nulla su cosa
-        // accetti in ingresso, ed e per questo che le due prove sono separate.
-        false
+        // Aperta dalla quindicesima tranche, e questa bandiera e sia la
+        // capability pubblicata sia il cancello che il piano consulta — una
+        // sola origine, per scelta dichiarata. Le due cose insieme hanno un
+        // effetto che va detto: finche era `false`, nessuna sonda poteva
+        // attraversare il percorso di scrittura, perche `compile_write_column`
+        // si fermava prima. Le prove e l'apertura sono quindi arrivate nello
+        // stesso commit, e la campagna e stata cio che le ha rese vere.
+        //
+        // Cosa sostiene l'apertura, in ordine. `raw.spatial_write_forms` ha
+        // misurato i tre fatti del server: la DDL vincolata e rifiutata con
+        // 1064, `ST_GeomFromWKB(?, <n>)` e accettato, e l'SRID **resta
+        // memorizzato** — 4326 su entrambe le major. Quest'ultimo e cio che
+        // rende praticabile tutto il resto: dove la colonna non porta il CRS,
+        // lo porta il valore.
+        //
+        // `provider.profile_write_spatial_create` e `..._append` misurano il
+        // percorso: la `Create` emette la DDL che il profilo decide, la
+        // `Append` scrive nella tabella che la prima ha lasciato, e la
+        // rilettura da un'altra connessione verifica l'SRID di **ogni** riga.
+        // E' la meta che chiude il cerchio con la lettura: se la scrittura
+        // perdesse il CRS, la lettura di questo stesso crate rifiuterebbe le
+        // righe che ha appena scritto.
+        true
     }
 
-    fn writable_geometry_type(&self, _name: &str) -> bool {
-        // Conseguenza del metodo sopra: senza scrittura spatial qualificata
-        // non esiste un tipo geometrico scrivibile come dichiarazione `exact`.
-        // Ereditare l'insieme di MySQL direbbe il contrario di cio che questo
-        // profilo dichiara due righe piu su.
-        false
+    fn writable_geometry_type(&self, name: &str) -> bool {
+        // L'insieme di MySQL, e non per eredita: i tipi geometrici sono nomi
+        // dello standard OGC, il piano li usa per la sola dichiarazione
+        // `exact`, e le sonde di scrittura girano su `mixed` — dove il tipo
+        // non compare affatto.
+        //
+        // Resta pero una cosa non misurata, e va detta qui invece che dedotta
+        // dal `true` di sopra: nessuna sonda ha scritto una colonna dichiarata
+        // `exact` su questo prodotto. Il giorno in cui una lo facesse, questo
+        // metodo e cio che deciderebbe, e allora il rinvio a `MySQL` andrebbe
+        // sostenuto invece che assunto.
+        crate::write::geometry_type_is_writable(name)
     }
 
     fn classify_server_code(&self, code: u16) -> ServerCodeVerdict {
@@ -1723,6 +1818,14 @@ impl ProductProfile for SecondProductProfile {
 
     fn geometry_projection(&self, quoted: &str) -> String {
         MYSQL_PROFILE.geometry_projection(quoted)
+    }
+
+    fn geometry_column_ddl(&self, srid: u32) -> String {
+        MYSQL_PROFILE.geometry_column_ddl(srid)
+    }
+
+    fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, declared: u32) -> bool {
+        MYSQL_PROFILE.geometry_target_srid_is_compatible(catalog, declared)
     }
 
     fn geometry_srid_projection(&self, quoted: &str) -> String {
@@ -3782,17 +3885,37 @@ mod tests {
             .object_columns_query()
             .contains("NULL AS srs_id"));
 
-        // Scrittura: nessuna geometria e mai stata scritta su MariaDB da
-        // questo crate, e le due decisioni che ne discendono si tengono.
+        // Scrittura: aperta su entrambi dalla quindicesima tranche, e i tipi
+        // scrivibili coincidono — sono nomi OGC, non una tabella di prodotto.
         assert!(MYSQL_PROFILE.write_spatial_is_qualified());
-        assert!(!MARIADB_PROFILE.write_spatial_is_qualified());
+        assert!(MARIADB_PROFILE.write_spatial_is_qualified());
         for geometry in ["point", "linestring", "polygon", "multipoint"] {
-            assert!(MYSQL_PROFILE.writable_geometry_type(geometry), "{geometry}");
-            assert!(
-                !MARIADB_PROFILE.writable_geometry_type(geometry),
-                "{geometry}: dichiarato scrivibile senza che la scrittura sia qualificata"
+            assert_eq!(
+                MYSQL_PROFILE.writable_geometry_type(geometry),
+                MARIADB_PROFILE.writable_geometry_type(geometry),
+                "{geometry}"
             );
         }
+
+        // E qui la divergenza vera della scrittura, che non e nella bandiera
+        // ma nella **forma della colonna**. `MySQL` la vincola all'SRID;
+        // `MariaDB` non puo — `raw.spatial_write_forms` ha misurato 1064 su
+        // entrambe le major — e il CRS si sposta dentro i valori.
+        assert_eq!(
+            MYSQL_PROFILE.geometry_column_ddl(4_326),
+            "GEOMETRY SRID 4326"
+        );
+        assert_eq!(MARIADB_PROFILE.geometry_column_ddl(4_326), "GEOMETRY");
+
+        // Conseguenza diretta, e la riga che teneva chiusa la scrittura prima
+        // ancora della bandiera: dove la colonna e vincolata il catalogo porta
+        // l'SRID e deve essere quello, dove non puo esserlo il catalogo tace e
+        // non c'e niente da confrontare. Il confronto secco falliva sempre sul
+        // secondo, perche `None` non e mai uguale a `Some(4326)`.
+        assert!(MYSQL_PROFILE.geometry_target_srid_is_compatible(Some(4_326), 4_326));
+        assert!(!MYSQL_PROFILE.geometry_target_srid_is_compatible(None, 4_326));
+        assert!(MARIADB_PROFILE.geometry_target_srid_is_compatible(None, 4_326));
+        assert!(!MARIADB_PROFILE.geometry_target_srid_is_compatible(Some(4_326), 4_326));
     }
 
     #[test]

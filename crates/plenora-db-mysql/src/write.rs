@@ -837,9 +837,20 @@ impl MysqlWritePlan {
                         "campo geometry Arrow diretto a una colonna {product} non spatial"
                     )));
                 }
-                if server.spatial_srid != column.spatial_srid {
+                // La compatibilita la decide il profilo, e non e la stessa
+                // domanda sui due prodotti: dove la colonna e vincolata il
+                // catalogo deve portare **quell'**SRID, dove non puo esserlo il
+                // catalogo tace e non c'e niente da confrontare. Il confronto
+                // secco che stava qui falliva sempre sul secondo — `None` non
+                // e mai uguale a `Some(4326)` — e teneva chiusa la scrittura
+                // spatial con una riga di codice, prima ancora che con una
+                // bandiera.
+                let declared = column.spatial_srid.ok_or_else(|| {
+                    crs_error(format!("write spatial {product} senza SRID dichiarato"))
+                })?;
+                if !profile.geometry_target_srid_is_compatible(server.spatial_srid, declared) {
                     return Err(crs_error(format!(
-                        "SRID target {product} diverso dal contratto Arrow"
+                        "SRID target {product} incompatibile col contratto Arrow"
                     )));
                 }
                 let native = server.data_type.to_ascii_lowercase();
@@ -1553,9 +1564,15 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
 
 /// Genera la dichiarazione MySQL per un tipo di colonna.
 ///
-/// Tipi geometrici: `GEOMETRY [NOT NULL] SRID <srid>` (MySQL 8.0+ dichiara
-/// SRID come constraint di colonna quando noto).
-fn mysql_column_ddl(kind: &MysqlColumnKind, spatial_srid: Option<u32>) -> String {
+/// La forma della colonna geometrica la decide il **profilo**: `MySQL` la
+/// vincola a un SRID, `MariaDB` non puo — e il CRS gli viaggia dentro i valori.
+/// Sceglierla qui avrebbe messo una divergenza di prodotto dentro una tabella
+/// di tipi, che e l'ultimo posto dove qualcuno la cercherebbe.
+fn mysql_column_ddl(
+    kind: &MysqlColumnKind,
+    spatial_srid: Option<u32>,
+    profile: &dyn crate::profile::ProductProfile,
+) -> String {
     match kind {
         MysqlColumnKind::Bool => "TINYINT(1)".to_owned(),
         MysqlColumnKind::I8 => "TINYINT".to_owned(),
@@ -1582,7 +1599,7 @@ fn mysql_column_ddl(kind: &MysqlColumnKind, spatial_srid: Option<u32>) -> String
             format!("DECIMAL({precision},{scale})")
         }
         MysqlColumnKind::Geometry => match spatial_srid {
-            Some(srid) => format!("GEOMETRY SRID {srid}"),
+            Some(srid) => profile.geometry_column_ddl(srid),
             None => "GEOMETRY".to_owned(),
         },
     }
@@ -1622,7 +1639,7 @@ pub(crate) fn build_create_table_sql(
 
     let mut lines = Vec::with_capacity(columns.len() + 1);
     for col in &columns {
-        let type_decl = mysql_column_ddl(&col.kind, col.spatial_srid);
+        let type_decl = mysql_column_ddl(&col.kind, col.spatial_srid, profile);
         let null_decl = if col.nullable { "NULL" } else { "NOT NULL" };
         lines.push(format!("    {} {} {}", col.quoted, type_decl, null_decl));
     }
@@ -1679,7 +1696,7 @@ pub(crate) fn build_temp_staging_sql(
     let lines: Vec<String> = columns
         .iter()
         .map(|c| {
-            let ty = mysql_column_ddl(&c.kind, c.spatial_srid);
+            let ty = mysql_column_ddl(&c.kind, c.spatial_srid, profile);
             let null = if c.nullable { "NULL" } else { "NOT NULL" };
             format!("    {} {} {}", c.quoted, ty, null)
         })

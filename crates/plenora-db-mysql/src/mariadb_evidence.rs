@@ -5701,6 +5701,265 @@ async fn profile_probes(
     portable_returning_probe(recorder, &pool, cancellation).await;
     declared_crs_probe(recorder, profile, &schema_name, cancellation).await;
     savepoint_probes(recorder, &pool, cancellation).await;
+    {
+        let mut connection = open_connection().await;
+        spatial_write_probes(
+            recorder,
+            profile,
+            &schema_name,
+            &mut connection,
+            cancellation,
+        )
+        .await;
+    }
+}
+
+/// La tabella su cui il provider scrive geometrie.
+const SCRATCH_SPATIAL: &str = "plenora_driver_evidence_spatial";
+
+/// Il campo Arrow di una geometria `mixed` XY con il CRS dichiarato.
+///
+/// I metadata sono quelli che il contratto `GeoArrow` di questo crate pubblica
+/// in lettura: costruirli qui a mano e cio che rende la sonda una prova sul
+/// **percorso di scrittura** e non sul generatore di metadata.
+fn spatial_write_field(srid: u32) -> plenora_database_core::arrow::schema::Field {
+    use plenora_database_core::arrow::schema::{DataType, Field};
+    use plenora_database_core::protocol;
+
+    let metadata = std::collections::HashMap::from([
+        (
+            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+            "geoarrow.wkb".to_owned(),
+        ),
+        (protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned()),
+        (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
+        (
+            protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+            "mixed".to_owned(),
+        ),
+        (
+            protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+            "geometry".to_owned(),
+        ),
+        (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
+        (
+            protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+            "declared_unresolved".to_owned(),
+        ),
+        (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
+    ]);
+    Field::new("shape", DataType::Binary, false).with_metadata(metadata)
+}
+
+/// Lo schema di ingresso: una chiave e una geometria.
+fn spatial_write_schema(srid: u32) -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    std::sync::Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        spatial_write_field(srid),
+    ]))
+}
+
+/// Un `POINT(x y)` in WKB XY little-endian, **senza** SRID incapsulato.
+///
+/// L'EWKB — quello che porta l'SRID dentro i byte — e rifiutato dal piano di
+/// scrittura, e a ragione: due dichiarazioni dello stesso CRS possono
+/// divergere, e allora nessuna delle due e piu quella giusta. Il CRS lo porta
+/// il contratto Arrow, una volta sola.
+fn point_wkb(x: f64, y: f64) -> Vec<u8> {
+    let mut bytes = vec![1_u8];
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&x.to_le_bytes());
+    bytes.extend_from_slice(&y.to_le_bytes());
+    bytes
+}
+
+/// Un batch con una riga per id, ciascuna con il proprio punto.
+fn spatial_write_batch(srid: u32, ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
+    use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int32Array};
+    use plenora_database_core::arrow::RecordBatch;
+
+    let points: Vec<Vec<u8>> = ids
+        .iter()
+        .map(|id| point_wkb(f64::from(*id), f64::from(*id)))
+        .collect();
+    let shapes: Vec<&[u8]> = points.iter().map(Vec::as_slice).collect();
+    RecordBatch::try_new(
+        spatial_write_schema(srid),
+        vec![
+            std::sync::Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
+            std::sync::Arc::new(BinaryArray::from(shapes)) as ArrayRef,
+        ],
+    )
+    .expect("batch spatial: harness, non divergenza")
+}
+
+/// L'SRID di ogni riga scritta, riletto da un'altra connessione.
+async fn spatial_contents(connection: &mut mysql_async::Conn) -> String {
+    connection
+        .query_first::<(i64, Option<String>), _>(format!(
+            "SELECT COUNT(*), GROUP_CONCAT(DISTINCT ST_SRID(shape)) FROM {SCRATCH_SPATIAL}"
+        ))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |row| {
+                row.map_or_else(
+                    || "rilettura senza righe".to_owned(),
+                    |(count, srids)| format!("righe={count} srid={}", srids.unwrap_or_default()),
+                )
+            },
+        )
+}
+
+/// La scrittura spatial, attraversata dal provider con il profilo del prodotto.
+///
+/// `spatial.write_wkb` era chiusa, e la ragione era giusta: nessuna geometria
+/// era mai stata scritta attraverso il crate, e leggere un WKB che il server
+/// produce non dice nulla su cosa accetti in ingresso.
+///
+/// `raw.spatial_write_forms` ha misurato i tre fatti del server. Queste due
+/// sonde misurano il **percorso**, che e un'altra cosa: la DDL che il piano
+/// emette, il bind che l'INSERT costruisce, e cosa resta scritto.
+///
+/// # Perche la `Create` viene prima
+///
+/// Perche e li che i due prodotti divergono. Il piano emette `GEOMETRY SRID
+/// <n>` dove la colonna si puo vincolare e `GEOMETRY` dove non si puo, e la
+/// scelta sta nel profilo. Una sonda che scrivesse in una tabella preparata a
+/// mano proverebbe l'INSERT e salterebbe proprio la riga che diverge.
+///
+/// # Cosa la rilettura verifica
+///
+/// L'SRID di **ogni** riga, non il conteggio. E' la meta che chiude il cerchio
+/// con la lettura: su un prodotto dove la colonna non porta il CRS, l'unica
+/// cosa che puo portarlo e il valore — e se la scrittura lo perdesse, la
+/// lettura di questo stesso crate rifiuterebbe le righe che ha appena scritto.
+async fn spatial_write_probes(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL}"))
+        .await;
+
+    let target = ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: SCRATCH_SPATIAL.to_owned(),
+    };
+    let operation = |mode| WriteOperation {
+        target: target.clone(),
+        mode,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: Some(plenora_database_core::plan::SridPolicy::RequireMatch),
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+
+    // La `Create` viene prima perche e li che i due prodotti divergono; la
+    // `Append` dopo, sulla tabella che la prima ha lasciato.
+    record_spatial_write(
+        recorder,
+        &provider,
+        connection,
+        SpatialWriteCase {
+            probe: "provider.profile_write_spatial_create",
+            question: "il piano crea una colonna geometrica e ci scrive dentro",
+            operation: &operation(WriteMode::Create),
+            ids: &[1, 2],
+            expected: "righe=2 srid=4326",
+        },
+        cancellation,
+    )
+    .await;
+    record_spatial_write(
+        recorder,
+        &provider,
+        connection,
+        SpatialWriteCase {
+            probe: "provider.profile_write_spatial_append",
+            question: "una append su una colonna geometrica conserva il CRS di ogni riga",
+            operation: &operation(WriteMode::Append),
+            ids: &[3, 4],
+            expected: "righe=4 srid=4326",
+        },
+        cancellation,
+    )
+    .await;
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL}"))
+        .await;
+}
+
+/// Una delle due scritture spatial, con cio che deve restare sul server.
+struct SpatialWriteCase<'a> {
+    probe: &'static str,
+    question: &'static str,
+    operation: &'a WriteOperation,
+    ids: &'a [i32],
+    expected: &'static str,
+}
+
+/// Esegue la scrittura, rilegge da un'altra connessione, e registra l'esito.
+async fn record_spatial_write(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    connection: &mut mysql_async::Conn,
+    case: SpatialWriteCase<'_>,
+    cancellation: &CancellationToken,
+) {
+    let written = scripted_write(
+        provider,
+        case.operation,
+        spatial_write_schema(4_326),
+        vec![spatial_write_batch(4_326, case.ids)],
+        case.ids.len() as u64,
+        None,
+        cancellation,
+    )
+    .await;
+    let contents = spatial_contents(connection).await;
+    match written {
+        Ok(outcome) if contents == case.expected => recorder.accepted(
+            case.probe,
+            "provider",
+            "profilo",
+            case.question,
+            format!("{:?} — {contents}", outcome.status),
+        ),
+        Ok(outcome) => recorder.rejected(
+            case.probe,
+            "provider",
+            "profilo",
+            case.question,
+            condense(&format!(
+                "atteso {}, misurato {:?} — {contents}",
+                case.expected, outcome.status
+            )),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            case.probe,
+            "provider",
+            "profilo",
+            case.question,
+            condense(&format!(
+                "{:?}/{:?}: {} — {contents}",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+    }
 }
 
 /// La tabella su cui si misurano i savepoint.

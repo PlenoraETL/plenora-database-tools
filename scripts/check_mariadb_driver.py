@@ -128,6 +128,8 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_functional_index": "il catalogo descrive gli indici, e li descrive come sono",
     "provider.profile_generated_index": "il catalogo descrive la colonna generata e il suo indice",
     "provider.profile_savepoint_partial_rollback": "transactions.savepoints: il rollback parziale annulla solo cio che e venuto dopo",
+    "provider.profile_write_spatial_create": "spatial.write_wkb: il piano crea la colonna geometrica e ci scrive dentro",
+    "provider.profile_write_spatial_append": "spatial.write_wkb: una append conserva il CRS di ogni riga",
     "provider.profile_write_append": "writes.append: Append",
     "provider.profile_write_create": "writes.create: Create",
     "provider.profile_write_delete_by_keys": "writes.delete_by_keys: cancella cio che trova e salta cio che non trova",
@@ -337,6 +339,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_crs_mismatched",
     "provider.profile_savepoint_partial_rollback",
     "provider.profile_savepoint_unknown_name",
+    "provider.profile_write_spatial_create",
+    "provider.profile_write_spatial_append",
 )
 
 
