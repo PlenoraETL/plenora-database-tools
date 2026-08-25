@@ -1658,6 +1658,18 @@ const fn mysql_spatial_name(function: SpatialFunction) -> Option<&'static str> {
     }
 }
 
+/// Il nome che un dialetto da a una funzione spatial.
+///
+/// Pubblica perche una sonda possa chiedere al server **lo stesso** nome che il
+/// renderer emetterebbe. Ricavarlo altrove — dal catalogo, o a mano — misurerebbe
+/// una funzione che questo codice non scrive mai, ed e esattamente l'errore che
+/// ha tenuto `ST_NDims` e `ST_NPoints` nella lista verified di `MySQL`: nomi
+/// `PostGIS` che il server non ha, dedotti invece che letti da qui.
+#[must_use]
+pub const fn spatial_function_name(dialect: Dialect, function: SpatialFunction) -> &'static str {
+    dialect_spatial_name(dialect, function)
+}
+
 /// Il nome che **questo** dialetto da alla funzione.
 const fn dialect_spatial_name(dialect: Dialect, function: SpatialFunction) -> &'static str {
     match dialect {

@@ -108,6 +108,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     returning_form_probe(recorder, connection).await;
     spatial_write_probe(recorder, connection).await;
     spatial_index_probe(recorder, connection).await;
+    spatial_candidates_probe(recorder, connection).await;
 }
 
 /// La tabella su cui si misura la scrittura spatial.
@@ -5727,6 +5728,100 @@ async fn profile_probes(
         )
         .await;
     }
+}
+
+/// Le funzioni del contratto che nessuno ha mai chiesto a questo server.
+///
+/// La lista verified ne porta quindici. Il contratto ne dichiara settantadue, e
+/// quarantuno non restituiscono geometria — cioe quarantuno che il mapper del
+/// result set saprebbe consegnare. Le ventisei di mezzo non sono state
+/// **rifiutate**: non sono mai state chieste.
+///
+/// La differenza conta. Una capability chiusa perche misurata assente e una
+/// promessa che il prodotto non puo mantenere; una chiusa perche nessuno ha
+/// guardato e una promessa che il prodotto forse mantiene gia, e che il
+/// consumatore non puo usare. Il primo errore fa fallire un piano, il secondo
+/// fa scrivere a qualcun altro il codice che c'era gia.
+///
+/// # Come chiede
+///
+/// Il nome lo da `plenora_database_sql::spatial_function_name`, cioe **lo
+/// stesso** che il renderer emetterebbe. Ricavarlo dal catalogo o a mano
+/// misurerebbe una funzione che il crate non scrive mai — ed e l'errore che
+/// aveva lasciato `ST_NDims` e `ST_NPoints` fra le verified di `MySQL`: nomi
+/// `PostGIS` dedotti invece che letti dal renderer.
+///
+/// La domanda e posta con zero argomenti. Un `1305` significa che la funzione
+/// non esiste; un `1582` — numero di parametri sbagliato — significa che esiste
+/// e che la si e chiamata male, che e cio che si voleva. Distinguere i due e
+/// tutta la sonda.
+///
+/// # Cosa **non** dice
+///
+/// Che una funzione esista non basta ad aprirla: deve anche rendere ciò che il
+/// contratto dichiara, con l'arieta che dichiara, attraverso il percorso del
+/// provider. Questa sonda produce un elenco di **candidate**, e il passo dopo e
+/// la lista verified, dove il gate le attraversa una per una.
+async fn spatial_candidates_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    use plenora_database_core::query::SpatialFunction;
+
+    let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
+        .expect("catalogo spatial incorporato");
+    let returns = |function: SpatialFunction| -> String {
+        let id = serde_json::to_value(function)
+            .expect("serializza la funzione")
+            .as_str()
+            .expect("l'id di wire e una stringa")
+            .to_owned();
+        catalog
+            .functions
+            .iter()
+            .find(|specification| specification.id == id)
+            .map_or_else(String::new, |specification| specification.returns.clone())
+    };
+
+    let mut present = Vec::new();
+    let mut absent = Vec::new();
+    for function in SpatialFunction::ALL {
+        // Le geometriche restano fuori: il mapper del result set rifiuta
+        // `MYSQL_TYPE_GEOMETRY`, quindi chiederle qui misurerebbe una
+        // superficie che il provider non puo comunque consegnare.
+        if returns(*function) == "geometry" {
+            continue;
+        }
+        if crate::query::VERIFIED_SPATIAL_FUNCTIONS.contains(function)
+            || crate::query::MARIADB_VERIFIED_SPATIAL_FUNCTIONS.contains(function)
+        {
+            continue;
+        }
+        let name = plenora_database_sql::spatial_function_name(
+            plenora_database_sql::Dialect::Mysql,
+            *function,
+        );
+        match connection.query_drop(format!("SELECT {name}()")).await {
+            // Nessun errore con zero argomenti: improbabile, ma allora la
+            // funzione c'e di sicuro.
+            Ok(()) => present.push(format!("{function:?}")),
+            Err(error) => match server_code(&error) {
+                Some(1_305) => absent.push(format!("{function:?}")),
+                Some(_) | None => present.push(format!("{function:?}")),
+            },
+        }
+    }
+
+    recorder.accepted(
+        "raw.spatial_candidate_functions",
+        "raw",
+        "spatial",
+        "quali funzioni del contratto, mai provate, il server possiede",
+        condense(&format!(
+            "presenti={}/{} [{}] assenti=[{}]",
+            present.len(),
+            present.len() + absent.len(),
+            present.join(" "),
+            absent.join(" ")
+        )),
+    );
 }
 
 /// Quali forme di `SPATIAL INDEX` il server accetta.

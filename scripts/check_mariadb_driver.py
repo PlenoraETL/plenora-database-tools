@@ -216,6 +216,13 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # passo per sapere cosa costerebbe aprirla. Osservativa perche non sostiene
     # nulla — ancora.
     "raw.spatial_index_forms": "quali forme di SPATIAL INDEX il server accetta",
+    # Le ventisei funzioni del contratto che nessuno ha mai chiesto. Non sono
+    # state rifiutate: non sono mai state chieste, ed e una differenza che
+    # cambia cosa significa la chiusura. Una capability chiusa perche misurata
+    # assente e una promessa che il prodotto non puo mantenere; una chiusa
+    # perche nessuno ha guardato e una promessa che il prodotto forse mantiene
+    # gia, e che il consumatore non puo usare.
+    "raw.spatial_candidate_functions": "quali funzioni mai provate il server possiede",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -288,6 +295,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.returning_forms",
     "raw.spatial_write_forms",
     "raw.spatial_index_forms",
+    "raw.spatial_candidate_functions",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",
