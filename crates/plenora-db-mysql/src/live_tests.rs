@@ -254,6 +254,7 @@ async fn live_provider_read_rejects_a_hostname_mismatch() {
         row_limit: Some(1),
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget MySQL live");
     let Err(error) = provider
@@ -537,6 +538,7 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let mut stream = provider
         .read(
@@ -619,6 +621,7 @@ async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     // Stima conservativa: riga 1 = 58 160 byte, riga 2 = 70 000 byte. La
     // prima entra nei 120 000 byte di budget, le due insieme no.
@@ -724,6 +727,7 @@ async fn live_default_limits_batch_many_rows_over_four_columns() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget default");
     let cancellation = CancellationToken::new();
@@ -790,6 +794,7 @@ async fn live_read_projection_filter_order_and_default_schema() {
             field: "id".to_owned(),
             parameter: "wanted_id".to_owned(),
         }),
+        declared_crs: Vec::new(),
     };
     let parameters = ParameterBag::new(BTreeMap::from([(
         "wanted_id".to_owned(),
@@ -867,6 +872,7 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
         row_limit: Some(1),
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let mut stream = provider
         .read(
@@ -3204,6 +3210,7 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let mut stream = provider
         .read(

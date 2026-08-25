@@ -265,6 +265,7 @@ where
         profile,
         demand_sender,
         columns: plan.columns,
+        crs_checks: plan.crs_checks,
         schema: plan.schema,
         batch_rows,
         budget: budget.clone(),
@@ -320,6 +321,11 @@ pub struct MysqlBatchStream {
     profile: &'static dyn crate::profile::ProductProfile,
     demand_sender: mpsc::Sender<()>,
     columns: Vec<crate::MysqlColumnSpec>,
+    /// I CRS che il piano ha dichiarato, da confermare su ogni riga.
+    ///
+    /// Vuoto ovunque il catalogo l'SRID lo sappia, che e la maggior parte
+    /// delle letture: il costo di questo campo, li, e un `is_empty` per riga.
+    crs_checks: Vec<crate::types::MysqlCrsCheck>,
     schema: SchemaRef,
     batch_rows: usize,
     budget: ResourceBudget,
@@ -448,12 +454,71 @@ impl MysqlBatchStream {
     }
 
     /// Accoda una riga già misurata ai buffer del batch in costruzione.
+    /// Conferma i CRS dichiarati dal piano su **questa** riga.
+    ///
+    /// La dichiarazione del chiamante e un'ipotesi finche qualcuno non la
+    /// verifica, e verificarla una volta sola non basterebbe: la colonna che
+    /// la richiede e quella che nessuna DDL vincola, quindi due righe della
+    /// stessa colonna possono portare SRID diversi. E' esattamente il caso che
+    /// rende falso un CRS pubblicato, ed e per questo che il controllo sta qui
+    /// — nel ciclo delle righe — e non nel prepare.
+    ///
+    /// Un valore `NULL` non ha un CRS da confermare e non ne smentisce
+    /// nessuno: la riga passa, e la colonna resta nulla come sarebbe stata.
+    ///
+    /// Il messaggio porta i due SRID e la posizione della riga, e niente
+    /// altro. Un SRID e un identificatore di registro, non una cella: la
+    /// geometria che l'ha portato non compare, ed e la regola che vale per
+    /// ogni messaggio pubblico di questo crate.
+    fn confirm_declared_crs(&self, row: &Row, row_count: usize) -> Result<()> {
+        for check in &self.crs_checks {
+            let product = self.profile.product();
+            let value = row.as_ref(check.result_index).ok_or_else(|| {
+                read_error(
+                    ErrorCategory::Schema,
+                    ErrorPhase::Read,
+                    "riga senza la colonna di controllo del CRS dichiarato",
+                )
+            })?;
+            let observed = match *value {
+                mysql_async::Value::NULL => continue,
+                mysql_async::Value::UInt(srid) => u32::try_from(srid).ok(),
+                mysql_async::Value::Int(srid) => u32::try_from(srid).ok(),
+                _ => None,
+            };
+            let Some(observed) = observed else {
+                return Err(read_error(
+                    ErrorCategory::Crs,
+                    ErrorPhase::Read,
+                    format!(
+                        "SRID {product} non leggibile alla riga {row_count} della                          colonna dichiarata"
+                    ),
+                ));
+            };
+            if observed != check.expected {
+                return Err(read_error(
+                    ErrorCategory::Crs,
+                    ErrorPhase::Read,
+                    format!(
+                        "CRS dichiarato non confermato dai valori {product}: la colonna                          e dichiarata SRID {} e la riga {row_count} porta SRID {observed}",
+                        check.expected
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn append_row(
         &self,
         row: &Row,
         buffers: &mut [MysqlColumnBuffer],
         row_count: usize,
     ) -> Result<()> {
+        // Prima dell'append, non dopo: una riga che smentisce la
+        // dichiarazione non deve entrare in un batch che qualcuno potrebbe
+        // ricevere se l'errore arrivasse un istante piu tardi.
+        self.confirm_declared_crs(row, row_count)?;
         for (index, buffer) in buffers.iter_mut().enumerate() {
             buffer
                 .append(row, index, self.budget.limits().cell_bytes)
@@ -993,6 +1058,7 @@ mod tests {
             collation: None,
             kind: MysqlColumnKind::I64,
             spatial_srid: None,
+            spatial_srid_declared: false,
         }
     }
 
@@ -1005,6 +1071,7 @@ mod tests {
             collation: None,
             kind: MysqlColumnKind::Binary,
             spatial_srid: None,
+            spatial_srid_declared: false,
         }
     }
 
@@ -1069,6 +1136,7 @@ mod tests {
             profile: &crate::profile::MYSQL_PROFILE,
             demand_sender,
             columns,
+            crs_checks: Vec::new(),
             schema,
             batch_rows: DEFAULT_BATCH_ROWS,
             budget: budget.clone(),
@@ -1334,6 +1402,7 @@ mod tests {
             collation: None,
             kind: MysqlColumnKind::Geometry,
             spatial_srid: None,
+            spatial_srid_declared: false,
         }
     }
 

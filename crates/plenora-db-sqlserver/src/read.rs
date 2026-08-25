@@ -54,6 +54,7 @@ pub async fn read_object(
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     read_operation(
         pool,

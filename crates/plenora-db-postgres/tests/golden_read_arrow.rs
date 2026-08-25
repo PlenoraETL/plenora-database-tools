@@ -64,6 +64,7 @@ fn empty_read(source: ObjectRef) -> ReadOperation {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     }
 }
 
@@ -239,6 +240,7 @@ async fn h7b_read_projection_reduces_schema_columns() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
@@ -286,6 +288,7 @@ async fn h7b_read_row_limit_is_honored_by_query_planner() {
         row_limit: Some(42),
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();

@@ -44,11 +44,42 @@ pub struct MysqlColumnSpec {
     pub collation: Option<String>,
     pub kind: MysqlColumnKind,
     pub spatial_srid: Option<u32>,
+    /// L'SRID viene dal **piano**, non dal catalogo.
+    ///
+    /// Cambia cosa il provider deve fare, non cosa pubblica: un SRID di
+    /// catalogo e vincolato dalla DDL e vale per costruzione, uno dichiarato
+    /// dal chiamante e un'ipotesi finche qualcuno non la verifica. Le due
+    /// cose finiscono nello stesso campo — il contratto `GeoArrow` pubblica un
+    /// CRS e basta — ma la seconda obbliga la lettura a controllare ogni
+    /// valore, e questa bandiera e cio che glielo ricorda.
+    pub spatial_srid_declared: bool,
+}
+
+/// Un controllo di CRS da eseguire riga per riga.
+///
+/// Il valore arriva in una colonna che il chiamante non ha chiesto e che non
+/// comparira nello schema Arrow: e `ST_SRID` della geometria, proiettata in
+/// coda alle colonne visibili. Portarla in coda e cio che rende il controllo
+/// possibile senza cambiare gli indici di tutto il resto — il decoder itera
+/// sulle colonne del piano, quindi cio che sta oltre non lo tocca.
+#[derive(Debug, Clone)]
+pub struct MysqlCrsCheck {
+    /// La posizione della colonna `ST_SRID` nel result set.
+    pub result_index: usize,
+    /// La colonna geometrica di cui e il CRS.
+    pub column: String,
+    /// Cio che il piano ha dichiarato, e che ogni valore deve confermare.
+    pub expected: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct MysqlReadPlan {
     pub columns: Vec<MysqlColumnSpec>,
+    /// I CRS dichiarati dal piano, da verificare su ogni riga.
+    ///
+    /// Vuoto quando nessuna colonna ne ha bisogno, che e il caso di ogni
+    /// prodotto il cui catalogo l'SRID lo sa.
+    pub crs_checks: Vec<MysqlCrsCheck>,
     pub schema: SchemaRef,
     pub sql: String,
     pub bind_names: Vec<String>,
@@ -121,17 +152,48 @@ impl MysqlReadPlan {
             ));
         }
         let renderer = mysql_renderer();
+        let declared = resolve_declared_crs(description, operation, profile)?;
         let available = description
             .columns
             .iter()
-            .map(|column| MysqlColumnSpec::from_catalog_with_profile(column, profile))
+            .map(|column| {
+                MysqlColumnSpec::from_catalog_declaring(
+                    column,
+                    profile,
+                    declared.get(column.name.as_str()).copied(),
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
         let columns = select_columns(&available, &operation.projection)?;
-        let projection = columns
+        let mut projections = columns
             .iter()
             .map(|column| column.projection(&renderer, profile))
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
+            .collect::<Result<Vec<_>>>()?;
+        // Le colonne del controllo vanno **in coda**, dopo tutte le visibili.
+        // E' cio che rende il controllo invisibile al resto: il decoder itera
+        // sulle colonne del piano, e cio che sta oltre non lo tocca — nessun
+        // indice cambia, nessun campo Arrow compare, e uno schema pubblicato
+        // resta identico a quello di una lettura senza dichiarazioni.
+        let mut crs_checks = Vec::new();
+        for column in &columns {
+            if !column.spatial_srid_declared {
+                continue;
+            }
+            let expected = column.spatial_srid.ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Crs,
+                    format!("colonna spatial {product} dichiarata senza SRID"),
+                )
+            })?;
+            let quoted = renderer.quote_identifier(&mysql_identifier(&column.name)?)?;
+            crs_checks.push(MysqlCrsCheck {
+                result_index: projections.len(),
+                column: column.name.clone(),
+                expected,
+            });
+            projections.push(profile.geometry_srid_projection(&quoted));
+        }
+        let projection = projections.join(", ");
         let object = ObjectName {
             catalog: None,
             schema: Some(mysql_identifier(&description.schema)?),
@@ -203,6 +265,7 @@ impl MysqlReadPlan {
         );
         Ok(Self {
             columns,
+            crs_checks,
             schema,
             sql,
             bind_names,
@@ -236,12 +299,78 @@ impl MysqlReadPlan {
         );
         Ok(Self {
             columns,
+            // Il path query non passa dal catalogo e non riceve un piano di
+            // lettura: le dichiarazioni non hanno dove entrare, e le colonne
+            // geometriche restano rifiutate dal profilo. Vuoto qui non e una
+            // semplificazione, e la descrizione esatta di quel percorso.
+            crs_checks: Vec::new(),
             schema,
             sql,
             bind_names,
             schema_token: QUERY_RESULT_SCHEMA_TOKEN.to_owned(),
         })
     }
+}
+
+/// Le dichiarazioni di CRS del piano, verificate contro il catalogo.
+///
+/// Verificate **prima** che diventino un SRID, perche una dichiarazione
+/// sbagliata e piu pericolosa di una assente: l'assenza fa fallire la lettura,
+/// l'errore la fa riuscire pubblicando un CRS che nessuno ha controllato.
+///
+/// Tre rifiuti, e ciascuno nomina una cosa diversa:
+///
+/// * la colonna non esiste — un nome sbagliato non deve passare per una
+///   dichiarazione che non serviva;
+/// * la colonna non e geometrica — un CRS su un `BIGINT` non e un rinforzo, e
+///   un malinteso su cosa contiene quella tabella;
+/// * il catalogo la descrive gia — due fonti per lo stesso fatto sono una
+///   fonte di troppo, e quando divergono nessuna delle due e piu quella
+///   giusta.
+fn resolve_declared_crs<'a>(
+    description: &MysqlObjectDescription,
+    operation: &'a ReadOperation,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<std::collections::BTreeMap<&'a str, u32>> {
+    let product = profile.product();
+    let mut declared = std::collections::BTreeMap::new();
+    for declaration in &operation.declared_crs {
+        let Some(column) = description
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == declaration.column)
+        else {
+            return Err(prepare_error(
+                ErrorCategory::NotFound,
+                format!("declared_crs nomina una colonna che l'oggetto {product} non ha"),
+            ));
+        };
+        if !profile.is_spatial_native_type(&column.data_type.to_ascii_lowercase()) {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                format!("declared_crs su una colonna {product} non geometrica"),
+            ));
+        }
+        if column.spatial_srid.is_some() {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                format!(
+                    "declared_crs su una colonna {product} il cui SRID il catalogo \
+                     gia descrive"
+                ),
+            ));
+        }
+        if declared
+            .insert(declaration.column.as_str(), declaration.srid)
+            .is_some()
+        {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                "declared_crs dichiara due volte la stessa colonna",
+            ));
+        }
+    }
+    Ok(declared)
 }
 
 /// Il token strutturale di una query non e un token di catalogo: l'unica
@@ -259,7 +388,7 @@ impl MysqlColumnSpec {
         Self::from_catalog_with_profile(column, &crate::profile::MYSQL_PROFILE)
     }
 
-    /// La colonna del catalogo, con il profilo che ne decide la parte spatial.
+    /// La colonna del catalogo, senza dichiarazioni dal piano.
     ///
     /// # Errors
     ///
@@ -268,6 +397,25 @@ impl MysqlColumnSpec {
     pub(crate) fn from_catalog_with_profile(
         column: &MysqlColumn,
         profile: &dyn crate::profile::ProductProfile,
+    ) -> Result<Self> {
+        Self::from_catalog_declaring(column, profile, None)
+    }
+
+    /// La colonna del catalogo, con il profilo e l'eventuale CRS dichiarato.
+    ///
+    /// `declared` vale soltanto dove il catalogo l'SRID non ce l'ha, e la
+    /// verifica che sia vero spetta a chi compila il piano: qui il campo
+    /// arriva gia risolto, perche una colonna non sa da sola se il chiamante
+    /// aveva il diritto di parlarne.
+    ///
+    /// # Errors
+    ///
+    /// Come `from_catalog`.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn from_catalog_declaring(
+        column: &MysqlColumn,
+        profile: &dyn crate::profile::ProductProfile,
+        declared: Option<u32>,
     ) -> Result<Self> {
         let product = profile.product();
         let native_type = column.data_type.to_ascii_lowercase();
@@ -299,10 +447,21 @@ impl MysqlColumnSpec {
             "time" => MysqlColumnKind::Time,
             "datetime" | "timestamp" => MysqlColumnKind::Timestamp,
             spatial if profile.is_spatial_native_type(spatial) => {
-                if profile.spatial_requires_declared_srid() && column.spatial_srid.is_none() {
+                // Tre casi, non due. Il catalogo lo sa: si usa quello. Il
+                // catalogo non lo sa e il piano lo dichiara: si usa il piano,
+                // e la lettura dovra verificarlo. Nessuno dei due: rifiuto,
+                // che resta l'unica risposta onesta — il contratto GeoArrow
+                // pubblica un CRS, e pubblicarlo senza saperlo e peggio del
+                // rifiuto.
+                if profile.spatial_requires_declared_srid()
+                    && column.spatial_srid.is_none()
+                    && declared.is_none()
+                {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
-                        format!("colonna spatial {product} senza SRID dichiarato"),
+                        format!(
+                            "colonna spatial {product} senza SRID: il catalogo tace e il piano non lo dichiara"
+                        ),
                     ));
                 }
                 MysqlColumnKind::Geometry
@@ -314,6 +473,14 @@ impl MysqlColumnSpec {
                 ));
             }
         };
+        // Il catalogo ha la precedenza dove parla: una dichiarazione su una
+        // colonna che il catalogo sa gia descrivere e rifiutata da chi compila
+        // il piano, quindi qui `declared` e presente solo dove l'altro tace.
+        let (spatial_srid, spatial_srid_declared) = match (column.spatial_srid, declared) {
+            (Some(catalog), _) => (Some(catalog), false),
+            (None, Some(plan)) => (Some(plan), true),
+            (None, None) => (None, false),
+        };
         Ok(Self {
             name: column.name.clone(),
             native_type,
@@ -321,7 +488,8 @@ impl MysqlColumnSpec {
             nullable: column.nullable,
             collation: column.collation.clone(),
             kind,
-            spatial_srid: column.spatial_srid,
+            spatial_srid,
+            spatial_srid_declared,
         })
     }
 
@@ -814,6 +982,7 @@ mod tests {
             row_limit: Some(1),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         assert_eq!(
             MysqlReadPlan::compile(&description, &operation)
@@ -869,6 +1038,7 @@ mod tests {
             row_limit: None,
             row_offset: Some(20),
             filter: None,
+            declared_crs: Vec::new(),
         };
         assert_eq!(
             MysqlReadPlan::compile(&description, &ordered)
@@ -898,6 +1068,177 @@ mod tests {
                 .expect_err("finestra non riproducibile")
                 .category,
             ErrorCategory::InvalidPlan
+        );
+    }
+    use plenora_database_core::plan::DeclaredCrs;
+
+    /// Una tabella con una geometria di cui il catalogo non sa l'SRID.
+    fn spatial_description() -> MysqlObjectDescription {
+        let mut shape = column("shape", "geometry", "geometry");
+        shape.nullable = true;
+        MysqlObjectDescription {
+            schema: "data".to_owned(),
+            name: "places".to_owned(),
+            kind: "BASE TABLE".to_owned(),
+            engine: Some("InnoDB".to_owned()),
+            columns: vec![column("id", "bigint", "bigint"), shape],
+            indexes: Vec::new(),
+            token: crate::MysqlSchemaToken("token".to_owned()),
+        }
+    }
+
+    fn crs_read(declared: Vec<DeclaredCrs>) -> ReadOperation {
+        ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("data".to_owned()),
+                object: "places".to_owned(),
+            },
+            projection: Vec::new(),
+            order_by: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            filter: None,
+            declared_crs: declared,
+        }
+    }
+
+    fn crs_declaration(column: &str, srid: u32) -> DeclaredCrs {
+        DeclaredCrs {
+            column: column.to_owned(),
+            srid,
+        }
+    }
+
+    /// Senza dichiarazione la colonna resta rifiutata, come prima.
+    ///
+    /// E' il caso che non deve cambiare: la dichiarazione apre una porta, non
+    /// ne toglie una chiusa. Un profilo il cui catalogo l'SRID non ce l'ha
+    /// continua a rifiutare chi non gliene da uno, perche il contratto
+    /// `GeoArrow` pubblica un CRS e pubblicarlo senza saperlo resta peggio del
+    /// rifiuto.
+    #[test]
+    fn a_geometry_without_catalog_or_plan_srid_is_still_refused() {
+        let error = MysqlReadPlan::compile_with_profile(
+            &spatial_description(),
+            &crs_read(Vec::new()),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect_err("nessuna delle due fonti parla");
+        assert_eq!(error.category, ErrorCategory::Crs);
+    }
+
+    /// Con la dichiarazione il piano compila, e porta con se il controllo.
+    ///
+    /// Le due asserzioni non sono ridondanti. La prima dice che la lettura
+    /// esiste; la seconda che non e stata creduta sulla parola — se il piano
+    /// compilasse senza il controllo, il CRS pubblicato sarebbe
+    /// un'affermazione del chiamante ripetuta dal provider, che e esattamente
+    /// cio che la regola 1 vieta.
+    #[test]
+    fn a_declared_crs_compiles_and_carries_its_verification() {
+        let plan = MysqlReadPlan::compile_with_profile(
+            &spatial_description(),
+            &crs_read(vec![crs_declaration("shape", 4326)]),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect("il piano dichiara il CRS");
+        assert_eq!(plan.crs_checks.len(), 1);
+        assert_eq!(plan.crs_checks[0].expected, 4326);
+        assert_eq!(plan.crs_checks[0].column, "shape");
+        // La colonna del controllo sta **dopo** le due visibili: gli indici di
+        // cio che il decoder legge non cambiano.
+        assert_eq!(plan.crs_checks[0].result_index, 2);
+        assert!(
+            plan.sql.contains("ST_SRID(`shape`)"),
+            "il controllo non arriva al server: {}",
+            plan.sql
+        );
+        // E lo schema pubblicato ha due campi, non tre: la colonna del
+        // controllo non e un dato, e nessun consumatore deve vederla.
+        assert_eq!(plan.schema.fields().len(), 2);
+    }
+
+    /// Il CRS dichiarato arriva ai metadata del campo Arrow.
+    #[test]
+    fn a_declared_crs_reaches_the_published_field() {
+        let plan = MysqlReadPlan::compile_with_profile(
+            &spatial_description(),
+            &crs_read(vec![crs_declaration("shape", 3003)]),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect("il piano dichiara il CRS");
+        let field = plan.schema.field(1);
+        assert_eq!(field.name(), "shape");
+        assert_eq!(
+            field
+                .metadata()
+                .get("plenora.geometry.srid")
+                .map(String::as_str),
+            Some("3003"),
+            "il CRS dichiarato non compare fra i metadata: {:?}",
+            field.metadata()
+        );
+    }
+
+    /// Tre dichiarazioni sbagliate, tre rifiuti che nominano cose diverse.
+    ///
+    /// Un rifiuto solo per tutti e tre sarebbe piu corto e direbbe meno: chi
+    /// sbaglia il nome di una colonna e chi dichiara un CRS su un `BIGINT`
+    /// hanno due problemi diversi, e il secondo probabilmente crede che quella
+    /// tabella contenga qualcosa che non contiene.
+    #[test]
+    fn a_declaration_that_does_not_apply_is_refused_by_its_own_reason() {
+        let missing = MysqlReadPlan::compile_with_profile(
+            &spatial_description(),
+            &crs_read(vec![crs_declaration("assente", 4326)]),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect_err("colonna inesistente");
+        assert_eq!(missing.category, ErrorCategory::NotFound);
+
+        let scalar = MysqlReadPlan::compile_with_profile(
+            &spatial_description(),
+            &crs_read(vec![crs_declaration("id", 4326)]),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect_err("colonna non geometrica");
+        assert_eq!(scalar.category, ErrorCategory::InvalidPlan);
+
+        // E la terza: il catalogo lo sa gia. Due fonti per lo stesso fatto
+        // sono una fonte di troppo, e quando divergono nessuna delle due e
+        // piu quella giusta.
+        let mut known = spatial_description();
+        known.columns[1].spatial_srid = Some(4326);
+        let duplicated = MysqlReadPlan::compile_with_profile(
+            &known,
+            &crs_read(vec![crs_declaration("shape", 4326)]),
+            &crate::profile::MARIADB_PROFILE,
+        )
+        .expect_err("il catalogo la descrive gia");
+        assert_eq!(duplicated.category, ErrorCategory::InvalidPlan);
+    }
+
+    /// Dove il catalogo parla, il piano non deve nemmeno provarci.
+    ///
+    /// Il profilo `MySQL` legge `SRS_ID` e non pretende dichiarazioni: una
+    /// colonna con SRID di catalogo compila senza controlli, e il piano non
+    /// porta niente da verificare riga per riga.
+    #[test]
+    fn a_catalog_srid_needs_no_verification() {
+        let mut known = spatial_description();
+        known.columns[1].spatial_srid = Some(4326);
+        let plan = MysqlReadPlan::compile_with_profile(
+            &known,
+            &crs_read(Vec::new()),
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect("il catalogo basta");
+        assert!(plan.crs_checks.is_empty());
+        assert!(
+            !plan.sql.contains("ST_SRID"),
+            "una lettura senza dichiarazioni non deve chiedere SRID: {}",
+            plan.sql
         );
     }
 }

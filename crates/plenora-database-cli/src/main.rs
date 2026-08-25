@@ -694,6 +694,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let cancellation = CancellationToken::new();
     let mut stream = provider
@@ -754,6 +755,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         row_limit: options.row_limit,
         row_offset: None,
         filter: options.filter.clone(),
+        declared_crs: Vec::new(),
     };
     let row_order = if options.order_by.is_empty() {
         "unspecified"

@@ -93,6 +93,7 @@ fn read_operation(terms: usize) -> ReadOperation {
                 })
                 .collect(),
         }),
+        declared_crs: Vec::new(),
     }
 }
 

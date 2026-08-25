@@ -105,6 +105,10 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
                 mixed_geometry_types: false,
                 dimensions: Vec::new(),
                 functions: Vec::new(),
+                // Senza PostGIS non c'e geometria da leggere, quindi non c'e
+                // niente per cui pretendere un CRS dichiarato. `false` qui
+                // dice «nessuna condizione», non «la condizione e soddisfatta».
+                requires_declared_crs: false,
             }
         },
         limits: ProviderLimits {
@@ -419,6 +423,11 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
         .collect();
 
     Ok(SpatialCapabilities {
+        // Il CRS lo sa il catalogo. `geometry_columns` porta l'SRID di ogni
+        // colonna, e `AddGeometryColumn` lo vincola: una dichiarazione del
+        // chiamante sarebbe una seconda fonte per lo stesso fatto, e due fonti
+        // per un fatto solo sono una fonte di troppo.
+        requires_declared_crs: false,
         // Le funzioni **davvero emesse** dal provider, non quelle equivalenti:
         // il renderer scrive `ST_GeomFromEWKB` (vedi `crate::spatial`) e la
         // lettura chiede `ST_AsEWKB`. Sondare `ST_AsBinary`/`ST_GeomFromWKB`

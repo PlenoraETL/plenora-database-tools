@@ -319,6 +319,7 @@ async fn materialize(
             field: "event_id".to_owned(),
             parameter: "minimum_id".to_owned(),
         }),
+        declared_crs: Vec::new(),
     };
     let parameters = if parameterized_read {
         ParameterBag::new(std::collections::BTreeMap::from([(

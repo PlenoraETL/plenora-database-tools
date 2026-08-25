@@ -98,6 +98,49 @@ pub fn validate(plan: Plan) -> Result<ValidatedPlan> {
     Ok(ValidatedPlan { plan, fingerprint })
 }
 
+/// Una dichiarazione di CRS vale dove serve, e **solo** li.
+///
+/// I provider il cui catalogo l'SRID lo sa — `PostgreSQL` da
+/// `geometry_columns`, `MySQL` da `information_schema` — pubblicano
+/// `requires_declared_crs = false`, e accettare li una dichiarazione vorrebbe
+/// dire tenere due fonti per lo stesso fatto: quando divergono, nessuna delle
+/// due e piu quella giusta.
+///
+/// Il rifiuto sta nell'engine e non nei provider perche riguarda la coerenza
+/// fra il piano e cio che il provider pubblica, che e la domanda che questo
+/// modulo decide. Un provider potrebbe ignorare il campo in silenzio, e il
+/// chiamante crederebbe di aver dichiarato qualcosa.
+fn validate_declared_crs(
+    capabilities: &ProviderCapabilities,
+    read: &plenora_database_core::plan::ReadOperation,
+) -> Result<()> {
+    if read.declared_crs.is_empty() {
+        return Ok(());
+    }
+    require(
+        capabilities,
+        capabilities.spatial.requires_declared_crs,
+        "declared_crs",
+    )?;
+    let mut seen = std::collections::BTreeSet::new();
+    for declaration in &read.declared_crs {
+        // Zero e l'«indefinito» OGC, cioe cio che il registro di MariaDB
+        // risponde da solo. Dichiararlo non aggiunge nulla a quel che il
+        // catalogo dice, e da l'aria di averlo fatto.
+        if declaration.srid == 0 {
+            return Err(DatabaseError::invalid_plan(
+                "declared_crs non ammette SRID 0: e l'indefinito OGC, cioe cio che il catalogo dice gia da solo",
+            ));
+        }
+        if !seen.insert(declaration.column.as_str()) {
+            return Err(DatabaseError::invalid_plan(
+                "declared_crs dichiara due volte la stessa colonna",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Verifica che le capability runtime possano eseguire il piano.
 ///
 /// # Che cosa questo confronto e, e che cosa non e
@@ -174,6 +217,7 @@ pub fn prepare(
                     ));
                 }
             }
+            validate_declared_crs(&capabilities, read)?;
             if let Some(filter) = &read.filter {
                 require(&capabilities, capabilities.reads.filter, "filter")?;
                 let mut used = Vec::new();
@@ -851,6 +895,88 @@ mod tests {
         capabilities.spatial.functions.clear();
         prepare_plan(CONTRACT_READ_PLAN, capabilities)
             .expect("il piano non usa row_limit ne funzioni spatial");
+    }
+
+    /// Il piano di lettura del contratto, con le dichiarazioni di CRS chieste.
+    ///
+    /// Passa per `parse_and_validate` come ogni altro piano di questi test: la
+    /// dichiarazione deve attraversare anche il contratto, non solo `prepare`,
+    /// e un campo che lo schema rifiutasse non arriverebbe mai qui.
+    fn plan_declaring(declarations: &[(&str, u32)]) -> Vec<u8> {
+        let mut document: serde_json::Value =
+            serde_json::from_slice(CONTRACT_READ_PLAN).expect("piano del contratto");
+        document["operation"]["declared_crs"] = declarations
+            .iter()
+            .map(|(column, srid)| serde_json::json!({"column": column, "srid": srid}))
+            .collect();
+        serde_json::to_vec(&document).expect("piano serializzabile")
+    }
+
+    /// Un CRS dichiarato a chi non lo pretende viene rifiutato.
+    ///
+    /// La direzione del rifiuto e quella meno ovvia, e vale la pena dirla: non
+    /// «il provider non sa leggere le geometrie», ma «il provider il CRS lo sa
+    /// gia». `PostgreSQL` lo legge da `geometry_columns`, `MySQL` da
+    /// `information_schema`; accettare li una dichiarazione vorrebbe dire
+    /// tenere due fonti per lo stesso fatto, e quando divergono nessuna delle
+    /// due e piu quella giusta.
+    ///
+    /// Senza questa riga il campo sarebbe accettato ovunque e onorato da un
+    /// provider solo: il chiamante crederebbe di aver dichiarato qualcosa, e
+    /// nessuno gli direbbe di no.
+    #[test]
+    fn a_declared_crs_is_refused_by_a_provider_whose_catalog_knows_it() {
+        let error = prepare_plan(&plan_declaring(&[("geom", 4326)]), postgres_capabilities())
+            .expect_err("PostgreSQL il CRS lo legge dal catalogo");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::Unsupported,
+            "atteso un rifiuto di capability: {}",
+            error.message
+        );
+    }
+
+    /// Dove il provider lo pretende, la dichiarazione passa.
+    #[test]
+    fn a_declared_crs_is_accepted_where_the_catalog_stays_silent() {
+        let mut capabilities = postgres_capabilities();
+        capabilities.spatial.requires_declared_crs = true;
+        prepare_plan(&plan_declaring(&[("geom", 4326)]), capabilities)
+            .expect("il provider chiede di dichiararlo");
+    }
+
+    /// Zero non e un CRS: e l'assenza che il catalogo dice gia da solo.
+    ///
+    /// Il rifiuto e `InvalidPlan` e non `Unsupported` perche non riguarda cosa
+    /// il provider sa fare: riguarda cosa quella dichiarazione afferma, che e
+    /// niente. Accettarlo darebbe al chiamante l'impressione di aver risolto
+    /// il problema per cui il campo esiste.
+    #[test]
+    fn a_declared_crs_of_zero_declares_nothing() {
+        let mut capabilities = postgres_capabilities();
+        capabilities.spatial.requires_declared_crs = true;
+        let error = prepare_plan(&plan_declaring(&[("geom", 0)]), capabilities)
+            .expect_err("zero e l'indefinito OGC, non un CRS");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
+    }
+
+    /// La stessa colonna due volte e una contraddizione, non un rinforzo.
+    #[test]
+    fn a_column_declared_twice_is_refused() {
+        let mut capabilities = postgres_capabilities();
+        capabilities.spatial.requires_declared_crs = true;
+        let error = prepare_plan(
+            &plan_declaring(&[("geom", 4326), ("geom", 3003)]),
+            capabilities,
+        )
+        .expect_err("due CRS per una colonna sola non ne fanno uno");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
     }
 
     fn write_plan_with_mode(

@@ -625,6 +625,7 @@ mod tests {
                     row_limit: Some(10_000),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &NeverCancelled,
@@ -677,6 +678,7 @@ mod tests {
             row_limit: Some(10),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let mut stream = Provider::read(
             &provider,
@@ -739,6 +741,7 @@ mod tests {
             row_limit: Some(1),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let mut stream = Provider::read(
             &provider,
@@ -796,6 +799,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let result = Provider::read(
             &provider,
@@ -974,6 +978,7 @@ mod tests {
                     row_limit: None,
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &inflight_cancellation,
@@ -1050,6 +1055,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let mut stream = provider
             .read_with_test_budget(&secret, &operation, &ParameterBag::default(), &cancellation)
@@ -1106,6 +1112,7 @@ mod tests {
                 field: "region_id".to_owned(),
                 parameter: "region_id".to_owned(),
             }),
+            declared_crs: Vec::new(),
         };
         let mut values = BTreeMap::new();
         values.insert("region_id".to_owned(), ParameterValue::I32(11));
@@ -1150,6 +1157,7 @@ mod tests {
                 geometry_parameter: Some("probe".to_owned()),
                 distance_parameter: None,
             }),
+            declared_crs: Vec::new(),
         };
         let mut spatial_values = BTreeMap::new();
         spatial_values.insert(
@@ -1791,6 +1799,7 @@ mod tests {
                     row_limit: None,
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -1908,6 +1917,7 @@ mod tests {
                     row_limit: None,
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2041,6 +2051,7 @@ mod tests {
                             },
                         ],
                     }),
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::new(typed_values),
                 &cancellation,
@@ -2081,6 +2092,7 @@ mod tests {
                         field: "duration".to_owned(),
                         parameter: "duration".to_owned(),
                     }),
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::new(null_values),
                 &cancellation,
@@ -2106,6 +2118,7 @@ mod tests {
                     row_limit: Some(1),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2128,6 +2141,7 @@ mod tests {
                     row_limit: Some(1),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2162,6 +2176,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
 
         let inflight_cancellation = CancellationToken::new();
@@ -2196,6 +2211,7 @@ mod tests {
                     row_limit: Some(1),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2228,6 +2244,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let mut quoted_stream = provider
             .read_with_test_budget(&secret, &quoted, &ParameterBag::default(), &cancellation)
@@ -2294,6 +2311,7 @@ mod tests {
                     row_limit: Some(row_limit),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 cancellation,
@@ -2331,6 +2349,7 @@ mod tests {
                         field: "event_id".to_owned(),
                         parameter: "event_id".to_owned(),
                     }),
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::new(values),
                 cancellation,
@@ -2737,6 +2756,7 @@ mod tests {
                     row_limit: Some(1),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2818,6 +2838,7 @@ mod tests {
                     row_limit: Some(1),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -2898,6 +2919,7 @@ mod tests {
                     row_limit: Some(2),
                     row_offset: None,
                     filter: None,
+                    declared_crs: Vec::new(),
                 },
                 &ParameterBag::default(),
                 &cancellation,
@@ -3387,6 +3409,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         for _ in 0..2 {
             let mut stream = provider
@@ -3510,6 +3533,7 @@ mod tests {
             row_limit: Some(1),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let mut other_stream = provider
             .read_with_test_budget(&secret, &other, &ParameterBag::default(), &NeverCancelled)
@@ -3631,6 +3655,7 @@ mod tests {
             row_limit: Some(ROWS_PER_READ),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         });
 
         let mut tasks = Vec::new();
@@ -3728,6 +3753,7 @@ mod tests {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         });
         let mut tasks = Vec::new();
         let cancellation = CancellationToken::new();

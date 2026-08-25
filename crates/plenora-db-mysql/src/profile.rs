@@ -215,6 +215,16 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Come si proietta una colonna geometrica per ottenerne il WKB.
     fn geometry_projection(&self, quoted: &str) -> String;
 
+    /// La proiezione che rende l'SRID di **ogni valore** geometrico.
+    ///
+    /// Sta accanto a `geometry_projection` perche e la sua controparte: quella
+    /// decide cosa esce come geometria, questa cosa serve a sapere se cio che
+    /// esce appartiene al CRS che il piano ha dichiarato. Un prodotto il cui
+    /// catalogo l'SRID lo sa non la usa mai — non c'e niente da verificare —
+    /// ma dichiararla nel profilo la tiene dove sta la decisione, invece che
+    /// in un `if` sul nome del prodotto dentro il compilatore del piano.
+    fn geometry_srid_projection(&self, quoted: &str) -> String;
+
     /// Se il WKB uscito da quella proiezione non e quello atteso.
     ///
     /// Sta accanto alla proiezione perche ne e la conseguenza: chi sceglie la
@@ -622,6 +632,13 @@ impl ProductProfile for MysqlProfile {
         format!("ST_AsBinary({quoted}) AS {quoted}")
     }
 
+    fn geometry_srid_projection(&self, quoted: &str) -> String {
+        // Senza alias: la colonna non compare in nessuno schema e si legge per
+        // posizione. Un alias le darebbe un nome che qualcuno potrebbe
+        // scambiare per una colonna del risultato.
+        format!("ST_SRID({quoted})")
+    }
+
     fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool {
         // `ST_AsBinary` di `MySQL` produce WKB senza SRID incapsulato e solo
         // XY: entrambe le cose sono cio che il contratto GeoArrow pubblicato
@@ -855,6 +872,14 @@ impl ProductProfile for MariadbProfile {
         MYSQL_PROFILE.geometry_projection(quoted)
     }
 
+    fn geometry_srid_projection(&self, quoted: &str) -> String {
+        // `ST_SRID` e nella lista che `raw.spatial_functions` ha attraversato
+        // su tutti e tre i riferimenti. E' l'unico prodotto dei due che questa
+        // proiezione la usa davvero: qui il CRS lo dichiara il chiamante, e
+        // una dichiarazione non verificata non e una misura.
+        MYSQL_PROFILE.geometry_srid_projection(quoted)
+    }
+
     fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool {
         // Conseguenza della proiezione condivisa: 21 byte sono esattamente il
         // WKB XY senza SRID incapsulato che il contratto dichiara.
@@ -1008,6 +1033,11 @@ impl ProductProfile for MariadbProfile {
                 mixed_geometry_types: false,
                 dimensions: Vec::new(),
                 functions: Vec::new(),
+                // Aperta insieme alla lettura geometrica, e non prima: finche
+                // `geometry` e `read_wkb` sono chiuse, dichiarare che la
+                // lettura pretende un CRS descriverebbe la condizione di una
+                // cosa che non si puo comunque chiedere.
+                requires_declared_crs: false,
             },
             // I limiti non sono capability: dicono quanto il crate manda, non
             // cosa il prodotto sa fare. Sono i suoi stessi valori su un
@@ -1457,6 +1487,10 @@ fn wire_column_spec_for(product: &str, column: &Column) -> Result<MysqlColumnSpe
         collation: None,
         kind,
         spatial_srid: None,
+        // Il path query non riceve un piano di lettura, quindi non ha dove
+        // ospitare una dichiarazione; e comunque non ci arriverebbe, perche
+        // qui sopra `MYSQL_TYPE_GEOMETRY` e rifiutato prima.
+        spatial_srid_declared: false,
     })
 }
 
@@ -1538,6 +1572,10 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         // saperlo. Il numero sta nella costante, che e anche l'unico posto
         // dove qualcuno lo puo cambiare con una misura in mano.
         functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
+        // `information_schema.columns.SRS_ID` esiste su questo prodotto e la
+        // DDL `SRID 4326` e accettata: il catalogo il CRS lo sa, e chiederlo
+        // al chiamante sarebbe chiederglielo due volte.
+        requires_declared_crs: false,
     }
 }
 
@@ -1647,6 +1685,10 @@ impl ProductProfile for SecondProductProfile {
 
     fn geometry_projection(&self, quoted: &str) -> String {
         MYSQL_PROFILE.geometry_projection(quoted)
+    }
+
+    fn geometry_srid_projection(&self, quoted: &str) -> String {
+        MYSQL_PROFILE.geometry_srid_projection(quoted)
     }
 
     fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool {
@@ -3213,6 +3255,7 @@ mod tests {
             collation: None,
             kind: MysqlColumnKind::Utf8,
             spatial_srid: None,
+            spatial_srid_declared: false,
         };
         let by_mysql = spec.arrow_field_with_profile(&MYSQL_PROFILE);
         let by_mariadb = spec.arrow_field_with_profile(&MARIADB_PROFILE);

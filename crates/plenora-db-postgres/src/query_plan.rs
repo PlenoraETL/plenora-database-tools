@@ -326,6 +326,7 @@ mod tests {
             row_limit: None,
             row_offset: Some(20),
             filter: None,
+            declared_crs: Vec::new(),
         };
         let plan = plan_read(&operation, &columns).expect("finestra senza tetto");
         assert!(

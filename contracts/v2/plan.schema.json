@@ -94,7 +94,20 @@
         },
         "row_limit": {"type": "integer", "minimum": 0},
         "row_offset": {"type": "integer", "minimum": 0},
-        "filter": {"$ref": "#/$defs/expression"}
+        "filter": {"$ref": "#/$defs/expression"},
+        "declared_crs": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "srid"],
+            "properties": {
+              "column": {"$ref": "common.schema.json#/$defs/identifier"},
+              "srid": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+            }
+          }
+        }
       }
     },
     "write": {

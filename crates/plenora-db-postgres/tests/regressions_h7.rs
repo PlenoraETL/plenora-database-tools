@@ -123,6 +123,7 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let mut stream = provider
         .read(&secret(), &op, &ParameterBag::default(), &budget(), &cancel)

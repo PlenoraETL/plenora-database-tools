@@ -290,6 +290,7 @@ mod tests {
                 mixed_geometry_types: true,
                 dimensions: vec![Dimensions::Xy, Dimensions::Xyz],
                 functions: vec![SpatialFunction::Intersects],
+                requires_declared_crs: false,
             },
             limits: ProviderLimits {
                 max_identifier_bytes: Some(63),

@@ -88,6 +88,7 @@
         "geography": {"type": "boolean"},
         "spatial_index": {"type": "boolean"},
         "mixed_geometry_types": {"type": "boolean"},
+        "requires_declared_crs": {"type": "boolean"},
         "dimensions": {
           "type": "array",
           "uniqueItems": true,

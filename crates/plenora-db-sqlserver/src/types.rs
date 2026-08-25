@@ -1197,6 +1197,7 @@ mod tests {
             row_limit: Some(5),
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         };
         let capped = SqlServerReadPlan::compile_operation(&target, &base).expect("solo tetto");
         assert!(

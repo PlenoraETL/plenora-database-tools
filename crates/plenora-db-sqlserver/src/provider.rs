@@ -300,6 +300,11 @@ impl Provider for SqlServerProvider {
                     scope: TransactionScope::Transaction,
                 },
                 spatial: SpatialCapabilities {
+                    // L'SRID viaggia **dentro** il valore: `geometry` e
+                    // `geography` sono UDT che se lo portano dietro, e
+                    // `.STSrid` lo rende senza interrogare un catalogo. Non
+                    // c'e niente da dichiarare.
+                    requires_declared_crs: false,
                     read_wkb: true,
                     write_wkb: true,
                     geometry: probe.geometry_type_id.is_some(),

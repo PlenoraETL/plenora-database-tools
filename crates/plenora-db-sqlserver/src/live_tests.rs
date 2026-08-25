@@ -461,6 +461,7 @@ async fn live_common_provider_contract_read_and_write() {
             field: "id".to_owned(),
             parameter: "minimum_id".to_owned(),
         }),
+        declared_crs: Vec::new(),
     };
     let bounded_parameters = ParameterBag::new(BTreeMap::from([(
         "minimum_id".to_owned(),
@@ -666,6 +667,7 @@ async fn live_common_provider_contract_read_and_write() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let read_budget = ResourceBudget::new(ResourceLimits::default()).expect("read budget");
     let source = provider
@@ -4103,6 +4105,7 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
             row_limit: None,
             row_offset: None,
             filter: None,
+            declared_crs: Vec::new(),
         },
         &ParameterBag::default(),
         2,

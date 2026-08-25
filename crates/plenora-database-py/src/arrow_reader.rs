@@ -177,6 +177,7 @@ pub(crate) fn make_read_operation(
         row_limit: limit,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     })
 }
 

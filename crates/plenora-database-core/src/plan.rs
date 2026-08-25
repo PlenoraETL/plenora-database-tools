@@ -145,6 +145,49 @@ pub struct ReadOperation {
     #[serde(default)]
     pub row_offset: Option<u64>,
     pub filter: Option<FilterExpression>,
+    /// Il CRS che il chiamante dichiara per una colonna geometrica.
+    ///
+    /// Esiste per i prodotti in cui il catalogo **non puo** dirlo. Su `MariaDB`
+    /// il registro OGC c'e e porta una colonna `SRID`, ma vale sempre zero:
+    /// nessuna DDL puo vincolare una geometry a un sistema di riferimento — ne
+    /// `SRID 4326`, ne `REF_SYSTEM_ID=4326`, entrambe rifiutate con 1064 su
+    /// tutte le versioni misurate. Non e che l'SRID sia sconosciuto: e
+    /// **assente**, e nessuna query di catalogo lo fara comparire.
+    ///
+    /// Senza una dichiarazione quei provider rifiutano la colonna, ed e
+    /// l'unica risposta onesta: il contratto `GeoArrow` pubblica un CRS, e
+    /// pubblicarlo senza saperlo sarebbe peggio del rifiuto.
+    ///
+    /// La dichiarazione non e una promessa che si crede sulla parola. Un
+    /// provider che l'accetta deve **verificarla valore per valore** — e
+    /// `ProviderCapabilities` lo dichiara con
+    /// [`crate::capabilities::SpatialCapabilities::requires_declared_crs`] —
+    /// perche una colonna che nessuna DDL vincola puo contenere geometrie con
+    /// SRID diversi fra loro, e credere alla dichiarazione trasformerebbe
+    /// quella eterogeneita in un CRS pubblicato falso.
+    ///
+    /// Additivo e opzionale: un piano che non lo dichiara si comporta come
+    /// prima. Una dichiarazione su una colonna che il catalogo sa gia
+    /// descrivere e un errore, non un rinforzo: due fonti per lo stesso fatto
+    /// sono una fonte di troppo.
+    #[serde(default)]
+    pub declared_crs: Vec<DeclaredCrs>,
+}
+
+/// Il CRS di una colonna, dichiarato da chi scrive il piano.
+///
+/// Vedi [`ReadOperation::declared_crs`] per il perche.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredCrs {
+    pub column: String,
+    /// L'identificatore del sistema di riferimento, nel registro del prodotto.
+    ///
+    /// Zero non e ammesso, ed e la ragione per cui questo campo esiste: zero e
+    /// l'«indefinito» OGC, cioe esattamente cio che il registro di `MariaDB`
+    /// gia risponde da solo. Dichiararlo non aggiungerebbe niente a cio che il
+    /// catalogo dice, e darebbe l'aria di averlo fatto.
+    pub srid: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

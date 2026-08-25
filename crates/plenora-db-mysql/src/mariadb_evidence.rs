@@ -820,6 +820,7 @@ async fn provider_surface_probes(
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
 
     // La query non passa dal catalogo: lo schema esce dai metadata del
@@ -1723,6 +1724,7 @@ async fn profile_read_probes(
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
 
     // Schema, valori e namespace dalla stessa lettura, con tre osservazioni:
@@ -1899,6 +1901,7 @@ async fn streaming_read_probes(
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
 
     // Le tredici forme che il renderer qualifica, ciascuna con il proprio

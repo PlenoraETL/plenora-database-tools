@@ -284,6 +284,28 @@ pub struct SpatialCapabilities {
     /// soltanto a `geometry` o soltanto a `geography`.
     #[serde(default)]
     pub functions: Vec<SpatialFunction>,
+    /// Le colonne geometriche si leggono solo con un CRS dichiarato dal piano.
+    ///
+    /// Serve perche `geometry` da sola non sa dire la verita su un prodotto
+    /// come `MariaDB`. Li il registro OGC esiste e porta un `SRID`, ma vale
+    /// sempre zero: nessuna DDL puo vincolare una geometry a un sistema di
+    /// riferimento. La lettura funziona — e misurata — **a condizione** che il
+    /// chiamante dichiari il CRS in
+    /// [`crate::plan::ReadOperation::declared_crs`], e che il provider lo
+    /// verifichi valore per valore.
+    ///
+    /// Con la sola `geometry` quella condizione non e esprimibile: `false`
+    /// negherebbe una lettura che funziona, `true` prometterebbe che una
+    /// lettura semplice basti. Le due bandiere insieme dicono la cosa giusta —
+    /// `geometry: true, requires_declared_crs: true` — e un chiamante che
+    /// ignora la seconda riceve un rifiuto in prepare, non un CRS inventato.
+    ///
+    /// **Falsa** dove il catalogo il CRS lo sa: `PostgreSQL` lo legge da
+    /// `geometry_columns`, `MySQL` da `information_schema.columns.SRS_ID`, e
+    /// li una dichiarazione del chiamante sarebbe una seconda fonte per lo
+    /// stesso fatto.
+    #[serde(default)]
+    pub requires_declared_crs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

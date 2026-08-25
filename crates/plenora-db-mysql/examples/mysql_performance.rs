@@ -200,6 +200,7 @@ fn read_operation_plan(database: &str, table: &str) -> ReadOperation {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     }
 }
 

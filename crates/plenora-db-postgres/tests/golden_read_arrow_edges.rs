@@ -75,6 +75,7 @@ fn empty_read(object: &str) -> ReadOperation {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     }
 }
 
@@ -257,6 +258,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
         row_limit: None,
         row_offset: None,
         filter: None,
+        declared_crs: Vec::new(),
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
     let cancel = CancellationToken::new();
