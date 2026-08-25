@@ -2,12 +2,16 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use plenora_database_core::plan::ProviderKind;
+// `Operation` e `ObjectRef` non stanno piu dietro `postgres`: la famiglia
+// `database-*` di introspezione li costruisce per qualunque provider compilato,
+// ed e sempre presente come `database-probe`.
+use plenora_database_core::plan::{ObjectRef, Operation};
 #[cfg(feature = "postgres")]
-use plenora_database_core::plan::{ObjectRef, OrderBy, SortDirection};
+use plenora_database_core::plan::{OrderBy, SortDirection};
 // Il percorso `postgres-read-ipc` e l'unico che pianifica una lettura e ne
-// misura il budget: fuori dalla feature questi nomi non hanno un chiamante.
+// misura il budget: fuori dalla feature questo nome non ha un chiamante.
 #[cfg(feature = "postgres")]
-use plenora_database_core::plan::{Operation, ReadOperation};
+use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{Provider, SecretString};
 // Lo streaming a batch esce solo dal percorso IPC.
 #[cfg(feature = "postgres")]
@@ -275,6 +279,10 @@ async fn run() -> CliResult<()> {
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
         "database-probe" => database_probe(&mut args).await,
+        "database-inspect-catalogs" => database_inspect(&mut args, list_catalogs_source).await,
+        "database-inspect-schemas" => database_inspect(&mut args, list_schemas_source).await,
+        "database-inspect-objects" => database_inspect(&mut args, list_objects_source).await,
+        "database-describe" => database_inspect(&mut args, describe_source).await,
         #[cfg(feature = "postgres")]
         "postgres-probe" => postgres_probe(&mut args).await,
         #[cfg(feature = "postgres")]
@@ -443,19 +451,30 @@ fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     }))
 }
 
-async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    if !matches!(
+/// Il provider nominato ha un adapter in **questo** binario.
+///
+/// `ProviderKind` viene dal contratto, che enumera anche cio che nessun crate
+/// implementa — `Mariadb` e li da prima che esistesse una misura. Accettare il
+/// nome e fallire dopo, alla connessione, direbbe al chiamante che il server
+/// non risponde quando il problema e che l'adapter non e stato compilato.
+fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
+    if matches!(
         kind,
         ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Sqlserver
     ) {
-        return Err(CliError::Fatal(DatabaseError::unsupported(
-            kind,
-            ErrorPhase::Prepare,
-            "provider dichiarato dal contratto ma adapter non disponibile",
-        )));
+        return Ok(());
     }
+    Err(CliError::Fatal(DatabaseError::unsupported(
+        kind,
+        ErrorPhase::Prepare,
+        "provider dichiarato dal contratto ma adapter non disponibile",
+    )))
+}
+
+async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
     let env_name = args
         .next()
         .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
@@ -471,6 +490,114 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
         "connection": connection,
         "capabilities": capabilities
     }))
+}
+
+/// Un'introspezione qualunque, sul provider nominato dal primo argomento.
+///
+/// # Perche generica invece di una famiglia per prodotto
+///
+/// `Provider::inspect` e implementato da tutti e tre gli adapter, e tutti e tre
+/// rispondono alle stesse quattro operazioni del contratto. Le superfici che
+/// esistevano non lo riflettevano: `PostgreSQL` aveva cinque comandi di
+/// introspezione, `MySQL` tre, SQL Server **nessuno** — arrivava solo a
+/// `database-probe`, cioe un provider qualificato per scrivere che dal CLI non
+/// si poteva nemmeno interrogare. Una quarta copia degli stessi comandi
+/// avrebbe chiuso il buco moltiplicando il codice che lo aveva prodotto.
+///
+/// # L'ordine degli argomenti
+///
+/// Le posizionali dell'operazione — schema, oggetto — stanno **prima** degli
+/// argomenti del provider, e non e una scelta di gusto:
+/// [`parse_provider_arguments`] consuma l'iteratore fino in fondo, perche per
+/// `PostgreSQL` sono i soli flag TLS mentre per gli altri due sono host,
+/// database, utente, porta e TLS, in numero variabile. Dopo di essi una
+/// posizionale non esiste. Prima, entrambe si leggono senza ambiguita.
+async fn database_inspect(
+    args: &mut impl Iterator<Item = String>,
+    source: fn(&mut dyn Iterator<Item = String>) -> CliResult<Operation>,
+) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let operation = source(args)?;
+    let provider_arguments = parse_provider_arguments(kind, args)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let inspection = provider
+        .inspect(&secret, &operation, &CancellationToken::new())
+        .await?;
+    print_json(
+        &serde_json::to_value(inspection).map_err(|_| "output non serializzabile".to_owned())?,
+    )
+}
+
+/// Il nome dello schema, che nessuna operazione puo dedurre.
+///
+/// Vuoto e un errore, non un carattere jolly: `DatabaseListObjects` con uno
+/// schema vuoto significa "tutti", e un argomento dimenticato diventerebbe
+/// silenziosamente una domanda piu larga di quella scritta.
+fn required(args: &mut dyn Iterator<Item = String>, missing: &str) -> CliResult<String> {
+    let value = args.next().ok_or_else(|| missing.to_owned())?;
+    if value.trim().is_empty() {
+        return Err(format!("{missing}: il valore e vuoto").into());
+    }
+    Ok(value)
+}
+
+// Le quattro sorgenti sono funzioni con un nome e non chiusure dentro il
+// dispatch: cosi il test le esercita come le esercita il binario, invece di
+// riscriverle e verificare la propria copia.
+
+// Le due senza posizionali non hanno modo di fallire, e il `Result` e
+// comunque parte della firma che tutte e quattro condividono: e cio che
+// permette a `database_inspect` di prenderne una qualunque. Toglierlo qui
+// vorrebbe dire due firme, quindi due percorsi, per la sola ragione che oggi
+// nessuna delle due legge un argomento.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "firma condivisa dalle quattro sorgenti di `database_inspect`"
+)]
+fn list_catalogs_source(_: &mut dyn Iterator<Item = String>) -> CliResult<Operation> {
+    Ok(Operation::DatabaseListCatalogs)
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "firma condivisa dalle quattro sorgenti di `database_inspect`"
+)]
+fn list_schemas_source(_: &mut dyn Iterator<Item = String>) -> CliResult<Operation> {
+    Ok(Operation::DatabaseListSchemas { source: None })
+}
+
+fn list_objects_source(args: &mut dyn Iterator<Item = String>) -> CliResult<Operation> {
+    Ok(Operation::DatabaseListObjects {
+        source: Some(ObjectRef {
+            catalog: None,
+            schema: Some(required(args, "manca lo schema")?),
+            // L'oggetto non partecipa a una lista: il contratto vuole
+            // comunque un `ObjectRef`, e questo campo e la parte che
+            // l'operazione non legge.
+            object: String::new(),
+        }),
+    })
+}
+
+fn describe_source(args: &mut dyn Iterator<Item = String>) -> CliResult<Operation> {
+    // Lo schema si legge per primo e si tiene: valutare i due `required` come
+    // argomenti della stessa espressione lascerebbe l'ordine alla
+    // valutazione, e `<schema> <object>` diventerebbero intercambiabili.
+    let schema = required(args, "manca lo schema")?;
+    Ok(Operation::DatabaseDescribeObject {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(schema),
+            object: required(args, "manca l'oggetto")?,
+        },
+    })
 }
 
 #[cfg(feature = "postgres")]
@@ -1461,6 +1588,10 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 /// dichiarava che `MySQL` richiedesse `--features full` quando
 /// `--features mysql` basta.
 const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
+    ("database-describe", None),
+    ("database-inspect-catalogs", None),
+    ("database-inspect-objects", None),
+    ("database-inspect-schemas", None),
     ("database-probe", None),
     ("inspect-dataset", None),
     ("validate-plan", None),
@@ -1599,8 +1730,15 @@ fn common_usage() -> String {
         "uso: plenora-database [flag-globali] COMANDO [args...]".to_owned(),
         String::new(),
         "== sempre disponibili ==".to_owned(),
-        "  database-probe <provider> <secret-env> [args tls]".to_owned(),
+        "  database-probe <provider> <secret-env> [args provider]".to_owned(),
         format!("    provider compilati in questo binario: {compiled}"),
+        "  database-inspect-catalogs <provider> <secret-env> [args provider]".to_owned(),
+        "  database-inspect-schemas <provider> <secret-env> [args provider]".to_owned(),
+        "  database-inspect-objects <provider> <secret-env> <schema> [args provider]".to_owned(),
+        "  database-describe <provider> <secret-env> <schema> <object> [args provider]".to_owned(),
+        "    introspezione via Provider::inspect, uguale su tutti i provider compilati".to_owned(),
+        "    le posizionali stanno prima degli args del provider, che sono in numero variabile"
+            .to_owned(),
         "  inspect-dataset <file.arrow>".to_owned(),
         "  validate-plan <file.json> [--capabilities <file.json>]".to_owned(),
     ]
@@ -1709,8 +1847,17 @@ fn sqlserver_usage() -> String {
     [
         "",
         "== SQL Server ==",
-        "  nessun sotto-comando dedicato: l'adapter si raggiunge da",
-        "  `database-probe sqlserver <secret-env>`",
+        "  args comuni: <secret-env> <host> <database> <user> [port] [--tls-ca-path-env <name>]",
+        "  nessun sotto-comando `sqlserver-*`: l'adapter si raggiunge dalla famiglia",
+        "  generica, che gira identica sui tre provider —",
+        "    database-probe sqlserver <args...>",
+        "    database-inspect-catalogs sqlserver <args...>",
+        "    database-inspect-schemas sqlserver <args...>",
+        "    database-inspect-objects sqlserver <secret-env> <schema> <resto args...>",
+        "    database-describe sqlserver <secret-env> <schema> <object> <resto args...>",
+        "  non raggiungibile: esecuzione SQL, DDL e transazioni. Non e una scelta",
+        "  del CLI — l'adapter non implementa `Provider::begin_transaction` ne",
+        "  `execute_ddl`, e il default del contratto per entrambi e `Unsupported`.",
     ]
     .join("\n")
 }
@@ -1954,6 +2101,63 @@ mod tests {
     use std::path::PathBuf;
     #[cfg(feature = "postgres")]
     use std::sync::Arc;
+
+    /// Le posizionali di `database-describe` si leggono nell'ordine scritto.
+    ///
+    /// L'inversione e il difetto che questo test esiste per escludere, e non
+    /// e teorico: `<schema> <object>` sono due stringhe, quindi scambiarle
+    /// non produce nessun errore di tipo e nessun errore di parsing. Si
+    /// scoprirebbe contro un server, come "oggetto inesistente" su un nome
+    /// che esiste.
+    #[test]
+    fn describe_reads_the_schema_before_the_object() {
+        let mut args = ["vendite", "fatture", "host"]
+            .map(str::to_owned)
+            .into_iter();
+        let operation = describe_source(&mut args).expect("sorgente");
+        let Operation::DatabaseDescribeObject { source } = operation else {
+            panic!("operazione inattesa");
+        };
+        assert_eq!(source.schema.as_deref(), Some("vendite"));
+        assert_eq!(source.object, "fatture");
+        // Cio che resta e degli argomenti del provider, che li consuma dopo.
+        assert_eq!(args.next().as_deref(), Some("host"));
+    }
+
+    /// Un valore vuoto non e un carattere jolly.
+    ///
+    /// `DatabaseListObjects` con schema vuoto significa "tutti gli oggetti":
+    /// accettando la stringa vuota, uno schema dimenticato — o una variabile
+    /// di shell non espansa — diventerebbe in silenzio una domanda piu larga
+    /// di quella scritta, e la risposta avrebbe l'aria di essere quella
+    /// giusta.
+    #[test]
+    fn an_empty_schema_is_refused_instead_of_widening_the_question() {
+        for empty in ["", "   "] {
+            let mut args = std::iter::once(empty.to_owned());
+            assert!(
+                list_objects_source(&mut args).is_err(),
+                "schema {empty:?} accettato"
+            );
+        }
+    }
+
+    /// Le due operazioni senza posizionali non ne consumano.
+    ///
+    /// Se le consumassero, il primo argomento del provider — l'host —
+    /// sparirebbe dentro l'operazione e il parser del provider vedrebbe una
+    /// riga piu corta di quella scritta.
+    #[test]
+    fn the_operations_without_positionals_leave_the_provider_arguments_alone() {
+        for source in [
+            list_catalogs_source as fn(&mut dyn Iterator<Item = String>) -> CliResult<Operation>,
+            list_schemas_source,
+        ] {
+            let mut args = ["host", "db", "utente"].map(str::to_owned).into_iter();
+            source(&mut args).expect("sorgente");
+            assert_eq!(args.count(), 3);
+        }
+    }
 
     #[cfg(feature = "postgres")]
     struct TestStream {
@@ -2306,8 +2510,19 @@ mod tests {
         let secret = SecretString::new("test-only-secret");
         #[allow(clippy::vec_init_then_push)] // le push sono cfg-gated
         let matrix: Vec<(ProviderKind, Vec<&str>)> = {
+            // `Postgres` era l'unica riga incondizionata, e questo test era
+            // rosso nelle due configurazioni che non lo compilano: li
+            // `build_provider` non arriva al TLS, risponde «adapter non
+            // disponibile» — `Unsupported` invece di `InvalidPlan` — e
+            // l'asserzione cadeva su una premessa mancante invece che sul
+            // fail-close che sorveglia. Non se n'era accorto nessuno perche
+            // la matrice delle feature esegue i test di ciascuna
+            // configurazione, e fino a poco fa ne eseguiva un sottoinsieme
+            // scelto per nome.
             #[allow(unused_mut)]
-            let mut m: Vec<(ProviderKind, Vec<&str>)> = vec![(ProviderKind::Postgres, Vec::new())];
+            let mut m: Vec<(ProviderKind, Vec<&str>)> = Vec::new();
+            #[cfg(feature = "postgres")]
+            m.push((ProviderKind::Postgres, Vec::new()));
             #[cfg(feature = "mysql")]
             m.push((
                 ProviderKind::Mysql,
@@ -2339,13 +2554,20 @@ mod tests {
     #[test]
     fn implemented_provider_factories_are_offline_and_typed() {
         let secret = SecretString::new("test-only-secret");
-        let mut postgres_args = std::iter::empty();
-        assert_eq!(
-            build_provider(ProviderKind::Postgres, &secret, &mut postgres_args)
-                .expect("PostgreSQL provider")
-                .kind(),
-            ProviderKind::Postgres
-        );
+        // Stessa ragione del test qui sopra: un binario senza la feature
+        // `postgres` non ha quel provider da costruire, e pretenderlo
+        // rendeva il test rosso per l'assenza dell'adapter invece che per
+        // cio che verifica.
+        #[cfg(feature = "postgres")]
+        {
+            let mut postgres_args = std::iter::empty();
+            assert_eq!(
+                build_provider(ProviderKind::Postgres, &secret, &mut postgres_args)
+                    .expect("PostgreSQL provider")
+                    .kind(),
+                ProviderKind::Postgres
+            );
+        }
 
         #[allow(clippy::vec_init_then_push)] // le push sono cfg-gated
         let structured: Vec<ProviderKind> = {
