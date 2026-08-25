@@ -5765,6 +5765,14 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
         format!(
             "INSERT INTO {table} VALUES (1, ST_GeomFromText('POINT(2 3)', 4326), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))', 4326))"
         ),
+        // La stessa riga in **cartesiano**. 4326 e un sistema geografico, e su
+        // `MySQL` molte funzioni geometriche non vi sono implementate: senza
+        // questa seconda riga la misura direbbe «la funzione non c'e» di una
+        // funzione che c'e e che rifiuta il sistema di riferimento, che e
+        // un'altra cosa e porta a una decisione diversa.
+        format!(
+            "INSERT INTO {table} VALUES (2, ST_GeomFromText('POINT(2 3)', 0), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))', 0))"
+        ),
     ] {
         connection
             .query_drop(statement)
@@ -5773,32 +5781,33 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
     }
 
     let mut measured = Vec::new();
-    for (name, expression) in [
-        ("srid_colonna", "ST_SRID(shape)".to_owned()),
-        ("srid_envelope", "ST_SRID(ST_Envelope(shape))".to_owned()),
-        ("srid_centroid", "ST_SRID(ST_Centroid(area))".to_owned()),
-        ("srid_buffer", "ST_SRID(ST_Buffer(area, 1))".to_owned()),
-        ("byte_colonna", "LENGTH(ST_AsBinary(shape))".to_owned()),
-        (
-            "byte_envelope",
-            "LENGTH(ST_AsBinary(ST_Envelope(shape)))".to_owned(),
-        ),
-    ] {
-        // `Option<i64>`, e non per prudenza: una funzione geometrica puo
-        // rendere `NULL` dove non e definita, e una conversione che non lo
-        // prevede fa cadere l'intera campagna invece di registrare la misura.
-        let verdict = match connection
-            .query_first::<Option<i64>, _>(format!("SELECT {expression} FROM {table} WHERE id = 1"))
-            .await
-        {
-            Ok(Some(Some(value))) => value.to_string(),
-            Ok(Some(None)) => "null".to_owned(),
-            Ok(None) => "nessuna riga".to_owned(),
-            Err(error) => {
-                server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
-            }
-        };
-        measured.push(format!("{name}={verdict}"));
+    for (row, srs) in [(1, "geo"), (2, "cart")] {
+        for (name, expression) in [
+            ("srid", "ST_SRID(shape)"),
+            ("envelope", "ST_SRID(ST_Envelope(shape))"),
+            ("centroid", "ST_SRID(ST_Centroid(area))"),
+            ("buffer", "ST_SRID(ST_Buffer(area, 1))"),
+            ("byte", "LENGTH(ST_AsBinary(shape))"),
+            ("byte_envelope", "LENGTH(ST_AsBinary(ST_Envelope(shape)))"),
+        ] {
+            // `Option<i64>`, e non per prudenza: una funzione geometrica puo
+            // rendere `NULL` dove non e definita, e una conversione che non lo
+            // prevede fa cadere l'intera campagna invece di registrare la
+            // misura.
+            let verdict = match connection
+                .query_first::<Option<i64>, _>(format!(
+                    "SELECT {expression} FROM {table} WHERE id = {row}"
+                ))
+                .await
+            {
+                Ok(Some(Some(value))) => value.to_string(),
+                Ok(Some(None)) => "null".to_owned(),
+                Ok(None) => "nessuna riga".to_owned(),
+                Err(error) => server_code(&error)
+                    .map_or_else(|| "rifiutato".to_owned(), |code| code.to_string()),
+            };
+            measured.push(format!("{srs}.{name}={verdict}"));
+        }
     }
 
     let _ = connection
