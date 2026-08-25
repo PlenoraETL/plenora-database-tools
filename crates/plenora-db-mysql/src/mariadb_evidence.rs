@@ -5730,6 +5730,15 @@ async fn profile_probes(
         )
         .await;
         concurrency_probe(recorder, profile, &mut connection, cancellation).await;
+        concurrent_writers_probe(
+            recorder,
+            profile,
+            &schema_name,
+            &mut connection,
+            cancellation,
+        )
+        .await;
+        pool_endurance_probe(recorder, profile, &mut connection, cancellation).await;
     }
 }
 
@@ -6141,6 +6150,268 @@ async fn spatial_bound_forms(connection: &mut mysql_async::Conn) -> (Vec<String>
             |row| row.flatten().unwrap_or_else(|| "nessuna".to_owned()),
         );
     (bound, srids)
+}
+
+/// La tabella su cui dodici scrittori si contendono il pool.
+const SCRATCH_WRITERS: &str = "plenora_driver_evidence_writers";
+
+/// Dodici scrittori concorrenti, ciascuno con la propria fetta di chiavi.
+///
+/// La sonda dei lettori concorrenti misura una cosa piu debole di quanto
+/// sembri: una connessione condivisa per sbaglio fra due **letture** mescola
+/// righe, e si vede. Fra due **scritture** fa altro — una transazione che
+/// committa su un filo che non e il suo, righe attribuite alla transazione
+/// sbagliata, un rollback che ne annulla una che non gli appartiene — e nessuna
+/// di quelle cose la sonda di lettura potrebbe cogliere.
+///
+/// # Cosa verifica
+///
+/// Ogni scrittore ha una fetta di chiavi disgiunta e un payload che porta il
+/// **proprio** numero. Alla fine la rilettura, da un'altra connessione, deve
+/// trovare tutte le righe **e** ciascuna col payload di chi l'ha scritta: il
+/// conteggio coglie una perdita, il payload coglie un'attribuzione sbagliata.
+///
+/// Il pool e piu piccolo del numero di scrittori — quattro per dodici — perche
+/// e la contesa a essere misurata, non la capacita.
+// Il corpo resta intero: semina, contesa, rilettura attribuita. Spezzarlo
+// separerebbe la misura dalla sequenza che la rende vera.
+#[allow(clippy::too_many_lines)]
+async fn concurrent_writers_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use std::sync::Arc;
+
+    const WRITERS: i32 = 12;
+    const ROWS_PER_WRITER: i32 = 4;
+
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_WRITERS}"),
+        format!(
+            "CREATE TABLE {SCRATCH_WRITERS} (id INT NOT NULL PRIMARY KEY, payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella degli scrittori: harness, non divergenza");
+    }
+
+    let provider = Arc::new(
+        MysqlProvider::with_profile(config(), 4, profile)
+            .expect("provider della misura: harness, non divergenza"),
+    );
+    let target = ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: SCRATCH_WRITERS.to_owned(),
+    };
+
+    let mut tasks = Vec::new();
+    for writer in 0..WRITERS {
+        let provider = Arc::clone(&provider);
+        let target = target.clone();
+        let cancellation = cancellation.clone();
+        tasks.push(tokio::spawn(async move {
+            let first = writer * ROWS_PER_WRITER + 1;
+            let rows: Vec<(i32, String)> = (first..first + ROWS_PER_WRITER)
+                .map(|id| (id, format!("w{writer}-{id}")))
+                .collect();
+            let operation = WriteOperation {
+                target,
+                mode: WriteMode::Append,
+                mapping_policy: MappingPolicy::Strict,
+                transaction_profile: TransactionProfile::SingleTransaction,
+                keys: Vec::new(),
+                update_columns: Vec::new(),
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            };
+            scripted_write(
+                &provider,
+                &operation,
+                scratch_schema(),
+                vec![scratch_batch_pairs(&rows)],
+                u64::try_from(ROWS_PER_WRITER).expect("righe"),
+                None,
+                &cancellation,
+            )
+            .await
+            .map(|outcome| outcome.rows.confirmed)
+        }));
+    }
+
+    let mut confirmed = 0_u64;
+    let mut failure = None;
+    for task in tasks {
+        match task.await.expect("scrittore della contesa") {
+            Ok(rows) => confirmed += rows,
+            Err(error) => {
+                failure.get_or_insert_with(|| {
+                    format!("{:?}/{:?}: {}", error.category, error.phase, error.message)
+                });
+            }
+        }
+    }
+
+    // La rilettura da un'altra connessione: il payload di ogni riga deve
+    // nominare lo scrittore che le compete. Un'attribuzione sbagliata rende il
+    // conteggio giusto e questo confronto no.
+    let mismatched = connection
+        .query_first::<i64, _>(format!(
+            "SELECT COUNT(*) FROM {SCRATCH_WRITERS} WHERE payload <> CONCAT('w', FLOOR((id - 1) / {ROWS_PER_WRITER}), '-', id)"
+        ))
+        .await
+        .map_or(-1, |row| row.unwrap_or(-1));
+    let stored = connection
+        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {SCRATCH_WRITERS}"))
+        .await
+        .map_or(-1, |row| row.unwrap_or(-1));
+
+    let question = "dodici scrittori concorrenti scrivono ciascuno la propria fetta";
+    let expected = i64::from(WRITERS * ROWS_PER_WRITER);
+    match failure {
+        None if stored == expected && mismatched == 0 && confirmed == expected.cast_unsigned() => {
+            recorder.accepted(
+                "provider.profile_concurrent_writers",
+                "provider",
+                "profilo",
+                question,
+                format!("scrittori={WRITERS} pool=4 righe={stored} attribuzioni_errate=0"),
+            );
+        }
+        None => recorder.rejected(
+            "provider.profile_concurrent_writers",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "attese {expected} righe attribuite, lette {stored} con {mismatched} \
+                 attribuzioni errate e {confirmed} confermate"
+            )),
+            None,
+        ),
+        Some(error) => recorder.rejected(
+            "provider.profile_concurrent_writers",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("uno scrittore ha fallito — {error}")),
+            None,
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_WRITERS}"))
+        .await;
+}
+
+/// Quante connessioni il **server** vede aperte.
+///
+/// Al server, non al pool: le due divergono esattamente nel caso che la sonda
+/// della tenuta cerca — una sessione che il pool ha dimenticato e che il motore
+/// tiene ancora.
+async fn connected_threads(connection: &mut mysql_async::Conn) -> i64 {
+    connection
+        .query_first::<(String, i64), _>("SHOW STATUS LIKE 'Threads_connected'")
+        .await
+        .map_or(-1, |row| row.map_or(-1, |(_, value)| value))
+}
+
+/// Il pool regge molti cicli senza lasciarsi dietro connessioni.
+///
+/// Non e un soak, e non pretende di esserlo: dura secondi. Misura pero la cosa
+/// che un soak cerca — che il numero di connessioni non **cresca** — su
+/// abbastanza cicli perche una perdita di una connessione ogni giro diventi
+/// visibile.
+///
+/// Il conteggio arriva da `Threads_connected` del server, letto da un'altra
+/// connessione: e cio che il motore vede, non cio che il pool crede. Le due
+/// divergono esattamente nel caso che questa sonda cerca — una sessione che il
+/// pool ha dimenticato e che il server tiene ancora aperta.
+async fn pool_endurance_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    const ROUNDS: usize = 150;
+    const POOL: usize = 3;
+
+    let before = connected_threads(connection).await;
+
+    let pool = crate::MysqlPool::new_with_profile(&config(), POOL, profile)
+        .expect("pool della misura: harness, non divergenza");
+    let mut failure = None;
+    for round in 0..ROUNDS {
+        let outcome = async {
+            let session = pool.checkout(cancellation).await?;
+            let mut transaction = Box::new(
+                crate::transaction::MysqlTransaction::begin(
+                    session,
+                    &TransactionOptions::default(),
+                    cancellation,
+                )
+                .await?,
+            );
+            transaction
+                .query(&Statement::new("SELECT 1"), cancellation)
+                .await?;
+            transaction.commit(cancellation).await
+        }
+        .await;
+        if let Err(error) = outcome {
+            failure.get_or_insert_with(|| {
+                format!(
+                    "giro {round}: {:?}/{:?}: {}",
+                    error.category, error.phase, error.message
+                )
+            });
+            break;
+        }
+    }
+    drop(pool);
+
+    let after = connected_threads(connection).await;
+    let question = "molti cicli sul pool non lasciano connessioni dietro di se";
+    // Il margine e il pool stesso: le connessioni che ha aperto possono essere
+    // ancora in chiusura quando il server risponde, e pretendere l'uguaglianza
+    // esatta misurerebbe la velocita con cui il sistema operativo chiude un
+    // socket invece della tenuta del pool.
+    let ceiling = before + i64::try_from(POOL).expect("pool") + 1;
+    match failure {
+        None if before >= 0 && after >= 0 && after <= ceiling => recorder.accepted(
+            "provider.profile_pool_endurance",
+            "provider",
+            "profilo",
+            question,
+            format!("giri={ROUNDS} pool={POOL} connessioni={before}->{after} tetto={ceiling}"),
+        ),
+        None => recorder.rejected(
+            "provider.profile_pool_endurance",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "connessioni {before}->{after}, oltre il tetto {ceiling} dopo {ROUNDS} giri"
+            )),
+            None,
+        ),
+        Some(error) => recorder.rejected(
+            "provider.profile_pool_endurance",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("un giro ha fallito — {error}")),
+            None,
+        ),
+    }
 }
 
 /// La tabella su cui dodici lettori si contendono il pool.

@@ -210,6 +210,19 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # analogia con PostgreSQL. Ereditarla su un secondo prodotto sarebbe lo
     # stesso errore, un prodotto piu in la.
     "provider.profile_concurrent_readers": "dodici lettori concorrenti non si mescolano le righe",
+    # La contesa in **scrittura**, che sbaglia in modo diverso: fra due
+    # letture una connessione condivisa mescola righe e si vede, fra due
+    # scritture fa altro — un commit su un filo che non e il suo, righe
+    # attribuite alla transazione sbagliata — e la sonda di lettura non
+    # potrebbe coglierlo.
+    "provider.profile_concurrent_writers": "dodici scrittori concorrenti non si scambiano le righe",
+    # Non e un soak e non pretende di esserlo: dura secondi. Misura pero la
+    # cosa che un soak cerca — che il numero di connessioni non cresca — su
+    # abbastanza cicli perche una perdita di una ogni giro diventi visibile.
+    # Il conteggio arriva da `Threads_connected` del server, cioe da cio che
+    # il motore vede e non da cio che il pool crede: le due divergono
+    # esattamente nel caso che la sonda cerca.
+    "provider.profile_pool_endurance": "molti cicli non lasciano connessioni dietro",
     # Dodici lettori sullo stesso pool, che ne ha quattro di connessioni.
     # PostgreSQL ha una prova di contesa da tempo e MySQL l'ha avuta oggi;
     # questa e la sua gemella. La lacuna non era di contratto ne spatial: era
@@ -405,6 +418,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_spatial_index",
     "provider.profile_spatial_functions",
     "provider.profile_concurrent_readers",
+    "provider.profile_concurrent_writers",
+    "provider.profile_pool_endurance",
 )
 
 
