@@ -5756,10 +5756,14 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
     for statement in [
         format!("DROP TABLE IF EXISTS {table}"),
         format!(
-            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL) ENGINE = InnoDB"
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL, area GEOMETRY NOT NULL) ENGINE = InnoDB"
         ),
+        // Un punto **e** un poligono: `ST_Centroid` di un punto rende `NULL` —
+        // e definito solo su geometrie areali — e la prima stesura di questa
+        // sonda l'ha scoperto andando in panico sulla conversione. Il dato
+        // sbagliato avrebbe misurato una funzione per un'altra.
         format!(
-            "INSERT INTO {table} VALUES (1, ST_GeomFromText('POINT(2 3)', 4326))"
+            "INSERT INTO {table} VALUES (1, ST_GeomFromText('POINT(2 3)', 4326), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))', 4326))"
         ),
     ] {
         connection
@@ -5772,18 +5776,23 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
     for (name, expression) in [
         ("srid_colonna", "ST_SRID(shape)".to_owned()),
         ("srid_envelope", "ST_SRID(ST_Envelope(shape))".to_owned()),
-        ("srid_centroid", "ST_SRID(ST_Centroid(shape))".to_owned()),
+        ("srid_centroid", "ST_SRID(ST_Centroid(area))".to_owned()),
+        ("srid_buffer", "ST_SRID(ST_Buffer(area, 1))".to_owned()),
         ("byte_colonna", "LENGTH(ST_AsBinary(shape))".to_owned()),
         (
             "byte_envelope",
             "LENGTH(ST_AsBinary(ST_Envelope(shape)))".to_owned(),
         ),
     ] {
+        // `Option<i64>`, e non per prudenza: una funzione geometrica puo
+        // rendere `NULL` dove non e definita, e una conversione che non lo
+        // prevede fa cadere l'intera campagna invece di registrare la misura.
         let verdict = match connection
-            .query_first::<i64, _>(format!("SELECT {expression} FROM {table} WHERE id = 1"))
+            .query_first::<Option<i64>, _>(format!("SELECT {expression} FROM {table} WHERE id = 1"))
             .await
         {
-            Ok(Some(value)) => value.to_string(),
+            Ok(Some(Some(value))) => value.to_string(),
+            Ok(Some(None)) => "null".to_owned(),
             Ok(None) => "nessuna riga".to_owned(),
             Err(error) => {
                 server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
