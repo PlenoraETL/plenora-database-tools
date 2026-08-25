@@ -3948,6 +3948,163 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
         .expect("cleanup spatial write guard");
 }
 
+/// Punto, linea e poligono nella **stessa** colonna, su entrambe le semantiche.
+///
+/// `mixed_geometry_types` era pubblicata come `probe.geometry_type_id.is_some()
+/// || probe.geography_type_id.is_some()`: la presenza dei due UDT sul server.
+/// La prova che la sorvegliava rileggeva il flag da `probe_capabilities` e
+/// asserva che fosse vero — cioe confrontava la deduzione con se stessa.
+///
+/// Nessuno aveva mai scritto un `Point` e un `Polygon` nella stessa colonna. Il
+/// ragionamento per cui la cosa dovrebbe funzionare e solido — `geometry` e
+/// `geography` sono UDT non vincolati a un singolo tipo geometrico, a
+/// differenza di una colonna `POINT` di `MySQL` — ma un ragionamento solido e
+/// esattamente cio che su `MySQL` aveva tenuto in piedi per mesi undici funzioni
+/// mai utilizzabili.
+///
+/// # Cosa attraversa
+///
+/// Un batch solo con tre valori WKB di tipo diverso, scritto dal path pubblico
+/// con `geometry_types = mixed` nel contratto, e riletto chiedendo al server
+/// `STGeometryType()` di ogni riga. Il conteggio direbbe che le righe sono
+/// arrivate; e il tipo di ciascuna a dire che sono arrivate **diverse**, che e
+/// l'unica cosa che la capability promette.
+///
+/// Le due semantiche hanno coordinate proprie: per `geography` il poligono deve
+/// avere l'anello in senso antiorario, o SQL Server lo legge come il
+/// complemento sulla sfera e rifiuta cio che e piu grande di un emisfero.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+#[allow(clippy::too_many_lines)]
+async fn live_mixed_geometry_types_share_one_column_on_both_semantics() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let pool = SqlServerPool::new(config.clone(), 1).expect("pool dei tipi misti");
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin dei tipi misti");
+
+    for (semantics, point, line, ring) in [
+        (
+            "geometry",
+            [1.0_f64, 1.0],
+            [[0.0_f64, 0.0], [4.0, 4.0]],
+            [
+                [0.0_f64, 0.0],
+                [4.0, 0.0],
+                [4.0, 4.0],
+                [0.0, 4.0],
+                [0.0, 0.0],
+            ],
+        ),
+        (
+            "geography",
+            [-122.35_f64, 47.65],
+            [[-122.36_f64, 47.65], [-122.34, 47.66]],
+            [
+                [-122.36_f64, 47.65],
+                [-122.35, 47.65],
+                [-122.35, 47.66],
+                [-122.36, 47.66],
+                [-122.36, 47.65],
+            ],
+        ),
+    ] {
+        admin
+            .execute_query(
+                Query::new(format!(
+                    "DROP TABLE IF EXISTS [plenora_test].[mixed_types_probe]; \
+                     CREATE TABLE [plenora_test].[mixed_types_probe] \
+                     ([shape] {semantics} NULL);"
+                )),
+                ErrorPhase::Write,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("fixture {semantics} dei tipi misti: {error}"));
+
+        let schema = spatial_write_schema(semantics, "xy");
+        let values = [
+            ewkb_point(1, &point),
+            wkb_line_string_xy(&line),
+            wkb_polygon_xy(&ring),
+        ];
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(BinaryArray::from(
+                values.iter().map(|value| Some(value.as_slice())).collect::<Vec<_>>(),
+            ))],
+        )
+        .expect("batch dei tipi misti");
+
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget dei tipi misti");
+        let prepared = prepare_write(
+            &pool,
+            &write_operation("mixed_types_probe", WriteMode::Append),
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("prepare {semantics} dei tipi misti: {error}"));
+        let outcome = write_prepared(
+            prepared,
+            Box::new(VecBatchStream {
+                schema: Arc::clone(&schema),
+                batches: VecDeque::from([batch]),
+            }),
+            &cancellation,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("scrittura {semantics} dei tipi misti: {error}"));
+        assert_eq!(outcome.status, WriteStatus::Committed);
+        assert_eq!(outcome.rows.inserted, Some(3));
+
+        // Il tipo lo dice il **server**, non il byte che gli abbiamo dato: una
+        // colonna che normalizzasse tutto a `Point` renderebbe il conteggio
+        // giusto e questo confronto no.
+        let rows = admin
+            .execute_query(
+                Query::new(
+                    "SELECT [shape].STGeometryType() \
+                     FROM [plenora_test].[mixed_types_probe] \
+                     ORDER BY [shape].STGeometryType();",
+                ),
+                ErrorPhase::Read,
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("rilettura {semantics} dei tipi misti: {error}"));
+        let observed = rows[0]
+            .iter()
+            .map(|row| {
+                row.try_get::<&str, _>(0)
+                    .expect("tipo geometrico")
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                "LineString".to_owned(),
+                "Point".to_owned(),
+                "Polygon".to_owned()
+            ],
+            "{semantics}: una colonna sola deve rendere i tre tipi che ha ricevuto"
+        );
+    }
+
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[mixed_types_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia della fixture dei tipi misti");
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture write"]
 #[allow(clippy::too_many_lines)]
@@ -6299,6 +6456,22 @@ fn wkb_circular_string_xy(points: &[(f64, f64)]) -> Vec<u8> {
             .to_le_bytes(),
     );
     for (x, y) in points {
+        value.extend_from_slice(&x.to_le_bytes());
+        value.extend_from_slice(&y.to_le_bytes());
+    }
+    value
+}
+
+fn wkb_line_string_xy(points: &[[f64; 2]]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(9 + points.len() * 16);
+    value.push(1);
+    value.extend_from_slice(&2_u32.to_le_bytes());
+    value.extend_from_slice(
+        &u32::try_from(points.len())
+            .expect("numero punti WKB rappresentabile")
+            .to_le_bytes(),
+    );
+    for [x, y] in points {
         value.extend_from_slice(&x.to_le_bytes());
         value.extend_from_slice(&y.to_le_bytes());
     }

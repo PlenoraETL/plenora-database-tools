@@ -7140,11 +7140,12 @@ async fn stream_row_count(table: &str, value: i64) -> i64 {
 
 /// Dodici lettori sullo stesso pool, e le righe tornano tutte.
 ///
-/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress` da tempo; qui non
-/// c'era niente di equivalente, e la lacuna non era spatial ne di contratto:
-/// era che nessuno aveva mai chiesto a questo provider di servire piu lettori
-/// insieme. Un pool che sotto contesa mescolasse le righe, o ne perdesse, non
-/// avrebbe fatto fallire nessuna prova di questo repository.
+/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress_when_dsn_is_available`
+/// da tempo; qui non c'era niente di equivalente, e la lacuna non era spatial
+/// ne di contratto: era che nessuno aveva mai chiesto a questo provider di
+/// servire piu lettori insieme. Un pool che sotto contesa mescolasse le righe,
+/// o ne perdesse, non avrebbe fatto fallire nessuna prova di questo
+/// repository.
 ///
 /// # Cosa verifica, e perche il conteggio non basta
 ///

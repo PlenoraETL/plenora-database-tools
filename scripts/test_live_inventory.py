@@ -11,6 +11,7 @@ ragione per cui queste forme sintattiche stanno scritte qui una per una.
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -423,6 +424,104 @@ class RealSources(unittest.TestCase):
             "live_provider_row_diagnostics_matches_confirmed_rollback_oracle", names
         )
         self.assertGreater(len(names), 40)
+
+
+class CitedTests(unittest.TestCase):
+    """Una prova nominata in un commento deve esistere.
+
+    Le capability di questo repository non si spiegano da sole: accanto a
+    `mixed_geometry_types: ...` c'e un commento che dice **quale** prova live
+    la attraversa, ed e cosi che un lettore distingue una misura da una
+    deduzione. Il commento e percio parte del contratto, e come il contratto
+    puo mentire.
+
+    Ha mentito due volte, in modi diversi.
+
+    La prima: su SQL Server il commento accanto a `mixed_geometry_types`
+    dichiarava che «il roundtrip mixed Point+Polygon e qualificato dal gate
+    live per entrambe le semantiche». Non lo era. Nessuno aveva mai scritto un
+    Point e un Polygon nella stessa colonna, e l'unica prova che sfiorava il
+    flag lo rileggeva da `probe_capabilities` per asserire che fosse vero — la
+    deduzione confrontata con se stessa.
+
+    La seconda, mezz'ora dopo, scrivendo la misura che mancava: il commento
+    nuovo nominava `live_additive_schema_evolution_is_opt_in_atomic_and_reported`
+    per l'indice spaziale, e le asserzioni sull'indice stanno invece in
+    `live_create_and_replace_round_trip_all_reference_types`. Un nome plausibile
+    e sbagliato e peggio di nessun nome: chi lo legge crede di poter andare a
+    controllare.
+
+    Questa guardia coglie soltanto la seconda forma — il nome che non esiste —
+    e non la prima, perche nessuno statico puo sapere se una prova che esiste
+    verifica davvero cio che il commento le attribuisce. Ma la seconda e quella
+    che si commette per distrazione, ed e l'unica delle due che si puo chiudere
+    a costo zero.
+
+    # Perche i nomi si raccolgono da tutto il repository
+
+    Le prove live non stanno in un solo posto: `live_tests.rs` per MySQL e SQL
+    Server, `transaction/tests.rs` e `test_suite.rs` per PostgreSQL. Un primo
+    tentativo di questa scansione guardava solo `live_tests.rs` e dichiarava
+    rotta una citazione di PostgreSQL che era perfettamente valida.
+    """
+
+    #: Quello che sembra un nome e non lo e. `live_tests` e un modulo; una
+    #: citazione con `*` e una famiglia di prove, e verificarla vorrebbe un
+    #: glob — che si puo fare, ma che qui direbbe meno di quanto costa.
+    NOT_A_NAME = frozenset({"live_tests"})
+
+    def test_every_live_test_named_in_a_comment_exists(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        sources = sorted((root / "crates").rglob("*.rs"))
+        self.assertGreater(len(sources), 50, "sorgenti Rust non trovate")
+
+        # `source_inventory` rifiuta due prove con lo stesso nome in moduli
+        # diversi, ed e giusto che lo faccia: confronta un inventario con
+        # un'esecuzione, e un nome per due test renderebbe il confronto
+        # ambiguo. Qui la domanda e piu piccola — «questo nome esiste?» — e i
+        # crate MySQL e MariaDB hanno legittimamente prove omonime.
+        known = {
+            inventory.leaf(name)
+            for source in sources
+            for name in inventory.annotated_tests(
+                source.read_text(encoding="utf-8")
+            )
+        }
+        self.assertGreater(len(known), 100, "inventario delle prove live vuoto")
+
+        cited: dict[str, list[str]] = {}
+        for source in sources:
+            for number, line in enumerate(
+                source.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                _, marker, comment = line.partition("//")
+                if not marker:
+                    continue
+                for name in re.findall(r"\b(live_\w+)", comment):
+                    # Il glob si riconosce dal carattere che **segue** il nome,
+                    # non dal nome: `live_query_stream_*_is_reusable` arriva qui
+                    # troncato a `live_query_stream_`.
+                    tail = comment.split(name, 1)[1][:1]
+                    # Un file che nomina **se stesso** non sta citando una
+                    # prova: `tests/live_f4.rs` parla di `live_f4` in testa,
+                    # ed e il proprio nome, non un identificatore.
+                    if (
+                        tail == "*"
+                        or name == source.stem
+                        or name in self.NOT_A_NAME
+                        or name in known
+                    ):
+                        continue
+                    cited.setdefault(name, []).append(
+                        f"{source.relative_to(root)}:{number}"
+                    )
+
+        self.assertEqual(
+            cited,
+            {},
+            "commenti che nominano prove live inesistenti: "
+            + "; ".join(f"{name} ({', '.join(where)})" for name, where in cited.items()),
+        )
 
 
 if __name__ == "__main__":

@@ -309,13 +309,37 @@ impl Provider for SqlServerProvider {
                     write_wkb: true,
                     geometry: probe.geometry_type_id.is_some(),
                     geography: probe.geography_type_id.is_some(),
+                    // La presenza dei due UDT e la condizione, non la prova. Il
+                    // DDL vero — `GEOMETRY_AUTO_GRID` con bounding box calcolato
+                    // sui dati, `GEOGRAPHY_AUTO_GRID` senza — lo attraversa
+                    // `live_create_and_replace_round_trip_all_reference_types`,
+                    // che dopo il create **e** dopo il replace staged rilegge il
+                    // catalogo e pretende i due indici con il loro schema di
+                    // tessellazione: un percorso che smettesse di emettere la
+                    // DDL non renderebbe questo flag falso, ma farebbe cadere
+                    // quella prova.
                     spatial_index: probe.geometry_type_id.is_some()
                         && probe.geography_type_id.is_some(),
-                    // geometry/geography sono UDT non vincolati a un singolo
-                    // tipo geometrico; il roundtrip mixed Point+Polygon è
-                    // qualificato dal gate live per entrambe le semantiche.
+                    // Stessa forma, e per un po' e stata una deduzione soltanto:
+                    // `geometry` e `geography` sono UDT non vincolati a un
+                    // singolo tipo geometrico — a differenza di una colonna
+                    // `POINT` di MySQL — e da li si concludeva che i tipi misti
+                    // reggessero. Il ragionamento e solido, ed e esattamente cio
+                    // che su MySQL aveva tenuto in piedi per mesi undici
+                    // funzioni mai utilizzabili.
+                    //
+                    // Ora c'e la misura:
+                    // `live_mixed_geometry_types_share_one_column_on_both_semantics`
+                    // scrive `Point`, `LineString` e `Polygon` nella stessa
+                    // colonna, in un batch solo, e si fa dire dal server il tipo
+                    // di ogni riga riletta.
                     mixed_geometry_types: probe.geometry_type_id.is_some()
                         || probe.geography_type_id.is_some(),
+                    // Le quattro dimensioni non sono un elenco di comodo:
+                    // `live_spatial_write_round_trips_z_m_and_zm_losslessly`
+                    // scrive `xyz`, `xym` e `xyzm` su entrambe le semantiche e
+                    // pretende il ritorno **byte per byte**, e `Xy` la
+                    // attraversa mezzo repository.
                     dimensions: vec![
                         Dimensions::Xy,
                         Dimensions::Xyz,
