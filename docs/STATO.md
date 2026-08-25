@@ -69,7 +69,7 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `upsert` | `true` | `true` | `true` | `true` |
 | `replace` | `true` | `true` | `true` | `true` |
 | `delete_by_keys` | `true` | `true` | `true` | `true` |
-| `bulk` | `true` | `true` | `false` | `true` |
+| `bulk` | `true` | `true` | `true` | `true` |
 | `array_binding` | `false` | `false` | `false` | `false` |
 | `returning` | `false` | `false` | `false` | `false` |
 | `rollback_on_failure` | `true` | `true` | `true` | `true` |

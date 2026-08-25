@@ -946,14 +946,19 @@ impl ProductProfile for MariadbProfile {
                 upsert: true,
                 replace: true,
                 delete_by_keys: true,
-                // `bulk` resta chiusa, e non per assenza di misura: nessun
-                // codice la consulta. `validate_write_capability` mappa sette
-                // mode su sette bandiere e `bulk` non e fra quelle, e nessun
-                // altro punto del workspace la legge. Aprirla pubblicherebbe
-                // una promessa che nessun controllo fa rispettare, che e
-                // l'opposto della regola 1 — e la stessa condizione di
-                // `array_binding` e `returning` qui sotto.
-                bulk: false,
+                // `bulk` dice che le righe raggiungono il server a blocchi,
+                // e su questo profilo e la stessa cosa che dice `MySQL`:
+                // l'implementazione e condivisa, e le dodici sonde della nona
+                // tranche l'hanno attraversata con due batch ciascuna.
+                //
+                // La prima stesura la lasciava chiusa con l'argomento che
+                // nessun codice la consulta. L'argomento e vero — e il campo e
+                // ora dichiarato descrittivo, con la sua guardia — ma non
+                // riguarda questo profilo: da «nessuno la fa rispettare» non
+                // segue «questo prodotto fa una cosa diversa dal gemello con
+                // cui condivide il codice». Sarebbe stata una divergenza
+                // inventata.
+                bulk: true,
                 array_binding: false,
                 returning: false,
                 rollback_on_failure: true,
@@ -3308,11 +3313,15 @@ mod tests {
                 .writes
                 .truncate_insert
         );
-        // `bulk`, `array_binding` e `returning` restano chiuse perche nessun
-        // codice le consulta: aprirle sarebbe una promessa senza guardia. La
-        // riga sta qui e non solo accanto alla dichiarazione perche il test
-        // e il posto in cui una bandiera aperta per distrazione diventa rossa.
-        assert!(!writes.bulk && !writes.array_binding && !writes.returning);
+        // `bulk` coincide con quella di `MySQL` perche l'implementazione e la
+        // stessa: dichiararla diversa sarebbe una divergenza inventata.
+        // `array_binding` e `returning` restano chiuse su entrambi, e la
+        // seconda per una ragione che sta a monte dei provider — `WriteOutcome`
+        // conta righe e non le trasporta.
+        let mysql_writes = &MYSQL_PROFILE.capabilities("9.7.2".to_owned()).writes;
+        assert_eq!(writes.bulk, mysql_writes.bulk);
+        assert!(writes.bulk);
+        assert!(!writes.array_binding && !writes.returning);
         // `rollback_on_failure` e aperta: parla delle **righe** di ogni
         // scrittura che il profilo ammette, e le righe tornano indietro in
         // entrambe le mode aperte — le sonde girano con `allow_partial:

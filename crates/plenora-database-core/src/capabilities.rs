@@ -37,14 +37,61 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadCapabilities {
+    /// La lettura consegna batch invece di materializzare il result set.
+    ///
+    /// La consulta l'engine prima di accettare una `database.read`.
     pub streaming: bool,
+    /// Esiste un **cursore server nominato**, che il consumatore puo
+    /// indirizzare e riaprire.
+    ///
+    /// Non e lo streaming: `streaming = true` dice che i batch arrivano a
+    /// pezzi, questo direbbe che quei pezzi hanno un nome sul server e che
+    /// una seconda sessione puo riprenderli. Nessun provider lo offre — il
+    /// data path `PostgreSQL` usa `RowStream` con backpressure, che e la
+    /// prima cosa e non la seconda — e nessun piano lo chiede, quindi
+    /// l'engine non lo consulta.
+    ///
+    /// **Descrittivo.** Sta nel documento capability perche un consumatore
+    /// che pianifica una lettura lunga vuole sapere se puo riprenderla, e la
+    /// risposta e no. Il giorno che un provider lo offrisse, servirebbe prima
+    /// un'operazione nel contratto che lo chieda: aprirlo senza sarebbe una
+    /// promessa senza superficie.
     #[serde(default)]
     pub server_cursor: bool,
+    /// La lettura sa saltare le prime `row_offset` righe.
+    ///
+    /// E' cio che il renderer emette come `OFFSET`, e non ha niente a che
+    /// vedere con `row_limit`: quello e un tetto, questo e una finestra, e
+    /// una finestra senza `order_by` non e riproducibile — il contratto
+    /// infatti rifiuta `row_offset` senza ordinamento.
+    ///
+    /// La definizione e arrivata tardi, e la sua assenza aveva gia prodotto
+    /// due letture diverse dello stesso campo: `PostgreSQL` e SQL Server lo
+    /// pubblicavano `true` rendendo `OFFSET`, `MySQL` e `MariaDB` lo
+    /// pubblicavano `false` rendendo **lo stesso** `OFFSET` con lo stesso
+    /// renderer. Un campo senza definizione non e ambiguo per meta: lo e per
+    /// chiunque lo legga.
     #[serde(default)]
     pub pagination: bool,
+    /// La lettura sa restituire un sottoinsieme delle colonne.
     pub projection: bool,
+    /// La lettura sa filtrare, nelle forme che il renderer qualifica.
+    ///
+    /// `true` non significa «qualunque filtro»: significa le forme che il
+    /// provider rende, e quelle che non rende restano rifiutate. Per `MySQL`
+    /// e `MariaDB` sono tredici, e ciascuna ha la propria sonda.
     pub filter: bool,
+    /// La lettura sa ordinare.
     pub ordering: bool,
+    /// Una lettura interrotta puo riprendere da dove era arrivata.
+    ///
+    /// Richiede un punto di ripresa che sopravviva alla sessione — un
+    /// cursore nominato, o una chiave di continuazione nel contratto — e non
+    /// esiste ne l'uno ne l'altra. Falso ovunque.
+    ///
+    /// **Descrittivo**, come [`Self::server_cursor`], e per la stessa
+    /// ragione: chi pianifica una lettura lunga deve saperlo prima di
+    /// cominciarla.
     #[serde(default)]
     pub resumable: bool,
 }
@@ -79,10 +126,45 @@ pub struct WriteCapabilities {
     pub replace: bool,
     #[serde(default)]
     pub delete_by_keys: bool,
+    /// Le righe raggiungono il server **a blocchi**, non una per volta.
+    ///
+    /// E' cio che decide l'ordine di grandezza di una scrittura: un `INSERT`
+    /// per riga e un `INSERT` per batch differiscono di un round-trip per
+    /// riga. Tutti i provider di questo repository scrivono a blocchi, e
+    /// nessuno espone la variante per riga.
+    ///
+    /// **Descrittivo.** L'engine non lo consulta perche non c'e un piano che
+    /// chieda l'una o l'altra forma: la scelta e del provider, non del
+    /// chiamante. Sta nel documento perche chi dimensiona un carico ha
+    /// bisogno di saperlo prima di misurarlo.
     #[serde(default)]
     pub bulk: bool,
+    /// Un parametro puo trasportare un **array**, legato una volta sola.
+    ///
+    /// Non e il batching di [`Self::bulk`]: quello manda piu righe in uno
+    /// statement, questo manderebbe piu valori in un parametro — `WHERE id =
+    /// ANY($1)` invece di `n` segnaposto. Cambia il numero di parametri
+    /// legati, non il numero di round-trip, e conta dove il tetto e sui
+    /// parametri: SQL Server ne ammette 2100.
+    ///
+    /// Nessun provider lo offre, e il contratto non ha una forma di piano che
+    /// lo chieda. **Descrittivo**, e falso ovunque.
     #[serde(default)]
     pub array_binding: bool,
+    /// L'esito di una scrittura trasporta le **righe restituite** dal server.
+    ///
+    /// `RETURNING` su `PostgreSQL`, `OUTPUT` su SQL Server: la scrittura
+    /// rende cio che ha scritto — chiavi generate, valori di default,
+    /// timestamp calcolati — senza una seconda interrogazione.
+    ///
+    /// Falso ovunque, e per una ragione che sta a monte dei provider:
+    /// [`crate::outcome::WriteOutcome`] conta righe e non le trasporta. Il
+    /// giorno che le trasportasse sarebbe una major del contratto, non
+    /// l'apertura di una bandiera.
+    ///
+    /// **Descrittivo** finche quel giorno non arriva. Da non confondere con
+    /// il `returning` degli statement portable, che e un'altra superficie e
+    /// vive nel piano.
     #[serde(default)]
     pub returning: bool,
     /// Un fallimento prima del commit annulla **le righe** scritte
@@ -126,14 +208,41 @@ pub enum TransactionScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionCapabilities {
+    /// L'operazione intera sta in una transazione sola.
+    ///
+    /// La consulta l'engine quando il piano dichiara il profilo omonimo.
     #[serde(default)]
     pub single_transaction: bool,
+    /// Il provider espone `SAVEPOINT` e `ROLLBACK TO` al chiamante.
+    ///
+    /// Non «il motore li supporta» — li supportano tutti — ma «il provider li
+    /// mette a disposizione»: `MySQL` si, attraverso lo scope transazionale
+    /// che il CLI esercita; `PostgreSQL` no, perche il suo scope esegue una
+    /// transazione atomica e non offre i due comandi.
+    ///
+    /// **Descrittivo.** L'engine non lo consulta perche un savepoint non si
+    /// chiede in un piano: lo usa chi tiene lo scope in mano, e lo scopre dal
+    /// tipo. Sta nel documento perche e una differenza reale fra due provider
+    /// entrambi qualificati.
     #[serde(default)]
     pub savepoints: bool,
+    /// Il DDL di preparazione appartiene alla transazione.
+    ///
+    /// `false` significa che il motore lo esegue con commit implicito, quindi
+    /// una tabella creata da `Create` sopravvive al rollback delle righe. La
+    /// tabella in [`WriteCapabilities::rollback_on_failure`] mostra le quattro
+    /// combinazioni; qui basta dire che i due flag parlano di due oggetti
+    /// diversi — le righe e lo schema.
+    ///
+    /// **Descrittivo**, ma con una conseguenza che il chiamante riceve
+    /// comunque: sui provider dove e `false`, un `Create` fallito dichiara
+    /// `Partial` e `RequiresRecovery` invece di `RolledBack`.
     #[serde(default)]
     pub transactional_ddl: bool,
+    /// La sostituzione passa da un oggetto di staging scambiato alla fine.
     #[serde(default)]
     pub staged_swap: bool,
+    /// L'ampiezza della garanzia transazionale.
     #[serde(default)]
     pub scope: TransactionScope,
 }
