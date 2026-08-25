@@ -293,6 +293,36 @@ def main() -> int:
         # non entravano nella corsa, e il report li dichiarava lo stesso. Un
         # test che non gira non prova niente, e dichiararlo eseguito e peggio
         # che non averlo.
+        #
+        # Niente `--nocapture`, ed e il punto di questa invocazione.
+        #
+        # Di questa corsa si legge **solo** l'elenco delle righe
+        # `test <nome> ... ok`: le usano `validate_live_row_diagnostics` e
+        # `validate_live_inventory`, e nessuna delle due guarda cio che i test
+        # stampano. Con `--nocapture` quelle stampe finivano sullo stesso
+        # flusso delle righe di esito mentre i test giravano, e in parallelo le
+        # due cose si intrecciavano: una riga `test <nome> ... ok` che si
+        # ritrova dentro la stampa di un altro test smette di essere
+        # riconoscibile.
+        #
+        # Il gate e diventato rosso cosi, una corsa su due, su
+        # `live_postgres_concurrent_cancellation_recovers_pool`: dichiarato
+        # «nella suite ma non eseguito» mentre era stato eseguito e passato.
+        # Quel test non ha `#[ignore]` e non puo essere saltato — se il DSN
+        # manca ritorna subito, ma la riga di esito la stampa lo stesso — il
+        # che rendeva l'accusa impossibile e il verdetto una moneta.
+        #
+        # `--test-threads=1` sembrava la risposta e non lo era: serializzare
+        # rende la rottura **deterministica** invece di toglierla, perche
+        # l'harness stampa `test <nome> ... `, lascia scrivere il test, e solo
+        # dopo aggiunge `ok`. Con la serializzazione i due benchmark, che
+        # stampano, sparivano dall'inventario a ogni corsa. Meglio di un flake,
+        # ma sempre sbagliato.
+        #
+        # Con la cattura attiva l'harness bufferizza per test ed emette righe
+        # intere, anche in parallelo — e l'output di un test che fallisce lo
+        # stampa lo stesso, che era l'unica ragione per cui `--nocapture`
+        # poteva sembrare utile qui.
         provider_output = run(
             cargo(
                 [
@@ -301,7 +331,6 @@ def main() -> int:
                     "plenora-db-postgres",
                     "--",
                     "--include-ignored",
-                    "--nocapture",
                 ],
                 dsn,
             ),

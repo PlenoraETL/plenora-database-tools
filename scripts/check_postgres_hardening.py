@@ -271,6 +271,12 @@ def main() -> int:
                 ]
             ),
         )
+        # Niente `--nocapture`, per la stessa ragione del gate di riferimento:
+        # di questa corsa si legge solo l'elenco delle righe
+        # `test <nome> ... ok`, e con le stampe dei test sullo stesso flusso
+        # quelle righe si spezzano. La cattura bufferizza per test ed emette
+        # righe intere anche in parallelo, e l'output di un test che fallisce
+        # lo stampa lo stesso.
         provider_output = step(
             "provider_suite_against_plaintext_and_tls",
             cargo(
@@ -279,8 +285,6 @@ def main() -> int:
                     "-p",
                     "plenora-db-postgres",
                     "--lib",
-                    "--",
-                    "--nocapture",
                 ],
                 dsn,
                 tls_dsn,
