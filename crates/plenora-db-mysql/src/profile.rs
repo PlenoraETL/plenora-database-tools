@@ -1294,12 +1294,28 @@ pub(crate) const MARIADB_STATEMENT_TIMEOUT: u16 = 1_969;
 /// I codici osservati su **entrambi** i riferimenti `MariaDB`, con lo stesso
 /// significato che hanno su `MySQL`.
 ///
-/// L'elenco e corto apposta. Ogni voce viene da un tentativo registrato nella
-/// quarta tranche di `docs/mariadb/EVIDENCE.md`: una password sbagliata, una
-/// colonna che non esiste, una chiave duplicata, una tabella assente,
-/// un'attesa di lock scaduta, un deadlock con la vittima annullata. Cio che
-/// non c'e non e negato: e non misurato, e finisce nel verdetto generico.
-pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[1_045, 1_054, 1_062, 1_142, 1_146, 1_205, 1_213];
+/// L'elenco e corto apposta. Ogni voce viene da un tentativo registrato in
+/// `docs/mariadb/EVIDENCE.md`, e cio che non c'e non e negato: e non misurato,
+/// e finisce nel verdetto generico.
+///
+/// Dalla **quarta** tranche: una password sbagliata, una colonna che non
+/// esiste, una chiave duplicata, una tabella assente, un'attesa di lock
+/// scaduta, un deadlock con la vittima annullata, un permesso mancante, una
+/// colonna non nullable senza valore, un vincolo referenziale violato in
+/// inserimento.
+///
+/// Dalla **nona**: un valore piu lungo della colonna, e una cancellazione
+/// trattenuta da una figlia.
+///
+/// Quattro di questi — 1048, 1406, 1451, 1452 — sono entrati qui insieme alla
+/// classificazione condivisa che li riguarda, e la campagna ha mostrato perche
+/// serve entrambe le cose: aggiungerli **solo** alla tabella li lasciava
+/// generici su `MariaDB`, dove passano da questo filtro. Due dei quattro erano
+/// misurati da mesi e non erano in elenco, perche fino ad allora non c'era
+/// niente da ereditare.
+pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[
+    1_045, 1_048, 1_054, 1_062, 1_142, 1_146, 1_205, 1_213, 1_406, 1_451, 1_452,
+];
 
 /// Il mapper dei metadata wire, condiviso fra i prodotti che parlano il
 /// protocollo `MySQL`.

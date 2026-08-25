@@ -1092,6 +1092,16 @@ tocca anche il provider MySQL qualificato, ed e in un commit suo — le sonde di
 rollback di questa tranche verificano ora le due quaterne al posto di quella
 generica.
 
+E la campagna ha aggiunto la seconda meta della correzione, che la sola
+tabella non conteneva. Su `MariaDB` un codice eredita la classificazione
+condivisa **solo** se e in `MEASURED_SERVER_CODES`, cioe se e stato osservato
+su quel motore: la prima stesura aggiungeva i quattro codici alla tabella e non
+all'inventario, quindi MySQL cambiava e MariaDB restava generica. La guardia ha
+fatto esattamente cio per cui esiste — non ereditare una promessa a nome di un
+motore che nessuno ha interrogato — e la misura c'era: 1048 e 1452 dalla quarta
+tranche, 1406 e 1451 da questa. Due dei quattro erano misurati da mesi senza
+essere in elenco, perche fino ad allora non c'era niente da ereditare.
+
 **Nessuna delle dodici distingue i tre server.** Le uniche differenze sono i
 nomi dei prodotti nei messaggi.
 
