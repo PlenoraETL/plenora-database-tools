@@ -2769,6 +2769,274 @@ fn locking_spatial_operation() -> QueryOperation {
     }
 }
 
+/// La tabella su cui i lettori concorrenti si contendono il pool.
+const CONCURRENCY_PROBE: &str = "[plenora_test].[concurrency_probe]";
+
+/// Dodici lettori sullo stesso pool, e ciascuno vede la propria fetta.
+///
+/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress_when_dsn_is_available`
+/// da tempo, `MySQL` e `MariaDB` l'hanno avuta di recente, e qui non c'era
+/// niente di equivalente. La lacuna non era spatial ne di contratto: era che
+/// nessuno aveva mai chiesto a questo provider di servire piu lettori insieme,
+/// e un pool che sotto contesa mescolasse le righe non avrebbe fatto fallire
+/// nessuna prova di questo repository.
+///
+/// # Perche il conteggio totale non basta
+///
+/// Un pool che consegnasse a due lettori la **stessa** connessione a meta
+/// stream renderebbe comunque il totale giusto, con le righe mescolate fra i
+/// due. Ogni worker chiede percio una fetta di chiavi **disgiunta** dalle
+/// altre e verifica di aver visto esattamente la propria: il totale coglie una
+/// perdita, la fetta coglie uno scambio.
+///
+/// Il pool e volutamente piu piccolo del numero di lettori — quattro
+/// connessioni per dodici worker — e il batch piu piccolo della fetta, due
+/// righe su cinque, perche lo stream resti aperto per piu giri. E' li che una
+/// connessione condivisa per sbaglio si farebbe sentire; con un pool abbondante
+/// e un batch che esaurisce al primo colpo non ci sarebbe contesa da misurare.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+async fn live_concurrent_readers_share_the_pool_without_mixing_rows() {
+    use std::sync::Arc;
+
+    const WORKERS: i32 = 12;
+    const ROWS_PER_WORKER: i32 = 5;
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    seed_concurrency_probe(&config, WORKERS * ROWS_PER_WORKER, &cancellation).await;
+
+    let provider =
+        Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider della contesa"));
+    let mut tasks = Vec::new();
+    for worker in 0..WORKERS {
+        let provider = Arc::clone(&provider);
+        tasks.push(tokio::spawn(async move {
+            let cancellation = CancellationToken::new();
+            let budget = ResourceBudget::new(ResourceLimits::default())
+                .expect("budget della contesa");
+            let first = worker * ROWS_PER_WORKER + 1;
+            let parameters = ParameterBag::new(BTreeMap::from([(
+                "first".to_owned(),
+                ParameterValue::I32(first),
+            )]));
+            let mut stream = provider
+                .query(
+                    &live_secret(),
+                    &concurrency_slice(ROWS_PER_WORKER),
+                    &parameters,
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .expect("stream della contesa");
+            let mut seen = Vec::new();
+            while let Some(batch) = stream
+                .next_batch(&cancellation)
+                .await
+                .expect("batch della contesa")
+            {
+                let column = batch
+                    .column_by_name("n")
+                    .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+                    .expect("colonna della contesa");
+                seen.extend_from_slice(column.values());
+            }
+            let expected = (first..first + ROWS_PER_WORKER).collect::<Vec<_>>();
+            assert_eq!(
+                seen, expected,
+                "il worker {worker} ha visto righe che non ha chiesto"
+            );
+            seen.len()
+        }));
+    }
+
+    let mut total = 0_usize;
+    for task in tasks {
+        total += task.await.expect("worker della contesa");
+    }
+    assert_eq!(
+        total,
+        usize::try_from(WORKERS * ROWS_PER_WORKER).expect("righe attese"),
+        "le fette dei dodici lettori devono ricomporre la tabella"
+    );
+}
+
+/// Sei lettori che interrompono a meta non affamano gli altri sei.
+///
+/// La gemella della precedente, e su questo prodotto chiede una cosa che sugli
+/// altri due non si poneva. `SQL Server` non rimette in circolo una
+/// connessione il cui stream e stato abbandonato: la mette in **quarantena**,
+/// perche il TDS lascerebbe pacchetti in coda che il lettore successivo
+/// troverebbe come propri — e' cio che
+/// `live_drop_of_partial_stream_quarantines_connection` misura su una
+/// connessione sola.
+///
+/// La domanda che nessuno aveva fatto e cosa succede a quella politica sotto
+/// contesa. Sei worker su dodici abbandonano lo stream a meta, con un pool di
+/// quattro: se ogni abbandono togliesse una connessione senza rimpiazzarla, i
+/// sei che leggono fino in fondo resterebbero senza. Un pool che si svuota non
+/// perde righe e non le mescola — si **ferma**, ed e un modo di rompersi che
+/// nessuna delle due prove precedenti potrebbe cogliere.
+///
+/// Chi legge fino in fondo deve vedere la propria fetta intera, non un
+/// prefisso; chi interrompe deve aver visto qualcosa prima di smettere,
+/// altrimenti la prova passerebbe anche se il provider non avesse consegnato
+/// niente a nessuno.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+async fn live_concurrent_abandonment_does_not_starve_the_pool() {
+    use std::sync::Arc;
+
+    const WORKERS: i32 = 12;
+    const ROWS_PER_WORKER: i32 = 6;
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    seed_concurrency_probe(&config, WORKERS * ROWS_PER_WORKER, &cancellation).await;
+
+    let provider =
+        Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider dell'abbandono"));
+    let mut tasks = Vec::new();
+    for worker in 0..WORKERS {
+        let provider = Arc::clone(&provider);
+        let abandons = worker % 2 == 0;
+        tasks.push(tokio::spawn(async move {
+            let cancellation = CancellationToken::new();
+            let budget = ResourceBudget::new(ResourceLimits::default())
+                .expect("budget dell'abbandono");
+            let first = worker * ROWS_PER_WORKER + 1;
+            let parameters = ParameterBag::new(BTreeMap::from([(
+                "first".to_owned(),
+                ParameterValue::I32(first),
+            )]));
+            let mut stream = provider
+                .query(
+                    &live_secret(),
+                    &concurrency_slice(ROWS_PER_WORKER),
+                    &parameters,
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .expect("stream dell'abbandono");
+            let mut seen = Vec::new();
+            while let Some(batch) = stream
+                .next_batch(&cancellation)
+                .await
+                .expect("batch dell'abbandono")
+            {
+                let column = batch
+                    .column_by_name("n")
+                    .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+                    .expect("colonna dell'abbandono");
+                seen.extend_from_slice(column.values());
+                if abandons {
+                    // Lo stream se ne va con il worker: e' esattamente il caso
+                    // che manda la connessione in quarantena.
+                    break;
+                }
+            }
+            drop(stream);
+            (abandons, seen, first)
+        }));
+    }
+
+    for task in tasks {
+        let (abandons, seen, first) = task.await.expect("worker dell'abbandono");
+        if abandons {
+            assert!(
+                !seen.is_empty(),
+                "un lettore che abbandona non ha visto nulla prima di smettere"
+            );
+        } else {
+            assert_eq!(
+                seen,
+                (first..first + ROWS_PER_WORKER).collect::<Vec<_>>(),
+                "un lettore ha perso righe mentre un altro abbandonava"
+            );
+        }
+    }
+}
+
+/// La fetta di un worker: da `first` in avanti, ordinata, lunga quanto basta.
+///
+/// Il taglio superiore lo fa `row_limit` invece di un secondo confronto: una
+/// fetta che tornasse piu lunga direbbe che il limite non e arrivato al
+/// server, e una piu corta che le righe si sono perse — due difetti diversi,
+/// entrambi visibili nello stesso confronto.
+fn concurrency_slice(rows: i32) -> QueryOperation {
+    let column = QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("source".to_owned()),
+            field: "n".to_owned(),
+        },
+    };
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: "concurrency_probe".to_owned(),
+            },
+            alias: Some("source".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column.clone(),
+            alias: Some("n".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column.clone()),
+            operator: plenora_database_core::plan::ComparisonOperator::Gte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "first".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column,
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(u64::try_from(rows).expect("fetta rappresentabile")),
+        row_offset: None,
+        locking: None,
+    }
+}
+
+/// La tabella della contesa, ricostruita a ogni prova.
+async fn seed_concurrency_probe(
+    config: &SqlServerConfig,
+    rows: i32,
+    cancellation: &CancellationToken,
+) {
+    let mut admin = SqlServerSession::open(config, cancellation)
+        .await
+        .expect("sessione admin della contesa");
+    admin
+        .execute_query(
+            Query::new(format!(
+                "DROP TABLE IF EXISTS {CONCURRENCY_PROBE}; \
+                 CREATE TABLE {CONCURRENCY_PROBE} ([n] int NOT NULL PRIMARY KEY); \
+                 WITH numeri AS ( \
+                     SELECT 1 AS n UNION ALL \
+                     SELECT n + 1 FROM numeri WHERE n < {rows} \
+                 ) \
+                 INSERT INTO {CONCURRENCY_PROBE} ([n]) SELECT n FROM numeri;"
+            )),
+            ErrorPhase::Write,
+            cancellation,
+        )
+        .await
+        .expect("fixture della contesa");
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live e contesa deterministica di un row lock"]
 async fn live_sqlserver_lock_hints_are_nowait_and_spatial_safe() {
