@@ -865,8 +865,9 @@ impl ProductProfile for MariadbProfile {
         // Le bandiere si aprono una alla volta, ciascuna con la sua misura.
         // Ereditare la tabella di MySQL era il difetto originale che ADR 0010
         // e 0014 hanno nominato: dichiarava qualificate sei write mode e
-        // ventisei funzioni spatial su un prodotto su cui nessuno le aveva
-        // provate.
+        // l'intera lista spatial di `MySQL` su un prodotto su cui nessuno le
+        // aveva provate — e quella lista, misurata, era sbagliata pure su
+        // `MySQL`.
         //
         // La lettura e la prima ad aprirsi, ed e la quinta tranche a
         // sostenerla, con sonde che verificano un contratto invece di
@@ -1520,10 +1521,12 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         mixed_geometry_types: true,
         dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
         // Le funzioni spatial pubblicate sono quelle di
-        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` — ventisei, non venti — e
-        // cio che le qualifica non e il dialect condiviso ma la sonda live che
-        // le attraversa una per una. Il commento diceva il numero sbagliato e
-        // la ragione sbagliata: vedi la costante per entrambe.
+        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS`, e cio che le qualifica
+        // non e il dialect condiviso ma la sonda live che le attraversa una
+        // per una. Qui non c'e il numero: e cambiato due volte — venti,
+        // ventisei, quindici — e ogni volta questo commento era l'ultimo a
+        // saperlo. Il numero sta nella costante, che e anche l'unico posto
+        // dove qualcuno lo puo cambiare con una misura in mano.
         functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
     }
 }

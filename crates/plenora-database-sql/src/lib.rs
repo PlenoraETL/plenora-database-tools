@@ -1066,7 +1066,7 @@ impl Renderer {
             .collect::<Result<Vec<_>>>()?;
         Ok(format!(
             "{}({})",
-            spatial_name(function),
+            dialect_spatial_name(self.dialect, function),
             rendered.join(", ")
         ))
     }
@@ -1395,7 +1395,10 @@ impl Renderer {
         }
         let quoted = self.quote(field)?;
         if function.is_unary_predicate() {
-            return Ok(format!("{}({quoted})", spatial_name(function)));
+            return Ok(format!(
+                "{}({quoted})",
+                dialect_spatial_name(self.dialect, function)
+            ));
         }
         let geometry_name = geometry_parameter.ok_or_else(|| {
             DatabaseError::invalid_plan("predicato spatial senza parametro geometria")
@@ -1429,7 +1432,7 @@ impl Renderer {
                 "funzione spatial non valida come filtro",
             ));
         }
-        let name = spatial_name(function);
+        let name = dialect_spatial_name(self.dialect, function);
         Ok(format!("{name}({quoted}, {right})"))
     }
 
@@ -1628,6 +1631,45 @@ const fn spatial_geometry_argument(function: SpatialFunction, index: usize) -> b
     function.takes_geometry_at(index)
 }
 
+/// I nomi che `MySQL` scrive **diversamente** da `PostGIS`.
+///
+/// `spatial_name` non e la tabella dei nomi spatial: e la tabella dei nomi
+/// **`PostGIS`**, e un test di questo modulo la verifica riga per riga contro
+/// la colonna `postgres` del catalogo versionato. Ogni altro dialetto che la
+/// usasse cosi com'e starebbe deducendo il proprio vocabolario da quello di un
+/// altro prodotto — la deduzione per analogia che la regola 1 vieta.
+///
+/// Queste due righe non vengono dalla documentazione: vengono dal riferimento.
+/// Interrogato con i ventisei nomi che il provider `MySQL` dichiara verified,
+/// ha risposto `1305` — «`FUNCTION` does not exist» — a `ST_NDims` e a
+/// `ST_NPoints`, e ha riconosciuto gli altri ventiquattro. `ST_Dimension` e
+/// `ST_NumPoints` esistono, e sono i nomi che quel server da alle stesse due
+/// domande.
+///
+/// La tabella e volutamente **corta**: non traduce le funzioni che `MySQL` non
+/// ha. Chiedere `ST_Covers` a `MySQL` deve continuare a fallire, perche
+/// `MySQL` non ce l'ha; tradurne il nome lo farebbe fallire piu tardi e con un
+/// errore peggiore.
+const fn mysql_spatial_name(function: SpatialFunction) -> Option<&'static str> {
+    match function {
+        SpatialFunction::Dimensions => Some("ST_Dimension"),
+        SpatialFunction::NPoints => Some("ST_NumPoints"),
+        _ => None,
+    }
+}
+
+/// Il nome che **questo** dialetto da alla funzione.
+const fn dialect_spatial_name(dialect: Dialect, function: SpatialFunction) -> &'static str {
+    match dialect {
+        Dialect::Mysql => match mysql_spatial_name(function) {
+            Some(name) => name,
+            None => spatial_name(function),
+        },
+        _ => spatial_name(function),
+    }
+}
+
+/// Il nome `PostGIS`. Vedi [`dialect_spatial_name`] prima di chiamarlo diretto.
 const fn spatial_name(function: SpatialFunction) -> &'static str {
     match function {
         SpatialFunction::GeometryType => "ST_GeometryType",

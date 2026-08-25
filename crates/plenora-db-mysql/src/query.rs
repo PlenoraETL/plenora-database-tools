@@ -60,27 +60,52 @@ use std::collections::BTreeSet;
 /// prove live ne attraversavano **due** — `Area` e `Intersects`; il test di
 /// capability contava la lista e ci cercava dentro cinque nomi, che e una
 /// verifica sulla costante, non sul motore. Le altre ventiquattro erano una
-/// deduzione dal dialect condiviso con `PostgreSQL`, cioe esattamente il tipo di
-/// affermazione che la regola 1 vieta.
+/// deduzione dal dialect condiviso con `PostgreSQL`, cioe esattamente il tipo
+/// di affermazione che la regola 1 vieta.
+///
+/// La lista non e descrittiva: `render_query` **rifiuta** ogni funzione che
+/// non vi compare. Pubblicarne una che poi fallisce non e un'imprecisione in
+/// un documento, e una promessa che il provider fa al chiamante e non
+/// mantiene.
 ///
 /// Ora la sonda `live_v12_every_verified_spatial_function_executes` le
-/// attraversa **tutte**, una per una, contro il riferimento: se una non
-/// esegue, il gate live diventa rosso e la lista va accorciata con una prova
-/// in mano invece che allungata per analogia. La sonda gira su un SRID
-/// cartesiano: quello che dimostra e che il renderer produce SQL che `MySQL`
-/// esegue, non che ogni funzione valga su ogni sistema di riferimento — che e
-/// una domanda diversa, e non e questa lista a rispondervi.
+/// attraversa **tutte**, una per una, contro il riferimento. Interrogata sulle
+/// ventisei di allora ne ha bocciate dodici in un colpo solo, e la lista si e
+/// accorciata con la misura in mano.
 ///
-/// **26 funzioni**:
+/// # Le undici che sono uscite, e perche
+///
+/// Non undici ragioni: **una**. `StartPoint`, `EndPoint`, `PointN`, `Buffer`,
+/// `Envelope`, `Intersection`, `Union`, `Difference`, `SymDifference`,
+/// `ConvexHull` e `Centroid` restituiscono una geometria, e il mapper del
+/// result set di questo provider rifiuta `MYSQL_TYPE_GEOMETRY`: una geometria
+/// in uscita da una query non porta SRID ne profilo dimensionale dimostrati, e
+/// il renderer non incapsula la colonna in `ST_AsBinary`. Sono bloccate sul
+/// preflight SRID, non sul nome: il giorno che quel preflight esiste tornano
+/// tutte insieme, e la sonda lo dira.
+///
+/// Due cose misurate lungo la strada, che vale la pena non riscoprire:
+/// `ST_NDims` e `ST_NPoints` non esistono su `MySQL` — li rende
+/// `dialect_spatial_name` come `ST_Dimension` e `ST_NumPoints` — e `ST_Union`
+/// su `MySQL` e **binario soltanto**, mentre il contratto ne ammette da uno a
+/// tre argomenti. Quando `Union` rientrera, la forma unaria restera comunque
+/// senza controparte.
+///
+/// # Cosa dimostra, e cosa no
+///
+/// La sonda gira su due geometrie — una lineare e una areale — e chiede a
+/// ciascuna funzione di eseguire su almeno una delle due: `ST_Area` su una
+/// `LINESTRING` risponde `3516`, e sarebbe stata una falsa assenza. Quello che
+/// dimostra e che il renderer produce SQL che `MySQL` esegue su un SRID
+/// cartesiano, non che ogni funzione valga su ogni sistema di riferimento —
+/// che e una domanda diversa, e non e questa lista a rispondervi.
+///
+/// **15 funzioni**:
 /// - metadata (7): `GeometryType`, `Srid`, `Dimensions`, `NPoints`,
 ///   `IsEmpty`, `IsValid`, `IsClosed`
 /// - predicate binary (5): `Intersects`, `Contains`, `Within`, `Disjoint`,
 ///   `Equals`
 /// - metriche (3): `Distance`, `Area`, `Length`
-/// - constructor (3): `StartPoint`, `EndPoint`, `PointN`
-/// - transform (2): `Buffer`, `Envelope`
-/// - set operation (6): `Intersection`, `Union`, `Difference`,
-///   `SymDifference`, `ConvexHull`, `Centroid`
 pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::GeometryType,
     SpatialFunction::Srid,
@@ -97,17 +122,6 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
-    SpatialFunction::StartPoint,
-    SpatialFunction::EndPoint,
-    SpatialFunction::PointN,
-    SpatialFunction::Buffer,
-    SpatialFunction::Envelope,
-    SpatialFunction::Intersection,
-    SpatialFunction::Union,
-    SpatialFunction::Difference,
-    SpatialFunction::SymDifference,
-    SpatialFunction::ConvexHull,
-    SpatialFunction::Centroid,
 ];
 
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
@@ -3121,6 +3135,52 @@ mod tests {
         assert_eq!(
             mysql_renderer().quote_identifier(&identifier).unwrap(),
             "`we``ird`"
+        );
+    }
+
+    /// Nessuna funzione verified restituisce una geometria.
+    ///
+    /// Undici delle ventisei che questa lista pubblicava sono state bocciate
+    /// dal riferimento tutte per la stessa ragione: il mapper del result set
+    /// rifiuta `MYSQL_TYPE_GEOMETRY`, quindi una funzione che restituisce una
+    /// geometria non arriva mai a consegnare una riga. Nessuna delle undici
+    /// aveva bisogno di un server per essere scoperta — il tipo di ritorno sta
+    /// nel catalogo versionato, e il rifiuto sta in `profile.rs`. Servivano
+    /// due gate live e una fixture in piedi per vedere una cosa che qui si
+    /// vede in trenta millisecondi.
+    ///
+    /// Questa guardia non e una riscrittura della lista in un'altra forma: la
+    /// lista dice **quali** funzioni, il catalogo dice **cosa restituiscono**,
+    /// e le due cose si contraddicono senza che nessuno se ne accorga. Il
+    /// giorno che il preflight SRID esiste, questo test cade — ed e il segnale
+    /// giusto: e il momento di riaprirle, non di allentare il test.
+    #[test]
+    fn no_verified_function_returns_a_geometry() {
+        let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
+            .expect("catalogo spatial incorporato");
+        let returns = |function: &SpatialFunction| -> String {
+            let id = serde_json::to_value(function)
+                .expect("serializza la funzione")
+                .as_str()
+                .expect("l'id di wire e una stringa")
+                .to_owned();
+            catalog
+                .functions
+                .iter()
+                .find(|specification| specification.id == id)
+                .unwrap_or_else(|| panic!("{id} non e nel catalogo"))
+                .returns
+                .clone()
+        };
+        let geometries = VERIFIED_SPATIAL_FUNCTIONS
+            .iter()
+            .filter(|function| returns(function) == "geometry")
+            .map(|function| format!("{function:?}"))
+            .collect::<Vec<_>>();
+        assert!(
+            geometries.is_empty(),
+            "pubblicate come verified ma il result set non le sa mappare: {}",
+            geometries.join(", ")
         );
     }
 }

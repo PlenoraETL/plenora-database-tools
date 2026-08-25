@@ -5040,6 +5040,24 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
 
 // ============================ v1.2 — Blocco C: spatial verified ===========
 
+/// Cio che le capability pubblicano e **esattamente** la lista verified.
+///
+/// Questo test chiedeva altro: che le funzioni fossero almeno venti e che
+/// cinque nomi scelti a mano ci fossero dentro. Nessuna delle due domande
+/// parla del canale — la prima e una soglia sulla lunghezza di una costante, e
+/// non c'e misura che la sostenga; la seconda campiona cinque righe su ventisei
+/// e chiama copertura il campione.
+///
+/// La soglia era anche **dannosa**, non solo inutile. Quando la sonda live ha
+/// dimostrato che undici delle ventisei non eseguivano, accorciare la lista ha
+/// fatto diventare rosso questo test: un test che rende costoso togliere una
+/// promessa che il motore non mantiene e una pressione a tenerla. La regola 1
+/// dice che una capability si apre con una prova; un floor come questo dice il
+/// contrario, e lo dice al momento peggiore.
+///
+/// Quello che va verificato qui e che `probe_capabilities` non filtri, non
+/// riordini e non aggiunga niente: l'uguaglianza con la costante, che ha una
+/// sonda dedicata a tenerla vera contro il riferimento.
 #[tokio::test]
 async fn live_v12_capabilities_publish_verified_spatial_functions() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -5048,45 +5066,50 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
         .probe_capabilities(&live_secret(), &cancellation)
         .await
         .expect("probe caps");
-    let functions = &caps.spatial.functions;
     assert!(
-        !functions.is_empty(),
+        !caps.spatial.functions.is_empty(),
         "v1.2 deve pubblicare funzioni spatial verified"
     );
-    // 20+ funzioni attese (metadata + predicati + metrics + constructors + set ops)
-    assert!(
-        functions.len() >= 20,
-        "atteso >= 20 funzioni verified, trovate {}",
-        functions.len()
+    assert_eq!(
+        caps.spatial.functions,
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS,
+        "le capability pubblicate divergono dalla lista verified"
     );
-    for expected in &[
-        plenora_database_core::query::SpatialFunction::Intersects,
-        plenora_database_core::query::SpatialFunction::Contains,
-        plenora_database_core::query::SpatialFunction::Within,
-        plenora_database_core::query::SpatialFunction::Distance,
-        plenora_database_core::query::SpatialFunction::Area,
-    ] {
-        assert!(
-            functions.contains(expected),
-            "spatial function verified attesa mancante: {expected:?}"
-        );
-    }
 }
 
 /// Ogni funzione di `VERIFIED_SPATIAL_FUNCTIONS`, eseguita contro il
 /// riferimento.
 ///
 /// La lista ne dichiarava ventisei e le prove live ne attraversavano due:
-/// `Area` e `Intersects`. Il test di capility qui sopra conta la lista e ci
+/// `Area` e `Intersects`. Il test di capability qui sopra conta la lista e ci
 /// cerca dentro cinque nomi, che dimostra qualcosa sulla costante e niente sul
-/// motore — la differenza che la regola 1 chiede di non confondere.
+/// motore — la differenza che la regola 1 chiede di non confondere. Quando
+/// questa sonda le ha attraversate davvero, dodici delle ventisei non
+/// eseguivano, e la lista e scesa a quindici.
 ///
-/// La sonda le prova tutte, una query per funzione, costruendo gli argomenti
-/// da `accepts_argument_count` e `takes_geometry_at`: dove il contratto vuole
-/// una geometria arriva la colonna, altrove un intero. Il dato e una
-/// `LINESTRING`, che e la geometria su cui tutte e ventisei sono definite —
-/// `StartPoint`, `EndPoint`, `PointN` e `IsClosed` su un punto fallirebbero
-/// per il dato, non per il motore.
+/// La sonda le prova tutte, costruendo gli argomenti da
+/// `accepts_argument_count` e `takes_geometry_at`: dove il contratto vuole una
+/// geometria arriva la colonna, altrove un intero.
+///
+/// # Due geometrie, non una
+///
+/// Ogni funzione viene provata su una `LINESTRING` **e** su un `POLYGON`, e
+/// conta se ne attraversa almeno una. La prima stesura ne usava una sola, e la
+/// `LINESTRING` che serviva a `IsClosed` e `NPoints` faceva rispondere `3516`
+/// ad `ST_Area`, che su una linea non e definita. Sarebbe stata una falsa
+/// assenza: una capability chiusa per colpa del dato della sonda, cioe
+/// l'errore opposto a quello che questa sonda esiste per prevenire, e
+/// altrettanto sbagliato.
+///
+/// # I rifiuti si raccolgono
+///
+/// Panicare sulla prima funzione rotta trasforma una lista sbagliata in una
+/// sequenza di gate live, uno per difetto. Il primo giro avrebbe trovato solo
+/// `Dimensions`; il secondo solo `NPoints`; per vedere le dodici sarebbero
+/// serviti dodici giri con una fixture in piedi. Chi accorcia la lista deve
+/// vederla intera in un colpo.
+///
+/// # Cosa dimostra, e cosa no
 ///
 /// Il SRID e 0, cartesiano. Cio che si dimostra e che il renderer produce SQL
 /// che `MySQL` esegue; se una funzione valga anche su un sistema geografico e
@@ -5121,121 +5144,176 @@ async fn live_v12_every_verified_spatial_function_executes() {
             .ok();
         connection
             .query_drop(
-                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, \
-                 shape GEOMETRY NOT NULL) ENGINE=InnoDB",
+                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE=InnoDB",
             )
             .await
             .expect("create della tabella della sonda");
         connection
             .query_drop(
-                "INSERT INTO _v12_spatial_all VALUES \
-                 (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'))",
+                "INSERT INTO _v12_spatial_all VALUES (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))",
             )
             .await
             .expect("seed della sonda");
     }
 
-    let shape = || QueryExpression::Column {
+    let shape = |field: &str| QueryExpression::Column {
         column: ColumnRef {
             relation: None,
-            field: "shape".to_owned(),
+            field: field.to_owned(),
         },
     };
 
+    // Le funzioni rotte si **raccolgono**, non si segnalano una per volta.
+    // Panicare sulla prima trasforma una lista sbagliata in una sequenza di
+    // gate: il primo giro ha trovato `Dimensions`, e solo il secondo avrebbe
+    // trovato `NPoints`. Chi accorcia la lista deve vederla intera.
     let mut executed = 0_usize;
+    let mut broken: Vec<String> = Vec::new();
     for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
-        // L'arieta dichiarata dal contratto, non una tabella scritta a mano
-        // qui: se il core la cambia, la sonda la segue.
-        let arity = (1..=4)
-            .find(|count| function.accepts_argument_count(*count))
-            .unwrap_or_else(|| panic!("arieta sconosciuta per {function:?}"));
-        let arguments: Vec<QueryExpression> = (0..arity)
-            .map(|index| {
-                if function.takes_geometry_at(index) {
-                    shape()
-                } else {
-                    // Il renderer parametrizza soltanto `Parameter`: un
-                    // letterale nell'AST non esiste, e non deve esistere.
-                    // `PointN` vuole un indice di vertice, `Buffer` una
-                    // distanza: 1 e valido per entrambi.
-                    QueryExpression::Parameter {
-                        name: "scalare".to_owned(),
+        // Ogni funzione contro **entrambe** le geometrie: basta che ne
+        // attraversi una. `ST_Area` su una `LINESTRING` risponde 3516, e
+        // `ST_IsClosed` su un `POLYGON` non e piu felice — chiedere a
+        // ciascuna soltanto la forma che le compete vorrebbe dire deciderlo
+        // qui, per analogia, che e il modo in cui questa lista si era gonfiata
+        // la prima volta.
+        let mut refusals: Vec<String> = Vec::new();
+        for field in ["line", "poly"] {
+            // L'arieta dichiarata dal contratto, non una tabella scritta a mano
+            // qui: se il core la cambia, la sonda la segue.
+            let arity = (1..=4)
+                .find(|count| function.accepts_argument_count(*count))
+                .unwrap_or_else(|| panic!("arieta sconosciuta per {function:?}"));
+            let arguments: Vec<QueryExpression> = (0..arity)
+                .map(|index| {
+                    if function.takes_geometry_at(index) {
+                        shape(field)
+                    } else {
+                        // Il renderer parametrizza soltanto `Parameter`: un
+                        // letterale nell'AST non esiste, e non deve esistere.
+                        // `PointN` vuole un indice di vertice, `Buffer` una
+                        // distanza: 1 e valido per entrambi.
+                        QueryExpression::Parameter {
+                            name: "scalare".to_owned(),
+                        }
+                    }
+                })
+                .collect();
+            // Prima che `arguments` entri nell'operazione: dopo e stato spostato,
+            // e la domanda «questa funzione usa uno scalare?» non si potrebbe piu
+            // porre alla forma che l'ha decisa.
+            let uses_scalar = arguments
+                .iter()
+                .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
+
+            let operation = QueryOperation {
+                common_table_expressions: Vec::new(),
+                source: Some(QuerySource {
+                    object: ObjectRef {
+                        catalog: None,
+                        schema: Some("dataflow_test".to_owned()),
+                        object: "_v12_spatial_all".to_owned(),
+                    },
+                    alias: None,
+                }),
+                derived_source: None,
+                projection: vec![QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: *function,
+                        arguments,
+                    },
+                    alias: Some("probe".to_owned()),
+                }],
+                joins: Vec::new(),
+                filter: None,
+                group_by: Vec::new(),
+                having: None,
+                order_by: Vec::new(),
+                distinct: false,
+                distinct_on: Vec::new(),
+                set_operations: Vec::new(),
+                row_limit: None,
+                row_offset: None,
+                locking: None,
+            };
+
+            // Il bag contiene il parametro **se** la funzione lo usa. Un
+            // parametro legato e mai riferito e ora un piano invalido — lo rifiuta
+            // il preflight, e a ragione: chi lo lega crede di averlo passato a
+            // qualcosa. Questo test lo metteva sempre, e per le funzioni di sola
+            // geometria — `GeometryType`, che di argomenti scalari non ne ha —
+            // era di troppo.
+            let bag = if uses_scalar {
+                ParameterBag::new(BTreeMap::from([(
+                    "scalare".to_owned(),
+                    ParameterValue::I32(1),
+                )]))
+            } else {
+                ParameterBag::default()
+            };
+            let opened = provider
+                .query(&live_secret(), &operation, &bag, &budget, &cancellation)
+                .await;
+            let mut stream = match opened {
+                Ok(stream) => stream,
+                Err(error) => {
+                    refusals.push(format!(
+                        "su {field} il prepare fallisce ({})",
+                        error.message
+                    ));
+                    continue;
+                }
+            };
+            // Il prepare non e l'esecuzione. Ottenere lo stream e lasciarlo cadere
+            // proverebbe che il server ha accettato lo statement, non che lo abbia
+            // eseguito: l'errore del worker arriva al receiver **dopo**, e un
+            // `drop` lo butterebbe via insieme allo stream. Qui si chiede il primo
+            // batch e poi la fine dello stream, cioe si attraversa il risultato.
+            match stream.next_batch(&cancellation).await {
+                Err(error) => {
+                    refusals.push(format!("su {field} non esegue ({})", error.message));
+                    continue;
+                }
+                Ok(first) => {
+                    if first.is_none_or(|batch| batch.num_rows() != 1) {
+                        refusals.push(format!("su {field} non produce la riga della sonda"));
+                        continue;
                     }
                 }
-            })
-            .collect();
-
-        let operation = QueryOperation {
-            common_table_expressions: Vec::new(),
-            source: Some(QuerySource {
-                object: ObjectRef {
-                    catalog: None,
-                    schema: Some("dataflow_test".to_owned()),
-                    object: "_v12_spatial_all".to_owned(),
-                },
-                alias: None,
-            }),
-            derived_source: None,
-            projection: vec![QueryProjection {
-                expression: QueryExpression::Spatial {
-                    function: *function,
-                    arguments,
-                },
-                alias: Some("probe".to_owned()),
-            }],
-            joins: Vec::new(),
-            filter: None,
-            group_by: Vec::new(),
-            having: None,
-            order_by: Vec::new(),
-            distinct: false,
-            distinct_on: Vec::new(),
-            set_operations: Vec::new(),
-            row_limit: None,
-            row_offset: None,
-            locking: None,
-        };
-
-        let bag = ParameterBag::new(BTreeMap::from([(
-            "scalare".to_owned(),
-            ParameterValue::I32(1),
-        )]));
-        let mut stream = provider
-            .query(&live_secret(), &operation, &bag, &budget, &cancellation)
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{function:?} e pubblicata fra le funzioni verified e il prepare fallisce: {}",
-                    error.message
-                )
-            });
-        // Il prepare non e l'esecuzione. Ottenere lo stream e lasciarlo cadere
-        // proverebbe che il server ha accettato lo statement, non che lo abbia
-        // eseguito: l'errore del worker arriva al receiver **dopo**, e un
-        // `drop` lo butterebbe via insieme allo stream. Qui si chiede il primo
-        // batch e poi la fine dello stream, cioe si attraversa il risultato.
-        let first = stream
-            .next_batch(&cancellation)
-            .await
-            .unwrap_or_else(|error| panic!("{function:?} non esegue: {}", error.message));
-        assert!(
-            first.is_some_and(|batch| batch.num_rows() == 1),
-            "{function:?} deve produrre la riga della sonda"
-        );
-        assert!(
-            stream
-                .next_batch(&cancellation)
-                .await
-                .unwrap_or_else(|error| panic!(
-                    "{function:?} non chiude lo stream: {}",
-                    error.message
-                ))
-                .is_none(),
-            "{function:?} deve chiudere lo stream dopo l'unica riga"
-        );
-        executed += 1;
+            }
+            match stream.next_batch(&cancellation).await {
+                Err(error) => {
+                    refusals.push(format!(
+                        "su {field} non chiude lo stream ({})",
+                        error.message
+                    ));
+                    continue;
+                }
+                Ok(Some(_)) => {
+                    refusals.push(format!("su {field} non chiude lo stream dopo l'unica riga"));
+                    continue;
+                }
+                Ok(None) => {}
+            }
+            // Una geometria che la attraversa basta: la domanda e se il renderer
+            // produce SQL che il server esegue, non se ogni funzione valga su ogni
+            // forma.
+            refusals.clear();
+            break;
+        }
+        if refusals.is_empty() {
+            executed += 1;
+        } else {
+            broken.push(format!("{function:?}: {}", refusals.join(", e ")));
+        }
     }
 
+    assert!(
+        broken.is_empty(),
+        "verified che il riferimento non esegue ({} su {}): {}",
+        broken.len(),
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        broken.join("; ")
+    );
     assert_eq!(
         executed,
         crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
@@ -6936,25 +7014,52 @@ async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
         assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
     }
 
-    // E qui la differenza da PostgreSQL, che e il motivo per cui questo test
-    // non si ferma al rifiuto: il result set e rimasto a meta, quindi la
-    // connessione e fuori sincrono. La transazione lo dichiara alla prima
-    // operazione successiva invece di provare a committare su un filo che non
-    // e piu il suo.
-    let error = tx
+    // Il rifiuto non e la fine del test, e la meta. `RemoteEffect::None` dice
+    // che la cancellazione di una lettura non ha lasciato niente dietro di se,
+    // ed e un'affermazione sulla **transazione**, non sullo stream: se fosse
+    // falsa, questa scrittura fallirebbe o non arriverebbe.
+    tx.execute(
+        &plenora_database_core::transaction::Statement {
+            sql: format!("INSERT INTO {table} (n) VALUES (10001)"),
+            params: Vec::new(),
+        },
+        &cancellation,
+    )
+    .await
+    .expect("dopo una lettura cancellata la transazione scrive ancora");
+    assert!(tx
         .commit(&cancellation)
         .await
-        .expect_err("una transazione con uno stream abbandonato non committa");
-    assert_eq!(error.category, ErrorCategory::Protocol);
-    assert_eq!(
-        error.retry,
-        plenora_database_core::RetryDisposition::RequiresRecovery
-    );
+        .expect("commit")
+        .is_committed());
+
+    // La rilettura arriva da **un'altra connessione**: che il commit dica
+    // `Committed` e cio che il provider crede, e la riga sul server e cio che
+    // e successo. Le due si confondono proprio nel caso in cui si vuole
+    // distinguerle.
+    assert_eq!(stream_row_count(table, 10001).await, 1);
 }
 
+/// Uno stream lasciato a meta **non** rompe la transazione.
+///
+/// E' il test che ha smentito la prima stesura di `query_stream`. Quella
+/// dichiarava — in un commento, in un documento e in una bandiera di stato —
+/// che abbandonare un result set `MySQL` lascia i pacchetti in coda e rende la
+/// connessione inservibile, e faceva fallire ogni operazione successiva della
+/// transazione con `RequiresRecovery`. Il riferimento ha risposto `Committed`.
+///
+/// `mysql_async` drena il result set pendente prima dello statement
+/// successivo. Il pericolo esisteva sul filo e non esisteva nel driver, e la
+/// differenza fra le due cose e esattamente quello che una misura serve a
+/// stabilire — anche quando cio che si sta deducendo e un guasto e non una
+/// capability.
+///
+/// Il caso non e esotico: un `break` dentro un ciclo e il modo piu comune di
+/// consumare uno stream a meta. Con la bandiera, ogni `break` costava la
+/// transazione.
 #[tokio::test]
 #[ignore = "live: richiede il riferimento MySQL"]
-async fn live_query_stream_abandoned_without_cancellation_is_refused_too() {
+async fn live_query_stream_abandoned_mid_way_leaves_the_transaction_usable() {
     let table = "_stream_abandoned";
     seed_stream_table(table, 500).await;
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -6987,14 +7092,37 @@ async fn live_query_stream_abandoned_without_cancellation_is_refused_too() {
             .is_some());
     }
 
-    let error = tx
+    // La scrittura viene **dopo** l'abbandono e sulla stessa connessione: se i
+    // pacchetti non letti fossero rimasti in coda, sarebbe questa a leggerli
+    // al posto della propria risposta.
+    tx.execute(
+        &plenora_database_core::transaction::Statement {
+            sql: format!("INSERT INTO {table} (n) VALUES (10002)"),
+            params: Vec::new(),
+        },
+        &cancellation,
+    )
+    .await
+    .expect("dopo uno stream abbandonato la transazione scrive ancora");
+    assert!(tx
         .commit(&cancellation)
         .await
-        .expect_err("uno stream lasciato a meta rende la connessione inservibile");
-    assert_eq!(error.category, ErrorCategory::Protocol);
-    assert!(
-        error.message.contains("fuori sincrono"),
-        "il messaggio non dice cosa e successo: {}",
-        error.message
-    );
+        .expect("commit")
+        .is_committed());
+    assert_eq!(stream_row_count(table, 10002).await, 1);
+}
+
+/// Quante righe con quel valore, da una connessione che non e quella del test.
+async fn stream_row_count(table: &str, value: i64) -> i64 {
+    let cancellation = CancellationToken::new();
+    let mut check = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("connessione di verifica");
+    check
+        .connection_mut()
+        .expect("connessione di verifica")
+        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {table} WHERE n = {value}"))
+        .await
+        .expect("conteggio")
+        .expect("una riga di conteggio")
 }

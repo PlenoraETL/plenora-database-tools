@@ -169,6 +169,7 @@ EXPECTED_UNIT_TESTS = {
     "query::tests::join_on_cannot_reference_a_relation_introduced_later",
     "query::tests::join_shapes_outside_the_qualified_subset_fail_closed",
     "query::tests::lateral_is_reported_as_not_yet_qualified_instead_of_absent",
+    "query::tests::no_verified_function_returns_a_geometry",
     "query::tests::peer_stable_ranking_renders_while_total_order_windows_stay_closed",
     "query::tests::physical_joins_render_with_relation_qualified_columns_and_ordered_binds",
     "query::tests::renderer_is_the_shared_mysql_dialect",
@@ -325,7 +326,7 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     # transazione. Le prime cinque hanno una controparte su PostgreSQL; la
     # sesta no, perche li un cursore abbandonato non costa niente e qui
     # rende la connessione inservibile.
-    "live_tests::live_query_stream_abandoned_without_cancellation_is_refused_too",
+    "live_tests::live_query_stream_abandoned_mid_way_leaves_the_transaction_usable",
     "live_tests::live_query_stream_cancelled_mid_stream_returns_cancelled",
     "live_tests::live_query_stream_exhausts_at_end",
     "live_tests::live_query_stream_paginates_result_in_batches",
