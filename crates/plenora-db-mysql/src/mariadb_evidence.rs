@@ -106,6 +106,116 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     raw_protocol_probes(recorder, connection).await;
     raw_type_probes(recorder, connection).await;
     returning_form_probe(recorder, connection).await;
+    spatial_write_probe(recorder, connection).await;
+}
+
+/// La tabella su cui si misura la scrittura spatial.
+const SCRATCH_SPATIAL_WRITE: &str = "plenora_driver_evidence_spatial_write";
+
+/// Cosa il server accetta quando si scrive una geometria, e cosa conserva.
+///
+/// `spatial.write_wkb` e chiusa su `MariaDB`, e la ragione accanto alla
+/// bandiera e giusta: nessuna geometria e mai stata scritta attraverso il
+/// crate, e leggere un WKB che il server produce non dice nulla su cosa
+/// accetti in ingresso.
+///
+/// Prima di aprirla o di tenerla chiusa servono tre fatti, e sono tre domande
+/// separate che una sola prova confonderebbe.
+///
+/// # La DDL
+///
+/// Il percorso di scrittura emette `GEOMETRY SRID <n>` quando crea la colonna.
+/// La prima tranche ha gia misurato che `MariaDB` rifiuta quella forma con
+/// 1064; qui la si rimisura accanto alle altre due, perche il verdetto sulla
+/// scrittura si legge tutto insieme.
+///
+/// # Il valore in ingresso
+///
+/// L'`INSERT` emette `ST_GeomFromWKB(?, <srid>)`, cioe passa l'SRID come
+/// secondo argomento. Che `MariaDB` accetti quella forma non e deducibile dal
+/// fatto che accetti `ST_GeomFromWKB` con un argomento solo.
+///
+/// # Cosa resta scritto
+///
+/// **La domanda che conta.** Su un prodotto dove nessuna DDL puo vincolare la
+/// colonna, l'SRID puo vivere solo dentro i valori: se il server accettasse il
+/// secondo argomento e poi memorizzasse zero, la scrittura perderebbe il CRS in
+/// silenzio — e la lettura, che da oggi lo verifica valore per valore,
+/// rifiuterebbe righe scritte da questo stesso crate. Le due meta si
+/// incastrano o non si incastrano, e questa sonda e il punto in cui si vede.
+async fn spatial_write_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_WRITE}"))
+        .await;
+
+    // 1. La colonna vincolata a un SRID, che e cio che la DDL del crate emette.
+    let constrained = connection
+        .query_drop(format!(
+            "CREATE TABLE {SCRATCH_SPATIAL_WRITE} (id INT NOT NULL PRIMARY KEY, \
+             shape GEOMETRY NOT NULL SRID 4326) ENGINE = InnoDB"
+        ))
+        .await;
+    let ddl = match &constrained {
+        Ok(()) => "accettata".to_owned(),
+        Err(error) => {
+            server_code(error).map_or_else(|| "rifiutata".to_owned(), |code| code.to_string())
+        }
+    };
+
+    // Se la forma vincolata e stata rifiutata, la tabella non esiste: le altre
+    // due domande si pongono comunque, su una colonna non vincolata — che e
+    // l'unica forma che quel prodotto ammette.
+    if constrained.is_err() {
+        connection
+            .query_drop(format!(
+                "CREATE TABLE {SCRATCH_SPATIAL_WRITE} (id INT NOT NULL PRIMARY KEY, \
+                 shape GEOMETRY NOT NULL) ENGINE = InnoDB"
+            ))
+            .await
+            .expect("tabella della scrittura spatial: harness, non divergenza");
+    }
+
+    // 2. Il valore in ingresso, con l'SRID come secondo argomento — la forma
+    //    che `MysqlWritePlan` emette.
+    let insert = connection
+        .query_drop(format!(
+            "INSERT INTO {SCRATCH_SPATIAL_WRITE} (id, shape) VALUES \
+             (1, ST_GeomFromWKB(ST_AsBinary(ST_GeomFromText('POINT(1 1)')), 4326))"
+        ))
+        .await;
+    let bind = match &insert {
+        Ok(()) => "accettato".to_owned(),
+        Err(error) => {
+            server_code(error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
+        }
+    };
+
+    // 3. Cosa resta scritto: l'SRID del valore memorizzato.
+    let stored = if insert.is_ok() {
+        connection
+            .query_first::<i64, _>(format!(
+                "SELECT ST_SRID(shape) FROM {SCRATCH_SPATIAL_WRITE} WHERE id = 1"
+            ))
+            .await
+            .map_or_else(
+                |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+                |row| row.map_or_else(|| "nessuna riga".to_owned(), |srid| srid.to_string()),
+            )
+    } else {
+        "non scritto".to_owned()
+    };
+
+    recorder.accepted(
+        "raw.spatial_write_forms",
+        "raw",
+        "scrittura",
+        "cosa il server accetta scrivendo una geometria, e quale SRID conserva",
+        format!("ddl_srid={ddl} bind_srid={bind} srid_memorizzato={stored}"),
+    );
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_WRITE}"))
+        .await;
 }
 
 /// La tabella su cui si misura `RETURNING`.

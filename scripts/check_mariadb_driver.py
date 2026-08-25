@@ -162,6 +162,13 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # condividono un solo `DialectKind`, e questa sonda misura la differenza
     # invece di dedurla dalla documentazione.
     "raw.returning_forms": "quali forme di RETURNING il server accetta, e quali righe rende",
+    # Tre domande sulla scrittura spatial, e la terza e quella che conta. La
+    # DDL vincolata (`GEOMETRY SRID n`) e cio che il piano di scrittura emette;
+    # `ST_GeomFromWKB(?, srid)` e cio che emette l'INSERT; e l'SRID
+    # memorizzato dice se il CRS sopravvive al viaggio. Su un prodotto dove
+    # nessuna DDL puo vincolare la colonna, l'SRID puo vivere solo dentro i
+    # valori — e la lettura, da oggi, li verifica uno per uno.
+    "raw.spatial_write_forms": "cosa il server accetta scrivendo una geometria, e quale SRID conserva",
     # La stessa domanda, posta al **percorso** invece che al server:
     # `execute_portable_returning` compila per `tx.provider_kind()` e esegue,
     # quindi attraversa la tabella dialetto-forma e il decoder delle righe.
@@ -258,6 +265,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.max_execution_time",
     "raw.statistics_expression",
     "raw.returning_forms",
+    "raw.spatial_write_forms",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",
