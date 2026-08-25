@@ -1192,10 +1192,14 @@ def measure_scopes(
         assert_artifacts_outside_repository(artifacts)
         artifact = build_artifacts(artifacts)
         assert_worktree_unchanged(before, "la build degli artefatti")
-        images = {
-            "build": image_identity(RUST_IMAGE),
-            "test": image_identity(PYTHON_IMAGE),
-        }
+        # L'identita delle immagini si chiede **dopo** la prima corsa, ed e la
+        # condizione che [`image_identity`] dichiara: `python:3.13-slim`
+        # arriva sul demone quando parte il container dei test, e su un runner
+        # pulito chiederla prima significa chiederla di un'immagine che non
+        # c'e ancora — `No such image`, e la campagna muore per una ragione
+        # che non riguarda ne la build ne la suite. Si calcola una volta e si
+        # riusa: gli scope girano sugli stessi due artefatti.
+        images: dict[str, object] | None = None
         for scope in scopes:
             output = run(
                 pytest_command(
@@ -1205,6 +1209,11 @@ def measure_scopes(
             )
             assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
             print(output)
+            if images is None:
+                images = {
+                    "build": image_identity(RUST_IMAGE),
+                    "test": image_identity(PYTHON_IMAGE),
+                }
             summary = pytest_summary(output)
             counts = assert_scope_contract(scope=scope, output=output, summary=summary)
             # Copia, non aggiornamento in luogo: l'origine del package la
