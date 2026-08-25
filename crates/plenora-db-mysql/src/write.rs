@@ -830,7 +830,14 @@ impl MysqlWritePlan {
                     "append {product} non puo scrivere una colonna generata"
                 )));
             }
-            let spec = MysqlColumnSpec::from_catalog_with_profile(server, profile)?;
+            // L'SRID del contratto Arrow **e** la dichiarazione, su questo
+            // percorso. Costruire la spec senza passarlo faceva rifiutare ogni
+            // colonna geometrica di un prodotto il cui catalogo tace: il
+            // rifiuto arrivava dalla regola della lettura — «il catalogo tace e
+            // il piano non lo dichiara» — applicata a un piano che lo dichiara
+            // eccome, solo altrove.
+            let spec =
+                MysqlColumnSpec::from_catalog_declaring(server, profile, column.spatial_srid)?;
             if column.kind == MysqlColumnKind::Geometry {
                 if spec.kind != MysqlColumnKind::Geometry {
                     return Err(mapping_error(format!(

@@ -205,12 +205,18 @@ async fn spatial_write_probe(recorder: &mut Recorder, connection: &mut mysql_asy
         "non scritto".to_owned()
     };
 
+    let (bound, bound_srids) = spatial_bound_forms(connection).await;
+
     recorder.accepted(
         "raw.spatial_write_forms",
         "raw",
         "scrittura",
         "cosa il server accetta scrivendo una geometria, e quale SRID conserva",
-        format!("ddl_srid={ddl} bind_srid={bind} srid_memorizzato={stored}"),
+        format!(
+            "ddl_srid={ddl} bind_srid={bind} srid_memorizzato={stored} \
+             legato[{}] srid_legati={bound_srids}",
+            bound.join(" ")
+        ),
     );
 
     let _ = connection
@@ -5712,6 +5718,62 @@ async fn profile_probes(
         )
         .await;
     }
+}
+
+/// Le forme legate: un segnaposto non e un'espressione tipata.
+///
+/// Le tre domande di sopra usano `ST_GeomFromWKB(ST_AsBinary(...), 4326)`, cioe
+/// un'espressione il cui tipo il server conosce. Il piano di scrittura non fa
+/// cosi — lega un parametro — e li i byte arrivano senza tipo finche non sono
+/// legati. `MariaDB` ha risposto `4079`,
+/// `ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION`, alla sonda che attraversa il
+/// percorso mentre accettava la forma letterale: la differenza fra le due e
+/// esattamente la ragione per cui esistono due sonde.
+///
+/// Tre varianti, perche «non funziona» non dice cosa metterci al posto. E per
+/// quelle che passano, quale SRID resta: una forma che funziona e perde il CRS
+/// non serve a questo percorso.
+async fn spatial_bound_forms(connection: &mut mysql_async::Conn) -> (Vec<String>, String) {
+    let point = point_wkb(1.0, 1.0);
+    let mut bound = Vec::new();
+    for (name, sql) in [
+        (
+            "nudo",
+            format!(
+                "INSERT INTO {SCRATCH_SPATIAL_WRITE} (id, shape) VALUES (10, ST_GeomFromWKB(?, 4326))"
+            ),
+        ),
+        (
+            "cast",
+            format!(
+                "INSERT INTO {SCRATCH_SPATIAL_WRITE} (id, shape) VALUES (11, ST_GeomFromWKB(CAST(? AS BINARY), 4326))"
+            ),
+        ),
+        (
+            "senza_srid",
+            format!(
+                "INSERT INTO {SCRATCH_SPATIAL_WRITE} (id, shape) VALUES (12, ST_GeomFromWKB(?))"
+            ),
+        ),
+    ] {
+        let verdict = match connection.exec_drop(sql, (point.clone(),)).await {
+            Ok(()) => "ok".to_owned(),
+            Err(error) => {
+                server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
+            }
+        };
+        bound.push(format!("{name}={verdict}"));
+    }
+    let srids = connection
+        .query_first::<Option<String>, _>(format!(
+            "SELECT GROUP_CONCAT(CONCAT(id, ':', ST_SRID(shape)) ORDER BY id) FROM {SCRATCH_SPATIAL_WRITE} WHERE id >= 10"
+        ))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |row| row.flatten().unwrap_or_else(|| "nessuna".to_owned()),
+        );
+    (bound, srids)
 }
 
 /// La tabella su cui il provider scrive geometrie.
