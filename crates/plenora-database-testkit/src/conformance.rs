@@ -1,4 +1,4 @@
-use plenora_database_core::capabilities::{ProviderCapabilities, TransactionScope};
+use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::plan::{Operation, ProviderKind};
 use plenora_database_core::provider::{ConnectionInfo, Inspection, Provider, SecretString};
 use plenora_database_core::{
@@ -121,117 +121,36 @@ pub fn validate_connection(
     Ok(())
 }
 
-/// Verifica invarianti provider-independent del documento capability v1.
+/// Verifica che il documento capability appartenga al provider atteso e sia
+/// coerente.
+///
+/// Le invarianti provider-independent — major, lunghezze, duplicati, limiti a
+/// zero e combinazioni contraddittorie — vivono ora in
+/// [`ProviderCapabilities::validate`], nel core. Qui restava l'unica copia, e
+/// il consumatore vero (`plenora_database_engine::prepare`) non la
+/// attraversava: due strade per la stessa domanda, e quella percorsa era la
+/// piu povera.
 ///
 /// # Errors
 ///
-/// Restituisce `InvalidPlan` quando le capability sono contraddittorie,
-/// duplicate o non bounded.
-#[allow(clippy::too_many_lines)]
+/// Restituisce `InvalidPlan` quando il documento e attribuito a un altro
+/// provider o viola una delle invarianti del contratto.
 pub fn validate_capabilities(
     expected_provider: ProviderKind,
     capabilities: &ProviderCapabilities,
 ) -> Result<()> {
-    // La major del **documento capability**, che dalla separazione di
-    // `truncate_insert` e la 2. Gli altri messaggi restano alla 1, e ciascuno
-    // porta la propria.
-    if capabilities.schema_version != 2 {
-        return Err(contract_error(
-            "documento capability con schema_version non supportata",
-        ));
-    }
     if capabilities.provider != expected_provider {
         return Err(contract_error(
             "documento capability attribuito a un provider differente",
         ));
     }
-    if capabilities.provider_version.trim().is_empty() {
-        return Err(contract_error(
-            "documento capability senza versione provider",
-        ));
-    }
-    if capabilities
-        .extension_versions
-        .iter()
-        .any(|(name, version)| name.trim().is_empty() || version.trim().is_empty())
-    {
-        return Err(contract_error(
-            "documento capability con estensione o versione vuota",
-        ));
-    }
-    if has_duplicates(&capabilities.spatial.dimensions) {
-        return Err(contract_error(
-            "documento capability con dimensioni spatial duplicate",
-        ));
-    }
-    if has_duplicates(&capabilities.spatial.functions) {
-        return Err(contract_error(
-            "documento capability con funzioni spatial duplicate",
-        ));
-    }
-
-    let spatial = &capabilities.spatial;
-    let has_spatial_semantics = spatial.geometry || spatial.geography;
-    let claims_spatial_behavior = spatial.read_wkb
-        || spatial.write_wkb
-        || spatial.spatial_index
-        || spatial.mixed_geometry_types
-        || !spatial.dimensions.is_empty()
-        || !spatial.functions.is_empty();
-    if claims_spatial_behavior && !has_spatial_semantics {
-        return Err(contract_error(
-            "documento capability spatial senza geometry o geography",
-        ));
-    }
-    if has_spatial_semantics && spatial.dimensions.is_empty() {
-        return Err(contract_error(
-            "documento capability spatial senza dimensionalità",
-        ));
-    }
-
-    let reads = &capabilities.reads;
-    if reads.server_cursor && !reads.streaming {
-        return Err(contract_error(
-            "server_cursor richiede streaming nel documento capability",
-        ));
-    }
-
-    let transactions = &capabilities.transactions;
-    if transactions.savepoints && !transactions.single_transaction {
-        return Err(contract_error("savepoints richiede single_transaction"));
-    }
-    if transactions.staged_swap
-        && (!transactions.single_transaction || !transactions.transactional_ddl)
-    {
-        return Err(contract_error(
-            "staged_swap richiede transazione singola e DDL transazionale",
-        ));
-    }
-    if transactions.single_transaction && transactions.scope == TransactionScope::None {
-        return Err(contract_error(
-            "single_transaction non può avere scope none",
-        ));
-    }
-    if !transactions.single_transaction && transactions.scope == TransactionScope::Transaction {
-        return Err(contract_error(
-            "scope transaction richiede single_transaction",
-        ));
-    }
-
-    let limits = &capabilities.limits;
-    let bounded_limits = [
-        limits.max_identifier_bytes,
-        limits.max_bind_parameters,
-        limits.max_statement_bytes,
-        limits.max_batch_rows,
-        limits.max_payload_bytes,
-    ];
-    if bounded_limits.into_iter().flatten().any(|limit| limit == 0) {
-        return Err(contract_error(
-            "documento capability con limite esplicito pari a zero",
-        ));
-    }
-    Ok(())
+    // Qui si **pubblica**, non si consuma: un provider di questo workspace
+    // non deve poter emettere un documento incoerente, anche quando la
+    // coerenza non e scritta nel contratto. Il percorso di consumo
+    // (`prepare`) si ferma invece a `validate()`, perche rifiutare la
+    // coerenza li restringerebbe la major v2.
+    capabilities.validate()?;
+    capabilities.validate_coherence()
 }
 
 /// Verifica nome canonico e forma JSON di un risultato di introspezione.
@@ -311,13 +230,6 @@ fn validate_error_envelope(
     Ok(())
 }
 
-fn has_duplicates<T: PartialEq>(values: &[T]) -> bool {
-    values
-        .iter()
-        .enumerate()
-        .any(|(index, value)| values[index + 1..].contains(value))
-}
-
 fn contract_error(message: &'static str) -> DatabaseError {
     DatabaseError::invalid_plan(message)
 }
@@ -327,7 +239,7 @@ mod tests {
     use super::*;
     use plenora_database_core::capabilities::{
         ProviderLimits, ReadCapabilities, SpatialCapabilities, TransactionCapabilities,
-        WriteCapabilities,
+        TransactionScope, WriteCapabilities,
     };
     use plenora_database_core::geometry::Dimensions;
     use plenora_database_core::query::SpatialFunction;

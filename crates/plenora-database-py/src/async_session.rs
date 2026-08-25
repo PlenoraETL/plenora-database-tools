@@ -18,9 +18,8 @@ use crate::arrow_reader::open_reader_async;
 use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
-use crate::runtime;
 use crate::transaction::parse_isolation;
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
@@ -188,8 +187,13 @@ impl AsyncSession {
             })
             .await
             .map_err(to_py_err)?;
+            // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di
+            // una riga o piu di una colonna invece di prendere la prima e
+            // buttare via il resto. E' la stessa regola dei costruttori
+            // scalar tipizzati del core.
+            let value = scalar_opt(rows).map_err(to_py_err)?;
             Python::with_gil(|py| {
-                rows.first().and_then(|r| r.get_index(0)).map_or_else(
+                value.as_ref().map_or_else(
                     || Ok(py.None()),
                     |v| param_to_python(py, v).map(Bound::unbind),
                 )
@@ -227,7 +231,9 @@ impl AsyncSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let provider = Arc::clone(&self.provider);
@@ -414,7 +420,9 @@ impl AsyncSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let provider = Arc::clone(&self.provider);
@@ -497,7 +505,16 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
 /// Chiamato dall'inizializzazione del pymodule per garantire che il
 /// runtime multi-thread condiviso con la Session sync sia usato anche
 /// per gli awaitable async.
-pub fn init_async_runtime() {
-    let rt = runtime();
-    pyo3_async_runtimes::tokio::init_with_runtime(rt).expect("pyo3-async-runtimes init");
+///
+/// # Errors
+///
+/// Restituisce il motivo se il runtime non e avviabile (limiti di thread o di
+/// descrittori) o se un altro runtime globale risulta gia registrato. Prima
+/// entrambi i casi erano un `expect`, cioe un panico dentro l'import del
+/// modulo: il chiamante Python riceveva una `PanicException` invece di un
+/// errore classificato.
+pub fn init_async_runtime() -> std::result::Result<(), String> {
+    let rt = crate::build_runtime()?;
+    pyo3_async_runtimes::tokio::init_with_runtime(rt)
+        .map_err(|()| "runtime globale pyo3-async-runtimes gia registrato".to_owned())
 }

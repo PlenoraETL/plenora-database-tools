@@ -149,7 +149,7 @@ pub(super) async fn execute(
                 )
                 .await;
                 return Err(commit_unknown_error(
-                    ErrorCategory::Cancelled,
+                    crate::error::interruption_category(cancellation),
                     execution_id,
                     diagnostic_input.input_total,
                     "commit diagnostico PostgreSQL interrotto; stato remoto ignoto",
@@ -308,8 +308,8 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                 return Err((
                     transaction,
                     diagnostic_error(
-                        ErrorCategory::Cancelled,
-                        "preparazione INSERT diagnostico PostgreSQL cancellata",
+                        crate::error::interruption_category(cancellation),
+                        "preparazione INSERT diagnostico PostgreSQL interrotta",
                     ),
                 ));
             }
@@ -448,8 +448,8 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                     }
                 }
                 None => Err(diagnostic_error(
-                    ErrorCategory::Cancelled,
-                    "INSERT diagnostico PostgreSQL cancellato",
+                    crate::error::interruption_category(self.cancellation),
+                    "INSERT diagnostico PostgreSQL interrotto",
                 )),
             }
         })

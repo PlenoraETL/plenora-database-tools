@@ -1,7 +1,7 @@
 """Type stubs per il wrapper Session Python."""
 from typing import Any
 
-from ._native import Session as _NativeSession
+from ._native import Session as _NativeSession, SessionContext
 from ._transaction import Transaction
 from .query import Delete, Insert, Select, Update, Upsert
 
@@ -29,6 +29,8 @@ class Session:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,
     ) -> Transaction: ...
     def metrics(self) -> dict: ...
     @property

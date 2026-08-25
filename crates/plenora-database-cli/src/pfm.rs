@@ -300,10 +300,11 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     };
     let commit = tx.commit(&ctx.cancel).await?;
     print_json(&json!({
-        "status": "ok",
+        "status": crate::commit_status(&commit),
         "commit": commit,
         "result": payload,
-    }))
+    }))?;
+    crate::commit_exit(&commit)
 }
 
 pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -352,13 +353,18 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
     // dagli step reali; exit=1 se qualche step ha fallito.
     let all_steps_ok = savepoint_result.is_ok() && release_result.is_ok();
     let commit = tx.commit(&ctx.cancel).await?;
+    let status = if all_steps_ok {
+        crate::commit_status(&commit)
+    } else {
+        "fail"
+    };
     print_json(&json!({
-        "status": if all_steps_ok { "ok" } else { "fail" },
+        "status": status,
         "steps": steps.into_iter().map(|(k, v)| json!({ "step": k, "result": v })).collect::<Vec<_>>(),
         "commit": commit,
     }))?;
     if all_steps_ok {
-        Ok(())
+        crate::commit_exit(&commit)
     } else {
         Err(CliError::Silent)
     }
@@ -396,7 +402,7 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
         &cancel,
     )
     .await?;
-    tx1.commit(&cancel).await?;
+    crate::require_committed(&tx1.commit(&cancel).await?)?;
 
     // tx2 senza context sulla connessione riusata dal pool → deve essere ""
     let mut tx2 = provider

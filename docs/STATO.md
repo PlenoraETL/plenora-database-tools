@@ -17,7 +17,7 @@ python scripts\render_state.py
 | `plenora-database-cli` | 1.2.0 |
 | `plenora-database-core` | 1.2.0 |
 | `plenora-database-engine` | 1.2.0 |
-| `plenora-database-py` | 0.10.0 |
+| `plenora-database-py` | 0.11.0 |
 | `plenora-database-sql` | 1.2.0 |
 | `plenora-database-testkit` | 1.2.0 |
 | `plenora-db-mysql` | 1.2.0 |
@@ -78,7 +78,7 @@ nell'intestazione.
 | `bulk` | `true` | `true` | `false` | `true` |
 | `array_binding` | `false` | `false` | `false` | `false` |
 | `returning` | `false` | `false` | `false` | `false` |
-| `rollback_on_failure` | `true` | `true` | `false` | `true` |
+| `rollback_on_failure` | `true` | `true` | `true` | `true` |
 
 ## Sub-comandi del CLI
 
@@ -142,6 +142,6 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 
 | famiglia | test |
 | --- | --- |
-| `live_default` | 37 |
+| `live_default` | 38 |
 | `live_reference` | 25 |
-| `unit` | 190 |
+| `unit` | 199 |

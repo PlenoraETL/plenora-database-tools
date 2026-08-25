@@ -1,4 +1,4 @@
-//! Sub-comandi MySQL v1.2 — parity iniziale col path Postgres.
+//! Sub-comandi `MySQL` v1.2 — parity iniziale col path Postgres.
 //!
 //! Sette comandi essenziali:
 //! - `mysql-probe`: test connessione + capabilities
@@ -25,14 +25,73 @@
 
 use crate::{secret_from_env, CliResult};
 use plenora_database_core::plan::{Operation, ProviderKind};
-use plenora_database_core::provider::{Provider, SecretString};
+use plenora_database_core::provider::{ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::CancellationToken;
 use plenora_db_mysql::{MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 use crate::print_json;
+
+/// Rende un valore canonico come JSON tipizzato.
+///
+/// Serve perche i due punti che stampavano un valore usavano
+/// `format!("{v:?}")`, cioe il `Debug` di `ParameterValue`: il campo `value` di
+/// un `mysql-execute-scalar` conteneva `"I64(1)"` invece di `1`, e
+/// `actual_rows` di un COUNT(*) la stessa cosa. Un consumatore che leggeva
+/// quel JSON non trovava un numero, trovava il nome di una variante Rust.
+///
+/// Le forme non scalari restano oggetti espliciti invece di stringhe opache:
+/// i byte non hanno una rappresentazione JSON naturale, e fingerla sarebbe lo
+/// stesso errore in un'altra veste. `Decimal` resta una stringa perche il
+/// float JSON ne perderebbe la precisione.
+pub(crate) fn scalar_to_json(value: &ParameterValue) -> Value {
+    match value {
+        ParameterValue::Bool(v) => json!(v),
+        ParameterValue::I32(v) => json!(v),
+        ParameterValue::I64(v) => json!(v),
+        ParameterValue::F64(v) => json!(v),
+        ParameterValue::String(v)
+        | ParameterValue::Date(v)
+        | ParameterValue::Timestamp(v)
+        | ParameterValue::TimestampTz(v)
+        | ParameterValue::Decimal(v)
+        | ParameterValue::Uuid(v) => json!(v),
+        ParameterValue::Json(v) => v.clone(),
+        ParameterValue::Bytes(bytes) => json!({
+            "encoding": "hex",
+            "value": hex_encode(bytes),
+        }),
+        ParameterValue::Wkb {
+            bytes,
+            srid,
+            dimensions,
+            semantics,
+        } => json!({
+            "encoding": "wkb-hex",
+            "value": hex_encode(bytes),
+            "srid": srid,
+            "dimensions": dimensions,
+            "semantics": semantics,
+        }),
+        ParameterValue::Enum { type_name, label } => json!({
+            "type": type_name,
+            "label": label,
+        }),
+        ParameterValue::Null { .. } => Value::Null,
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut acc, byte| {
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        })
+}
 
 /// Costruisce un `MysqlProvider` parsando gli argomenti standard:
 /// `<PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] [--tls-insecure-skip-verify]`.
@@ -82,10 +141,10 @@ fn mysql_provider_from_args(
                     .clone();
                 remaining.remove(0);
                 let path_str = std::env::var(&ca_env)
-                    .map_err(|_| format!("variabile TLS CA env non trovata: {ca_env}"))?;
+                    .map_err(|_| "variabile ambiente della CA TLS non impostata")?;
                 let path = PathBuf::from(path_str);
-                let pem =
-                    std::fs::read(&path).map_err(|e| format!("lettura CA MySQL fallita: {e}"))?;
+                let pem = std::fs::read(&path)
+                    .map_err(|error| format!("lettura CA MySQL fallita: {}", error.kind()))?;
                 if pem.len() > 1024 * 1024 {
                     return Err("CA PEM MySQL oltre 1 MiB".to_owned().into());
                 }
@@ -135,7 +194,11 @@ fn mysql_provider_from_args(
 pub async fn mysql_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     if !remaining.is_empty() {
-        return Err(format!("argomenti extra non attesi: {remaining:?}").into());
+        return Err(format!(
+            "argomenti extra non attesi: {} oltre quelli previsti",
+            remaining.len()
+        )
+        .into());
     }
     let cancellation = CancellationToken::new();
     let connection = provider.test_connection(&secret, &cancellation).await?;
@@ -179,7 +242,11 @@ pub async fn mysql_describe(args: &mut impl Iterator<Item = String>) -> CliResul
 pub async fn mysql_inspect_schemas(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     if !remaining.is_empty() {
-        return Err(format!("argomenti extra non attesi: {remaining:?}").into());
+        return Err(format!(
+            "argomenti extra non attesi: {} oltre quelli previsti",
+            remaining.len()
+        )
+        .into());
     }
     let inspection = provider
         .inspect(
@@ -262,14 +329,16 @@ pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRe
     let commit_outcome = tx.commit(&cancellation).await?;
     print_json(&json!({
         "provider": "mysql",
+        "status": crate::commit_status(&commit_outcome),
         "affected_rows": affected,
-        "commit": format!("{commit_outcome:?}").to_lowercase(),
-    }))
+        "commit": commit_outcome,
+    }))?;
+    crate::commit_exit(&commit_outcome)
 }
 
 /// `mysql-execute-ddl <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>] <sql>`
 ///
-/// DDL raw (CREATE/DROP/ALTER). MySQL fa autocommit implicito su DDL.
+/// DDL raw (CREATE/DROP/ALTER). `MySQL` fa autocommit implicito su DDL.
 pub async fn mysql_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     let mut it = remaining.into_iter();
@@ -315,15 +384,17 @@ pub async fn mysql_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cl
         params: Vec::new(),
     };
     let rows = tx.query(&stmt, &cancellation).await?;
+    let rows_returned = rows.len();
     let _ = tx.rollback(&cancellation).await;
-    let value = rows
-        .first()
-        .and_then(|row| row.values().first())
-        .map_or_else(|| "null".to_owned(), |param| format!("{param:?}"));
+    // Cardinalita imposta: `scalar_opt` rifiuta piu di una riga o piu di una
+    // colonna, come gia fa il path Postgres via i costruttori scalar del core.
+    let value = plenora_database_core::facade::scalar_opt(rows)?
+        .as_ref()
+        .map_or(Value::Null, scalar_to_json);
     print_json(&json!({
         "provider": "mysql",
         "value": value,
-        "rows_returned": rows.len(),
+        "rows_returned": rows_returned,
     }))
 }
 
@@ -340,7 +411,7 @@ pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -
         .ok_or_else(|| "manca EXPECTED_AFFECTED (numero intero)".to_owned())?;
     let expected: u64 = expected_str
         .parse()
-        .map_err(|_| format!("EXPECTED_AFFECTED non numerico: {expected_str}"))?;
+        .map_err(|_| "EXPECTED_AFFECTED non numerico: atteso un intero senza segno")?;
     if it.next().is_some() {
         return Err("argomenti extra dopo EXPECTED_AFFECTED".to_owned().into());
     }
@@ -369,10 +440,12 @@ pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -
             let commit = tx.commit(&cancellation).await?;
             print_json(&json!({
                 "provider": "mysql",
+                "status": crate::commit_status(&commit),
                 "outcome": "matched",
                 "expected_affected": expected,
-                "commit": format!("{commit:?}").to_lowercase(),
-            }))
+                "commit": commit,
+            }))?;
+            crate::commit_exit(&commit)
         }
         Err(e) if e.category == plenora_database_core::ErrorCategory::ConcurrentModification => {
             let _ = tx.rollback(&cancellation).await;
@@ -393,7 +466,7 @@ pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -
 /// `mysql-portable-execute` — **non disponibile** (v1.2).
 ///
 /// Il facade `execute_portable` del core supporta il compile-portable solo
-/// per Postgres. Estendere a MySQL richiede refactor cross-crate del
+/// per Postgres. Estendere a `MySQL` richiede refactor cross-crate del
 /// facade + un dispatcher `compile_portable_for_provider(provider_kind)`
 /// non ancora implementato. Deferito a giro futuro.
 #[allow(dead_code)]
@@ -406,11 +479,16 @@ async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) 
     if it.next().is_some() {
         return Err("argomenti extra dopo PORTABLE.json".to_owned().into());
     }
-    let json_str =
-        std::fs::read_to_string(&path).map_err(|e| format!("lettura {path} fallita: {e}"))?;
+    let json_str = std::fs::read_to_string(&path)
+        .map_err(|error| format!("lettura del file dello statement fallita: {}", error.kind()))?;
     let portable: plenora_database_core::portable::PortableStatement =
-        serde_json::from_str(&json_str)
-            .map_err(|e| format!("parse PortableStatement JSON fallito: {e}"))?;
+        serde_json::from_str(&json_str).map_err(|e| {
+            format!(
+                "PortableStatement JSON non parsabile a riga {}, colonna {}",
+                e.line(),
+                e.column()
+            )
+        })?;
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
     let mut tx = provider
@@ -455,10 +533,11 @@ async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) 
             .collect();
         json!({
             "provider": "mysql",
+            "status": crate::commit_status(&commit),
             "kind": "select",
             "rows": json_rows,
             "row_count": json_rows.len(),
-            "commit": format!("{commit:?}").to_lowercase(),
+            "commit": commit,
         })
     } else {
         let affected =
@@ -467,12 +546,21 @@ async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) 
         let commit = tx.commit(&cancellation).await?;
         json!({
             "provider": "mysql",
+            "status": crate::commit_status(&commit),
             "kind": "dml",
             "affected_rows": affected,
-            "commit": format!("{commit:?}").to_lowercase(),
+            "commit": commit,
         })
     };
-    print_json(&result)
+    // I due rami producono `commit` in scope diversi: l'uscita segue lo stato
+    // gia scritto nel documento, che e la stessa cosa detta una volta sola.
+    let certain = result["status"] == "ok";
+    print_json(&result)?;
+    if certain {
+        Ok(())
+    } else {
+        Err(crate::CliError::Silent)
+    }
 }
 
 /// `mysql-transaction-test <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]`
@@ -483,7 +571,11 @@ async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) 
 pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, remaining) = mysql_provider_from_args(args)?;
     if !remaining.is_empty() {
-        return Err(format!("argomenti extra non attesi: {remaining:?}").into());
+        return Err(format!(
+            "argomenti extra non attesi: {} oltre quelli previsti",
+            remaining.len()
+        )
+        .into());
     }
     let cancellation = CancellationToken::new();
     let table = format!("_cli_txtest_{}", std::process::id());
@@ -541,10 +633,9 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
     };
     let rows = verify_tx.query(&count_stmt, &cancellation).await?;
     let _ = verify_tx.rollback(&cancellation).await;
-    let count_str = rows
-        .first()
-        .and_then(|row| row.values().first())
-        .map_or_else(|| "?".to_owned(), |v| format!("{v:?}"));
+    let actual_rows = plenora_database_core::facade::scalar_opt(rows)?
+        .as_ref()
+        .map_or(Value::Null, scalar_to_json);
     // Cleanup
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table}"), &cancellation)
@@ -554,8 +645,9 @@ pub async fn mysql_transaction_test(args: &mut impl Iterator<Item = String>) -> 
         "kind": ProviderKind::Mysql,
         "scenario": "insert+savepoint+rollback_to_sp+commit",
         "expected_rows_after_commit": 1,
-        "actual_rows": count_str,
-        "commit": format!("{commit:?}").to_lowercase(),
-        "status": "ok",
-    }))
+        "actual_rows": actual_rows,
+        "commit": commit,
+        "status": crate::commit_status(&commit),
+    }))?;
+    crate::commit_exit(&commit)
 }

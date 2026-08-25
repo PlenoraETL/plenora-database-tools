@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "provider": "sqlite",
+  "provider_version": "0.0.0-minimal",
+  "reads": {
+    "streaming": true,
+    "projection": false,
+    "filter": false,
+    "ordering": false
+  },
+  "writes": {
+    "create": false,
+    "append": false,
+    "truncate_insert": false,
+    "update": false,
+    "upsert": false,
+    "replace": false
+  },
+  "transactions": {},
+  "spatial": {
+    "read_wkb": false,
+    "write_wkb": false,
+    "dimensions": []
+  },
+  "limits": {}
+}

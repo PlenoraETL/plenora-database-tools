@@ -11,6 +11,39 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ---
 
+## [0.11.0] — non rilasciata
+
+### 🚨 BREAKING — `execute_scalar` impone la cardinalita che dichiarava
+
+`execute_scalar` prendeva la prima riga e la prima colonna e scartava il
+resto, su tutte e sei le superfici (sync, async, transaction, e le tre
+corrispondenti MySQL). Una query che restituiva due righe, o due colonne,
+dava un risultato plausibile e arbitrario invece di dire che era sbagliata —
+e la stessa chiamata poteva cambiare risposta al variare dell'ordine del
+result set.
+
+Ora vale la cardinalita dei costruttori scalar del core: **al piu una riga,
+esattamente una colonna**. Zero righe restano `None`, come prima.
+
+**Migrazione.** Chi usava `execute_scalar` per leggere la prima cella di un
+result set piu ampio deve passare a `execute_returning_rows` e prendere da li
+il valore. Chi lo usava per una vera query scalare — il caso normale — non
+deve fare niente.
+
+Il ramo MySQL cambia anche il caso "zero righe": restituiva un valore `NULL`
+tipizzato al posto di `None`, contro la propria documentazione.
+
+### Corretto
+
+- Il decoder MySQL non trasforma piu i `BLOB` di byte ASCII in stringhe: la
+  distinzione fra binario e testo si legge dal character set della colonna, e
+  non dall'aspetto dei byte. Una cella che il protocollo non consegna e ora un
+  errore di protocollo, non un `NULL` SQL.
+- `SpatialReference.validated()` fallisce se il modulo nativo non c'e, invece
+  di restituire un oggetto che si dichiara validato senza esserlo.
+- L'import del modulo `_native` restituisce un `ImportError` classificato
+  quando il runtime non parte, invece di un panic.
+
 ## [0.10.0] — 2026-08-17
 
 Contratto `Replace` su **entrambi** i provider, TLS fail-closed nei comandi

@@ -47,13 +47,10 @@ pub(super) fn cancelled_write_error(
     )
 }
 
-pub(super) fn interruption_category(cancellation: &CancellationToken) -> ErrorCategory {
-    if cancellation.reason() == Some(CancellationReason::Deadline) {
-        ErrorCategory::Timeout
-    } else {
-        ErrorCategory::Cancelled
-    }
-}
+/// La stessa domanda del resto del provider, e la stessa risposta: la copia
+/// che stava qui e in `crate::error` divergeva gia dal `check_cancelled`, che
+/// rispondeva sempre `Cancelled`.
+pub(super) use crate::error::interruption_category;
 
 pub(super) fn interruption_message(cancellation: &CancellationToken) -> &'static str {
     if cancellation.reason() == Some(CancellationReason::Deadline) {

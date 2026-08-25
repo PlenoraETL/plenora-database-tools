@@ -35,7 +35,7 @@ use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::transaction::parse_isolation;
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
@@ -192,8 +192,13 @@ impl AsyncMysqlSession {
             })
             .await
             .map_err(to_py_err)?;
+            // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di
+            // una riga o piu di una colonna invece di prendere la prima e
+            // buttare via il resto. E' la stessa regola dei costruttori
+            // scalar tipizzati del core.
+            let value = scalar_opt(rows).map_err(to_py_err)?;
             Python::with_gil(|py| {
-                rows.first().and_then(|r| r.get_index(0)).map_or_else(
+                value.as_ref().map_or_else(
                     || Ok(py.None()),
                     |v| param_to_python(py, v).map(Bound::unbind),
                 )
@@ -220,22 +225,7 @@ impl AsyncMysqlSession {
             .await
             .map_err(to_py_err)?;
             Python::with_gil(|py| {
-                let out = PyList::empty(py);
-                for row in rows {
-                    let dict = PyDict::new(py);
-                    let columns: Vec<String> = row.columns().to_vec();
-                    for (idx, name) in columns.iter().enumerate() {
-                        let value = row.values().get(idx).cloned().unwrap_or_else(|| {
-                            plenora_database_core::provider::ParameterValue::Null {
-                                type_name: "unknown".to_owned(),
-                            }
-                        });
-                        let py_val = param_to_python(py, &value)?;
-                        dict.set_item(name.as_str(), py_val)?;
-                    }
-                    out.append(dict)?;
-                }
-                Ok(out.into_any().unbind())
+                crate::transaction::rows_to_pylist(py, rows).map(|list| list.into_any().unbind())
             })
         })
     }
@@ -319,7 +309,9 @@ impl AsyncMysqlSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let provider = Arc::clone(&self.provider);
@@ -353,7 +345,9 @@ impl AsyncMysqlSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let provider = Arc::clone(&self.provider);
@@ -512,11 +506,11 @@ pub fn aconnect_mysql<'py>(
                 config =
                     config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
             }
-            other => {
-                return Err(PyRuntimeError::new_err(format!(
-                    "tls_mode non riconosciuto: {other:?}. Valori: \
-                     'require' (default) | 'insecure_trust_server'"
-                )));
+            _ => {
+                return Err(PyRuntimeError::new_err(
+                    "tls_mode non riconosciuto. Valori: \
+                     'require' (default) | 'insecure_trust_server'",
+                ));
             }
         }
         let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);

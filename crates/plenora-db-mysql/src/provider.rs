@@ -303,7 +303,7 @@ impl Provider for MysqlProvider {
                 )
                 .await?;
                 drop(session);
-                Ok(self.profile.capabilities(probe.product_version))
+                self.profile.capabilities(probe.product_version).published()
             }
             .await;
             crate::profile::attributed(self.profile, outcome)

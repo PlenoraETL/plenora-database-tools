@@ -16,8 +16,10 @@ use plenora_database_core::provider::BatchStream;
 use plenora_database_core::provider::ParameterBag;
 #[cfg(feature = "postgres")]
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
-#[cfg(feature = "postgres")]
+// Non piu dietro `postgres`: il giudizio sul commit incerto e comune a tutti i
+// provider, e vive negli helper qui sotto.
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
 use plenora_database_engine::parse_and_validate;
 #[cfg(feature = "mysql")]
@@ -83,6 +85,59 @@ pub(crate) enum CliError {
     // spostarla dietro la feature significherebbe cfg-are anche quelli.
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     Silent,
+}
+
+/// Cosa la CLI dice di un `commit()`, e con quale codice di uscita.
+///
+/// `CommitOutcome::OutcomeUnknown` e un `Ok`: il commit e stato **emesso** e
+/// l'esito remoto non e verificabile. Chi scriveva `tx.commit(...).await?` lo
+/// riceveva come successo, e i comandi stampavano `"status": "ok"` con uscita
+/// 0 — cioe dicevano a un'automazione che la mutazione era andata a buon fine
+/// mentre il contratto chiedeva quarantena e verifica fuori banda. Un retry su
+/// quella base puo raddoppiare una scrittura gia applicata.
+///
+/// Qui l'incertezza ha un nome suo — `outcome_unknown` — e non e mai `ok`.
+pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
+    match outcome {
+        CommitOutcome::Committed => "ok",
+        CommitOutcome::OutcomeUnknown { .. } => "outcome_unknown",
+    }
+}
+
+/// L'uscita che accompagna un esito gia stampato: zero solo se certo.
+pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
+    match outcome {
+        CommitOutcome::Committed => Ok(()),
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Silent),
+    }
+}
+
+/// Un commit che *deve* essere certo perche il comando prosegua.
+///
+/// Serve dove l'esito non viene stampato: preparazione di uno schema
+/// effimero, setup di un benchmark, helper amministrativi. Li proseguire su un
+/// commit incerto significa costruire il resto del comando su uno stato
+/// remoto che nessuno ha verificato.
+///
+/// # Errors
+///
+/// `Fatal` con effetto remoto ignoto e disposizione `RequiresRecovery`.
+pub(crate) fn require_committed(outcome: &CommitOutcome) -> CliResult<()> {
+    match outcome {
+        CommitOutcome::Committed => Ok(()),
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Fatal(DatabaseError {
+            category: ErrorCategory::Internal,
+            phase: ErrorPhase::Commit,
+            remote_effect: RemoteEffect::Unknown,
+            retry: RetryDisposition::RequiresRecovery,
+            provider: None,
+            execution_id: None,
+            message: "commit emesso senza conferma: verificare lo stato remoto \
+                      prima di ogni retry"
+                .to_owned(),
+            diagnostics: None,
+        })),
+    }
 }
 
 pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
@@ -278,15 +333,74 @@ fn inspect_dataset(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     print_json(&report)
 }
 
+/// `validate-plan <file.json> [--capabilities <file.json>]`
+///
+/// Senza `--capabilities` verifica solo cio che il piano dichiara di se: la
+/// forma, i limiti, i riferimenti. Con, esegue anche la **preparazione**, cioe
+/// il confronto fra cio che il piano chiede e cio che un provider pubblicizza.
+///
+/// La seconda meta esisteva gia in `plenora_database_engine::prepare`, e non
+/// aveva chiamanti: nessuna superficie la raggiungeva, quindi la matrice
+/// piano-capability non veniva mai eseguita e nessun test poteva accorgersi
+/// che fosse incompleta. Il documento capability e un file, non una
+/// connessione, quindi la verifica resta offline.
 fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let path = one_argument(args, "manca il percorso del piano")?;
+    let path = args
+        .next()
+        .ok_or_else(|| "manca il percorso del piano".to_owned())?;
+    let mut capabilities_path: Option<String> = None;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--capabilities" => {
+                capabilities_path = Some(
+                    args.next()
+                        .ok_or_else(|| "--capabilities richiede un percorso".to_owned())?,
+                );
+            }
+            other => {
+                if let Some(value) = other.strip_prefix("--capabilities=") {
+                    capabilities_path = Some(value.to_owned());
+                } else {
+                    // Nessun `{other}`: un argomento fuori posto puo essere
+                    // qualunque cosa la riga di comando abbia raccolto, DSN
+                    // compresi, e questo messaggio finisce in stderr JSON.
+                    return Err("argomento inatteso per validate-plan".into());
+                }
+            }
+        }
+    }
+
     let input = fs::read(path).map_err(|_| "piano non leggibile".to_owned())?;
     let validated = parse_and_validate(&input)?;
+    let provider = validated.plan().provider;
+    let fingerprint = validated.fingerprint().to_owned();
+
+    let Some(capabilities_path) = capabilities_path else {
+        return print_json(&json!({
+            "schema_version": 1,
+            "status": "validated",
+            "provider": provider,
+            "fingerprint": fingerprint
+        }));
+    };
+
+    let document =
+        fs::read(&capabilities_path).map_err(|_| "capability non leggibili".to_owned())?;
+    let capabilities: plenora_database_core::capabilities::ProviderCapabilities =
+        serde_json::from_slice(&document).map_err(|e| {
+            format!(
+                "capability non parsabili a riga {}, colonna {}",
+                e.line(),
+                e.column()
+            )
+        })?;
+    let prepared = plenora_database_engine::prepare(validated, capabilities)?;
     print_json(&json!({
         "schema_version": 1,
-        "status": "validated",
-        "provider": validated.plan().provider,
-        "fingerprint": validated.fingerprint()
+        "status": "prepared",
+        "provider": provider,
+        "fingerprint": fingerprint,
+        "provider_version": prepared.capabilities().provider_version,
     }))
 }
 
@@ -491,7 +605,7 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
     while let Some(option) = args.next() {
         let value = args
             .next()
-            .ok_or_else(|| format!("manca il valore per {option}"))?;
+            .ok_or("manca il valore per l'ultima opzione della riga di comando")?;
         match option.as_str() {
             "--max-rows" => limits.rows = parse_positive_u64(&option, &value)?,
             "--max-output-bytes" => {
@@ -519,11 +633,20 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
             "--filter" => {
                 // Il valore è un percorso a un JSON che deserializza in
                 // FilterExpression.
+                // Il percorso resta nel messaggio: e contesto operativo, cioe
+                // cio che `DatabaseError::message` ammette per contratto, e
+                // l'ha scritto il chiamante sulla riga di comando. Il
+                // *contenuto* del file no: quello e payload.
                 let content = fs::read(&value)
                     .map_err(|_| format!("--filter file non leggibile: {value}"))?;
                 let parsed: plenora_database_core::plan::FilterExpression =
-                    serde_json::from_slice(&content)
-                        .map_err(|e| format!("--filter JSON non parsabile: {e}"))?;
+                    serde_json::from_slice(&content).map_err(|e| {
+                        format!(
+                            "--filter JSON non parsabile a riga {}, colonna {}",
+                            e.line(),
+                            e.column()
+                        )
+                    })?;
                 filter = Some(parsed);
             }
             "--limit" => {
@@ -534,10 +657,10 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
                 // referenziabile dal filtro come `field=NAME`.
                 let (name, val) = typed_params::parse_named_value_type(&value)?;
                 if params_map.insert(name.clone(), val).is_some() {
-                    return Err(format!("--parameter duplicato: {name}").into());
+                    return Err("--parameter duplicato".into());
                 }
             }
-            _ => return Err(format!("opzione postgres-read-ipc sconosciuta: {option}").into()),
+            _ => return Err("opzione postgres-read-ipc sconosciuta".into()),
         }
     }
     limits.validate()?;
@@ -622,7 +745,7 @@ async fn write_stream_to_ipc(
             ErrorPhase::Commit,
             RemoteEffect::None,
             RetryDisposition::Never,
-            format!("pubblicazione Arrow IPC fallita: {error}"),
+            format!("pubblicazione Arrow IPC fallita: {}", error.kind()),
         );
         return match fs::remove_file(&temporary) {
             Ok(()) => {
@@ -706,7 +829,10 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
                     ErrorPhase::Write,
                     RemoteEffect::None,
                     RetryDisposition::Never,
-                    format!("artifact temporaneo Arrow IPC non creabile: {error}"),
+                    format!(
+                        "artifact temporaneo Arrow IPC non creabile: {}",
+                        error.kind()
+                    ),
                 ));
             }
         }
@@ -1437,7 +1563,7 @@ fn common_usage() -> String {
         "  database-probe <provider> <secret-env> [args tls]".to_owned(),
         format!("    provider compilati in questo binario: {compiled}"),
         "  inspect-dataset <file.arrow>".to_owned(),
-        "  validate-plan <file.json>".to_owned(),
+        "  validate-plan <file.json> [--capabilities <file.json>]".to_owned(),
     ]
     .join("\n")
 }

@@ -270,9 +270,10 @@
             "op": {"const": "spatial"},
             "function": {
               "enum": [
-                "is_empty", "is_valid", "intersects", "contains", "within",
-                "covers", "touches", "crosses", "overlaps", "disjoint",
-                "d_within"
+                "is_empty", "is_valid", "is_simple", "is_closed",
+                "intersects", "contains", "contains_properly", "within",
+                "covers", "covered_by", "touches", "crosses", "overlaps",
+                "disjoint", "equals", "d_within"
               ]
             },
             "field": {"$ref": "common.schema.json#/$defs/identifier"},

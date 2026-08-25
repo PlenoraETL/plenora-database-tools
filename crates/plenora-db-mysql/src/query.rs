@@ -15,9 +15,12 @@
 //! numerano le righe pari una per una e sarebbero riproducibili solo su una
 //! chiave d'ordine dimostrata univoca, proprieta che l'AST portabile non
 //! esprime. CTE, set operation, window spatial, derived source (di base o di
-//! join), LATERAL, subquery, spatial e locking restano fail-closed per lo
-//! stesso motivo di fondo: sono sottoinsiemi dell'AST non ancora dimostrati su
-//! `MySQL`, non costrutti necessariamente assenti dal motore. FULL JOIN e
+//! join), LATERAL, subquery e locking restano fail-closed per lo stesso
+//! motivo di fondo: sono sottoinsiemi dell'AST non ancora dimostrati su
+//! `MySQL`, non costrutti necessariamente assenti dal motore. Lo spatial no:
+//! era in quell'elenco e non c'e piu, perche le funzioni di
+//! `VERIFIED_SPATIAL_FUNCTIONS` si renderizzano e si eseguono — cio che resta
+//! chiuso e la *window* spatial, non lo spatial. FULL JOIN e
 //! invece un'assenza reale: `MySQL` 8.4 non ha una forma nativa equivalente,
 //! cosi come non ha la clausola di frame GROUPS.
 //!
@@ -41,17 +44,34 @@ use plenora_database_core::{
 use plenora_database_sql::RenderedSql;
 use std::collections::BTreeSet;
 
-/// Sottoinsieme delle funzioni spatial `MySQL` 8.4 qualificate per l'AST
-/// portabile — dichiarate live in `probe_capabilities` e utilizzabili
-/// via `Provider::query` sia come proiezioni scalari sia (per i
-/// predicati) come filtri WHERE.
+/// Sottoinsieme delle funzioni spatial `MySQL` qualificate per l'AST
+/// portabile — pubblicate in `probe_capabilities` e utilizzabili via
+/// `Provider::query` sia come proiezioni scalari sia (per i predicati) come
+/// filtri WHERE.
 ///
 /// Fonte: rendering dialect condiviso in `plenora-database-sql` (unificato
 /// col dialect `Postgres` per il subset `ST_*`). Le funzioni escluse
 /// (`X`/`Y`/`Z`/`M`, `AsGeoJson`, `DWithin`, `Transform`, ecc.) restano
-/// `Unsupported` finché non hanno un test live dedicato su `MySQL` 8.4 LTS.
+/// `Unsupported` finché non hanno una prova live su `MySQL`.
 ///
-/// **20+ funzioni verified**:
+/// # Cosa prova questa lista, e da quando
+///
+/// Per un po' ha promesso piu di quanto avesse. Il nome diceva "verified" e le
+/// prove live ne attraversavano **due** — `Area` e `Intersects`; il test di
+/// capability contava la lista e ci cercava dentro cinque nomi, che e una
+/// verifica sulla costante, non sul motore. Le altre ventiquattro erano una
+/// deduzione dal dialect condiviso con `PostgreSQL`, cioe esattamente il tipo di
+/// affermazione che la regola 1 vieta.
+///
+/// Ora la sonda `live_v12_every_verified_spatial_function_executes` le
+/// attraversa **tutte**, una per una, contro il riferimento: se una non
+/// esegue, il gate live diventa rosso e la lista va accorciata con una prova
+/// in mano invece che allungata per analogia. La sonda gira su un SRID
+/// cartesiano: quello che dimostra e che il renderer produce SQL che `MySQL`
+/// esegue, non che ogni funzione valga su ogni sistema di riferimento — che e
+/// una domanda diversa, e non e questa lista a rispondervi.
+///
+/// **26 funzioni**:
 /// - metadata (7): `GeometryType`, `Srid`, `Dimensions`, `NPoints`,
 ///   `IsEmpty`, `IsValid`, `IsClosed`
 /// - predicate binary (5): `Intersects`, `Contains`, `Within`, `Disjoint`,
@@ -1081,7 +1101,10 @@ mod tests {
         cases.push(("derived source di base", derived_base));
 
         // La window scalare e qualificata da questa tranche; la window
-        // spatial resta fuori insieme a tutto il resto dell'AST spatial.
+        // spatial resta fuori. Non insieme al resto dell'AST spatial — le
+        // funzioni di `VERIFIED_SPATIAL_FUNCTIONS` sono accettate, e poche
+        // righe piu in basso questo stesso test lo mostra — ma per la sola
+        // forma window, che nessuna prova attraversa.
         let mut spatial_window = base_query();
         spatial_window.projection = vec![QueryProjection {
             expression: QueryExpression::SpatialWindow {
@@ -1476,7 +1499,7 @@ mod tests {
             },
             qualified("a", "actor_id"),
         ));
-        cases.push(("window in ON", window_on, ErrorCategory::Unsupported));
+        cases.push(("window in ON", window_on, ErrorCategory::InvalidPlan));
 
         // v1.2: Centroid è ora verified. Il test JOIN spatial usa una
         // funzione non-verified per verificare che JOIN-on-spatial resti
@@ -1534,14 +1557,24 @@ mod tests {
             ErrorCategory::InvalidPlan,
         ));
 
+        // Alcuni casi non sono limiti di `MySQL`: sono SQL invalido per
+        // qualunque motore, e da quando `validate_query_operation` conosce la
+        // clausola di provenienza di una window li rifiuta prima del
+        // renderer. Rispondono percio in fase `Validate` e senza provider —
+        // il confine giusto, e va misurato dove cade davvero.
         for (label, query, category) in cases {
             let error = match render_query(&query, "warehouse") {
                 Ok(rendered) => panic!("{label} deve restare fail-closed, reso: {}", rendered.sql),
                 Err(error) => error,
             };
             assert_eq!(error.category, category, "{label}: {}", error.message);
-            assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
-            assert_eq!(error.provider, Some(ProviderKind::Mysql), "{label}");
+            if PORTABLE_REJECTIONS.contains(&label) {
+                assert_eq!(error.phase, ErrorPhase::Validate, "{label}");
+                assert_eq!(error.provider, None, "{label}");
+            } else {
+                assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
+                assert_eq!(error.provider, Some(ProviderKind::Mysql), "{label}");
+            }
         }
     }
 
@@ -2590,6 +2623,12 @@ mod tests {
         }
     }
 
+    /// I casi che la validazione portabile rifiuta prima del renderer.
+    ///
+    /// Non sono limiti di `MySQL`: nessun motore ammette una window in una
+    /// clausola `ON` o dentro gli argomenti di un'altra window.
+    const PORTABLE_REJECTIONS: &[&str] = &["window in ON", "window annidata in una window"];
+
     #[test]
     #[allow(clippy::too_many_lines)]
     fn window_operands_stay_row_only_scalar_and_relation_valid() {
@@ -2611,7 +2650,7 @@ mod tests {
                 Vec::new(),
                 None,
             )),
-            ErrorCategory::Unsupported,
+            ErrorCategory::InvalidPlan,
         ));
 
         cases.push((
@@ -2757,14 +2796,24 @@ mod tests {
             ErrorCategory::InvalidPlan,
         ));
 
+        // Alcuni casi non sono limiti di `MySQL`: sono SQL invalido per
+        // qualunque motore, e da quando `validate_query_operation` conosce la
+        // clausola di provenienza di una window li rifiuta prima del
+        // renderer. Rispondono percio in fase `Validate` e senza provider —
+        // il confine giusto, e va misurato dove cade davvero.
         for (label, query, category) in cases {
             let error = match render_query(&query, "warehouse") {
                 Ok(rendered) => panic!("{label} deve restare fail-closed, reso: {}", rendered.sql),
                 Err(error) => error,
             };
             assert_eq!(error.category, category, "{label}: {}", error.message);
-            assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
-            assert_eq!(error.provider, Some(ProviderKind::Mysql), "{label}");
+            if PORTABLE_REJECTIONS.contains(&label) {
+                assert_eq!(error.phase, ErrorPhase::Validate, "{label}");
+                assert_eq!(error.provider, None, "{label}");
+            } else {
+                assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
+                assert_eq!(error.provider, Some(ProviderKind::Mysql), "{label}");
+            }
         }
     }
 
@@ -2814,9 +2863,13 @@ mod tests {
             right: Box::new(threshold()),
         });
 
+        // `WHERE`, `GROUP BY` e `HAVING` non sono clausole in cui una window
+        // sia SQL valido: le rifiuta la validazione portabile, per tutti i
+        // provider e prima del renderer. `ORDER BY` invece **e** valido — solo
+        // non ancora qualificato qui — e resta il caso che misura la chiusura
+        // di questo provider.
         for (label, query) in [
             ("window in WHERE", filtered),
-            ("window in ORDER BY", ordered),
             ("window in GROUP BY", keyed),
             ("window in HAVING", filtered_group),
         ] {
@@ -2824,14 +2877,30 @@ mod tests {
                 Ok(rendered) => panic!("{label} deve restare fail-closed, reso: {}", rendered.sql),
                 Err(error) => error,
             };
-            assert_eq!(error.category, ErrorCategory::Unsupported, "{label}");
-            assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
+            assert_eq!(error.category, ErrorCategory::InvalidPlan, "{label}");
+            assert_eq!(error.phase, ErrorPhase::Validate, "{label}");
             assert!(
-                error.message.contains("non ancora qualificat"),
+                error.message.contains("fuori da projection"),
                 "{label}: {}",
                 error.message
             );
         }
+
+        let error = match render_query(&ordered, "warehouse") {
+            Ok(rendered) => panic!(
+                "window in ORDER BY deve restare fail-closed: {}",
+                rendered.sql
+            ),
+            Err(error) => error,
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.provider, Some(ProviderKind::Mysql));
+        assert!(
+            error.message.contains("non ancora qualificat"),
+            "{}",
+            error.message
+        );
     }
 
     /// Una window e valutata dopo il raggruppamento e prima di DISTINCT: le

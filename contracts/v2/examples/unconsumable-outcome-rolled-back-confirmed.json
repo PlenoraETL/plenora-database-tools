@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "status": "rolled_back",
+  "execution_id": "01J3REJECTROLLEDBACK",
+  "provider": "postgres",
+  "rows": {
+    "received": 500,
+    "confirmed": 12,
+    "inserted": null,
+    "updated": null,
+    "deleted": null,
+    "failed": 0,
+    "skipped": 0
+  }
+}

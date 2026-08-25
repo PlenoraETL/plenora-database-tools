@@ -199,6 +199,11 @@ pub async fn write(
         policy: operation.mapping_policy,
         losses,
     };
+    // Un report si accumula una perdita per campo, e i nomi di tipo arrivano
+    // dallo schema sorgente: entrambe le dimensioni dipendono dal target, non
+    // da noi. Il contratto ha dei tetti, e questo e il punto in cui si sa
+    // ancora quale operazione stava producendo il documento.
+    report.validate()?;
     if !report.permits_execution() {
         return Err(public_error(
             ErrorCategory::DataMapping,

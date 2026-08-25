@@ -46,17 +46,48 @@ use mysql_session::{connect_mysql, MysqlSession};
 use session::{connect, Session};
 use transaction::Transaction;
 
-/// Runtime tokio globale condiviso da Session e Transaction. Inizializzato
-/// al primo uso e mai droppato durante la vita del processo Python.
+/// Runtime tokio globale condiviso da Session e Transaction. Costruito una
+/// sola volta all'import del modulo `_native` e mai droppato durante la vita
+/// del processo Python.
+static RT: OnceLock<Runtime> = OnceLock::new();
+
+/// Costruisce il runtime, oppure descrive perche non e stato possibile.
+///
+/// Idempotente: la seconda chiamata restituisce quello gia costruito.
+///
+/// `Builder::build()` fa I/O — apre l'event loop e avvia i worker — e puo
+/// fallire per limiti di thread o di descrittori del processo. Prima quel
+/// fallimento passava per un `expect`, cioe un panico durante l'import del
+/// modulo: Python lo vedeva come `pyo3_runtime.PanicException`, senza classe
+/// d'errore stabile su cui un chiamante possa ragionare. Ora l'import
+/// restituisce un `ImportError` con il motivo.
+fn build_runtime() -> std::result::Result<&'static Runtime, String> {
+    if let Some(existing) = RT.get() {
+        return Ok(existing);
+    }
+    let built = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("plenora-py")
+        .build()
+        .map_err(|error| format!("runtime tokio non avviabile: {error}"))?;
+    // `set` fallisce solo se un'altra thread ha vinto la corsa: in quel caso
+    // il runtime buono e il suo, e il nostro viene droppato. Va bene.
+    drop(RT.set(built));
+    RT.get()
+        .ok_or_else(|| "runtime tokio non registrato".to_owned())
+}
+
+/// Il runtime condiviso.
+///
+/// # Panics
+///
+/// Solo se invocata prima che l'import del modulo `_native` sia riuscito, il
+/// che non e raggiungibile da Python: `#[pymodule]` costruisce il runtime e,
+/// se non ci riesce, l'import fallisce e nessuna di queste funzioni diventa
+/// chiamabile.
 pub(crate) fn runtime() -> &'static Runtime {
-    static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("plenora-py")
-            .build()
-            .expect("build tokio runtime")
-    })
+    RT.get()
+        .expect("runtime costruito dall'inizializzazione del modulo _native")
 }
 
 /// Versione del SDK Python. Coincide con `pyproject.toml::version` e
@@ -108,10 +139,10 @@ pub fn validate_ewkb_reference(ewkb: &[u8], srid: u32, dimensions: &str) -> PyRe
         "xym" => Dimensions::Xym,
         "xyzm" => Dimensions::Xyzm,
         "unknown" => Dimensions::Unknown,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "dimensions non valida: {other:?}"
-            )))
+        _ => {
+            return Err(PyValueError::new_err(
+                "dimensions non valida: attesi xy, xyz, xym, xyzm, unknown",
+            ))
         }
     };
     plenora_database_core::spatial_predicate::SpatialReference::new_validated(
@@ -128,7 +159,11 @@ pub fn validate_ewkb_reference(ewkb: &[u8], srid: u32, dimensions: &str) -> PyRe
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
     // asyncio ↔ tokio. Chiamato una sola volta all'import del modulo.
-    init_async_runtime();
+    //
+    // Fallisce chiuso: se il runtime non parte, l'import del modulo non
+    // riesce e nessuna funzione qui sotto diventa raggiungibile. E' anche
+    // l'invariante che rende infallibile `runtime()`.
+    init_async_runtime().map_err(pyo3::exceptions::PyImportError::new_err)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
     m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;

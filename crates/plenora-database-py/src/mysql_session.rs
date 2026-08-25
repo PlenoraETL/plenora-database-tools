@@ -44,7 +44,7 @@ use crate::mysql_arrow_reader::open_mysql_reader;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::Row;
@@ -189,7 +189,16 @@ impl MysqlSession {
         })
     }
 
-    /// SELECT scalare — 1 riga × 1 colonna.
+    /// SELECT scalare: **al piu una riga, esattamente una colonna**.
+    ///
+    /// `None` quando la query non restituisce righe. Piu di una riga, o piu di
+    /// una colonna, sono un errore — non una selezione arbitraria del primo
+    /// valore, come faceva la versione 0.10: quella scartava in silenzio il
+    /// resto del result set, e una query sbagliata restituiva un risultato
+    /// plausibile invece di dire che era sbagliata.
+    ///
+    /// E' la stessa cardinalita dei costruttori scalar del core. Chi vuole la
+    /// prima riga di un result set piu ampio usa `execute_returning_rows`.
     #[pyo3(signature = (sql, params=None))]
     fn execute_scalar<'py>(
         &self,
@@ -206,14 +215,14 @@ impl MysqlSession {
                 tx.query(&stmt, cancel).await
             })
         })?;
-        let value = rows
-            .first()
-            .and_then(|row| row.values().first())
-            .cloned()
-            .unwrap_or_else(|| plenora_database_core::provider::ParameterValue::Null {
-                type_name: "unknown".to_owned(),
-            });
-        param_to_python(py, &value)
+        // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di una
+        // riga o piu di una colonna invece di prendere la prima e buttare via
+        // il resto. E' la stessa regola dei costruttori scalar tipizzati del
+        // core, e quella che questa firma dichiarava gia a parole.
+        let value = scalar_opt(rows).map_err(to_py_err)?;
+        value
+            .as_ref()
+            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
     }
 
     /// SELECT con rows → list[dict] (nome colonna → valore Python).
@@ -233,22 +242,7 @@ impl MysqlSession {
                 tx.query(&stmt, cancel).await
             })
         })?;
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            let columns: Vec<String> = row.columns().to_vec();
-            for (idx, name) in columns.iter().enumerate() {
-                let value = row.values().get(idx).cloned().unwrap_or_else(|| {
-                    plenora_database_core::provider::ParameterValue::Null {
-                        type_name: "unknown".to_owned(),
-                    }
-                });
-                let py_val = param_to_python(py, &value)?;
-                dict.set_item(name.as_str(), py_val)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out)
+        crate::transaction::rows_to_pylist(py, rows)
     }
 
     /// Apre una nuova transazione user-managed su MySQL.
@@ -331,7 +325,9 @@ impl MysqlSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
@@ -354,7 +350,9 @@ impl MysqlSession {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         self.run_tx(py, move |tx, cancel| {
@@ -557,11 +555,11 @@ pub fn connect_mysql(
         "insecure_trust_server" => {
             config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
         }
-        other => {
-            return Err(PyRuntimeError::new_err(format!(
-                "tls_mode non riconosciuto: {other:?}. Valori: \
-                 'require' (default) | 'insecure_trust_server'"
-            )));
+        _ => {
+            return Err(PyRuntimeError::new_err(
+                "tls_mode non riconosciuto. Valori: \
+                 'require' (default) | 'insecure_trust_server'",
+            ));
         }
     }
     let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);

@@ -24,16 +24,47 @@ pub struct Row {
 }
 
 impl Row {
-    /// Costruisce una `Row`. Il chiamante è responsabile di garantire che
-    /// `columns.len() == values.len()`; violazioni sono un bug del driver.
-    #[must_use]
-    pub fn new(columns: Arc<[String]>, values: Vec<ParameterValue>) -> Self {
-        debug_assert_eq!(
-            columns.len(),
-            values.len(),
-            "Row: mismatch tra nomi colonna e valori"
-        );
-        Self { columns, values }
+    /// Costruisce una `Row` verificando che nomi e valori si corrispondano.
+    ///
+    /// Prima la parità era un `debug_assert_eq!`, cioè un controllo che
+    /// spariva in release: una riga malformata prodotta da un driver veniva
+    /// accettata in produzione e falliva più tardi, altrove — su un accesso
+    /// per nome che non trovava il valore, o su un indice fuori dai valori.
+    /// Il posto giusto per accorgersene è qui, dove si sa ancora quale driver
+    /// l'ha costruita.
+    ///
+    /// Sostituisce `Row::new`, che era infallibile e non poteva quindi
+    /// segnalare niente. Non e stata affiancata: un costruttore che accetta
+    /// una riga malformata resta un modo per costruirne una, e i sette
+    /// chiamanti stanno tutti in questo workspace. Il crate e `publish =
+    /// false` e nessun altro repository lo referenzia per path, quindi non
+    /// esistono chiamanti esterni da rompere; e la major di cui parla la
+    /// regola 2 di AGENTS.md e quella del contratto in `contracts/v2/`, che
+    /// questa firma non tocca.
+    ///
+    /// # Errors
+    ///
+    /// `DataMapping` se `columns.len() != values.len()`. Il messaggio riporta
+    /// i due conteggi e nessun nome: i nomi di colonna sono identificatori
+    /// dello schema remoto, e un errore pubblico non li trasporta.
+    pub fn try_new(columns: Arc<[String]>, values: Vec<ParameterValue>) -> crate::Result<Self> {
+        if columns.len() != values.len() {
+            return Err(crate::DatabaseError {
+                category: crate::ErrorCategory::DataMapping,
+                phase: crate::ErrorPhase::Read,
+                remote_effect: crate::RemoteEffect::None,
+                retry: crate::RetryDisposition::Never,
+                provider: None,
+                execution_id: None,
+                message: format!(
+                    "riga malformata: {} nomi di colonna e {} valori",
+                    columns.len(),
+                    values.len()
+                ),
+                diagnostics: None,
+            });
+        }
+        Ok(Self { columns, values })
     }
 
     #[must_use]
@@ -79,24 +110,40 @@ impl Row {
     }
 }
 
+/// Accesso per nome, comodo ma panicante.
+///
+/// Il messaggio non elenca piu le colonne presenti: `Row` trasporta i nomi
+/// dello schema remoto, e un panico finisce nei log come qualsiasi altro
+/// output: quell'elenco era un inventario dello schema su un percorso che
+/// nessuno redige. Chi deve sapere quali colonne ci sono ha [`Row::columns`];
+/// chi non vuole panicare ha [`Row::get`].
 impl Index<&str> for Row {
     type Output = ParameterValue;
 
     fn index(&self, name: &str) -> &ParameterValue {
         self.get(name).unwrap_or_else(|| {
             panic!(
-                "colonna `{name}` non presente in Row (colonne: {:?})",
-                self.columns
+                "accesso a una colonna non presente in una Row di {} colonne \
+                 (usare Row::get per un accesso fallibile)",
+                self.columns.len()
             )
         })
     }
 }
 
+/// Accesso posizionale, comodo ma panicante. Vedi [`Row::get_index`] per la
+/// variante fallibile.
 impl Index<usize> for Row {
     type Output = ParameterValue;
 
     fn index(&self, index: usize) -> &ParameterValue {
-        &self.values[index]
+        self.values.get(index).unwrap_or_else(|| {
+            panic!(
+                "indice {index} fuori da una Row di {} valori \
+                 (usare Row::get_index per un accesso fallibile)",
+                self.values.len()
+            )
+        })
     }
 }
 
@@ -105,13 +152,14 @@ mod tests {
     use super::*;
 
     fn sample_row() -> Row {
-        Row::new(
+        Row::try_new(
             Arc::from(vec!["id".to_owned(), "name".to_owned()]),
             vec![
                 ParameterValue::I32(42),
                 ParameterValue::String("plenora".to_owned()),
             ],
         )
+        .expect("fixture coerente")
     }
 
     #[test]
@@ -151,11 +199,39 @@ mod tests {
         assert!(matches!(&row[0], ParameterValue::I32(42)));
     }
 
+    /// Il panico dice che la colonna manca, non quali ci sono.
+    ///
+    /// Il messaggio elencava `self.columns`: un panico raggiungibile da un
+    /// nome sbagliato pubblicava l'intero schema della riga nei log.
     #[test]
-    #[should_panic(expected = "colonna `absent`")]
+    #[should_panic(expected = "colonna non presente in una Row di 2 colonne")]
     fn index_by_name_panics_when_missing() {
         let row = sample_row();
         let _ = &row["absent"];
+    }
+
+    #[test]
+    fn index_by_position_panics_out_of_range() {
+        let row = sample_row();
+        let panicked = std::panic::catch_unwind(move || {
+            let _ = &row[7];
+        });
+        assert!(panicked.is_err());
+    }
+
+    /// La parita fra nomi e valori non e piu un `debug_assert`: vale anche in
+    /// release, che e dove i driver girano.
+    #[test]
+    fn a_row_whose_names_and_values_disagree_is_rejected() {
+        let error = Row::try_new(
+            Arc::from(vec!["id".to_owned(), "name".to_owned()]),
+            vec![ParameterValue::I32(42)],
+        )
+        .expect_err("2 nomi e 1 valore");
+        assert_eq!(error.category, crate::ErrorCategory::DataMapping);
+        // Conteggi si, nomi no.
+        assert!(error.message.contains('2'), "{}", error.message);
+        assert!(!error.message.contains("name"), "{}", error.message);
     }
 
     #[test]
@@ -168,14 +244,16 @@ mod tests {
     #[test]
     fn shared_columns_avoid_per_row_allocations() {
         let columns: Arc<[String]> = Arc::from(vec!["a".to_owned(), "b".to_owned()]);
-        let row1 = Row::new(
+        let row1 = Row::try_new(
             Arc::clone(&columns),
             vec![ParameterValue::I32(1), ParameterValue::I32(2)],
-        );
-        let row2 = Row::new(
+        )
+        .expect("fixture coerente");
+        let row2 = Row::try_new(
             Arc::clone(&columns),
             vec![ParameterValue::I32(3), ParameterValue::I32(4)],
-        );
+        )
+        .expect("fixture coerente");
         assert!(Arc::ptr_eq(&row1.columns, &row2.columns));
     }
 

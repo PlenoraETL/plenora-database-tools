@@ -13,6 +13,11 @@ pub struct Limits {
     #[serde(skip)]
     pub max_plan_json_bytes: usize,
     #[serde(skip)]
+    /// Il tetto sui nomi, in **code point**: e il `maxLength: 256` di
+    /// `common.schema.json#/$defs/identifier`, non un budget di byte. Il nome
+    /// del campo dice altro per ragioni storiche e non compare in
+    /// `plan.schema.json`, che ha `additionalProperties: false`: nessun piano
+    /// puo dichiararlo, quindi cambiarlo non e una modifica di contratto.
     pub max_identifier_bytes: usize,
     #[serde(skip)]
     pub max_filter_depth: usize,

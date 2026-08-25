@@ -29,6 +29,7 @@ use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
+use pyo3::exceptions::PyRuntimeError;
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_postgres::PostgresProvider;
@@ -74,10 +75,13 @@ pub(crate) fn parse_mode(s: &str) -> Result<WriteMode, DatabaseError> {
         "update" => Ok(WriteMode::Update),
         "upsert" => Ok(WriteMode::Upsert),
         "delete_by_keys" => Ok(WriteMode::DeleteByKeys),
-        other => Err(DatabaseError::invalid_plan(format!(
-            "mode sconosciuto '{other}': attesi \
-             create/append/replace/truncate_insert/update/upsert/delete_by_keys"
-        ))),
+        // Il valore non entra nel messaggio: un argomento fuori posto puo
+        // essere SQL, una DSN o un token, e questo testo diventa un'eccezione
+        // Python, un log e a volte telemetria.
+        _ => Err(DatabaseError::invalid_plan(
+            "mode sconosciuto: attesi create, append, replace, truncate_insert, \
+             update, upsert, delete_by_keys",
+        )),
     }
 }
 
@@ -88,10 +92,10 @@ pub(crate) fn parse_profile(s: &str) -> Result<TransactionProfile, DatabaseError
         "staged_swap" => Ok(TransactionProfile::StagedSwap),
         "chunk_committed" => Ok(TransactionProfile::ChunkCommitted),
         "best_effort_ddl" => Ok(TransactionProfile::BestEffortDdl),
-        other => Err(DatabaseError::invalid_plan(format!(
-            "transaction_profile sconosciuto '{other}': attesi \
-             read_only/single_transaction/staged_swap/chunk_committed/best_effort_ddl"
-        ))),
+        _ => Err(DatabaseError::invalid_plan(
+            "transaction_profile sconosciuto: attesi read_only, single_transaction, \
+             staged_swap, chunk_committed, best_effort_ddl",
+        )),
     }
 }
 
@@ -101,10 +105,9 @@ pub(crate) fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseErr
         "compatible" => Ok(MappingPolicy::Compatible),
         "lossy" => Ok(MappingPolicy::Lossy),
         "native" => Ok(MappingPolicy::Native),
-        other => Err(DatabaseError::invalid_plan(format!(
-            "mapping_policy sconosciuta '{other}': attesi \
-             strict/compatible/lossy/native"
-        ))),
+        _ => Err(DatabaseError::invalid_plan(
+            "mapping_policy sconosciuta: attesi strict, compatible, lossy, native",
+        )),
     }
 }
 
@@ -114,14 +117,19 @@ pub(crate) fn decode_ipc_stream(
     ipc_bytes: &[u8],
 ) -> Result<(SchemaRef, VecDeque<RecordBatch>, u64), DatabaseError> {
     let cursor = Cursor::new(ipc_bytes);
+    // Stessa regola dei messaggi sull'AST: `DatabaseError::message` non porta
+    // payload, e un errore Arrow nomina volentieri colonne e valori.
     let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| DatabaseError::invalid_plan(format!("Arrow IPC stream non valido: {e}")))?;
+        .map_err(|_| DatabaseError::invalid_plan("Arrow IPC stream non valido"))?;
     let schema = reader.schema();
     let mut batches: VecDeque<RecordBatch> = VecDeque::new();
     let mut total_rows: u64 = 0;
     for batch_result in reader {
-        let batch = batch_result.map_err(|e| {
-            DatabaseError::invalid_plan(format!("record batch Arrow IPC non valido: {e}"))
+        let batch = batch_result.map_err(|_| {
+            DatabaseError::invalid_plan(format!(
+                "record batch Arrow IPC non valido: il {}o",
+                batches.len() + 1
+            ))
         })?;
         total_rows = total_rows.saturating_add(batch.num_rows() as u64);
         batches.push_back(batch);
@@ -131,38 +139,35 @@ pub(crate) fn decode_ipc_stream(
 
 // ------------------------------ WriteOutcome → Python dict -------------
 
+/// L'esito di una scrittura come dizionario Python, **serializzato da Serde**.
+///
+/// La versione precedente lo costruiva a mano, campo per campo, e sbagliava in
+/// due modi che nessun test copriva. Gli stati venivano resi con
+/// `format!("{:?}").to_lowercase()`, che appiattisce il `CamelCase`: il
+/// contratto dice `partially_committed`, `outcome_unknown` e
+/// `commit_requested`, e Python riceveva `partiallycommitted`,
+/// `outcomeunknown` e `commitrequested`. E `recovery` veniva sempre scritto,
+/// anche `null`, mentre le varianti `committed` e `rolled_back` dello schema
+/// hanno `unevaluatedProperties: false` e non dichiarano quel campo: **ogni**
+/// esito prodotto violava il contratto in almeno una variante.
+///
+/// Passare da Serde non e una scorciatoia: e l'unico modo perche il dizionario
+/// Python e il JSON del contratto restino la stessa cosa. `rename_all =
+/// "snake_case"` e `skip_serializing_if` sono dichiarati una volta sul tipo, e
+/// da li valgono per tutte le superfici.
 fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("schema_version", outcome.schema_version)?;
-    d.set_item("status", format!("{:?}", outcome.status).to_lowercase())?;
-    d.set_item("execution_id", outcome.execution_id.clone())?;
-    d.set_item("provider", format!("{:?}", outcome.provider).to_lowercase())?;
-
-    let rows = PyDict::new(py);
-    rows.set_item("received", outcome.rows.received)?;
-    rows.set_item("confirmed", outcome.rows.confirmed)?;
-    rows.set_item("inserted", outcome.rows.inserted)?;
-    rows.set_item("updated", outcome.rows.updated)?;
-    rows.set_item("deleted", outcome.rows.deleted)?;
-    rows.set_item("failed", outcome.rows.failed)?;
-    rows.set_item("skipped", outcome.rows.skipped)?;
-    d.set_item("rows", rows)?;
-
-    if let Some(recovery) = &outcome.recovery {
-        let rd = PyDict::new(py);
-        rd.set_item(
-            "last_certain_phase",
-            format!("{:?}", recovery.last_certain_phase).to_lowercase(),
-        )?;
-        rd.set_item("automatic_retry_allowed", recovery.automatic_retry_allowed)?;
-        rd.set_item("idempotency_key", recovery.idempotency_key.clone())?;
-        rd.set_item("staging_object", recovery.staging_object.clone())?;
-        rd.set_item("verification_action", recovery.verification_action.clone())?;
-        d.set_item("recovery", rd)?;
-    } else {
-        d.set_item("recovery", py.None())?;
-    }
-    Ok(d)
+    let value = serde_json::to_value(outcome).map_err(|error| {
+        // Il messaggio non porta il documento: un esito puo contenere
+        // identificatori di esecuzione e nomi di oggetti.
+        PyRuntimeError::new_err(format!(
+            "esito di scrittura non serializzabile nel contratto: {}",
+            error.classify() as u8
+        ))
+    })?;
+    let converted = crate::py_convert::json_to_python(py, &value)?;
+    converted
+        .downcast_into::<PyDict>()
+        .map_err(|_| PyRuntimeError::new_err("esito di scrittura che non serializza in un oggetto"))
 }
 
 // ------------------------------ Core bulk write ------------------------

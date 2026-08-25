@@ -44,6 +44,6 @@ async fn run_admin_stmt(secret: &SecretString, sql: &str) -> CliResult<()> {
         .begin_transaction(secret, &TransactionOptions::default(), &budget, &cancel)
         .await?;
     tx.execute(&Statement::new(sql.to_owned()), &cancel).await?;
-    tx.commit(&cancel).await?;
+    crate::require_committed(&tx.commit(&cancel).await?)?;
     Ok(())
 }

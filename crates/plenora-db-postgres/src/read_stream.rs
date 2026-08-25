@@ -479,15 +479,12 @@ async fn cancel_query(
 }
 
 pub fn cancelled_read_error(cancellation: &CancellationToken) -> DatabaseError {
+    let category = crate::error::interruption_category(cancellation);
     public_error(
-        if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
-            ErrorCategory::Timeout
-        } else {
-            ErrorCategory::Cancelled
-        },
+        category,
         ErrorPhase::Read,
         false,
-        if cancellation.reason() == Some(plenora_database_core::CancellationReason::Deadline) {
+        if category == ErrorCategory::Timeout {
             "durata massima query PostgreSQL esaurita"
         } else {
             "query PostgreSQL cancellata sul server"

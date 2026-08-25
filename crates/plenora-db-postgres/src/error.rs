@@ -4,17 +4,41 @@ use plenora_database_core::{
     RetryDisposition,
 };
 
+/// La categoria pubblica di un'interruzione, secondo la causa che l'ha
+/// prodotta.
+///
+/// Una deadline scaduta e un `Timeout`, tutto il resto e una `Cancelled`. La
+/// distinzione vive nel token da sempre, ma solo due superfici la leggevano —
+/// `read_stream` e `write::recovery` — mentre le altre costruivano
+/// `ErrorCategory::Cancelled` a mano. La stessa scadenza usciva quindi come
+/// `Timeout` o come `Cancelled` a seconda di quale strato la osservava per
+/// primo, e un chiamante che decide se allungare il budget o smettere riceveva
+/// risposte diverse dallo stesso evento.
+pub use plenora_database_core::interruption_category;
+
+/// Interrompe **prima** di toccare la rete, dicendo quale causa ha interrotto.
+///
+/// Una deadline scaduta e un `Timeout`, non una `Cancelled`: la distinzione
+/// vive gia nel token, e questa funzione — che sta davanti a diciannove
+/// superfici del provider — la buttava via. Lo stesso evento usciva come
+/// `Timeout` da `read_stream` e da `write::recovery`, che consultano
+/// `reason()`, e come `Cancelled` da qui: due risposte pubbliche diverse per
+/// una sola scadenza, decise da quale strato la osservava per primo.
 pub fn check_cancelled(cancellation: &CancellationToken, phase: ErrorPhase) -> Result<()> {
-    if cancellation.is_cancelled() {
-        Err(public_error(
-            ErrorCategory::Cancelled,
-            phase,
-            false,
-            "operazione cancellata",
-        ))
-    } else {
-        Ok(())
+    if cancellation.reason().is_none() {
+        return Ok(());
     }
+    let category = interruption_category(cancellation);
+    Err(public_error(
+        category,
+        phase,
+        false,
+        if category == ErrorCategory::Timeout {
+            "durata massima operazione PostgreSQL esaurita"
+        } else {
+            "operazione cancellata"
+        },
+    ))
 }
 
 pub fn row_decode_error(_: tokio_postgres::Error) -> DatabaseError {

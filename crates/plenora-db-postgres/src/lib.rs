@@ -590,7 +590,7 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             check_cancelled(cancellation, ErrorPhase::Probe)?;
             let client = self.connect_session(secret).await?;
-            capability_document(client.client()?).await
+            capability_document(client.client()?).await?.published()
         })
     }
 

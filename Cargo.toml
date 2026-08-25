@@ -17,9 +17,15 @@ members = [
 # solo su core + Postgres + CLI. MySQL, SQL Server e i bindings Python
 # (che richiedono maturin per il wheel) restano compilabili on-demand con
 # `-p plenora-db-mysql` / `-p plenora-database-py`, ma non entrano nel
-# path di default. Effetto lato `cargo audit`: le CVE transitive di
-# tiberius/mysql_async e la superficie pyo3 non compaiono sul Cargo.lock
-# del default build.
+# path di default.
+#
+# Nessun effetto lato supply-chain: `default-members` governa cosa viene
+# *costruito*, non cosa viene *risolto*. Il workspace ha un solo Cargo.lock, e
+# contiene tiberius, mysql_async e pyo3 anche quando il default build non li
+# tocca; `cargo audit` e `cargo deny` leggono quel lockfile, quindi le loro
+# advisory compaiono comunque. E' esattamente il motivo per cui deny.toml
+# elenca le ignore della catena tiberius -> rustls-webpki: se il lockfile non
+# le contenesse, non ci sarebbe niente da ignorare.
 default-members = [
     "crates/plenora-database-core",
     "crates/plenora-database-sql",

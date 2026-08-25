@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "provider": "postgres",
+  "provider_version": "17.5",
+  "reads": {
+    "streaming": true,
+    "projection": true,
+    "filter": true,
+    "ordering": true
+  },
+  "writes": {
+    "create": true,
+    "append": true,
+    "truncate_insert": true,
+    "update": true,
+    "upsert": true,
+    "replace": true
+  },
+  "transactions": {},
+  "spatial": {
+    "read_wkb": false,
+    "write_wkb": false,
+    "dimensions": []
+  },
+  "limits": {
+    "max_bind_parameters": 100000000000000000000
+  }
+}

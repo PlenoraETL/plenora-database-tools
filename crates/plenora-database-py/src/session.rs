@@ -38,7 +38,7 @@ use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
@@ -66,9 +66,11 @@ pub(crate) fn build_provider(tls_mode: &str) -> PyResult<PostgresProvider> {
     match tls_mode {
         "require" => Ok(PostgresProvider::default()),
         "insecure_local" => Ok(PostgresProvider::insecure_local()),
-        other => Err(PyRuntimeError::new_err(format!(
-            "tls_mode non riconosciuto: {other:?}. Valori: 'require' | 'insecure_local'"
-        ))),
+        // Il valore non entra nel messaggio: e un argomento del chiamante, e
+        // questo testo diventa un'eccezione Python e finisce nei log.
+        _ => Err(PyRuntimeError::new_err(
+            "tls_mode non riconosciuto: attesi 'require' o 'insecure_local'",
+        )),
     }
 }
 
@@ -201,8 +203,16 @@ impl Session {
         })
     }
 
-    /// Esegue una query e ritorna il primo valore (prima riga, prima colonna).
-    /// `None` se la query non ritorna righe.
+    /// SELECT scalare: **al piu una riga, esattamente una colonna**.
+    ///
+    /// `None` quando la query non restituisce righe. Piu di una riga, o piu di
+    /// una colonna, sono un errore — non una selezione arbitraria del primo
+    /// valore, come faceva la versione 0.10: quella scartava in silenzio il
+    /// resto del result set, e una query sbagliata restituiva un risultato
+    /// plausibile invece di dire che era sbagliata.
+    ///
+    /// E' la stessa cardinalita dei costruttori scalar del core. Chi vuole la
+    /// prima riga di un result set piu ampio usa `execute_returning_rows`.
     #[pyo3(signature = (sql, params=None))]
     fn execute_scalar<'py>(
         &self,
@@ -216,8 +226,13 @@ impl Session {
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
-        rows.first()
-            .and_then(|r| r.get_index(0))
+        // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di una
+        // riga o piu di una colonna invece di prendere la prima e buttare via
+        // il resto. E' la stessa regola dei costruttori scalar tipizzati del
+        // core, e quella che questa firma dichiarava gia a parole.
+        let value = scalar_opt(rows).map_err(to_py_err)?;
+        value
+            .as_ref()
             .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
     }
 
@@ -263,7 +278,9 @@ impl Session {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
@@ -291,7 +308,9 @@ impl Session {
         self.ensure_open()?;
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         self.run_tx(py, move |tx, cancel| {
@@ -307,8 +326,12 @@ impl Session {
     /// Ritorna un dict con ~25 chiavi u64.
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.provider.metrics_snapshot();
-        let value = serde_json::to_value(snap)
-            .map_err(|e| PyRuntimeError::new_err(format!("metrics serialize: {e}")))?;
+        let value = serde_json::to_value(snap).map_err(|error| {
+            PyRuntimeError::new_err(format!(
+                "metriche non serializzabili: {}",
+                error.classify() as u8
+            ))
+        })?;
         let json_str = value.to_string();
         let json_mod = py.import("json")?;
         let obj = json_mod.getattr("loads")?.call1((json_str,))?;

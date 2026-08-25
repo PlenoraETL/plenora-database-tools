@@ -10,6 +10,10 @@
       "schema": "../capabilities.schema.json"
     },
     {
+      "file": "capabilities-minimal.json",
+      "schema": "../capabilities.schema.json"
+    },
+    {
       "file": "loss-report-strict.json",
       "schema": "../loss-report.schema.json"
     },
@@ -20,6 +24,18 @@
     {
       "file": "outcome-unknown.json",
       "schema": "../write-outcome.schema.json"
+    }
+  ],
+  "rejected": [
+    {
+      "file": "rejected-outcome-unknown-field.json",
+      "schema": "../write-outcome.schema.json",
+      "reason": "la variante committed dichiara unevaluatedProperties: false, quindi un campo non previsto e fuori contratto"
+    },
+    {
+      "file": "rejected-capabilities-no-provider-version.json",
+      "schema": "../capabilities.schema.json",
+      "reason": "provider_version e obbligatorio: senza, il documento non dice di quale motore parla"
     }
   ]
 }

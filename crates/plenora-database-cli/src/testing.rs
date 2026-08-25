@@ -191,7 +191,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
             &cancel,
         )
         .await?;
-    tx_setup.commit(&cancel).await?;
+    crate::require_committed(&tx_setup.commit(&cancel).await?)?;
 
     // Winner: bump 1 → 2 con expected_version=1.
     let update_stmt =
@@ -222,7 +222,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
         )
         .await;
     if winner_outcome.is_ok() {
-        tx_winner.commit(&cancel).await?;
+        crate::require_committed(&tx_winner.commit(&cancel).await?)?;
     } else {
         let _ = tx_winner.rollback(&cancel).await;
     }

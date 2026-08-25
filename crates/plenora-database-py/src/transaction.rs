@@ -22,7 +22,7 @@
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionScope};
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
@@ -41,7 +41,7 @@ fn tx_closed_error() -> PyErr {
 /// operano nella stessa transazione (nessun auto-commit per-call).
 ///
 /// `unsendable`: la transazione tiene la connessione Postgres pool-owned
-/// e non può migrare fra thread Python. PyO3 lo enforca a runtime.
+/// e non può migrare fra thread Python. `PyO3` lo enforca a runtime.
 #[pyclass(module = "plenora_database._native", unsendable)]
 pub struct Transaction {
     inner: Option<Box<dyn TransactionScope>>,
@@ -54,6 +54,28 @@ impl Transaction {
 
     fn tx_mut(&mut self) -> PyResult<&mut Box<dyn TransactionScope>> {
         self.inner.as_mut().ok_or_else(tx_closed_error)
+    }
+
+    /// Esegue una query e restituisce le righe canoniche.
+    ///
+    /// Unico punto in cui la transazione interroga: scalar e `list[dict]` si
+    /// distinguono per come presentano il risultato, non per come lo prendono.
+    fn query_rows(
+        &mut self,
+        py: Python<'_>,
+        sql: &str,
+        params: Option<Bound<'_, PyList>>,
+    ) -> PyResult<Vec<Row>> {
+        let param_values = params_from_python(params.as_ref())?;
+        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let tx = self.tx_mut()?;
+        py.allow_threads(|| {
+            runtime().block_on(async move {
+                let cancel = CancellationToken::new();
+                tx.query(&statement, &cancel).await
+            })
+        })
+        .map_err(to_py_err)
     }
 }
 
@@ -85,7 +107,13 @@ impl Transaction {
         .map_err(to_py_err)
     }
 
-    /// Esegue una query nella transazione e ritorna la prima cella o None.
+    /// Esegue una query nella transazione e ritorna la cella scalare, o None
+    /// se non ci sono righe.
+    ///
+    /// La cardinalita e imposta: piu di una riga o piu di una colonna sono un
+    /// errore, non una selezione arbitraria. Prima passava per la `list[dict]`
+    /// e prendeva il primo valore del primo dict — la prima colonna della
+    /// prima riga — scartando in silenzio tutto il resto.
     #[pyo3(signature = (sql, params=None))]
     fn execute_scalar<'py>(
         &mut self,
@@ -93,16 +121,11 @@ impl Transaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let rows = self.execute_returning_rows(py, sql, params)?;
-        if rows.is_empty() {
-            return Ok(py.None().into_bound(py));
-        }
-        let first = rows.get_item(0)?.downcast_into::<PyDict>()?;
-        first
-            .values()
-            .iter()
-            .next()
-            .map_or_else(|| Ok(py.None().into_bound(py)), Ok)
+        let rows = self.query_rows(py, sql, params)?;
+        let value = scalar_opt(rows).map_err(to_py_err)?;
+        value
+            .as_ref()
+            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
     }
 
     /// Esegue una query nella transazione e ritorna tutte le righe come
@@ -114,17 +137,7 @@ impl Transaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let tx = self.tx_mut()?;
-        let rows: Vec<Row> = py
-            .allow_threads(|| {
-                runtime().block_on(async move {
-                    let cancel = CancellationToken::new();
-                    tx.query(&statement, &cancel).await
-                })
-            })
-            .map_err(to_py_err)?;
+        let rows = self.query_rows(py, sql, params)?;
         rows_to_pylist(py, rows)
     }
 
@@ -136,7 +149,9 @@ impl Transaction {
     ) -> PyResult<Bound<'py, PyList>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let tx = self.tx_mut()?;
@@ -155,7 +170,9 @@ impl Transaction {
     fn execute_portable_count(&mut self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let tx = self.tx_mut()?;
@@ -334,7 +351,14 @@ impl Transaction {
     }
 }
 
-fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyList>> {
+/// Righe canoniche -> `list[dict]`.
+///
+/// Lo `zip` non e una scorciatoia: e l'invariante di `Row::try_new`, che
+/// garantisce tanti valori quanti nomi. Le superfici `MySQL` ne tenevano una
+/// copia che indicizzava i valori per posizione e riempiva un eventuale buco
+/// con un `NULL` inventato — cioe presentavano come dato assente cio che
+/// sarebbe stato un guasto di decodifica.
+pub fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyList>> {
     let out = PyList::empty(py);
     for row in rows {
         let dict = PyDict::new(py);
@@ -356,9 +380,9 @@ pub fn parse_isolation(
         "read_committed" => Ok(IsolationLevel::ReadCommitted),
         "repeatable_read" => Ok(IsolationLevel::RepeatableRead),
         "serializable" => Ok(IsolationLevel::Serializable),
-        other => Err(PyValueError::new_err(format!(
-            "isolation level sconosciuto: {other:?} (attesi: read_uncommitted, read_committed, repeatable_read, serializable)"
-        ))),
+        _ => Err(PyValueError::new_err(
+            "isolation level sconosciuto (attesi: read_uncommitted, read_committed, repeatable_read, serializable)",
+        )),
     }
 }
 
@@ -370,8 +394,8 @@ pub fn parse_native_query_policy(
     match value {
         "allow" => Ok(NativeQueryPolicy::Allow),
         "deny" => Ok(NativeQueryPolicy::Deny),
-        other => Err(PyValueError::new_err(format!(
-            "native_query_policy sconosciuto: {other:?} (attesi: allow, deny)"
-        ))),
+        _ => Err(PyValueError::new_err(
+            "native_query_policy sconosciuto (attesi: allow, deny)",
+        )),
     }
 }

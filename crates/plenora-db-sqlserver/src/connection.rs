@@ -1,5 +1,5 @@
 use crate::config::SqlServerConfig;
-use crate::error::{cancellation_error, driver_error, timeout_error};
+use crate::error::{driver_error, interruption_error, timeout_error};
 use crate::recovery::{TransactionEvent, TransactionState};
 use crate::session::{SessionState, SESSION_BOOTSTRAP_SQL};
 use crate::types::SqlServerColumnSpec;
@@ -47,7 +47,11 @@ impl SqlServerSession {
     pub async fn open(config: &SqlServerConfig, cancellation: &CancellationToken) -> Result<Self> {
         config.validate()?;
         if cancellation.is_cancelled() {
-            return Err(cancellation_error(ErrorPhase::Connect, RemoteEffect::None));
+            return Err(interruption_error(
+                cancellation,
+                ErrorPhase::Connect,
+                RemoteEffect::None,
+            ));
         }
         let driver_config = config.driver_config()?;
         let address = driver_config.get_addr();
@@ -68,7 +72,11 @@ impl SqlServerSession {
         };
         let client = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(cancellation_error(ErrorPhase::Connect, RemoteEffect::None));
+                return Err(interruption_error(
+                cancellation,
+                ErrorPhase::Connect,
+                RemoteEffect::None,
+            ));
             }
             result = tokio::time::timeout(config.connect_timeout(), connect) => {
                 match result {
@@ -263,7 +271,7 @@ impl SqlServerSession {
             ControlOutcome::Completed => Ok(()),
             ControlOutcome::Cancelled => {
                 self.quarantine();
-                Err(cancellation_error(phase, remote_effect))
+                Err(interruption_error(cancellation, phase, remote_effect))
             }
             ControlOutcome::Timeout => {
                 self.quarantine();
@@ -305,7 +313,7 @@ impl SqlServerSession {
             QueryOutcome::Completed(rows) => Ok(rows),
             QueryOutcome::Cancelled => {
                 self.quarantine();
-                Err(cancellation_error(phase, RemoteEffect::None))
+                Err(interruption_error(cancellation, phase, RemoteEffect::None))
             }
             QueryOutcome::Timeout => {
                 self.quarantine();
@@ -352,7 +360,11 @@ impl SqlServerSession {
             QueryOutcome::Completed(rows) => Ok(RowQueryResult::Applied(rows)),
             QueryOutcome::Cancelled => {
                 self.quarantine();
-                Err(cancellation_error(ErrorPhase::Write, RemoteEffect::Unknown))
+                Err(interruption_error(
+                    cancellation,
+                    ErrorPhase::Write,
+                    RemoteEffect::Unknown,
+                ))
             }
             QueryOutcome::Timeout => {
                 self.quarantine();
@@ -396,7 +408,11 @@ impl SqlServerSession {
             WriteQueryOutcome::Completed(rows) => Ok(rows),
             WriteQueryOutcome::Cancelled => {
                 self.quarantine();
-                Err(cancellation_error(ErrorPhase::Write, RemoteEffect::Unknown))
+                Err(interruption_error(
+                    cancellation,
+                    ErrorPhase::Write,
+                    RemoteEffect::Unknown,
+                ))
             }
             WriteQueryOutcome::Timeout => {
                 self.quarantine();
@@ -447,7 +463,11 @@ impl SqlServerSession {
             WriteQueryOutcome::Completed(rows) => Ok(rows),
             WriteQueryOutcome::Cancelled => {
                 self.quarantine();
-                Err(cancellation_error(ErrorPhase::Write, RemoteEffect::Unknown))
+                Err(interruption_error(
+                    cancellation,
+                    ErrorPhase::Write,
+                    RemoteEffect::Unknown,
+                ))
             }
             WriteQueryOutcome::Timeout => {
                 self.quarantine();
@@ -497,7 +517,11 @@ impl SqlServerSession {
             PumpOutcome::Completed => Ok(()),
             PumpOutcome::Cancelled | PumpOutcome::ReceiverDropped => {
                 self.quarantine();
-                Err(cancellation_error(ErrorPhase::Read, RemoteEffect::None))
+                Err(interruption_error(
+                    cancellation,
+                    ErrorPhase::Read,
+                    RemoteEffect::None,
+                ))
             }
             PumpOutcome::Timeout => {
                 self.quarantine();

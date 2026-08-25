@@ -16,6 +16,20 @@
 //!
 //! Usato da execute-sql (--param), execute-scalar (--param), conditional-update
 //! (--set-param), portable-execute (nel JSON), --session-context (globale).
+//!
+//! # I messaggi d'errore non riportano il valore
+//!
+//! Un parametro CLI **e** un payload: e il dato che sta per essere bindato.
+//! Gli errori di parsing includevano lo spec o il valore per intero, quindi
+//! una password passata con il tipo sbagliato — `pwd:hunter2:int` — finiva
+//! integralmente in stderr, che qui e JSON, e da li nei log e nella
+//! telemetria. Contraddiceva il divieto che
+//! `plenora_database_core::DatabaseError` dichiara sul proprio `message`:
+//! contesto operativo, mai payload.
+//!
+//! Ora un errore dice **dove** e **cosa si aspettava**, mai **cosa ha letto**.
+//! Chi deve vedere il valore ce l'ha gia: l'ha scritto lui sulla riga di
+//! comando.
 
 use crate::CliResult;
 use plenora_database_core::provider::ParameterValue;
@@ -61,7 +75,7 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
     }
     let (raw_value, ty) = spec
         .rsplit_once(':')
-        .ok_or_else(|| format!("param senza separatore ':': {spec}"))?;
+        .ok_or("param senza separatore ':' (atteso VALUE:TYPE)")?;
     // Fix review #15: prima usavamo `trim_matches('"' | '\'')` che
     // eliminava quote iniziali/finali indiscriminatamente,
     // corrompendo:
@@ -79,47 +93,60 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
     let value = strip_matching_outer_quotes(raw_value, ty);
     match ty {
         "null" => Err(
-            "sintassi null: usa direttamente 'null:<sub-type>' senza valore, es 'null:uuid'"
-                .into(),
+            "sintassi null: usa direttamente 'null:<sub-type>' senza valore, es 'null:uuid'".into(),
         ),
         "bool" => match value {
             "true" => Ok(ParameterValue::Bool(true)),
             "false" => Ok(ParameterValue::Bool(false)),
-            _ => Err(format!("bool non riconosciuto (usa true|false): {value}").into()),
+            _ => Err("bool non riconosciuto (usa true|false)".into()),
         },
         "int" => value
             .parse::<i32>()
             .map(ParameterValue::I32)
-            .map_err(|_| format!("int non valido: {value}").into()),
+            .map_err(|_| "valore non interpretabile come int (i32)".into()),
         "bigint" | "long" => value
             .parse::<i64>()
             .map(ParameterValue::I64)
-            .map_err(|_| format!("bigint non valido: {value}").into()),
+            .map_err(|_| "valore non interpretabile come bigint (i64)".into()),
         "float" | "double" => value
             .parse::<f64>()
             .map(ParameterValue::F64)
-            .map_err(|_| format!("float non valido: {value}").into()),
+            .map_err(|_| "valore non interpretabile come float (f64)".into()),
         "string" | "text" => Ok(ParameterValue::String(value.to_owned())),
         "uuid" => {
             if value.len() != 36 {
-                return Err(format!("uuid deve avere lunghezza 36: {value}").into());
+                return Err(format!(
+                    "uuid deve avere lunghezza 36, ricevuti {} caratteri",
+                    value.chars().count()
+                )
+                .into());
             }
             Ok(ParameterValue::Uuid(value.to_owned()))
         }
         "json" => serde_json::from_str::<serde_json::Value>(value)
             .map(ParameterValue::Json)
-            .map_err(|e| format!("json non parsabile: {e}").into()),
+            // Solo riga e colonna: il `Display` di `serde_json::Error`
+            // include il frammento che non ha saputo leggere, cioe una parte
+            // del valore.
+            .map_err(|e| {
+                format!(
+                    "json non parsabile a riga {}, colonna {}",
+                    e.line(),
+                    e.column()
+                )
+                .into()
+            }),
         "date" => Ok(ParameterValue::Date(value.to_owned())),
         "timestamp" => Ok(ParameterValue::Timestamp(value.to_owned())),
         "timestamptz" => Ok(ParameterValue::TimestampTz(value.to_owned())),
         "bytes-hex" | "bytea" => decode_hex(value)
             .map(ParameterValue::Bytes)
             .map_err(std::convert::Into::into),
-        other => Err(format!(
-            "type sconosciuto: {other} \
-             (bool|int|bigint|float|string|uuid|json|date|timestamp|timestamptz|bytes-hex|null:<type>)"
-        )
-        .into()),
+        _ => Err(
+            "type sconosciuto: ammessi bool, int, bigint, float, string, uuid, json, \
+             date, timestamp, timestamptz, bytes-hex, null:<type>"
+                .into(),
+        ),
     }
 }
 
@@ -127,11 +154,12 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
 /// `--session-context` (dove serve nome del setting); nel caso di `--param`
 /// per bind position, il nome è ignorato dal consumer.
 pub(crate) fn parse_named_value_type(spec: &str) -> CliResult<(String, ParameterValue)> {
+    // Lo spec intero contiene il valore: nessuno dei due errori qui lo cita.
     let (name, rest) = spec
         .split_once('=')
-        .ok_or_else(|| format!("param senza '=': {spec}"))?;
+        .ok_or("param senza '=' (atteso NAME=VALUE:TYPE)")?;
     if name.is_empty() {
-        return Err(format!("param con name vuoto: {spec}").into());
+        return Err("param con name vuoto (atteso NAME=VALUE:TYPE)".into());
     }
     let value = parse_value_type(rest)?;
     Ok((name.to_owned(), value))
@@ -168,7 +196,7 @@ fn strip_matching_outer_quotes<'a>(raw: &'a str, ty: &str) -> &'a str {
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim_start_matches("\\x").trim_start_matches("0x");
     if s.len() % 2 != 0 {
-        return Err(format!("hex length dispari: {s}"));
+        return Err(format!("hex di lunghezza dispari ({} caratteri)", s.len()));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
     let bytes = s.as_bytes();
@@ -187,7 +215,9 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("hex nibble non valido: {}", b as char)),
+        // Nemmeno un singolo carattere: su un valore corto e gia una parte
+        // consistente del segreto.
+        _ => Err("carattere non esadecimale nel valore".to_owned()),
     }
 }
 
@@ -374,5 +404,60 @@ mod tests {
             strip_bind_params(vec!["-p".into(), "true:bool".into(), "sql".into()]).unwrap();
         assert_eq!(rest, vec!["sql"]);
         assert!(matches!(params.0[0], ParameterValue::Bool(true)));
+    }
+
+    /// Nessun errore di parsing rimette il valore nel messaggio.
+    ///
+    /// Il marcatore e un segreto plausibile: se compare nell'errore, quel
+    /// percorso lo avrebbe scritto in stderr JSON, nei log e nella telemetria.
+    /// La guardia enumera le forme, cosi un tipo nuovo che ricade
+    /// nell'abitudine `format!("... {value}")` si ferma qui.
+    #[test]
+    fn no_parse_error_carries_the_value() {
+        const MARKER: &str = "hunter2SEGRETO";
+
+        let specs = [
+            format!("{MARKER}:int"),
+            format!("{MARKER}:bigint"),
+            format!("{MARKER}:float"),
+            format!("{MARKER}:bool"),
+            format!("{MARKER}:uuid"),
+            format!("{MARKER}:json"),
+            format!("{MARKER}:bytes-hex"),
+            format!("{MARKER}:tipo-inesistente"),
+            // Senza separatore: lo spec intero era finito nel messaggio.
+            MARKER.to_owned(),
+        ];
+
+        for spec in specs {
+            let error = parse_value_type(&spec).expect_err(&format!("{spec} deve fallire"));
+            let rendered = format!("{error:?}");
+            assert!(
+                !rendered.contains(MARKER),
+                "il valore e finito nell'errore di `{spec}`: {rendered}"
+            );
+        }
+
+        // E la variante con nome, dove a perdersi era lo spec completo.
+        let named = parse_named_value_type(&format!("segreto{MARKER}"))
+            .expect_err("param senza '=' deve fallire");
+        assert!(!format!("{named:?}").contains(MARKER), "{named:?}");
+    }
+
+    /// Un hex dispari o con caratteri non validi non ristampa i caratteri.
+    ///
+    /// I marcatori sono maiuscoli e improbabili di proposito: la prima
+    /// stesura cercava `"zz"`, che compare dentro «lunghe**zz**a» del
+    /// messaggio, e il test falliva su se stesso invece che sul difetto.
+    #[test]
+    fn hex_errors_report_shape_not_content() {
+        for (spec, marker) in [
+            ("ABCDEFXQ:bytes-hex", "ABCDEFXQ"),
+            ("KWKW:bytes-hex", "KWKW"),
+        ] {
+            let error = parse_value_type(spec).expect_err("hex non valido");
+            let rendered = format!("{error:?}");
+            assert!(!rendered.contains(marker), "{rendered}");
+        }
     }
 }

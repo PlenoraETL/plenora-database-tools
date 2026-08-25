@@ -51,7 +51,13 @@ use plenora_database_core::{
 use std::collections::BTreeMap;
 
 /// Collation id riservato di `MySQL` per i tipi binari.
-const BINARY_CHARACTER_SET: u16 = 63;
+///
+/// E' l'unico segnale che distingue `BLOB` da `TEXT` e `VARBINARY` da
+/// `VARCHAR`: sul filo entrambi arrivano come `Value::Bytes`, e il tipo di
+/// colonna e lo stesso. Visibile al crate perche anche il decoder delle
+/// transazioni deve poterlo chiedere — prima tirava a indovinare provando a
+/// interpretare i byte come UTF-8.
+pub(crate) const BINARY_CHARACTER_SET: u16 = 63;
 
 /// Cosa un codice di errore del server significa, per intero.
 ///
@@ -898,12 +904,21 @@ impl ProductProfile for MariadbProfile {
             // rifiutato dal server annulla anche il primo, una cancellazione
             // a meta scrittura non lascia righe e il provider resta usabile.
             //
-            // `rollback_on_failure` resta chiusa per una ragione diversa: il
-            // flag parla delle **righe** di qualunque scrittura — il residuo
-            // DDL lo descrive `transactional_ddl`, che e gia false — e quella
-            // promessa globale non e qualificata. La cancellazione, per giunta,
-            // dichiara l'effetto remoto `Unknown`: e la rilettura a mostrare
-            // che le righe erano tornate indietro, non il provider.
+            // `rollback_on_failure` e aperta, e l'argomento con cui era
+            // rimasta chiusa non reggeva. Il flag parla delle righe di
+            // qualunque scrittura *che questo profilo ammette*, e ne ammette
+            // una: `Append`. Le tre sonde della settima tranche girano con
+            // `allow_partial: false` — proprio il piano che la bandiera
+            // governa — e misurano l'esito che promette: un secondo batch
+            // rifiutato annulla anche il primo, `RemoteEffect::RolledBack`
+            // dichiarato e la rilettura da un'altra sessione a confermarlo.
+            //
+            // L'obiezione della cancellazione era fuori bersaglio: `Unknown`
+            // e l'effetto di una **cancellazione**, non di un fallimento, e su
+            // quel percorso nessun provider promette nulla — PostgreSQL
+            // pubblica `true` e ha lo stesso esito ignoto a commit interrotto.
+            // Tenendola chiusa, MariaDB rifiutava in `prepare` esattamente il
+            // piano su cui la campagna aveva raccolto le prove.
             writes: WriteCapabilities {
                 create: false,
                 append: true,
@@ -917,7 +932,7 @@ impl ProductProfile for MariadbProfile {
                 bulk: false,
                 array_binding: false,
                 returning: false,
-                rollback_on_failure: false,
+                rollback_on_failure: true,
             },
             // L'unica famiglia con dei `true`, e sono quelli che la terza
             // tranche ha misurato: tredici sonde di sessione su tredici danno
@@ -1410,9 +1425,11 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         spatial_index: false,
         mixed_geometry_types: true,
         dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-        // v1.2: 20 funzioni spatial MySQL 8+ dichiarate verified via il
-        // dialect condiviso `plenora-database-sql`. Vedi
-        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` per la lista + rationale.
+        // Le funzioni spatial pubblicate sono quelle di
+        // `crate::query::VERIFIED_SPATIAL_FUNCTIONS` — ventisei, non venti — e
+        // cio che le qualifica non e il dialect condiviso ma la sonda live che
+        // le attraversa una per una. Il commento diceva il numero sbagliato e
+        // la ragione sbagliata: vedi la costante per entrambe.
         functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
     }
 }
@@ -3205,11 +3222,11 @@ mod tests {
         assert!(writes.append);
         assert!(!writes.create && !writes.update && !writes.upsert);
         assert!(!writes.replace && !writes.delete_by_keys && !writes.bulk);
-        // E `rollback_on_failure` resta chiusa perche parla delle righe di
-        // **ogni** scrittura, e quella promessa non e qualificata: la
-        // cancellazione dichiara l'effetto remoto ignoto, ed e la rilettura a
-        // mostrare che le righe erano tornate indietro.
-        assert!(!writes.rollback_on_failure);
+        // `rollback_on_failure` e aperta: parla delle righe di ogni
+        // scrittura che il profilo ammette, e ne ammette una — `Append` — le
+        // cui tre sonde girano con `allow_partial: false` e misurano proprio
+        // quell'esito.
+        assert!(writes.rollback_on_failure);
         // `truncate_insert` e chiusa su **entrambi** i profili, e per una
         // ragione che non e "non misurata": su questi due motori `TRUNCATE` e
         // DDL con commit implicito, quindi le righe sparirebbero prima
@@ -3244,7 +3261,6 @@ mod tests {
         );
         assert!(!writes.upsert && !writes.replace && !writes.delete_by_keys);
         assert!(!writes.bulk && !writes.array_binding && !writes.returning);
-        assert!(!writes.rollback_on_failure);
 
         // Spatial: la lettura del WKB non e stata provata attraverso il
         // provider, la scrittura nemmeno, e la lista delle funzioni verified

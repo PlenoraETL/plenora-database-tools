@@ -99,6 +99,12 @@ pub enum FilterExpression {
     Like {
         field: String,
         parameter: String,
+        /// Lo schema non lo elenca fra i `required`: un filtro `like` senza
+        /// questo campo e un documento v2 valido, e senza `default` la
+        /// deserializzazione lo rifiutava **prima** di qualunque validatore —
+        /// il piano non arrivava neppure a essere giudicato. Assente vuol dire
+        /// `false`, cioe il confronto sensibile alle maiuscole.
+        #[serde(default)]
         case_insensitive: bool,
     },
     Spatial {
@@ -203,4 +209,29 @@ pub struct Plan {
     pub operation: Operation,
     #[serde(default)]
     pub limits: Limits,
+}
+
+#[cfg(test)]
+mod like_default_tests {
+    use super::FilterExpression;
+
+    /// `$defs` del filtro `like` non elenca `case_insensitive` fra i
+    /// `required`: un documento che lo omette e valido, e prima del
+    /// `#[serde(default)]` non si deserializzava affatto — il piano falliva
+    /// alla lettura, prima di qualunque validatore, e l'errore parlava di un
+    /// campo mancante come se il contratto lo pretendesse.
+    #[test]
+    fn a_like_filter_without_case_insensitive_is_read_as_case_sensitive() {
+        let filter: FilterExpression =
+            serde_json::from_str(r#"{"op":"like","field":"nome","parameter":"needle"}"#)
+                .expect("il contratto ammette l'omissione");
+        assert_eq!(
+            filter,
+            FilterExpression::Like {
+                field: "nome".to_owned(),
+                parameter: "needle".to_owned(),
+                case_insensitive: false,
+            }
+        );
+    }
 }

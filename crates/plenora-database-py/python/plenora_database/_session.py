@@ -154,15 +154,21 @@ class Session:
           - `update_columns`: lista di colonne da aggiornare per mode
             "update" (v0.3.0+). Vuoto = tutte le non-key.
 
-        Ritorna un dict con struttura `WriteOutcome`:
+        Ritorna un dict con la struttura `WriteOutcome` del contratto v2,
+        serializzata dalla stessa fonte del JSON:
 
             {
+              "schema_version": 2,
               "status": "committed",
               "execution_id": "...",
               "provider": "postgres",
               "rows": {"received": N, "confirmed": N, "inserted": N, ...},
-              "recovery": None,
             }
+
+        `recovery` compare **solo** negli esiti che lo prevedono —
+        `partially_committed` e `outcome_unknown` — perche le altre varianti
+        dello schema non lo dichiarano. Gli stati usano la forma del contratto
+        (`partially_committed`, non `partiallycommitted`).
 
         Richiede pyarrow installato (a meno che `source` sia già bytes).
         """

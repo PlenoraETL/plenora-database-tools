@@ -30,12 +30,11 @@ impl IpcFileBatchStream {
     fn open(path: &str) -> CliResult<Self> {
         let file =
             File::open(path).map_err(|_| format!("input Arrow IPC non leggibile: {path}"))?;
-        let reader = FileReader::try_new(file, None)
-            .map_err(|e| format!("input Arrow IPC malformato: {e}"))?;
+        let reader = FileReader::try_new(file, None).map_err(|_| "input Arrow IPC malformato")?;
         let schema = reader.schema();
         let mut batches = VecDeque::new();
         for maybe_batch in reader {
-            let batch = maybe_batch.map_err(|e| format!("batch Arrow non leggibile: {e}"))?;
+            let batch = maybe_batch.map_err(|_| "batch Arrow non leggibile")?;
             batches.push_back(batch);
         }
         Ok(Self { schema, batches })
@@ -67,8 +66,13 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
 
     let contents = fs::read(&write_op_path)
         .map_err(|_| format!("WRITE_OP.json non leggibile: {write_op_path}"))?;
-    let operation: WriteOperation = serde_json::from_slice(&contents)
-        .map_err(|e| format!("WRITE_OP.json non parsabile: {e}"))?;
+    let operation: WriteOperation = serde_json::from_slice(&contents).map_err(|e| {
+        format!(
+            "WRITE_OP.json non parsabile a riga {}, colonna {}",
+            e.line(),
+            e.column()
+        )
+    })?;
 
     let stream = IpcFileBatchStream::open(&input_path)?;
     execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run).await
@@ -104,7 +108,12 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
                 update_columns = value.split(',').map(|s| s.trim().to_owned()).collect();
             }
             "--dry-run" => dry_run = true,
-            other => return Err(format!("opzione postgres-write-ipc sconosciuta: {other}").into()),
+            other => {
+                // Il nome dell'opzione non riconosciuta puo essere un
+                // qualunque argomento fuori posto: SQL, una DSN, un token.
+                let _ = other;
+                return Err("opzione postgres-write-ipc sconosciuta".into());
+            }
         }
     }
 
@@ -172,10 +181,12 @@ async fn execute_bulk_write(
         .write(&secret, prepared, stream, &budget, &cancel)
         .await?;
 
-    print_json(
-        &serde_json::to_value(&outcome)
-            .map_err(|e| CliError::from(format!("outcome non serializzabile: {e}")))?,
-    )
+    print_json(&serde_json::to_value(&outcome).map_err(|error| {
+        CliError::from(format!(
+            "outcome non serializzabile: {}",
+            error.classify() as u8
+        ))
+    })?)
 }
 
 fn parse_write_mode(value: &str) -> CliResult<WriteMode> {
@@ -187,11 +198,11 @@ fn parse_write_mode(value: &str) -> CliResult<WriteMode> {
         "update" => Ok(WriteMode::Update),
         "upsert" => Ok(WriteMode::Upsert),
         "delete-by-keys" | "delete_by_keys" => Ok(WriteMode::DeleteByKeys),
-        other => Err(format!(
-            "--mode sconosciuto: {other} \
-             (create|append|replace|truncate-insert|update|upsert|delete-by-keys)"
-        )
-        .into()),
+        _ => Err(
+            "--mode sconosciuto: ammessi create, append, replace, truncate-insert, \
+             update, upsert, delete-by-keys"
+                .into(),
+        ),
     }
 }
 
@@ -203,7 +214,13 @@ fn parse_dry_run(args: &mut impl Iterator<Item = String>) -> CliResult<bool> {
     if rest.len() == 1 && rest[0] == "--dry-run" {
         return Ok(true);
     }
-    Err(format!("argomenti trailing non riconosciuti: {rest:?}").into())
+    // Cio che resta puo essere qualunque cosa il chiamante abbia scritto:
+    // il conteggio e azionabile, l'elenco sarebbe payload.
+    Err(format!(
+        "argomenti trailing non riconosciuti: {} oltre quelli previsti",
+        rest.len()
+    )
+    .into())
 }
 
 /// Ensure `ensure_end` compatibility: consume l'iteratore. Definita qui per

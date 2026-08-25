@@ -1,4 +1,5 @@
 """Type stubs per il modulo spatial."""
+from __future__ import annotations
 
 
 class SpatialReference:
@@ -14,6 +15,14 @@ class SpatialReference:
         dimensions: str = "xy",
         semantics: str = "geometry",
     ) -> None: ...
+    @classmethod
+    def validated(
+        cls,
+        ewkb: bytes | bytearray,
+        srid: int,
+        dimensions: str = "xy",
+        semantics: str = "geometry",
+    ) -> SpatialReference: ...
     def __repr__(self) -> str: ...
 
 

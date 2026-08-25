@@ -7,7 +7,7 @@ use crate::error::{check_cancelled, classify_error, public_error};
 use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::RowStream;
-use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
+use plenora_database_core::{CancellationToken, ErrorPhase};
 
 pub struct PostgresRowStream<'a> {
     pub(super) client: &'a tokio_postgres::Client,
@@ -42,10 +42,10 @@ impl RowStream for PostgresRowStream<'_> {
             else {
                 self.exhausted = true;
                 return Err(public_error(
-                    ErrorCategory::Cancelled,
+                    crate::error::interruption_category(cancellation),
                     ErrorPhase::Read,
                     false,
-                    "FETCH FORWARD cancellato durante l'esecuzione",
+                    "FETCH FORWARD interrotto durante l'esecuzione",
                 ));
             };
             let rows = fetch_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;

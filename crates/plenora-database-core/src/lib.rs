@@ -37,7 +37,10 @@ pub use conformance::{
     CapabilityEvidence, ConformanceProfile, EvidenceKind, ProfileReport, ProfileStatus,
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
-pub use error::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
+pub use error::{
+    interruption_category, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
+    RetryDisposition,
+};
 pub use facade::{
     execute_portable, execute_portable_returning, execute_portable_returning_one,
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal,

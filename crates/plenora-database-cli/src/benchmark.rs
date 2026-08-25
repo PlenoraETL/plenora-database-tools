@@ -55,7 +55,7 @@ pub(crate) async fn benchmark_oltp(args: &mut impl Iterator<Item = String>) -> C
             .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
             .await?;
         tx.execute(&Statement::new("SELECT 1"), &cancel).await?;
-        tx.commit(&cancel).await?;
+        crate::require_committed(&tx.commit(&cancel).await?)?;
         samples.push(start.elapsed().as_micros());
     }
     let overall_ms = overall_start.elapsed().as_millis();

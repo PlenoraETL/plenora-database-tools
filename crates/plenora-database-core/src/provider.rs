@@ -244,9 +244,16 @@ pub trait Provider: Send + Sync {
 
     /// Apre una transazione applicativa multi-statement.
     ///
-    /// Il default restituisce `Unsupported`: solo i provider che hanno
-    /// dichiarato la capability `application_oltp` (Fase A del piano PFM)
-    /// devono sovrascrivere questa implementazione.
+    /// Il default restituisce `Unsupported`: devono sovrascriverla soltanto i
+    /// provider che pubblicano
+    /// [`TransactionCapabilities::scope`](crate::capabilities::TransactionCapabilities::scope)
+    /// pari a [`TransactionScope::Transaction`](crate::capabilities::TransactionScope::Transaction).
+    ///
+    /// Non esiste una capability `application_oltp`: `APPLICATION_OLTP_V1` e un
+    /// *profilo di conformita* (vedi [`crate::conformance`]), cioe un insieme di
+    /// capability richieste dichiarato fuori dalla libreria e verificato da
+    /// [`check_profile`](crate::conformance::check_profile) su evidence live.
+    /// Un profilo si supera, non si pubblica nel documento capability.
     fn begin_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,

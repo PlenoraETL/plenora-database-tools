@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "status": "outcome_unknown",
+  "execution_id": "01J3REJECTAUTORETRY",
+  "provider": "postgres",
+  "rows": {
+    "received": 500,
+    "confirmed": 0,
+    "inserted": null,
+    "updated": null,
+    "deleted": null,
+    "failed": 0,
+    "skipped": 0
+  },
+  "recovery": {
+    "last_certain_phase": "commit_requested",
+    "automatic_retry_allowed": true,
+    "idempotency_key": null,
+    "staging_object": null,
+    "verification_action": null
+  }
+}

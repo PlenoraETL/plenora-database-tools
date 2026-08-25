@@ -66,13 +66,13 @@ fn batch_to_ipc_bytes(
     let mut buf = Vec::with_capacity(1024);
     {
         let mut writer = StreamWriter::try_new(&mut buf, &schema)
-            .map_err(|e| internal_error(format!("arrow-ipc writer init: {e}")))?;
+            .map_err(|_| internal_error("arrow-ipc writer init"))?;
         writer
             .write(batch)
-            .map_err(|e| internal_error(format!("arrow-ipc writer write: {e}")))?;
+            .map_err(|_| internal_error("arrow-ipc writer write"))?;
         writer
             .finish()
-            .map_err(|e| internal_error(format!("arrow-ipc writer finish: {e}")))?;
+            .map_err(|_| internal_error("arrow-ipc writer finish"))?;
     }
     Ok(buf)
 }
@@ -121,10 +121,10 @@ impl BatchReader {
         let mut buf = Vec::with_capacity(512);
         {
             let mut writer = StreamWriter::try_new(&mut buf, &schema)
-                .map_err(|e| PyRuntimeError::new_err(format!("arrow-ipc schema writer: {e}")))?;
+                .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema writer"))?;
             writer
                 .finish()
-                .map_err(|e| PyRuntimeError::new_err(format!("arrow-ipc schema finish: {e}")))?;
+                .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
         }
         Ok(PyBytes::new(py, &buf))
     }
@@ -157,10 +157,10 @@ pub(crate) fn make_read_operation(
             let direction = match dir.as_str() {
                 "asc" => SortDirection::Asc,
                 "desc" => SortDirection::Desc,
-                other => {
-                    return Err(DatabaseError::invalid_plan(format!(
-                        "order_by direzione sconosciuta '{other}': attesi 'asc' o 'desc'"
-                    )));
+                _ => {
+                    return Err(DatabaseError::invalid_plan(
+                        "order_by direzione sconosciuta: attesi 'asc' o 'desc'",
+                    ));
                 }
             };
             Ok(OrderBy { field, direction })
@@ -272,12 +272,11 @@ impl AsyncBatchReader {
             let schema = stream.schema();
             let mut buf = Vec::with_capacity(512);
             {
-                let mut writer = StreamWriter::try_new(&mut buf, &schema).map_err(|e| {
-                    PyRuntimeError::new_err(format!("arrow-ipc schema writer: {e}"))
-                })?;
-                writer.finish().map_err(|e| {
-                    PyRuntimeError::new_err(format!("arrow-ipc schema finish: {e}"))
-                })?;
+                let mut writer = StreamWriter::try_new(&mut buf, &schema)
+                    .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema writer"))?;
+                writer
+                    .finish()
+                    .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
             }
             Python::with_gil(|py| Ok(PyBytes::new(py, &buf).into_any().unbind()))
         })

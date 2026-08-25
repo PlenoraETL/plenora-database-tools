@@ -12,8 +12,8 @@ use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture}
 use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ReadDiagnosticsTracker,
-    RemoteEffect, Result, RetryDisposition,
+    interruption_category, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase,
+    ReadDiagnosticsTracker, RemoteEffect, Result, RetryDisposition,
 };
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, Renderer};
 use std::sync::Arc;
@@ -337,7 +337,7 @@ impl BatchStream for SqlServerBatchStream {
             if cancellation.is_cancelled() {
                 self.cancellation.cancel();
                 self.finished = true;
-                return Err(cancelled_read_error());
+                return Err(cancelled_read_error(cancellation));
             }
             let completed = {
                 let next = self.next_batch_inner();
@@ -352,7 +352,7 @@ impl BatchStream for SqlServerBatchStream {
             } else {
                 self.cancellation.cancel();
                 self.finished = true;
-                Err(cancelled_read_error())
+                Err(cancelled_read_error(cancellation))
             }
         })
     }
@@ -400,7 +400,7 @@ impl SqlServerBatchStream {
         self.budget.ensure_active()?;
         if self.cancellation.is_cancelled() {
             self.finished = true;
-            return Err(cancelled_read_error());
+            return Err(cancelled_read_error(&self.cancellation));
         }
         let reservation = BatchReservation::new(&self.budget, self.batch_rows, &self.columns)?;
         let capacity = reservation.row_limit.min(1_024);
@@ -414,7 +414,7 @@ impl SqlServerBatchStream {
             let received = tokio::select! {
                 _ = self.cancellation.cancelled() => {
                     self.finished = true;
-                    return Err(cancelled_read_error());
+                    return Err(cancelled_read_error(&self.cancellation));
                 }
                 row = self.receiver.recv() => row,
             };
@@ -798,12 +798,26 @@ fn validate_batch_rows(batch_rows: usize) -> Result<()> {
     Ok(())
 }
 
-fn cancelled_read_error() -> DatabaseError {
-    read_error(
-        ErrorCategory::Cancelled,
-        ErrorPhase::Read,
-        "lettura SQL Server cancellata; connessione quarantinata",
-    )
+/// La lettura interrotta, con la causa che l'ha interrotta.
+///
+/// Una deadline scaduta e un `Timeout`: dichiararla `Cancelled` faceva
+/// sembrare una decisione del chiamante cio che era un limite di tempo, e
+/// nascondeva al consumatore l'unica informazione che gli serve per decidere
+/// se riprovare con piu tempo.
+fn cancelled_read_error(cancellation: &CancellationToken) -> DatabaseError {
+    if interruption_category(cancellation) == ErrorCategory::Timeout {
+        read_error(
+            ErrorCategory::Timeout,
+            ErrorPhase::Read,
+            "durata massima lettura SQL Server esaurita; connessione quarantinata",
+        )
+    } else {
+        read_error(
+            ErrorCategory::Cancelled,
+            ErrorPhase::Read,
+            "lettura SQL Server cancellata; connessione quarantinata",
+        )
+    }
 }
 
 fn read_error(

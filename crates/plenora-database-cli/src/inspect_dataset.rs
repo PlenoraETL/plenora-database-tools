@@ -205,7 +205,7 @@ fn inspect_cell(
         ));
     }
     let inspection = inspect_ewkb_detailed(bytes, MAX_GEOMETRY_COMPONENTS, MAX_GEOMETRY_DEPTH)
-        .map_err(|error| format!("geometry batch {batch} riga {row}: {error}"))?;
+        .map_err(|_| format!("geometry non decodificabile: batch {batch}, riga {row}"))?;
     validate_observed_contract(contract, &inspection, batch, row)?;
     Ok(json!({
         "batch": batch,
@@ -403,7 +403,12 @@ mod tests {
             &[Some(vec![1, 2, 3])],
         );
         let error = inspect(&fixture.0).expect_err("malformed WKB");
-        assert!(error.database_error().message.contains("batch 0 riga 0"));
+        // Le coordinate della cella restano — sono posizione, non contenuto —
+        // e la causa della libreria non c'e piu: un errore di decodifica WKB
+        // nomina volentieri byte e offset del dato.
+        let message = &error.database_error().message;
+        assert!(message.contains("batch 0"), "{message}");
+        assert!(message.contains("riga 0"), "{message}");
     }
 
     #[test]

@@ -104,7 +104,7 @@ def connect_mysql(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> MysqlSession:
+) -> "_MysqlSessionWrapper":
     """Apre una nuova sessione MySQL (sync).
 
     API disponibili in MysqlSession:

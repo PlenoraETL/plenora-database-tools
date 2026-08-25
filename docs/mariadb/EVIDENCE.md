@@ -843,18 +843,21 @@ prove che sostengono una capability **pubblicata** da quelle che
 meno per queste tre, ma resta per le mode che verranno: ciascuna avra le
 proprie prove prima della propria bandiera.
 
-`rollback_on_failure` resta chiusa, e non per dimenticanza: il flag parla
-delle **righe** di qualunque scrittura — il residuo DDL lo descrive
-`transactional_ddl`, gia false — e quella promessa globale non e qualificata.
-La cancellazione, per giunta, dichiara l'effetto remoto `Unknown`: e la
-rilettura a mostrare che le righe erano tornate indietro, non il provider.
+`rollback_on_failure` **e aperta**, e per un po' non lo era per un argomento
+sbagliato. Il flag parla delle righe di qualunque scrittura che questo profilo
+ammette, e ne ammette una: `Append`. Le tre sonde qui sopra girano con
+`allow_partial: false` — il piano che la bandiera governa — e misurano l'esito
+che promette: il secondo batch rifiutato annulla anche il primo, l'effetto
+dichiarato e `RolledBack`, e la rilettura da un'altra sessione lo conferma. Il
+residuo DDL non c'entra: lo descrive `transactional_ddl`, che resta `false`.
 
-`rollback_on_failure` resta chiusa per una ragione sua, ed e diversa da quella
-che avevo scritto: il flag parla delle **righe** di qualunque scrittura — il
-residuo DDL lo descrive `transactional_ddl`, gia false — e quella promessa
-globale non e qualificata. La cancellazione, per giunta, dichiara l'effetto
-remoto `Unknown`: e la rilettura a mostrare che le righe erano tornate
-indietro, non il provider.
+L'obiezione che avevo scritto — la cancellazione dichiara l'effetto remoto
+`Unknown` — era fuori bersaglio: `Unknown` e l'esito di una **cancellazione**,
+non di un fallimento, e su quel percorso nessun provider promette nulla.
+PostgreSQL pubblica `rollback_on_failure = true` e ha lo stesso esito ignoto a
+commit interrotto. Tenendola chiusa, MariaDB rifiutava in `prepare` proprio il
+piano su cui queste prove sono state raccolte: l'unica mode aperta, con
+l'unico `allow_partial` misurato.
 
 ### Cosa resta not_measured
 

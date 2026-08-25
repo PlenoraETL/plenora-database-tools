@@ -1,8 +1,8 @@
 use crate::profile::ServerCodeVerdict;
 use mysql_async::Error;
 use plenora_database_core::{
-    CancellationReason, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
-    RetryDisposition,
+    interruption_category, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase,
+    RemoteEffect, RetryDisposition,
 };
 
 pub fn driver_error(
@@ -185,7 +185,10 @@ pub fn interruption_error(
     phase: ErrorPhase,
     effect: RemoteEffect,
 ) -> DatabaseError {
-    if cancellation.reason() == Some(CancellationReason::Deadline) {
+    // La decisione e una sola e sta nel core: qui resta solo la forma
+    // dell'errore, che e specifica del prodotto (messaggi, retry, effetto
+    // remoto).
+    if interruption_category(cancellation) == ErrorCategory::Timeout {
         timeout_error(profile, phase, effect)
     } else {
         cancellation_error(profile, phase, effect)

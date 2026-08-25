@@ -82,7 +82,7 @@ where
     let mut last_error: Option<DatabaseError> = None;
     for attempt in 0..policy.max_attempts {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(last_error.as_ref()));
+            return Err(interrupted_error(last_error.as_ref(), cancellation));
         }
         match op(attempt).await {
             Ok(value) => return Ok(value),
@@ -100,7 +100,7 @@ where
                     RetryDisposition::After(ms) => {
                         let ms = policy.max_delay_ms.map_or(ms, |cap| ms.min(cap));
                         if sleep_cancellable(cancellation, ms).await {
-                            return Err(cancelled_error(last_error.as_ref()));
+                            return Err(interrupted_error(last_error.as_ref(), cancellation));
                         }
                     }
                     RetryDisposition::Never
@@ -131,11 +131,20 @@ async fn sleep_cancellable(cancellation: &CancellationToken, ms: u64) -> bool {
     }
 }
 
-fn cancelled_error(last: Option<&DatabaseError>) -> DatabaseError {
-    DatabaseError::cancelled(
+/// L'errore con cui il retry si arrende, con la causa che l'ha fermato.
+///
+/// Questo strato sta sopra tutti e tre i provider, quindi perdeva la deadline
+/// per tutti insieme: un budget esaurito durante il backoff usciva come
+/// `Cancelled`, indistinguibile da un annullamento del chiamante.
+fn interrupted_error(
+    last: Option<&DatabaseError>,
+    cancellation: &CancellationToken,
+) -> DatabaseError {
+    DatabaseError::interrupted(
+        cancellation,
         last.and_then(|e| e.provider),
         plenora_database_core::ErrorPhase::Cleanup,
-        "retry interrotto dalla cancellation",
+        "retry interrotto",
     )
 }
 
@@ -348,5 +357,47 @@ mod tests {
         )
         .await;
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// `DatabaseError::is_retryable()` e questo executor devono dire la stessa
+    /// cosa. Hanno divergiuto: il metodo pubblico rispondeva `true` per
+    /// `RequiresRecovery` e `RequiresIdempotencyKey`, che qui non sono mai
+    /// stati ritentati. Un consumer che si fidava della risposta e non
+    /// dell'executor poteva duplicare una scrittura dall'esito ignoto.
+    ///
+    /// La guardia non ispeziona il codice: conta i tentativi davvero eseguiti.
+    #[tokio::test]
+    async fn is_retryable_agrees_with_the_executor() {
+        for retry in [
+            RetryDisposition::Never,
+            RetryDisposition::Quarantine,
+            RetryDisposition::Safe,
+            RetryDisposition::After(0),
+            RetryDisposition::RequiresIdempotencyKey,
+            RetryDisposition::RequiresRecovery,
+        ] {
+            let count = Arc::new(AtomicU32::new(0));
+            let count_clone = Arc::clone(&count);
+            let cancel = CancellationToken::new();
+            let _ = retry_with_policy(
+                move |_attempt| {
+                    let c = Arc::clone(&count_clone);
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Err::<i32, _>(mk_error(retry))
+                    }
+                },
+                RetryPolicy::new(3),
+                &cancel,
+            )
+            .await;
+            let attempts = count.load(Ordering::SeqCst);
+            let executor_retried = attempts > 1;
+            assert_eq!(
+                executor_retried,
+                mk_error(retry).is_retryable(),
+                "{retry:?}: l'executor ha eseguito {attempts} tentativi"
+            );
+        }
     }
 }

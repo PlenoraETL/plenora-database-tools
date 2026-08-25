@@ -60,7 +60,11 @@ def test_copy_from_append_pyarrow_table_returns_committed_outcome(session) -> No
     assert outcome["rows"]["confirmed"] == 500
     assert outcome["rows"]["inserted"] == 500
     assert outcome["rows"]["failed"] == 0
-    assert outcome["recovery"] is None
+    # Un esito certo non porta `recovery`: la variante `committed` dello
+    # schema ha `unevaluatedProperties: false` e non dichiara quel campo.
+    # Il convertitore lo scriveva comunque, a `None`, e questa asserzione
+    # consacrava la violazione.
+    assert "recovery" not in outcome
 
     # Verifica lato DB
     count = session.execute_scalar("SELECT COUNT(*)::BIGINT FROM _pyp3_copy")

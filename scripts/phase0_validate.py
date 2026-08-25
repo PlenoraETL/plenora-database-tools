@@ -227,6 +227,40 @@ def validate_examples(
         if not entries:
             raise ValidationError(f"examples index vuoto: {root.name}")
         validated += len(entries)
+
+        # Corpus negativo. Un esempio valido prova che lo schema *accetta*
+        # cio che deve accettare, e nient'altro: da solo, uno schema che
+        # accetta qualsiasi cosa lo supera. Queste voci dichiarano documenti
+        # che devono essere **rifiutati**, e sono l'unico modo per accorgersi
+        # che un vincolo e stato allentato o non ha mai morso.
+        for entry in index.get("rejected", []):
+            example_path = (index_path.parent / entry["file"]).resolve()
+            schema_path = (index_path.parent / entry["schema"]).resolve()
+            if not example_path.is_relative_to(root.resolve()):
+                raise ValidationError(f"rejected path fuori da {root.name}")
+            if not schema_path.is_relative_to(root.resolve()):
+                raise ValidationError(f"schema path fuori da {root.name}")
+            if example_path in seen:
+                raise ValidationError(f"example duplicato: {entry['file']}")
+            seen.add(example_path)
+            try:
+                schema = schemas[schema_path]
+            except KeyError as exc:
+                raise ValidationError(
+                    f"schema non registrato: {entry['schema']}"
+                ) from exc
+            label = f"rejected {root.name}/{entry['file']}"
+            try:
+                validate_instance(
+                    load_json(example_path), schema, registry, label
+                )
+            except ValidationError:
+                validated += 1
+                continue
+            raise ValidationError(
+                f"{label}: accettato dallo schema, ma doveva essere rifiutato "
+                f"({entry.get('reason', 'motivo non dichiarato')})"
+            )
     return validated
 
 
@@ -499,11 +533,57 @@ def validate_generated_documents() -> int:
     return len(generated)
 
 
+def collect_refs(node: Any, out: set[str]) -> None:
+    """Ogni `$ref` del documento, normalizzato al solo frammento."""
+    if isinstance(node, dict):
+        target = node.get("$ref")
+        if isinstance(target, str) and "#/$defs/" in target:
+            out.add(target.split("#/$defs/", 1)[1])
+        for value in node.values():
+            collect_refs(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            collect_refs(value, out)
+
+
+def validate_no_orphan_defs(schemas: Mapping[Path, Mapping[str, Any]]) -> int:
+    """Nessuna definizione pubblicata senza nessuno che la usi.
+
+    Un `$defs` non riferito non partecipa a nessuna validazione: non descrive
+    niente, ma sta in un file pubblicato e si legge come se lo facesse. Ne e
+    stato trovato uno — `geometry_contract` — che descriveva un documento JSON
+    che questo prodotto non emette (il contratto di una colonna geometrica
+    viaggia nei metadata di campo Arrow) e contraddiceva il tipo Rust con lo
+    stesso nome. Nessuno se n'era accorto perche nessuno lo leggeva.
+    """
+    referenced: set[str] = set()
+    for schema in schemas.values():
+        collect_refs(schema, referenced)
+
+    declared = 0
+    for path, schema in schemas.items():
+        defs = schema.get("$defs")
+        if not isinstance(defs, dict):
+            continue
+        for name in defs:
+            declared += 1
+            if name not in referenced:
+                raise ValidationError(
+                    f"definizione senza riferimenti: {path.name}#/$defs/{name}"
+                )
+    return declared
+
+
 def run_gate() -> dict[str, Any]:
     schemas = discover_schemas(REPO_ROOT / "contracts")
     registry = build_registry(schemas.values())
     checks = [
         {"id": "json-schemas", "status": "passed", "count": len(schemas)},
+        {
+            "id": "schema-definitions",
+            "status": "passed",
+            "count": validate_no_orphan_defs(schemas),
+        },
         {
             "id": "contract-examples",
             "status": "passed",

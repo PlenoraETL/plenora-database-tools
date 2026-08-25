@@ -7,7 +7,7 @@ in Git, che e dove sta la storia.
 - `capabilities.schema.json`: capability scoperte sul target;
 - `loss-report.schema.json`: perdite di mapping esplicite;
 - `write-outcome.schema.json`: committed, rolled back, partial e unknown;
-- `common.schema.json`: identificatori, provider, geometria e policy;
+- `common.schema.json`: identificatori, provider, oggetti e policy;
 - `golden-manifest.schema.json`: casi di compatibilità semantica.
 
 I `$id` usano il namespace non instradabile

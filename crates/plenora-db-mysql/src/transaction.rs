@@ -1,11 +1,11 @@
-//! Transaction scope MySQL — implementa `TransactionScope` del core.
+//! Transaction scope `MySQL` — implementa `TransactionScope` del core.
 //!
 //! Copre begin con opzioni (isolation, access mode, statement_timeout),
 //! savepoint annidati con quoting sicuro, commit/rollback disambiguato
 //! (`OutcomeUnknown` in caso di canale compromesso in fase Commit).
 //!
 //! Non implementa (deferito a minor future):
-//! - `query_stream` — richiede cursor MySQL (mysql_async non ha API
+//! - `query_stream` — richiede cursor `MySQL` (mysql_async non ha API
 //!   nativa: bisogna implementare via SELECT + LIMIT/OFFSET chunked)
 //!
 //! Riuso: sfrutta `MysqlSession::exec_write` / `query_rows` /
@@ -22,9 +22,11 @@
     clippy::significant_drop_tightening
 )]
 
-use crate::error::driver_error;
+use crate::error::{driver_error, interruption_error};
 use crate::parameter::bind_positional_params;
+use crate::profile::BINARY_CHARACTER_SET;
 use crate::session::{MysqlSession, MysqlTransactionCommand};
+use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Row as MyRow, Value};
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
@@ -44,7 +46,7 @@ pub struct MysqlTransaction {
     open: bool,
     /// Policy di ammissione statement (Allow default, Deny per PFM).
     /// Persistito da `TransactionOptions::native_query_policy`; parity
-    /// con `PostgresTransaction`. Fix P1 review MySQL 2026-08-15.
+    /// con `PostgresTransaction`. Fix P1 review `MySQL` 2026-08-15.
     native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
@@ -230,7 +232,7 @@ fn quote_savepoint_name(name: &str) -> Result<String> {
 
 /// Esegue un SQL raw (nessun parametro) sulla sessione via **text protocol**.
 ///
-/// MySQL rifiuta `SET`, `SAVEPOINT`, `START TRANSACTION` ecc. nel prepared
+/// `MySQL` rifiuta `SET`, `SAVEPOINT`, `START TRANSACTION` ecc. nel prepared
 /// statement protocol (errore 1295). `exec_control` usa `query_drop`.
 async fn raw_exec(
     session: &mut MysqlSession,
@@ -245,10 +247,38 @@ async fn raw_exec(
 ///
 /// I tipi non nativi (Date/Time/Decimal) sono estratti come stringhe UTF-8
 /// (formato server-side); il consumer riconverte con `p.date(str)` etc.
+/// La conversione consulta i **metadati di colonna**, non solo il valore. Sul
+/// filo `BLOB` e `TEXT` arrivano entrambi come `Value::Bytes` con lo stesso
+/// tipo di colonna: l'unico segnale che li distingue e il character set (63 =
+/// binario). Senza consultarlo, un `BLOB` i cui byte formano per caso UTF-8
+/// valido — qualunque payload ASCII — diventava una stringa, e un `TEXT` in
+/// latin1 con byte non UTF-8 diventava un blob.
 fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Result<Row> {
+    // I metadati si leggono prima: `take_opt` prende `&mut row` e non
+    // convivrebbe col prestito immutabile di `columns_ref`.
+    let specs: Vec<(ColumnType, u16)> = row
+        .columns_ref()
+        .iter()
+        .map(|column| (column.column_type(), column.character_set()))
+        .collect();
+
     let mut values = Vec::with_capacity(columns.len());
     for idx in 0..columns.len() {
-        let value = row.take_opt::<Value, _>(idx).unwrap_or(Ok(Value::NULL));
+        let Some(&spec) = specs.get(idx) else {
+            return Err(protocol_mismatch(
+                kind,
+                idx,
+                "il result set dichiara meno colonne dei nomi attesi",
+            ));
+        };
+        // `take_opt` risponde `None` per una cella che il protocollo non ha
+        // consegnato. Prima diventava un `NULL` SQL: una riga incompleta —
+        // cioe un guasto di protocollo o di mapping — si presentava al
+        // chiamante come un dato legittimo, indistinguibile da una colonna
+        // davvero vuota.
+        let Some(value) = row.take_opt::<Value, _>(idx) else {
+            return Err(protocol_mismatch(kind, idx, "cella assente nel result set"));
+        };
         let raw = value.map_err(|error| DatabaseError {
             category: ErrorCategory::DataMapping,
             phase: ErrorPhase::Read,
@@ -259,12 +289,82 @@ fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Re
             diagnostics: None,
             message: format!("decode colonna idx={idx}: {error}"),
         })?;
-        values.push(convert_value(raw, idx, kind)?);
+        values.push(convert_value(raw, idx, kind, spec)?);
     }
-    Ok(Row::new(Arc::clone(columns), values))
+    Row::try_new(Arc::clone(columns), values)
 }
 
-fn convert_value(value: Value, idx: usize, kind: ProviderKind) -> Result<ParameterValue> {
+/// Byte di una colonna testuale, o l'errore che dice che non lo sono.
+fn text_or_error(
+    bytes: Vec<u8>,
+    kind: ProviderKind,
+    idx: usize,
+    character_set: u16,
+) -> Result<ParameterValue> {
+    String::from_utf8(bytes)
+        .map(ParameterValue::String)
+        .map_err(|_| non_utf8_text(kind, idx, character_set))
+}
+
+/// Un tipo wire che questo decoder non sa qualificare.
+///
+/// Fallisce chiuso invece di indovinare: una famiglia nuova — o una che il
+/// server introduce in una versione successiva — deve essere qualificata
+/// deliberatamente, non ereditare per caso il tipo pubblico di un'altra.
+fn unqualified_wire_type(kind: ProviderKind, idx: usize, column_type: ColumnType) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Unsupported,
+        phase: ErrorPhase::Read,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(kind),
+        execution_id: None,
+        diagnostics: None,
+        message: format!("colonna idx={idx} di tipo wire non qualificato: {column_type:?}"),
+    }
+}
+
+/// Una colonna dichiarata testuale porta byte che testo non sono.
+///
+/// Tipicamente una collation che il client non si aspetta. Il messaggio porta
+/// posizione e character set — contesto operativo — e non i byte.
+fn non_utf8_text(kind: ProviderKind, idx: usize, character_set: u16) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::DataMapping,
+        phase: ErrorPhase::Read,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(kind),
+        execution_id: None,
+        diagnostics: None,
+        message: format!("colonna idx={idx} testuale (charset {character_set}) non e UTF-8"),
+    }
+}
+
+/// Il result set non ha la forma che dichiara.
+///
+/// `Protocol` e non `DataMapping`: non e un valore che non si sa convertire, e
+/// la conversazione col server che non torna. Il messaggio porta la posizione,
+/// mai il contenuto.
+fn protocol_mismatch(kind: ProviderKind, idx: usize, what: &str) -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Protocol,
+        phase: ErrorPhase::Read,
+        remote_effect: RemoteEffect::None,
+        retry: RetryDisposition::Never,
+        provider: Some(kind),
+        execution_id: None,
+        diagnostics: None,
+        message: format!("{what} (colonna idx={idx})"),
+    }
+}
+
+fn convert_value(
+    value: Value,
+    idx: usize,
+    kind: ProviderKind,
+    spec: (ColumnType, u16),
+) -> Result<ParameterValue> {
     Ok(match value {
         Value::NULL => ParameterValue::Null {
             type_name: "unknown".to_owned(),
@@ -288,10 +388,58 @@ fn convert_value(value: Value, idx: usize, kind: ProviderKind) -> Result<Paramet
         }
         Value::Float(v) => ParameterValue::F64(f64::from(v)),
         Value::Double(v) => ParameterValue::F64(v),
-        Value::Bytes(bytes) => match std::str::from_utf8(&bytes) {
-            Ok(s) => ParameterValue::String(s.to_owned()),
-            Err(_) => ParameterValue::Bytes(bytes),
-        },
+        // Il tipo pubblico di una cella lo decide il **tipo di colonna**, mai
+        // l'aspetto dei byte.
+        //
+        // Sul filo molte famiglie diverse arrivano tutte come `Value::Bytes`.
+        // Indovinare provando a leggerle come UTF-8 fa dipendere il tipo dal
+        // contenuto: un `BIT(8)` che vale `0x41` diventava la stringa `"A"` e
+        // lo stesso `BIT(8)` che vale `0xff` restava byte — la stessa colonna,
+        // due tipi, decisi dal dato.
+        //
+        // Le tre classi qui sotto sono la stessa partizione che `profile.rs`
+        // applica in `text_kind` e nel mapping dei tipi wire, quindi il path
+        // transazionale e quello del catalogo dicono la stessa cosa.
+        Value::Bytes(bytes) => {
+            let (column_type, character_set) = spec;
+            match column_type {
+                // Hanno entrambe le forme, e solo il charset le distingue.
+                ColumnType::MYSQL_TYPE_STRING
+                | ColumnType::MYSQL_TYPE_VARCHAR
+                | ColumnType::MYSQL_TYPE_VAR_STRING
+                | ColumnType::MYSQL_TYPE_TINY_BLOB
+                | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
+                | ColumnType::MYSQL_TYPE_LONG_BLOB
+                | ColumnType::MYSQL_TYPE_BLOB => {
+                    if character_set == BINARY_CHARACTER_SET {
+                        ParameterValue::Bytes(bytes)
+                    } else {
+                        text_or_error(bytes, kind, idx, character_set)?
+                    }
+                }
+                // Sempre testo, qualunque charset dichiarino. `DECIMAL` viene
+                // consegnato come stringa di cifre — e cio che l'intestazione
+                // di questo modulo promette — e `JSON`, `ENUM`, `SET` sono
+                // testuali per definizione.
+                ColumnType::MYSQL_TYPE_DECIMAL
+                | ColumnType::MYSQL_TYPE_NEWDECIMAL
+                | ColumnType::MYSQL_TYPE_JSON
+                | ColumnType::MYSQL_TYPE_ENUM
+                | ColumnType::MYSQL_TYPE_SET => text_or_error(bytes, kind, idx, character_set)?,
+                // Sempre byte. `BIT` e una maschera, `GEOMETRY` e un WKB:
+                // nessuno dei due e testo, nemmeno quando i byte lo sembrano.
+                ColumnType::MYSQL_TYPE_BIT | ColumnType::MYSQL_TYPE_GEOMETRY => {
+                    ParameterValue::Bytes(bytes)
+                }
+                // Un tipo che questo decoder non qualifica non viene
+                // indovinato: fallisce chiuso, cosi chi lo incontra lo
+                // qualifica invece di scoprirlo da un tipo pubblico
+                // sbagliato.
+                other => {
+                    return Err(unqualified_wire_type(kind, idx, other));
+                }
+            }
+        }
         Value::Date(y, mo, d, h, mi, s, us) => {
             if h == 0 && mi == 0 && s == 0 && us == 0 {
                 ParameterValue::Date(format!("{y:04}-{mo:02}-{d:02}"))
@@ -406,16 +554,17 @@ impl TransactionScope for MysqlTransaction {
                     _ = cancellation.cancelled() => {
                         self.session.discard().await;
                         self.open = false;
-                        return Err(DatabaseError {
-                            category: ErrorCategory::Cancelled,
-                            phase: ErrorPhase::Read,
-                            remote_effect: RemoteEffect::None,
-                            retry: RetryDisposition::Never,
-                            provider: Some(kind),
-                            execution_id: None,
-                            diagnostics: None,
-                            message: format!("query {} cancellata", profile.product()),
-                        });
+                        // La causa la porta il token: una deadline scaduta e
+                        // un `Timeout`. Questo ramo la costruiva a mano come
+                        // `Cancelled`, mentre il resto del provider passa da
+                        // `interruption_error` — la stessa scadenza usciva in
+                        // due categorie diverse a seconda della superficie.
+                        return Err(interruption_error(
+                            profile,
+                            cancellation,
+                            ErrorPhase::Read,
+                            RemoteEffect::None,
+                        ));
                     }
                     result = tokio::time::timeout(timeout, execution) => result,
                 };
@@ -710,7 +859,7 @@ impl TransactionScope for MysqlTransaction {
 /// Il timeout di una query dentro una transazione.
 ///
 /// Estratto perche un messaggio che non si puo costruire in un test e un
-/// messaggio che nessuno verifica: era rimasto cablato su MySQL per due
+/// messaggio che nessuno verifica: era rimasto cablato su `MySQL` per due
 /// review mentre il ramo accanto era gia parametrizzato.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn query_timeout_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
@@ -807,5 +956,190 @@ mod tests {
     #[test]
     fn an_empty_context_is_valid() {
         assert!(validate_context_keys(&TransactionOptions::default()).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    //  decode_row: i metadati di colonna, non l'aspetto dei byte
+    // ------------------------------------------------------------------
+
+    use super::{decode_row, BINARY_CHARACTER_SET};
+    use mysql_async::consts::ColumnType;
+    use mysql_async::Value;
+    use plenora_database_core::plan::ProviderKind;
+    use plenora_database_core::provider::ParameterValue;
+    use std::sync::Arc;
+
+    /// Character set non binario qualsiasi (utf8mb4).
+    const UTF8MB4: u16 = 255;
+
+    fn row_of(column_type: ColumnType, character_set: u16, value: Value) -> mysql_async::Row {
+        let wire = Arc::new([mysql_async::Column::new(column_type)
+            .with_name(b"payload")
+            .with_character_set(character_set)]);
+        mysql_common::row::new_row(vec![value], wire)
+    }
+
+    fn decode_one(column_type: ColumnType, character_set: u16, value: Value) -> ParameterValue {
+        let names: Arc<[String]> = Arc::from(vec!["payload".to_owned()]);
+        let row = decode_row(
+            row_of(column_type, character_set, value),
+            &names,
+            ProviderKind::Mysql,
+        )
+        .expect("riga decodificabile");
+        row.values().first().expect("un valore").clone()
+    }
+
+    /// Il caso che il decoder sbagliava: un BLOB i cui byte sono ASCII.
+    ///
+    /// Sono `Value::Bytes` come un TEXT, e formano UTF-8 valido: interpretarli
+    /// come stringa era indistinguibile dal caso giusto finche non si
+    /// guardava il character set.
+    #[test]
+    fn an_ascii_blob_stays_binary() {
+        let value = decode_one(
+            ColumnType::MYSQL_TYPE_BLOB,
+            BINARY_CHARACTER_SET,
+            Value::Bytes(b"PNG-like-ascii".to_vec()),
+        );
+        assert!(
+            matches!(value, ParameterValue::Bytes(ref bytes) if bytes == b"PNG-like-ascii"),
+            "un BLOB ASCII non deve diventare testo: {value:?}"
+        );
+    }
+
+    /// La regressione che il charset da solo introduceva.
+    ///
+    /// `DECIMAL` viaggia come `Value::Bytes` **con charset binario** — come
+    /// ogni tipo numerico — ma e una stringa di cifre, e l'intestazione di
+    /// questo modulo promette che i tipi non nativi escano come stringhe
+    /// UTF-8. Applicare il charset a ogni `Bytes` trasformava ogni DECIMAL in
+    /// un blob: il charset distingue binario da testo solo per le famiglie che
+    /// hanno entrambe le forme.
+    #[test]
+    fn a_decimal_stays_a_string_despite_the_binary_charset() {
+        let value = decode_one(
+            ColumnType::MYSQL_TYPE_NEWDECIMAL,
+            BINARY_CHARACTER_SET,
+            Value::Bytes(b"12.34".to_vec()),
+        );
+        assert!(
+            matches!(value, ParameterValue::String(ref text) if text == "12.34"),
+            "un DECIMAL non deve diventare un blob: {value:?}"
+        );
+    }
+
+    /// `BIT` e una maschera, non testo — nemmeno quando i byte lo sembrano.
+    ///
+    /// `0x41` e UTF-8 valido, quindi il fallback precedente lo consegnava come
+    /// `"A"`; `0xff` no, e restava byte. La stessa colonna cambiava tipo
+    /// pubblico in base al valore.
+    #[test]
+    fn a_bit_column_stays_binary_whatever_the_bytes_look_like() {
+        for payload in [vec![0x41_u8], vec![0xff_u8]] {
+            let value = decode_one(
+                ColumnType::MYSQL_TYPE_BIT,
+                BINARY_CHARACTER_SET,
+                Value::Bytes(payload.clone()),
+            );
+            assert!(
+                matches!(value, ParameterValue::Bytes(ref bytes) if *bytes == payload),
+                "BIT {payload:?} non deve diventare testo: {value:?}"
+            );
+        }
+    }
+
+    /// Un WKB e byte anche quando per caso e UTF-8 valido.
+    #[test]
+    fn a_geometry_column_stays_binary() {
+        let value = decode_one(
+            ColumnType::MYSQL_TYPE_GEOMETRY,
+            BINARY_CHARACTER_SET,
+            Value::Bytes(b"AAAA".to_vec()),
+        );
+        assert!(matches!(value, ParameterValue::Bytes(_)), "{value:?}");
+    }
+
+    /// Un tipo wire non qualificato non viene indovinato.
+    #[test]
+    fn an_unqualified_wire_type_fails_closed() {
+        let names: Arc<[String]> = Arc::from(vec!["payload".to_owned()]);
+        let error = decode_row(
+            row_of(
+                // `MYSQL_TYPE_NULL` non ha una rappresentazione `Bytes`
+                // sensata: e il rappresentante del caso "questo decoder non
+                // sa cosa farne".
+                ColumnType::MYSQL_TYPE_NULL,
+                BINARY_CHARACTER_SET,
+                Value::Bytes(vec![0x01]),
+            ),
+            &names,
+            ProviderKind::Mysql,
+        )
+        .expect_err("tipo wire non qualificato");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn a_json_column_stays_a_string() {
+        let value = decode_one(
+            ColumnType::MYSQL_TYPE_JSON,
+            UTF8MB4,
+            Value::Bytes(br#"{"a":1}"#.to_vec()),
+        );
+        assert!(
+            matches!(value, ParameterValue::String(ref text) if text == r#"{"a":1}"#),
+            "{value:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_column_stays_text() {
+        let value = decode_one(
+            ColumnType::MYSQL_TYPE_BLOB,
+            UTF8MB4,
+            Value::Bytes("però".as_bytes().to_vec()),
+        );
+        assert!(
+            matches!(value, ParameterValue::String(ref text) if text == "però"),
+            "{value:?}"
+        );
+    }
+
+    /// L'altro verso: byte non UTF-8 su una colonna dichiarata testuale non
+    /// degradano a blob in silenzio.
+    #[test]
+    fn a_text_column_with_invalid_utf8_is_an_error() {
+        let names: Arc<[String]> = Arc::from(vec!["payload".to_owned()]);
+        let error = decode_row(
+            row_of(
+                ColumnType::MYSQL_TYPE_VAR_STRING,
+                UTF8MB4,
+                Value::Bytes(vec![0xff, 0xfe]),
+            ),
+            &names,
+            ProviderKind::Mysql,
+        )
+        .expect_err("byte non UTF-8 su colonna testuale");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+    }
+
+    /// Una cella che il protocollo non ha consegnato non e un NULL.
+    #[test]
+    fn a_missing_cell_is_a_protocol_error() {
+        // Due nomi attesi, una sola colonna sul filo.
+        let names: Arc<[String]> = Arc::from(vec!["a".to_owned(), "b".to_owned()]);
+        let error = decode_row(
+            row_of(
+                ColumnType::MYSQL_TYPE_LONGLONG,
+                BINARY_CHARACTER_SET,
+                Value::Int(1),
+            ),
+            &names,
+            ProviderKind::Mysql,
+        )
+        .expect_err("il result set ha meno colonne dei nomi attesi");
+        assert_eq!(error.category, ErrorCategory::Protocol);
+        assert!(!error.is_retryable());
     }
 }

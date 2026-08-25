@@ -56,9 +56,12 @@ pub fn enforce_policy(policy: NativeQueryPolicy, sql: &str) -> crate::Result<()>
         .ok_or_else(|| crate::DatabaseError::invalid_plan("statement SQL vuoto"))?;
     let head = extract_first_keyword(first);
     if !is_oltp_allowed_keyword(&head) {
-        return Err(crate::DatabaseError::invalid_plan(format!(
-            "profilo native_query=Deny: keyword `{head}` non consentito"
-        )));
+        // La keyword viene da testo SQL libero, e sotto questo profilo il
+        // chiamante puo aver mandato uno statement che non doveva: ricopiarla
+        // significherebbe rimettere SQL nel messaggio.
+        return Err(crate::DatabaseError::invalid_plan(
+            "profilo native_query=Deny: lo statement non e fra le forme CRUD ammesse",
+        ));
     }
     Ok(())
 }

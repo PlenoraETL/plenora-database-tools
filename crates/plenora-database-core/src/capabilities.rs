@@ -1,6 +1,32 @@
 #![allow(clippy::struct_excessive_bools)]
 // Il wire contract usa flag indipendenti: un bitset o enum renderebbe il JSON
 // meno stabile e non rappresenterebbe capability combinabili liberamente.
+//
+// # Perche i campi opzionali hanno `#[serde(default)]`
+//
+// `contracts/v2/capabilities.schema.json` dichiara obbligatorio molto meno di
+// quanto questi tipi pretendessero: `server_cursor`, `pagination`,
+// `resumable`, mezze `writes`, l'intera sezione `transactions`, quattro flag
+// spatial ed `extension_versions` erano facoltativi nello schema e
+// obbligatori qui. Un documento valido secondo il contratto falliva la
+// deserializzazione: il "contratto unico" era unico solo finche nessuno
+// scriveva il documento minimo.
+//
+// L'allineamento va nella direzione che non rompe nulla — Rust diventa
+// tollerante quanto lo schema, invece che lo schema severo quanto Rust — cosi
+// non serve una major v3: un documento che era valido prima lo resta.
+//
+// I default non sono neutri, sono **fail-closed**, ed e la regola del
+// progetto: una capability resta `false` finche non esiste una prova
+// riproducibile che la sostiene, e `not_measured` non e un `no` ma non apre
+// niente lo stesso. Un campo assente e una capability non dichiarata, quindi
+// `false`; uno `scope` assente e [`TransactionScope::None`].
+//
+// La serializzazione non cambia: questi tipi continuano a emettere tutti i
+// campi, quindi l'uscita resta valida per lo schema. Le due direzioni sono
+// verificate su un unico documento, `contracts/v2/examples/
+// capabilities-minimal.json`: `scripts/phase0_validate.py` lo valida contro lo
+// schema, il test in fondo a questo file lo deserializza.
 
 use crate::geometry::Dimensions;
 use crate::plan::ProviderKind;
@@ -12,11 +38,14 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct ReadCapabilities {
     pub streaming: bool,
+    #[serde(default)]
     pub server_cursor: bool,
+    #[serde(default)]
     pub pagination: bool,
     pub projection: bool,
     pub filter: bool,
     pub ordering: bool,
+    #[serde(default)]
     pub resumable: bool,
 }
 
@@ -48,9 +77,13 @@ pub struct WriteCapabilities {
     pub update: bool,
     pub upsert: bool,
     pub replace: bool,
+    #[serde(default)]
     pub delete_by_keys: bool,
+    #[serde(default)]
     pub bulk: bool,
+    #[serde(default)]
     pub array_binding: bool,
+    #[serde(default)]
     pub returning: bool,
     /// Un fallimento prima del commit annulla **le righe** scritte
     /// dall'operazione.
@@ -75,12 +108,16 @@ pub struct WriteCapabilities {
     /// [`crate::error::RemoteEffect::Partial`] e
     /// [`crate::error::RetryDisposition::RequiresRecovery`], perche un retry
     /// cieco troverebbe il target gia esistente.
+    #[serde(default)]
     pub rollback_on_failure: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransactionScope {
+    /// Default deliberato: uno scope non dichiarato non e uno scope
+    /// transazionale.
+    #[default]
     None,
     Statement,
     Transaction,
@@ -89,10 +126,15 @@ pub enum TransactionScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionCapabilities {
+    #[serde(default)]
     pub single_transaction: bool,
+    #[serde(default)]
     pub savepoints: bool,
+    #[serde(default)]
     pub transactional_ddl: bool,
+    #[serde(default)]
     pub staged_swap: bool,
+    #[serde(default)]
     pub scope: TransactionScope,
 }
 
@@ -101,9 +143,13 @@ pub struct TransactionCapabilities {
 pub struct SpatialCapabilities {
     pub read_wkb: bool,
     pub write_wkb: bool,
+    #[serde(default)]
     pub geometry: bool,
+    #[serde(default)]
     pub geography: bool,
+    #[serde(default)]
     pub spatial_index: bool,
+    #[serde(default)]
     pub mixed_geometry_types: bool,
     pub dimensions: Vec<Dimensions>,
     /// Sottoinsieme garantito per ogni semantica spatial pubblicizzata.
@@ -131,10 +177,361 @@ pub struct ProviderCapabilities {
     pub schema_version: u32,
     pub provider: ProviderKind,
     pub provider_version: String,
+    #[serde(default)]
     pub extension_versions: BTreeMap<String, String>,
     pub reads: ReadCapabilities,
     pub writes: WriteCapabilities,
     pub transactions: TransactionCapabilities,
     pub spatial: SpatialCapabilities,
     pub limits: ProviderLimits,
+}
+
+/// Lunghezze massime dichiarate da `contracts/v2/capabilities.schema.json`.
+///
+/// In **caratteri**: `maxLength` di JSON Schema conta caratteri Unicode.
+const MAX_PROVIDER_VERSION_CHARS: usize = 512;
+const MAX_EXTENSION_NAME_CHARS: usize = 128;
+const MAX_EXTENSION_VERSION_CHARS: usize = 256;
+
+impl ProviderCapabilities {
+    /// Verifica che il documento sia un capability v2 coerente.
+    ///
+    /// Il controllo e provider-independent: riguarda la forma e le
+    /// contraddizioni interne, non cosa un singolo motore sappia fare.
+    ///
+    /// Viveva soltanto in `plenora-database-testkit`, cioe era raggiungibile
+    /// solo da chi scriveva test di conformita. Chi *consuma* un documento —
+    /// `plenora_database_engine::prepare`, e da li la CLI — non lo attraversava
+    /// e poteva quindi dichiarare "prepared" un piano confrontato con un
+    /// documento che il contratto rifiuta. Sta qui perche ci sia una fonte
+    /// sola: il testkit ora delega.
+    ///
+    /// Verifica **soltanto** cio che il contratto dichiara: major, campi non
+    /// vuoti, lunghezze massime, duplicati, limiti diversi da zero. Le
+    /// relazioni fra capability che lo schema non esprime stanno in
+    /// [`Self::validate_coherence`], perche rifiutarle qui — sul percorso di
+    /// consumo — significherebbe restringere la major v2.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidPlan` per major non supportata, campi vuoti o oltre le
+    /// lunghezze del contratto, duplicati e limiti a zero.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.schema_version != 2 {
+            return Err(invalid(
+                "documento capability con schema_version non supportata",
+            ));
+        }
+
+        // `minLength: 1` conta i code point, non i caratteri non-spazio: una
+        // versione fatta di soli spazi e dentro la major v2, per quanto sia
+        // inutile. Qui si applica la lunghezza dichiarata e nient'altro; il
+        // giudizio sul contenuto sta in `validate_coherence`.
+        if self.provider_version.is_empty() {
+            return Err(invalid("documento capability senza versione provider"));
+        }
+        if self.provider_version.chars().count() > MAX_PROVIDER_VERSION_CHARS {
+            return Err(invalid("provider_version oltre la lunghezza del contratto"));
+        }
+        for (name, version) in &self.extension_versions {
+            // Lo schema non pone alcun minimo su nome e versione di
+            // un'estensione: solo `propertyNames.maxLength` e `maxLength`.
+            if name.chars().count() > MAX_EXTENSION_NAME_CHARS
+                || version.chars().count() > MAX_EXTENSION_VERSION_CHARS
+            {
+                return Err(invalid(
+                    "nome o versione di estensione oltre la lunghezza del contratto",
+                ));
+            }
+        }
+
+        if has_duplicates(&self.spatial.dimensions) {
+            return Err(invalid(
+                "documento capability con dimensioni spatial duplicate",
+            ));
+        }
+        if has_duplicates(&self.spatial.functions) {
+            return Err(invalid(
+                "documento capability con funzioni spatial duplicate",
+            ));
+        }
+
+        let limits = &self.limits;
+        let bounded = [
+            limits.max_identifier_bytes,
+            limits.max_bind_parameters,
+            limits.max_statement_bytes,
+            limits.max_batch_rows,
+            limits.max_payload_bytes,
+        ];
+        if bounded.into_iter().flatten().any(|limit| limit == 0) {
+            return Err(invalid(
+                "documento capability con limite esplicito pari a zero",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Il documento appena costruito, sul punto di uscire dal provider.
+    ///
+    /// Qui il repository **pubblica**, e qui valgono entrambi i giudizi:
+    /// quello del contratto e quello di coerenza. La distinzione fra i due
+    /// serve dalla parte del consumo — dove rifiutare piu di quanto il
+    /// contratto dica significherebbe restringere la major — e non da questa:
+    /// chi produce non ha alcun motivo di emettere un documento che sa
+    /// contraddittorio.
+    ///
+    /// Nessuno dei tre provider chiamava nulla prima di restituire il proprio
+    /// documento. La versione del motore veniva da una probe: bastava un
+    /// server che rispondesse una stringa vuota perche uscisse un documento
+    /// fuori contratto, e il primo a saperlo sarebbe stato il consumatore.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidPlan` se il documento viola il contratto o e incoerente.
+    pub fn published(self) -> crate::Result<Self> {
+        self.validate()?;
+        self.validate_coherence()?;
+        Ok(self)
+    }
+}
+
+impl ProviderCapabilities {
+    /// Le relazioni fra capability che **il contratto non esprime**.
+    ///
+    /// Sono coerenze vere — `server_cursor` senza `streaming` non ha senso, e
+    /// `staged_swap` senza DDL transazionale non e realizzabile — ma
+    /// `contracts/v2/capabilities.schema.json` non le dichiara: un documento
+    /// che le viola e **valido secondo il contratto pubblico**.
+    ///
+    /// Per questo non stanno in [`Self::validate`], che sta sul percorso di
+    /// consumo di `prepare`. Averle messe li ha fatto rifiutare al prodotto
+    /// documenti che la major v2 ammette, e restringere cio che una major
+    /// accetta e proprio quello che la regola 2 di AGENTS.md vieta senza una
+    /// major nuova.
+    ///
+    /// Restano pero verificate dove il repository **pubblica**: la conformita
+    /// dei provider le chiama, quindi nessun provider di questo workspace puo
+    /// emettere un documento incoerente. Se un giorno diventassero normative,
+    /// il posto e `contracts/v3/`, con l'equivalenza schema-Serde-validatore
+    /// provata da test incrociati.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidPlan` per una combinazione di capability contraddittoria.
+    pub fn validate_coherence(&self) -> crate::Result<()> {
+        // Una versione provider di soli spazi, o un'estensione senza nome,
+        // superano lo schema e non identificano nulla. Chi pubblica non deve
+        // emetterle; chi consuma non puo rifiutarle senza cambiare major.
+        if self.provider_version.trim().is_empty() {
+            return Err(invalid(
+                "versione provider di soli spazi nel documento capability",
+            ));
+        }
+        for (name, version) in &self.extension_versions {
+            if name.trim().is_empty() || version.trim().is_empty() {
+                return Err(invalid(
+                    "documento capability con estensione o versione vuota",
+                ));
+            }
+        }
+
+        let spatial = &self.spatial;
+        let has_spatial_semantics = spatial.geometry || spatial.geography;
+        let claims_spatial_behavior = spatial.read_wkb
+            || spatial.write_wkb
+            || spatial.spatial_index
+            || spatial.mixed_geometry_types
+            || !spatial.dimensions.is_empty()
+            || !spatial.functions.is_empty();
+        if claims_spatial_behavior && !has_spatial_semantics {
+            return Err(invalid(
+                "documento capability spatial senza geometry o geography",
+            ));
+        }
+        if has_spatial_semantics && spatial.dimensions.is_empty() {
+            return Err(invalid("documento capability spatial senza dimensionalita"));
+        }
+
+        if self.reads.server_cursor && !self.reads.streaming {
+            return Err(invalid(
+                "server_cursor richiede streaming nel documento capability",
+            ));
+        }
+
+        let transactions = &self.transactions;
+        if transactions.savepoints && !transactions.single_transaction {
+            return Err(invalid("savepoints richiede single_transaction"));
+        }
+        if transactions.staged_swap
+            && (!transactions.single_transaction || !transactions.transactional_ddl)
+        {
+            return Err(invalid(
+                "staged_swap richiede transazione singola e DDL transazionale",
+            ));
+        }
+        if transactions.single_transaction && transactions.scope == TransactionScope::None {
+            return Err(invalid("single_transaction non puo avere scope none"));
+        }
+        if !transactions.single_transaction && transactions.scope == TransactionScope::Transaction {
+            return Err(invalid("scope transaction richiede single_transaction"));
+        }
+        Ok(())
+    }
+}
+
+fn invalid(message: &'static str) -> crate::DatabaseError {
+    crate::DatabaseError::invalid_plan(message)
+}
+
+fn has_duplicates<T: PartialEq>(values: &[T]) -> bool {
+    values
+        .iter()
+        .enumerate()
+        .any(|(index, value)| values[index + 1..].contains(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Il documento minimo ammesso dallo schema deve deserializzare.
+    ///
+    /// E' lo stesso file che `scripts/phase0_validate.py` valida contro
+    /// `capabilities.schema.json`: una sola fonte, verificata da entrambi i
+    /// lati. Se qualcuno rende obbligatorio qui un campo che lo schema lascia
+    /// facoltativo, questo test lo dice subito invece di lasciarlo scoprire a
+    /// un consumatore.
+    /// Il confine fra cio che il contratto dichiara e cio che il prodotto
+    /// pretende, fissato dove sta.
+    ///
+    /// `capabilities.schema.json` **non** esprime le relazioni fra capability:
+    /// un documento con `server_cursor` senza `streaming` e valido secondo la
+    /// major v2. Averlo fatto rifiutare da `validate()` — che sta sul percorso
+    /// di consumo di `prepare` — restringeva cio che la v2 accetta, e
+    /// restringere una major senza cambiarla e proprio quello che la regola 2
+    /// di AGENTS.md vieta.
+    ///
+    /// Quindi: `validate()` lo accetta, `validate_coherence()` lo rifiuta, e la
+    /// conformita dei provider chiama la seconda. Se qualcuno riporta la
+    /// relazione in `validate()`, questo test lo dice.
+    #[test]
+    fn a_relation_the_contract_does_not_state_is_not_rejected_on_the_consumption_path() {
+        let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
+        let mut capabilities: ProviderCapabilities =
+            serde_json::from_slice(bytes).expect("documento minimo");
+        capabilities.reads.server_cursor = true;
+        capabilities.reads.streaming = false;
+
+        capabilities
+            .validate()
+            .expect("il contratto v2 non vieta questa combinazione");
+        capabilities
+            .validate_coherence()
+            .expect_err("ma resta incoerente, e chi pubblica non deve emetterla");
+    }
+
+    /// Un limite che eccede `u64` e conforme allo schema v2 — che dice
+    /// `"type": "integer"` senza massimo — e resta illeggibile da questa
+    /// implementazione, che lo tiene in `u64`.
+    ///
+    /// Il documento non viene rifiutato: non arriva neppure a esistere. Il
+    /// confine e la deserializzazione, e il messaggio di errore che ne esce
+    /// deve dire *quello*, non far credere a un contratto piu stretto di
+    /// quello pubblicato.
+    #[test]
+    fn a_limit_beyond_u64_is_within_the_contract_and_outside_this_reader() {
+        let bytes = include_bytes!(
+            "../../../contracts/v2/examples/unconsumable-capabilities-limit-over-u64.json"
+        );
+        serde_json::from_slice::<ProviderCapabilities>(bytes)
+            .expect_err("un limite oltre u64 non e rappresentabile qui");
+    }
+
+    /// Cio che il contratto **dichiara** resta rifiutato dal percorso di
+    /// consumo: il confine si sposta in un verso solo.
+    #[test]
+    fn what_the_contract_states_is_still_rejected_on_the_consumption_path() {
+        let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
+        let mut capabilities: ProviderCapabilities =
+            serde_json::from_slice(bytes).expect("documento minimo");
+
+        // Lo schema ha `minimum: 1` su questo limite.
+        capabilities.limits.max_batch_rows = Some(0);
+        capabilities.validate().expect_err("limite a zero");
+
+        // E `minLength: 1` sulla versione del provider.
+        capabilities = serde_json::from_slice(bytes).expect("documento minimo");
+        capabilities.provider_version = String::new();
+        capabilities.validate().expect_err("versione vuota");
+    }
+
+    #[test]
+    fn the_minimal_contract_document_deserialises() {
+        let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
+        let capabilities: ProviderCapabilities =
+            serde_json::from_slice(bytes).expect("il documento minimo del contratto deve caricare");
+
+        // I default non sono neutri: sono la risposta conservativa.
+        assert!(!capabilities.reads.server_cursor);
+        assert!(!capabilities.reads.pagination);
+        assert!(!capabilities.reads.resumable);
+        assert!(!capabilities.writes.delete_by_keys);
+        assert!(!capabilities.writes.bulk);
+        assert!(!capabilities.writes.array_binding);
+        assert!(!capabilities.writes.returning);
+        assert!(!capabilities.writes.rollback_on_failure);
+        assert!(!capabilities.transactions.single_transaction);
+        assert!(!capabilities.transactions.savepoints);
+        assert!(!capabilities.transactions.transactional_ddl);
+        assert!(!capabilities.transactions.staged_swap);
+        assert_eq!(capabilities.transactions.scope, TransactionScope::None);
+        assert!(!capabilities.spatial.geometry);
+        assert!(!capabilities.spatial.geography);
+        assert!(!capabilities.spatial.spatial_index);
+        assert!(!capabilities.spatial.mixed_geometry_types);
+        assert!(capabilities.spatial.functions.is_empty());
+        assert!(capabilities.extension_versions.is_empty());
+        assert_eq!(capabilities.limits.max_identifier_bytes, None);
+    }
+
+    /// L'altra direzione: cio che questi tipi emettono contiene ogni campo
+    /// che lo schema richiede. I default rendono tollerante la lettura, non
+    /// reticente la scrittura.
+    #[test]
+    fn serialising_emits_every_field_the_schema_requires() {
+        let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
+        let capabilities: ProviderCapabilities =
+            serde_json::from_slice(bytes).expect("documento minimo");
+        let emitted = serde_json::to_value(&capabilities).expect("serializzabile");
+
+        for field in [
+            "schema_version",
+            "provider",
+            "provider_version",
+            "reads",
+            "writes",
+            "transactions",
+            "spatial",
+            "limits",
+        ] {
+            assert!(emitted.get(field).is_some(), "manca `{field}`");
+        }
+        for field in ["streaming", "projection", "filter", "ordering"] {
+            assert!(emitted["reads"].get(field).is_some(), "reads.{field}");
+        }
+        for field in [
+            "create",
+            "append",
+            "truncate_insert",
+            "update",
+            "upsert",
+            "replace",
+        ] {
+            assert!(emitted["writes"].get(field).is_some(), "writes.{field}");
+        }
+        for field in ["read_wkb", "write_wkb", "dimensions"] {
+            assert!(emitted["spatial"].get(field).is_some(), "spatial.{field}");
+        }
+    }
 }

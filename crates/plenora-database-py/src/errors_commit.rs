@@ -11,8 +11,15 @@
 //! - `ErrorPhase::Commit` (non `Write` come alcuni path facevano).
 //! - `RemoteEffect::Unknown` (già consolidato prima, ma qui garantito).
 //! - `provider` sempre valorizzato quando noto (`Postgres`/`Mysql`).
-//! - `retry: Never` — l'operatore deve verificare out-of-band, no
-//!   automatic retry.
+//!
+//! La disposizione e `RequiresRecovery`, non `Never`. Le due dicono cose
+//! diverse: `Never` significa che l'operazione non e riprendibile, mentre qui
+//! l'operazione **puo** essere ripresa dopo una verifica fuori banda — che e
+//! esattamente cio che il messaggio chiede all'operatore. Con `Never` le due
+//! superfici si contraddicevano: l'attributo `retry` dei binding Python diceva
+//! `"never"` mentre il testo diceva di verificare e riprendere, e
+//! `requires_manual_recovery()` del core — vero solo per `RequiresRecovery` e
+//! `RequiresIdempotencyKey` — rispondeva di no.
 
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{
@@ -44,7 +51,7 @@ pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
         // "Write" è per lo statement DML; l'ambiguità è sul COMMIT.
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
-        retry: RetryDisposition::Never,
+        retry: RetryDisposition::RequiresRecovery,
         provider: Some(provider),
         execution_id: None,
         message: format!(

@@ -24,7 +24,7 @@ pub(super) fn decode_rows(rows: &[tokio_postgres::Row]) -> Result<Vec<Row>> {
     let mut out = Vec::with_capacity(rows.len());
     for pg_row in rows {
         let values = decode_row(pg_row)?;
-        out.push(Row::new(Arc::clone(&columns), values));
+        out.push(Row::try_new(Arc::clone(&columns), values)?);
     }
     Ok(out)
 }

@@ -73,10 +73,8 @@ pub(crate) fn strip_output_format(args: Vec<String>) -> CliResult<Vec<String>> {
                 "json" => OutputFormat::Json,
                 "markdown" | "md" => OutputFormat::Markdown,
                 "junit" | "junit-xml" => OutputFormat::Junit,
-                other => {
-                    return Err(
-                        format!("--format sconosciuto: {other} (json|markdown|junit)").into(),
-                    );
+                _ => {
+                    return Err("--format sconosciuto: ammessi json, markdown, junit".into());
                 }
             };
             fmt.set_active();

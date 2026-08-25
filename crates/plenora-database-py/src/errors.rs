@@ -185,8 +185,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// provider, execution_id, diagnostics) come attributi sull'istanza.
 ///
 /// PFM CHG-004: se il pattern coincide con "commit outcome unknown"
-/// (`Internal` + `Commit` phase + `Unknown` remote_effect + `Never`
-/// retry), l'errore ottiene la classe dedicata
+/// (`Internal` + `Commit` phase + `Unknown` remote_effect +
+/// `RequiresRecovery` retry), l'errore ottiene la classe dedicata
 /// `PlenoraCommitOutcomeUnknownError` invece di `PlenoraInternalError`
 /// generico. Il consumer può filtrare separatamente per retry/quarantine
 /// logic senza matching stringhe nel messaggio.
@@ -195,7 +195,11 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
     let is_commit_outcome_unknown = err.category == ErrorCategory::Internal
         && err.phase == ErrorPhase::Commit
         && err.remote_effect == RemoteEffect::Unknown
-        && matches!(err.retry, RetryDisposition::Never);
+        // La disposizione e `RequiresRecovery`: il commit non e perso, va
+        // verificato fuori banda e poi eventualmente ripreso. Riconoscerlo su
+        // `Never` faceva dire all'attributo Python `retry` il contrario di cio
+        // che il messaggio chiedeva di fare.
+        && matches!(err.retry, RetryDisposition::RequiresRecovery);
     let pyerr = if is_commit_outcome_unknown {
         PlenoraCommitOutcomeUnknownError::new_err(message)
     } else {

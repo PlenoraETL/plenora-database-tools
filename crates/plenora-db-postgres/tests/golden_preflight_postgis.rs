@@ -36,6 +36,7 @@
 )]
 
 use plenora_database_core::provider::{Provider, SecretString};
+use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory};
@@ -102,10 +103,83 @@ async fn preflight_pf1_capability_positive_reports_postgis_present() {
         !caps.spatial.dimensions.is_empty(),
         "spatial.dimensions deve essere non-vuoto su target con PostGIS"
     );
+    // Non basta "non vuoto": il provider pubblicava tutte e 72 le funzioni
+    // per il solo fatto che l'estensione esistesse, e un test che chiede
+    // soltanto la non-vuotezza sarebbe passato anche allora. Ora l'elenco e
+    // l'intersezione fra il catalogo versionato e `pg_proc`, quindi sul
+    // riferimento — che ha PostGIS completo — deve coincidere con il
+    // catalogo, e ogni nome dev'essere uno di quelli dichiarati.
+    let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
+        .expect("catalogo spatial incorporato");
+    // La lista di funzioni e **una sola** per tutte le semantiche
+    // pubblicizzate, e il contratto lo impone: una funzione elencata deve
+    // essere invocabile su geometry **e** su geography quando entrambe sono
+    // dichiarate. Su PostGIS 3.4 l'API geography e molto piu piccola — 17
+    // funzioni del catalogo contro 71 — quindi il documento pubblica
+    // l'intersezione, non l'unione.
+    //
+    // Pretendere qui l'intero catalogo, come faceva la prima stesura,
+    // significherebbe pretendere che il provider prometta su una colonna
+    // geography funzioni che li non esistono.
+    let published: std::collections::BTreeSet<String> = caps
+        .spatial
+        .functions
+        .iter()
+        .map(|function| {
+            serde_json::to_value(function)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .expect("nome wire della funzione spatial")
+        })
+        .collect();
+    let declared: std::collections::BTreeSet<String> = catalog
+        .functions
+        .iter()
+        .map(|spec| spec.id.clone())
+        .collect();
+
     assert!(
-        !caps.spatial.functions.is_empty(),
-        "spatial.functions deve essere non-vuoto su target con PostGIS"
+        published.is_subset(&declared),
+        "pubblicate funzioni che il catalogo non dichiara: {:?}",
+        published.difference(&declared).collect::<Vec<_>>()
     );
+
+    // Positiva: cio che PostGIS offre su entrambe le semantiche, in **tutte**
+    // le forme che il core accetta, deve esserci. `Area`, `Distance` e
+    // `DWithin` non sono in questa lista di proposito: il core accetta per
+    // ciascuna un'arita che PostGIS 3.4 fornisce solo per una delle due
+    // semantiche, quindi la capability resta chiusa — ed e il punto.
+    for required in [
+        SpatialFunction::Intersects,
+        SpatialFunction::Covers,
+        SpatialFunction::CoveredBy,
+        SpatialFunction::Buffer,
+        SpatialFunction::Centroid,
+        SpatialFunction::Srid,
+    ] {
+        assert!(
+            caps.spatial.functions.contains(&required),
+            "il riferimento non pubblica {required:?}, che PostGIS offre su              geometry e geography"
+        );
+    }
+
+    // Negativa: cio che esiste **solo** per geometry non deve comparire
+    // finche `geography` e pubblicizzata. Senza questa meta, un documento che
+    // torna a pubblicare l'unione passerebbe il test positivo.
+    assert!(
+        caps.spatial.geography,
+        "il riferimento dichiara geography: la negativa qui sotto presuppone          che entrambe le semantiche siano pubblicizzate"
+    );
+    for geometry_only in [
+        SpatialFunction::IsValid,
+        SpatialFunction::NPoints,
+        SpatialFunction::Transform,
+    ] {
+        assert!(
+            !caps.spatial.functions.contains(&geometry_only),
+            "{geometry_only:?} esiste solo per geometry, ma il documento              dichiara anche geography: la lista deve essere l'intersezione"
+        );
+    }
 
     let postgis_v = caps
         .extension_versions

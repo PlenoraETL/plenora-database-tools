@@ -22,7 +22,7 @@
 
 use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionScope};
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
@@ -118,8 +118,13 @@ impl AsyncTransaction {
                 let cancel = CancellationToken::new();
                 tx.query(&statement, &cancel).await.map_err(to_py_err)?
             };
+            // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di
+            // una riga o piu di una colonna invece di prendere la prima e
+            // buttare via il resto. E' la stessa regola dei costruttori
+            // scalar tipizzati del core.
+            let value = scalar_opt(rows).map_err(to_py_err)?;
             Python::with_gil(|py| {
-                rows.first().and_then(|r| r.get_index(0)).map_or_else(
+                value.as_ref().map_or_else(
                     || Ok(py.None()),
                     |v| param_to_python(py, v).map(Bound::unbind),
                 )
@@ -155,7 +160,9 @@ impl AsyncTransaction {
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let inner = Arc::clone(&self.inner);
@@ -179,7 +186,9 @@ impl AsyncTransaction {
     ) -> PyResult<Bound<'py, PyAny>> {
         let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
             to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida: {e}"
+                "AST portable non valida a riga {}, colonna {}",
+                e.line(),
+                e.column()
             )))
         })?;
         let inner = Arc::clone(&self.inner);

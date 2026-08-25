@@ -46,6 +46,24 @@ fn expect_single_column(row: Row) -> Result<ParameterValue> {
         .expect("controllato lunghezza"))
 }
 
+/// Estrae lo scalare da un result set: al piu **una** riga, esattamente
+/// **una** colonna. `None` quando la query non ha restituito righe.
+///
+/// E' la stessa cardinalita che i costruttori tipizzati di questo modulo
+/// applicano da sempre, resa pubblica perche le altre superfici scalar —
+/// binding Python e CLI — la applichino invece di reimplementarla. Prendevano
+/// la prima riga e la prima colonna e buttavano via il resto: una query che
+/// restituiva due righe, o due colonne, dava un risultato plausibile e
+/// arbitrario invece di un errore.
+///
+/// # Errors
+///
+/// `Conflict` se le righe sono piu di una, `DataMapping` se le colonne non
+/// sono esattamente una.
+pub fn scalar_opt(rows: Vec<Row>) -> Result<Option<ParameterValue>> {
+    expect_at_most_one_row(rows)?.map_or(Ok(None), |row| expect_single_column(row).map(Some))
+}
+
 fn not_found(message: &str) -> DatabaseError {
     DatabaseError {
         category: ErrorCategory::NotFound,
@@ -322,10 +340,11 @@ mod tests {
     }
 
     fn row_i32(name: &str, v: i32) -> Row {
-        Row::new(
+        Row::try_new(
             std::sync::Arc::from(vec![name.to_owned()]),
             vec![ParameterValue::I32(v)],
         )
+        .expect("fixture coerente")
     }
 
     #[test]
@@ -342,10 +361,11 @@ mod tests {
 
     #[test]
     fn expect_single_column_rejects_wrong_width() {
-        let row = Row::new(
+        let row = Row::try_new(
             std::sync::Arc::from(vec!["a".to_owned(), "b".to_owned()]),
             vec![ParameterValue::I32(1), ParameterValue::I32(2)],
-        );
+        )
+        .expect("fixture coerente");
         let err = expect_single_column(row).unwrap_err();
         assert_eq!(err.category, ErrorCategory::DataMapping);
     }

@@ -36,7 +36,7 @@ struct CachedPool {
     pool: Arc<SqlServerPool>,
 }
 
-/// Adattatore SQL Server per il contratto comune Plenora.
+/// Adattatore `SQL Server` per il contratto comune Plenora.
 ///
 /// L'endpoint, l'utente e le policy TLS provengono da [`SqlServerConfig`].
 /// Il [`SecretString`] ricevuto dai metodi [`Provider`] sostituisce sempre la
@@ -261,7 +261,7 @@ impl Provider for SqlServerProvider {
             let mut pooled = pool.checkout(cancellation).await?;
             let probe = probe_server(pooled.session_mut()?, cancellation).await?;
             drop(pooled);
-            Ok(ProviderCapabilities {
+            ProviderCapabilities {
                 schema_version: 2,
                 provider: ProviderKind::Sqlserver,
                 provider_version: probe.product_version,
@@ -316,14 +316,25 @@ impl Provider for SqlServerProvider {
                     functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
                 },
                 limits: ProviderLimits {
-                    // Il core applica già il limite portabile più stretto.
-                    max_identifier_bytes: Some(256),
+                    // Il limite SQL Server e in **caratteri** — 128, per
+                    // `nvarchar(128)` — mentre questo campo e in byte. I due
+                    // non si convertono: 129 caratteri ASCII sono 129 byte,
+                    // quindi passavano il 256 dichiarato qui e venivano poi
+                    // respinti dal controllo di dialetto in
+                    // `plenora_database_core::identifier`. La capability
+                    // prometteva cio che il core negava.
+                    //
+                    // Stessa risposta gia data da MySQL, che ha lo stesso
+                    // problema: finche il contratto non esprime i caratteri,
+                    // l'unica risposta onesta e "non dichiarato".
+                    max_identifier_bytes: None,
                     max_bind_parameters: Some(crate::MAX_BIND_PARAMETERS as u64),
                     max_statement_bytes: None,
                     max_batch_rows: Some(MAX_CONFIGURED_BATCH_ROWS as u64),
                     max_payload_bytes: None,
                 },
-            })
+            }
+            .published()
         })
     }
 
@@ -477,12 +488,19 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Interrompe **prima** dell'I/O, dicendo quale causa ha interrotto.
+///
+/// Sta davanti a test connection, capability, inspect, read, query, prepare e
+/// write: costruire qui `Cancelled` a mano faceva uscire come annullamento
+/// esplicito una deadline che il resto del provider — e gli altri due
+/// provider — riportano come `Timeout`.
 fn ensure_not_cancelled(cancellation: &CancellationToken, phase: ErrorPhase) -> Result<()> {
     if cancellation.is_cancelled() {
-        Err(DatabaseError::cancelled(
+        Err(DatabaseError::interrupted(
+            cancellation,
             Some(ProviderKind::Sqlserver),
             phase,
-            "operazione SQL Server cancellata prima dell'I/O",
+            "operazione SQL Server interrotta prima dell'I/O",
         ))
     } else {
         Ok(())

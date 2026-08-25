@@ -35,7 +35,7 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
         } else if arg == "--type" {
             return Err("--type richiede sintassi --type=TYPE (es. --type=i64)".into());
         } else {
-            return Err(format!("argomento execute-scalar inatteso: {arg}").into());
+            return Err("argomento execute-scalar inatteso: ammesso solo --type=TYPE".into());
         }
     }
     let ty = ty.ok_or(
@@ -77,12 +77,12 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
         "date" => json!(execute_scalar_date(tx.as_mut(), &stmt, &ctx.cancel).await?),
         "timestamp" => json!(execute_scalar_timestamp(tx.as_mut(), &stmt, &ctx.cancel).await?),
         "timestamptz" => json!(execute_scalar_timestamptz(tx.as_mut(), &stmt, &ctx.cancel).await?),
-        other => {
-            return Err(format!(
-                "--type sconosciuto: {other} \
-                 (bool|i32|i64|f64|string|uuid|json|bytes|date|timestamp|timestamptz)"
-            )
-            .into());
+        _ => {
+            return Err(
+                "--type sconosciuto: ammessi bool, i32, i64, f64, string, uuid, \
+                 json, bytes, date, timestamp, timestamptz"
+                    .into(),
+            );
         }
     };
 
@@ -109,7 +109,7 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
     ensure_end(&mut iter)?;
     let expected: u64 = expected_raw
         .parse()
-        .map_err(|_| format!("EXPECTED_AFFECTED non valido: {expected_raw}"))?;
+        .map_err(|_| "EXPECTED_AFFECTED non valido: atteso un intero senza segno")?;
 
     // CHG-003: conditional-update è path PFM → policy Deny.
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
@@ -150,16 +150,27 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
             e.message.clone(),
         ),
     };
-    if outcome.is_ok() {
-        tx.commit(&ctx.cancel).await?;
+    // L'esito del commit non si scarta: `OutcomeUnknown` e un `Ok` che dice
+    // "emesso, non confermato", e finiva in `?` come se fosse una conferma.
+    let commit = if outcome.is_ok() {
+        Some(tx.commit(&ctx.cancel).await?)
     } else {
         let _ = tx.rollback(&ctx.cancel).await;
-    }
+        None
+    };
+    let status = commit.as_ref().map_or(status, |outcome| {
+        if status == "ok" {
+            crate::commit_status(outcome)
+        } else {
+            status
+        }
+    });
     print_json(&json!({
         "status": status,
         "error_category": category,
         "message": message,
         "expected_affected": expected,
+        "commit": commit,
     }))?;
     // Fix review #10: exit code non-zero se update non-ok (concurrent /
     // not_found / error) — permette a CI di gestire concorrenza.
@@ -231,11 +242,15 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
             s if s.starts_with("--format=") => {
                 s.trim_start_matches("--format=").clone_into(&mut fmt);
             }
-            other => return Err(format!("opzione explain sconosciuta: {other}").into()),
+            _ => {
+                return Err(
+                    "opzione explain sconosciuta: ammesse --analyze, --verbose, --format=".into(),
+                )
+            }
         }
     }
     if !matches!(fmt.as_str(), "text" | "json" | "yaml" | "xml") {
-        return Err(format!("--format inatteso: {fmt} (text|json|yaml|xml)").into());
+        return Err("--format inatteso: ammessi text, json, yaml, xml".into());
     }
 
     // Assembla EXPLAIN [ANALYZE] [VERBOSE] (FORMAT ...) STATEMENT.

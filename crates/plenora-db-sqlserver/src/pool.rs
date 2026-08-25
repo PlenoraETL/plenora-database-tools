@@ -60,10 +60,11 @@ impl SqlServerPool {
         );
         let permit = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(DatabaseError::cancelled(
+                return Err(DatabaseError::interrupted(
+                    cancellation,
                     Some(plenora_database_core::plan::ProviderKind::Sqlserver),
                     ErrorPhase::Connect,
-                    "acquisizione pool SQL Server cancellata",
+                    "acquisizione pool SQL Server interrotta",
                 ));
             }
             result = acquire => match result {
@@ -75,8 +76,15 @@ impl SqlServerPool {
                     ));
                 }
                 Err(_) => {
-                    return Err(pool_error(
+                    // Contesa locale e transitoria: nessuno statement e
+                    // partito, il remoto non ha visto niente. PostgreSQL la
+                    // classifica `Safe` (vedi `plenora-db-postgres::pool`) e
+                    // qui diceva `Never`, cioe due semantiche diverse per lo
+                    // stesso evento — un permit occupato per qualche
+                    // millisecondo diventava un errore definitivo.
+                    return Err(pool_error_with_retry(
                         ErrorCategory::Timeout,
+                        RetryDisposition::Safe,
                         "timeout acquisizione pool SQL Server",
                     ));
                 }
@@ -192,11 +200,19 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn pool_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
+    pool_error_with_retry(category, RetryDisposition::Never, message)
+}
+
+fn pool_error_with_retry(
+    category: ErrorCategory,
+    retry: RetryDisposition,
+    message: impl Into<String>,
+) -> DatabaseError {
     DatabaseError {
         category,
         phase: ErrorPhase::Connect,
         remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
+        retry,
         provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         execution_id: None,
         message: message.into(),
@@ -239,5 +255,52 @@ mod tests {
         });
         assert!(poisoned.is_err());
         assert_eq!(pool.idle_connections(), 0);
+    }
+
+    /// La contesa sul pool e locale e transitoria: nessuno statement e
+    /// partito, quindi un nuovo tentativo e sicuro. `PostgreSQL` la classifica
+    /// gia `Safe`; qui rispondeva `Never`, e lo stesso evento aveva due
+    /// semantiche a seconda del provider.
+    ///
+    /// Il test non apre nessuna connessione: satura il semaforo, cosi il
+    /// timeout scatta sull'acquisizione del permit e il TDS non viene mai
+    /// toccato.
+    #[tokio::test]
+    async fn pool_acquire_timeout_is_safe_to_retry() {
+        let config = SqlServerConfig::new(
+            "sql.example.test",
+            "warehouse",
+            "loader",
+            SecretString::new("secret"),
+        )
+        .with_timeouts(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(20),
+        );
+        let pool = SqlServerPool::new(config, 1).expect("pool fixture");
+        let _held = Arc::clone(&pool.semaphore)
+            .acquire_owned()
+            .await
+            .expect("permit");
+
+        // `expect_err` chiederebbe `Debug` sulla sessione, che non ce l'ha:
+        // il match dice la stessa cosa senza obbligare un tipo pubblico a
+        // derivare un tratto solo per un test.
+        let Err(error) = pool.checkout(&CancellationToken::new()).await else {
+            panic!("il semaforo e saturo: il checkout non puo riuscire");
+        };
+        assert_eq!(error.category, ErrorCategory::Timeout);
+        assert_eq!(error.retry, RetryDisposition::Safe);
+        assert!(error.is_retryable());
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+    }
+
+    /// Il pool chiuso, invece, non e una contesa: resta definitivo.
+    #[test]
+    fn closed_pool_stays_non_retryable() {
+        let error = pool_error(ErrorCategory::Internal, "pool SQL Server chiuso");
+        assert_eq!(error.retry, RetryDisposition::Never);
+        assert!(!error.is_retryable());
     }
 }

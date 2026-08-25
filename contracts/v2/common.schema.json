@@ -36,34 +36,6 @@
         "object": {"$ref": "#/$defs/identifier"}
       }
     },
-    "geometry_contract": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["field_id", "encoding", "dimensions", "nullable"],
-      "properties": {
-        "field_id": {"$ref": "#/$defs/field_id"},
-        "encoding": {"const": "geoarrow.wkb"},
-        "dimensions": {"enum": ["xy", "xyz", "xym", "xyzm"]},
-        "nullable": {"type": "boolean"},
-        "geometry_type": {
-          "enum": [
-            "unknown",
-            "point",
-            "multipoint",
-            "linestring",
-            "multilinestring",
-            "polygon",
-            "multipolygon",
-            "geometrycollection"
-          ]
-        },
-        "srid": {"type": ["integer", "null"], "minimum": 0},
-        "crs": {"type": ["string", "null"], "maxLength": 65536},
-        "spatial_semantics": {
-          "enum": ["geometry", "geography"]
-        }
-      }
-    },
     "mapping_policy": {
       "enum": ["strict", "compatible", "lossy", "native"]
     },

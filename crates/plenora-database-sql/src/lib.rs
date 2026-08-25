@@ -27,7 +27,13 @@ impl Identifier {
     ///
     /// # Errors
     ///
-    /// Restituisce `InvalidPlan` per stringa vuota, NUL o oltre 256 byte.
+    /// Restituisce `InvalidPlan` per stringa vuota, NUL o oltre 256 caratteri.
+    ///
+    /// Erano 256 **byte**, misurati con `String::len()`, mentre il contratto
+    /// dichiara `maxLength: 256` — code point. Il renderer rifiutava percio
+    /// nomi che il contratto ammette e che i motori accettano: SQL Server ne
+    /// prende 128 di Unicode, `MySQL` 64 di caratteri, e nessuno dei due
+    /// ragiona in byte.
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         if value.is_empty() || value.contains('\0') {
@@ -35,7 +41,7 @@ impl Identifier {
                 "identificatore SQL vuoto o contenente NUL",
             ));
         }
-        if value.len() > 256 {
+        if value.chars().count() > 256 {
             return Err(DatabaseError::invalid_plan(
                 "identificatore SQL oltre il limite del core",
             ));
@@ -1870,6 +1876,67 @@ mod tests {
             error.category,
             plenora_database_core::ErrorCategory::ResourceLimit
         );
+    }
+
+    /// Una `Column` in posizione geometrica non viene tipizzata.
+    ///
+    /// E' il fatto da cui dipende `SpatialFunction::is_aggregate`: se il
+    /// renderer tipizzasse ogni argomento in posizione geometrica, allora
+    /// `ST_Union(x, y)` sarebbe sempre la scalare `(geometry, geometry)` e la
+    /// classificazione potrebbe smettere di rispondere «aggregata possibile».
+    /// Non lo fa: il wrapping tocca i soli `Parameter`, quindi
+    /// `ST_Union(geom, gridsize)` con due colonne e formabile e il server
+    /// risolve l'aggregata `(geometry set, float8)`. Se questo test cade,
+    /// `is_aggregate` va rivista.
+    #[test]
+    fn a_column_in_a_geometry_position_is_not_typed_by_the_renderer() {
+        let mut query = simple_query();
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Union,
+                arguments: vec![query_column("e", "geom"), query_column("e", "grid_size")],
+            },
+            alias: None,
+        }];
+        let sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query_with_spatial_encoding(&query, false)
+        .expect("render")
+        .sql;
+        assert!(
+            sql.contains("ST_Union(\"e\".\"geom\", \"e\".\"grid_size\")"),
+            "{sql}"
+        );
+        assert!(!sql.contains("ST_GeomFromEWKB"), "{sql}");
+
+        // Con un `Parameter` nella stessa posizione il wrapping c'e, e la
+        // forma diventa senza ambiguita quella scalare.
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Union,
+                arguments: vec![
+                    query_column("e", "geom"),
+                    QueryExpression::Parameter {
+                        name: "other".to_owned(),
+                    },
+                ],
+            },
+            alias: None,
+        }];
+        let sql = Renderer::new(
+            Dialect::Postgres,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query_with_spatial_encoding(&query, false)
+        .expect("render")
+        .sql;
+        assert!(sql.contains("ST_GeomFromEWKB"), "{sql}");
     }
 
     #[test]

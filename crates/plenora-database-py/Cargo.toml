@@ -5,7 +5,7 @@ description = "Bindings Python (PyO3) di plenora-database-tools"
 # release proprio (semver PyPI) separato dal Rust workspace (v1.x).
 # Deve coincidere con `pyproject.toml::version` altrimenti wheel filename
 # e `p.version()` divergono (bug v0.1.0 fixato in v0.1.1).
-version = "0.10.0"
+version = "0.11.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -23,8 +23,18 @@ plenora-db-postgres.workspace = true
 plenora-db-mysql.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310", "serde"] }
-pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
+# RUSTSEC-2025-0020: fino alla 0.24.0 `PyString::from_object` passava un
+# `&str` all'API C di Python senza garantire il NUL finale, e l'interprete
+# poteva leggere oltre la fine del buffer ed esporne il contenuto in
+# un'eccezione. Corretta nella 0.24.1: il minimo qui sta sopra quella riga, e
+# `"0.24"` non basterebbe perche ammetterebbe ancora la 0.24.0.
+#
+# Il workspace risolveva 0.23.5, cioe dentro l'intervallo vulnerabile. Il
+# codice non chiama quella funzione, ma la raggiungibilita non e una difesa
+# che si mantiene da sola: la prossima riga che la usasse non troverebbe
+# nessun gate a fermarla.
+pyo3 = { version = "0.24.2", features = ["extension-module", "abi3-py310", "serde"] }
+pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

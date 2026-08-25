@@ -77,6 +77,30 @@ pub enum RetryDisposition {
 /// `message` deve contenere contesto operativo, mai DSN, token, SQL bindato o
 /// payload. Il dettaglio vendor appartiene a un sink protetto esterno.
 ///
+/// # Cosa conta come contesto operativo
+///
+/// La regola "niente payload" da sola non decide i casi di confine, e per un
+/// po' e stata applicata a intuito: alcuni messaggi ricopiavano un argomento
+/// qualsiasi della riga di comando, altri toglievano perfino il nome della
+/// colonna che il chiamante aveva scritto nel proprio piano. Sono due cose
+/// diverse, e la differenza e **da dove viene la stringa**.
+///
+/// Puo comparire nel messaggio cio che il chiamante ha dichiarato in uno slot
+/// tipizzato: nomi di colonna, di chiave, di parametro, chiavi di session
+/// context, identificatori di oggetto. Sono la sua struttura, li ha scritti
+/// lui, e senza di essi l'errore non e azionabile — "una chiave non esiste nel
+/// batch" non dice quale.
+///
+/// Non puo comparire cio che e arrivato in uno slot non ancora validato o che
+/// trasporta dati: un argomento posizionale fuori posto (puo essere una DSN,
+/// un token, dello SQL), una parola estratta da testo SQL libero, il valore di
+/// una cella, il `Display` di un errore di libreria che nomina byte e offset
+/// del dato. Li il messaggio dice **quale slot** e sbagliato e quali valori
+/// sono ammessi, mai cosa e stato ricevuto.
+///
+/// La prova di un errore di parsing e la posizione — riga e colonna — non il
+/// frammento.
+///
 /// `diagnostics` è il carrier row-scoped: quando l'esecuzione ha potuto
 /// identificare le righe sorgente rifiutate, il documento
 /// `plenora-row-diagnostics-v1` viaggia con l'errore invece di essere
@@ -94,6 +118,20 @@ pub struct DatabaseError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Box<RowDiagnostics>>,
+}
+
+/// La categoria pubblica di un'interruzione, secondo la causa che l'ha
+/// prodotta.
+///
+/// Sta qui, e non nei provider, perche i provider ne avevano tre copie e ogni
+/// copia copriva superfici diverse.
+#[must_use]
+pub fn interruption_category(cancellation: &crate::CancellationToken) -> ErrorCategory {
+    if cancellation.reason() == Some(crate::CancellationReason::Deadline) {
+        ErrorCategory::Timeout
+    } else {
+        ErrorCategory::Cancelled
+    }
 }
 
 impl DatabaseError {
@@ -130,6 +168,31 @@ impl DatabaseError {
     }
 
     #[must_use]
+    /// L'errore di un'operazione interrotta, con la **causa** che l'ha
+    /// interrotta.
+    ///
+    /// Una deadline scaduta e un `Timeout`, tutto il resto una `Cancelled`.
+    /// La distinzione vive nel token dall'inizio, ma ogni provider se l'e
+    /// ricostruita per conto proprio e sempre in modo incompleto:
+    /// `PostgreSQL` la leggeva in due file su sette, `SQL Server` in nessuno
+    /// dei due davanti all'I/O, e il retry engine — che sta sopra tutti e tre — la
+    /// perdeva per ogni provider insieme. Il risultato era che lo stesso
+    /// token produceva due errori pubblici diversi a seconda di quale strato
+    /// lo osservava per primo, e un chiamante che decide se allungare il
+    /// budget o smettere riceveva risposte contraddittorie dallo stesso
+    /// evento.
+    pub fn interrupted(
+        cancellation: &crate::CancellationToken,
+        provider: Option<ProviderKind>,
+        phase: ErrorPhase,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            category: interruption_category(cancellation),
+            ..Self::cancelled(provider, phase, message)
+        }
+    }
+
     pub fn cancelled(
         provider: Option<ProviderKind>,
         phase: ErrorPhase,
@@ -161,11 +224,35 @@ impl DatabaseError {
         }
     }
 
+    /// Un retry **automatico** e autorizzato, senza intervento fuori banda.
+    ///
+    /// Solo `Safe` e `After` lo sono. `RequiresRecovery` e
+    /// `RequiresIdempotencyKey` descrivono un esito che un tentativo cieco
+    /// duplicherebbe: il chiamante deve prima verificare l'effetto remoto o
+    /// procurarsi una chiave di idempotenza. Il metodo diceva il contrario di
+    /// [`crate::Result`]-consumer come `retry_with_policy`, che quelle due
+    /// disposizioni le propaga invece di ritentarle — un consumer che si
+    /// fidava di questa risposta poteva duplicare una scrittura.
+    ///
+    /// Chi deve distinguere «non ritentabile mai» da «ritentabile dopo
+    /// recovery» usa [`Self::requires_manual_recovery`].
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        !matches!(
+        matches!(
             self.retry,
-            RetryDisposition::Never | RetryDisposition::Quarantine
+            RetryDisposition::Safe | RetryDisposition::After(_)
+        )
+    }
+
+    /// Il retry e possibile, ma soltanto dopo un intervento fuori banda.
+    ///
+    /// Vero per `RequiresRecovery` e `RequiresIdempotencyKey`: l'operazione
+    /// non e persa, ma nessun automatismo puo riprenderla da solo.
+    #[must_use]
+    pub const fn requires_manual_recovery(&self) -> bool {
+        matches!(
+            self.retry,
+            RetryDisposition::RequiresRecovery | RetryDisposition::RequiresIdempotencyKey
         )
     }
 
@@ -222,7 +309,39 @@ mod tests {
         assert_eq!(error.category, ErrorCategory::Timeout);
         assert_eq!(error.remote_effect, RemoteEffect::Unknown);
         assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
-        assert!(error.is_retryable());
+        // Un commit dall'esito ignoto non e ritentabile *da solo*: prima
+        // qualcuno deve verificare cosa e successo davvero al remoto.
+        assert!(!error.is_retryable());
+        assert!(error.requires_manual_recovery());
+    }
+
+    /// Le due risposte partizionano le disposizioni, e nessuna disposizione
+    /// e insieme automatica e da recuperare a mano.
+    #[test]
+    fn automatic_retry_and_manual_recovery_partition_the_dispositions() {
+        let dispositions = [
+            (RetryDisposition::Never, false, false),
+            (RetryDisposition::Quarantine, false, false),
+            (RetryDisposition::Safe, true, false),
+            (RetryDisposition::After(10), true, false),
+            (RetryDisposition::RequiresIdempotencyKey, false, true),
+            (RetryDisposition::RequiresRecovery, false, true),
+        ];
+        for (retry, automatic, manual) in dispositions {
+            let error = DatabaseError {
+                category: ErrorCategory::Transient,
+                phase: ErrorPhase::Write,
+                remote_effect: RemoteEffect::None,
+                retry,
+                provider: None,
+                execution_id: None,
+                message: "classificazione".to_owned(),
+                diagnostics: None,
+            };
+            assert_eq!(error.is_retryable(), automatic, "{retry:?}");
+            assert_eq!(error.requires_manual_recovery(), manual, "{retry:?}");
+            assert!(!(error.is_retryable() && error.requires_manual_recovery()));
+        }
     }
 
     /// La quarantena non è un retry rimandato: nessun tentativo automatico è

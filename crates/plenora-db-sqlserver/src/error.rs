@@ -1,6 +1,7 @@
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+    interruption_category, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase,
+    RemoteEffect, RetryDisposition,
 };
 use tiberius::error::Error;
 
@@ -166,6 +167,29 @@ pub fn timeout_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> Database
         execution_id: None,
         message: "timeout operazione SQL Server".to_owned(),
         diagnostics: None,
+    }
+}
+
+/// L'errore pubblico di un'operazione interrotta, con la causa che l'ha
+/// interrotta.
+///
+/// Una deadline e un `Timeout`, una `cancel()` e una `Cancelled`: la
+/// distinzione esiste gia nel token, e ogni superficie che chiamava
+/// direttamente `cancellation_error` la buttava via. La stessa scadenza usciva
+/// da `MySQL` come `Timeout` e da qui come `Cancelled`, e un chiamante che
+/// distingue i due casi — per decidere se allungare il budget o smettere —
+/// riceveva risposte diverse dallo stesso evento.
+pub fn interruption_error(
+    cancellation: &CancellationToken,
+    phase: ErrorPhase,
+    remote_effect: RemoteEffect,
+) -> DatabaseError {
+    // La decisione e una sola e sta nel core: qui resta solo la forma
+    // dell'errore, che e specifica del provider.
+    if interruption_category(cancellation) == ErrorCategory::Timeout {
+        timeout_error(phase, remote_effect)
+    } else {
+        cancellation_error(phase, remote_effect)
     }
 }
 

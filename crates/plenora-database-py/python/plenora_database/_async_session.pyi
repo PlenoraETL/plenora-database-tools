@@ -2,7 +2,7 @@
 from typing import Any
 
 from ._async_transaction import AsyncTransaction
-from ._native import AsyncSession as _NativeAsyncSession
+from ._native import AsyncSession as _NativeAsyncSession, SessionContext
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -35,6 +35,8 @@ class AsyncSession:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,
     ) -> AsyncTransaction: ...
     def select(self, table: str, schema: str | None = None) -> AsyncSelect: ...
     def insert(self, table: str, schema: str | None = None) -> AsyncInsert: ...

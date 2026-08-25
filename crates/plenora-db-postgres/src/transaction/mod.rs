@@ -147,17 +147,27 @@ impl PostgresTransaction {
         }
     }
 
-    /// Costruisce l'errore Cancelled con `RemoteEffect::Unknown` nelle
+    /// Costruisce l'errore di interruzione con `RemoteEffect::Unknown` nelle
     /// fasi state-mutating (Write/Commit), dove la query può essere
     /// stata già applicata server-side. Le fasi Read/Prepare/Rollback
     /// restano con `None` (nessun effetto).
-    fn cancelled_error(phase: ErrorPhase, message: &str) -> DatabaseError {
+    ///
+    /// La categoria viene dalla **causa**: una deadline scaduta e un
+    /// `Timeout`. Prima era sempre `Cancelled`, e queste otto superfici —
+    /// execute, savepoint, rollback e release del savepoint, query, stream e i
+    /// due rami dell'update condizionale — perdevano l'unica informazione che
+    /// distingue un limite di tempo da una decisione del chiamante.
+    fn interruption_error(
+        cancellation: &CancellationToken,
+        phase: ErrorPhase,
+        message: &str,
+    ) -> DatabaseError {
         let remote_effect = match phase {
             ErrorPhase::Write | ErrorPhase::Commit => RemoteEffect::Unknown,
             _ => RemoteEffect::None,
         };
         DatabaseError {
-            category: ErrorCategory::Cancelled,
+            category: crate::error::interruption_category(cancellation),
             phase,
             remote_effect,
             retry: RetryDisposition::Never,
@@ -213,7 +223,8 @@ impl TransactionScope for PostgresTransaction {
                 // Fix review: cancel in Write phase → RemoteEffect::Unknown
                 // (la query può essere applicata server-side prima del
                 // taglio del canale).
-                return Err(Self::cancelled_error(
+                return Err(Self::interruption_error(
+                    cancellation,
                     phase,
                     "operazione cancellata durante l'esecuzione",
                 ));
@@ -250,7 +261,8 @@ impl TransactionScope for PostgresTransaction {
             } else {
                 self.client.invalidate();
                 self.open = false;
-                Err(Self::cancelled_error(
+                Err(Self::interruption_error(
+                    cancellation,
                     ErrorPhase::Write,
                     "SAVEPOINT cancellato durante l'esecuzione",
                 ))
@@ -276,7 +288,8 @@ impl TransactionScope for PostgresTransaction {
             } else {
                 self.client.invalidate();
                 self.open = false;
-                Err(Self::cancelled_error(
+                Err(Self::interruption_error(
+                    cancellation,
                     ErrorPhase::Rollback,
                     "ROLLBACK TO SAVEPOINT cancellato durante l'esecuzione",
                 ))
@@ -302,7 +315,8 @@ impl TransactionScope for PostgresTransaction {
             } else {
                 self.client.invalidate();
                 self.open = false;
-                Err(Self::cancelled_error(
+                Err(Self::interruption_error(
+                    cancellation,
                     ErrorPhase::Finalize,
                     "RELEASE SAVEPOINT cancellato durante l'esecuzione",
                 ))
@@ -336,7 +350,8 @@ impl TransactionScope for PostgresTransaction {
                 self.client.invalidate();
                 self.open = false;
                 // Read phase → RemoteEffect::None (no state-mutating).
-                return Err(Self::cancelled_error(
+                return Err(Self::interruption_error(
+                    cancellation,
                     ErrorPhase::Read,
                     "operazione cancellata durante l'esecuzione",
                 ));
@@ -390,7 +405,8 @@ impl TransactionScope for PostgresTransaction {
             else {
                 self.client.invalidate();
                 self.open = false;
-                return Err(Self::cancelled_error(
+                return Err(Self::interruption_error(
+                    cancellation,
                     ErrorPhase::Prepare,
                     "DECLARE CURSOR cancellato durante l'esecuzione",
                 ));
@@ -435,7 +451,8 @@ impl TransactionScope for PostgresTransaction {
             else {
                 self.client.invalidate();
                 self.open = false;
-                return Err(Self::cancelled_error(
+                return Err(Self::interruption_error(
+                    cancellation,
                     phase,
                     "UPDATE condizionale cancellato durante l'esecuzione",
                 ));
@@ -472,7 +489,8 @@ impl TransactionScope for PostgresTransaction {
                 else {
                     self.client.invalidate();
                     self.open = false;
-                    return Err(Self::cancelled_error(
+                    return Err(Self::interruption_error(
+                        cancellation,
                         ErrorPhase::Read,
                         "key probe cancellato durante l'esecuzione",
                     ));

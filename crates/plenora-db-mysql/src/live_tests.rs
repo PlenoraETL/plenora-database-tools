@@ -5066,6 +5066,186 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
     }
 }
 
+/// Ogni funzione di `VERIFIED_SPATIAL_FUNCTIONS`, eseguita contro il
+/// riferimento.
+///
+/// La lista ne dichiarava ventisei e le prove live ne attraversavano due:
+/// `Area` e `Intersects`. Il test di capility qui sopra conta la lista e ci
+/// cerca dentro cinque nomi, che dimostra qualcosa sulla costante e niente sul
+/// motore — la differenza che la regola 1 chiede di non confondere.
+///
+/// La sonda le prova tutte, una query per funzione, costruendo gli argomenti
+/// da `accepts_argument_count` e `takes_geometry_at`: dove il contratto vuole
+/// una geometria arriva la colonna, altrove un intero. Il dato e una
+/// `LINESTRING`, che e la geometria su cui tutte e ventisei sono definite —
+/// `StartPoint`, `EndPoint`, `PointN` e `IsClosed` su un punto fallirebbero
+/// per il dato, non per il motore.
+///
+/// Il SRID e 0, cartesiano. Cio che si dimostra e che il renderer produce SQL
+/// che `MySQL` esegue; se una funzione valga anche su un sistema geografico e
+/// un'altra domanda, e questa lista non la pone.
+///
+/// Se una funzione non esegue, questo test diventa rosso e la lista va
+/// accorciata: e il modo in cui una capability si chiude con una prova in mano
+/// invece di restare aperta per analogia.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_v12_every_verified_spatial_function_executes() {
+    use plenora_database_core::plan::ObjectRef;
+    use plenora_database_core::provider::{ParameterBag, ParameterValue};
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::ResourceBudget;
+    use std::collections::BTreeMap;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione di setup");
+        connection
+            .query_drop("DROP TABLE IF EXISTS _v12_spatial_all")
+            .await
+            .ok();
+        connection
+            .query_drop(
+                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, \
+                 shape GEOMETRY NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("create della tabella della sonda");
+        connection
+            .query_drop(
+                "INSERT INTO _v12_spatial_all VALUES \
+                 (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'))",
+            )
+            .await
+            .expect("seed della sonda");
+    }
+
+    let shape = || QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: "shape".to_owned(),
+        },
+    };
+
+    let mut executed = 0_usize;
+    for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
+        // L'arieta dichiarata dal contratto, non una tabella scritta a mano
+        // qui: se il core la cambia, la sonda la segue.
+        let arity = (1..=4)
+            .find(|count| function.accepts_argument_count(*count))
+            .unwrap_or_else(|| panic!("arieta sconosciuta per {function:?}"));
+        let arguments: Vec<QueryExpression> = (0..arity)
+            .map(|index| {
+                if function.takes_geometry_at(index) {
+                    shape()
+                } else {
+                    // Il renderer parametrizza soltanto `Parameter`: un
+                    // letterale nell'AST non esiste, e non deve esistere.
+                    // `PointN` vuole un indice di vertice, `Buffer` una
+                    // distanza: 1 e valido per entrambi.
+                    QueryExpression::Parameter {
+                        name: "scalare".to_owned(),
+                    }
+                }
+            })
+            .collect();
+
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("dataflow_test".to_owned()),
+                    object: "_v12_spatial_all".to_owned(),
+                },
+                alias: None,
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: *function,
+                    arguments,
+                },
+                alias: Some("probe".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+        };
+
+        let bag = ParameterBag::new(BTreeMap::from([(
+            "scalare".to_owned(),
+            ParameterValue::I32(1),
+        )]));
+        let mut stream = provider
+            .query(&live_secret(), &operation, &bag, &budget, &cancellation)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{function:?} e pubblicata fra le funzioni verified e il prepare fallisce: {}",
+                    error.message
+                )
+            });
+        // Il prepare non e l'esecuzione. Ottenere lo stream e lasciarlo cadere
+        // proverebbe che il server ha accettato lo statement, non che lo abbia
+        // eseguito: l'errore del worker arriva al receiver **dopo**, e un
+        // `drop` lo butterebbe via insieme allo stream. Qui si chiede il primo
+        // batch e poi la fine dello stream, cioe si attraversa il risultato.
+        let first = stream
+            .next_batch(&cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("{function:?} non esegue: {}", error.message));
+        assert!(
+            first.is_some_and(|batch| batch.num_rows() == 1),
+            "{function:?} deve produrre la riga della sonda"
+        );
+        assert!(
+            stream
+                .next_batch(&cancellation)
+                .await
+                .unwrap_or_else(|error| panic!(
+                    "{function:?} non chiude lo stream: {}",
+                    error.message
+                ))
+                .is_none(),
+            "{function:?} deve chiudere lo stream dopo l'unica riga"
+        );
+        executed += 1;
+    }
+
+    assert_eq!(
+        executed,
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        "la sonda deve attraversare l'intera lista pubblicata"
+    );
+
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("cleanup");
+    cleanup
+        .connection_mut()
+        .expect("connessione di cleanup")
+        .query_drop("DROP TABLE IF EXISTS _v12_spatial_all")
+        .await
+        .ok();
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_functions_render_and_execute() {

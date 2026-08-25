@@ -302,11 +302,15 @@ impl WritePlan {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(LossReport {
+        let report = LossReport {
             schema_version: 2,
             policy,
             losses,
-        })
+        };
+        // Stesso motivo del preflight PostgreSQL: i tetti del contratto si
+        // verificano dove il report nasce.
+        report.validate()?;
+        Ok(report)
     }
 }
 

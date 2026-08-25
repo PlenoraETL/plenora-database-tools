@@ -45,7 +45,7 @@ Uso tipico:
 """
 from __future__ import annotations
 
-from typing import Union
+from typing import Optional, Union
 
 # Dimensioni supportate dal core (Dimensions enum, snake_case).
 _VALID_DIMENSIONS = frozenset({"xy", "xyz", "xym", "xyzm", "unknown"})
@@ -62,18 +62,49 @@ _VALID_SEMANTICS = frozenset({"geometry", "geography"})
 # `plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS`.
 # Single-source-of-truth Rust: se il core aggiunge un SRID, Python lo
 # vede automaticamente al prossimo import senza toccare questo file.
-def _load_geographic_srids() -> frozenset[int]:
+def _load_geographic_srids() -> Optional[frozenset[int]]:
+    """Legge la lista dal core Rust. `None` se il modulo nativo non c'e.
+
+    Qui viveva anche una copia hardcoded come "safety net". Non lo era: una
+    seconda copia di una policy e una policy che diverge in silenzio, e questa
+    alimenta una guardia di **rifiuto** — se la lista non contiene un SRID
+    geografico, `d_within` con `semantics='geometry'` passa e restituisce una
+    distanza in gradi presentata come metri. Un fallback che sbaglia in quella
+    direzione e peggio di nessun fallback.
+
+    Chi non puo leggere la lista autorevole non tira a indovinare: fallisce
+    chiuso al momento dell'uso, in `_require_geographic_srids`. La risoluzione
+    resta non fatale all'import perche il package deve poter essere importato
+    senza estensione nativa (lo copre `tests/test_public_api_imports.py`).
+    """
     try:
         from . import _native  # type: ignore[attr-defined]
-        return frozenset(_native.geographic_srids())
-    except (ImportError, AttributeError):
-        # Fallback difensivo per contesti in cui il native non è
-        # ancora caricato (test unitari puro-Python, doctest). Deve
-        # restare in sync col Rust ma è solo un safety net.
-        return frozenset({4326, 4269, 4267, 4258, 4283})
+    except ImportError:
+        return None
+    # `getattr` invece di un `except AttributeError` attorno alla chiamata:
+    # quest'ultimo inghiottirebbe anche un AttributeError sollevato *dentro*
+    # la funzione nativa, scambiando un bug del core per "native assente".
+    loader = getattr(_native, "geographic_srids", None)
+    if loader is None:
+        return None
+    return frozenset(loader())
 
 
-_GEOGRAPHIC_SRIDS: frozenset[int] = _load_geographic_srids()
+_GEOGRAPHIC_SRIDS: Optional[frozenset[int]] = _load_geographic_srids()
+
+
+def _require_geographic_srids() -> frozenset[int]:
+    """La lista autorevole, o un errore. Mai una supposizione."""
+    if _GEOGRAPHIC_SRIDS is None:
+        raise RuntimeError(
+            "modulo nativo plenora_database._native non disponibile o "
+            "incompatibile: la policy degli SRID geografici vive in "
+            "plenora_database_core::spatial_policy e non ha una copia Python. "
+            "Senza di essa questa verifica non puo essere fatta, e proseguire "
+            "significherebbe accettare una distanza in gradi al posto dei "
+            "metri. Reinstallare il wheel completo."
+        )
+    return _GEOGRAPHIC_SRIDS
 # Predicati supportati (SpatialPredicate::Kind, snake_case).
 _VALID_PREDICATES = frozenset({
     "intersects", "contains", "within", "bounding_box", "d_within",
@@ -112,17 +143,39 @@ class SpatialReference:
 
         Raises:
             ValueError: SRID o dimensioni divergenti, o EWKB malformato.
+            RuntimeError: modulo nativo assente o incompatibile — la verifica
+                non e stata eseguita, e questo costruttore non restituisce
+                oggetti "validated" senza averla eseguita.
 
         Preferire questo costruttore per input di terze parti; il
         costruttore literal è mantenuto per compat / deserializzazione
         JSON (dove il check è a carico del serializzatore).
         """
+        # Fail-closed. Prima ImportError e AttributeError venivano inghiottiti
+        # e l'oggetto tornava comunque, dichiarandosi validato senza che alcuna
+        # verifica fosse avvenuta: su un'installazione incompleta o con
+        # versioni disallineate, un EWKB malformato o con SRID incoerente
+        # passava esattamente dal costruttore scelto per non farlo passare.
         try:
             from . import _native  # type: ignore[attr-defined]
-            _native.validate_ewkb_reference(bytes(ewkb), srid, dimensions)
-        except (ImportError, AttributeError):
-            # native non caricato (test unit puro-Python): skip check.
-            pass
+        except ImportError as exc:
+            raise RuntimeError(
+                "modulo nativo plenora_database._native non disponibile: "
+                "SpatialReference.validated() non puo verificare l'EWKB. "
+                "Usare il costruttore literal SpatialReference(...) solo se la "
+                "validazione e gia stata fatta altrove."
+            ) from exc
+        # `getattr` e non `except AttributeError`: quest'ultimo catturerebbe
+        # anche un AttributeError sollevato dentro il validatore nativo,
+        # trasformando un bug del core in un controllo saltato in silenzio.
+        validator = getattr(_native, "validate_ewkb_reference", None)
+        if validator is None:
+            raise RuntimeError(
+                "plenora_database._native non espone validate_ewkb_reference: "
+                "estensione nativa incompatibile con questa versione del "
+                "package Python. Reinstallare il wheel completo."
+            )
+        validator(bytes(ewkb), srid, dimensions)
         return cls(ewkb, srid, dimensions, semantics)
 
     def __init__(
@@ -137,16 +190,16 @@ class SpatialReference:
                 f"SpatialReference.ewkb deve essere bytes/bytearray, non {type(ewkb).__name__}"
             )
         if not isinstance(srid, int) or srid < 0:
-            raise ValueError(f"SpatialReference.srid deve essere int >= 0, ricevuto {srid!r}")
+            raise ValueError("SpatialReference.srid deve essere int >= 0")
         if dimensions not in _VALID_DIMENSIONS:
             raise ValueError(
-                f"SpatialReference.dimensions non valida: {dimensions!r}, "
-                f"attesi {sorted(_VALID_DIMENSIONS)}"
+                "SpatialReference.dimensions non valida, attesi "
+                f"{sorted(_VALID_DIMENSIONS)}"
             )
         if semantics not in _VALID_SEMANTICS:
             raise ValueError(
-                f"SpatialReference.semantics non valida: {semantics!r}, "
-                f"attesi {sorted(_VALID_SEMANTICS)}"
+                "SpatialReference.semantics non valida, attesi "
+                f"{sorted(_VALID_SEMANTICS)}"
             )
         self.ewkb = bytes(ewkb)
         self.srid = srid
@@ -191,8 +244,8 @@ def geography(
 def _validate_predicate(predicate: str) -> None:
     if predicate not in _VALID_PREDICATES:
         raise ValueError(
-            f"predicato spaziale non valido: {predicate!r}, "
-            f"attesi {sorted(_VALID_PREDICATES)}"
+            "predicato spaziale non valido, attesi "
+            f"{sorted(_VALID_PREDICATES)}"
         )
 
 
@@ -229,7 +282,7 @@ def _validate_predicate_reference_combo(
     if (
         predicate == "d_within"
         and reference.semantics == "geometry"
-        and reference.srid in _GEOGRAPHIC_SRIDS
+        and reference.srid in _require_geographic_srids()
     ):
         raise ValueError(
             f"where_spatial('d_within', ...) con semantics='geometry' su "

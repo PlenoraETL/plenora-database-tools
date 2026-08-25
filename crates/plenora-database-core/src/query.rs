@@ -55,6 +55,19 @@ impl ScalarFunction {
             Self::RowNumber | Self::Rank | Self::DenseRank | Self::Lag | Self::Lead
         )
     }
+
+    /// La funzione collassa un gruppo di righe in un valore.
+    ///
+    /// Serve a due domande diverse — se l'espressione e compatibile con
+    /// `FOR UPDATE` e se puo contenere una window fra i suoi argomenti — che
+    /// prima portavano ciascuna la propria copia della lista.
+    #[must_use]
+    pub const fn is_aggregate(self) -> bool {
+        matches!(
+            self,
+            Self::Count | Self::Sum | Self::Average | Self::Minimum | Self::Maximum
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +354,66 @@ impl SpatialFunction {
                     | Self::Collect
                     | Self::AsMvtGeom
             )
+    }
+
+    /// La funzione **puo** collassare un gruppo di geometrie in un valore.
+    ///
+    /// «Puo», non «lo fa»: per `ST_Collect` e `ST_Union` l'arita non identifica
+    /// l'overload, e questo AST non porta i tipi che servirebbero a
+    /// identificarlo. Misurato su `PostGIS` 3.4 (`pg_proc.prokind`):
+    ///
+    /// | chiamata | overload |
+    /// |---|---|
+    /// | `ST_Collect(x)` | `(geometry set)` aggregata **o** `(geometry[])` scalare |
+    /// | `ST_Collect(x, y)` | `(geometry, geometry)` scalare |
+    /// | `ST_Union(x)` | `(geometry set)` aggregata **o** `(geometry[])` scalare |
+    /// | `ST_Union(x, y)` | `(geometry, geometry)` scalare **o** `(geometry set, float8)` aggregata |
+    /// | `ST_Union(x, y, z)` | `(geometry, geometry, float8)` scalare |
+    ///
+    /// Una stesura precedente sosteneva che le forme ambigue non fossero
+    /// esprimibili, perche il renderer avvolge in `ST_GeomFromEWKB` gli
+    /// argomenti nelle posizioni geometriche. Non e vero: quel wrapping tocca
+    /// **solo** i `QueryExpression::Parameter`
+    /// (`plenora_database_sql`, `render_spatial_function`). Una
+    /// `QueryExpression::Column` passa invariata, quindi
+    /// `ST_Union(geom, gridsize)` con due colonne e formabile e il server
+    /// risolve l'aggregata.
+    ///
+    /// Dove l'aggregata e possibile, questa funzione risponde `true`. E' la
+    /// risposta conservativa nel verso giusto: sbagliarla per eccesso rifiuta
+    /// prima della rete un piano scalare valido — l'utente lo riscrive —
+    /// mentre sbagliarla per difetto lascia passare una window annidata in
+    /// un'aggregata, o un `FOR UPDATE` su una query che aggrega, e il rifiuto
+    /// arriva dal server a transazione aperta.
+    ///
+    /// Per rispondere «lo fa» servirebbe l'identita dell'overload nel piano,
+    /// cioe un campo nuovo nel contratto: additivo, ma non gratis, e finche non
+    /// c'e la risposta resta questa.
+    #[must_use]
+    pub const fn is_aggregate(self, argument_count: usize) -> bool {
+        match self {
+            // Le arita sono quelle che `PostGIS` pubblica davvero: rispondere
+            // `true` a zero argomenti, o a un'arita inesistente, faceva dire a
+            // questa funzione qualcosa su una chiamata che non esiste — e il
+            // controllo del locking la interroga **prima** che la validazione
+            // delle arita abbia rifiutato il piano, quindi l'errore riportato
+            // sarebbe stato quello sbagliato.
+            Self::Extent | Self::Collect => argument_count == 1,
+            Self::AsMvt => matches!(argument_count, 1..=5),
+            Self::AsGeobuf | Self::Union => matches!(argument_count, 1 | 2),
+            _ => false,
+        }
+    }
+
+    /// La funzione esiste **solo** come window function.
+    ///
+    /// `PostgreSQL` non sa eseguirla senza `OVER`, quindi e componibile solo
+    /// con [`QueryExpression::SpatialWindow`]. La variante ordinaria
+    /// [`QueryExpression::Spatial`] la accettava, e il piano arrivava al server
+    /// come chiamata semplice — rifiutata li invece che qui.
+    #[must_use]
+    pub const fn is_window_only(self) -> bool {
+        matches!(self, Self::ClusterDbscan | Self::ClusterKMeans)
     }
 
     #[must_use]
@@ -698,7 +771,50 @@ pub fn validate_query_operation(
 ) -> crate::Result<()> {
     enum Node<'a> {
         Operation(&'a QueryOperation, usize),
-        Expression(&'a QueryExpression, usize),
+        Expression(&'a QueryExpression, usize, WindowPosition),
+    }
+
+    /// Dove, nella query, si trova l'espressione che stiamo visitando.
+    ///
+    /// Una window function e valida solo nella projection e nell'`ORDER BY`
+    /// finale, e mai dentro gli argomenti di un'altra window o di
+    /// un'aggregata: il valore che ordina la finestra non e ancora calcolato
+    /// quando la clausola che lo userebbe viene valutata. Il validatore
+    /// visitava le espressioni senza sapere da quale clausola venissero,
+    /// quindi accettava `WHERE row_number() OVER () > 1` e
+    /// `rank() OVER (PARTITION BY row_number() OVER ())`, che ogni provider
+    /// rifiuta — a rete gia aperta e con il messaggio del server invece che
+    /// con un `InvalidPlan` prima della connessione.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum WindowPosition {
+        /// Projection e `ORDER BY` della stessa operazione.
+        Allowed,
+        /// `WHERE`, `ON`, `GROUP BY`, `DISTINCT ON`, `HAVING`.
+        Clause,
+        /// Dentro gli argomenti di un'altra window o di un'aggregata.
+        Nested,
+        /// L'`ORDER BY` che il renderer emette **dopo** le set operation.
+        ///
+        /// Quell'`ORDER BY` ordina il risultato dell'unione, non la query che
+        /// lo dichiara: le sue righe non appartengono piu a nessuna delle
+        /// finestre dei rami, e la clausola puo riferirsi solo alle colonne di
+        /// uscita.
+        SetOperation,
+    }
+
+    fn reject_window(position: WindowPosition) -> crate::Result<()> {
+        match position {
+            WindowPosition::Allowed => Ok(()),
+            WindowPosition::Clause => Err(crate::DatabaseError::invalid_plan(
+                "funzione window fuori da projection e ORDER BY",
+            )),
+            WindowPosition::SetOperation => Err(crate::DatabaseError::invalid_plan(
+                "funzione window nell'ORDER BY di una set operation",
+            )),
+            WindowPosition::Nested => Err(crate::DatabaseError::invalid_plan(
+                "funzione window annidata in una window o in un'aggregata",
+            )),
+        }
     }
 
     fn identifier(value: &str, max_bytes: usize) -> crate::Result<()> {
@@ -759,27 +875,28 @@ pub fn validate_query_operation(
                     return true;
                 }
                 QueryExpression::Scalar {
-                    function:
-                        ScalarFunction::Count
-                        | ScalarFunction::Sum
-                        | ScalarFunction::Average
-                        | ScalarFunction::Minimum
-                        | ScalarFunction::Maximum,
+                    function,
+                    arguments,
                     ..
+                } => {
+                    if function.is_aggregate() {
+                        return true;
+                    }
+                    stack.extend(arguments);
                 }
-                | QueryExpression::Spatial {
-                    function:
-                        SpatialFunction::Collect
-                        | SpatialFunction::Extent
-                        | SpatialFunction::Union
-                        | SpatialFunction::AsMvt
-                        | SpatialFunction::AsGeobuf,
+                QueryExpression::Spatial {
+                    function,
+                    arguments,
                     ..
-                } => return true,
-                QueryExpression::Scalar { arguments, .. }
-                | QueryExpression::Spatial { arguments, .. }
-                | QueryExpression::And { arguments }
-                | QueryExpression::Or { arguments } => stack.extend(arguments),
+                } => {
+                    if function.is_aggregate(arguments.len()) {
+                        return true;
+                    }
+                    stack.extend(arguments);
+                }
+                QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
+                    stack.extend(arguments);
+                }
                 QueryExpression::SpatialOperator { left, right, .. }
                 | QueryExpression::Compare { left, right, .. } => {
                     stack.push(left);
@@ -886,6 +1003,7 @@ pub fn validate_query_operation(
                     stack.push(Node::Expression(
                         &projection.expression,
                         depth.saturating_add(1),
+                        WindowPosition::Allowed,
                     ));
                 }
                 for join in &operation.joins {
@@ -915,7 +1033,11 @@ pub fn validate_query_operation(
                         (JoinKind::Cross, None) => {}
                         (_, Some(on)) => {
                             predicate(on)?;
-                            stack.push(Node::Expression(on, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                on,
+                                depth.saturating_add(1),
+                                WindowPosition::Clause,
+                            ));
                         }
                         (_, None) => {
                             return Err(crate::DatabaseError::invalid_plan(
@@ -926,22 +1048,47 @@ pub fn validate_query_operation(
                 }
                 if let Some(filter) = &operation.filter {
                     predicate(filter)?;
-                    stack.push(Node::Expression(filter, depth.saturating_add(1)));
+                    stack.push(Node::Expression(
+                        filter,
+                        depth.saturating_add(1),
+                        WindowPosition::Clause,
+                    ));
                 }
                 for expression in &operation.group_by {
-                    stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                    stack.push(Node::Expression(
+                        expression,
+                        depth.saturating_add(1),
+                        WindowPosition::Clause,
+                    ));
                 }
                 for expression in &operation.distinct_on {
-                    stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                    stack.push(Node::Expression(
+                        expression,
+                        depth.saturating_add(1),
+                        WindowPosition::Clause,
+                    ));
                 }
                 if let Some(having) = &operation.having {
                     predicate(having)?;
-                    stack.push(Node::Expression(having, depth.saturating_add(1)));
+                    stack.push(Node::Expression(
+                        having,
+                        depth.saturating_add(1),
+                        WindowPosition::Clause,
+                    ));
                 }
+                // Il renderer emette questo `ORDER BY` dopo i rami dell'unione:
+                // con una set operation ordina il risultato combinato, e li una
+                // window non ha piu una partizione a cui riferirsi.
+                let ordering_position = if operation.set_operations.is_empty() {
+                    WindowPosition::Allowed
+                } else {
+                    WindowPosition::SetOperation
+                };
                 for ordering in &operation.order_by {
                     stack.push(Node::Expression(
                         &ordering.expression,
                         depth.saturating_add(1),
+                        ordering_position,
                     ));
                 }
                 for set_operation in &operation.set_operations {
@@ -981,7 +1128,7 @@ pub fn validate_query_operation(
                 }
                 depth
             }
-            Node::Expression(expression, depth) => {
+            Node::Expression(expression, depth, position) => {
                 nodes = nodes.saturating_add(1);
                 match expression {
                     QueryExpression::Wildcard { relation } => {
@@ -1010,27 +1157,43 @@ pub fn validate_query_operation(
                                 "numero argomenti funzione scalare non valido",
                             ));
                         }
+                        let inner = if function.is_aggregate() {
+                            WindowPosition::Nested
+                        } else {
+                            position
+                        };
                         for argument in arguments {
-                            stack.push(Node::Expression(argument, depth.saturating_add(1)));
+                            stack.push(Node::Expression(argument, depth.saturating_add(1), inner));
                         }
                     }
                     QueryExpression::Spatial {
                         function,
                         arguments,
                     } => {
+                        if function.is_window_only() {
+                            return Err(crate::DatabaseError::invalid_plan(
+                                "funzione spatial window usata come chiamata ordinaria: \
+                                 richiede QueryExpression::SpatialWindow",
+                            ));
+                        }
                         if !function.accepts_argument_count(arguments.len()) {
                             return Err(crate::DatabaseError::invalid_plan(
                                 "numero argomenti funzione spatial non valido",
                             ));
                         }
+                        let inner = if function.is_aggregate(arguments.len()) {
+                            WindowPosition::Nested
+                        } else {
+                            position
+                        };
                         for argument in arguments {
-                            stack.push(Node::Expression(argument, depth.saturating_add(1)));
+                            stack.push(Node::Expression(argument, depth.saturating_add(1), inner));
                         }
                     }
                     QueryExpression::SpatialOperator { left, right, .. }
                     | QueryExpression::Compare { left, right, .. } => {
-                        stack.push(Node::Expression(left, depth.saturating_add(1)));
-                        stack.push(Node::Expression(right, depth.saturating_add(1)));
+                        stack.push(Node::Expression(left, depth.saturating_add(1), position));
+                        stack.push(Node::Expression(right, depth.saturating_add(1), position));
                     }
                     QueryExpression::Window {
                         function,
@@ -1056,6 +1219,7 @@ pub fn validate_query_operation(
                                 "funzione non valida come window",
                             ));
                         }
+                        reject_window(position)?;
                         if !function.accepts_argument_count(arguments.len()) {
                             return Err(crate::DatabaseError::invalid_plan(
                                 "numero argomenti funzione window non valido",
@@ -1065,15 +1229,24 @@ pub fn validate_query_operation(
                             validate_window_frame(frame)?;
                         }
                         for argument in arguments {
-                            stack.push(Node::Expression(argument, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                argument,
+                                depth.saturating_add(1),
+                                WindowPosition::Nested,
+                            ));
                         }
                         for expression in partition_by {
-                            stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                expression,
+                                depth.saturating_add(1),
+                                WindowPosition::Nested,
+                            ));
                         }
                         for ordering in order_by {
                             stack.push(Node::Expression(
                                 &ordering.expression,
                                 depth.saturating_add(1),
+                                WindowPosition::Nested,
                             ));
                         }
                     }
@@ -1084,28 +1257,39 @@ pub fn validate_query_operation(
                         order_by,
                         frame,
                     } => {
-                        if !matches!(
-                            function,
-                            SpatialFunction::ClusterDbscan | SpatialFunction::ClusterKMeans
-                        ) || !function.accepts_argument_count(arguments.len())
+                        // La stessa domanda, una risposta sola: prima la
+                        // lista era scritta a mano qui e la variante ordinaria
+                        // non ne sapeva niente.
+                        if !function.is_window_only()
+                            || !function.accepts_argument_count(arguments.len())
                         {
                             return Err(crate::DatabaseError::invalid_plan(
                                 "funzione spatial window non valida",
                             ));
                         }
+                        reject_window(position)?;
                         if let Some(frame) = frame {
                             validate_window_frame(frame)?;
                         }
                         for argument in arguments {
-                            stack.push(Node::Expression(argument, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                argument,
+                                depth.saturating_add(1),
+                                WindowPosition::Nested,
+                            ));
                         }
                         for expression in partition_by {
-                            stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                expression,
+                                depth.saturating_add(1),
+                                WindowPosition::Nested,
+                            ));
                         }
                         for ordering in order_by {
                             stack.push(Node::Expression(
                                 &ordering.expression,
                                 depth.saturating_add(1),
+                                WindowPosition::Nested,
                             ));
                         }
                     }
@@ -1116,7 +1300,11 @@ pub fn validate_query_operation(
                     QueryExpression::InSubquery {
                         expression, query, ..
                     } => {
-                        stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                        stack.push(Node::Expression(
+                            expression,
+                            depth.saturating_add(1),
+                            position,
+                        ));
                         stack.push(Node::Operation(query, depth.saturating_add(1)));
                     }
                     QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
@@ -1124,11 +1312,19 @@ pub fn validate_query_operation(
                             return Err(crate::DatabaseError::invalid_plan("gruppo query vuoto"));
                         }
                         for argument in arguments {
-                            stack.push(Node::Expression(argument, depth.saturating_add(1)));
+                            stack.push(Node::Expression(
+                                argument,
+                                depth.saturating_add(1),
+                                position,
+                            ));
                         }
                     }
                     QueryExpression::IsNull { expression, .. } => {
-                        stack.push(Node::Expression(expression, depth.saturating_add(1)));
+                        stack.push(Node::Expression(
+                            expression,
+                            depth.saturating_add(1),
+                            position,
+                        ));
                     }
                 }
                 depth
@@ -1296,5 +1492,440 @@ mod validation_tests {
         let error =
             validate_query_operation(&query, &Limits::default()).expect_err("reversed frame");
         assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+    }
+    fn trivial_predicate() -> QueryExpression {
+        QueryExpression::Compare {
+            left: Box::new(QueryExpression::Parameter {
+                name: "left".to_owned(),
+            }),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "right".to_owned(),
+            }),
+        }
+    }
+
+    fn row_number() -> QueryExpression {
+        QueryExpression::Window {
+            function: ScalarFunction::RowNumber,
+            arguments: Vec::new(),
+            partition_by: Vec::new(),
+            order_by: Vec::new(),
+            frame: None,
+        }
+    }
+
+    /// Una query minima con la window nella posizione indicata dal chiamante.
+    fn query_without_filter() -> QueryOperation {
+        let mut query = query_with_filter(trivial_predicate());
+        query.filter = None;
+        query
+    }
+
+    #[test]
+    fn a_window_in_the_projection_and_in_order_by_is_valid() {
+        let mut query = query_without_filter();
+        query.projection = vec![QueryProjection {
+            expression: row_number(),
+            alias: Some("position".to_owned()),
+        }];
+        query.order_by = vec![QueryOrdering {
+            expression: row_number(),
+            direction: SortDirection::Asc,
+        }];
+        validate_query_operation(&query, &Limits::default())
+            .expect("le due sole clausole che ammettono una window");
+    }
+
+    #[test]
+    fn a_window_in_the_order_by_of_a_set_operation_is_rejected() {
+        // Lo stesso `ORDER BY` che sopra e valido diventa invalido appena la
+        // query acquista un ramo: il renderer lo emette dopo l'unione.
+        let mut query = query_without_filter();
+        query.order_by = vec![QueryOrdering {
+            expression: row_number(),
+            direction: SortDirection::Asc,
+        }];
+        query.set_operations = vec![QuerySetOperation {
+            operator: QuerySetOperator::Union,
+            all: false,
+            query: Box::new(query_without_filter()),
+        }];
+        let error = validate_query_operation(&query, &Limits::default())
+            .expect_err("window nell'ORDER BY di una UNION");
+        assert!(error.message.contains("set operation"), "{error:?}");
+    }
+
+    #[test]
+    fn a_window_below_a_comparison_in_the_projection_stays_valid() {
+        // `SELECT row_number() OVER () = $1 AS first` e SQL valido: la regola
+        // e sulla clausola, non sulla profondita, e restringerla al solo nodo
+        // di testa rifiuterebbe piani corretti.
+        let mut query = query_without_filter();
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Compare {
+                left: Box::new(row_number()),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(QueryExpression::Parameter {
+                    name: "first".to_owned(),
+                }),
+            },
+            alias: Some("first".to_owned()),
+        }];
+        validate_query_operation(&query, &Limits::default())
+            .expect("una window annidata nella projection resta valida");
+    }
+
+    #[test]
+    fn a_window_in_the_filter_is_rejected() {
+        // `WHERE row_number() OVER () = $1`: il `Compare` supera il controllo
+        // di booleanita, e senza la posizione sintattica il piano arrivava
+        // intatto al provider.
+        let query = query_with_filter(QueryExpression::Compare {
+            left: Box::new(row_number()),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "first".to_owned(),
+            }),
+        });
+        let error =
+            validate_query_operation(&query, &Limits::default()).expect_err("window in WHERE");
+        assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+        assert!(error.message.contains("fuori da projection"), "{error:?}");
+    }
+
+    #[test]
+    fn a_window_in_group_by_and_in_having_is_rejected() {
+        for clause in ["group_by", "having"] {
+            let mut query = query_without_filter();
+            let expression = QueryExpression::Compare {
+                left: Box::new(row_number()),
+                operator: ComparisonOperator::Eq,
+                right: Box::new(QueryExpression::Parameter {
+                    name: "first".to_owned(),
+                }),
+            };
+            if clause == "group_by" {
+                query.group_by = vec![expression];
+            } else {
+                query.having = Some(expression);
+            }
+            let error = validate_query_operation(&query, &Limits::default())
+                .expect_err("window fuori clausola");
+            assert_eq!(
+                error.category,
+                crate::ErrorCategory::InvalidPlan,
+                "{clause}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_nested_in_another_window_is_rejected() {
+        for position in ["argument", "partition_by", "order_by"] {
+            let mut query = query_without_filter();
+            let mut outer = QueryExpression::Window {
+                function: ScalarFunction::Lag,
+                arguments: vec![QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "event_id".to_owned(),
+                    },
+                }],
+                partition_by: Vec::new(),
+                order_by: Vec::new(),
+                frame: None,
+            };
+            if let QueryExpression::Window {
+                arguments,
+                partition_by,
+                order_by,
+                ..
+            } = &mut outer
+            {
+                match position {
+                    "argument" => arguments.push(row_number()),
+                    "partition_by" => partition_by.push(row_number()),
+                    _ => order_by.push(QueryOrdering {
+                        expression: row_number(),
+                        direction: SortDirection::Asc,
+                    }),
+                }
+            }
+            query.projection = vec![QueryProjection {
+                expression: outer,
+                alias: None,
+            }];
+            let error =
+                validate_query_operation(&query, &Limits::default()).expect_err("window annidata");
+            assert_eq!(
+                error.category,
+                crate::ErrorCategory::InvalidPlan,
+                "{position}"
+            );
+            assert!(error.message.contains("annidata"), "{position}: {error:?}");
+        }
+    }
+
+    fn geometry_column() -> QueryExpression {
+        QueryExpression::Column {
+            column: ColumnRef {
+                relation: None,
+                field: "geom".to_owned(),
+            },
+        }
+    }
+
+    fn lag_geometry() -> QueryExpression {
+        QueryExpression::Window {
+            function: ScalarFunction::Lag,
+            arguments: vec![geometry_column()],
+            partition_by: Vec::new(),
+            order_by: Vec::new(),
+            frame: None,
+        }
+    }
+
+    fn spatial_projection(
+        function: SpatialFunction,
+        arguments: Vec<QueryExpression>,
+    ) -> QueryOperation {
+        let mut query = query_without_filter();
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function,
+                arguments,
+            },
+            alias: Some("shape".to_owned()),
+        }];
+        query
+    }
+
+    /// `ST_Union` e `ST_Collect` esistono in due forme omonime: l'aggregata
+    /// unaria su un insieme di righe e quella scalare che combina le geometrie
+    /// che riceve. Solo la prima chiude la finestra ai suoi argomenti.
+    #[test]
+    fn a_window_inside_an_unambiguously_scalar_overload_stays_valid() {
+        // `ST_Collect(x, y)` e `ST_Union(x, y, z)`: a quelle arita `PostGIS`
+        // pubblica solo la forma scalare, quindi la window non e annidata in
+        // nessuna aggregata e il piano resta valido.
+        let collect = spatial_projection(
+            SpatialFunction::Collect,
+            vec![geometry_column(), lag_geometry()],
+        );
+        validate_query_operation(&collect, &Limits::default())
+            .expect("ST_Collect binaria e solo scalare");
+
+        let union = spatial_projection(
+            SpatialFunction::Union,
+            vec![geometry_column(), lag_geometry(), geometry_column()],
+        );
+        validate_query_operation(&union, &Limits::default())
+            .expect("ST_Union ternaria e solo scalare");
+    }
+
+    #[test]
+    fn a_window_inside_an_ambiguous_overload_is_rejected() {
+        // `ST_Union(x, y)` puo essere l'aggregata `(geometry set, float8)`: il
+        // piano non porta i tipi che lo escluderebbero, e rifiutare prima
+        // della rete costa meno che scoprirlo dal server.
+        let query = spatial_projection(
+            SpatialFunction::Union,
+            vec![geometry_column(), lag_geometry()],
+        );
+        let error = validate_query_operation(&query, &Limits::default())
+            .expect_err("ST_Union binaria e ambigua");
+        assert!(error.message.contains("annidata"), "{error:?}");
+    }
+
+    /// Dove `PostGIS` pubblica un'aggregata a quell'arita, la risposta e
+    /// `true` — anche quando esiste **anche** una scalare.
+    ///
+    /// La tabella viene da `pg_proc.prokind` misurato su `PostGIS` 3.4, non da
+    /// una lettura della documentazione. Il caso che conta e
+    /// `ST_Union` a due argomenti: `(geometry, geometry)` e scalare e
+    /// `(geometry set, float8)` e aggregata, e il piano non porta i tipi che
+    /// li distinguerebbero. Una stesura precedente rispondeva `false`
+    /// sostenendo che la forma aggregata non fosse esprimibile; lo e, perche
+    /// il renderer tipizza solo i `Parameter` e lascia passare invariata una
+    /// `Column`.
+    #[test]
+    fn an_ambiguous_arity_answers_that_the_aggregate_is_possible() {
+        // Ambigue: aggregata **o** scalare, e il piano non lo dice.
+        assert!(SpatialFunction::Collect.is_aggregate(1));
+        assert!(SpatialFunction::Union.is_aggregate(1));
+        assert!(SpatialFunction::Union.is_aggregate(2));
+
+        // Non ambigue: a quell'arita `PostGIS` ha solo la scalare.
+        assert!(!SpatialFunction::Collect.is_aggregate(2));
+        assert!(!SpatialFunction::Union.is_aggregate(3));
+
+        // Solo aggregate, ma **alle arita che PostGIS pubblica**: fuori da
+        // quelle la chiamata non esiste, e dirne qualcosa sarebbe una risposta
+        // su un piano che la validazione delle arita rifiutera comunque.
+        for (function, valid) in [
+            (SpatialFunction::Extent, vec![1]),
+            (SpatialFunction::AsMvt, vec![1, 2, 3, 4, 5]),
+            (SpatialFunction::AsGeobuf, vec![1, 2]),
+        ] {
+            for count in 0..=6 {
+                assert_eq!(
+                    function.is_aggregate(count),
+                    valid.contains(&count),
+                    "{function:?} a {count}"
+                );
+                assert_eq!(
+                    function.is_aggregate(count),
+                    function.accepts_argument_count(count),
+                    "{function:?} a {count}: aggregata e arita valida devono coincidere"
+                );
+            }
+        }
+        // Nemmeno le due ambigue rispondono fuori dalle proprie arita.
+        assert!(!SpatialFunction::Collect.is_aggregate(0));
+        assert!(!SpatialFunction::Union.is_aggregate(0));
+        assert!(!SpatialFunction::Union.is_aggregate(4));
+
+        // Nessuna delle due e una window: la domanda resta distinta.
+        assert!(!SpatialFunction::Union.is_window_only());
+        assert!(!SpatialFunction::Collect.is_window_only());
+    }
+
+    // Il fatto che rende ambigua l'arita — il renderer tipizza come geometria
+    // solo i `Parameter`, e lascia passare invariata una `Column` — e fissato
+    // dove quel comportamento vive: `plenora_database_sql`,
+    // `a_column_in_a_geometry_position_is_not_typed_by_the_renderer`.
+
+    #[test]
+    fn a_window_inside_the_unary_spatial_aggregate_is_rejected() {
+        for function in [SpatialFunction::Union, SpatialFunction::Collect] {
+            let query = spatial_projection(function, vec![lag_geometry()]);
+            let error = validate_query_operation(&query, &Limits::default())
+                .expect_err("window dentro l'aggregata unaria");
+            assert!(
+                error.message.contains("annidata"),
+                "{function:?}: {error:?}"
+            );
+        }
+    }
+
+    /// La stessa distinzione vale per `FOR UPDATE`: e l'aggregata a essere
+    /// incompatibile con il locking di riga, non il nome della funzione.
+    #[test]
+    fn locking_survives_a_scalar_spatial_overload_and_not_the_aggregate() {
+        let lock = QueryLock {
+            strength: QueryLockStrength::Update,
+            relations: Vec::new(),
+            wait: QueryLockWait::Wait,
+        };
+
+        let mut scalar = spatial_projection(
+            SpatialFunction::Collect,
+            vec![geometry_column(), geometry_column()],
+        );
+        scalar.locking = Some(lock.clone());
+        validate_query_operation(&scalar, &Limits::default())
+            .expect("ST_Collect binaria non aggrega niente");
+
+        let mut aggregate = spatial_projection(SpatialFunction::Union, vec![geometry_column()]);
+        aggregate.locking = Some(lock);
+        let error = validate_query_operation(&aggregate, &Limits::default())
+            .expect_err("ST_Union unaria e aggregata");
+        assert!(error.message.contains("locking non ammesso"), "{error:?}");
+    }
+
+    #[test]
+    fn a_window_in_an_aggregate_argument_is_rejected() {
+        let mut query = query_without_filter();
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Scalar {
+                function: ScalarFunction::Sum,
+                arguments: vec![row_number()],
+            },
+            alias: None,
+        }];
+        let error = validate_query_operation(&query, &Limits::default())
+            .expect_err("window dentro un'aggregata");
+        assert!(error.message.contains("annidata"), "{error:?}");
+    }
+
+    #[test]
+    fn a_window_in_the_projection_of_a_subquery_is_valid() {
+        // Ogni operazione apre la propria projection: la posizione si
+        // ricalcola, non si eredita dal contesto che contiene la subquery.
+        let mut inner = query_without_filter();
+        inner.projection = vec![QueryProjection {
+            expression: row_number(),
+            alias: None,
+        }];
+        let query = query_with_filter(QueryExpression::Compare {
+            left: Box::new(QueryExpression::ScalarSubquery {
+                query: Box::new(inner),
+            }),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::Parameter {
+                name: "first".to_owned(),
+            }),
+        });
+        validate_query_operation(&query, &Limits::default())
+            .expect("la subquery ha la propria projection");
+    }
+
+    /// Il filtro `spatial` del piano ammette esattamente i predicati che questo
+    /// motore sa valutare come booleani.
+    ///
+    /// La divergenza esisteva ed era muta nella direzione peggiore: lo schema
+    /// v2 elencava undici funzioni, `returns_boolean` ne riconosceva sedici, e
+    /// un piano con `is_simple`, `is_closed`, `contains_properly`,
+    /// `covered_by` o `equals` — che il motore pianifica e i provider
+    /// rendono — era fuori contratto. Allargare l'enum e compatibile: nessun
+    /// documento prima valido smette di esserlo.
+    ///
+    /// `relate` resta fuori di proposito: e booleana solo con tre argomenti, e
+    /// la forma del filtro nel piano ne prevede due.
+    #[test]
+    fn the_plan_admits_exactly_the_spatial_predicates_this_engine_evaluates() {
+        /// La variante `spatial` del filtro, cercata per struttura: e l'unico
+        /// sottoschema che fissa `op` a `spatial`.
+        fn spatial_variant(node: &serde_json::Value) -> Option<&serde_json::Value> {
+            if node
+                .pointer("/properties/op/const")
+                .and_then(serde_json::Value::as_str)
+                == Some("spatial")
+            {
+                return Some(node);
+            }
+            match node {
+                serde_json::Value::Object(map) => map.values().find_map(spatial_variant),
+                serde_json::Value::Array(items) => items.iter().find_map(spatial_variant),
+                _ => None,
+            }
+        }
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../contracts/v2/plan.schema.json"))
+                .expect("schema del piano");
+
+        let declared: std::collections::BTreeSet<String> = spatial_variant(&schema)
+            .and_then(|variant| variant.pointer("/properties/function/enum"))
+            .and_then(serde_json::Value::as_array)
+            .expect("enum delle funzioni nel filtro spatial")
+            .iter()
+            .map(|item| item.as_str().expect("funzione come stringa").to_owned())
+            .collect();
+
+        let evaluated: std::collections::BTreeSet<String> = SpatialFunction::ALL
+            .iter()
+            .filter(|function| function.returns_boolean(2) && **function != SpatialFunction::Relate)
+            .map(|function| {
+                serde_json::to_value(function)
+                    .expect("funzione serializzabile")
+                    .as_str()
+                    .expect("funzione come stringa")
+                    .to_owned()
+            })
+            .collect();
+
+        assert_eq!(declared, evaluated);
     }
 }
