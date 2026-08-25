@@ -5754,10 +5754,24 @@ fn spatial_write_field(srid: u32) -> plenora_database_core::arrow::schema::Field
 /// Lo schema di ingresso: una chiave e una geometria.
 fn spatial_write_schema(srid: u32) -> plenora_database_core::arrow::SchemaRef {
     use plenora_database_core::arrow::schema::{DataType, Field, Schema};
-    std::sync::Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        spatial_write_field(srid),
-    ]))
+    use plenora_database_core::protocol;
+
+    // La versione del contratto sta sullo **schema**, non sui campi, e diventa
+    // obbligatoria appena un campo porta metadati canonici `plenora.*`. Gli
+    // altri schemi di queste sonde non ne hanno bisogno perche non ne portano
+    // nessuno; questo si, ed e la campagna ad averlo detto — la prima stesura
+    // costruiva `Schema::new` e le due sonde venivano rifiutate in `validate`
+    // prima di toccare il server.
+    std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", DataType::Int32, false),
+            spatial_write_field(srid),
+        ],
+        std::collections::HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
 }
 
 /// Un `POINT(x y)` in WKB XY little-endian, **senza** SRID incapsulato.
