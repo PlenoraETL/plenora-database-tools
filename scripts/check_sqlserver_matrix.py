@@ -14,19 +14,67 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scripts import live_inventory  # noqa: E402
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
 RUST_IMAGE = "rust:1.92"
-# Numero di test live attesi per ogni riferimento della matrice. Il gate
-# pretende l'uguaglianza esatta: un test in piu' non e' un miglioramento
-# silenzioso, e' una superficie non registrata.
+# I test che la matrice **non** esegue, ciascuno con la sua ragione.
 #
-# Portato da 43 a 44 il 2026-08-06. Il registro era fermo al 2026-07-31
-# (f77d143), mentre 13df8af del 2026-08-04 ha aggiunto
-# `live_provider_row_diagnostics_matches_confirmed_rollback_oracle` senza
-# aggiornarlo: da allora la matrice falliva con "matrice live inattesa" dopo
-# che tutti e 44 i test erano passati.
-EXPECTED_TESTS = 44
+# `live_private_ca_tls_validates_chain_and_hostname` pretende la CA privata che
+# la fixture del riferimento materializza, e questa matrice avvia i server nudi:
+# eseguirlo qui misurerebbe l'assenza di un certificato, non la versione.
+#
+# Gli altri due non contengono `live_` e il filtro di cargo li lascerebbe fuori
+# comunque; restano nominati perche il gate reference li dichiara
+# `declared_not_executed` con la stessa ragione, e due elenchi che dicono la
+# stessa cosa in due posti divergono il giorno in cui uno solo cambia.
+SKIPPED_TESTS = (
+    "live_private_ca_tls_validates_chain_and_hostname",
+    "polybase_external_catalog_is_structural_and_not_implicit",
+    "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
+)
+
+LIVE_TEST_SOURCE = ROOT / "crates" / "plenora-db-sqlserver" / "src" / "live_tests.rs"
+
+
+def expected_live_tests() -> set[str]:
+    """I test live che ogni riferimento della matrice deve attraversare.
+
+    # Perche non e un numero
+
+    Qui c'era `EXPECTED_TESTS`, mantenuto a mano, e il commento che lo
+    accompagnava raccontava gia il proprio difetto: portato da 43 a 44 il
+    2026-08-06 perche una prova aggiunta due giorni prima non aveva aggiornato
+    il registro, e da allora la matrice falliva con «matrice live inattesa»
+    **dopo** che tutti i test erano passati.
+
+    E' successo di nuovo. Il numero e rimasto 44 mentre la sorgente arrivava a
+    quarantotto, e nessuno se n'e accorto per la ragione peggiore: questa
+    matrice non la esegue nessun workflow. Un registro mantenuto a mano dentro
+    un gate che nessuno lancia non e un registro, e' una data di scadenza.
+
+    La pretesa resta la stessa e diventa piu forte: non «quanti sono passati»
+    ma **quali**. Un conteggio giusto per caso — una prova aggiunta e una
+    rimossa nello stesso giro — passerebbe; un confronto di insiemi no. Ed e la
+    stessa forma che `check_sqlserver_reference.py` usa gia, invece di una
+    seconda che le diverga accanto.
+    """
+
+    declared = {
+        live_inventory.leaf(name)
+        for name in live_inventory.source_inventory([LIVE_TEST_SOURCE])
+    }
+    if not declared:
+        raise RuntimeError("inventario dei test live SQL Server vuoto")
+    # Il filtro di cargo e `live_`: cio che non lo porta nel nome non entra
+    # nella corsa, e pretenderlo qui renderebbe la matrice ineseguibile.
+    return {
+        name
+        for name in declared
+        if "live_" in name and name not in SKIPPED_TESTS
+    }
 
 
 @dataclass(frozen=True)
@@ -149,16 +197,18 @@ def run_suite(entry: MatrixEntry) -> None:
         "-e", f"PLENORA_SQLSERVER_EXPECTED_COMPATIBILITY={entry.compatibility}",
         RUST_IMAGE, "cargo", "test", "-p", "plenora-db-sqlserver", "live_",
         "--locked", "--", "--ignored", "--test-threads=1",
-        "--skip", "live_private_ca_tls_validates_chain_and_hostname",
-        "--skip", "polybase_external_catalog_is_structural_and_not_implicit",
-        "--skip", "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
+        *[argument for name in SKIPPED_TESTS for argument in ("--skip", name)],
     ]
     output = run(command, timeout=1200, capture=True)
-    expected = re.compile(
-        rf"test result: ok\. {EXPECTED_TESTS} passed; 0 failed; 0 ignored;"
-    )
-    if not expected.search(output):
-        raise RuntimeError(f"matrice live inattesa per {entry.label}")
+    expected = expected_live_tests()
+    executed = {live_inventory.leaf(name) for name in live_inventory.executed_tests(output)}
+    missing = sorted(expected - executed)
+    unexpected = sorted(executed - expected)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"matrice live inattesa per {entry.label}: "
+            f"non eseguiti={missing}, non dichiarati={unexpected}"
+        )
 
 
 def qualify(entry: MatrixEntry) -> dict[str, object]:
@@ -185,7 +235,10 @@ def qualify(entry: MatrixEntry) -> dict[str, object]:
             "compatibility_level": entry.compatibility,
             "image": entry.image,
             "product_version": identity,
-            "live_tests": {"expected": EXPECTED_TESTS, "passed": EXPECTED_TESTS},
+            "live_tests": {
+            "expected": len(expected_live_tests()),
+            "passed": len(expected_live_tests()),
+        },
         }
     finally:
         subprocess.run(
