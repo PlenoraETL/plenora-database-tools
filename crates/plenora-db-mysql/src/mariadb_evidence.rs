@@ -142,9 +142,16 @@ async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_as
             .expect("tabella di RETURNING: harness, non divergenza");
     }
 
-    // Le quattro forme, ciascuna sulla propria riga: una forma che fallisse
-    // per la riga di un'altra misurerebbe l'ordine delle sonde invece del
-    // server.
+    // Ogni forma sulla propria riga: una forma che fallisse per la riga di
+    // un'altra misurerebbe l'ordine delle sonde invece del server.
+    //
+    // E ogni forma rende le **righe**, non un `Ok`. Che il parser accetti la
+    // sintassi e meta della domanda: `RETURNING` esiste per i valori che
+    // consegna, e una forma accettata che non consegnasse niente sarebbe una
+    // capability aperta su una promessa vuota. La prima stesura di questa
+    // sonda si fermava all'accettazione, e sull'upsert — dove la
+    // documentazione dice il contrario di quello che il server fa — era
+    // proprio li che smetteva di misurare.
     let forms = [
         (
             "insert",
@@ -162,25 +169,29 @@ async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_as
             "delete",
             format!("DELETE FROM {SCRATCH_RETURNING} WHERE id = 2 RETURNING id"),
         ),
-        // La forma che il compilatore portable emette per `Upsert`. Non e una
-        // variante di `INSERT` per il parser: e la domanda separata «`RETURNING`
-        // sopravvive a `ON DUPLICATE KEY UPDATE`?», e la risposta non si
-        // deduce da quella di `insert`.
+        // La forma che il compilatore portable emette per `Upsert`, e due
+        // volte: il ramo che inserisce e il ramo che aggiorna sono lo stesso
+        // statement per il parser e due esiti diversi per chi legge le righe.
+        // Sapere che la sintassi passa non dice quale dei due consegni cosa.
         (
-            "upsert",
+            "upsert_insert",
             format!(
                 "INSERT INTO {SCRATCH_RETURNING} (id, payload) VALUES (3, 'd') \
+                 ON DUPLICATE KEY UPDATE payload = VALUES(payload) RETURNING id"
+            ),
+        ),
+        (
+            "upsert_update",
+            format!(
+                "INSERT INTO {SCRATCH_RETURNING} (id, payload) VALUES (3, 'e') \
                  ON DUPLICATE KEY UPDATE payload = VALUES(payload) RETURNING id"
             ),
         ),
     ];
     let mut measured = Vec::with_capacity(forms.len());
     for (name, sql) in forms {
-        // `query_drop` basta: la domanda e se il server accetta la forma, non
-        // quali valori renda. Le righe rese sono la domanda successiva, e ha
-        // senso porla solo dove la prima ha risposto di si.
-        let verdict = match connection.query_drop(sql).await {
-            Ok(()) => "ok".to_owned(),
+        let verdict = match connection.query::<i32, _>(sql).await {
+            Ok(ids) => format!("{ids:?}"),
             Err(error) => {
                 server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
             }
@@ -192,7 +203,7 @@ async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_as
         "raw.returning_forms",
         "raw",
         "scrittura",
-        "quali forme di RETURNING il server accetta",
+        "quali forme di RETURNING il server accetta, e quali righe rende",
         measured.join(" "),
     );
 

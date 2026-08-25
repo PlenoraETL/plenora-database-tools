@@ -154,7 +154,7 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # versione, e troppo largo per MariaDB, che ce l'ha. I due prodotti
     # condividono un solo `DialectKind`, e questa sonda misura la differenza
     # invece di dedurla dalla documentazione.
-    "raw.returning_forms": "quali forme di RETURNING il server accetta",
+    "raw.returning_forms": "quali forme di RETURNING il server accetta, e quali righe rende",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
