@@ -170,6 +170,7 @@ il verdetto registra il cifrario negoziato accanto a versione e digest.
 | raw | spatial | `raw.spatial_functions` | POINT srid=4326 wkb=21 byte | POINT srid=4326 wkb=21 byte | POINT srid=4326 wkb=21 byte |
 | raw | sessione | `raw.max_execution_time` | accettato | **no** Server error: `ERROR 1193 (HY000): Unknown system variable 'MAX_EXECUTION_TIME'' | **no** Server error: `ERROR 1193 (HY000): Unknown system variable 'MAX_EXECUTION_TIME'' |
 | raw | catalogo | `raw.statistics_expression` | presente | **no** Server error: `ERROR 1054 (42S22): Unknown column 'EXPRESSION' in 'SELECT'' | **no** Server error: `ERROR 1054 (42S22): Unknown column 'EXPRESSION' in 'SELECT'' |
+| raw | scrittura | `raw.returning_forms` | insert=1064 replace=1064 update=1064 delete=1064 upsert_insert=1064 upsert_update=1064 | insert=`[1]` replace=`[2]` update=1064 delete=`[2]` upsert_insert=`[3]` upsert_update=`[3]` | **identico a MariaDB 11** |
 | provider | protocollo | `provider.test_connection` | server_version=9.7.2 | server_version=12.3.2-MariaDB-ubu2404 | server_version=11.8.8-MariaDB-ubu2404 |
 | provider | protocollo | `provider.capabilities` | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 | create=true append=true upsert=true replace=true bulk=true spatial=26 |
 | provider | catalogo | `provider.describe_object` | colonne=14 indici=1 | **no** Schema: colonna MySQL non valida (codice 1054) | **no** Schema: colonna MySQL non valida (codice 1054) |
@@ -400,6 +401,7 @@ sonde:
 | provider | profilo | `provider.profile_describe_geometry` | **no** Crs: colonna spatial MySQL senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato | **no** Crs: colonna spatial MariaDB senza SRID dichiarato |
 | provider | profilo | `provider.profile_functional_index` | `plenora_idx_expression`:colonne=0 confrontabile=false, `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true | `PRIMARY`:colonne=1 confrontabile=true |
 | provider | profilo | `provider.profile_timeout` | Timeout/Never/None — timeout MySQL (codice 3024) | Timeout/Never/None — timeout MariaDB (codice 1969) | Timeout/Never/None — timeout MariaDB (codice 1969) |
+| provider | profilo | `provider.profile_portable_returning` | **rifiutato** — `Unsupported`: RETURNING non esiste su MySQL | righe=1 valori=`I64(1)` | righe=1 valori=`I64(1)` |
 
 ### Cosa dice
 
@@ -1291,3 +1293,102 @@ Niente, in questo documento. Le superfici che il provider `MySQL` puntato su
 restano quello che sono per costruzione: dipendono da un catalogo che quel
 percorso non sa leggere, e il percorso qualificato passa dal profilo, dove
 sono misurate.
+
+## Dodicesima tranche: `RETURNING`, e un intero strato che non si poteva raggiungere
+
+Questa tranche e cominciata da un commento. `compile_returning` rifiutava
+`RETURNING` su tutto il dialetto `Mysql` con questa motivazione: «MySQL non ha
+RETURNING universale (solo 8.0.20+ per INSERT)». Poche funzioni piu in la, il
+facade ne dava un'altra: «MySQL 8.0.31+ supporta INSERT ... RETURNING per
+singola riga».
+
+Due numeri di versione diversi per la stessa funzionalita, ed e questo il
+dettaglio da cui vale la pena partire: se venissero entrambi da una misura,
+sarebbero lo stesso numero. Nessuno dei due ci veniva. `MySQL` non ha
+`RETURNING` — a nessuna versione, in nessuna forma.
+
+A rendere plausibile la confusione e che `MariaDB` ce l'ha. E i due prodotti
+condividevano un solo `DialectKind`.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | scrittura | `raw.returning_forms` | 1064 su tutte e sei | `insert=[1] replace=[2] update=1064 delete=[2] upsert_insert=[3] upsert_update=[3]` | **identico a MariaDB 12** |
+| provider | profilo | `provider.profile_portable_returning` | **rifiutato** — `Unsupported` | righe=1 valori `I64(1)` | **identico** |
+
+### Cosa dice
+
+**`MariaDB` ammette `RETURNING` ovunque tranne che su `UPDATE`.** `INSERT`,
+`REPLACE`, `DELETE` e **entrambi** i rami dell'upsert rendono le righe; l'
+`UPDATE` risponde `1064`, errore di sintassi. Le due major danno la stessa riga
+di esiti, senza differenze.
+
+L'upsert e il caso in cui la misura serviva di piu: la documentazione di
+`MariaDB` lascia intendere che `RETURNING` non sopravviva a `ON DUPLICATE KEY
+UPDATE`, e il server lo esegue — su tutti e due i rami, quello che inserisce e
+quello che aggiorna. Questo file segue il server.
+
+**La sonda legge le righe, non l'assenza di errore.** La prima stesura usava
+`query_drop`: se il parser non rifiutava la sintassi, la forma risultava
+disponibile. E' meta della domanda. `RETURNING` esiste per i valori che
+consegna, e una forma accettata che non consegnasse niente sarebbe una
+capability aperta su una promessa vuota — e sarebbe stato proprio sull'upsert,
+dove il server smentisce la documentazione, che fermarsi all'accettazione
+avrebbe pesato di piu.
+
+**Due sonde, due domande che sembrano una.** `raw.returning_forms` interroga il
+**server** con lo statement scritto a mano. `provider.profile_portable_returning`
+interroga il **percorso**: `execute_portable_returning` compila per
+`tx.provider_kind()` ed esegue, quindi attraversa la tabella dialetto-forma e il
+decoder delle righe.
+
+La differenza non e teorica, e si vedeva benissimo il giorno in cui sono state
+scritte: il server `MariaDB` accettava `INSERT ... RETURNING` mentre
+`compile_portable` rifiutava `ProviderKind::Mariadb` **per intero**. Ogni
+`execute_portable` e ogni `query_portable` su `MariaDB` fallivano in prepare con
+«compile_portable non supportato per Mariadb»: l'intero strato facade era
+irraggiungibile su un provider che questo repository pubblica. Una sonda sul
+solo server avrebbe registrato «disponibile» di una superficie che nessun
+chiamante poteva toccare.
+
+Quel rifiuto non era una decisione. Era il ramo di scarto di un `match` scritto
+quando il provider `MariaDB` non esisteva, e il messaggio diceva «non
+supportato» di una cosa che nessuno aveva deciso di non supportare.
+
+### Cosa ne segue per il codice
+
+`DialectKind::Mariadb` e una variante, non una bandiera dentro `Mysql`. Oggi la
+divergenza e una sola, e una bandiera sarebbe bastata a scrivere il codice — non
+a leggerlo: la seconda divergenza si presenterebbe come una seconda bandiera
+dentro un dialetto che nel nome dichiara di essere di qualcun altro. Dove i due
+prodotti si somigliano — segnaposto `?`, quoting a backtick, `ON DUPLICATE KEY
+UPDATE`, `INSERT IGNORE`, spatial via `ST_GeomFromWKB` — l'arm resta condiviso,
+e ogni riga condivisa e una riga in cui si somigliano davvero.
+
+`compile_returning` riceve la **forma**, non solo il dialetto. Su `MariaDB`
+`RETURNING` non e una proprieta del prodotto: e una proprieta della coppia
+prodotto-forma, e il solo dialetto avrebbe costretto a scegliere fra aprire
+l'`UPDATE`, che fallisce sul server, e chiudere le altre tre, che funzionano.
+
+### Perche le due sonde sono osservative
+
+Il loro esito atteso **diverge per prodotto**: su `MySQL` il rifiuto e la misura
+giusta, su `MariaDB` lo sono le righe. Gli inventari del runner esprimono un
+esito solo, uguale per tutti i riferimenti — chiedere `accepted` renderebbe rossa
+la matrice su `MySQL`, chiedere `rejected` su `MariaDB`, e ciascuna direbbe il
+falso su meta di essa.
+
+L'elenco delle osservative esisteva vuoto, con una nota che diceva di tenerlo
+per la prossima sonda senza contratto. Sono le prime due ad abitarlo, e la
+seconda ha allargato il perimetro anche alla famiglia `raw`: «questa sonda non
+sostiene niente, e lo dice apposta» non e una proprieta della famiglia.
+
+### Cosa resta not_measured
+
+Niente di nuovo. `writes.returning` resta `false` e **descrittiva**, e non per
+mancanza di misura: parla di un'altra superficie ancora — l'esito del percorso
+di piano, che conta righe e non le trasporta. Aprirla vorrebbe dire far
+trasportare righe a un documento di esito, che e la forma sbagliata per una
+scrittura bulk; il `RETURNING` che questa tranche apre vive nel percorso
+portable, dove le righe hanno gia dove stare.

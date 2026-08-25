@@ -731,10 +731,17 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         )
         # All'indietro: ogni sonda classificata deve **esistere**, e qui il
         # perimetro e piu largo del profilo. Gli inventari possono nominare
-        # qualunque sonda `provider.*` — `provider.ambiguous_commit` e la
-        # prima a valersene — e una dichiarazione su una sonda cancellata non
+        # qualunque sonda — `provider.ambiguous_commit` e stata la prima a
+        # valersene, `raw.returning_forms` la prima a portarlo fuori dalla
+        # famiglia `provider` — e una dichiarazione su una sonda cancellata non
         # dichiara nulla.
-        produced = set(re.findall(r'"(provider\.[a-z_]+)"', source))
+        #
+        # Il perimetro include le `raw` perche l'inventario osservativo non e
+        # una proprieta della famiglia: dice «questa sonda non sostiene niente,
+        # e lo dice apposta», e una sonda `raw` senza contratto ha lo stesso
+        # bisogno di essere dichiarata di una del profilo. Restringerlo a
+        # `provider.*` faceva sembrare fantasma una dichiarazione vera.
+        produced = set(re.findall(r'"((?:provider|raw)\.[a-z_]+)"', source))
         self.assertEqual(
             classified - produced,
             set(),
