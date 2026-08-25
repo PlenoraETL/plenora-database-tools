@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -659,6 +660,25 @@ def repository_state() -> dict[str, object]:
     }
 
 
+def soak_rounds() -> list[str]:
+    """La manopola del soak, inoltrata al container solo se qualcuno la chiede.
+
+    Sta qui e non in linea perche il valore va **validato**: un giro non
+    numerico farebbe partire una corsa che il documento non sa descrivere, e
+    un rifiuto immediato costa meno di una misura da buttare.
+    """
+
+    raw = os.environ.get("PLENORA_MIXED_ROUNDS")
+    if raw is None:
+        return []
+    if not raw.isdigit() or int(raw) < 1:
+        raise RuntimeError(
+            f"PLENORA_MIXED_ROUNDS={raw!r}: e il numero di giri della sonda del "
+            f"carico misto, e deve essere un intero positivo"
+        )
+    return ["-e", f"PLENORA_MIXED_ROUNDS={raw}"]
+
+
 def run(command: list[str]) -> str:
     completed = subprocess.run(
         command,
@@ -709,6 +729,16 @@ def measure(
         f"{container_variable(server.container, server.password_variable)}",
         "-e", f"PLENORA_EVIDENCE_LABEL={server.label}",
         "-e", f"PLENORA_EVIDENCE_DIGEST={server.digest}",
+        # L'ambiente della misura e **dichiarato**, non ereditato: e cio che
+        # rende la corsa riproducibile su una macchina che non e questa. Una
+        # manopola che deve arrivare al container va percio nominata qui, e
+        # nominarla e anche il modo in cui resta visibile.
+        #
+        # `PLENORA_MIXED_ROUNDS` allunga la sonda del carico misto, che e la
+        # stessa del gate: il soak non e un percorso diverso, e la stessa corsa
+        # con piu giri. Assente, la sonda usa il suo default e il gate resta
+        # corto — un gate che dura ore non lo esegue nessuno.
+        *soak_rounds(),
     ]
     command = [
         "docker", "run", "--rm",
