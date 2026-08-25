@@ -157,7 +157,7 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 # Le violazioni di capability dicono se una prova necessaria ha cambiato esito;
 # non dicono se una sonda e **sparita**. Se una `raw.*` o una osservativa
 # smettesse di essere prodotta su tutti e tre i server, il totale scenderebbe
-# da 74 a 73 e l'uscita resterebbe zero: la matrice
+# da 76 a 75 e l'uscita resterebbe zero: la matrice
 # racconterebbe una superficie in meno senza che nulla lo dica.
 #
 # L'ordine e parte del contratto perche e cio che rende leggibile il documento
@@ -172,6 +172,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.prepare_metadata",
     "raw.prepare_parameters",
     "raw.column_srid",
+    "raw.geometry_columns_registry",
+    "raw.declared_column_srid",
     "raw.spatial_functions",
     "raw.max_execution_time",
     "raw.statistics_expression",

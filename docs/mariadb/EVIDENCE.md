@@ -1129,3 +1129,74 @@ Sta insieme a `array_binding`, `returning`, `server_cursor`, `pagination` e
 * **il commit ambiguo**, che resta il punto 4.
 * **la quarantena della connessione**, che si osserva solo dall'identita
   della sessione in `information_schema.processlist`.
+
+## Decima tranche: l'SRID di colonna, cercato dove poteva stare
+
+Le tranche precedenti avevano chiuso lo spatial di `MariaDB` con una frase che
+sembrava definitiva: `information_schema.columns.SRS_ID` non esiste, errore
+1054, quindi non c'e modo di sapere se una geometry abbia un sistema di
+riferimento. La frase era vera e la conclusione sbagliata, perche l'assenza
+era stata osservata **da una parte sola**.
+
+Questa tranche guarda nelle altre due, e corregge il documento.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | spatial | `raw.geometry_columns_registry` | **no** `GEOMETRY_COLUMNS` assente, `ST_GEOMETRY_COLUMNS.SRS_ID`=NULL | `GEOMETRY_COLUMNS.SRID`=0 | `GEOMETRY_COLUMNS.SRID`=0 |
+| raw | spatial | `raw.declared_column_srid` | `SRID`=accettato, registro rende 4326; `REF_SYSTEM_ID`=rifiutato 1064 | **no** entrambe rifiutate 1064 | **no** entrambe rifiutate 1064 |
+
+### Cosa dice
+
+**Il registro OGC su `MariaDB` c'e, ed espone un SRID di colonna.**
+`information_schema.GEOMETRY_COLUMNS` esiste su entrambi i riferimenti e porta
+una colonna `SRID`. Su `MySQL` quella tabella non esiste affatto — la 8.0
+l'ha sostituita con `ST_GEOMETRY_COLUMNS` — quindi i due prodotti hanno **due
+registri diversi**, non uno solo che a uno dei due manca. E' una divergenza di
+prodotto come le altre, e appartiene al profilo.
+
+**Ma nessuna colonna puo essere vincolata a un SRID.** `SRID 4326` nella DDL e
+rifiutato da `MariaDB` con 1064, come la prima tranche aveva gia misurato; e
+lo e anche `REF_SYSTEM_ID=4326`, che e l'attributo che quel prodotto
+documenta al posto suo. Due sintassi, due rifiuti, su entrambe le versioni. Su
+`MySQL` la prima e accettata e il registro rende 4326, la seconda no.
+
+Ne segue che `GEOMETRY_COLUMNS.SRID` su `MariaDB` vale **sempre zero** —
+l'«indefinito» OGC — perche non esiste una DDL che lo faccia diventare altro.
+
+**La ragione della chiusura cambia, e diventa piu stretta.** Non «il catalogo
+non risponde»: risponde, e dice zero. Non «l'SRID e sconosciuto»: e
+**assente**, perche il motore non permette di dichiararlo. Lo spatial di
+`MariaDB` resta chiuso, e ora si sa esattamente cosa servirebbe per aprirlo —
+non una query di catalogo diversa, ma un CRS **dichiarato dal chiamante** e
+verificato valore per valore, che e la forma che il path di scrittura ha gia
+con `srid_policy`.
+
+### Come la sonda ha quasi registrato il contrario
+
+La prima stesura interrogava `WHERE TABLE_NAME`, e ha preso 1054 da entrambe
+le `MariaDB`. Stava per chiudere il capitolo con «il registro non ha un SRID»,
+e sarebbe stato falso in modo credibile: due server, tre rifiuti coerenti, un
+codice d'errore che sembrava confermare.
+
+A smentirlo e stata la riga aggiunta **per completezza** e non per dubbio —
+quella che chiede al catalogo la forma del registro. La forma diceva
+`[..., MAX_PPR, SRID]`: la colonna c'era. Il 1054 riguardava il predicato,
+perche nel registro OGC il nome della tabella sta in `F_TABLE_NAME`.
+
+Una sonda che chiede la cosa sbagliata non rende «nessuna risposta»: rende
+**una risposta a un'altra domanda**, e le due si leggono identiche. Il
+predicato si ricava ora dalla forma del registro invece di essere immaginato,
+e per questo la sonda prova entrambi i nomi di ciascuna generazione OGC.
+
+### Cosa resta not_measured
+
+* **il comportamento sotto un `SRID` di riga eterogeneo**: se una colonna
+  senza vincolo contenga valori con SRID diversi, e cosa il provider dovrebbe
+  pubblicare come CRS in quel caso. E' la domanda che una strategia dichiarata
+  dal chiamante dovrebbe risolvere, e non si pone finche quella strategia non
+  esiste.
+* **le versioni di `MariaDB` oltre la 12.3**: il rifiuto e misurato su 11.8 e
+  12.3, e come tutte le righe di questo documento vale per cio che e stato
+  acceso.

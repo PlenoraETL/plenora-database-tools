@@ -76,6 +76,12 @@ const SCRATCH: &str = "plenora_driver_evidence";
 /// misurava quella regola invece dei tipi.
 const SCRATCH_GEO: &str = "plenora_driver_evidence_geo";
 
+/// La tabella su cui si prova a **vincolare** un SRID di colonna.
+///
+/// Separata da [`SCRATCH_GEO`], che serve alle sonde del wire e non deve
+/// cambiare forma: qui la DDL viene rifatta due volte, una per sintassi.
+const SCRATCH_SRID: &str = "plenora_driver_evidence_srid";
+
 /// La tabella delle sonde di lettura: righe abbastanza da spezzare un batch.
 const SCRATCH_ROWS: &str = "plenora_driver_evidence_rows";
 
@@ -217,7 +223,7 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
         .await;
     match connection
         .query_drop(format!(
-            "CREATE TABLE {SCRATCH_GEO} (id BIGINT NOT NULL PRIMARY KEY, \n             shape GEOMETRY NULL) ENGINE = InnoDB"
+            "CREATE TABLE {SCRATCH_GEO} (id BIGINT NOT NULL PRIMARY KEY, \n shape GEOMETRY NULL) ENGINE = InnoDB"
         ))
         .await
     {
@@ -341,6 +347,161 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
             condense(&error.to_string()),
             server_code(&error),
         ),
+    }
+
+    // Se l'SRID di colonna esista **altrove**, prima di concludere che non
+    // esista affatto.
+    //
+    // Che `SRS_ID` manchi da `information_schema.columns` e misurato, e da
+    // solo dice che quella strada non c'e — non che non ce ne siano altre. Il
+    // registro OGC e l'altra: `GEOMETRY_COLUMNS` e la tabella che `MySQL` 5.7
+    // aveva e la 8.0 ha sostituito con `ST_GEOMETRY_COLUMNS`.
+    //
+    // # Il predicato si ricava dalla forma, non si indovina
+    //
+    // La prima stesura di questa sonda interrogava `WHERE TABLE_NAME`, e ha
+    // preso 1054 da entrambe le `MariaDB`. Stava per registrare un'assenza
+    // che non c'era: nel registro OGC la colonna si chiama `F_TABLE_NAME`, e
+    // l'errore riguardava il predicato, non l'SRID. Chiedere prima **quali
+    // colonne** il registro abbia, e costruire la query da quelle, e l'unico
+    // modo in cui la risposta parla dell'SRID invece che del nome che la sonda
+    // ha immaginato.
+    let mut geometry_columns = Vec::new();
+    for table in ["GEOMETRY_COLUMNS", "ST_GEOMETRY_COLUMNS"] {
+        let shape = connection
+            .query_first::<Option<String>, _>(format!(
+                "SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY ORDINAL_POSITION) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = 'information_schema' AND TABLE_NAME = '{table}'"
+            ))
+            .await;
+        let Ok(Some(Some(columns))) = shape else {
+            geometry_columns.push(format!("{table}=assente"));
+            continue;
+        };
+        let names: Vec<&str> = columns.split(',').collect();
+        let pick = |candidates: &[&str]| -> Option<String> {
+            candidates
+                .iter()
+                .find(|wanted| names.iter().any(|name| name.eq_ignore_ascii_case(wanted)))
+                .map(|found| (*found).to_owned())
+        };
+        let (Some(name_column), Some(srid_column)) = (
+            pick(&["F_TABLE_NAME", "TABLE_NAME"]),
+            pick(&["SRID", "SRS_ID"]),
+        ) else {
+            geometry_columns.push(format!("{table}=senza SRID [{columns}]"));
+            continue;
+        };
+        let value = connection
+            .query_first::<Option<u32>, _>(format!(
+                "SELECT {srid_column} FROM information_schema.{table} WHERE {name_column} = '{SCRATCH_GEO}'"
+            ))
+            .await;
+        geometry_columns.push(match value {
+            Ok(Some(srid)) => format!("{table}.{srid_column}={srid:?}"),
+            Ok(None) => format!("{table}.{srid_column}=nessuna riga"),
+            Err(error) => format!("{table}.{srid_column}=no({})", condense(&error.to_string())),
+        });
+    }
+    let detail = geometry_columns.join(" ");
+    // Cio che la sonda cerca e un SRID: un registro che ne rende uno la
+    // accetta, uno che non ce l'ha o non c'e la rifiuta. Sono due misure
+    // diverse, e il dettaglio le distingue per nome.
+    if detail.contains("=Some(") {
+        recorder.accepted(
+            "raw.geometry_columns_registry",
+            "raw",
+            "spatial",
+            "espone l'SRID di colonna in un registro OGC",
+            detail,
+        );
+    } else {
+        recorder.rejected(
+            "raw.geometry_columns_registry",
+            "raw",
+            "spatial",
+            "espone l'SRID di colonna in un registro OGC",
+            detail,
+            None,
+        );
+    }
+
+    // Un SRID **dichiarato**, e da quale sintassi.
+    //
+    // Il registro rende `0` su `MariaDB` e `NULL` su `MySQL` per la stessa
+    // fixture, che non ne dichiara nessuno: due modi di dire «non vincolata».
+    // La domanda che conta e un'altra — se una colonna possa essere vincolata,
+    // e con quale attributo — perche da li dipende se il CRS si possa sapere.
+    //
+    // La prima tranche ha misurato che `SRID` nella DDL e rifiutato da
+    // `MariaDB` con un errore di sintassi, e si era fermata li. `REF_SYSTEM_ID`
+    // e l'attributo che quel prodotto documenta al suo posto: la sonda prova
+    // entrambe le forme su tutti e tre i server e registra quale sia accettata
+    // e cosa il registro renda dopo. Provarne una sola direbbe «non si puo»
+    // avendo chiesto in una lingua sola.
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SRID}"))
+        .await;
+    let mut declared = Vec::new();
+    for (syntax, ddl) in [
+        (
+            "SRID",
+            format!("CREATE TABLE {SCRATCH_SRID} (shape GEOMETRY NOT NULL SRID 4326)"),
+        ),
+        (
+            "REF_SYSTEM_ID",
+            format!("CREATE TABLE {SCRATCH_SRID} (shape GEOMETRY NOT NULL REF_SYSTEM_ID=4326)"),
+        ),
+    ] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SRID}"))
+            .await;
+        if let Err(error) = connection.query_drop(ddl).await {
+            declared.push(format!(
+                "{syntax}=rifiutato({})",
+                server_code(&error).map_or(0, |code| code)
+            ));
+        } else {
+            // Il registro si rilegge con la stessa regola di prima: il nome
+            // della colonna viene dalla forma, non da un'ipotesi.
+            let mut seen = "registro assente".to_owned();
+            for (table, name_column, srid_column) in [
+                ("GEOMETRY_COLUMNS", "F_TABLE_NAME", "SRID"),
+                ("ST_GEOMETRY_COLUMNS", "TABLE_NAME", "SRS_ID"),
+            ] {
+                if let Ok(Some(value)) = connection
+                        .query_first::<Option<u32>, _>(format!(
+                            "SELECT {srid_column} FROM information_schema.{table} WHERE {name_column} = '{SCRATCH_SRID}'"
+                        ))
+                        .await
+                    {
+                        seen = format!("{table}.{srid_column}={value:?}");
+                        break;
+                    }
+            }
+            declared.push(format!("{syntax}=accettato {seen}"));
+        }
+    }
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SRID}"))
+        .await;
+    let detail = declared.join(" ");
+    if detail.contains("=accettato") {
+        recorder.accepted(
+            "raw.declared_column_srid",
+            "raw",
+            "spatial",
+            "una colonna geometrica puo essere vincolata a un SRID, e il registro lo rende",
+            detail,
+        );
+    } else {
+        recorder.rejected(
+            "raw.declared_column_srid",
+            "raw",
+            "spatial",
+            "una colonna geometrica puo essere vincolata a un SRID, e il registro lo rende",
+            detail,
+            None,
+        );
     }
 
     // Le funzioni spatial che il renderer condiviso emette per MySQL.

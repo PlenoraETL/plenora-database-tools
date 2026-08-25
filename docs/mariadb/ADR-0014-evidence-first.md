@@ -260,6 +260,18 @@ configurazione TLS e una sola per i quattro percorsi: quel blocco ha gia avuto
 il suo difetto — un default che accettava il certificato senza verificarlo — e
 quattro copie lo avrebbero rimesso in gioco tre volte.
 
-**Cosa resta aperto.** Lo spatial, che su `MariaDB` resta chiuso per una
-ragione strutturale — `SRS_ID` non esiste in `information_schema.columns` — e
-il commit ambiguo, `not_measured` su tutti e tre i server.
+**Cosa resta aperto.** Lo spatial e il commit ambiguo.
+
+Sullo spatial la decima tranche ha corretto la ragione, e la correzione conta:
+non e che il catalogo di `MariaDB` non risponda. Il registro OGC
+`information_schema.GEOMETRY_COLUMNS` esiste e porta una colonna `SRID` — un
+registro **diverso** da quello di `MySQL`, che usa `ST_GEOMETRY_COLUMNS` —
+ma vale sempre zero, perche nessuna DDL puo vincolare una colonna a un SRID:
+rifiutate entrambe le sintassi, quella di `MySQL` e `REF_SYSTEM_ID`, che e
+l'attributo documentato da `MariaDB` stessa.
+
+Ne segue che «una strategia SRID per prodotto», che questa ADR aveva
+assegnato al profilo, non e una query di catalogo diversa: e un CRS dichiarato
+dal chiamante e verificato valore per valore, nella forma che il path di
+scrittura ha gia con `srid_policy`. Finche quella strategia non esiste, la
+chiusura resta.
