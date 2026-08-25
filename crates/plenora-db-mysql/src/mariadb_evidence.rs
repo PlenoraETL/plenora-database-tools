@@ -5513,7 +5513,15 @@ async fn profile_probes(
                                 phase: ErrorPhase::Prepare,
                                 remote_effect: RemoteEffect::None,
                                 retry: RetryDisposition::Never,
-                                message_contains: "senza SRID dichiarato",
+                                // Il frammento e sceso a due parole quando il
+                                // messaggio ha smesso di dire «senza SRID
+                                // dichiarato» per dire quale delle due fonti
+                                // tace: «il catalogo tace e il piano non lo
+                                // dichiara». La sonda deve riconoscere la
+                                // regola, non la frase — e la frase e cambiata
+                                // il giorno in cui una seconda fonte e
+                                // diventata possibile.
+                                message_contains: "senza SRID",
                             };
                             match refusal_mismatch(&contract, &error) {
                                 Some(mismatch) => recorder.not_measured(
