@@ -336,6 +336,12 @@ class SessionMatrixTests(unittest.TestCase):
                 stripped.replace("2>&1", "")
                 .replace(">&2", "")
                 .replace("/dev/null", "")
+                # `pip install` installa nell'ambiente Python, non nell'albero
+                # di lavoro. La guardia cercava la sottostringa `install ` per
+                # riconoscere il comando Unix `install`, che copia file, e
+                # prendeva anche questo: il passo che installa le dipendenze
+                # del gate veniva accusato di sporcare il checkout.
+                .replace("pip install", "")
             )
             writers = (
                 "mkdir",

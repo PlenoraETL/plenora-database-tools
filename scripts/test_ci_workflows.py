@@ -1386,5 +1386,161 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
         self.assertIn("docker-compose.postgres-tls.yml", assurance)
 
 
+# Un comando che esegue codice Python **del repository**.
+#
+# Non basta cercare `python`: `python -m pip install`, `python -m venv` e
+# `python -c "..."` non importano nulla di questo albero, e chiederne le
+# dipendenze sarebbe chiedere di installarle al passo che le installa. Cio che
+# conta e il riferimento a uno script sotto `scripts/`, a un modulo `scripts.`
+# o `tests.`, o a una discovery su `tests`.
+# Due confini a sinistra, e nessuno dei due e un dettaglio.
+#
+# Il trattino: senza, `-r requirements-self-tests.txt` conteneva
+# `tests.txt`, e il passo che **installa** le dipendenze finiva fra quelli
+# che ne hanno bisogno — la guardia avrebbe chiesto di installarle prima di
+# installarle.
+#
+# La barra: `.github/scripts/` e un altro albero. Quegli script sono aiuti
+# di CI deliberatamente autonomi — `verify_wheel.py` importa solo la
+# stdlib — e girano dove il repository non e nemmeno il working directory.
+# Chiedere loro le dipendenze dei gate significherebbe installarle in job
+# che non ne usano nessuna.
+REPOSITORY_PYTHON = re.compile(
+    r"python3?\s+[^\n]*?"
+    r"(?:(?<![\w./])scripts/[\w/]+\.py"
+    r"|(?<![-\w./])(?:scripts|tests)\.[\w.]+"
+    r"|-s\s+tests\b)"
+)
+
+
+def python_gate_jobs(workflow: str) -> list[tuple[str, list[dict]]]:
+    """I job che eseguono codice Python del repository, con i loro passi."""
+
+    jobs: list[tuple[str, list[dict]]] = []
+    for name, job in parsed_jobs(workflow).items():
+        steps = job.get("steps", [])
+        if any(
+            REPOSITORY_PYTHON.search(step["run"])
+            for step in steps
+            if isinstance(step.get("run"), str)
+        ):
+            jobs.append((name, steps))
+    return jobs
+
+
+def installs_requirements(steps: list[dict], before: int) -> bool:
+    """Uno dei passi **precedenti** installa le dipendenze dichiarate.
+
+    L'ordine conta: un `pip install` dopo il gate non serve a niente, e
+    guardando il job per intero sarebbe indistinguibile da uno prima.
+    """
+
+    return any(
+        "requirements-self-tests.txt" in step["run"]
+        for step in steps[:before]
+        if isinstance(step.get("run"), str)
+    )
+
+
+def first_repository_python(steps: list[dict]) -> int | None:
+    """L'indice del primo passo che esegue codice del repository."""
+
+    for index, step in enumerate(steps):
+        if isinstance(step.get("run"), str) and REPOSITORY_PYTHON.search(step["run"]):
+            return index
+    return None
+
+
+class PythonGateDependencyTests(unittest.TestCase):
+    """Un gate Python che gira in CI ne installa le dipendenze."""
+
+    def test_every_job_running_a_python_gate_installs_its_requirements(self) -> None:
+        """Il difetto che questa guardia chiude e costato tre giorni di rosso.
+
+        `mysql-static-gate` esegue `check_mysql_reference.py --static`, che
+        importa `render_state`, che importa `phase0_validate`, che senza
+        `jsonschema` esce **all'import**. Il workflow non installava niente, e
+        il job falliva in nove secondi con un messaggio che parlava di una
+        dipendenza e non di una verifica.
+
+        Nessuno se n'era accorto perche l'import indiretto e arrivato dopo: il
+        gate era verde un giorno e rosso il giorno seguente, senza che nessuno
+        avesse toccato quel workflow.
+
+        `rust-ci` aveva gia il passo, e il commento accanto diceva la regola per
+        esteso — «era un gate che in CI non poteva passare». La regola c'era,
+        valeva per un job solo, e gli altri sette non la conoscevano.
+        """
+
+        offenders: list[str] = []
+        for path in workflow_files():
+            workflow = path.read_text(encoding="utf-8")
+            for name, steps in python_gate_jobs(workflow):
+                first = first_repository_python(steps)
+                if first is not None and not installs_requirements(steps, first):
+                    offenders.append(f"{path.name}:{name}")
+        self.assertEqual(
+            sorted(offenders),
+            [],
+            "job che eseguono un gate Python senza installarne le dipendenze",
+        )
+
+    def test_the_guard_reads_the_order_and_not_only_the_presence(self) -> None:
+        """Installare dopo il gate non e installare."""
+
+        steps = [
+            {"run": "python3 scripts/check_mysql_reference.py --static"},
+            {"run": "python3 -m pip install -r requirements-self-tests.txt"},
+        ]
+        self.assertFalse(installs_requirements(steps, 0))
+        self.assertTrue(installs_requirements(list(reversed(steps)), 1))
+
+    def test_a_command_that_only_mentions_python_is_not_a_gate(self) -> None:
+        """`pip`, `venv` e `-c` non importano il codice del repository.
+
+        La distinzione non e cosmetica: senza, il passo che installa le
+        dipendenze verrebbe contato fra quelli che ne hanno bisogno, e la
+        guardia chiederebbe di installarle prima di installarle.
+        """
+
+        workflow = "\n".join(
+            [
+                "on: push",
+                "jobs:",
+                "  build:",
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+                "      - run: python3 -m pip install -r requirements-self-tests.txt",
+                '      - run: python -c "import sys; print(sys.version)"',
+                "      - run: python .github/scripts/verify_wheel.py",
+            ]
+        )
+        self.assertEqual(python_gate_jobs(workflow), [])
+
+    def test_the_forms_that_do_execute_repository_code_are_all_recognised(self) -> None:
+        """Quattro forme, tutte in uso in questi workflow."""
+
+        for command in [
+            "python3 scripts/check_mysql_reference.py --static",
+            "python3 -m scripts.check_phase0",
+            "python3 -m unittest tests.test_sqlserver_performance",
+            "python3 -m unittest discover -s tests -t .",
+        ]:
+            workflow = "\n".join(
+                [
+                    "on: push",
+                    "jobs:",
+                    "  check:",
+                    "    runs-on: ubuntu-latest",
+                    "    steps:",
+                    f"      - run: {command}",
+                ]
+            )
+            self.assertEqual(
+                [name for name, _ in python_gate_jobs(workflow)],
+                ["check"],
+                f"forma non riconosciuta: {command}",
+            )
+
 if __name__ == "__main__":
     unittest.main()
