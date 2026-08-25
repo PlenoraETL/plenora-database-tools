@@ -3739,20 +3739,40 @@ mod tests {
         // La lista pubblicata e la stessa che il renderer consulta: le due
         // erano separate, e un piano poteva superare il cancello di MySQL e
         // morire sul server mentre la capability diceva giustamente di no.
-        assert_eq!(spatial.functions.len(), 14);
         assert_eq!(
             spatial.functions,
             MARIADB_PROFILE.verified_spatial_functions().to_vec()
         );
+
+        // Le due liste non sono piu una il sottoinsieme dell'altra, e la
+        // guardia lo verifica in **entrambe** le direzioni: cercare solo cio
+        // che manca a MariaDB lascerebbe passare in silenzio il giorno in cui
+        // MySQL perdesse qualcosa che qui c'e.
         let mysql_functions = MYSQL_PROFILE.verified_spatial_functions();
-        assert_eq!(mysql_functions.len(), 15);
-        let missing: Vec<_> = mysql_functions
+        let only_mysql: Vec<_> = mysql_functions
             .iter()
             .filter(|function| !spatial.functions.contains(function))
+            .copied()
+            .collect();
+        let only_mariadb: Vec<_> = spatial
+            .functions
+            .iter()
+            .filter(|function| !mysql_functions.contains(function))
+            .copied()
             .collect();
         assert_eq!(
-            missing,
-            vec![&plenora_database_core::query::SpatialFunction::IsValid]
+            only_mysql,
+            vec![
+                plenora_database_core::query::SpatialFunction::IsValid,
+                plenora_database_core::query::SpatialFunction::HausdorffDistance,
+                plenora_database_core::query::SpatialFunction::FrechetDistance
+            ],
+            "cio che MySQL ha e MariaDB no"
+        );
+        assert_eq!(
+            only_mariadb,
+            vec![plenora_database_core::query::SpatialFunction::Relate],
+            "cio che MariaDB ha e MySQL no"
         );
         assert_eq!(
             spatial.write_wkb,

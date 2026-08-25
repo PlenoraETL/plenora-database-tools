@@ -5151,13 +5151,13 @@ async fn live_v12_every_verified_spatial_function_executes() {
             .ok();
         connection
             .query_drop(
-                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE=InnoDB",
+                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE=InnoDB",
             )
             .await
             .expect("create della tabella della sonda");
         connection
             .query_drop(
-                "INSERT INTO _v12_spatial_all VALUES (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))",
+                "INSERT INTO _v12_spatial_all VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))",
             )
             .await
             .expect("seed della sonda");
@@ -5184,7 +5184,9 @@ async fn live_v12_every_verified_spatial_function_executes() {
         // qui, per analogia, che e il modo in cui questa lista si era gonfiata
         // la prima volta.
         let mut refusals: Vec<String> = Vec::new();
-        for field in ["line", "poly"] {
+        // Tre geometrie, non due: `ST_X` vuole un punto, e su una linea
+        // fallirebbe per il dato invece che per il motore.
+        for field in ["point", "line", "poly"] {
             // L'arieta dichiarata dal contratto, non una tabella scritta a mano
             // qui: se il core la cambia, la sonda la segue.
             let arity = (1..=4)

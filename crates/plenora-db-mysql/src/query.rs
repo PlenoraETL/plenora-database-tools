@@ -122,6 +122,24 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
+    // Le nove che `raw.spatial_candidate_functions` ha trovato presenti fra le
+    // ventisei mai chieste. Presenti non vuol dire qualificate: la sonda
+    // `live_v12_every_verified_spatial_function_executes` le attraversa una per
+    // una, e cio che non esegue esce da questa lista con la misura in mano —
+    // come ne sono uscite undici quando scese da ventisei a quindici.
+    //
+    // `Relate` e `CoveredBy` non ci sono, e su `MariaDB` si: le due liste non
+    // sono piu una il sottoinsieme dell'altra, e non c'e ragione perche lo
+    // siano.
+    SpatialFunction::X,
+    SpatialFunction::Y,
+    SpatialFunction::IsSimple,
+    SpatialFunction::Touches,
+    SpatialFunction::Crosses,
+    SpatialFunction::Overlaps,
+    SpatialFunction::HausdorffDistance,
+    SpatialFunction::FrechetDistance,
+    SpatialFunction::AsGeoJson,
 ];
 
 /// Le funzioni spatial qualificate su `MariaDB`.
@@ -158,6 +176,23 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
+    // Le otto presenti su **entrambe** le major, dalle ventisei mai chieste.
+    //
+    // `CoveredBy` resta fuori, ed e la seconda divergenza fra le due major di
+    // questo prodotto: la 12.3 ce l'ha, la 11.8 LTS no. Stessa regola di
+    // `IsValid` — la lista e l'intersezione, perche una capability e una
+    // promessa a chi non sa su quale minor atterrera.
+    //
+    // `Relate` c'e qui e non su `MySQL`, e `HausdorffDistance` e
+    // `FrechetDistance` il contrario.
+    SpatialFunction::X,
+    SpatialFunction::Y,
+    SpatialFunction::IsSimple,
+    SpatialFunction::Touches,
+    SpatialFunction::Crosses,
+    SpatialFunction::Overlaps,
+    SpatialFunction::Relate,
+    SpatialFunction::AsGeoJson,
 ];
 
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
@@ -1216,7 +1251,7 @@ mod tests {
         let mut spatial = base_query();
         spatial.projection = vec![QueryProjection {
             expression: QueryExpression::Spatial {
-                function: SpatialFunction::AsGeoJson,
+                function: SpatialFunction::NRings,
                 arguments: vec![column("geom")],
             },
             alias: None,
@@ -1596,7 +1631,7 @@ mod tests {
         let mut spatial_on = joined_query();
         spatial_on.joins[0].on = Some(equality(
             QueryExpression::Spatial {
-                function: SpatialFunction::AsGeoJson,
+                function: SpatialFunction::NRings,
                 arguments: vec![qualified("a", "geom")],
             },
             qualified("e", "geom"),
@@ -2786,7 +2821,7 @@ mod tests {
             windowed_query(scalar_window(
                 ScalarFunction::Sum,
                 vec![QueryExpression::Spatial {
-                    function: SpatialFunction::AsGeoJson,
+                    function: SpatialFunction::NRings,
                     arguments: vec![qualified("e", "geom")],
                 }],
                 Vec::new(),

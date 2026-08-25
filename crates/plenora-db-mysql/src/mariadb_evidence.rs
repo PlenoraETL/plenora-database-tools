@@ -5967,10 +5967,10 @@ async fn spatial_function_probe(
     for statement in [
         format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_FN}"),
         format!(
-            "CREATE TABLE {SCRATCH_SPATIAL_FN} (id INT NOT NULL PRIMARY KEY, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE = InnoDB"
+            "CREATE TABLE {SCRATCH_SPATIAL_FN} (id INT NOT NULL PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE = InnoDB"
         ),
         format!(
-            "INSERT INTO {SCRATCH_SPATIAL_FN} VALUES (1, ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))"
+            "INSERT INTO {SCRATCH_SPATIAL_FN} VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))"
         ),
     ] {
         connection
@@ -6027,7 +6027,10 @@ async fn cross_spatial_function(
         .find(|count| function.accepts_argument_count(*count))
         .unwrap_or(1);
     let mut reason = String::new();
-    for field in ["line", "poly"] {
+    // Tre geometrie, non due. `ST_X` vuole un punto e su una linea fallisce
+    // per il dato, non per il motore: la stessa falsa assenza che `ST_Area` su
+    // una `LINESTRING` aveva quasi fatto registrare.
+    for field in ["point", "line", "poly"] {
         let arguments: Vec<QueryExpression> = (0..arity)
             .map(|index| {
                 if function.takes_geometry_at(index) {
