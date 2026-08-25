@@ -155,6 +155,17 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # condividono un solo `DialectKind`, e questa sonda misura la differenza
     # invece di dedurla dalla documentazione.
     "raw.returning_forms": "quali forme di RETURNING il server accetta, e quali righe rende",
+    # La stessa domanda, posta al **percorso** invece che al server:
+    # `execute_portable_returning` compila per `tx.provider_kind()` e esegue,
+    # quindi attraversa la tabella dialetto-forma e il decoder delle righe.
+    #
+    # Osservativa e non necessaria perche l'esito atteso **diverge per
+    # prodotto** — su MySQL il rifiuto e la misura giusta, su MariaDB lo sono
+    # le righe — e questi inventari esprimono un esito solo, uguale per tutti i
+    # riferimenti. Chiedere `accepted` la renderebbe rossa su MySQL, chiedere
+    # `rejected` su MariaDB: entrambe direbbero il falso su meta della matrice.
+    # La divergenza resta visibile nel documento, che e dove serve.
+    "provider.profile_portable_returning": "il facade portable, sul prodotto che risponde",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -277,6 +288,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_delete_by_keys_rollback",
     "provider.profile_write_delete_by_keys_cancellation",
     "provider.profile_timeout",
+    "provider.profile_portable_returning",
 )
 
 

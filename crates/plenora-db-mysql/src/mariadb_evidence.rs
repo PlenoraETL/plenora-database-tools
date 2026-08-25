@@ -5577,6 +5577,128 @@ async fn profile_probes(
     update_write_probes(recorder, profile, &schema_name, cancellation).await;
     remaining_write_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
+    portable_returning_probe(recorder, &pool, cancellation).await;
+}
+
+/// La tabella su cui il facade prova `RETURNING`.
+const SCRATCH_PORTABLE: &str = "plenora_driver_evidence_portable";
+
+/// Il facade portable, attraversato con il profilo del prodotto che risponde.
+///
+/// `raw.returning_forms` misura il **server**: quali forme accetta e quali
+/// righe rende, con lo statement scritto a mano. Questa misura il **percorso**:
+/// `execute_portable_returning` compila l'AST per `tx.provider_kind()` e lo
+/// esegue, quindi attraversa `compile_returning`, la tabella dialetto-forma e
+/// il decoder delle righe.
+///
+/// Le due domande sembrano la stessa e non lo sono, e la differenza si vedeva
+/// bene fino a poco fa: il server `MariaDB` accettava `INSERT ... RETURNING`
+/// mentre `compile_portable` rifiutava `ProviderKind::Mariadb` per intero, e
+/// una sonda sul solo server avrebbe detto «disponibile» di una superficie che
+/// nessun chiamante poteva raggiungere.
+///
+/// L'esito atteso diverge per prodotto, ed e il punto: su `MySQL` il rifiuto e
+/// la misura giusta, su `MariaDB` lo sono le righe.
+// La transazione vive fino al `rollback` che la consuma: e proprio cio che il
+// lint vorrebbe accorciare, e l'unica alternativa sarebbe lasciarla cadere
+// senza chiuderla, restituendo al pool una sessione con una transazione
+// aperta.
+#[allow(clippy::significant_drop_tightening)]
+async fn portable_returning_probe(
+    recorder: &mut Recorder,
+    pool: &crate::MysqlPool,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::portable::{
+        Expression, InsertStatement, PortableStatement, TableRef,
+    };
+
+    let mut connection = open_connection().await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_PORTABLE}"),
+        format!(
+            "CREATE TABLE {SCRATCH_PORTABLE} (id INT NOT NULL PRIMARY KEY, \
+             payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella del facade portable: harness, non divergenza");
+    }
+
+    let question = "il facade portable compila ed esegue un RETURNING sul prodotto che risponde";
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new(SCRATCH_PORTABLE),
+        columns: vec!["id".to_owned(), "payload".to_owned()],
+        values: vec![vec![
+            Expression::literal(plenora_database_core::provider::ParameterValue::I32(1)),
+            Expression::literal(plenora_database_core::provider::ParameterValue::String(
+                "portable".to_owned(),
+            )),
+        ]],
+        returning: vec!["id".to_owned()],
+    });
+
+    let outcome = async {
+        let session = pool.checkout(cancellation).await?;
+        let mut transaction = Box::new(
+            crate::transaction::MysqlTransaction::begin(
+                session,
+                &TransactionOptions::default(),
+                cancellation,
+            )
+            .await?,
+        );
+        let rows = plenora_database_core::facade::execute_portable_returning(
+            transaction.as_mut(),
+            &statement,
+            cancellation,
+        )
+        .await;
+        // Il rollback vale in entrambi i rami: la tabella la butta via la
+        // sonda, ma lasciare una transazione aperta sulla sessione la
+        // restituirebbe al pool sporca. `rollback` consuma un `Box<Self>`,
+        // che e il modo in cui il contratto impedisce di usare una
+        // transazione dopo averla chiusa.
+        let _ = transaction.rollback(cancellation).await;
+        rows
+    }
+    .await;
+
+    match outcome {
+        Ok(rows) => recorder.accepted(
+            "provider.profile_portable_returning",
+            "provider",
+            "profilo",
+            question,
+            format!("righe={} valori={:?}", rows.len(), first_cell(&rows)),
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_portable_returning",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            None,
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_PORTABLE}"))
+        .await;
+}
+
+/// La prima cella della prima riga, per il dettaglio della sonda.
+fn first_cell(rows: &[plenora_database_core::row::Row]) -> String {
+    rows.first().map_or_else(
+        || "nessuna riga".to_owned(),
+        |row| {
+            row.values()
+                .first()
+                .map_or_else(|| "riga vuota".to_owned(), |value| format!("{value:?}"))
+        },
+    )
 }
 
 /// L'indice funzionale: prima si prova a crearlo, poi si guarda come il

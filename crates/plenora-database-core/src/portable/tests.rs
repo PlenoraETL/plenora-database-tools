@@ -545,3 +545,129 @@ fn insert_arity_mismatch_is_rejected() {
     });
     assert!(compile_portable(ProviderKind::Postgres, &stmt).is_err());
 }
+
+// === MariaDB: un prodotto diverso, e una sola divergenza misurata ===========
+
+/// Uno statement banale, per chiedere solo del dialetto.
+fn mariadb_insert(returning: Vec<String>) -> PortableStatement {
+    PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("t"),
+        columns: vec!["a".into()],
+        values: vec![vec![Expression::literal(ParameterValue::I32(1))]],
+        returning,
+    })
+}
+
+/// Il compilatore accetta `MariaDB`, che prima finiva nel ramo di scarto.
+///
+/// Non e un dettaglio di copertura: `compile_portable` e cio che sta sotto
+/// `execute_portable` e `query_portable`, quindi finche `Mariadb` cadeva nel
+/// `other` l'intero strato facade era irraggiungibile su un provider che
+/// questo repository pubblica — e falliva in prepare, con un messaggio che
+/// diceva «non supportato» di una cosa che nessuno aveva deciso di non
+/// supportare.
+#[test]
+fn mariadb_compiles_with_the_mysql_syntax() {
+    let compiled = compile_portable(ProviderKind::Mariadb, &mariadb_insert(Vec::new()))
+        .expect("MariaDB e un dialetto del compilatore");
+    assert_eq!(compiled.sql, "INSERT INTO `t` (`a`) VALUES (?)");
+    // Il segnaposto e `?`, non `$1`: dove i due prodotti si somigliano, si
+    // somigliano davvero.
+    let mysql = compile_portable(ProviderKind::Mysql, &mariadb_insert(Vec::new())).expect("MySQL");
+    assert_eq!(compiled.sql, mysql.sql);
+}
+
+/// `RETURNING` su `MySQL` e chiuso su **ogni** forma, e il messaggio non cita
+/// una versione che non esiste.
+#[test]
+fn mysql_refuses_returning_on_every_form() {
+    let error = compile_portable(ProviderKind::Mysql, &mariadb_insert(vec!["id".into()]))
+        .expect_err("MySQL non ha RETURNING");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    // Il messaggio diceva «solo 8.0.20+ per INSERT», che e falso: interrogato
+    // con le cinque forme, MySQL 9.7 risponde 1064 a tutte.
+    assert!(
+        !error.message.contains("8.0.20"),
+        "il messaggio cita una versione che non c'entra: {}",
+        error.message
+    );
+}
+
+/// Su `MariaDB` `RETURNING` dipende dalla **forma**, e la tabella e quella
+/// misurata sui riferimenti: aperta su `INSERT`, `DELETE` e upsert, chiusa
+/// sull'`UPDATE`, che il server rifiuta con un errore di sintassi.
+#[test]
+fn mariadb_returning_follows_the_measured_form_table() {
+    let insert = compile_portable(ProviderKind::Mariadb, &mariadb_insert(vec!["id".into()]))
+        .expect("INSERT ... RETURNING e misurato aperto");
+    assert_eq!(
+        insert.sql,
+        "INSERT INTO `t` (`a`) VALUES (?) RETURNING `id`"
+    );
+
+    let delete = compile_portable(
+        ProviderKind::Mariadb,
+        &PortableStatement::Delete(DeleteStatement {
+            table: TableRef::new("t"),
+            filter: Some(eq("a", ParameterValue::I32(1))),
+            returning: vec!["id".into()],
+        }),
+    )
+    .expect("DELETE ... RETURNING e misurato aperto");
+    assert_eq!(delete.sql, "DELETE FROM `t` WHERE `a` = ? RETURNING `id`");
+
+    let upsert = compile_portable(
+        ProviderKind::Mariadb,
+        &PortableStatement::Upsert(UpsertStatement {
+            table: TableRef::new("t"),
+            columns: vec!["a".into()],
+            values: vec![vec![Expression::literal(ParameterValue::I32(1))]],
+            conflict_target: vec!["a".into()],
+            update_on_conflict: vec![("a".into(), Expression::literal(ParameterValue::I32(2)))],
+            returning: vec!["id".into()],
+        }),
+    )
+    .expect("l'upsert rende le righe su entrambi i rami, misurato");
+    assert!(
+        upsert.sql.ends_with(" RETURNING `id`"),
+        "l'upsert perde la clausola: {}",
+        upsert.sql
+    );
+
+    let error = compile_portable(
+        ProviderKind::Mariadb,
+        &PortableStatement::Update(UpdateStatement {
+            table: TableRef::new("t"),
+            assignments: vec![("a".into(), Expression::literal(ParameterValue::I32(2)))],
+            filter: None,
+            returning: vec!["id".into()],
+        }),
+    )
+    .expect_err("UPDATE ... RETURNING e l'unica forma che MariaDB rifiuta");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert!(
+        error.message.contains("UPDATE"),
+        "il rifiuto non dice quale forma: {}",
+        error.message
+    );
+}
+
+/// Il rifiuto dell'`UPDATE` non e un rifiuto del `RETURNING` in generale.
+///
+/// La distinzione conta perche il modo piu semplice di scrivere questa
+/// funzione — una bandiera sul dialetto — le avrebbe confuse, e avrebbe
+/// chiuso tre forme che il server accetta per colpa della quarta.
+#[test]
+fn mariadb_update_without_returning_still_compiles() {
+    let compiled = compile_portable(
+        ProviderKind::Mariadb,
+        &PortableStatement::Update(UpdateStatement {
+            table: TableRef::new("t"),
+            assignments: vec![("a".into(), Expression::literal(ParameterValue::I32(2)))],
+            filter: None,
+            returning: Vec::new(),
+        }),
+    )
+    .expect("un UPDATE senza RETURNING non ha niente di divergente");
+    assert_eq!(compiled.sql, "UPDATE `t` SET `a` = ?");
+}

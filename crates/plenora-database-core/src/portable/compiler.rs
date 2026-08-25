@@ -1,12 +1,18 @@
-//! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL` e
-//! `MySQL` (parity essenziale — v1.2 base senza `RETURNING` / senza
-//! spatial `DWithin`). Altri provider (`SQL Server`, `Oracle`) fail-closed.
+//! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL`, `MySQL`
+//! e `MariaDB`; gli altri provider (`SQL Server`, `Oracle`) fail-closed.
 //!
 //! Design: unico compile pass con `DialectKind` dispatch sui punti dove
 //! il dialect diverge (placeholder `$N` vs `?`, quoting `"` vs `` ` ``,
-//! `ON CONFLICT` vs `ON DUPLICATE KEY UPDATE`, `RETURNING` vs no `RETURNING`,
-//! spatial `ST_GeomFromEWKB` vs `ST_GeomFromWKB`). Le funzioni comuni
-//! (`predicate`, `expression`, `projection`, `order_by`, ecc.) sono uniche.
+//! `ON CONFLICT` vs `ON DUPLICATE KEY UPDATE`, `RETURNING` dove il prodotto
+//! **e la forma** lo ammettono, spatial `ST_GeomFromEWKB` vs
+//! `ST_GeomFromWKB`). Le funzioni comuni (`predicate`, `expression`,
+//! `projection`, `order_by`, ecc.) sono uniche.
+//!
+//! `MariaDB` e arrivato dopo, e finche non e arrivato finiva nel ramo di
+//! scarto: l'intero strato facade era irraggiungibile su un provider che
+//! questo repository pubblica. La sua unica divergenza misurata da `MySQL` e
+//! `RETURNING`, che `MySQL` non ha a nessuna versione e `MariaDB` ammette su
+//! ogni forma di scrittura tranne `UPDATE`.
 
 use super::{
     DeleteStatement, Direction, Expression, InsertStatement, Nulls, OrderBy, PortableStatement,
@@ -33,6 +39,13 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
     let dialect = match kind {
         ProviderKind::Postgres => DialectKind::Postgres,
         ProviderKind::Mysql => DialectKind::Mysql,
+        // `Mariadb` finiva nel ramo di scarto, quindi l'intero strato facade
+        // era irraggiungibile su un provider che questo repository pubblica:
+        // ogni `execute_portable` e ogni `query_portable` fallivano in prepare
+        // con «compile_portable non supportato per Mariadb». Non era una
+        // decisione, era il default di un `match` scritto quando il provider
+        // non esisteva.
+        ProviderKind::Mariadb => DialectKind::Mariadb,
         other => {
             return Err(DatabaseError::unsupported(
                 other,
@@ -59,6 +72,44 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
 enum DialectKind {
     Postgres,
     Mysql,
+    /// La sintassi di `MySQL`, tranne dove i due prodotti divergono davvero.
+    ///
+    /// Oggi la divergenza e una sola — `RETURNING` — e potrebbe sembrare che
+    /// una bandiera dentro `DialectKind::Mysql` sarebbe bastata. Sarebbe
+    /// bastata a scrivere il codice, non a leggerlo: `MariaDB` e un prodotto
+    /// diverso, e la prossima divergenza si presenta come una seconda
+    /// bandiera dentro un dialetto che nel nome dichiara di essere di
+    /// qualcun altro. Il costo di una variante e un `match` in piu; il costo
+    /// dell'alternativa e non sapere piu di chi si sta parlando.
+    Mariadb,
+}
+
+/// La forma di scrittura a cui la clausola `RETURNING` si attacca.
+///
+/// Serve perche su `MariaDB` `RETURNING` **non** e una proprieta del dialetto:
+/// e una proprieta della coppia dialetto-forma. Il server accetta la clausola
+/// su `INSERT`, `REPLACE`, `DELETE` e sull'upsert, e la rifiuta su `UPDATE`
+/// con un errore di sintassi. Passare solo il dialetto costringerebbe a
+/// scegliere fra aprire anche l'`UPDATE`, che fallirebbe sul server, e
+/// chiudere anche le altre tre, che funzionano.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReturningForm {
+    Insert,
+    Update,
+    Delete,
+    Upsert,
+}
+
+impl ReturningForm {
+    /// Il nome della forma, per il messaggio di rifiuto.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Insert => "INSERT",
+            Self::Update => "UPDATE",
+            Self::Delete => "DELETE",
+            Self::Upsert => "l'upsert",
+        }
+    }
 }
 
 struct CompileContext {
@@ -80,7 +131,10 @@ impl CompileContext {
         self.params.push(value);
         match self.dialect {
             DialectKind::Postgres => format!("${}", self.params.len()),
-            DialectKind::Mysql => "?".to_owned(),
+            // Il segnaposto e il primo punto in cui MariaDB e MySQL: la lista
+            // di cio che i due condividono e lunga, e ogni riga di questo file
+            // che li tratta insieme e una riga in cui si somigliano davvero.
+            DialectKind::Mysql | DialectKind::Mariadb => "?".to_owned(),
         }
     }
 }
@@ -98,7 +152,8 @@ impl From<DialectKind> for IdentifierDialect {
     fn from(kind: DialectKind) -> Self {
         match kind {
             DialectKind::Postgres => Self::Postgres,
-            DialectKind::Mysql => Self::Mysql,
+            // Il quoting: backtick raddoppiato, identico sui due prodotti.
+            DialectKind::Mysql | DialectKind::Mariadb => Self::Mysql,
         }
     }
 }
@@ -225,7 +280,12 @@ fn compile_spatial(
     let col = quote_identifier(column, ctx.dialect)?;
     match ctx.dialect {
         DialectKind::Postgres => compile_spatial_postgres(&col, predicate, reference, ctx),
-        DialectKind::Mysql => compile_spatial_mysql(&col, predicate, reference, ctx),
+        // `ST_GeomFromWKB` e i predicati spatial: nessuna divergenza misurata
+        // fra i due prodotti — `raw.spatial_functions` ha registrato lo stesso
+        // esito sui tre riferimenti.
+        DialectKind::Mysql | DialectKind::Mariadb => {
+            compile_spatial_mysql(&col, predicate, reference, ctx)
+        }
     }
 }
 
@@ -375,29 +435,67 @@ fn compile_order_by(order_by: &[OrderBy], dialect: DialectKind) -> Result<String
     Ok(parts?.join(", "))
 }
 
-fn compile_returning(returning: &[String], dialect: DialectKind) -> Result<String> {
+/// La clausola `RETURNING`, dove il prodotto e la forma la ammettono.
+///
+/// # Cosa dicevano le due righe di prima
+///
+/// «`MySQL` non ha `RETURNING` universale (solo 8.0.20+ per `INSERT`)». La
+/// prima meta era vera, la seconda no: `MySQL` non ha `RETURNING` a nessuna
+/// versione, e la 8.0.20 citata li non c'entra. Interrogato con le cinque
+/// forme, `MySQL 9.7` risponde `1064` a tutte — `INSERT`, `REPLACE`, `UPDATE`,
+/// `DELETE` e l'upsert.
+///
+/// A confondere le acque e che `MariaDB` ce l'ha, e i due prodotti
+/// condividevano un solo dialetto. `MariaDB 11` e `MariaDB 12`, misurate dalla
+/// stessa sonda, rendono le righe su `INSERT`, `REPLACE`, `DELETE` e su
+/// **entrambi** i rami dell'upsert — quello che inserisce e quello che
+/// aggiorna — e rispondono `1064` al solo `UPDATE`. Le due major danno la
+/// stessa riga di esiti.
+///
+/// Il rifiuto era quindi giusto per un prodotto e troppo largo per l'altro. La
+/// tabella qui sotto e quella misurata, non quella documentata: sull'upsert la
+/// documentazione di `MariaDB` dice il contrario di quello che il server fa, e
+/// questo file segue il server.
+fn compile_returning(
+    returning: &[String],
+    dialect: DialectKind,
+    form: ReturningForm,
+) -> Result<String> {
     if returning.is_empty() {
         return Ok(String::new());
     }
-    match dialect {
-        DialectKind::Postgres => {
-            let cols: Result<Vec<_>> = returning
-                .iter()
-                .map(|c| quote_identifier(c, dialect))
-                .collect();
-            Ok(format!(" RETURNING {}", cols?.join(", ")))
-        }
-        DialectKind::Mysql => {
-            // MySQL non ha RETURNING universale (solo 8.0.20+ per INSERT).
-            // Fail-closed esplicito invece di produrre SQL rotto.
-            Err(DatabaseError::unsupported(
-                ProviderKind::Mysql,
-                crate::ErrorPhase::Prepare,
-                "RETURNING non supportato dal compilatore portable MySQL. \
-                 Usa una SELECT esplicita post-DML.",
-            ))
-        }
+    let refusal = match dialect {
+        DialectKind::Postgres => None,
+        DialectKind::Mysql => Some((
+            ProviderKind::Mysql,
+            "RETURNING non esiste su MySQL, a nessuna versione e in nessuna forma. \
+             Usa una SELECT esplicita post-DML."
+                .to_owned(),
+        )),
+        DialectKind::Mariadb => match form {
+            ReturningForm::Insert | ReturningForm::Delete | ReturningForm::Upsert => None,
+            ReturningForm::Update => Some((
+                ProviderKind::Mariadb,
+                format!(
+                    "MariaDB non ammette RETURNING su {}: il server risponde con un errore di \
+                     sintassi. Le altre forme di scrittura lo ammettono.",
+                    form.label()
+                ),
+            )),
+        },
+    };
+    if let Some((kind, message)) = refusal {
+        return Err(DatabaseError::unsupported(
+            kind,
+            crate::ErrorPhase::Prepare,
+            message,
+        ));
     }
+    let cols: Result<Vec<_>> = returning
+        .iter()
+        .map(|c| quote_identifier(c, dialect))
+        .collect();
+    Ok(format!(" RETURNING {}", cols?.join(", ")))
 }
 
 // ---- Statement compilers ---------------------------------------------------
@@ -460,7 +558,11 @@ fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<Strin
         "INSERT INTO {table} ({cols_sql}) VALUES {}",
         rows?.join(", ")
     );
-    sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
+    sql.push_str(&compile_returning(
+        &s.returning,
+        ctx.dialect,
+        ReturningForm::Insert,
+    )?);
     Ok(sql)
 }
 
@@ -485,7 +587,11 @@ fn compile_update(s: &UpdateStatement, ctx: &mut CompileContext) -> Result<Strin
         let where_sql = compile_predicate(filter, ctx)?;
         write!(sql, " WHERE {where_sql}").expect("write String");
     }
-    sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
+    sql.push_str(&compile_returning(
+        &s.returning,
+        ctx.dialect,
+        ReturningForm::Update,
+    )?);
     Ok(sql)
 }
 
@@ -496,7 +602,11 @@ fn compile_delete(s: &DeleteStatement, ctx: &mut CompileContext) -> Result<Strin
         let where_sql = compile_predicate(filter, ctx)?;
         write!(sql, " WHERE {where_sql}").expect("write String");
     }
-    sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
+    sql.push_str(&compile_returning(
+        &s.returning,
+        ctx.dialect,
+        ReturningForm::Delete,
+    )?);
     Ok(sql)
 }
 
@@ -564,7 +674,10 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
                 write!(sql, " DO UPDATE SET {}", sets?.join(", ")).expect("write String");
             }
         }
-        DialectKind::Mysql => {
+        // `ON DUPLICATE KEY UPDATE` e `INSERT IGNORE`: stessa sintassi sui due
+        // prodotti. La divergenza dell'upsert non e qui, e in cosa il server
+        // consegna dopo — vedi `compile_returning`.
+        DialectKind::Mysql | DialectKind::Mariadb => {
             // MySQL: ON DUPLICATE KEY UPDATE. Il conflict_target NON è
             // esplicito in MySQL (usa la primary key / unique index
             // automatico) — accettiamo il campo per compat portable ma
@@ -590,6 +703,10 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
             }
         }
     }
-    sql.push_str(&compile_returning(&s.returning, ctx.dialect)?);
+    sql.push_str(&compile_returning(
+        &s.returning,
+        ctx.dialect,
+        ReturningForm::Upsert,
+    )?);
     Ok(sql)
 }
