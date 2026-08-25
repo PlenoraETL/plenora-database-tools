@@ -360,8 +360,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_savepoint_unknown_name",
     "provider.profile_write_spatial_create",
     "provider.profile_write_spatial_append",
-    "provider.profile_spatial_functions",
     "provider.profile_write_spatial_mixed",
+    "provider.profile_spatial_functions",
 )
 
 
