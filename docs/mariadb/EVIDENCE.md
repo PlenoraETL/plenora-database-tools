@@ -1555,3 +1555,93 @@ commit implicito, quindi il DDL sopravvive al rollback.
 * **la fase del rifiuto e `Write`**, per un `ROLLBACK TO` che una scrittura non
   e. Misurata uguale sui tre riferimenti, quindi non e una divergenza: e una
   classificazione da rivedere, non una differenza fra prodotti.
+
+## Quindicesima tranche: la colonna non porta il CRS, lo portano i valori
+
+La tredicesima ha aperto la lettura spatial con un CRS dichiarato dal chiamante
+e verificato valore per valore. Restava l'altra meta: scrivere. Ed era chiusa
+per la ragione giusta — «nessuna geometria e mai stata scritta attraverso il
+crate, e leggere un WKB che il server produce non dice nulla su cosa accetti in
+ingresso».
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| raw | scrittura | `raw.spatial_write_forms` | ddl=accettata, bind=accettato, srid=4326; legato[nudo=ok cast=ok senza_srid=3643] | ddl=**1064**, bind=accettato, srid=4326; legato[nudo=**4079** cast=ok senza_srid=**4079**] | **identico a MariaDB 12** |
+| provider | profilo | `provider.profile_write_spatial_create` | Committed — righe=2 srid=4326 | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_spatial_append` | Committed — righe=4 srid=4326 | **identico** | **identico** |
+
+### Cosa dice
+
+**Su `MariaDB` nessuna DDL puo vincolare una colonna a un sistema di
+riferimento.** `GEOMETRY SRID 4326` risponde 1064, come `REF_SYSTEM_ID` che la
+prima tranche aveva gia misurato. Non e una lacuna di questa misura: e la forma
+del prodotto.
+
+**Ma l'SRID non si perde: lo porta il valore.** `ST_GeomFromWKB(..., 4326)`
+memorizza una geometria il cui `ST_SRID` rende 4326, su entrambe le major. Ed e
+la meta che incastra con la tredicesima tranche: la lettura verifica il CRS
+valore per valore, quindi una colonna non vincolata resta descrivibile con
+onesta. Se la scrittura avesse perso il CRS, la lettura di questo stesso crate
+avrebbe rifiutato le righe appena scritte — e le due tranche si sarebbero
+contraddette a distanza di ore.
+
+**Un segnaposto non e un'espressione tipata.** E' la scoperta che ha richiesto
+due sonde per essere vista. `raw.spatial_write_forms` usava
+`ST_GeomFromWKB(ST_AsBinary(...), 4326)` — un valore il cui tipo il server
+conosce — e passava su tutti e tre. Il piano di scrittura lega un parametro, e
+li `MariaDB` risponde `4079`,
+`ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION`.
+
+Delle tre varianti misurate, `CAST(? AS BINARY)` e l'unica che entrambi i
+prodotti accettano, e su entrambi conserva l'SRID. Il rendering e percio
+**condiviso** e non una decisione del profilo: una forma sola che vale su tutti
+e due e meglio di due che divergono senza doverlo.
+
+### Cosa ne segue per il codice
+
+Due decisioni si spostano nel profilo, e una terza no.
+
+`geometry_column_ddl` rende la colonna vincolata dove si puo e nuda dove non si
+puo. Stava dentro una tabella di tipi, che e l'ultimo posto dove qualcuno
+cercherebbe una divergenza di prodotto.
+
+`geometry_target_srid_is_compatible` sostituisce il confronto `catalogo ==
+dichiarato`. Non erano la stessa domanda: dove la colonna e vincolata il
+catalogo deve portare **quell'**SRID; dove non puo esserlo, il catalogo tace e
+non c'e niente con cui confrontare. Il confronto secco falliva sempre sul
+secondo — `None` non e mai uguale a `Some(4326)` — e teneva chiusa la scrittura
+spatial con una riga di codice, prima ancora che con una bandiera.
+
+Il `CAST` invece resta condiviso, per la ragione detta sopra.
+
+### Sull'ordine, che qui non e quello solito
+
+`write_spatial_is_qualified` e insieme la capability pubblicata **e** il
+cancello che il piano consulta: una sola origine, per scelta dichiarata, cosi
+nessun profilo puo negare `write_wkb` e accettare comunque la compilazione. La
+conseguenza e che finche era `false` nessuna sonda poteva attraversare il
+percorso — `compile_write_column` si ferma prima.
+
+Prove e apertura sono percio arrivate insieme, e la campagna e cio che le ha
+rese vere. Non e una formalita: nei primi tre giri e stata rossa, e ogni volta
+per un difetto diverso — lo schema della sonda senza `plenora.contract.version`,
+il preflight che applicava alla scrittura la regola della lettura, e il
+segnaposto non tipato. Se fosse rimasta rossa, la bandiera sarebbe tornata giu
+con lei.
+
+### Cosa resta not_measured
+
+* **la dichiarazione `exact`**: le sonde girano su geometrie `mixed`, dove il
+  tipo geometrico non compare. `writable_geometry_type` rinvia all'insieme di
+  `MySQL` — sono nomi OGC, non una tabella di prodotto — ma nessuna sonda ha
+  scritto una colonna dichiarata `exact` su questo prodotto, e la nota sta
+  accanto al metodo che lo deciderebbe.
+* **`create_spatial_index`**: `SpatialCapabilities::spatial_index` resta chiusa
+  su entrambi i profili, e nessuna sonda ha creato un indice spaziale. Il nome
+  e scritto per intero per la stessa ragione della tredicesima tranche:
+  `spatial` e gia il prefisso di una superficie di sonde, e una guardia del
+  self-test pretende che ogni identificatore con quel prefisso corrisponda a
+  una sonda esistente.
+* **le dimensioni oltre XY**: invariato dalla tredicesima.
