@@ -231,6 +231,20 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # disegno: se `ST_Envelope` di una geometria 4326 rendesse zero, non ci
     # sarebbe niente da verificare valore per valore.
     "raw.geometry_result_forms": "cosa esce da una funzione che restituisce geometria",
+    # Le due superfici spatial rimaste, e sono chiuse per ragioni diverse.
+    #
+    # `exact` e una forma che il piano ammette e che nessuna sonda ha
+    # attraversato: tutte le scritture di questo documento girano su `mixed`, e
+    # `writable_geometry_type` su MariaDB rinvia all'insieme di MySQL con un
+    # argomento — sono nomi OGC — invece che con una prova.
+    #
+    # Le dimensioni oltre XY sono probabilmente assenti dal prodotto: `ST_Z` e
+    # `ST_M` sono gia risultate assenti da entrambi. Ma le funzioni di accesso e
+    # il supporto alle coordinate sono due cose diverse, e misurarlo trasforma
+    # un «non misurato» in un fatto — che e cio che il documento dovrebbe poter
+    # dire di ogni bandiera chiusa.
+    "raw.exact_geometry_column": "una colonna tipata accetta il proprio tipo",
+    "raw.geometry_dimensions": "quali profili dimensionali il parser accetta",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -305,6 +319,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.spatial_index_forms",
     "raw.spatial_candidate_functions",
     "raw.geometry_result_forms",
+    "raw.exact_geometry_column",
+    "raw.geometry_dimensions",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",

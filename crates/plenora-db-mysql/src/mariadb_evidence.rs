@@ -110,6 +110,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     spatial_index_probe(recorder, connection).await;
     spatial_candidates_probe(recorder, connection).await;
     geometry_result_probe(recorder, connection).await;
+    exact_and_dimension_probe(recorder, connection).await;
 }
 
 /// La tabella su cui si misura la scrittura spatial.
@@ -5729,6 +5730,120 @@ async fn profile_probes(
         )
         .await;
     }
+}
+
+/// Le due superfici spatial rimaste: la dichiarazione `exact` e le dimensioni.
+///
+/// # La dichiarazione `exact`
+///
+/// Il contratto `GeoArrow` ammette due forme: `mixed`, dove la colonna e
+/// `GEOMETRY` e regge tipi diversi, e `exact`, dove il tipo e uno solo e la
+/// colonna lo dichiara — `POINT`, `POLYGON`. Tutte le sonde di scrittura di
+/// questo documento girano su `mixed`, quindi `exact` e una forma che il piano
+/// ammette e che nessuna misura ha attraversato.
+///
+/// Conta perche `writable_geometry_type` su `MariaDB` rinvia all'insieme di
+/// `MySQL`, e quel rinvio e sostenuto da un argomento — sono nomi OGC, non una
+/// tabella di prodotto — non da una prova.
+///
+/// # Le dimensioni
+///
+/// Il piano rifiuta ogni geometria che non sia XY, e la bandiera pubblica
+/// `dimensions: [xy]`. La sonda delle candidate ha gia trovato `ST_Z` e `ST_M`
+/// **assenti** da entrambi i prodotti, il che e un indizio forte; ma le
+/// funzioni di accesso e il supporto alle coordinate sono due cose diverse, e
+/// un prodotto potrebbe memorizzare una Z che non sa rendere.
+///
+/// Qui si chiede al parser: `POINT Z(1 2 3)` in WKT, e la dimensione che il
+/// server attribuisce a cio che ne esce. Se il parser rifiuta, la chiusura
+/// smette di essere «non misurata» e diventa un fatto del prodotto — che e cio
+/// che il documento dovrebbe poter dire di ogni bandiera chiusa.
+async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    let table = "plenora_driver_evidence_exact";
+
+    // --- la colonna tipata ---------------------------------------------
+    let mut measured = Vec::new();
+    for (name, ddl, value) in [
+        (
+            "point",
+            format!("CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape POINT NOT NULL) ENGINE = InnoDB"),
+            "ST_GeomFromText('POINT(1 1)')",
+        ),
+        (
+            "polygon",
+            format!("CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape POLYGON NOT NULL) ENGINE = InnoDB"),
+            "ST_GeomFromText('POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))')",
+        ),
+        (
+            "point_con_poligono",
+            format!("CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape POINT NOT NULL) ENGINE = InnoDB"),
+            "ST_GeomFromText('POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))')",
+        ),
+    ] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+        let verdict = match connection.query_drop(ddl).await {
+            Err(error) => server_code(&error)
+                .map_or_else(|| "ddl rifiutata".to_owned(), |code| format!("ddl={code}")),
+            Ok(()) => {
+                match connection
+                    .query_drop(format!(
+                        "INSERT INTO {table} (id, shape) VALUES (1, {value})"
+                    ))
+                    .await
+                {
+                    Ok(()) => "ok".to_owned(),
+                    Err(error) => server_code(&error).map_or_else(
+                        || "insert rifiutato".to_owned(),
+                        |code| format!("insert={code}"),
+                    ),
+                }
+            }
+        };
+        measured.push(format!("{name}={verdict}"));
+    }
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await;
+
+    recorder.accepted(
+        "raw.exact_geometry_column",
+        "raw",
+        "scrittura",
+        "una colonna tipata accetta il proprio tipo e rifiuta gli altri",
+        measured.join(" "),
+    );
+
+    // --- le dimensioni --------------------------------------------------
+    let mut dimensions = Vec::new();
+    for (name, expression) in [
+        ("xy", "ST_GeomFromText('POINT(1 2)')"),
+        ("xyz", "ST_GeomFromText('POINT Z(1 2 3)')"),
+        ("xyz_compatto", "ST_GeomFromText('POINTZ(1 2 3)')"),
+        ("xym", "ST_GeomFromText('POINT M(1 2 3)')"),
+    ] {
+        let verdict = match connection
+            .query_first::<Option<i64>, _>(format!("SELECT ST_Dimension({expression})"))
+            .await
+        {
+            Ok(Some(Some(value))) => format!("dimensione={value}"),
+            Ok(Some(None)) => "null".to_owned(),
+            Ok(None) => "nessuna riga".to_owned(),
+            Err(error) => {
+                server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
+            }
+        };
+        dimensions.push(format!("{name}={verdict}"));
+    }
+
+    recorder.accepted(
+        "raw.geometry_dimensions",
+        "raw",
+        "spatial",
+        "quali profili dimensionali il parser del server accetta",
+        dimensions.join(" "),
+    );
 }
 
 /// Cosa esce da una funzione che **restituisce** una geometria.
