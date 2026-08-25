@@ -48,8 +48,11 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "DataFlow_Test_2026!"
       MSSQL_PID: Developer
+    # Loopback esplicito: l'account `sa` di questo fixture ha una password
+    # versionata, e senza indirizzo Compose la pubblicherebbe su 0.0.0.0.
+    # Stessa forma gia usata dai fixture MySQL e MariaDB.
     ports:
-      - "1433:1433"
+      - "127.0.0.1:1433:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
       - sqlserver_tls:/var/opt/mssql/tls:ro

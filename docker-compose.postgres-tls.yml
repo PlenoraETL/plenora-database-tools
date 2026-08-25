@@ -5,7 +5,7 @@ name: plenora-postgres-tls
 
 services:
   postgres-tls-certgen:
-    image: postgis/postgis:16-3.4
+    image: postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
     container_name: dataflow-postgres-tls-certgen
     entrypoint: ["/bin/bash", "-ec"]
     command:
@@ -44,7 +44,7 @@ services:
     restart: "no"
 
   postgres-tls:
-    image: postgis/postgis:16-3.4
+    image: postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
     container_name: dataflow-postgres-tls
     depends_on:
       postgres-tls-certgen:
@@ -53,8 +53,9 @@ services:
       POSTGRES_USER: dataflow_tls
       POSTGRES_PASSWORD: dataflow_tls_test_2026
       POSTGRES_DB: dataflow_tls_test
+    # Loopback esplicito: vedi la nota in docker-compose.postgres.yml.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_tls_data:/var/lib/postgresql/data
       - postgres_tls_certs:/tls:ro
