@@ -127,6 +127,13 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     # dove non si crea non deve comparire.
     "provider.profile_functional_index": "il catalogo descrive gli indici, e li descrive come sono",
     "provider.profile_generated_index": "il catalogo descrive la colonna generata e il suo indice",
+    "provider.profile_savepoint_partial_rollback": "transactions.savepoints: il rollback parziale annulla solo cio che e venuto dopo",
+    "provider.profile_write_append": "writes.append: Append",
+    "provider.profile_write_create": "writes.create: Create",
+    "provider.profile_write_delete_by_keys": "writes.delete_by_keys: cancella cio che trova e salta cio che non trova",
+    "provider.profile_write_replace": "writes.replace: svuota il target e ci mette le righe in ingresso",
+    "provider.profile_write_update": "writes.update: aggiorna cio che trova, salta cio che non trova, non inserisce",
+    "provider.profile_write_upsert": "writes.upsert: aggiorna cio che c'e, inserisce cio che non c'e, e non scompone cio che non sa",
 }
 
 # Le sonde che **osservano** e basta: nessuna capability pubblicata poggia su
@@ -209,6 +216,19 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
     "provider.profile_upsert_on_primary_key": "l'Upsert rifiuta un secondo indice unico",
     "provider.profile_upsert_on_generated_key": "l'Upsert rifiuta le keys che non ancorano da sole",
     "provider.profile_upsert_generated_anchor": "l'Upsert rifiuta di scrivere una colonna generata",
+    "provider.profile_savepoint_unknown_name": "transactions.savepoints: un nome mai creato viene rifiutato",
+    "provider.profile_write_append_cancellation": "writes.append: la cancellazione non lascia righe e il provider resta usabile",
+    "provider.profile_write_append_rollback": "writes.append: il rollback annulla anche il primo batch",
+    "provider.profile_write_create_cancellation": "writes.create: la cancellazione non lascia righe, lascia la tabella, e il provider resta usabile",
+    "provider.profile_write_create_rollback": "writes.create: le righe tornano indietro e la tabella resta, dichiarate Partial",
+    "provider.profile_write_delete_by_keys_cancellation": "writes.delete_by_keys: la cancellazione non toglie righe, e il provider resta usabile",
+    "provider.profile_write_delete_by_keys_rollback": "writes.delete_by_keys: una chiave trattenuta fa tornare indietro l'intero batch",
+    "provider.profile_write_replace_cancellation": "writes.replace: la cancellazione non lascia il target vuoto",
+    "provider.profile_write_replace_rollback": "writes.replace: un fallimento non lascia il target vuoto",
+    "provider.profile_write_update_cancellation": "writes.update: la cancellazione lascia i valori di prima, e il provider resta usabile",
+    "provider.profile_write_update_rollback": "writes.update: il rollback rimette i valori di prima",
+    "provider.profile_write_upsert_cancellation": "writes.upsert: la cancellazione non applica nulla, e il provider resta usabile",
+    "provider.profile_write_upsert_rollback": "writes.upsert: il rollback annulla anche gli aggiornamenti del primo batch",
 }
 
 
@@ -368,97 +388,23 @@ def duplicate_probes(names: Iterable[str]) -> list[str]:
 # La `chiave` e la superficie qualificata; il valore dice cosa la sonda deve
 # rendere.
 QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
-    # I savepoint. `transactions.savepoints` e chiusa su questo profilo, e la
-    # ragione accanto alla bandiera non e «il prodotto non li ha» ma «nessuna
-    # sonda li ha toccati»: un savepoint dichiarato e non provato si scopre
-    # rotto durante un rollback parziale, cioe nel momento peggiore.
+    # Vuoto, e dichiarato: e la stessa forma di `OBSERVATION_ONLY_PROBES`.
     #
-    # Necessarie e non osservative, a differenza delle sonde del CRS: qui
-    # l'esito atteso e lo **stesso** sui tre riferimenti — entrambi i prodotti
-    # i savepoint ce l'hanno, e il crate li implementa una volta sola.
-    "provider.profile_savepoint_partial_rollback": (
-        "savepoints: il rollback parziale annulla solo cio che e venuto dopo",
-        "accepted",
-    ),
-    # Il rifiuto **e** la prova. Senza, la prima passerebbe anche su un motore
-    # che dice di si a qualunque `ROLLBACK TO`, e il chiamante crederebbe di
-    # aver annullato qualcosa che e ancora li.
-    "provider.profile_savepoint_unknown_name": (
-        "savepoints: un nome mai creato viene rifiutato",
-        "rejected",
-    ),
-    "provider.profile_write_append": (
-        "Append",
-        "accepted",
-    ),
-    "provider.profile_write_append_rollback": (
-        "Append: il rollback annulla anche il primo batch",
-        "rejected",
-    ),
-    "provider.profile_write_append_cancellation": (
-        "Append: la cancellazione non lascia righe e il provider resta usabile",
-        "rejected",
-    ),
-    "provider.profile_write_create": (
-        "Create",
-        "accepted",
-    ),
-    "provider.profile_write_create_rollback": (
-        "Create: le righe tornano indietro e la tabella resta, dichiarate Partial",
-        "rejected",
-    ),
-    "provider.profile_write_create_cancellation": (
-        "Create: la cancellazione non lascia righe, lascia la tabella, e il provider resta usabile",
-        "rejected",
-    ),
-    "provider.profile_write_update": (
-        "Update: aggiorna cio che trova, salta cio che non trova, non inserisce",
-        "accepted",
-    ),
-    "provider.profile_write_update_rollback": (
-        "Update: il rollback rimette i valori di prima",
-        "rejected",
-    ),
-    "provider.profile_write_update_cancellation": (
-        "Update: la cancellazione lascia i valori di prima, e il provider resta usabile",
-        "rejected",
-    ),
-    "provider.profile_write_upsert": (
-        "Upsert: aggiorna cio che c'e, inserisce cio che non c'e, e non scompone cio che non sa",
-        "accepted",
-    ),
-    "provider.profile_write_upsert_rollback": (
-        "Upsert: il rollback annulla anche gli aggiornamenti del primo batch",
-        "rejected",
-    ),
-    "provider.profile_write_upsert_cancellation": (
-        "Upsert: la cancellazione non applica nulla, e il provider resta usabile",
-        "rejected",
-    ),
-    "provider.profile_write_replace": (
-        "Replace: svuota il target e ci mette le righe in ingresso",
-        "accepted",
-    ),
-    "provider.profile_write_replace_rollback": (
-        "Replace: un fallimento non lascia il target vuoto",
-        "rejected",
-    ),
-    "provider.profile_write_replace_cancellation": (
-        "Replace: la cancellazione non lascia il target vuoto",
-        "rejected",
-    ),
-    "provider.profile_write_delete_by_keys": (
-        "DeleteByKeys: cancella cio che trova e salta cio che non trova",
-        "accepted",
-    ),
-    "provider.profile_write_delete_by_keys_rollback": (
-        "DeleteByKeys: una chiave trattenuta fa tornare indietro l'intero batch",
-        "rejected",
-    ),
-    "provider.profile_write_delete_by_keys_cancellation": (
-        "DeleteByKeys: la cancellazione non toglie righe, e il provider resta usabile",
-        "rejected",
-    ),
+    # Ci sono state venti sonde, e per un po' la distinzione era vera: le write
+    # mode di MariaDB erano chiuse, e una sonda che le attraversava qualificava
+    # una superficie che il contratto non prometteva ancora. Poi le sei mode si
+    # sono aperte una tranche alla volta, e i savepoint con la quattordicesima
+    # — ma le sonde sono rimaste qui, e il commento continuava a spiegare la
+    # distinzione con l'esempio di `writes.append`, «che e chiusa». Non lo era
+    # piu da sei tranche.
+    #
+    # Il verdetto ne usciva **piu debole del vero**: diceva «perde la sua
+    # qualifica» di prove che sostengono capability pubblicate, cioe promesse
+    # che il contratto fa a un consumatore.
+    #
+    # L'elenco resta perche la prossima superficie qualificata prima di essere
+    # aperta — la scrittura spatial, per dire — abbia dove stare **dichiarata**,
+    # invece di non stare da nessuna parte.
 }
 
 
