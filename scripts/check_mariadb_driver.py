@@ -166,6 +166,21 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # `rejected` su MariaDB: entrambe direbbero il falso su meta della matrice.
     # La divergenza resta visibile nel documento, che e dove serve.
     "provider.profile_portable_returning": "il facade portable, sul prodotto che risponde",
+    # Le tre domande sul CRS dichiarato. Osservative per la stessa ragione
+    # delle due qui sopra, e in modo ancora piu netto: su MySQL la lettura
+    # senza dichiarazione **riesce** — il catalogo l'SRID lo sa — e le altre
+    # due sono rifiutate perche la dichiarazione e di troppo; su MariaDB e
+    # l'esatto contrario. Un inventario che esprime un esito solo per tutti i
+    # riferimenti direbbe il falso su meta della matrice, qualunque esito
+    # scegliesse.
+    #
+    # La terza e quella che rende le altre due qualcosa: una dichiarazione
+    # creduta sulla parola darebbe lo stesso verde della seconda, e solo il
+    # rifiuto su valori che la smentiscono distingue «il provider ha
+    # verificato» da «il provider ha ripetuto».
+    "provider.profile_crs_undeclared": "una geometria senza CRS dichiarato",
+    "provider.profile_crs_declared": "una geometria con il CRS dichiarato giusto",
+    "provider.profile_crs_mismatched": "un CRS dichiarato che i valori smentiscono",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -289,6 +304,9 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_delete_by_keys_cancellation",
     "provider.profile_timeout",
     "provider.profile_portable_returning",
+    "provider.profile_crs_undeclared",
+    "provider.profile_crs_declared",
+    "provider.profile_crs_mismatched",
 )
 
 

@@ -5581,6 +5581,206 @@ async fn profile_probes(
     remaining_write_probes(recorder, profile, &schema_name, cancellation).await;
     profile_timeout_probe(recorder, profile, &pool, cancellation).await;
     portable_returning_probe(recorder, &pool, cancellation).await;
+    declared_crs_probe(recorder, profile, &schema_name, cancellation).await;
+}
+
+/// La tabella su cui si misura il CRS dichiarato.
+const SCRATCH_CRS: &str = "plenora_driver_evidence_crs";
+
+/// Il CRS dichiarato dal piano, attraversato dal percorso di lettura.
+///
+/// La decima tranche aveva chiuso lo spatial di questo prodotto con una ragione
+/// precisa — `GEOMETRY_COLUMNS.SRID` vale sempre zero, perche nessuna DDL puo
+/// vincolare una geometry a un sistema di riferimento — e aveva detto cosa
+/// servirebbe per riaprirlo: un CRS dichiarato dal chiamante e verificato
+/// valore per valore. Questa sonda misura quella forma.
+///
+/// # Tre domande, non una
+///
+/// **Una lettura senza dichiarazione resta rifiutata.** E' il caso che non deve
+/// cambiare: la dichiarazione apre una porta, non ne toglie una chiusa. Senza
+/// questa riga, un provider che smettesse di rifiutare pubblicherebbe un CRS
+/// che nessuno gli ha dato.
+///
+/// **Una lettura con la dichiarazione giusta consegna la geometria.** E' cio
+/// che apre la capability, ed e l'unica delle tre che potrebbe farlo.
+///
+/// **Una lettura con la dichiarazione sbagliata fallisce sui valori.** E' la
+/// meta che conta di piu, e la ragione per cui la seconda non basta: una
+/// dichiarazione creduta sulla parola darebbe lo stesso esito verde della
+/// seconda domanda. Solo la terza distingue «il provider ha verificato» da «il
+/// provider ha ripetuto quello che gli e stato detto».
+///
+/// Su `MySQL` le tre domande hanno risposte diverse, e va bene cosi: li il
+/// catalogo l'SRID lo sa, quindi la prima lettura riesce senza dichiarazioni e
+/// le altre due vengono rifiutate perche la dichiarazione e di troppo. La
+/// divergenza fra i prodotti e il fatto, non il difetto.
+async fn declared_crs_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::plan::DeclaredCrs;
+
+    let provider = MysqlProvider::with_profile(config(), 2, profile)
+        .expect("provider della misura: harness, non divergenza");
+    let mut connection = open_connection().await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_CRS}"),
+        format!(
+            "CREATE TABLE {SCRATCH_CRS} (id INT NOT NULL PRIMARY KEY, \
+             shape GEOMETRY NOT NULL) ENGINE = InnoDB"
+        ),
+        // Due righe, **stesso** SRID: e la tabella su cui la dichiarazione
+        // giusta deve riuscire. L'eterogeneita si misura sulla stessa tabella,
+        // dichiarando l'altro SRID.
+        format!(
+            "INSERT INTO {SCRATCH_CRS} (id, shape) VALUES \
+             (1, ST_GeomFromText('POINT(1 1)', 4326)), \
+             (2, ST_GeomFromText('POINT(2 2)', 4326))"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella del CRS dichiarato: harness, non divergenza");
+    }
+
+    let plan = |declared: Vec<DeclaredCrs>| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(schema_name.to_owned()),
+            object: SCRATCH_CRS.to_owned(),
+        },
+        projection: Vec::new(),
+        order_by: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        filter: None,
+        declared_crs: declared,
+    };
+    let declaring = |srid| {
+        vec![DeclaredCrs {
+            column: "shape".to_owned(),
+            srid,
+        }]
+    };
+
+    for (probe, question, declared, refusal_is_the_measure) in crs_cases(&declaring) {
+        record_crs_case(
+            recorder,
+            &provider,
+            profile,
+            probe,
+            question,
+            &plan(declared),
+            refusal_is_the_measure,
+            cancellation,
+        )
+        .await;
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_CRS}"))
+        .await;
+}
+
+/// Le tre domande, e per ciascuna se la misura sia il rifiuto o la lettura.
+fn crs_cases(
+    declaring: &impl Fn(u32) -> Vec<plenora_database_core::plan::DeclaredCrs>,
+) -> [(
+    &'static str,
+    &'static str,
+    Vec<plenora_database_core::plan::DeclaredCrs>,
+    bool,
+); 3] {
+    [
+        (
+            "provider.profile_crs_undeclared",
+            "una geometria senza CRS dichiarato resta rifiutata",
+            Vec::new(),
+            true,
+        ),
+        (
+            "provider.profile_crs_declared",
+            "una geometria con il CRS dichiarato giusto si legge",
+            declaring(4326),
+            false,
+        ),
+        (
+            "provider.profile_crs_mismatched",
+            "un CRS dichiarato che i valori smentiscono non passa",
+            declaring(3003),
+            true,
+        ),
+    ]
+}
+
+/// Registra una delle tre domande.
+#[allow(clippy::too_many_arguments)]
+async fn record_crs_case(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    probe: &'static str,
+    question: &'static str,
+    operation: &ReadOperation,
+    refusal_is_the_measure: bool,
+    cancellation: &CancellationToken,
+) {
+    {
+        let outcome = drain_read(
+            provider,
+            profile,
+            operation,
+            &ParameterBag::default(),
+            cancellation,
+        )
+        .await;
+        match (outcome, refusal_is_the_measure) {
+            (Ok(read), false) if read.rows == 2 => recorder.accepted(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                format!("righe={} batch={}", read.rows, read.batches),
+            ),
+            (Ok(read), false) => recorder.rejected(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                condense(&format!("attese 2 righe, lette {}", read.rows)),
+                None,
+            ),
+            (Ok(read), true) => recorder.accepted(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                format!("la lettura e riuscita lo stesso: righe={}", read.rows),
+            ),
+            (Err(error), true) if error.category == ErrorCategory::Crs => recorder.rejected(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                condense(&format!("{:?}: {}", error.category, error.message)),
+                None,
+            ),
+            (Err(error), _) => recorder.not_measured(
+                probe,
+                "provider",
+                "profilo",
+                question,
+                &condense(&format!(
+                    "{:?}/{:?}: {}",
+                    error.category, error.phase, error.message
+                )),
+            ),
+        }
+    }
 }
 
 /// La tabella su cui il facade prova `RETURNING`.
