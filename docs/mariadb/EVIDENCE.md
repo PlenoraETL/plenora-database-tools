@@ -1761,3 +1761,61 @@ nuova, ma l'emissione della clausola nella DDL e una sonda che la attraversi.
   sonde girano su `mixed`, ed e proprio la dichiarazione che questa tranche ha
   finito di qualificare.
 * **le dimensioni oltre XY**: invariata.
+
+## Diciottesima tranche: l'indice spaziale attraversa il percorso
+
+La diciassettesima aveva lasciato l'indice chiuso con una ragione che non era
+«non misurata»: il server lo accetta, ed era scritto nel documento. Mancava il
+percorso — il piano rifiutava `create_spatial_index` in prepare — e una
+capability descrive cio che il **provider** sa fare.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_write_spatial_index` | Committed — indice `SPATIAL` su `shape` | **identico** | **identico** |
+
+### Cosa dice
+
+**Il piano emette la clausola, e il catalogo la conferma.** La sonda chiede
+l'indice alla mode `Create` e poi interroga `information_schema.statistics`: che
+il piano abbia emesso la clausola e cio che il provider crede, l'indice sul
+server e cio che e successo. Le due si confondono proprio nel caso in cui si
+vuole distinguerle.
+
+**La clausola e la stessa sui due prodotti.** Diverge il vincolo di SRID sulla
+colonna — `GEOMETRY SRID <n>` dove si puo, `GEOMETRY` dove non si puo — e
+l'indice si attacca a entrambe. Non era scontato: il `1064` che `MariaDB`
+risponde alla variante `con_srid` di `raw.spatial_index_forms` poteva far
+sembrare che l'indice fosse il problema, e non lo e.
+
+### Cosa ne segue per il codice
+
+Tre rifiuti nuovi, e ciascuno ne evita uno peggiore.
+
+L'indice vale **solo sulla mode `Create`**: si crea con la tabella, e su una
+mode senza DDL aggiungerlo con un `ALTER` separato sarebbe una seconda
+istruzione con un secondo commit implicito. Un fallimento a meta lascerebbe la
+tabella con l'indice e senza le righe, o il contrario, e l'esito non saprebbe
+dirlo.
+
+Non vale su una **colonna nullable**: entrambi i motori la rifiutano, e
+scoprirlo dal server significherebbe averlo scoperto con la tabella gia in piedi
+— la `CREATE TABLE` fa commit implicito e non torna indietro.
+
+Non vale su uno **schema senza geometrie**: eseguire senza indice sarebbe un
+piano onorato a meta, e il chiamante crederebbe di avere un indice che non ha.
+
+`SpatialCapabilities::spatial_index` si apre su **entrambi** i profili. Su
+`MySQL` restava chiusa per la stessa ragione, non per una differenza fra i due.
+
+### Cosa resta not_measured
+
+* **la dichiarazione `exact` in scrittura**: le sonde girano su `mixed`.
+  `writable_geometry_type` rinvia all'insieme di `MySQL` — sono nomi OGC — ma
+  nessuna sonda ha scritto una colonna dichiarata `exact` su questo prodotto.
+* **le dimensioni oltre XY**: la proiezione condivisa produce WKB XY, e Z e M
+  non hanno attraversato nulla.
+* **le funzioni spatial che `MySQL` non ha**: la sonda attraversa la lista
+  dell'altro prodotto, quindi misura al piu quella. E' una domanda che comincia
+  dal catalogo di `MariaDB`, e questo documento non l'ha ancora posta.
