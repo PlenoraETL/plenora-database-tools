@@ -1143,12 +1143,13 @@ impl ProductProfile for MariadbProfile {
                 // `geography` non esiste su questo prodotto, e non e una
                 // lacuna di misura.
                 geography: false,
-                // Misurato che il server accetta `SPATIAL INDEX` su una
-                // colonna non vincolata — l'unica forma che questo prodotto
-                // ammette — ma il piano di scrittura rifiuta ancora
-                // `create_spatial_index` in prepare: la capability descrive cio
-                // che il provider sa fare, non cio che il server saprebbe.
-                spatial_index: false,
+                // Aperta dalla diciottesima tranche. Il fatto del server lo
+                // aveva misurato la diciassettesima — `SPATIAL INDEX` su una
+                // colonna non vincolata, l'unica forma che questo prodotto
+                // ammette — e mancava il percorso: il piano rifiutava
+                // `create_spatial_index` in prepare, e una capability descrive
+                // cio che il provider sa fare.
+                spatial_index: true,
                 // Aperta dalla diciassettesima tranche: un punto e un poligono
                 // scritti nella stessa colonna e riletti per tipo, identici sui
                 // tre riferimenti. Le sonde di scrittura precedenti portavano
@@ -1714,7 +1715,12 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         write_wkb: true,
         geometry: true,
         geography: false,
-        spatial_index: false,
+        // Aperta insieme a quella di MariaDB, e per la stessa misura: la
+        // clausola entra nella `CREATE TABLE` della mode `Create`, e la sonda
+        // la attraversa su entrambi i prodotti. Restava chiusa qui per la
+        // stessa ragione — il piano la rifiutava in prepare — e non per una
+        // differenza fra i due.
+        spatial_index: true,
         mixed_geometry_types: true,
         dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
         // Le funzioni spatial pubblicate sono quelle di
@@ -2317,13 +2323,14 @@ mod tests {
                 "provider.rs costruisce {built} invece di chiederla al profilo"
             );
         }
-        // E cio che il profilo pubblica resta quello di prima: sei mode su
-        // sette, `TruncateInsert` fail-closed, spatial senza indice.
+        // E cio che il profilo pubblica: sei mode su sette, `TruncateInsert`
+        // fail-closed, e lo spatial completo — l'indice compreso, da quando la
+        // clausola entra nella `CREATE TABLE` della mode `Create`.
         let published = MYSQL_PROFILE.capabilities("9.7.2".to_owned());
         assert_eq!(published.provider_version, "9.7.2");
         assert_eq!(published.provider, MYSQL_PROFILE.kind());
         assert!(published.spatial.read_wkb && published.spatial.write_wkb);
-        assert!(!published.spatial.spatial_index);
+        assert!(published.spatial.spatial_index);
         assert_eq!(
             published.limits.max_bind_parameters,
             Some(crate::MAX_BIND_PARAMETERS as u64)
@@ -3702,7 +3709,16 @@ mod tests {
         // Cio che resta chiuso, resta chiuso: `geography` non esiste su questo
         // prodotto, e i tipi misti non sono mai stati letti.
         assert!(!spatial.geography);
-        assert!(!spatial.spatial_index);
+        // L'indice si apre con la diciottesima, su entrambi: il fatto del
+        // server era misurato dalla diciassettesima, e mancava il percorso.
+        assert!(spatial.spatial_index);
+        assert_eq!(
+            spatial.spatial_index,
+            MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .spatial
+                .spatial_index
+        );
         // I tipi misti si aprono con la diciassettesima tranche, e coincidono
         // con MySQL: e la stessa colonna `GEOMETRY` che regge tipi diversi, e
         // le sonde lo misurano con lo stesso punto e lo stesso poligono.

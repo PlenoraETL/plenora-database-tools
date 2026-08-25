@@ -6208,6 +6208,11 @@ async fn spatial_contents(connection: &mut mysql_async::Conn) -> String {
 /// con la lettura: su un prodotto dove la colonna non porta il CRS, l'unica
 /// cosa che puo portarlo e il valore — e se la scrittura lo perdesse, la
 /// lettura di questo stesso crate rifiuterebbe le righe che ha appena scritto.
+// Quattro domande in fila sulla stessa fixture, e l'ordine e parte della
+// misura: la `Create` lascia la tabella su cui l'`Append` scrive, i tipi
+// misti si aggiungono a quelle righe, e l'indice riparte da una tabella
+// nuova. Spezzarla separerebbe le sonde dalla sequenza che le rende vere.
+#[allow(clippy::too_many_lines)]
 async fn spatial_write_probes(
     recorder: &mut Recorder,
     profile: &'static dyn ProductProfile,
@@ -6318,9 +6323,91 @@ async fn spatial_write_probes(
         ),
     }
 
+    // La quarta domanda: l'indice spaziale, chiesto dal piano e non scritto a
+    // mano. `raw.spatial_index_forms` ha misurato che il server accetta la
+    // clausola; questa misura che il **provider** la emette, e che l'indice
+    // esiste davvero dopo — il catalogo lo dice, non la DDL che l'ha chiesta.
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL}"))
         .await;
+    let question = "il piano crea la tabella con l'indice spaziale chiesto";
+    let mut indexed = operation(WriteMode::Create);
+    indexed.create_spatial_index = true;
+    let created = scripted_write(
+        &provider,
+        &indexed,
+        spatial_write_schema(4_326),
+        vec![spatial_write_batch(4_326, &[1, 2])],
+        2,
+        None,
+        cancellation,
+    )
+    .await;
+    let index = spatial_index_of(connection).await;
+    match created {
+        Ok(outcome) if index == "indice=SPATIAL su shape" => recorder.accepted(
+            "provider.profile_write_spatial_index",
+            "provider",
+            "profilo",
+            question,
+            format!("{:?} — {index}", outcome.status),
+        ),
+        Ok(outcome) => recorder.rejected(
+            "provider.profile_write_spatial_index",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "atteso un indice SPATIAL su shape, misurato {:?} — {index}",
+                outcome.status
+            )),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_write_spatial_index",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {} — {index}",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL}"))
+        .await;
+}
+
+/// L'indice spaziale della tabella, chiesto al catalogo.
+///
+/// Al **catalogo**, non alla DDL che l'ha chiesto: che il piano abbia emesso la
+/// clausola e cio che il provider crede, e l'indice sul server e cio che e
+/// successo.
+async fn spatial_index_of(connection: &mut mysql_async::Conn) -> String {
+    connection
+        .query_first::<(String, String), _>(format!(
+            "SELECT INDEX_TYPE, COLUMN_NAME FROM information_schema.statistics \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{SCRATCH_SPATIAL}' \
+               AND INDEX_TYPE = 'SPATIAL'"
+        ))
+        .await
+        .map_or_else(
+            |error| {
+                format!(
+                    "catalogo non interrogabile: {}",
+                    condense(&error.to_string())
+                )
+            },
+            |row| {
+                row.map_or_else(
+                    || "nessun indice spaziale".to_owned(),
+                    |(kind, column)| format!("indice={kind} su {column}"),
+                )
+            },
+        )
 }
 
 /// Una delle due scritture spatial, con cio che deve restare sul server.

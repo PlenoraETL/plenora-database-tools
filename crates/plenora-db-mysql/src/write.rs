@@ -1437,10 +1437,16 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
             ),
         ));
     }
-    if operation.create_spatial_index {
-        return Err(unsupported(
-            "creazione indice spatial non ancora qualificata",
-        ));
+    if operation.create_spatial_index && operation.mode != WriteMode::Create {
+        // L'indice si crea con la tabella. Su una mode che non emette DDL non
+        // c'e un `CREATE TABLE` in cui metterlo, e aggiungerlo con un `ALTER`
+        // separato sarebbe una seconda istruzione con un secondo commit
+        // implicito: un fallimento a meta lascerebbe la tabella con l'indice e
+        // senza le righe, o il contrario, e l'esito non saprebbe dirlo.
+        return Err(unsupported(format!(
+            "create_spatial_index appartiene alla mode Create, non a {:?}",
+            operation.mode
+        )));
     }
     if operation
         .target
@@ -1646,6 +1652,7 @@ pub(crate) fn build_create_table_sql(
     database: &str,
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<String> {
+    let product = profile.product();
     let renderer = mysql_renderer();
     let target_schema = operation.target.schema.as_deref().unwrap_or(database);
     let object_name = ObjectName {
@@ -1677,6 +1684,30 @@ pub(crate) fn build_create_table_sql(
             })
             .collect::<Result<Vec<_>>>()?;
         lines.push(format!("    PRIMARY KEY ({})", pk_cols.join(", ")));
+    }
+    if operation.create_spatial_index {
+        let spatial: Vec<&MysqlWriteColumn> = columns
+            .iter()
+            .filter(|column| column.kind == MysqlColumnKind::Geometry)
+            .collect();
+        if spatial.is_empty() {
+            return Err(unsupported(format!(
+                "create_spatial_index su uno schema {product} senza colonne geometriche"
+            )));
+        }
+        for column in spatial {
+            // `NOT NULL` non e una raccomandazione: entrambi i motori
+            // rifiutano un indice spaziale su una colonna nullable, e
+            // scoprirlo dal server significherebbe averlo scoperto dopo aver
+            // creato la tabella — che qui fa commit implicito e non torna
+            // indietro.
+            if column.nullable {
+                return Err(unsupported(format!(
+                    "indice spatial {product} su una colonna nullable"
+                )));
+            }
+            lines.push(format!("    SPATIAL INDEX ({})", column.quoted));
+        }
     }
 
     Ok(format!(
@@ -1992,6 +2023,67 @@ mod tests {
     /// PostgreSQL. Prima le rifiutava, il che rendeva irraggiungibile il ramo
     /// `PRIMARY KEY` di `build_create_table_sql`: codice che non poteva
     /// essere eseguito da nessun piano valido.
+    /// L'indice spaziale entra nella `CREATE TABLE`, e solo li.
+    ///
+    /// Tre cose insieme, perche separate direbbero meno. La clausola compare
+    /// nella DDL della mode `Create`; una colonna geometrica nullable la fa
+    /// rifiutare **prima** del server — su questi motori la `CREATE TABLE` fa
+    /// commit implicito, quindi scoprirlo dal server significherebbe averlo
+    /// scoperto con la tabella gia in piedi; e uno schema senza geometrie fa
+    /// rifiutare la richiesta invece di eseguirla senza indice, che sarebbe un
+    /// piano onorato a meta.
+    ///
+    /// La forma della colonna la decide il profilo — `MariaDB` non ammette il
+    /// vincolo di SRID — ma la clausola dell'indice e la stessa: e il vincolo
+    /// che diverge, non l'indice.
+    #[test]
+    fn a_spatial_index_belongs_to_the_create_ddl_and_wants_a_non_null_column() {
+        let mut operation = append_operation();
+        operation.mode = WriteMode::Create;
+        operation.create_spatial_index = true;
+        operation.srid_policy = Some(plenora_database_core::plan::SridPolicy::RequireMatch);
+
+        // `NOT NULL` esplicito: l'aiuto rende una colonna nullable, e un
+        // indice spaziale non la accetta — su nessuno dei due motori.
+        let input = schema(vec![
+            Field::new("id", DataType::Int64, false),
+            spatial_field("geometry", 4_326).with_nullable(false),
+        ]);
+        for profile in [
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            &crate::profile::MARIADB_PROFILE,
+        ] {
+            let ddl = build_create_table_sql(&input, &operation, "warehouse", profile)
+                .expect("Create con indice spaziale");
+            assert!(
+                ddl.contains("SPATIAL INDEX (`geom`)"),
+                "{}: la clausola non compare — {ddl}",
+                profile.product()
+            );
+        }
+
+        // La colonna nullable: rifiutata prima del server.
+        let nullable = spatial_field("geometry", 4_326).with_nullable(true);
+        let error = build_create_table_sql(
+            &schema(vec![nullable]),
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("indice spaziale su colonna nullable");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+
+        // Nessuna geometria: la richiesta e rifiutata, non ignorata.
+        let error = build_create_table_sql(
+            &schema(vec![Field::new("id", DataType::Int64, false)]),
+            &operation,
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("indice spaziale senza colonne geometriche");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
     #[test]
     fn create_accepts_keys_and_renders_them_as_a_primary_key() {
         let fields = vec![

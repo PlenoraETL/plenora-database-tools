@@ -2052,6 +2052,10 @@ mod tests {
             capabilities.dimensions,
             vec![plenora_database_core::geometry::Dimensions::Xy]
         );
-        assert!(!capabilities.spatial_index);
+        // L'indice si crea con la tabella: la clausola entra nella
+        // `CREATE TABLE` della mode `Create`, e su una mode senza DDL il piano
+        // la rifiuta — un `ALTER` separato sarebbe un secondo commit implicito,
+        // e un fallimento a meta non saprebbe dire cosa e rimasto.
+        assert!(capabilities.spatial_index);
     }
 }

@@ -227,6 +227,7 @@ EXPECTED_UNIT_TESTS = {
     "types::tests::mysql_geomcollection_alias_produces_the_canonical_exact_type",
     "types::tests::spatial_projection_is_wkb_xy_with_declared_srid",
     "types::tests::the_window_renders_with_and_without_a_ceiling",
+    "write::tests::a_spatial_index_belongs_to_the_create_ddl_and_wants_a_non_null_column",
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",

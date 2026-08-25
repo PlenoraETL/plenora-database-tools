@@ -131,6 +131,7 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_write_spatial_create": "spatial.write_wkb: il piano crea la colonna geometrica e ci scrive dentro",
     "provider.profile_write_spatial_append": "spatial.write_wkb: una append conserva il CRS di ogni riga",
     "provider.profile_write_spatial_mixed": "spatial.mixed_geometry_types: due tipi geometrici nella stessa colonna",
+    "provider.profile_write_spatial_index": "spatial.spatial_index: il piano emette la clausola e il catalogo la conferma",
     "provider.profile_write_append": "writes.append: Append",
     "provider.profile_write_create": "writes.create: Create",
     "provider.profile_write_delete_by_keys": "writes.delete_by_keys: cancella cio che trova e salta cio che non trova",
@@ -361,6 +362,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_spatial_create",
     "provider.profile_write_spatial_append",
     "provider.profile_write_spatial_mixed",
+    "provider.profile_write_spatial_index",
     "provider.profile_spatial_functions",
 )
 
