@@ -97,6 +97,23 @@ pub(crate) enum CliError {
 /// quella base puo raddoppiare una scrittura gia applicata.
 ///
 /// Qui l'incertezza ha un nome suo — `outcome_unknown` — e non e mai `ok`.
+///
+/// Non sta dietro una feature, e l'attributo qui sotto non e un ripensamento:
+/// il giudizio sul commit incerto e comune a tutti i provider, ed e per questo
+/// che vive nel modulo radice invece che dentro quello di uno solo. Che con la
+/// sola feature `sqlserver` non lo chiami nessuno non dice niente sul
+/// giudizio — dice che quel provider non espone ancora un sottocomando che
+/// apra una transazione, perche `database-probe` non ne apre. `cfg`-are la
+/// funzione affermerebbe che l'incertezza del commit riguarda due provider su
+/// tre, che e falso; l'attributo dichiara invece che oggi non c'e un
+/// chiamante, e sparisce quando ce ne sara uno.
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql")),
+    allow(
+        dead_code,
+        reason = "nessun sottocomando SQL Server apre una transazione"
+    )
+)]
 pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
     match outcome {
         CommitOutcome::Committed => "ok",
@@ -105,6 +122,16 @@ pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
 }
 
 /// L'uscita che accompagna un esito gia stampato: zero solo se certo.
+///
+/// Stesso attributo e stessa ragione di [`commit_status`], che accompagna
+/// sempre.
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql")),
+    allow(
+        dead_code,
+        reason = "nessun sottocomando SQL Server apre una transazione"
+    )
+)]
 pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
@@ -122,6 +149,18 @@ pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
 /// # Errors
 ///
 /// `Fatal` con effetto remoto ignoto e disposizione `RequiresRecovery`.
+///
+/// I quattro chiamanti — benchmark, schema effimero, harness PFM, testing —
+/// stanno tutti dietro `postgres`, quindi il predicato e piu stretto di quello
+/// delle due funzioni qui sopra. Vale la stessa nota: e l'assenza di
+/// chiamanti a essere dichiarata, non una proprieta del giudizio.
+#[cfg_attr(
+    not(feature = "postgres"),
+    allow(
+        dead_code,
+        reason = "i quattro chiamanti stanno dietro la feature postgres"
+    )
+)]
 pub(crate) fn require_committed(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
