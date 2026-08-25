@@ -1392,3 +1392,101 @@ di piano, che conta righe e non le trasporta. Aprirla vorrebbe dire far
 trasportare righe a un documento di esito, che e la forma sbagliata per una
 scrittura bulk; il `RETURNING` che questa tranche apre vive nel percorso
 portable, dove le righe hanno gia dove stare.
+
+## Tredicesima tranche: lo spatial si apre, e con la condizione accanto
+
+La decima tranche aveva chiuso lo spatial di `MariaDB` con una ragione precisa e
+una ricetta: «non una query di catalogo diversa, ma un CRS **dichiarato dal
+chiamante** e verificato valore per valore, che e la forma che il path di
+scrittura ha gia con `srid_policy`». Questa tranche misura quella forma, e apre
+la capability.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_crs_undeclared` | **rifiutato** — `Crs`: il catalogo tace e il piano non lo dichiara | **identico** | **identico** |
+| provider | profilo | `provider.profile_crs_declared` | righe=2 batch=1 | **identico** | **identico** |
+| provider | profilo | `provider.profile_crs_mismatched` | **rifiutato** — `Crs`: dichiarata SRID 3003, la riga 0 porta SRID 4326 | **identico** | **identico** |
+
+### Cosa dice
+
+**Tre domande, e la terza e quella che rende vere le altre due.** Senza
+dichiarazione la colonna resta rifiutata — la dichiarazione apre una porta, non
+ne toglie una chiusa. Con la dichiarazione giusta le righe arrivano. Con una
+dichiarazione che i valori smentiscono, la lettura fallisce **alla riga che la
+smentisce**, e nomina i due SRID.
+
+Senza la terza, la seconda non proverebbe niente: una dichiarazione creduta
+sulla parola darebbe lo stesso esito verde, e `geometry: true` significherebbe
+«il provider ripete cio che il chiamante gli ha detto». La verifica sta nel ciclo
+delle righe e non nel prepare, e non e pedanteria: la colonna che richiede una
+dichiarazione e proprio quella che nessuna DDL vincola, quindi due righe della
+stessa colonna possono portare SRID diversi. E' il caso lasciato `not_measured`
+dalla decima tranche, e ora e misurato — non come domanda separata, ma come la
+forma stessa del controllo.
+
+**`MySQL` si comporta identico, e non era la risposta attesa.** La tranche era
+nata come una divergenza di `MariaDB`: li `SRS_ID` non esiste e nessuna DDL puo
+vincolare una geometry, quindi sembrava che il problema fosse suo. La sonda gira
+su una colonna `GEOMETRY` che la DDL **non** vincola — l'unica forma che
+`MariaDB` ammette — e su `MySQL` quella stessa colonna ha `SRS_ID` nullo: e
+rifiutata senza dichiarazione, letta con una, e fallisce sui valori quando la
+dichiarazione e smentita. Tre esiti su tre, identici sui tre riferimenti.
+
+Il fatto non e «`MariaDB` ha un problema che `MySQL` non ha». E' che su
+`MariaDB` la colonna non vincolata e l'unica possibile, mentre su `MySQL` e una
+possibilita che qualcuno puo scegliere — e in quel caso i due prodotti si
+comportano allo stesso modo.
+
+### Cosa ne segue per le capability
+
+`MariaDB` apre `SpatialCapabilities::read_wkb` e `SpatialCapabilities::geometry`,
+con `dimensions: [xy]` — che e cio che le sonde hanno attraversato — e con
+`SpatialCapabilities::requires_declared_crs` a `true` accanto.
+
+I nomi qui sono scritti per intero e non come `spatial.<campo>` per una ragione
+che vale la pena dire: `spatial` e gia il prefisso di una **superficie di
+sonde** in questo documento — `spatial.srid_column`, `spatial.geometrycollection`
+— e una guardia del self-test controlla che ogni identificatore con quel
+prefisso corrisponda a una sonda esistente. Due nomi con la stessa forma e due
+significati diversi sono esattamente cio che quella guardia esiste per non
+lasciar passare.
+
+Le due bandiere vanno lette **insieme**, ed e la ragione per cui la seconda
+esiste. `geometry` da sola non sa dire la verita su questo prodotto: `false`
+negherebbe una lettura che funziona, `true` prometterebbe che una lettura
+semplice basti. `geometry: true, requires_declared_crs: true` dice la cosa
+giusta, e un chiamante che ignora la seconda riceve un rifiuto in prepare invece
+di un CRS inventato.
+
+`MySQL` pubblica anche lui `requires_declared_crs` a `true`, per la stessa misura.
+La bandiera dice «leggere una geometria **puo** richiedere un CRS dichiarato»,
+non «lo richiede sempre».
+
+Restano chiuse `geography` — che su questo prodotto non esiste, e non e una
+lacuna di misura — `spatial_index`, `mixed_geometry_types`, che nessuna sonda ha
+letto, e la lista `functions`, che non si eredita da `MySQL`.
+
+### Perche le tre sonde sono osservative
+
+Per la stessa ragione delle due del `RETURNING`, e la campagna lo registra come
+divergenza su due delle tre: gli inventari del runner esprimono un esito solo
+per tutti i riferimenti, e qui l'esito atteso e per meta un rifiuto — che nella
+matrice si legge `rejected` — e per meta una lettura. Non c'e un unico valore che
+li descriva tutti e tre senza dire il falso su qualcuno.
+
+La divergenza che la campagna segnala e nel **testo**, non nel comportamento: il
+messaggio nomina il prodotto che ha rifiutato, quindi `MySQL` e `MariaDB` non
+possono rendere la stessa stringa. Gli esiti coincidono.
+
+### Cosa resta not_measured
+
+* **i tipi geometrici misti**: la tabella delle sonde porta soltanto punti, e una
+  colonna con geometrie di tipo diverso non e mai stata letta. `mixed_geometry_types`
+  resta chiusa.
+* **le dimensioni oltre XY**: la proiezione condivisa produce WKB XY, e Z e M non
+  hanno attraversato nulla.
+* **le funzioni spatial**: nessuna sonda le ha eseguite su questo prodotto, e la
+  lista verified di `MySQL` — che questa stessa sessione ha dovuto accorciare da
+  ventisei a quindici — e la prova che ereditarla sarebbe un errore.

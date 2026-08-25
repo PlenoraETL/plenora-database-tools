@@ -1024,20 +1024,36 @@ impl ProductProfile for MariadbProfile {
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
             },
+            // La lettura geometrica si apre con la dodicesima tranche, e non
+            // da sola: si apre **insieme** alla condizione che la rende vera.
+            //
+            // Le tre sonde del CRS dichiarato girano su una colonna `GEOMETRY`
+            // che nessuna DDL vincola — l'unica forma che MariaDB ammette — e
+            // misurano tre esiti diversi: senza dichiarazione la colonna resta
+            // rifiutata, con la dichiarazione giusta le righe arrivano, con
+            // una dichiarazione che i valori smentiscono la lettura fallisce
+            // alla riga che la smentisce. La terza e quella che rende vera la
+            // seconda: senza, `geometry: true` significherebbe che il provider
+            // ripete cio che il chiamante gli ha detto.
             spatial: SpatialCapabilities {
-                read_wkb: false,
+                read_wkb: true,
                 write_wkb: self.write_spatial_is_qualified(),
-                geometry: false,
+                geometry: true,
+                // `geography` non esiste su questo prodotto, e non e una
+                // lacuna di misura.
                 geography: false,
                 spatial_index: false,
+                // Non misurata: la tabella delle sonde porta soltanto punti, e
+                // una colonna con tipi geometrici misti non e mai stata letta.
                 mixed_geometry_types: false,
-                dimensions: Vec::new(),
+                // Solo XY, che e cio che le sonde hanno attraversato — e cio
+                // che la proiezione condivisa produce.
+                dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
+                // Le funzioni spatial restano una lista vuota: la lista
+                // verified di MySQL non si eredita, e su questo prodotto
+                // nessuna sonda l'ha attraversata.
                 functions: Vec::new(),
-                // Aperta insieme alla lettura geometrica, e non prima: finche
-                // `geometry` e `read_wkb` sono chiuse, dichiarare che la
-                // lettura pretende un CRS descriverebbe la condizione di una
-                // cosa che non si puo comunque chiedere.
-                requires_declared_crs: false,
+                requires_declared_crs: true,
             },
             // I limiti non sono capability: dicono quanto il crate manda, non
             // cosa il prodotto sa fare. Sono i suoi stessi valori su un
@@ -1572,10 +1588,24 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         // saperlo. Il numero sta nella costante, che e anche l'unico posto
         // dove qualcuno lo puo cambiare con una misura in mano.
         functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
+        // `true`, e non era la risposta attesa.
+        //
         // `information_schema.columns.SRS_ID` esiste su questo prodotto e la
-        // DDL `SRID 4326` e accettata: il catalogo il CRS lo sa, e chiederlo
-        // al chiamante sarebbe chiederglielo due volte.
-        requires_declared_crs: false,
+        // DDL `SRID 4326` e accettata, quindi sembrava che qui il catalogo il
+        // CRS lo sapesse sempre e che chiederlo al chiamante fosse chiederlo
+        // due volte. Le sonde del CRS dichiarato hanno misurato altro: su una
+        // colonna `GEOMETRY` che la DDL **non** vincola, `SRS_ID` e nullo
+        // anche su MySQL, e la colonna e rifiutata esattamente come su
+        // MariaDB. Con la dichiarazione si legge, e con una dichiarazione
+        // smentita dai valori fallisce alla riga che la smentisce: i tre esiti
+        // coincidono sui tre riferimenti, senza divergenze.
+        //
+        // La bandiera dice «leggere una geometria **puo** richiedere un CRS
+        // dichiarato», non «lo richiede sempre»: su MySQL vale per le colonne
+        // non vincolate, su MariaDB per tutte, perche li vincolarle non si
+        // puo. Pubblicare `false` qui avrebbe tenuto chiusa una lettura che
+        // funziona, e per una ragione che nessuna misura sosteneva.
+        requires_declared_crs: true,
     }
 }
 
@@ -3494,13 +3524,35 @@ mod tests {
         );
         assert!(writes.upsert && writes.replace && writes.delete_by_keys);
 
-        // Spatial: la lettura del WKB non e stata provata attraverso il
-        // provider, la scrittura nemmeno, e la lista delle funzioni verified
-        // di MySQL non si eredita.
+        // Spatial: la lettura si e aperta con la dodicesima tranche, e con la
+        // condizione accanto. Le due bandiere vanno lette insieme —
+        // `geometry: true, requires_declared_crs: true` — perche la prima da
+        // sola prometterebbe che una lettura semplice basti.
         let spatial = &published.spatial;
-        assert!(!spatial.read_wkb && !spatial.geometry && !spatial.geography);
+        assert!(spatial.read_wkb && spatial.geometry);
+        assert!(spatial.requires_declared_crs);
+        assert_eq!(
+            spatial.dimensions,
+            vec![plenora_database_core::geometry::Dimensions::Xy]
+        );
+        // La condizione non e una divergenza di prodotto: le stesse tre sonde
+        // danno lo stesso esito su MySQL, dove una colonna `GEOMETRY` non
+        // vincolata dalla DDL ha `SRS_ID` nullo esattamente come qui. E' la
+        // riga che impedisce di leggere questa apertura come «MariaDB ha un
+        // problema che MySQL non ha».
+        assert_eq!(
+            spatial.requires_declared_crs,
+            MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .spatial
+                .requires_declared_crs
+        );
+        // Cio che resta chiuso, resta chiuso: `geography` non esiste su questo
+        // prodotto, i tipi misti non sono mai stati letti, e la lista verified
+        // di MySQL non si eredita.
+        assert!(!spatial.geography);
         assert!(!spatial.spatial_index && !spatial.mixed_geometry_types);
-        assert!(spatial.dimensions.is_empty() && spatial.functions.is_empty());
+        assert!(spatial.functions.is_empty());
         assert_eq!(
             spatial.write_wkb,
             MARIADB_PROFILE.write_spatial_is_qualified(),
