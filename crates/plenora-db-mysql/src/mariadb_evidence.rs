@@ -162,6 +162,17 @@ async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_as
             "delete",
             format!("DELETE FROM {SCRATCH_RETURNING} WHERE id = 2 RETURNING id"),
         ),
+        // La forma che il compilatore portable emette per `Upsert`. Non e una
+        // variante di `INSERT` per il parser: e la domanda separata «`RETURNING`
+        // sopravvive a `ON DUPLICATE KEY UPDATE`?», e la risposta non si
+        // deduce da quella di `insert`.
+        (
+            "upsert",
+            format!(
+                "INSERT INTO {SCRATCH_RETURNING} (id, payload) VALUES (3, 'd') \
+                 ON DUPLICATE KEY UPDATE payload = VALUES(payload) RETURNING id"
+            ),
+        ),
     ];
     let mut measured = Vec::with_capacity(forms.len());
     for (name, sql) in forms {
