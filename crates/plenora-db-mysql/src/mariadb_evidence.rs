@@ -5739,6 +5739,14 @@ async fn profile_probes(
         )
         .await;
         pool_endurance_probe(recorder, profile, &mut connection, cancellation).await;
+        mixed_load_probe(
+            recorder,
+            profile,
+            &schema_name,
+            &mut connection,
+            cancellation,
+        )
+        .await;
     }
 }
 
@@ -6333,6 +6341,300 @@ async fn connected_threads(connection: &mut mysql_async::Conn) -> i64 {
 /// connessione: e cio che il motore vede, non cio che il pool crede. Le due
 /// divergono esattamente nel caso che questa sonda cerca — una sessione che il
 /// pool ha dimenticato e che il server tiene ancora aperta.
+/// La tabella che i lettori leggono mentre gli scrittori scrivono.
+const SCRATCH_MIXED_READ: &str = "plenora_driver_evidence_mixed_read";
+
+/// La tabella su cui gli scrittori si contendono lo stesso pool dei lettori.
+const SCRATCH_MIXED_WRITE: &str = "plenora_driver_evidence_mixed_write";
+
+/// Letture e scritture **insieme**, sullo stesso pool, per quanti giri si vuole.
+///
+/// Le due sonde precedenti separano i carichi: dodici lettori in una, dodici
+/// scrittori nell'altra. Un pool puo sbagliare proprio dove si mescolano, e
+/// nessuna delle due poteva dirlo — una connessione che torna dal path di
+/// scrittura con la transazione non chiusa e innocua fra scrittori, che ne
+/// aprono un'altra subito, e velenosa per un lettore che la trova con un
+/// `BEGIN` implicito addosso.
+///
+/// # Perche e anche il soak
+///
+/// L'altro residuo era la durata: le sonde durano secondi, e colgono una
+/// perdita **sistematica**, non una lenta. Una connessione persa ogni mille
+/// giri sfugge a centocinquanta giri e si vede in centomila.
+///
+/// I due residui si chiudono con lo stesso codice invece che con due sonde
+/// diverse, e non e un risparmio: e la ragione per cui il soak vale qualcosa.
+/// Un soak che esercitasse un percorso **diverso** da quello del gate
+/// misurerebbe la tenuta di codice che nessuno attraversa mai; qui la corsa
+/// lunga e la corsa breve sono la stessa, e cambia solo `PLENORA_MIXED_ROUNDS`.
+///
+/// Il gate ne fa pochi, perche un gate che dura ore non lo esegue nessuno — e
+/// una sonda che nessuno esegue non e una sonda. La corsa lunga si lancia a
+/// mano, e il documento porta la sua riga accanto a quella breve.
+///
+/// # Cosa verifica
+///
+/// A ogni giro, sei lettori e sei scrittori partono insieme sullo stesso pool
+/// da quattro. Ogni lettore ha una fetta di chiavi disgiunta e la pretende
+/// intera; ogni scrittore ha la propria fetta di id e ci scrive un payload che
+/// porta il suo numero.
+///
+/// Alla fine si guardano tre cose, e ciascuna coglie un difetto che le altre
+/// due lascerebbero passare: il **conteggio** delle righe scritte coglie una
+/// perdita, il **payload** coglie un'attribuzione sbagliata, e
+/// `Threads_connected` letto dal server coglie una connessione che il pool ha
+/// dimenticato e che il motore tiene ancora aperta.
+#[allow(clippy::too_many_lines)]
+async fn mixed_load_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use std::sync::Arc;
+
+    const READERS: i64 = 6;
+    const WRITERS: i32 = 6;
+    const ROWS_PER_READER: i64 = 5;
+    const ROWS_PER_WRITER: i32 = 4;
+
+    // Il gate ne fa pochi; la corsa lunga si chiede da fuori. Un valore
+    // illeggibile non fa fallire la sonda per una ragione che non e il
+    // prodotto: si torna al default.
+    let rounds: usize = std::env::var("PLENORA_MIXED_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12);
+
+    // Le fette crescono, quindi la tabella e piu lunga del prodotto: e la
+    // somma delle lunghezze, non il loro numero per la piu corta.
+    let seeded_rows: i64 = (0..READERS).map(|reader| ROWS_PER_READER + reader).sum();
+    let mut seeded = String::new();
+    for id in 1..=seeded_rows {
+        if id > 1 {
+            seeded.push(',');
+        }
+        let _ = write!(&mut seeded, "({id})");
+    }
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_MIXED_READ}"),
+        format!("DROP TABLE IF EXISTS {SCRATCH_MIXED_WRITE}"),
+        format!("CREATE TABLE {SCRATCH_MIXED_READ} (n INT NOT NULL PRIMARY KEY) ENGINE = InnoDB"),
+        format!("INSERT INTO {SCRATCH_MIXED_READ} (n) VALUES {seeded}"),
+        format!(
+            "CREATE TABLE {SCRATCH_MIXED_WRITE} (id INT NOT NULL PRIMARY KEY, payload VARCHAR(32) NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabelle del carico misto: harness, non divergenza");
+    }
+
+    let before = connected_threads(connection).await;
+
+    // **Un** provider per tutti: e' il pool condiviso a essere la domanda. Due
+    // pool separati riprodurrebbero le due sonde che gia esistono.
+    let provider = Arc::new(
+        MysqlProvider::with_profile(config(), 4, profile)
+            .expect("provider del carico misto: harness, non divergenza"),
+    );
+    let target = ObjectRef {
+        catalog: None,
+        schema: Some(schema_name.to_owned()),
+        object: SCRATCH_MIXED_WRITE.to_owned(),
+    };
+
+    let mut failure = None;
+    let mut read_rows = 0_usize;
+    let mut written_rows = 0_u64;
+    'giri: for round in 0..rounds {
+        let mut tasks = Vec::new();
+        for reader in 0..READERS {
+            let provider = Arc::clone(&provider);
+            let cancellation = cancellation.clone();
+            tasks.push(tokio::spawn(async move {
+                // Le fette hanno lunghezze **diverse** — tre, quattro, cinque
+                // e cosi via — e non e un dettaglio: con fette uguali, due
+                // lettori che si scambiassero la connessione a meta stream
+                // renderebbero comunque il conteggio giusto. Cosi lo scambio
+                // cambia il totale, e il conteggio diventa da solo la prova
+                // che ciascuno ha visto la propria.
+                let length = ROWS_PER_READER + reader;
+                let first = (0..reader).map(|other| ROWS_PER_READER + other).sum::<i64>() + 1;
+                let last = first + length - 1;
+                let statement = Statement {
+                    sql: format!(
+                        "SELECT n FROM {SCRATCH_MIXED_READ} WHERE n BETWEEN ? AND ? ORDER BY n"
+                    ),
+                    params: vec![
+                        plenora_database_core::provider::ParameterValue::I64(first),
+                        plenora_database_core::provider::ParameterValue::I64(last),
+                    ],
+                };
+                // La transazione si apre dal **provider**, non da un pool
+                // costruito qui: `pool_for` e cachato per segreto, e con lo
+                // stesso segreto degli scrittori questa lettura esce dalla
+                // stessa riserva di connessioni. Un pool separato
+                // riprodurrebbe le due sonde che gia esistono.
+                let mut transaction = provider
+                    .begin_transaction(
+                        &secret(),
+                        &TransactionOptions::default(),
+                        &read_budget(),
+                        &cancellation,
+                    )
+                    .await?;
+                let mut seen = 0_usize;
+                {
+                    // Batch da due su cinque righe: lo stream resta aperto per
+                    // piu giri, che e il momento in cui una connessione
+                    // condivisa per sbaglio si farebbe sentire.
+                    let mut stream = transaction
+                        .query_stream(&statement, 2, &cancellation)
+                        .await?;
+                    while let Some(batch) = stream.next_batch(&cancellation).await? {
+                        seen += batch.len();
+                    }
+                }
+                transaction.commit(&cancellation).await?;
+                Ok::<(usize, u64), plenora_database_core::DatabaseError>((seen, 0))
+            }));
+        }
+        for writer in 0..WRITERS {
+            let provider = Arc::clone(&provider);
+            let target = target.clone();
+            let cancellation = cancellation.clone();
+            let round = i32::try_from(round).expect("giro rappresentabile");
+            tasks.push(tokio::spawn(async move {
+                // Le chiavi non si ripetono fra i giri: un `Append` che
+                // trovasse la propria riga gia scritta fallirebbe sul primario,
+                // e la sonda leggerebbe come contesa cio che e aritmetica.
+                let first = (round * WRITERS + writer) * ROWS_PER_WRITER + 1;
+                let rows: Vec<(i32, String)> = (first..first + ROWS_PER_WRITER)
+                    .map(|id| (id, format!("w{writer}-{id}")))
+                    .collect();
+                let operation = WriteOperation {
+                    target,
+                    mode: WriteMode::Append,
+                    mapping_policy: MappingPolicy::Strict,
+                    transaction_profile: TransactionProfile::SingleTransaction,
+                    keys: Vec::new(),
+                    update_columns: Vec::new(),
+                    srid_policy: None,
+                    create_spatial_index: false,
+                    allow_partial: false,
+                };
+                let outcome = scripted_write(
+                    &provider,
+                    &operation,
+                    scratch_schema(),
+                    vec![scratch_batch_pairs(&rows)],
+                    u64::try_from(ROWS_PER_WRITER).expect("righe"),
+                    None,
+                    &cancellation,
+                )
+                .await?;
+                Ok::<(usize, u64), plenora_database_core::DatabaseError>((
+                    0,
+                    outcome.rows.confirmed,
+                ))
+            }));
+        }
+
+        for task in tasks {
+            match task.await.expect("worker del carico misto") {
+                Ok((seen, confirmed)) => {
+                    read_rows += seen;
+                    written_rows += confirmed;
+                }
+                Err(error) => {
+                    failure.get_or_insert_with(|| {
+                        format!(
+                            "giro {round}: {:?}/{:?}: {}",
+                            error.category, error.phase, error.message
+                        )
+                    });
+                    break 'giri;
+                }
+            }
+        }
+    }
+
+    drop(provider);
+
+    // La rilettura da un'altra connessione: il payload di ogni riga deve
+    // nominare lo scrittore che le compete. Un'attribuzione sbagliata rende il
+    // conteggio giusto e questo confronto no.
+    let mismatched = connection
+        .query_first::<i64, _>(format!(
+            "SELECT COUNT(*) FROM {SCRATCH_MIXED_WRITE} \
+             WHERE payload <> CONCAT('w', ((id - 1) DIV {ROWS_PER_WRITER}) MOD {WRITERS}, '-', id)"
+        ))
+        .await
+        .map_or(-1, |row| row.unwrap_or(-1));
+    let stored = connection
+        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {SCRATCH_MIXED_WRITE}"))
+        .await
+        .map_or(-1, |row| row.unwrap_or(-1));
+    let after = connected_threads(connection).await;
+
+    let question = "letture e scritture insieme sullo stesso pool, per molti giri";
+    let expected_reads = usize::try_from(seeded_rows).expect("righe") * rounds;
+    let expected_writes =
+        u64::try_from(i64::from(WRITERS * ROWS_PER_WRITER)).expect("righe") * rounds as u64;
+    // Il tetto lascia il margine del pool stesso: pretendere l'uguaglianza
+    // esatta misurerebbe la velocita con cui il sistema operativo chiude un
+    // socket invece della tenuta del pool.
+    let ceiling = before + 5;
+    let sound = failure.is_none()
+        && read_rows == expected_reads
+        && written_rows == expected_writes
+        && stored == i64::try_from(expected_writes).unwrap_or(-1)
+        && mismatched == 0
+        && before >= 0
+        && after >= 0
+        && after <= ceiling;
+
+    if sound {
+        recorder.accepted(
+            "provider.profile_mixed_load",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "giri={rounds} lettori={READERS} scrittori={WRITERS} pool=4 \
+                 lette={read_rows} scritte={stored} attribuzioni_errate=0 \
+                 connessioni={before}->{after} tetto={ceiling}"
+            ),
+        );
+    } else {
+        recorder.rejected(
+            "provider.profile_mixed_load",
+            "provider",
+            "profilo",
+            question,
+            condense(&failure.unwrap_or_else(|| {
+                format!(
+                    "attese {expected_reads} letture e {expected_writes} scritture, \
+                     lette {read_rows} e scritte {written_rows}; in tabella {stored} righe \
+                     con {mismatched} attribuzioni errate; connessioni {before}->{after} \
+                     contro il tetto {ceiling}"
+                )
+            })),
+            None,
+        );
+    }
+
+    for table in [SCRATCH_MIXED_READ, SCRATCH_MIXED_WRITE] {
+        let _ = connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await;
+    }
+}
+
 async fn pool_endurance_probe(
     recorder: &mut Recorder,
     profile: &'static dyn ProductProfile,

@@ -223,6 +223,7 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # il motore vede e non da cio che il pool crede: le due divergono
     # esattamente nel caso che la sonda cerca.
     "provider.profile_pool_endurance": "molti cicli non lasciano connessioni dietro",
+    "provider.profile_mixed_load": "letture e scritture insieme sullo stesso pool",
     # Dodici lettori sullo stesso pool, che ne ha quattro di connessioni.
     # PostgreSQL ha una prova di contesa da tempo e MySQL l'ha avuta oggi;
     # questa e la sua gemella. La lacuna non era di contratto ne spatial: era
@@ -420,6 +421,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_concurrent_readers",
     "provider.profile_concurrent_writers",
     "provider.profile_pool_endurance",
+    "provider.profile_mixed_load",
 )
 
 
