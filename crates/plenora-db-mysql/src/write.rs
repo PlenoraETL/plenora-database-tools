@@ -516,7 +516,24 @@ impl MysqlWritePlan {
             .map(|column| {
                 column.spatial_srid.map_or_else(
                     || "?".to_owned(),
-                    |srid| format!("ST_GeomFromWKB(?, {srid})"),
+                    // `CAST(? AS BINARY)`, e il cast non e prudenza: e la sola
+                    // forma legata che entrambi i prodotti accettano.
+                    //
+                    // Un segnaposto non e un'espressione tipata, e la
+                    // differenza si vede solo su uno dei due. `MariaDB`
+                    // risponde 4079 —
+                    // `ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION` — a
+                    // `ST_GeomFromWKB(?, <n>)` mentre accetta la stessa
+                    // funzione su un valore tipato; `MySQL` accetta entrambe.
+                    // Misurato da `raw.spatial_write_forms` sulle tre varianti:
+                    // nudo, con cast, e senza SRID.
+                    //
+                    // Il cast e condiviso invece di essere una decisione del
+                    // profilo perche una forma sola che vale su tutti e due e
+                    // meglio di due che divergono senza doverlo: l'SRID resta
+                    // memorizzato — 4326 su entrambi — e non c'e niente da
+                    // guadagnare tenendo due rendering.
+                    |srid| format!("ST_GeomFromWKB(CAST(? AS BINARY), {srid})"),
                 )
             })
             .collect::<Vec<_>>()
@@ -2929,7 +2946,7 @@ mod tests {
         assert_eq!(plan.columns[0].spatial_srid, Some(4_326));
         assert_eq!(
             plan.render_insert(1).expect("insert geometry"),
-            "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(?, 4326));"
+            "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326));"
         );
         assert!(plan
             .preflight(
