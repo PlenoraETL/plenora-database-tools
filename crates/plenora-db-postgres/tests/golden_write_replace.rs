@@ -29,6 +29,7 @@ use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory};
 use plenora_db_postgres::PostgresProvider;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tokio::sync::{Mutex, MutexGuard};
 
 const DSN: &str = "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
                    dbname=dataflow_test";
@@ -264,7 +265,36 @@ async fn audit_count() -> String {
     scalar_text(&format!("SELECT n::text FROM public.{AUDIT}")).await
 }
 
-async fn reset_fixture() {
+/// I test di questo file condividono **le stesse tre tabelle**, e non per
+/// pigrizia: il contratto di `Replace` si prova su un target con una chiave
+/// esterna verso un padre e un trigger di audit, cioe su un oggetto che ha una
+/// storia. Ricrearlo per ogni test con nomi diversi non proverebbe la stessa
+/// cosa.
+///
+/// Cio che mancava era **dirlo**. `cargo test` esegue i test di un binario in
+/// parallelo, e otto di questi cominciano droppando e ricreando quelle
+/// tabelle: due che partono insieme si tolgono di mezzo il fixture a vicenda,
+/// e il secondo riceve «violazione vincolo di unicita» da una `CREATE TABLE` —
+/// che e la corsa di due sessioni sugli indici del catalogo, non un difetto
+/// del provider.
+///
+/// La prima corsa del gate live dopo l'aggiunta del workflow li ha fatti
+/// scontrare. Il turno rende la condivisione una proprieta dichiarata invece
+/// di una coincidenza dello scheduler.
+static FIXTURE: Mutex<()> = Mutex::const_new(());
+
+/// Prende il turno sul fixture e lo riporta allo stato noto.
+///
+/// La guardia va tenuta viva per tutta la durata del test: rilasciarla subito
+/// rimetterebbe il fixture in gioco mentre il test lo sta usando.
+#[must_use = "la guardia tiene il turno: scartarla rimette il fixture in gioco"]
+async fn reset_fixture() -> MutexGuard<'static, ()> {
+    let turn = FIXTURE.lock().await;
+    reset_fixture_tables().await;
+    turn
+}
+
+async fn reset_fixture_tables() {
     execute_sql(&[
         format!("DROP TABLE IF EXISTS public.{TARGET}"),
         format!("DROP TABLE IF EXISTS public.{PARENT}"),
@@ -351,7 +381,7 @@ fn memory_stream(rows: &[(i64, &str, i64)]) -> Box<dyn BatchStream> {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_replace_preserves_object_identity_indexes_constraints_and_triggers() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = metadata_digest().await;
     assert!(before.contains("_label_uidx"), "fixture senza unique index");
     assert!(before.contains("_audit"), "fixture senza trigger");
@@ -385,7 +415,7 @@ async fn pg_replace_preserves_object_identity_indexes_constraints_and_triggers()
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_replace_on_a_missing_target_is_not_found() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     execute_sql(&[format!("DROP TABLE public.{TARGET}")]).await;
 
     let cancel = CancellationToken::new();
@@ -408,7 +438,7 @@ async fn pg_replace_on_a_missing_target_is_not_found() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_create_spatial_index_is_rejected_for_every_mode_but_create() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = rows_digest(TARGET).await;
     let provider = provider();
     let cancel = CancellationToken::new();
@@ -448,7 +478,7 @@ async fn pg_create_spatial_index_is_rejected_for_every_mode_but_create() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_replace_rejects_keys_and_update_columns() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = rows_digest(TARGET).await;
     let provider = provider();
     let cancel = CancellationToken::new();
@@ -492,7 +522,7 @@ async fn pg_replace_rejects_keys_and_update_columns() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_replace_restores_the_previous_rows_when_the_stream_fails() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = rows_digest(TARGET).await;
     assert_eq!(before, "1:prima:1,2:seconda:2,3:terza:1");
 
@@ -516,7 +546,7 @@ async fn pg_replace_restores_the_previous_rows_when_the_stream_fails() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_replace_restores_the_previous_rows_on_cancellation_after_the_delete() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = rows_digest(TARGET).await;
 
     let cancel = CancellationToken::new();
@@ -539,7 +569,7 @@ async fn pg_replace_restores_the_previous_rows_on_cancellation_after_the_delete(
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_truncate_insert_restores_the_previous_rows_when_the_stream_fails() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = rows_digest(TARGET).await;
 
     let cancel = CancellationToken::new();
@@ -565,7 +595,7 @@ async fn pg_truncate_insert_restores_the_previous_rows_when_the_stream_fails() {
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
 async fn pg_truncate_insert_replaces_the_rows_and_keeps_the_metadata() {
-    reset_fixture().await;
+    let _fixture = reset_fixture().await;
     let before = metadata_digest().await;
 
     let cancel = CancellationToken::new();
