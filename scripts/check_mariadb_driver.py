@@ -209,6 +209,13 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # qualcuno l'ha attraversata davvero, e undici delle bocciate erano li per
     # analogia con PostgreSQL. Ereditarla su un secondo prodotto sarebbe lo
     # stesso errore, un prodotto piu in la.
+    "provider.profile_concurrent_readers": "dodici lettori concorrenti non si mescolano le righe",
+    # Dodici lettori sullo stesso pool, che ne ha quattro di connessioni.
+    # PostgreSQL ha una prova di contesa da tempo e MySQL l'ha avuta oggi;
+    # questa e la sua gemella. La lacuna non era di contratto ne spatial: era
+    # che nessuno aveva mai chiesto a questo provider di servire piu lettori
+    # insieme, e un pool che sotto contesa mescolasse le righe non avrebbe
+    # fatto fallire nessuna prova di questo documento.
     "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
     # `SpatialCapabilities::spatial_index` e chiusa su entrambi i profili e il
     # piano rifiuta `create_spatial_index` in prepare. Non e una divergenza: e
@@ -397,6 +404,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_spatial_mixed",
     "provider.profile_write_spatial_index",
     "provider.profile_spatial_functions",
+    "provider.profile_concurrent_readers",
 )
 
 

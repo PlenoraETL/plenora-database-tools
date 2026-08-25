@@ -328,8 +328,11 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Il numero e un fermo, non una misura: aggiungere un test live
         # dev'essere un atto deliberato, e passare da qui e cio che lo rende
-        # tale. Le sei righe nuove sono le prove di `query_stream`.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 31)
+        # tale. Sei righe sono le prove di `query_stream`; le due ultime sono
+        # lo stress concorrente, che questo provider non aveva — PostgreSQL
+        # ce l'ha da tempo, e la lacuna non era di contratto: nessuno aveva
+        # mai chiesto a MySQL di servire dodici lettori insieme.
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 33)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (

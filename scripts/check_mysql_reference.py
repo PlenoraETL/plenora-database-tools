@@ -332,6 +332,8 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     # transazione. Le prime cinque hanno una controparte su PostgreSQL; la
     # sesta no, perche li un cursore abbandonato non costa niente e qui
     # rende la connessione inservibile.
+    "live_tests::live_concurrent_cancellation_does_not_disturb_the_other_readers",
+    "live_tests::live_concurrent_readers_share_the_pool_without_mixing_rows",
     "live_tests::live_query_stream_abandoned_mid_way_leaves_the_transaction_usable",
     "live_tests::live_query_stream_cancelled_mid_stream_returns_cancelled",
     "live_tests::live_query_stream_exhausts_at_end",

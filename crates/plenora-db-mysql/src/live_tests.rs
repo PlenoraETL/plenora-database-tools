@@ -7135,3 +7135,219 @@ async fn stream_row_count(table: &str, value: i64) -> i64 {
         .expect("conteggio")
         .expect("una riga di conteggio")
 }
+
+// === Concorrenza: quello che PostgreSQL aveva e questi due no ==============
+
+/// Dodici lettori sullo stesso pool, e le righe tornano tutte.
+///
+/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress` da tempo; qui non
+/// c'era niente di equivalente, e la lacuna non era spatial ne di contratto:
+/// era che nessuno aveva mai chiesto a questo provider di servire piu lettori
+/// insieme. Un pool che sotto contesa mescolasse le righe, o ne perdesse, non
+/// avrebbe fatto fallire nessuna prova di questo repository.
+///
+/// # Cosa verifica, e perche il conteggio non basta
+///
+/// Il totale delle righe e la prima cosa, ed e quella che coglie una perdita.
+/// Ma un pool che servisse a due lettori la **stessa** connessione a meta
+/// stream renderebbe comunque il totale giusto, con le righe mescolate fra i
+/// due: ogni worker verifica percio che le proprie righe siano quelle che ha
+/// chiesto — la sua fetta di id, in ordine — non solo quante sono.
+///
+/// Il pool e volutamente **piu piccolo** del numero di lettori: quattro
+/// connessioni per dodici worker. Un pool abbondante non misura la contesa, e
+/// la contesa e cio che questa prova esiste per attraversare.
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_concurrent_readers_share_the_pool_without_mixing_rows() {
+    use std::sync::Arc;
+
+    const WORKERS: i64 = 12;
+    const ROUNDS: usize = 8;
+    const ROWS_PER_WORKER: i64 = 5;
+
+    let table = "_stress_concurrent";
+    seed_stream_table(
+        table,
+        u32::try_from(WORKERS * ROWS_PER_WORKER).expect("righe"),
+    )
+    .await;
+
+    let provider = Arc::new(MysqlProvider::new(live_config(), 4).expect("provider"));
+    let mut tasks = Vec::new();
+    for worker in 0..WORKERS {
+        let provider = Arc::clone(&provider);
+        let table = table.to_owned();
+        tasks.push(tokio::spawn(async move {
+            let cancellation = CancellationToken::new();
+            let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+            // Ogni worker ha la **propria** fetta di id, contigua e disgiunta
+            // da quella degli altri: se il pool consegnasse a due lettori la
+            // stessa connessione a meta stream, le righe di uno finirebbero
+            // nell'altro e l'ordinamento lo direbbe.
+            let first = worker * ROWS_PER_WORKER + 1;
+            let last = first + ROWS_PER_WORKER - 1;
+            let statement = plenora_database_core::transaction::Statement {
+                sql: format!("SELECT n FROM {table} WHERE n BETWEEN ? AND ? ORDER BY n"),
+                params: vec![
+                    plenora_database_core::provider::ParameterValue::I64(first),
+                    plenora_database_core::provider::ParameterValue::I64(last),
+                ],
+            };
+            let mut seen = Vec::new();
+            for _ in 0..ROUNDS {
+                let mut transaction = provider
+                    .begin_transaction(
+                        &live_secret(),
+                        &plenora_database_core::transaction::TransactionOptions::default(),
+                        &budget,
+                        &cancellation,
+                    )
+                    .await
+                    .expect("begin concorrente");
+                {
+                    let mut stream = transaction
+                        .query_stream(&statement, 2, &cancellation)
+                        .await
+                        .expect("stream concorrente");
+                    seen.clear();
+                    while let Some(rows) = stream
+                        .next_batch(&cancellation)
+                        .await
+                        .expect("batch concorrente")
+                    {
+                        for row in rows {
+                            seen.push(format!("{:?}", row.values()[0]));
+                        }
+                    }
+                }
+                transaction
+                    .commit(&cancellation)
+                    .await
+                    .expect("commit concorrente");
+                assert_eq!(
+                    seen.len(),
+                    usize::try_from(ROWS_PER_WORKER).expect("righe"),
+                    "il worker {worker} ha visto righe che non ha chiesto"
+                );
+            }
+            seen.len()
+        }));
+    }
+
+    let mut total = 0_usize;
+    for task in tasks {
+        total += task.await.expect("worker dello stress");
+    }
+    assert_eq!(
+        total,
+        usize::try_from(WORKERS * ROWS_PER_WORKER).expect("righe"),
+        "l'ultimo giro di ogni worker deve rendere la sua fetta intera"
+    );
+}
+
+/// Una cancellazione fra dodici lettori non porta via gli altri.
+///
+/// La prova gemella della precedente, e misura la cosa che un pool sbaglia piu
+/// facilmente: una connessione interrotta a meta e restituita al pool senza
+/// essere ripulita: il lettore successivo la trova con i pacchetti di qualcun
+/// altro in coda.
+///
+/// Meta dei worker cancella a meta stream, l'altra meta legge fino in fondo.
+/// Quelli che leggono devono vedere **la propria fetta intera** — non un
+/// batch parziale, non righe altrui — e il provider deve restare usabile dopo.
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_concurrent_cancellation_does_not_disturb_the_other_readers() {
+    use std::sync::Arc;
+
+    const WORKERS: i64 = 12;
+    const ROWS_PER_WORKER: i64 = 6;
+
+    let table = "_stress_cancel_mix";
+    seed_stream_table(
+        table,
+        u32::try_from(WORKERS * ROWS_PER_WORKER).expect("righe"),
+    )
+    .await;
+
+    let provider = Arc::new(MysqlProvider::new(live_config(), 4).expect("provider"));
+    let mut tasks = Vec::new();
+    for worker in 0..WORKERS {
+        let provider = Arc::clone(&provider);
+        let table = table.to_owned();
+        let interrupts = worker % 2 == 0;
+        tasks.push(tokio::spawn(async move {
+            let cancellation = CancellationToken::new();
+            let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+            let first = worker * ROWS_PER_WORKER + 1;
+            let last = first + ROWS_PER_WORKER - 1;
+            let statement = plenora_database_core::transaction::Statement {
+                sql: format!("SELECT n FROM {table} WHERE n BETWEEN ? AND ? ORDER BY n"),
+                params: vec![
+                    plenora_database_core::provider::ParameterValue::I64(first),
+                    plenora_database_core::provider::ParameterValue::I64(last),
+                ],
+            };
+            let mut transaction = provider
+                .begin_transaction(
+                    &live_secret(),
+                    &plenora_database_core::transaction::TransactionOptions::default(),
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .expect("begin concorrente");
+            let interrupted = CancellationToken::new();
+            let mut seen = 0_usize;
+            {
+                let token = if interrupts {
+                    &interrupted
+                } else {
+                    &cancellation
+                };
+                let mut stream = transaction
+                    .query_stream(&statement, 2, token)
+                    .await
+                    .expect("stream concorrente");
+                while let Some(rows) = stream.next_batch(token).await.transpose() {
+                    match rows {
+                        Ok(rows) => {
+                            seen += rows.len();
+                            if interrupts && seen >= 2 {
+                                interrupted.cancel();
+                            }
+                        }
+                        Err(error) => {
+                            assert!(interrupts, "il worker {worker} non ha cancellato niente");
+                            assert_eq!(error.category, ErrorCategory::Cancelled);
+                            break;
+                        }
+                    }
+                }
+            }
+            // La transazione resta usabile anche dopo una lettura cancellata:
+            // e cio che la settima tranche ha misurato, e qui lo si attraversa
+            // sotto contesa.
+            transaction
+                .commit(&cancellation)
+                .await
+                .expect("commit dopo la cancellazione concorrente");
+            (interrupts, seen)
+        }));
+    }
+
+    for task in tasks {
+        let (interrupts, seen) = task.await.expect("worker dello stress");
+        if interrupts {
+            // Ha smesso presto, ma non prima di aver letto qualcosa.
+            assert!(seen >= 2, "un lettore cancellato non ha visto nulla");
+        } else {
+            assert_eq!(
+                seen,
+                usize::try_from(ROWS_PER_WORKER).expect("righe"),
+                "un lettore non cancellato ha perso righe mentre un altro cancellava"
+            );
+        }
+    }
+}

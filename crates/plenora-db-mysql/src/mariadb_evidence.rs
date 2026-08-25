@@ -5729,6 +5729,7 @@ async fn profile_probes(
             cancellation,
         )
         .await;
+        concurrency_probe(recorder, profile, &mut connection, cancellation).await;
     }
 }
 
@@ -6140,6 +6141,152 @@ async fn spatial_bound_forms(connection: &mut mysql_async::Conn) -> (Vec<String>
             |row| row.flatten().unwrap_or_else(|| "nessuna".to_owned()),
         );
     (bound, srids)
+}
+
+/// La tabella su cui dodici lettori si contendono il pool.
+const SCRATCH_STRESS: &str = "plenora_driver_evidence_stress";
+
+/// Dodici lettori concorrenti sullo stesso pool, con il profilo del prodotto.
+///
+/// `PostgreSQL` ha una prova di contesa da tempo; `MySQL` l'ha avuta oggi, e
+/// questa e la sua gemella su questo prodotto. La lacuna non era di contratto
+/// ne spatial: era che nessuno aveva mai chiesto a questo provider di servire
+/// piu lettori insieme, e un pool che sotto contesa mescolasse le righe non
+/// avrebbe fatto fallire nessuna prova di questo documento.
+///
+/// # Perche il conteggio totale non basta
+///
+/// Un pool che consegnasse a due lettori la **stessa** connessione a meta
+/// stream renderebbe comunque il totale giusto, con le righe mescolate fra i
+/// due. Ogni worker chiede percio una fetta di id **disgiunta** dalle altre e
+/// verifica di aver visto la propria: il totale coglie una perdita, la fetta
+/// coglie uno scambio.
+///
+/// Il pool e volutamente piu piccolo del numero di lettori — quattro
+/// connessioni per dodici worker — perche un pool abbondante non misura la
+/// contesa, e la contesa e cio che questa sonda esiste per attraversare.
+// La transazione vive fino al `commit` che la consuma, ed e proprio quello
+// che il lint vorrebbe accorciare; il corpo resta intero perche la sequenza
+// — semina, contesa, verifica — e cio che la sonda misura.
+#[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
+async fn concurrency_probe(
+    recorder: &mut Recorder,
+    profile: &'static dyn ProductProfile,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use std::sync::Arc;
+
+    const WORKERS: i64 = 12;
+    const ROWS_PER_WORKER: i64 = 5;
+
+    let mut rows = String::new();
+    for id in 1..=(WORKERS * ROWS_PER_WORKER) {
+        if id > 1 {
+            rows.push(',');
+        }
+        let _ = write!(&mut rows, "({id})");
+    }
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_STRESS}"),
+        format!("CREATE TABLE {SCRATCH_STRESS} (n INT NOT NULL PRIMARY KEY) ENGINE = InnoDB"),
+        format!("INSERT INTO {SCRATCH_STRESS} (n) VALUES {rows}"),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella della contesa: harness, non divergenza");
+    }
+
+    let pool = Arc::new(
+        crate::MysqlPool::new_with_profile(&config(), 4, profile)
+            .expect("pool della misura: harness, non divergenza"),
+    );
+    let mut tasks = Vec::new();
+    for worker in 0..WORKERS {
+        let pool = Arc::clone(&pool);
+        let cancellation = cancellation.clone();
+        tasks.push(tokio::spawn(async move {
+            let first = worker * ROWS_PER_WORKER + 1;
+            let last = first + ROWS_PER_WORKER - 1;
+            let statement = Statement {
+                sql: format!("SELECT n FROM {SCRATCH_STRESS} WHERE n BETWEEN ? AND ? ORDER BY n"),
+                params: vec![
+                    plenora_database_core::provider::ParameterValue::I64(first),
+                    plenora_database_core::provider::ParameterValue::I64(last),
+                ],
+            };
+            let session = pool.checkout(&cancellation).await?;
+            let mut transaction = Box::new(
+                crate::transaction::MysqlTransaction::begin(
+                    session,
+                    &TransactionOptions::default(),
+                    &cancellation,
+                )
+                .await?,
+            );
+            let mut seen = 0_usize;
+            {
+                // Batch da due su cinque righe: lo stream resta aperto per piu
+                // giri, che e il momento in cui una connessione condivisa per
+                // sbaglio si farebbe sentire.
+                let mut stream = transaction
+                    .query_stream(&statement, 2, &cancellation)
+                    .await?;
+                while let Some(batch) = stream.next_batch(&cancellation).await? {
+                    seen += batch.len();
+                }
+            }
+            transaction.commit(&cancellation).await?;
+            Ok::<usize, plenora_database_core::DatabaseError>(seen)
+        }));
+    }
+
+    let mut total = 0_usize;
+    let mut failure = None;
+    for task in tasks {
+        match task.await.expect("worker della contesa") {
+            Ok(seen) => total += seen,
+            Err(error) => {
+                failure.get_or_insert_with(|| {
+                    format!("{:?}/{:?}: {}", error.category, error.phase, error.message)
+                });
+            }
+        }
+    }
+
+    let question = "dodici lettori concorrenti sullo stesso pool vedono ciascuno la propria fetta";
+    let expected = usize::try_from(WORKERS * ROWS_PER_WORKER).expect("righe attese");
+    match failure {
+        None if total == expected => recorder.accepted(
+            "provider.profile_concurrent_readers",
+            "provider",
+            "profilo",
+            question,
+            format!("lettori={WORKERS} pool=4 righe={total}"),
+        ),
+        None => recorder.rejected(
+            "provider.profile_concurrent_readers",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("attese {expected} righe, lette {total}")),
+            None,
+        ),
+        Some(error) => recorder.rejected(
+            "provider.profile_concurrent_readers",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("un lettore ha fallito — {error}")),
+            None,
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_STRESS}"))
+        .await;
 }
 
 /// La tabella su cui si attraversano le funzioni spatial.
