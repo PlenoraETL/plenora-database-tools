@@ -1170,6 +1170,231 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
     assert_eq!(unnamed_error.category, ErrorCategory::Schema);
 }
 
+/// Ogni funzione di `VERIFIED_SPATIAL_FUNCTIONS`, attraversata contro il
+/// riferimento.
+///
+/// La prova qui sopra verifica i **valori** di quindici funzioni scelte a mano,
+/// ed e la piu forte delle due: dice che `STGeometryType` rende `Point` e che
+/// `STIntersects` rende vero, non solo che non hanno dato errore. Ma la lista
+/// pubblicata ne porta ventiquattro, e le nove che restano fuori non sono un
+/// campione: sono esattamente quelle che **restituiscono geometria** —
+/// `StartPoint`, `EndPoint`, `PointN`, `Buffer`, `Intersection`, `Difference`,
+/// `SymDifference`, `Union`, `ConvexHull`.
+///
+/// E' la stessa forma che su `MySQL` aveva lasciato pubblicate undici funzioni
+/// mai utilizzabili: la lista era stata dedotta dal dialetto condiviso, e il
+/// giorno in cui qualcuno l'ha attraversata davvero e scesa da ventisei a
+/// quindici. Qui il percorso di uscita e diverso — il renderer incapsula in
+/// `.AsBinaryZM()`, quindi le geometrie potrebbero uscire — ma «potrebbero» non
+/// e una misura.
+///
+/// # Cosa fa, e perche non sostituisce l'altra
+///
+/// Cammina sulla **costante**, non su un elenco scritto qui: se la lista si
+/// allunga, questa prova la segue senza che nessuno se ne ricordi. Costruisce
+/// gli argomenti da `accepts_argument_count` e `takes_geometry_at`, cioe
+/// dall'arieta che il contratto dichiara, e attraversa il result set invece di
+/// limitarsi ad aprirlo.
+///
+/// Cio che verifica e piu debole — che la funzione esegua e renda una riga —
+/// ed e voluto: le due prove rispondono a domande diverse. Questa dice «niente
+/// e pubblicato senza essere stato attraversato», l'altra dice «cio che esce e
+/// giusto».
+///
+/// # Le due semantiche
+///
+/// Ogni funzione viene provata su `shape` (geometry) e su `position`
+/// (geography), e basta che ne attraversi una: `STEnvelope` su una geography
+/// non esiste, e chiudere la funzione per quello sarebbe una falsa assenza —
+/// l'errore che su `MySQL` `ST_Area` su una `LINESTRING` aveva quasi fatto
+/// registrare.
+///
+/// # I rifiuti si raccolgono
+///
+/// Panicare sulla prima funzione rotta trasforma una lista sbagliata in una
+/// sequenza di gate live, uno per difetto. Chi accorcia la lista deve vederla
+/// intera in un colpo.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per il sottoinsieme spatial nativo"]
+#[allow(clippy::too_many_lines)]
+async fn live_every_verified_spatial_function_is_crossed() {
+    let cancellation = CancellationToken::new();
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        32,
+        2,
+    )
+    .expect("provider della traversata");
+    let secret = live_secret();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget della traversata");
+
+    let mut crossed = 0_usize;
+    let mut broken: Vec<String> = Vec::new();
+    for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
+        // **Ogni** arieta che il contratto ammette, non la prima. `Union` le
+        // ammette entrambe — l'aggregata unaria e la binaria — e SQL Server
+        // offre soltanto `STUnion(altra)`: chiedendogli la minima, la sonda
+        // leggeva «il riferimento non attraversa `Union`» dove il fatto era
+        // «non l'attraversa in quella forma».
+        //
+        // L'arieta arriva da `accepts_argument_count`, cioe dal **contratto**,
+        // e non dalla classificazione unary/binary interna a questo renderer:
+        // interrogare quella significherebbe far coincidere la domanda con la
+        // risposta, ed e l'errore che su MariaDB aveva fatto passare una sonda
+        // che misurava la propria guardia.
+        //
+        // Cio che resta preteso e la cosa giusta: una funzione pubblicata deve
+        // essere attraversabile in **almeno una** delle forme che il piano
+        // ammette. Nessuna, e la funzione non merita la lista.
+        let mut shapes = Vec::new();
+        for arity in (1..=4).filter(|count| function.accepts_argument_count(*count)) {
+            for (field, semantics, coordinates) in [
+                ("shape", SpatialSemantics::Geometry, [3.0_f64, 3.0_f64]),
+                (
+                    "position",
+                    SpatialSemantics::Geography,
+                    [13.0_f64, 43.0_f64],
+                ),
+            ] {
+                shapes.push((arity, field, semantics, coordinates));
+            }
+        }
+        let mut refusals: Vec<String> = Vec::new();
+        for (arity, field, semantics, coordinates) in shapes {
+            let mut parameters = BTreeMap::new();
+            let arguments: Vec<QueryExpression> = (0..arity)
+                .map(|index| {
+                    if index == 0 {
+                        QueryExpression::Column {
+                            column: ColumnRef {
+                                relation: Some("source".to_owned()),
+                                field: field.to_owned(),
+                            },
+                        }
+                    } else if function.takes_geometry_at(index) {
+                        parameters.insert(
+                            "needle".to_owned(),
+                            ParameterValue::Wkb {
+                                bytes: ewkb_point(1, &coordinates),
+                                srid: Some(4_326),
+                                dimensions: Dimensions::Xy,
+                                semantics,
+                            },
+                        );
+                        QueryExpression::Parameter {
+                            name: "needle".to_owned(),
+                        }
+                    } else {
+                        // Lo scalare non e uno solo: il renderer classifica
+                        // l'argomento non geometrico prima di emetterlo, e
+                        // pretende un `F64` **finito** per la distanza di
+                        // `STBuffer` e un `I32` maggiore o uguale a uno per
+                        // l'indice di vertice di `STPointN`. Bindare `1` per
+                        // entrambi faceva rifiutare `Buffer` dal prepare, e la
+                        // prima lettura di quel rifiuto era «il riferimento non
+                        // attraversa `Buffer`»: era invece la sonda a chiedergli
+                        // la cosa sbagliata.
+                        //
+                        // Il renderer parametrizza soltanto `Parameter` — un
+                        // letterale nell'AST non esiste, e non deve esistere.
+                        parameters.insert(
+                            "scalare".to_owned(),
+                            if matches!(function, SpatialFunction::Buffer) {
+                                ParameterValue::F64(1.0)
+                            } else {
+                                ParameterValue::I32(1)
+                            },
+                        );
+                        QueryExpression::Parameter {
+                            name: "scalare".to_owned(),
+                        }
+                    }
+                })
+                .collect();
+            let operation = QueryOperation {
+                common_table_expressions: Vec::new(),
+                source: Some(QuerySource {
+                    object: ObjectRef {
+                        catalog: None,
+                        schema: Some("plenora_test".to_owned()),
+                        object: "stream_probe".to_owned(),
+                    },
+                    alias: Some("source".to_owned()),
+                }),
+                derived_source: None,
+                projection: vec![QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: *function,
+                        arguments,
+                    },
+                    alias: Some("sonda".to_owned()),
+                }],
+                joins: Vec::new(),
+                filter: None,
+                group_by: Vec::new(),
+                having: None,
+                order_by: Vec::new(),
+                distinct: false,
+                distinct_on: Vec::new(),
+                set_operations: Vec::new(),
+                row_limit: Some(1),
+                row_offset: None,
+                locking: None,
+            };
+            let bag = ParameterBag::new(parameters);
+            match provider
+                .query(&secret, &operation, &bag, &budget, &cancellation)
+                .await
+            {
+                Err(error) => {
+                    refusals.push(format!(
+                        "su {field} con {arity} argomenti il prepare fallisce ({})",
+                        error.message
+                    ));
+                    continue;
+                }
+                Ok(mut stream) => match stream.next_batch(&cancellation).await {
+                    Err(error) => {
+                        refusals.push(format!(
+                            "su {field} con {arity} argomenti non esegue ({})",
+                            error.message
+                        ));
+                        continue;
+                    }
+                    Ok(first) => {
+                        if first.is_none_or(|batch| batch.num_rows() != 1) {
+                            refusals.push(format!(
+                                "su {field} con {arity} argomenti non rende la riga della sonda"
+                            ));
+                            continue;
+                        }
+                    }
+                },
+            }
+            refusals.clear();
+            break;
+        }
+        if refusals.is_empty() {
+            crossed += 1;
+        } else {
+            broken.push(format!("{function:?}: {}", refusals.join(", e ")));
+        }
+    }
+
+    assert!(
+        broken.is_empty(),
+        "verified che il riferimento non attraversa ({} su {}): {}",
+        broken.len(),
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        broken.join("; ")
+    );
+    assert_eq!(
+        crossed,
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        "la sonda deve attraversare l'intera lista pubblicata"
+    );
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito per il sottoinsieme spatial nativo"]
 #[allow(clippy::too_many_lines)]
