@@ -280,12 +280,13 @@ ventitre sonde, come nella prima tranche.
 
 ### Cosa resta not_measured
 
-`provider.ambiguous_commit`. Un commit di esito ignoto si osserva solo con
-fault injection deterministica: uccidere la connessione a meta `COMMIT` da
-una seconda sessione e una corsa, non un esperimento ripetibile, e un esito
-ottenuto cosi non distingue il comportamento del provider dal momento in cui
-e arrivato il colpo. Resta `not_measured`, senza inferenze: un esito assente
-non e un esito negativo.
+~~`provider.ambiguous_commit`~~ **Chiuso dall'undicesima tranche.** La ragione
+scritta qui — che un commit di esito ignoto si osserva solo con fault
+injection deterministica, e che uccidere la connessione a meta `COMMIT` da una
+seconda sessione e una corsa e non un esperimento — era giusta, e escludeva
+**quel** metodo, non la misura. La forma deterministica esisteva gia nel
+provider SQL Server di questo repository, e vale identica qui. Il seguito e in
+fondo al documento.
 
 ## Terza tranche: la semantica di sessione
 
@@ -1200,3 +1201,63 @@ e per questo la sonda prova entrambi i nomi di ciascuna generazione OGC.
 * **le versioni di `MariaDB` oltre la 12.3**: il rifiuto e misurato su 11.8 e
   12.3, e come tutte le righe di questo documento vale per cio che e stato
   acceso.
+
+## Undicesima tranche: il commit che e atterrato e non l'ha detto
+
+Era l'ultima superficie `not_measured` di questo documento, e ci e rimasta a
+lungo per una ragione che vale la pena rileggere: «un esito ottenuto cosi non
+distingue il comportamento del provider dal momento in cui e arrivato il
+colpo». Vero — di quel metodo. Uccidere la connessione a meta `COMMIT` da una
+seconda sessione e una corsa, e da una corsa non esce un contratto.
+
+La forma deterministica era in casa da tempo, in un provider che nessuno
+stava guardando: `SqlServerSession::commit_with_delayed_response` esegue
+`COMMIT TRANSACTION; WAITFOR DELAY`, cioe fa **atterrare** il commit e poi
+trattiene la risposta. La finestra in cui cancellare e larga, ripetibile e
+sempre nello stesso punto. Su questi due motori l'equivalente e
+`COMMIT; DO SLEEP(5)`.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | commit | `provider.ambiguous_commit` | `OutcomeUnknown`, fase certa `commit_requested`, e la riga **c'e** | **identico** | **identico** |
+
+### Cosa dice
+
+**`OutcomeUnknown` e onesto, e questa e la parte che conta.** Che il provider
+dichiari un esito ignoto e meta della prova; l'altra meta e che quella
+dichiarazione corrisponda a cio che il server ha fatto. `Unknown` non vuol
+dire «non e successo niente»: vuol dire «non lo so», e le due si distinguono
+solo rileggendo da un'altra connessione. La riga inserita nella transazione
+**c'e**, su tutti e tre i riferimenti: il commit era andato a buon fine, e il
+provider non poteva saperlo.
+
+E' il caso per cui `OutcomeUnknown` esiste, ed e il piu pericoloso da
+sbagliare in entrambe le direzioni. Un `Committed` qui direbbe a
+un'automazione che la mutazione e confermata quando nessuno l'ha vista
+tornare; un `RolledBack` autorizzerebbe un retry che **raddoppia** la riga.
+La sonda rifiuta entrambi, e non per costruzione: se il commit non fosse
+atterrato registrerebbe `not_measured`, perche avrebbe misurato un altro caso
+e chiamarlo con questo nome direbbe una cosa per un'altra.
+
+**Il percorso attraversato e quello di produzione.** L'interruttore cambia il
+testo dello statement, non la logica che ne classifica l'esito: la
+cancellazione, la quarantena della sessione e la mappatura verso
+`OutcomeUnknown` sono le stesse righe che un consumatore incontra. E' un
+`#[cfg(test)]` con guardia che si spegne al `Drop` — non una feature, non una
+variabile d'ambiente — per la stessa ragione del bypass del rifiuto: un
+interruttore che si accende e basta lascerebbe ogni commit successivo del
+binario in attesa di cinque secondi.
+
+**I tre server non si distinguono.** Come per tutta la macchina a stati della
+sessione, che resta la parte del provider su cui MySQL e MariaDB non hanno mai
+divergiuto.
+
+### Cosa resta not_measured
+
+Niente, in questo documento. Le superfici che il provider `MySQL` puntato su
+`MariaDB` non raggiunge — `provider.read` e `provider.read_geometry` —
+restano quello che sono per costruzione: dipendono da un catalogo che quel
+percorso non sa leggere, e il percorso qualificato passa dal profilo, dove
+sono misurate.

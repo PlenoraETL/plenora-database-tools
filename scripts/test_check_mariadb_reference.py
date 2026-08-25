@@ -499,20 +499,36 @@ class MariadbDriverEvidenceTests(unittest.TestCase):
         self.assertIn("| raw |", document)
         self.assertIn("| provider |", document)
 
-    def test_the_ambiguous_commit_stays_not_measured(self) -> None:
-        """Senza fault injection deterministica non si conclude niente.
+    def test_the_ambiguous_commit_is_measured_and_verified_from_outside(self) -> None:
+        """La sonda del commit ignoto verifica **due** cose, non una.
 
-        E la sonda dove la tentazione di dedurre e piu forte: il commit e
-        andato, quindi "probabilmente" il provider lo classifica bene. Un
-        verdetto che confondesse un esito assente con uno negativo — o
-        positivo — porterebbe a decidere su una prova mai fatta.
+        Questa guardia diceva un'altra cosa, ed e stata riscritta il giorno in
+        cui ha smesso di valere — che era il suo scopo. Diceva: senza fault
+        injection deterministica non si conclude niente, ed era vero finche
+        l'unico modo immaginato era uccidere la connessione a meta commit, che
+        e una corsa. La forma deterministica c'era gia nel provider SQL Server
+        di questo repository: far atterrare il commit e **poi** trattenere la
+        risposta.
+
+        Cio che va presidiato ora e piu stretto della misura stessa. Che il
+        provider dichiari `OutcomeUnknown` e meta della prova; l'altra meta e
+        che quella dichiarazione sia onesta, e si vede solo rileggendo il
+        server da un'altra connessione. Una sonda che si fermasse alla prima
+        meta chiamerebbe prova un'alzata di spalle, e `Unknown` verrebbe
+        accettato anche dove il commit non e mai atterrato — cioe dove la
+        misura riguarda un altro caso.
         """
 
         evidence = self.EVIDENCE.read_text(encoding="utf-8")
         self.assertIn('"provider.ambiguous_commit"', evidence)
-        self.assertIn("not_measured", evidence)
-        self.assertIn("fault injection deterministica", evidence)
-        self.assertIn("not_measured", self.DOCUMENT.read_text(encoding="utf-8"))
+        # Il seam e deterministico e vive nel percorso di produzione: e
+        # l'interruttore a cambiare il testo dello statement, non una copia
+        # della logica che ne classifica l'esito.
+        self.assertIn("DelayedCommitResponse", evidence)
+        # E la rilettura da fuori, che e la meta che distingue una prova da
+        # una citazione.
+        self.assertIn("commit_contents", evidence)
+        self.assertIn("OutcomeUnknown", evidence)
 
     def test_every_driver_probe_is_recorded_in_the_document(self) -> None:
         """La matrice del documento segue le sonde che la producono."""
@@ -701,13 +717,26 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             "di qualifica": set(QUALIFICATION_PROBES),
         }
         classified = set().union(*inventories.values())
+        # Le due direzioni non hanno lo stesso perimetro, e l'asimmetria e
+        # voluta.
+        #
+        # In avanti: ogni sonda **del profilo** deve essere classificata. E'
+        # quella la famiglia che nasce insieme a una capability, e per cui
+        # «non e in nessun inventario» sarebbe indistinguibile da una
+        # dimenticanza.
         self.assertEqual(
             declared - classified,
             set(),
             "sonde del profilo che nessun inventario del runner classifica",
         )
+        # All'indietro: ogni sonda classificata deve **esistere**, e qui il
+        # perimetro e piu largo del profilo. Gli inventari possono nominare
+        # qualunque sonda `provider.*` — `provider.ambiguous_commit` e la
+        # prima a valersene — e una dichiarazione su una sonda cancellata non
+        # dichiara nulla.
+        produced = set(re.findall(r'"(provider\.[a-z_]+)"', source))
         self.assertEqual(
-            classified - declared,
+            classified - produced,
             set(),
             "il runner pretende sonde che la misura non produce piu",
         )

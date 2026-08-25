@@ -91,6 +91,13 @@ OUTCOME_ONLY = frozenset({"raw.tls_cipher", "provider.test_connection"})
 # e `same` usciva con zero.
 REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_probe": "riconoscimento del prodotto e qualifica della versione",
+    # Il commit ambiguo: la sonda lo provoca in modo deterministico e verifica
+    # **due** cose, non una. Che il provider dichiari `OutcomeUnknown`, e che
+    # quella dichiarazione sia onesta — la riga c'e, letta da un'altra
+    # connessione. Un `RolledBack` qui autorizzerebbe un retry che la
+    # raddoppia, ed e la ragione per cui la prova e necessaria e non
+    # osservativa.
+    "provider.ambiguous_commit": "il commit atterrato ma non confermato e dichiarato ignoto",
     "provider.profile_describe_object": "catalogo letto con le query del profilo",
     "provider.profile_read_schema": "lo schema che la lettura pubblica",
     "provider.profile_read_values": "i valori che la lettura decodifica",

@@ -38,12 +38,87 @@ pub enum MysqlTransactionCommand {
 }
 
 impl MysqlTransactionCommand {
-    const fn sql(self) -> &'static str {
+    // `const` fuori dai test, dove `commit_sql` e una costante; dentro no,
+    // perche legge l'interruttore. La firma resta una sola: due firme
+    // vorrebbero dire due percorsi, e il punto della misura e che il percorso
+    // sia lo stesso.
+    #[cfg_attr(not(test), allow(clippy::missing_const_for_fn))]
+    fn sql(self) -> &'static str {
         match self {
             Self::Start => "START TRANSACTION",
-            Self::Commit => "COMMIT",
-            Self::Rollback => "ROLLBACK",
+            // Il commit, e nei soli test il commit **la cui risposta tarda**.
+            //
+            // Il commit ambiguo era l'ultima superficie `not_measured` di
+            // questo documento, e la ragione era buona: uccidere la
+            // connessione a meta `COMMIT` da una seconda sessione e una corsa,
+            // non un esperimento, e un esito ottenuto cosi non distingue il
+            // comportamento del provider dal momento in cui e arrivato il
+            // colpo.
+            //
+            // Questa e la stessa forma che il provider SQL Server usa gia —
+            // `COMMIT TRANSACTION; WAITFOR DELAY` — e la rende deterministica:
+            // il commit **atterra**, poi la risposta tarda, e la finestra in
+            // cui cancellare e larga e sempre la stessa. Cio che si osserva
+            // dopo non e un caso fortunato: e il percorso di commit reale del
+            // provider, con la risposta trattenuta.
+            //
+            // Vale solo nei test — `#[cfg(test)]`, nessuna feature, nessuna
+            // variabile d'ambiente — e solo finche una guardia resta viva.
+            Self::Commit => commit_sql(),
+            Self::Rollback => ROLLBACK_SQL,
         }
+    }
+}
+
+const COMMIT_SQL: &str = "COMMIT";
+const ROLLBACK_SQL: &str = "ROLLBACK";
+
+#[cfg(not(test))]
+const fn commit_sql() -> &'static str {
+    COMMIT_SQL
+}
+
+/// Il commit, con la risposta trattenuta se la guardia e viva.
+///
+/// `DO SLEEP(n)` invece di `SELECT SLEEP(n)`: non produce un result set, e
+/// quindi non cambia cosa il client deve leggere oltre al ritardo.
+#[cfg(test)]
+fn commit_sql() -> &'static str {
+    if DELAYED_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
+        "COMMIT; DO SLEEP(5)"
+    } else {
+        COMMIT_SQL
+    }
+}
+
+#[cfg(test)]
+static DELAYED_COMMIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Trattiene la risposta del commit finche la guardia resta viva.
+///
+/// Globale e non per-thread, per la stessa ragione del bypass `MariaDB`: il
+/// provider gira su un runtime multi-thread, e un interruttore legato al
+/// thread del test non sarebbe visibile dentro il task che apre la
+/// connessione. E si spegne al `Drop`, perche un interruttore che si accende e
+/// basta lascerebbe ogni commit successivo del binario di test in attesa di
+/// cinque secondi.
+#[allow(clippy::redundant_pub_crate)]
+#[cfg(test)]
+pub(crate) struct DelayedCommitResponse;
+
+#[allow(clippy::redundant_pub_crate)]
+#[cfg(test)]
+impl DelayedCommitResponse {
+    pub(crate) fn engage() -> Self {
+        DELAYED_COMMIT.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for DelayedCommitResponse {
+    fn drop(&mut self) {
+        DELAYED_COMMIT.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

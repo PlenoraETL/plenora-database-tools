@@ -796,17 +796,161 @@ async fn provider_surface_probes(
 
     cancellation_probes(recorder, provider, cancellation).await;
 
-    recorder.not_measured(
-        "provider.ambiguous_commit",
-        "provider",
-        "commit",
-        "come classifica un commit di esito ignoto",
-        "richiede fault injection deterministica sul COMMIT — uccidere la \
-         connessione a meta commit da una seconda sessione e una corsa, non \
-         un esperimento ripetibile, e un esito ottenuto cosi non distingue \
-         il comportamento del provider dal momento in cui e arrivato il \
-         colpo. Nessuna inferenza da qui.",
-    );
+    ambiguous_commit_probe(recorder, provider, cancellation).await;
+}
+
+/// La tabella su cui si misura un commit di esito ignoto.
+const SCRATCH_COMMIT: &str = "plenora_driver_evidence_commit";
+
+/// Un commit **atterrato** di cui il chiamante non sa l'esito.
+///
+/// Era l'ultima superficie `not_measured` di questo documento, e la ragione
+/// dichiarata era buona: uccidere la connessione a meta `COMMIT` da una
+/// seconda sessione e una corsa, e un esito ottenuto cosi non distingue il
+/// comportamento del provider dal momento in cui e arrivato il colpo.
+///
+/// La ragione escludeva **quel** metodo, non la misura. Il provider SQL Server
+/// di questo repository usa da tempo la forma deterministica — `COMMIT
+/// TRANSACTION; WAITFOR DELAY` — e qui vale la stessa: `COMMIT; DO SLEEP(5)`
+/// fa atterrare il commit e **poi** trattiene la risposta, quindi la finestra
+/// in cui cancellare e larga, ripetibile e sempre nello stesso punto. Il
+/// percorso attraversato resta quello di produzione: l'interruttore cambia il
+/// testo dello statement, non la logica che ne classifica l'esito.
+///
+/// # Cosa verifica, e perche la rilettura e il punto
+///
+/// Che il provider dichiari `OutcomeUnknown` e meta della prova. L'altra meta
+/// e che quella dichiarazione sia **onesta**: `Unknown` non vuol dire «non e
+/// successo niente», vuol dire «non lo so», e le due si distinguono solo
+/// guardando il server da un'altra connessione. Se la riga c'e, il provider ha
+/// detto la verita su una scrittura andata a buon fine senza che lui potesse
+/// saperlo — che e il caso per cui `OutcomeUnknown` esiste, e il piu
+/// pericoloso da sbagliare: un `RolledBack` qui autorizzerebbe un retry che
+/// raddoppia la riga.
+async fn ambiguous_commit_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    outer: &CancellationToken,
+) {
+    let mut connection = open_connection().await;
+    for statement in [
+        format!("DROP TABLE IF EXISTS {SCRATCH_COMMIT}"),
+        format!("CREATE TABLE {SCRATCH_COMMIT} (id INT NOT NULL PRIMARY KEY) ENGINE = InnoDB"),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella del commit: harness, non divergenza");
+    }
+
+    let question = "un commit atterrato ma non confermato e dichiarato ignoto, e la riga c'e";
+    let budget = read_budget();
+    let interrupted = CancellationToken::new();
+    let outcome = async {
+        let mut transaction = provider
+            .begin_transaction(
+                &secret(),
+                &plenora_database_core::transaction::TransactionOptions::default(),
+                &budget,
+                outer,
+            )
+            .await?;
+        transaction
+            .execute(
+                &plenora_database_core::transaction::Statement {
+                    sql: format!("INSERT INTO {SCRATCH_COMMIT} (id) VALUES (7)"),
+                    params: Vec::new(),
+                },
+                outer,
+            )
+            .await?;
+        // L'interruttore vale da qui, e si spegne quando la guardia muore: il
+        // commit successivo di questo binario non deve trovare cinque secondi
+        // di attesa che nessuno ha chiesto.
+        let _delayed = crate::session::DelayedCommitResponse::engage();
+        let cancel_at = interrupted.clone();
+        // La cancellazione arriva **dentro** la finestra, non al suo bordo: un
+        // secondo su cinque lascia margine a una macchina lenta senza
+        // avvicinarsi alla fine del ritardo.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            cancel_at.cancel();
+        });
+        transaction.commit(&interrupted).await
+    }
+    .await;
+
+    let contents = commit_contents(&mut connection).await;
+    match outcome {
+        Ok(plenora_database_core::transaction::CommitOutcome::OutcomeUnknown { recovery }) => {
+            // La riga **deve** esserci: il commit era atterrato prima che la
+            // risposta fosse trattenuta. Se non ci fosse, `Unknown` sarebbe
+            // ugualmente lecito ma la sonda avrebbe misurato un altro caso, e
+            // registrarlo qui direbbe una cosa per un'altra.
+            let mismatch = (contents != "righe=1").then(|| {
+                format!("il commit non era atterrato: {contents}; misurato un altro caso")
+            });
+            match mismatch {
+                None => recorder.accepted(
+                    "provider.ambiguous_commit",
+                    "provider",
+                    "commit",
+                    question,
+                    condense(&format!(
+                        "OutcomeUnknown fase_certa={:?} verifica={:?} — {contents}",
+                        recovery.last_certain_phase, recovery.verification_action
+                    )),
+                ),
+                Some(reason) => recorder.not_measured(
+                    "provider.ambiguous_commit",
+                    "provider",
+                    "commit",
+                    question,
+                    &condense(&reason),
+                ),
+            }
+        }
+        Ok(other) => recorder.rejected(
+            "provider.ambiguous_commit",
+            "provider",
+            "commit",
+            question,
+            condense(&format!(
+                "il commit ha dichiarato {other:?} invece di un esito ignoto — {contents}"
+            )),
+            None,
+        ),
+        Err(error) => recorder.not_measured(
+            "provider.ambiguous_commit",
+            "provider",
+            "commit",
+            question,
+            &condense(&format!(
+                "il commit non e arrivato a dichiarare un esito: {:?}/{:?}: {} — {contents}",
+                error.category, error.phase, error.message
+            )),
+        ),
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_COMMIT}"))
+        .await;
+}
+
+/// Quante righe la tabella del commit contiene, da un'altra connessione.
+async fn commit_contents(connection: &mut mysql_async::Conn) -> String {
+    connection
+        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {SCRATCH_COMMIT}"))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |row| {
+                row.map_or_else(
+                    || "rilettura senza righe".to_owned(),
+                    |n| format!("righe={n}"),
+                )
+            },
+        )
 }
 
 /// Il mapper del provider, raggiunto **senza** passare dal catalogo.
