@@ -5979,9 +5979,15 @@ async fn spatial_function_probe(
             .expect("tabella delle funzioni spatial: harness, non divergenza");
     }
 
+    // La lista del **profilo**, non quella di `MySQL`. Finche erano la stessa
+    // la distinzione non si vedeva; da quando divergono, attraversare l'altra
+    // misura il proprio cancello invece del prodotto — le tre che risultavano
+    // rifiutate lo erano da `render_query`, non dal server, e `Relate` non
+    // veniva nemmeno provata.
+    let functions = profile.verified_spatial_functions();
     let mut executed = Vec::new();
     let mut refused = Vec::new();
-    for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
+    for function in functions {
         match cross_spatial_function(&provider, *function, schema_name, cancellation).await {
             Ok(()) => executed.push(format!("{function:?}")),
             Err(reason) => refused.push(format!("{function:?}({reason})")),
@@ -5992,7 +5998,7 @@ async fn spatial_function_probe(
     let detail = format!(
         "eseguite={}/{} rifiutate=[{}]",
         executed.len(),
-        crate::query::VERIFIED_SPATIAL_FUNCTIONS.len(),
+        functions.len(),
         refused.join(" ")
     );
     recorder.accepted(
