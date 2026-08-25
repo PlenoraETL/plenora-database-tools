@@ -339,13 +339,48 @@ async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
     let session = pool.checkout(&cancel).await?;
     let mut transaction =
         crate::transaction::MysqlTransaction::begin(session, &options, &cancel).await?;
+    // Il nome della variabile non e lo stesso su tutti i server della matrice,
+    // e non c'e un nome che vada bene per tutti: `transaction_isolation` non
+    // esiste su MariaDB prima della 11.1, `tx_isolation` e stata rimossa in
+    // MySQL 8.0. Chiedendo `@@transaction_isolation` questa sonda moriva con
+    // 1193 su 10.11, e la matrice si rifiutava — giustamente — di pubblicare
+    // un confronto che coincide su un fallimento.
+    //
+    // Il profilo possiede gia quel nome, ma qui non si puo chiedere a lui:
+    // questa matrice misura di proposito **un solo** profilo su tutti i
+    // server, ed e cosi che dimostra che lo stesso percorso di codice rende la
+    // stessa semantica. Sceglierne uno per prodotto cambierebbe cio che la
+    // matrice afferma, e aggiungerebbe un secondo punto di selezione del
+    // profilo dove una guardia ne pretende uno solo.
+    //
+    // La via che non ha bisogno di sapere il prodotto e chiedere al server
+    // **quale dei due nomi possiede**: `SHOW VARIABLES` con un `IN` non e un
+    // errore su un nome assente, e' un insieme vuoto, quindi ogni server
+    // risponde. Le MariaDB dalla 11.1 in su ne rendono due, con lo stesso
+    // valore.
     let rows = transaction
-        .query(&Statement::new("SELECT @@transaction_isolation"), &cancel)
+        .query(
+            &Statement::new(
+                "SHOW VARIABLES WHERE Variable_name IN \
+                 ('transaction_isolation', 'tx_isolation')",
+            ),
+            &cancel,
+        )
         .await?;
-    let observed = rows
-        .first()
-        .and_then(|row| row.values().first())
-        .map_or_else(|| "assente".to_owned(), plain);
+    // Il valore sta nella **seconda** colonna: la prima e il nome. E se i due
+    // nomi rendessero valori diversi sarebbe una divergenza vera, non un
+    // dettaglio da appiattire — la sonda la nomina invece di sceglierne uno.
+    let mut observed_values: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.values().get(1))
+        .map(plain)
+        .collect();
+    observed_values.dedup();
+    let observed = match observed_values.as_slice() {
+        [] => "assente".to_owned(),
+        [single] => single.clone(),
+        many => format!("i due nomi divergono: {}", many.join(" / ")),
+    };
     Box::new(transaction).commit(&cancel).await?;
     Ok(Measured::new(
         observed.clone(),
