@@ -26,6 +26,8 @@ docker rm -f dataflow-mariadb \
              dataflow-mariadb-certgen \
              dataflow-mariadb-11 \
              dataflow-mariadb-11-certgen \
+             dataflow-mariadb-10 \
+             dataflow-mariadb-10-certgen \
              dataflow-mysql \
              dataflow-mysql-certgen \
              dataflow-postgres \

@@ -47,6 +47,7 @@ def load_campaign():
 CAMPAIGN = load_campaign()
 
 LIFECYCLE = importlib.import_module("scripts.fixture_campaign")
+from scripts.mariadb_references import REFERENCES as MARIADB_REFERENCES
 
 
 def observations(probes, outcome: str = "accepted", detail: str = "uguale"):
@@ -90,9 +91,32 @@ class SessionMatrixTests(unittest.TestCase):
         results = MATRIX.compare(built, self.fleet, MATRIX.OUTCOME_ONLY)
         MATRIX.validate(built, results)
 
-    def test_the_matrix_measures_the_three_declared_references(self) -> None:
+    def test_the_matrix_measures_every_declared_reference(self) -> None:
+        """La flotta segue `references.json`, che e la fonte unica.
+
+        Questa guardia elencava le tre chiavi a mano, ed e caduta il giorno in
+        cui MariaDB 10.11 e entrata nella matrice. Riscriverla aggiungendo una
+        quarta stringa avrebbe rimesso in piedi la stessa trappola: un elenco
+        copiato diverge dalla fonte alla prima modifica, e l'unico segnale che
+        da e un fallimento che si "aggiusta" allineando il numero senza
+        guardare cosa e cambiato.
+
+        Cio che va preteso non e **quali** riferimenti ci siano — lo decide
+        `docker/mariadb/references.json`, e l'ADR prevede esplicitamente che se
+        ne aggiungano — ma che la flotta li contenga tutti, che MySQL apra la
+        fila perche e il metro del confronto, e che ognuno sia fissato per
+        digest: un tag mutabile renderebbe la riga della matrice una promessa
+        invece di una prova.
+        """
+
         keys = [server.key for server in self.fleet]
-        self.assertEqual(keys, ["mysql", "mariadb-12", "mariadb-11"])
+        self.assertEqual(keys[0], "mysql", "il metro del confronto apre la fila")
+        expected = {f"mariadb-{reference.major}" for reference in MARIADB_REFERENCES}
+        self.assertEqual(
+            set(keys[1:]),
+            expected,
+            "la flotta non segue i riferimenti dichiarati",
+        )
         for server in self.fleet:
             self.assertTrue(
                 server.digest.startswith("sha256:"),
@@ -241,7 +265,14 @@ class SessionMatrixTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as raised:
             self.run_verdict([[], []], ["prima", "dopo", "dopo"], spy)
         self.assertIn("HEAD e cambiato", str(raised.exception))
-        self.assertEqual(spy.measured, 3, "le misure erano gia partite")
+        # Una per riferimento, piu MySQL: il conteggio arriva dalla fonte e non
+        # da un numero scritto qui, che sarebbe la stessa trappola dell'elenco
+        # copiato — con l'aggravante che un numero non dice cosa conta.
+        self.assertEqual(
+            spy.measured,
+            len(MARIADB_REFERENCES) + 1,
+            "le misure erano gia partite",
+        )
 
     def test_a_tree_touched_during_the_run_is_refused(self) -> None:
         spy = self.spy()
