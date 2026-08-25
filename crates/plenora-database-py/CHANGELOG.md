@@ -13,6 +13,31 @@ confondersi con il ciclo di release del Rust workspace (che usa tag
 
 ## [0.11.0] — non rilasciata
 
+### Aggiunto — `connect_mariadb` / `aconnect_mariadb`
+
+`MariaDB` ha ora una superficie sua nel SDK, sync e async. Stessa forma di
+`connect_mysql` — stesso protocollo, stessi placeholder `?`, stesse opzioni
+TLS — e un **provider diverso**: il profilo di prodotto decide le query di
+catalogo, l'istruzione di timeout (`max_statement_time` in secondi, non
+`MAX_EXECUTION_TIME` in millisecondi), i metadata nel namespace
+`plenora.mariadb.*` e la classificazione dei codici server.
+
+Due factory e non un parametro, ed e una decisione (ADR 0014): `connect_mysql`
+puntata su un server MariaDB viene **rifiutata** alla probe, e
+`connect_mariadb` puntata su MySQL pure. Un provider che si adatta al server
+che trova sceglie per il chiamante nel punto in cui il chiamante non sta
+guardando.
+
+Le sessioni restano `MysqlSession` e `AsyncMysqlSession`, perche la superficie
+e la stessa, ma sanno quale prodotto servono: il `repr` lo dichiara, e il
+messaggio della sessione chiusa cita la factory giusta. Prima una sessione
+chiusa rimandava sempre a `connect_mysql`.
+
+Sei write mode su sette, come su MySQL, con `TruncateInsert` esclusa per la
+stessa ragione permanente. Lo **spatial resta chiuso**: su MariaDB
+`information_schema.columns.SRS_ID` non esiste, quindi una colonna geometrica
+non e descrivibile e viene rifiutata alla descrizione.
+
 ### 🚨 BREAKING — `execute_scalar` impone la cardinalita che dichiarava
 
 `execute_scalar` prendeva la prima riga e la prima colonna e scartava il

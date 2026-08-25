@@ -5,6 +5,9 @@
 //! * `PostgreSQL`/`PostGIS` — `connect` / `aconnect`, con spatial predicates
 //!   e `SpatialReference`;
 //! * `MySQL` — `connect_mysql` / `aconnect_mysql`, senza spatial.
+//! * `MariaDB` — `connect_mariadb` / `aconnect_mariadb`, stessa superficie
+//!   e provider distinto: il prodotto lo dichiara il consumatore, e la
+//!   probe verifica quella scelta invece di compierla (ADR 0014).
 //!
 //! Su entrambi: `execute` / `execute_scalar` / `execute_returning_rows` /
 //! `execute_ddl`, `begin` con isolamento, savepoint, `SessionContext` e
@@ -39,10 +42,10 @@ mod transaction;
 mod write;
 
 use arrow_reader::{AsyncBatchReader, BatchReader};
-use async_mysql_session::{aconnect_mysql, AsyncMysqlSession};
+use async_mysql_session::{aconnect_mariadb, aconnect_mysql, AsyncMysqlSession};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_transaction::AsyncTransaction;
-use mysql_session::{connect_mysql, MysqlSession};
+use mysql_session::{connect_mariadb, connect_mysql, MysqlSession};
 use session::{connect, Session};
 use transaction::Transaction;
 
@@ -171,6 +174,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mysql, m)?)?;
+    // Le due superfici esplicite di `MariaDB`. ADR 0014: il consumatore
+    // dichiara il prodotto, la probe verifica quella scelta invece di
+    // compierla.
+    m.add_function(wrap_pyfunction!(connect_mariadb, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect_mariadb, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;

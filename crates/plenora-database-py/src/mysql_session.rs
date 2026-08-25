@@ -53,7 +53,7 @@ use plenora_database_core::transaction::{
     AccessMode, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, DatabaseError};
-use plenora_db_mysql::{MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
+use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -62,14 +62,28 @@ use std::sync::Arc;
 // Fase E: consolidato in `crate::budget::session_budget`.
 use crate::budget::session_budget as default_budget;
 
-/// Sessione MySQL. Wrapper thin sopra `MysqlProvider`.
+/// Sessione della famiglia `MySQL`: `MySQL` o `MariaDB`.
+///
+/// Il provider e dietro `dyn Provider` perche i due prodotti hanno due tipi
+/// distinti — ADR 0014 vieta che sia il server a decidere quale — e questa
+/// sessione non ne conosce nessuno dei due: usa il contratto. Cio che sa e
+/// **quale** ha in mano, e lo dice ovunque nomini un prodotto: il `repr`, il
+/// messaggio della sessione chiusa. Una sessione `MariaDB` che si dichiarasse
+/// `MySQL` mentirebbe proprio a chi sta cercando di capire cosa ha aperto.
 ///
 /// Prodotta da `plenora_database.connect_mysql(...)`. Context-manager
 /// friendly (`with connect_mysql(...) as s:`).
 #[pyclass(module = "plenora_database._native")]
 pub struct MysqlSession {
-    provider: Arc<MysqlProvider>,
+    provider: Arc<dyn Provider>,
     secret: SecretString,
+    /// Il prodotto che questa sessione serve, per le superfici che lo
+    /// nominano. Non si deduce da `server_version`: quella e una stringa del
+    /// server, e leggerla per decidere sarebbe la selezione automatica che
+    /// ADR 0014 esclude.
+    product: &'static str,
+    /// Il nome della factory da citare quando la sessione e chiusa.
+    factory: &'static str,
     server_version: String,
     closed: bool,
 }
@@ -77,9 +91,10 @@ pub struct MysqlSession {
 impl MysqlSession {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
-            return Err(PyRuntimeError::new_err(
-                "sessione MySQL chiusa: aprine una nuova con plenora_database.connect_mysql(...)",
-            ));
+            return Err(PyRuntimeError::new_err(format!(
+                "sessione {} chiusa: aprine una nuova con plenora_database.{}(...)",
+                self.product, self.factory
+            )));
         }
         Ok(())
     }
@@ -163,8 +178,8 @@ impl MysqlSession {
 
     fn __repr__(&self) -> String {
         format!(
-            "<MysqlSession server='{}' closed={}>",
-            self.server_version, self.closed
+            "<MysqlSession product='{}' server='{}' closed={}>",
+            self.product, self.server_version, self.closed
         )
     }
 
@@ -528,41 +543,102 @@ pub fn connect_mysql(
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
 ) -> PyResult<MysqlSession> {
-    // Fix P1 review MySQL 2026-08-15 (parity con Postgres SDK 0.9.0):
-    // prima il default settava `TrustServerCertificate` quando
-    // `tls_ca_pem` era None — quindi ogni consumer che non forniva
-    // una CA privata usava TLS senza verifica del certificato
-    // server (vulnerabile a MITM). Ora il default è
-    // `MysqlCertificatePolicy::Verify` (WebPKI trust store);
-    // `tls_mode="insecure_trust_server"` è opt-in esplicito per
-    // test/dev locali.
     let secret = SecretString::new(password.to_owned());
+    let config = family_config(host, database, user, &secret, port, tls_ca_pem, tls_mode)?;
+    let provider: Arc<dyn Provider> = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
+    open_family_session(provider, secret, "MySQL", "connect_mysql")
+}
+
+/// La configurazione comune ai due prodotti, TLS compreso.
+///
+/// Sta in un posto solo perche il fail-close TLS non puo permettersi due
+/// copie. Il difetto che questo blocco ha gia avuto una volta era proprio li:
+/// il default accettava `TrustServerCertificate` quando la CA non era data,
+/// cioe TLS senza verifica del certificato del server. Ora il default
+/// **verifica**, e `insecure_trust_server` e un opt-in esplicito per test e
+/// sviluppo locale. Duplicarlo per `MariaDB` avrebbe rimesso in gioco quel
+/// difetto sul secondo prodotto.
+///
+/// # Errors
+///
+/// `PlenoraError` per una CA oltre 1 MiB o un `tls_mode` non riconosciuto.
+pub(crate) fn family_config(
+    host: &str,
+    database: &str,
+    user: &str,
+    secret: &SecretString,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+) -> PyResult<MysqlConfig> {
     let mut config = MysqlConfig::new(host, database, user, secret.clone());
     if let Some(p) = port {
         config = config.with_port(p);
     }
     if let Some(pem) = tls_ca_pem {
         if pem.len() > 1024 * 1024 {
-            return Err(PyRuntimeError::new_err("CA PEM MySQL oltre 1 MiB"));
+            return Err(PyRuntimeError::new_err("CA PEM oltre 1 MiB"));
         }
         config = config.with_private_ca_certificate_pem(pem);
     }
     match tls_mode {
-        "require" => {
-            // Default `MysqlCertificatePolicy::Verify` — nessun
-            // override necessario.
-        }
+        "require" => Ok(config),
         "insecure_trust_server" => {
-            config = config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
+            Ok(config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate))
         }
-        _ => {
-            return Err(PyRuntimeError::new_err(
-                "tls_mode non riconosciuto. Valori: \
-                 'require' (default) | 'insecure_trust_server'",
-            ));
-        }
+        _ => Err(PyRuntimeError::new_err(
+            "tls_mode non riconosciuto. Valori: 'require' (default) | 'insecure_trust_server'",
+        )),
     }
-    let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
+}
+
+/// Apre una connessione `MariaDB` e produce una `MysqlSession`.
+///
+/// Una factory sua, non un parametro di [`connect_mysql`], ed e la meta di
+/// ADR 0014 che riguarda il SDK: «nessuna selezione automatica». Il
+/// consumatore dichiara il prodotto, e la probe verifica quella scelta invece
+/// di compierla — `connect_mysql` puntata su `MariaDB` viene rifiutata, e
+/// questa puntata su `MySQL` pure.
+///
+/// Gli argomenti sono gli stessi perche i due prodotti parlano lo stesso
+/// protocollo. Cio che cambia e il provider costruito, e con lui il profilo
+/// che decide le query di catalogo, l'istruzione di timeout, i metadata
+/// pubblicati e la classificazione dei codici server.
+///
+/// # Errors
+///
+/// Come [`connect_mysql`], piu il rifiuto della probe se il server non e
+/// `MariaDB`.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql
+pub fn connect_mariadb(
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+) -> PyResult<MysqlSession> {
+    let secret = SecretString::new(password.to_owned());
+    let config = family_config(host, database, user, &secret, port, tls_ca_pem, tls_mode)?;
+    let provider: Arc<dyn Provider> = Arc::new(MariadbProvider::new(config, 4).map_err(to_py_err)?);
+    open_family_session(provider, secret, "MariaDB", "connect_mariadb")
+}
+
+/// Sonda il server e costruisce la sessione, per entrambi i prodotti.
+///
+/// La probe non e una formalita: e il punto in cui il provider verifica di
+/// avere davanti il motore che il consumatore ha dichiarato, e una `connect_*`
+/// che la saltasse restituirebbe una sessione utilizzabile contro il prodotto
+/// sbagliato.
+fn open_family_session(
+    provider: Arc<dyn Provider>,
+    secret: SecretString,
+    product: &'static str,
+    factory: &'static str,
+) -> PyResult<MysqlSession> {
     let provider_probe = Arc::clone(&provider);
     let secret_probe = secret.clone();
     let (connection, _capabilities) = runtime()
@@ -580,6 +656,8 @@ pub fn connect_mysql(
     Ok(MysqlSession {
         provider,
         secret,
+        product,
+        factory,
         server_version: connection.server_version,
         closed: false,
     })

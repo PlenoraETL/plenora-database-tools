@@ -4,7 +4,7 @@
 //! `crate::write` (parse_mode/parse_profile/parse_mapping_policy,
 //! decode_ipc_stream, make_operation, default_budget, VecBatchStream,
 //! outcome_into_py, wrap_outcome) — differisce solo per il tipo di
-//! provider (`Arc<MysqlProvider>` vs `Arc<PostgresProvider>`).
+//! provider (`Arc<dyn Provider>` vs `Arc<PostgresProvider>`).
 
 #![allow(
     clippy::doc_markdown,
@@ -25,7 +25,6 @@ use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
 use plenora_database_core::DatabaseError;
-use plenora_db_mysql::MysqlProvider;
 use std::sync::Arc;
 
 /// Bulk write MySQL: decodifica l'IPC, costruisce il piano, scrive.
@@ -40,7 +39,7 @@ use std::sync::Arc;
 /// `DatabaseError` per IPC malformato, mode/profile/policy invalidi, keys
 /// mancanti dove servono, o fallimento del provider in prepare/write.
 pub(crate) async fn do_copy_from_async_mysql(
-    provider: Arc<MysqlProvider>,
+    provider: Arc<dyn Provider>,
     secret: SecretString,
     schema_name: String,
     table_name: String,
@@ -88,7 +87,7 @@ pub(crate) async fn do_copy_from_async_mysql(
 /// keys mancanti per mode che le richiedono, o errore del provider durante
 /// prepare/write.
 pub(crate) fn copy_from_sync_mysql(
-    provider: &Arc<MysqlProvider>,
+    provider: &Arc<dyn Provider>,
     secret: &SecretString,
     schema: &str,
     table: &str,

@@ -30,7 +30,6 @@ use crate::arrow_reader::{default_budget, make_read_operation, BatchReader};
 use crate::runtime;
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError};
-use plenora_db_mysql::MysqlProvider;
 use std::sync::Arc;
 
 /// Apre un `BatchReader` su una tabella MySQL.
@@ -43,7 +42,7 @@ use std::sync::Arc;
 /// `DatabaseError` se `order_by` ha direzione invalida, o se il provider
 /// fallisce ad aprire lo stream.
 pub(crate) fn open_mysql_reader(
-    provider: &Arc<MysqlProvider>,
+    provider: &Arc<dyn Provider>,
     secret: &SecretString,
     schema: &str,
     object: &str,

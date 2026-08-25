@@ -72,7 +72,9 @@ from ._native import connect as _native_connect
 from ._native import (
     AsyncMysqlSession,
     MysqlSession,
+    aconnect_mariadb as _native_aconnect_mariadb,
     aconnect_mysql as _native_aconnect_mysql,
+    connect_mariadb as _native_connect_mariadb,
     connect_mysql as _native_connect_mysql,
 )
 
@@ -155,6 +157,45 @@ def connect_mysql(
       - tls_mode: `"require"` (default) | `"insecure_trust_server"`
     """
     native = _native_connect_mysql(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return _MysqlSessionWrapper(native)
+
+
+def connect_mariadb(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> "_MysqlSessionWrapper":
+    """Apre una nuova sessione MariaDB (sync).
+
+    Stessa superficie di `connect_mysql` — stesso protocollo, stessi
+    placeholder `?`, stesse opzioni TLS — ma un **provider diverso**, e la
+    differenza non e cosmetica: il profilo di prodotto decide le query di
+    catalogo, l'istruzione di timeout (`max_statement_time` in secondi, non
+    `MAX_EXECUTION_TIME` in millisecondi), i metadata pubblicati nel
+    namespace `plenora.mariadb.*` e la classificazione dei codici server.
+
+    Non c'e selezione automatica, ed e una decisione (ADR 0014): questa
+    factory puntata su un server MySQL viene **rifiutata** alla probe, e
+    `connect_mysql` puntata su MariaDB pure. Chi dichiara un prodotto e
+    finisce sull'altro ha un problema di configurazione, non una comodita
+    da assecondare.
+
+    WriteMode: le stesse 6 su 7 di MySQL, `TruncateInsert` esclusa per la
+    stessa ragione permanente. Lo **spatial resta chiuso**: su MariaDB
+    `information_schema.columns.SRS_ID` non esiste, quindi una colonna
+    geometrica non e descrivibile e viene rifiutata.
+
+    L'equivalente async e `aconnect_mariadb`.
+
+    Parametri: identici a `connect_mysql`.
+    """
+    native = _native_connect_mariadb(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
     return _MysqlSessionWrapper(native)
@@ -371,6 +412,31 @@ async def aconnect_mysql(
     return _AsyncMysqlSessionWrapper(native)
 
 
+async def aconnect_mariadb(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> "_AsyncMysqlSessionWrapper":
+    """Apre una nuova sessione MariaDB async.
+
+    Awaitable analogo di `connect_mariadb` — vedi la sua docstring per TLS,
+    write mode residui e per la ragione della factory separata.
+
+    Uso:
+
+        async with await aconnect_mariadb("localhost", "db", "u", "p") as s:
+            n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+    """
+    native = await _native_aconnect_mariadb(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return _AsyncMysqlSessionWrapper(native)
+
+
 class _AsyncMysqlSessionWrapper:
     """Wrapper Python-side per AsyncMysqlSession: aggiunge ergonomia
     `acopy_from` con auto-conversion source + portable AST builders
@@ -525,6 +591,8 @@ __all__ = [
     "aconnect",
     "connect_mysql",
     "aconnect_mysql",
+    "connect_mariadb",
+    "aconnect_mariadb",
     "MysqlSession",
     "AsyncMysqlSession",
     "version",

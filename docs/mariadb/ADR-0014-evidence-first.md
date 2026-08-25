@@ -249,6 +249,17 @@ e restano valide come tali. Cio che il bypass ha smesso di essere e l'unica
 via a `MariaDB`: le sonde `provider.profile_*` passano dal profilo, e il
 provider pubblico le rende raggiungibili anche fuori dai test.
 
-**Cosa resta aperto.** Il SDK Python non espone ancora `connect_mariadb`: il
-binding dipende da `plenora-db-mysql` e costruisce `MysqlProvider`, e la
-superficie esplicita che questa ADR nomina va aggiunta li.
+**Il SDK.** `connect_mariadb` e `aconnect_mariadb` esistono, e con loro si
+chiude l'elenco delle superfici esplicite che questa ADR nominava. La sessione
+non e stata duplicata — la sua superficie e identica, e due copie
+divergerebbero alla prima correzione applicata a una sola — ma tiene il
+provider dietro `dyn Provider` e sa quale prodotto serve: il `repr` lo
+dichiara, e il messaggio della sessione chiusa cita la factory giusta invece
+di rimandare sempre a `connect_mysql`. Anche la costruzione della
+configurazione TLS e una sola per i quattro percorsi: quel blocco ha gia avuto
+il suo difetto — un default che accettava il certificato senza verificarlo — e
+quattro copie lo avrebbero rimesso in gioco tre volte.
+
+**Cosa resta aperto.** Lo spatial, che su `MariaDB` resta chiuso per una
+ragione strutturale — `SRS_ID` non esiste in `information_schema.columns` — e
+il commit ambiguo, `not_measured` su tutti e tre i server.

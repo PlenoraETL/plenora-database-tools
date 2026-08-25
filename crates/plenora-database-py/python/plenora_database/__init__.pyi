@@ -184,8 +184,12 @@ def version() -> str: ...
 def connect(dsn: str, tls_mode: str = "require") -> Session: ...
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 
-# MySQL — 5 WriteMode disponibili (append/create/upsert/update/
-# delete_by_keys). `replace` e `truncate_insert` fail-closed (0.9.1+).
+# La famiglia MySQL: sei write mode su sette per entrambi i prodotti, con
+# `truncate_insert` fail-closed — `TRUNCATE` e DDL con commit implicito, e
+# nessun rollback riporta indietro le righe.
+#
+# Due factory e non un parametro: il prodotto lo dichiara il consumatore, e la
+# probe verifica quella scelta invece di compierla (ADR 0014).
 def connect_mysql(
     host: str,
     database: str,
@@ -197,6 +201,26 @@ def connect_mysql(
 ) -> _MysqlSessionWrapper: ...
 
 async def aconnect_mysql(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> _AsyncMysqlSessionWrapper: ...
+
+def connect_mariadb(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> _MysqlSessionWrapper: ...
+
+async def aconnect_mariadb(
     host: str,
     database: str,
     user: str,

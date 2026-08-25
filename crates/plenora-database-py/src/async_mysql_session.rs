@@ -43,7 +43,7 @@ use plenora_database_core::transaction::{
     AccessMode, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
-use plenora_db_mysql::{MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
+use plenora_db_mysql::{MariadbProvider, MysqlProvider};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -57,7 +57,12 @@ use crate::budget::session_budget as default_budget;
 #[pyclass(module = "plenora_database._native")]
 #[allow(dead_code)]
 pub struct AsyncMysqlSession {
-    provider: Arc<MysqlProvider>,
+    provider: Arc<dyn Provider>,
+    /// Il prodotto che questa sessione serve, e la factory che l'ha aperta:
+    /// una sessione `MariaDB` che si dichiarasse `MySQL` mentirebbe proprio a
+    /// chi sta cercando di capire cosa ha in mano.
+    product: &'static str,
+    factory: &'static str,
     secret: SecretString,
     server_version: String,
     closed: bool,
@@ -66,15 +71,16 @@ pub struct AsyncMysqlSession {
 impl AsyncMysqlSession {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
-            return Err(PyRuntimeError::new_err(
-                "sessione chiusa: aprine una nuova con plenora_database.aconnect_mysql(...)",
-            ));
+            return Err(PyRuntimeError::new_err(format!(
+                "sessione {} chiusa: aprine una nuova con plenora_database.{}(...)",
+                self.product, self.factory
+            )));
         }
         Ok(())
     }
 
     async fn run_tx<R>(
-        provider: Arc<MysqlProvider>,
+        provider: Arc<dyn Provider>,
         secret: SecretString,
         work: impl for<'a> FnOnce(
             &'a mut dyn TransactionScope,
@@ -482,38 +488,95 @@ pub fn aconnect_mysql<'py>(
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
+    open_async(
+        py,
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        "MySQL",
+        "aconnect_mysql",
+    )
+}
+
+/// Factory async di `MariaDB` — apre una `AsyncMysqlSession` sul suo provider.
+///
+/// Una factory sua e non un parametro di [`aconnect_mysql`], per la stessa
+/// ragione del percorso sincrono: ADR 0014 vieta la selezione automatica, e il
+/// prodotto lo dichiara il consumatore.
+///
+/// # Errors
+///
+/// Come [`aconnect_mysql`], piu il rifiuto della probe se il server non e
+/// `MariaDB`.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con aconnect_mysql
+pub fn aconnect_mariadb<'py>(
+    py: Python<'py>,
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    open_async(
+        py,
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        "MariaDB",
+        "aconnect_mariadb",
+    )
+}
+
+/// Il corpo comune delle due factory async.
+///
+/// La configurazione — TLS compreso — passa da `family_config`, la stessa che
+/// usa il percorso sincrono: il fail-close TLS ha gia avuto il suo difetto una
+/// volta, e non puo permettersi ne due copie ne quattro.
+#[allow(clippy::too_many_arguments)] // gli argomenti sono quelli delle due API
+fn open_async<'py>(
+    py: Python<'py>,
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+    product: &'static str,
+    factory: &'static str,
+) -> PyResult<Bound<'py, PyAny>> {
     let host = host.to_owned();
     let database = database.to_owned();
     let user = user.to_owned();
     let secret = SecretString::new(password.to_owned());
-    // Fix P1 review MySQL: default TLS `require` (Verify webpki),
-    // `insecure_trust_server` opt-in esplicito.
     let tls_mode_owned = tls_mode.to_owned();
     future_into_py(py, async move {
-        let mut config = MysqlConfig::new(host, database, user, secret.clone());
-        if let Some(p) = port {
-            config = config.with_port(p);
-        }
-        if let Some(pem) = tls_ca_pem {
-            if pem.len() > 1024 * 1024 {
-                return Err(PyRuntimeError::new_err("CA PEM MySQL oltre 1 MiB"));
-            }
-            config = config.with_private_ca_certificate_pem(pem);
-        }
-        match tls_mode_owned.as_str() {
-            "require" => {}
-            "insecure_trust_server" => {
-                config =
-                    config.with_certificate_policy(MysqlCertificatePolicy::TrustServerCertificate);
-            }
-            _ => {
-                return Err(PyRuntimeError::new_err(
-                    "tls_mode non riconosciuto. Valori: \
-                     'require' (default) | 'insecure_trust_server'",
-                ));
-            }
-        }
-        let provider = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
+        let config = crate::mysql_session::family_config(
+            &host,
+            &database,
+            &user,
+            &secret,
+            port,
+            tls_ca_pem,
+            &tls_mode_owned,
+        )?;
+        let provider: Arc<dyn Provider> = if product == "MariaDB" {
+            Arc::new(MariadbProvider::new(config, 4).map_err(to_py_err)?)
+        } else {
+            Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?)
+        };
         let cancel = CancellationToken::new();
         let connection = provider
             .test_connection(&secret, &cancel)
@@ -526,6 +589,8 @@ pub fn aconnect_mysql<'py>(
         Python::with_gil(|py| {
             let session = AsyncMysqlSession {
                 provider,
+                product,
+                factory,
                 secret,
                 server_version: connection.server_version,
                 closed: false,
