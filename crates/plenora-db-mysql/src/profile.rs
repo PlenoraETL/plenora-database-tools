@@ -883,18 +883,28 @@ impl ProductProfile for MariadbProfile {
         // che il renderer rifiuta — `LIKE` case-insensitive e il filtro
         // spatial — hanno una sonda che verifica che restino rifiutate.
         //
-        // Le scritture no: nessun piano di scrittura e mai stato eseguito con
-        // questo profilo, e restano chiuse per intero.
+        // Le scritture sono arrivate dopo, una tranche per volta, e ciascuna
+        // ha la propria nota accanto alla propria bandiera. Questa frase
+        // diceva che erano chiuse per intero, ed e rimasta a dirlo mentre sei
+        // mode si aprivano una sotto l'altra: un cappello che riassume un
+        // elenco invecchia sempre prima dell'elenco.
         ProviderCapabilities {
             schema_version: 2,
             provider: self.kind(),
             provider_version,
             extension_versions: BTreeMap::new(),
             reads: ReadCapabilities {
-                // Le quattro misurate. `server_cursor`, `pagination` e
-                // `resumable` restano false perche il crate non li offre a
-                // nessuno dei due prodotti: sono chiusi anche per MySQL, e
-                // qui non c'e niente da qualificare.
+                // `server_cursor` e `resumable` restano false perche il crate
+                // non li offre a nessuno dei due prodotti: sono chiusi anche
+                // per MySQL, e qui non c'e niente da qualificare. Fra i due
+                // c'era anche `pagination`, che nel frattempo si e aperta tre
+                // righe piu sotto — con la sua misura — senza che questo
+                // elenco se ne accorgesse.
+                //
+                // `streaming` significa che le righe arrivano a blocchi, non
+                // che esista un cursore: `query_stream` fa scorrere il result
+                // set sul filo, ed e per questo che la bandiera accanto dice
+                // `false`.
                 streaming: true,
                 server_cursor: false,
                 // La finestra si rende, e da oggi la bandiera la governa:

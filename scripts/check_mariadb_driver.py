@@ -107,6 +107,20 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_read_ordering_asc": "reads.ordering, verso ascendente",
     "provider.profile_read_ordering_desc": "reads.ordering, verso discendente",
     "provider.profile_read_streaming": "reads.streaming",
+    # Il percorso Arrow e `TransactionScope::query_stream` sono due superfici
+    # diverse dietro la stessa bandiera: la prima consegna batch a un lettore,
+    # la seconda fa scorrere un result set mentre la transazione e aperta.
+    # L'implementazione e condivisa con MySQL, la misura no — e «condivide il
+    # codice» non e un argomento che questo documento accetta per nessun'altra
+    # bandiera.
+    "provider.transaction_row_stream": "reads.streaming, dentro la transazione",
+    # La sonda che tiene onesta una smentita. La prima stesura di
+    # `query_stream` dichiarava che abbandonare un result set a meta rende la
+    # connessione inservibile; il riferimento MySQL ha risposto `Committed`,
+    # perche il driver drena i pacchetti pendenti. Se MariaDB divergesse, si
+    # scoprirebbe altrimenti solo quando un chiamante esce da un ciclo con un
+    # `break` in produzione.
+    "provider.transaction_row_stream_abandoned": "reads.streaming, stream lasciato a meta",
     # Punto 2 della fase 3: il contratto dell'indice. La descrizione deve
     # riuscire, e cio che ne esce deve corrispondere all'esito della DDL —
     # dove l'indice su espressione si crea deve risultare non confrontabile,
@@ -223,6 +237,8 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_read_ordering_asc",
     "provider.profile_read_ordering_desc",
     "provider.profile_read_streaming",
+    "provider.transaction_row_stream",
+    "provider.transaction_row_stream_abandoned",
     "raw.generated_column_catalog",
     "provider.profile_generated_index",
     "provider.profile_upsert_on_primary_key",

@@ -2037,9 +2037,207 @@ async fn streaming_read_probes(
     )
     .await;
 
+    transaction_stream_probes(recorder, provider, &mut connection, cancellation).await;
+
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_ROWS}"))
         .await;
+}
+
+/// Lo stream di righe **dentro la transazione**, misurato su questo prodotto.
+///
+/// `provider.profile_read_streaming`, qui sopra, misura il percorso Arrow: il
+/// lettore consegna piu di un batch. Non e la stessa superficie di
+/// `TransactionScope::query_stream`, che apre un result set sul filo e lo fa
+/// scorrere mentre la transazione e aperta — l'implementazione e condivisa con
+/// `MySQL`, la misura no, e «condivide il codice» e un argomento che questo
+/// documento non accetta per nessun'altra bandiera.
+///
+/// La seconda sonda e quella che conta di piu, e per una ragione che riguarda
+/// la storia di questo percorso. La prima stesura di `query_stream`
+/// dichiarava che abbandonare un result set a meta rende la connessione
+/// inservibile, e faceva fallire con `RequiresRecovery` ogni operazione
+/// successiva della transazione. Il riferimento `MySQL` ha smentito:
+/// `mysql_async` drena i pacchetti pendenti, e la transazione committa. Se
+/// `MariaDB` si comportasse diversamente sarebbe una divergenza vera fra i due
+/// prodotti — e sarebbe il tipo di divergenza che non si scopre finche un
+/// chiamante non esce da un ciclo con un `break` in produzione.
+async fn transaction_stream_probes(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    paginating_stream_probe(recorder, provider, cancellation).await;
+    abandoned_stream_probe(recorder, provider, connection, cancellation).await;
+}
+
+/// Lo stream consegna i batch della misura dichiarata, e poi la transazione
+/// committa.
+async fn paginating_stream_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let budget = read_budget();
+    let batch = 4_096_u32;
+    let question = "uno stream dentro la transazione consegna i batch della misura chiesta";
+
+    let paginated = async {
+        let mut transaction = provider
+            .begin_transaction(
+                &secret(),
+                &TransactionOptions::default(),
+                &budget,
+                cancellation,
+            )
+            .await?;
+        let statement = Statement {
+            sql: format!("SELECT id FROM {SCRATCH_ROWS} ORDER BY id"),
+            params: Vec::new(),
+        };
+        let mut sizes = Vec::new();
+        {
+            let mut stream = transaction
+                .query_stream(&statement, batch, cancellation)
+                .await?;
+            while let Some(rows) = stream.next_batch(cancellation).await? {
+                sizes.push(rows.len());
+            }
+        }
+        let outcome = transaction.commit(cancellation).await?;
+        Ok::<_, plenora_database_core::DatabaseError>((sizes, outcome))
+    }
+    .await;
+
+    // Il conteggio **per batch**, non il totale: un totale giusto uscirebbe
+    // anche da uno stream che consegna tutto in un colpo, cioe da uno stream
+    // che non strema.
+    let expected_sizes = {
+        let mut sizes = vec![batch as usize; STREAMING_ROWS / batch as usize];
+        let remainder = STREAMING_ROWS % batch as usize;
+        if remainder > 0 {
+            sizes.push(remainder);
+        }
+        sizes
+    };
+    match paginated {
+        Ok((sizes, outcome)) if sizes == expected_sizes && outcome.is_committed() => recorder
+            .accepted(
+                "provider.transaction_row_stream",
+                "provider",
+                "profilo",
+                question,
+                format!("batch={sizes:?} commit=Committed"),
+            ),
+        Ok((sizes, outcome)) => recorder.rejected(
+            "provider.transaction_row_stream",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "atteso {expected_sizes:?} e un commit, misurato {sizes:?} e {outcome:?}"
+            )),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.transaction_row_stream",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            None,
+        ),
+    }
+}
+
+/// Uno stream lasciato a meta non impedisce alla transazione di scrivere e
+/// committare.
+async fn abandoned_stream_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let budget = read_budget();
+    let marker = STREAMING_ROWS_I64 + 7;
+    let abandoned = async {
+        let mut transaction = provider
+            .begin_transaction(&secret(), &TransactionOptions::default(), &budget, cancellation)
+            .await?;
+        let statement = Statement {
+            sql: format!("SELECT id FROM {SCRATCH_ROWS} ORDER BY id"),
+            params: Vec::new(),
+        };
+        {
+            let mut stream = transaction.query_stream(&statement, 8, cancellation).await?;
+            // Un batch su mille, e poi lo stream viene lasciato andare senza
+            // che nessuno abbia cancellato niente.
+            stream.next_batch(cancellation).await?;
+        }
+        // La scrittura viaggia sulla **stessa** connessione: se i pacchetti
+        // non letti fossero rimasti in coda, sarebbe questa a leggerli al
+        // posto della propria risposta.
+        transaction
+            .execute(
+                &Statement {
+                    sql: format!(
+                        "INSERT INTO {SCRATCH_ROWS} (id, payload, label) VALUES ({marker}, 'x', NULL)"
+                    ),
+                    params: Vec::new(),
+                },
+                cancellation,
+            )
+            .await?;
+        transaction.commit(cancellation).await
+    }
+    .await;
+
+    // La rilettura arriva da un'altra connessione: che il commit dica
+    // `Committed` e cio che il provider crede, e la riga sul server e cio che
+    // e successo.
+    let landed = connection
+        .query_first::<i64, _>(format!(
+            "SELECT COUNT(*) FROM {SCRATCH_ROWS} WHERE id = {marker}"
+        ))
+        .await
+        .map_or_else(
+            |error| format!("rilettura non riuscita: {}", condense(&error.to_string())),
+            |count| format!("righe={}", count.unwrap_or_default()),
+        );
+    let question = "una transazione che abbandona uno stream a meta scrive e committa lo stesso";
+    match abandoned {
+        Ok(outcome) if outcome.is_committed() && landed == "righe=1" => recorder.accepted(
+            "provider.transaction_row_stream_abandoned",
+            "provider",
+            "profilo",
+            question,
+            format!("commit=Committed — {landed}"),
+        ),
+        Ok(outcome) => recorder.rejected(
+            "provider.transaction_row_stream_abandoned",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("il commit ha dichiarato {outcome:?} — {landed}")),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.transaction_row_stream_abandoned",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {} — {landed}",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+    }
 }
 
 /// La tabella con una colonna generata e un unique index sopra.
