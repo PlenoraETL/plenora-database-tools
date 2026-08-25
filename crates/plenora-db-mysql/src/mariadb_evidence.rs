@@ -5509,6 +5509,38 @@ async fn profile_probes(
                         ),
                     ),
                 ),
+                // Su una versione **non qualificata** il comportamento
+                // corretto e il rifiuto, e rifiutare bene e la qualifica che
+                // funziona: registrarlo come divergenza direbbe che il
+                // provider ha sbagliato proprio dove ha fatto cio che deve.
+                //
+                // La sonda distingue percio due rifiuti. Quello che nomina
+                // la versione non misurata e l'esito atteso, e si registra
+                // come accettato con il suo perche; ogni altro resta un
+                // rifiuto, e il gate lo vede.
+                //
+                // Il riconoscimento passa dalla categoria e non dal testo:
+                // `Unsupported` in fase di probe con l'elenco dichiarato e
+                // cio che `unqualified_version_rejection` produce, e un
+                // confronto su una sottostringa del messaggio legherebbe la
+                // sonda alla prosa invece che alla decisione.
+                Err(error)
+                    if error.category
+                        == plenora_database_core::error::ErrorCategory::Unsupported
+                        && profile.qualified_versions().is_some()
+                        && error.message.contains("non misurata") =>
+                {
+                    recorder.accepted(
+                        "provider.profile_probe",
+                        "provider",
+                        "profilo",
+                        "supera la probe con il profilo del prodotto, qualifica della versione inclusa",
+                        condense(&format!(
+                            "versione fuori dall'elenco qualificato, rifiutata con la sua ragione: {}",
+                            error.message
+                        )),
+                    );
+                }
                 Err(error) => recorder.rejected(
                     "provider.profile_probe",
                     "provider",

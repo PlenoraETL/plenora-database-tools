@@ -179,10 +179,71 @@ pub(crate) async fn probe_server_with_profile(
     profile: &dyn crate::profile::ProductProfile,
     cancellation: &CancellationToken,
 ) -> Result<MysqlProbe> {
+    // **L'identita prima della capability**, e le due domande sono due query.
+    //
+    // Erano una sola, e chiedeva `@@transaction_isolation` insieme a
+    // `VERSION()`. Quella variabile non esiste su MariaDB prima della 11.1 —
+    // fino a li si chiama `@@tx_isolation` — quindi su 10.11 il server
+    // rispondeva 1193 e la probe finiva prima di arrivare al riconoscimento
+    // del prodotto e alla qualifica della versione.
+    //
+    // Il difetto non e il codice mancante: e che il messaggio onesto — «questa
+    // versione non e stata misurata» — era irraggiungibile **esattamente sulle
+    // versioni per cui era stato scritto**. Chi arrivava con una 10.11 leggeva
+    // un errore server redatto e andava a cercare un guasto che non c'era.
+    //
+    // Da qui la regola che questa separazione applica: una query di capability
+    // puo fallire per la stessa ragione che l'identita avrebbe spiegato,
+    // quindi l'identita si stabilisce prima. Il costo e un round-trip in piu
+    // per probe, ed e il prezzo di un rifiuto che si sa leggere.
+    let mut identity = session
+        .query_rows(
+            "SELECT VERSION() AS product_version, \
+             @@version_comment AS version_comment",
+            ErrorPhase::Probe,
+            cancellation,
+        )
+        .await?;
+    if identity.len() != 1 {
+        return Err(mapping_error(format!(
+            "probe {} priva di una riga univoca",
+            profile.product()
+        )));
+    }
+    let identity = identity.remove(0);
+    let product_version: String = required(&identity, "product_version", "product_version")?;
+    let version_comment: String = required(&identity, "version_comment", "version_comment")?;
+
+    // Il riconoscimento del prodotto, e la ragione per cui rifiutarlo,
+    // stanno nel profilo. Qui resta il punto in cui il rifiuto scatta, e con
+    // esso il bypass di test, che non si sposta: e questo il punto che
+    // attraversa, ed e accanto a questo che va letto.
+    if !mariadb_rejection_bypassed() {
+        if let Some(rejection) =
+            profile.foreign_product_rejection(&product_version, &version_comment)
+        {
+            return Err(rejection);
+        }
+    }
+
+    // La seconda domanda sta **fuori** dal bypass, e la differenza non e
+    // formale. Il bypass esiste per attraversare il rifiuto del prodotto e
+    // misurare cosa c'e dietro; la qualifica della versione non e quel
+    // rifiuto, e tenerla dentro voleva dire che la misura — che il bypass lo
+    // accende sempre — era l'unico percorso a non attraversarla mai. Cioe
+    // proprio il percorso che deve dimostrarla.
+    if let Some(rejection) =
+        crate::profile::unqualified_version_rejection(profile, &product_version)
+    {
+        return Err(rejection);
+    }
+
+    // Solo ora le variabili di sessione: da qui in poi la versione e nota e
+    // qualificata, quindi un 1193 sarebbe una divergenza vera e non
+    // l'ombra di una versione che nessuno ha misurato.
     let mut rows = session
         .query_rows(
-            "SELECT VERSION() AS product_version, DATABASE() AS database_name, \
-             @@version_comment AS version_comment, \
+            "SELECT DATABASE() AS database_name, \
              @@lower_case_table_names AS lower_case_table_names, \
              @@sql_mode AS sql_mode, @@time_zone AS time_zone, \
              @@transaction_isolation AS transaction_isolation",
@@ -192,7 +253,7 @@ pub(crate) async fn probe_server_with_profile(
         .await?;
     if rows.len() != 1 {
         return Err(mapping_error(format!(
-            "probe {} priva di una riga univoca",
+            "sessione {} priva di una riga univoca",
             profile.product()
         )));
     }
@@ -224,33 +285,6 @@ pub(crate) async fn probe_server_with_profile(
             diagnostics: None,
         });
     }
-    let product_version: String = required(&row, "product_version", "product_version")?;
-    let version_comment: String = required(&row, "version_comment", "version_comment")?;
-
-    // Il riconoscimento del prodotto, e la ragione per cui rifiutarlo,
-    // stanno nel profilo. Qui resta il punto in cui il rifiuto scatta, e con
-    // esso il bypass di test, che non si sposta: e questo il punto che
-    // attraversa, ed e accanto a questo che va letto.
-    if !mariadb_rejection_bypassed() {
-        if let Some(rejection) =
-            profile.foreign_product_rejection(&product_version, &version_comment)
-        {
-            return Err(rejection);
-        }
-    }
-
-    // La seconda domanda sta **fuori** dal bypass, e la differenza non e
-    // formale. Il bypass esiste per attraversare il rifiuto del prodotto e
-    // misurare cosa c'e dietro; la qualifica della versione non e quel
-    // rifiuto, e tenerla dentro voleva dire che la misura — che il bypass lo
-    // accende sempre — era l'unico percorso a non attraversarla mai. Cioe
-    // proprio il percorso che deve dimostrarla.
-    if let Some(rejection) =
-        crate::profile::unqualified_version_rejection(profile, &product_version)
-    {
-        return Err(rejection);
-    }
-
     Ok(MysqlProbe {
         product_version,
         database: required(&row, "database_name", "database_name")?,
