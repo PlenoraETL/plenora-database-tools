@@ -243,10 +243,13 @@ pub(crate) async fn probe_server_with_profile(
     // l'ombra di una versione che nessuno ha misurato.
     let mut rows = session
         .query_rows(
-            "SELECT DATABASE() AS database_name, \
-             @@lower_case_table_names AS lower_case_table_names, \
-             @@sql_mode AS sql_mode, @@time_zone AS time_zone, \
-             @@transaction_isolation AS transaction_isolation",
+            &format!(
+                "SELECT DATABASE() AS database_name, \
+                 @@lower_case_table_names AS lower_case_table_names, \
+                 @@sql_mode AS sql_mode, @@time_zone AS time_zone, \
+                 {} AS transaction_isolation",
+                profile.session_isolation_variable()
+            ),
             ErrorPhase::Probe,
             cancellation,
         )

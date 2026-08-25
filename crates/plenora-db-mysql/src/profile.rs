@@ -128,6 +128,24 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// invece di lasciarlo implicito, e cio che rende visibile l'asimmetria.
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]>;
 
+    /// Il nome della variabile che porta il livello di isolamento della
+    /// sessione.
+    ///
+    /// I due prodotti non la chiamano allo stesso modo, e non e una sinonimia
+    /// che si possa scegliere a piacere: `tx_isolation` e stata **rimossa** da
+    /// `MySQL` 8.0, e `transaction_isolation` non esiste su `MariaDB` prima
+    /// della 11.1. Non c'e un nome che vada bene per entrambi i prodotti, e
+    /// dentro `MariaDB` ce n'e uno solo che vada bene per tutte le versioni
+    /// misurate.
+    ///
+    /// Il metodo esiste perche il difetto che lo ha prodotto era invisibile:
+    /// la probe chiedeva `@@transaction_isolation` insieme a `VERSION()`, e su
+    /// 10.11 moriva con 1193 prima di poter dire che quella versione non era
+    /// qualificata. Il nome della variabile appartiene al prodotto esattamente
+    /// come vi appartiene quello del timeout, ed e la stessa ragione: una
+    /// costante condivisa e vera per uno solo dei due.
+    fn session_isolation_variable(&self) -> &'static str;
+
     /// Lo statement che impone il timeout di statement sulla sessione.
     ///
     /// Il contratto del core esprime il timeout in millisecondi; il server
@@ -490,6 +508,12 @@ impl ProductProfile for MysqlProfile {
         None
     }
 
+    fn session_isolation_variable(&self) -> &'static str {
+        // `tx_isolation` e stata rimossa in `MySQL` 8.0: chiederla qui
+        // romperebbe ogni server che questo provider serve da sempre.
+        "@@transaction_isolation"
+    }
+
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
         // `MAX_EXECUTION_TIME` e session-scoped e si misura in millisecondi,
         // la stessa unita del contratto: qui la conversione e l'identita, e
@@ -788,16 +812,36 @@ impl ProductProfile for MariadbProfile {
         })
     }
 
+    fn session_isolation_variable(&self) -> &'static str {
+        // `tx_isolation` risponde su tutte e tre le versioni misurate —
+        // 10.11, 11.8, 12.3 — mentre `transaction_isolation` compare solo
+        // dalla 11.1. Fra i due nomi non si sceglie il piu moderno: si
+        // sceglie quello che copre l'intera matrice, perche un nome che
+        // copre meta delle righe fa fallire l'altra meta prima ancora che
+        // la probe possa spiegarsi.
+        "@@tx_isolation"
+    }
+
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
-        // Le due che ADR 0014 ha misurato, e nessun'altra. Non e prudenza
+        // Le tre che ADR 0014 ha misurato, e nessun'altra. Non e prudenza
         // eccessiva: cio che il profilo afferma — quali colonne di catalogo
         // esistono, quale variabile regge il timeout, con quale codice arriva
-        // — e stato osservato su queste due, e una major che non c'era ancora
+        // — e stato osservato su queste tre, e una major che non c'era ancora
         // quando la misura e stata fatta non e coperta da quella misura.
         //
+        // 10.11 e entrata per ultima, ed e la piu vecchia: due cicli di
+        // sviluppo indietro rispetto alla riga di evidenza, e la LTS che piu
+        // gente ha davvero in produzione. Le cento sonde della campagna danno
+        // su di lei lo stesso esito che danno sulle altre due — l'unica cosa
+        // che la fermava era una variabile di sessione che il profilo ora
+        // possiede.
+        //
         // La riga che rende il rifiuto onesto e il messaggio: dice che la
-        // versione non e stata misurata, non che non funzioni.
-        Some(&[(11, 8), (12, 3)])
+        // versione non e stata misurata, non che non funzioni. Perche quel
+        // messaggio arrivi davvero, la qualifica va decisa **prima** di
+        // interrogare qualunque variabile di sessione: era dentro la stessa
+        // query, e su 10.11 moriva prima di poter parlare.
+        Some(&[(10, 11), (11, 8), (12, 3)])
     }
 
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
@@ -1817,6 +1861,10 @@ impl ProductProfile for SecondProductProfile {
 
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
         MYSQL_PROFILE.qualified_versions()
+    }
+
+    fn session_isolation_variable(&self) -> &'static str {
+        MYSQL_PROFILE.session_isolation_variable()
     }
 
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
