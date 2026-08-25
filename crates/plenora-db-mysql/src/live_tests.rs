@@ -252,6 +252,7 @@ async fn live_provider_read_rejects_a_hostname_mismatch() {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: Some(1),
+        row_offset: None,
         filter: None,
     };
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget MySQL live");
@@ -534,6 +535,7 @@ async fn live_early_stream_drop_cancels_worker_and_keeps_provider_usable() {
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let mut stream = provider
@@ -615,6 +617,7 @@ async fn live_a_row_over_the_batch_budget_carries_over_to_the_next_batch() {
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     // Stima conservativa: riga 1 = 58 160 byte, riga 2 = 70 000 byte. La
@@ -719,6 +722,7 @@ async fn live_default_limits_batch_many_rows_over_four_columns() {
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget default");
@@ -781,6 +785,7 @@ async fn live_read_projection_filter_order_and_default_schema() {
             direction: SortDirection::Desc,
         }],
         row_limit: Some(1),
+        row_offset: None,
         filter: Some(FilterExpression::Eq {
             field: "id".to_owned(),
             parameter: "wanted_id".to_owned(),
@@ -860,6 +865,7 @@ async fn live_streaming_read_maps_scalar_and_xy_geometry_exactly() {
             direction: SortDirection::Asc,
         }],
         row_limit: Some(1),
+        row_offset: None,
         filter: None,
     };
     let mut stream = provider
@@ -3196,6 +3202,7 @@ async fn live_append_commits_a_single_transaction_and_reads_back_exactly() {
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let mut stream = provider

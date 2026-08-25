@@ -692,6 +692,7 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let cancellation = CancellationToken::new();
@@ -751,6 +752,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         projection: options.projection.clone(),
         order_by: options.order_by.clone(),
         row_limit: options.row_limit,
+        row_offset: None,
         filter: options.filter.clone(),
     };
     let row_order = if options.order_by.is_empty() {

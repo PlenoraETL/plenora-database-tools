@@ -52,7 +52,7 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | --- | --- | --- | --- | --- |
 | `streaming` | `true` | `true` | `true` | `true` |
 | `server_cursor` | `false` | `false` | `false` | `false` |
-| `pagination` | `true` | `false` | `false` | `true` |
+| `pagination` | `true` | `true` | `true` | `true` |
 | `projection` | `true` | `true` | `true` | `true` |
 | `filter` | `true` | `true` | `true` | `true` |
 | `ordering` | `true` | `true` | `true` | `true` |
@@ -142,4 +142,4 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | --- | --- |
 | `live_default` | 38 |
 | `live_reference` | 25 |
-| `unit` | 201 |
+| `unit` | 202 |

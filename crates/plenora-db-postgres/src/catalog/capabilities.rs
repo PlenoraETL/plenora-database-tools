@@ -42,6 +42,11 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             // Il data path usa RowStream con backpressure, ma non espone un
             // cursore server nominato o riprendibile.
             server_cursor: false,
+            // Dichiarata `true` da sempre, e da oggi con qualcosa sotto: il
+            // piano di lettura rende `OFFSET n`, e l'engine lega la bandiera
+            // al campo. Prima nessun piano di lettura poteva chiedere una
+            // finestra, quindi la promessa non era ne mantenuta ne
+            // smentita — era irriscuotibile.
             pagination: true,
             projection: true,
             filter: true,

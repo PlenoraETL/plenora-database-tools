@@ -52,6 +52,7 @@ pub async fn read_object(
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     read_operation(

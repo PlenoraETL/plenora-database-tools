@@ -93,6 +93,7 @@
           }
         },
         "row_limit": {"type": "integer", "minimum": 0},
+        "row_offset": {"type": "integer", "minimum": 0},
         "filter": {"$ref": "#/$defs/expression"}
       }
     },

@@ -73,6 +73,7 @@ fn empty_read(object: &str) -> ReadOperation {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     }
 }
@@ -254,6 +255,7 @@ async fn edge_e2_mixed_small_and_huge_rows_preserves_all_rows() {
             direction: plenora_database_core::plan::SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);

@@ -178,10 +178,16 @@ impl SqlServerReadPlan {
             object: sql_server_identifier(&description.name)?,
         };
         let mut sql = String::from("SELECT ");
-        if let Some(limit) = operation.row_limit {
-            sql.push_str("TOP (");
-            sql.push_str(&limit.to_string());
-            sql.push_str(") ");
+        // `TOP` **solo** senza finestra. SQL Server rifiuta `TOP` insieme a
+        // `OFFSET ... FETCH` nella stessa espressione — e un errore di
+        // sintassi, non una preferenza — quindi quando il piano chiede un
+        // offset il tetto viaggia in coda come `FETCH NEXT`.
+        if operation.row_offset.is_none() {
+            if let Some(limit) = operation.row_limit {
+                sql.push_str("TOP (");
+                sql.push_str(&limit.to_string());
+                sql.push_str(") ");
+            }
         }
         sql.push_str(&projection);
         sql.push_str(" FROM ");
@@ -222,6 +228,21 @@ impl SqlServerReadPlan {
                 .collect::<Result<Vec<_>>>()?;
             sql.push_str(" ORDER BY ");
             sql.push_str(&ordering.join(", "));
+        }
+        // La forma del dialetto e `OFFSET n ROWS [FETCH NEXT m ROWS ONLY]`, e
+        // va dopo l'`ORDER BY` — che questo ramo scrive sempre, anche quando
+        // il piano non ne chiede uno, con `(SELECT NULL)`. Il tetto arriva qui
+        // e non come `TOP` per la ragione detta sopra: le due forme non
+        // convivono.
+        if let Some(offset) = operation.row_offset {
+            sql.push_str(" OFFSET ");
+            sql.push_str(&offset.to_string());
+            sql.push_str(" ROWS");
+            if let Some(limit) = operation.row_limit {
+                sql.push_str(" FETCH NEXT ");
+                sql.push_str(&limit.to_string());
+                sql.push_str(" ROWS ONLY");
+            }
         }
         sql.push(';');
         let fields = columns
@@ -1152,6 +1173,53 @@ mod tests {
                 structural_fingerprint: "abc".to_owned(),
             },
         }
+    }
+
+    /// `TOP` e `OFFSET` non convivono, e il dialetto lo impone.
+    ///
+    /// SQL Server rifiuta `TOP` insieme a `OFFSET ... FETCH` nella stessa
+    /// espressione: e un errore di sintassi, non una preferenza. Il tetto
+    /// cambia percio forma a seconda che il piano chieda una finestra, e
+    /// questo test fissa le due — perche una sottostringa `OFFSET` sarebbe
+    /// verde anche sul SQL che il server rifiuta.
+    #[test]
+    fn the_ceiling_changes_shape_when_a_window_is_asked() {
+        let target = description("int", 10, 0);
+        let source = plenora_database_core::plan::ObjectRef {
+            catalog: None,
+            schema: Some("dbo".to_owned()),
+            object: "fixture".to_owned(),
+        };
+        let base = ReadOperation {
+            source,
+            projection: Vec::new(),
+            order_by: Vec::new(),
+            row_limit: Some(5),
+            row_offset: None,
+            filter: None,
+        };
+        let capped = SqlServerReadPlan::compile_operation(&target, &base).expect("solo tetto");
+        assert!(
+            capped.sql.contains("TOP (5)") && !capped.sql.contains("OFFSET"),
+            "senza finestra il tetto e TOP: {}",
+            capped.sql
+        );
+
+        let windowed = ReadOperation {
+            row_offset: Some(20),
+            ..base
+        };
+        let plan = SqlServerReadPlan::compile_operation(&target, &windowed).expect("finestra");
+        assert!(
+            !plan.sql.contains("TOP ("),
+            "TOP non puo convivere con la finestra: {}",
+            plan.sql
+        );
+        assert!(
+            plan.sql.contains("OFFSET 20 ROWS FETCH NEXT 5 ROWS ONLY"),
+            "il tetto deve viaggiare come FETCH NEXT: {}",
+            plan.sql
+        );
     }
 
     #[test]

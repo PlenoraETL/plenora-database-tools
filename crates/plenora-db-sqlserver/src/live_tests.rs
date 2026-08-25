@@ -456,6 +456,7 @@ async fn live_common_provider_contract_read_and_write() {
             direction: SortDirection::Desc,
         }],
         row_limit: Some(2),
+        row_offset: None,
         filter: Some(FilterExpression::Gte {
             field: "id".to_owned(),
             parameter: "minimum_id".to_owned(),
@@ -663,6 +664,7 @@ async fn live_common_provider_contract_read_and_write() {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let read_budget = ResourceBudget::new(ResourceLimits::default()).expect("read budget");
@@ -4099,6 +4101,7 @@ async fn live_tds_bulk_round_trips_verified_scalar_types() {
             projection: columns,
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         },
         &ParameterBag::default(),

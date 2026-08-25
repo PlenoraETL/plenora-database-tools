@@ -175,6 +175,7 @@ pub(crate) fn make_read_operation(
         projection,
         order_by: order_by_parsed,
         row_limit: limit,
+        row_offset: None,
         filter: None,
     })
 }

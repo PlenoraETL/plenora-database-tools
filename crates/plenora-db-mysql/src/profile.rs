@@ -492,7 +492,13 @@ impl ProductProfile for MysqlProfile {
             reads: ReadCapabilities {
                 streaming: true,
                 server_cursor: false,
-                pagination: false,
+                // La finestra si rende, e da oggi la bandiera la governa:
+                // l'engine rifiuta un `row_offset` a un provider che non la
+                // pubblica. Il piano di lettura la compila come `LIMIT ...
+                // OFFSET n`, con il tetto del tipo quando il chiamante non ne
+                // ha chiesto uno — `OFFSET` da solo non e sintassi valida su
+                // questi motori.
+                pagination: true,
                 projection: true,
                 filter: true,
                 ordering: true,
@@ -890,7 +896,13 @@ impl ProductProfile for MariadbProfile {
                 // qui non c'e niente da qualificare.
                 streaming: true,
                 server_cursor: false,
-                pagination: false,
+                // La finestra si rende, e da oggi la bandiera la governa:
+                // l'engine rifiuta un `row_offset` a un provider che non la
+                // pubblica. Il piano di lettura la compila come `LIMIT ...
+                // OFFSET n`, con il tetto del tipo quando il chiamante non ne
+                // ha chiesto uno — `OFFSET` da solo non e sintassi valida su
+                // questi motori.
+                pagination: true,
                 projection: true,
                 filter: true,
                 ordering: true,
@@ -3337,7 +3349,12 @@ mod tests {
         // fallite.
         let reads = &published.reads;
         assert!(reads.streaming && reads.projection && reads.filter && reads.ordering);
-        assert!(!reads.server_cursor && !reads.pagination);
+        // `pagination` si e aperta insieme al campo che la rende riscuotibile:
+        // `ReadOperation` ha ora `row_offset`, il piano di lettura lo compila
+        // e l'engine lega la bandiera al campo. Prima era `false` su questo
+        // profilo e `true` su PostgreSQL, con lo stesso nulla sotto.
+        assert!(reads.pagination);
+        assert!(!reads.server_cursor);
         assert!(!reads.resumable);
         // E dove il crate non offre niente, i due prodotti dicono la stessa
         // cosa: una bandiera chiusa qui non e una divergenza di prodotto.

@@ -149,11 +149,31 @@ pub fn prepare(
             if !read.order_by.is_empty() {
                 require(&capabilities, capabilities.reads.ordering, "order_by")?;
             }
-            // `row_limit` NON viene legato a `reads.pagination`: `MySQL` e
-            // `MariaDB` pubblicano `pagination = false` e rendono comunque il
-            // limite come `LIMIT` — i loro test live lo usano. `pagination`
-            // descrive la paginazione a finestre, che e un'altra promessa, e
-            // legarli qui rifiuterebbe piani legittimi.
+            // `row_limit` non e legato a `reads.pagination`, e non e una
+            // dimenticanza: un tetto non e una finestra. I provider che
+            // pubblicano `pagination = false` rendono comunque il limite, e
+            // legarli qui rifiuterebbe piani legittimi che i loro test live
+            // usano da sempre.
+            //
+            // `row_offset` si, ed e cio che rende quella bandiera qualcosa
+            // invece di una dichiarazione. Il campo e nuovo, quindi nessun
+            // piano esistente porta un offset e nessuno viene rifiutato da
+            // questa riga per la prima volta.
+            if read.row_offset.is_some() {
+                require(&capabilities, capabilities.reads.pagination, "row_offset")?;
+                // La finestra pretende un ordinamento, e la regola sta qui e
+                // non nei provider perche riguarda il **piano**: un offset su
+                // un risultato non ordinato non e riproducibile su nessun
+                // motore, e due letture consecutive possono rendere righe
+                // diverse. `MySQL` la applicava gia per il tetto, PostgreSQL
+                // no: metterla qui la rende una sola.
+                if read.order_by.is_empty() {
+                    return Err(DatabaseError::invalid_plan(
+                        "row_offset richiede order_by: una finestra su un risultato non \
+                         ordinato non e riproducibile",
+                    ));
+                }
+            }
             if let Some(filter) = &read.filter {
                 require(&capabilities, capabilities.reads.filter, "filter")?;
                 let mut used = Vec::new();
@@ -670,6 +690,60 @@ mod tests {
             .expect_err("un limite oltre u64 non e rappresentabile qui");
     }
 
+    /// Una finestra senza ordinamento sta dentro il contratto e fuori da
+    /// questo lettore.
+    ///
+    /// Lo schema non lega i due campi — potrebbe, con una condizione, ma la
+    /// regola non e sintattica: e la ragione per cui la finestra esiste. Due
+    /// letture consecutive di un risultato non ordinato possono rendere righe
+    /// diverse, quindi `row_offset` senza `order_by` descrive una pagina che
+    /// nessuno puo ripetere.
+    ///
+    /// Il rifiuto e in `prepare` e non nei provider: riguarda il piano, e
+    /// `MySQL` lo applicava gia al tetto mentre `PostgreSQL` no. Metterlo qui
+    /// lo rende uno.
+    #[test]
+    fn an_offset_without_an_ordering_is_within_the_contract_and_refused_here() {
+        let bytes = include_bytes!(
+            "../../../contracts/v2/examples/unconsumable-plan-offset-without-order.json"
+        );
+        let validated = parse_and_validate(bytes).expect("il contratto ammette il documento");
+        let error = prepare(validated, postgres_capabilities())
+            .expect_err("una finestra senza ordinamento non e riproducibile");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
+        assert!(
+            error.message.contains("row_offset richiede order_by"),
+            "il messaggio non dice cosa manca: {}",
+            error.message
+        );
+    }
+
+    /// Una finestra chiesta a chi non la pubblica viene rifiutata.
+    ///
+    /// E' cio che rende `reads.pagination` una bandiera invece di una
+    /// dichiarazione: prima nessuna riga la consultava, e un provider che
+    /// avesse pubblicato `false` avrebbe ricevuto l'offset lo stesso.
+    #[test]
+    fn an_offset_is_refused_by_a_provider_that_does_not_publish_pagination() {
+        let bytes = include_bytes!(
+            "../../../contracts/v2/examples/unconsumable-plan-offset-without-order.json"
+        );
+        let validated = parse_and_validate(bytes).expect("il contratto ammette il documento");
+        let mut capabilities = postgres_capabilities();
+        capabilities.reads.pagination = false;
+        let error =
+            prepare(validated, capabilities).expect_err("il provider non pubblica la paginazione");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::Unsupported,
+            "atteso un rifiuto di capability, non di piano: {}",
+            error.message
+        );
+    }
+
     /// `maxLength: 256` conta code point. Un riferimento di 256 caratteri
     /// accentati pesa 512 byte ed e dentro il contratto.
     #[test]
@@ -1047,10 +1121,6 @@ mod capability_surface {
         (
             "server_cursor",
             "nessun piano chiede un cursore nominato: aprirlo vorrebbe dire prima              un'operazione nel contratto che lo domandi",
-        ),
-        (
-            "pagination",
-            "la finestra e un fatto del piano — `row_offset` con `order_by` — e il              renderer la emette per ogni dialetto: qui non c'e niente da negare",
         ),
         (
             "resumable",

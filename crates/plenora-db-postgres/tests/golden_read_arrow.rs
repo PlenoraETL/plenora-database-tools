@@ -60,6 +60,7 @@ fn empty_read(source: ObjectRef) -> ReadOperation {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     }
 }
@@ -234,6 +235,7 @@ async fn h7b_read_projection_reduces_schema_columns() {
         projection: vec!["id".into(), "name".into()],
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);
@@ -280,6 +282,7 @@ async fn h7b_read_row_limit_is_honored_by_query_planner() {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: Some(42),
+        row_offset: None,
         filter: None,
     };
     let p = PostgresProvider::insecure_local_with_batch_rows(1_024);

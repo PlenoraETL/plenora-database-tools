@@ -269,6 +269,10 @@ impl Provider for SqlServerProvider {
                 reads: ReadCapabilities {
                     streaming: true,
                     server_cursor: false,
+                    // Come gli altri tre: la finestra si rende, e la
+                    // bandiera la governa. Qui la forma del dialetto e
+                    // `OFFSET n ROWS FETCH NEXT m ROWS ONLY`, e il tetto
+                    // lascia `TOP` — le due forme non convivono.
                     pagination: true,
                     projection: true,
                     filter: true,

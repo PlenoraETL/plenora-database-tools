@@ -65,26 +65,26 @@ pub struct ReadCapabilities {
     /// una finestra senza `order_by` non e riproducibile — il contratto
     /// infatti rifiuta `row_offset` senza ordinamento.
     ///
-    /// # Sta nella sezione sbagliata, e la decisione e aperta
+    /// # Come e stata chiusa
     ///
-    /// `row_offset` vive su [`crate::query::QueryOperation`].
-    /// [`crate::plan::ReadOperation`] non ce l'ha — ha `row_limit` e basta —
-    /// quindi **un piano di lettura non puo chiedere una finestra**, e questo
-    /// campo, che sta in `ReadCapabilities`, promette una superficie che la
-    /// sua operazione non espone.
+    /// Il campo prometteva una superficie che la sua operazione non esponeva:
+    /// `row_offset` viveva su [`crate::query::QueryOperation`] e
+    /// [`crate::plan::ReadOperation`] aveva il solo `row_limit`, quindi **un
+    /// piano di lettura non poteva chiedere una finestra**. Una promessa che
+    /// nessun piano puo riscuotere non e ne mantenuta ne smentita.
     ///
-    /// Le due uscite sono entrambe una modifica di contratto: spostarlo dove
-    /// vive cio che descrive, oppure chiuderlo ovunque finche `ReadOperation`
-    /// non guadagna l'offset. Nessuna delle due si fa di passaggio, e nessuna
-    /// delle due e questa riga — che dichiara il difetto invece di
-    /// propagarlo aprendo la bandiera su altri due provider.
+    /// La sua assenza di definizione aveva gia prodotto due letture diverse
+    /// dello stesso campo: `PostgreSQL` e SQL Server lo pubblicavano `true`,
+    /// `MySQL` e `MariaDB` `false`, e nessuno dei quattro rendeva un offset
+    /// su quel percorso — perche il percorso non ce l'aveva.
     ///
-    /// La definizione e arrivata tardi, e la sua assenza aveva gia prodotto
-    /// due letture diverse dello stesso campo: `PostgreSQL` e SQL Server lo
-    /// pubblicavano `true` rendendo `OFFSET`, `MySQL` e `MariaDB` lo
-    /// pubblicavano `false` rendendo **lo stesso** `OFFSET` con lo stesso
-    /// renderer. Un campo senza definizione non e ambiguo per meta: lo e per
-    /// chiunque lo legga.
+    /// Delle due uscite possibili — spostare il campo, o chiuderlo ovunque —
+    /// e stata presa la terza: dare all'operazione cio che il campo
+    /// descriveva. `ReadOperation` ha ora `row_offset`, i quattro provider lo
+    /// rendono nella forma del proprio dialetto, e l'engine lega la bandiera
+    /// al campo — un offset chiesto a un provider che non la pubblica viene
+    /// rifiutato in `prepare`. Da descrittiva e diventata governata, ed e
+    /// l'unica delle sei ad averlo fatto.
     #[serde(default)]
     pub pagination: bool,
     /// La lettura sa restituire un sottoinsieme delle colonne.

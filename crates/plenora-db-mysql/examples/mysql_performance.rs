@@ -198,6 +198,7 @@ fn read_operation_plan(database: &str, table: &str) -> ReadOperation {
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     }
 }

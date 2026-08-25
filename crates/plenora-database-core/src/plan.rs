@@ -124,6 +124,26 @@ pub struct ReadOperation {
     #[serde(default)]
     pub order_by: Vec<OrderBy>,
     pub row_limit: Option<u64>,
+    /// Le prime righe da saltare, cioe la finestra.
+    ///
+    /// Un piano di lettura non poteva chiederla: il campo esisteva su
+    /// `QueryOperation` e non qui, mentre `ReadCapabilities::pagination` —
+    /// che sta nella sezione della **lettura** — prometteva proprio questo. Un
+    /// campo del contratto che descrive una superficie che la sua operazione
+    /// non espone e una promessa che nessun piano puo riscuotere, ed e
+    /// esattamente cio che quella bandiera era.
+    ///
+    /// Additivo e opzionale: un piano che non lo dichiara si comporta come
+    /// prima. Cio che cambia e che ora la bandiera ha qualcosa da governare —
+    /// l'engine rifiuta un offset a un provider che non lo pubblica — e i
+    /// provider hanno qualcosa da rendere.
+    ///
+    /// Come `row_limit`, pretende `order_by`: una finestra su un risultato
+    /// non ordinato non e riproducibile, e due letture consecutive possono
+    /// rendere righe diverse. La regola e quella che `QueryOperation` ha gia,
+    /// e vale qui per la stessa ragione.
+    #[serde(default)]
+    pub row_offset: Option<u64>,
     pub filter: Option<FilterExpression>,
 }
 

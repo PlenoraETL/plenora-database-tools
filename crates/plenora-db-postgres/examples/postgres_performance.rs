@@ -314,6 +314,7 @@ async fn materialize(
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: parameterized_read.then(|| FilterExpression::Gt {
             field: "event_id".to_owned(),
             parameter: "minimum_id".to_owned(),

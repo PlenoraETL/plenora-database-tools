@@ -552,6 +552,7 @@ async fn provider_surface_probes(
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
 
@@ -1310,6 +1311,7 @@ async fn profile_read_probes(
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
 
@@ -1485,6 +1487,7 @@ async fn streaming_read_probes(
             direction: SortDirection::Asc,
         }],
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
 

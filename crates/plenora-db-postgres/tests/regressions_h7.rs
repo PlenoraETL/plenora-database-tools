@@ -121,6 +121,7 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
         projection: Vec::new(),
         order_by: Vec::new(),
         row_limit: None,
+        row_offset: None,
         filter: None,
     };
     let mut stream = provider

@@ -24,6 +24,10 @@
     {
       "file": "outcome-unknown.json",
       "schema": "../write-outcome.schema.json"
+    },
+    {
+      "file": "unconsumable-plan-offset-without-order.json",
+      "schema": "../plan.schema.json"
     }
   ],
   "rejected": [

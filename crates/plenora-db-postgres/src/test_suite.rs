@@ -623,6 +623,7 @@ mod tests {
                     projection: Vec::new(),
                     order_by: Vec::new(),
                     row_limit: Some(10_000),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -674,6 +675,7 @@ mod tests {
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
             row_limit: Some(10),
+            row_offset: None,
             filter: None,
         };
         let mut stream = Provider::read(
@@ -735,6 +737,7 @@ mod tests {
             projection: vec!["geom".to_owned()],
             order_by: Vec::new(),
             row_limit: Some(1),
+            row_offset: None,
             filter: None,
         };
         let mut stream = Provider::read(
@@ -791,6 +794,7 @@ mod tests {
             projection: Vec::new(),
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         };
         let result = Provider::read(
@@ -968,6 +972,7 @@ mod tests {
                     projection: vec!["event_id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: None,
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -1041,6 +1046,7 @@ mod tests {
             ],
             order_by: vec![],
             row_limit: None,
+            row_offset: None,
             filter: None,
         };
         let mut stream = provider
@@ -1093,6 +1099,7 @@ mod tests {
                 direction: SortDirection::Asc,
             }],
             row_limit: Some(10),
+            row_offset: None,
             filter: Some(FilterExpression::Eq {
                 field: "region_id".to_owned(),
                 parameter: "region_id".to_owned(),
@@ -1134,6 +1141,7 @@ mod tests {
                 direction: SortDirection::Asc,
             }],
             row_limit: Some(3),
+            row_offset: None,
             filter: Some(FilterExpression::Spatial {
                 function: SpatialFunction::Intersects,
                 field: "geom".to_owned(),
@@ -1779,6 +1787,7 @@ mod tests {
                     projection: Vec::new(),
                     order_by: Vec::new(),
                     row_limit: None,
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -1895,6 +1904,7 @@ mod tests {
                     projection: Vec::new(),
                     order_by: Vec::new(),
                     row_limit: None,
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2016,6 +2026,7 @@ mod tests {
                     projection: vec!["id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: None,
+                    row_offset: None,
                     filter: Some(FilterExpression::And {
                         args: vec![
                             FilterExpression::Eq {
@@ -2063,6 +2074,7 @@ mod tests {
                     projection: vec!["id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: None,
+                    row_offset: None,
                     filter: Some(FilterExpression::Eq {
                         field: "duration".to_owned(),
                         parameter: "duration".to_owned(),
@@ -2090,6 +2102,7 @@ mod tests {
                     projection: vec!["event_id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: Some(1),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2111,6 +2124,7 @@ mod tests {
                     projection: vec!["event_id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: Some(1),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2144,6 +2158,7 @@ mod tests {
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         };
 
@@ -2177,6 +2192,7 @@ mod tests {
                     projection: vec!["event_id".to_owned()],
                     order_by: Vec::new(),
                     row_limit: Some(1),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2208,6 +2224,7 @@ mod tests {
             ],
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         };
         let mut quoted_stream = provider
@@ -2273,6 +2290,7 @@ mod tests {
                         direction: SortDirection::Asc,
                     }],
                     row_limit: Some(row_limit),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2306,6 +2324,7 @@ mod tests {
                         direction: SortDirection::Asc,
                     }],
                     row_limit: Some(row_limit),
+                    row_offset: None,
                     filter: Some(FilterExpression::Gt {
                         field: "event_id".to_owned(),
                         parameter: "event_id".to_owned(),
@@ -2714,6 +2733,7 @@ mod tests {
                     ],
                     order_by: Vec::new(),
                     row_limit: Some(1),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2794,6 +2814,7 @@ mod tests {
                     ],
                     order_by: Vec::new(),
                     row_limit: Some(1),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -2873,6 +2894,7 @@ mod tests {
                         direction: SortDirection::Asc,
                     }],
                     row_limit: Some(2),
+                    row_offset: None,
                     filter: None,
                 },
                 &ParameterBag::default(),
@@ -3361,6 +3383,7 @@ mod tests {
             projection: Vec::new(),
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         };
         for _ in 0..2 {
@@ -3483,6 +3506,7 @@ mod tests {
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
             row_limit: Some(1),
+            row_offset: None,
             filter: None,
         };
         let mut other_stream = provider
@@ -3603,6 +3627,7 @@ mod tests {
                 direction: SortDirection::Asc,
             }],
             row_limit: Some(ROWS_PER_READ),
+            row_offset: None,
             filter: None,
         });
 
@@ -3699,6 +3724,7 @@ mod tests {
             projection: vec!["event_id".to_owned()],
             order_by: Vec::new(),
             row_limit: None,
+            row_offset: None,
             filter: None,
         });
         let mut tasks = Vec::new();

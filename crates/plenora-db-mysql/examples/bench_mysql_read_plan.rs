@@ -84,6 +84,7 @@ fn read_operation(terms: usize) -> ReadOperation {
             direction: SortDirection::Asc,
         }],
         row_limit: Some(10_000),
+        row_offset: None,
         filter: Some(FilterExpression::And {
             args: (0..terms)
                 .map(|index| FilterExpression::Gte {

@@ -88,6 +88,11 @@ impl MysqlReadPlan {
         )
     }
 
+    /// Lunga di una riga oltre la soglia da quando rende anche la finestra, e
+    /// resta intera: e la compilazione di un piano di lettura, dove le
+    /// clausole si scrivono nell'ordine in cui il dialetto le vuole. Spezzarla
+    /// per il conteggio separerebbe l'ordine dal posto in cui si legge.
+    #[allow(clippy::too_many_lines)]
     fn compile_unattributed(
         description: &MysqlObjectDescription,
         operation: &ReadOperation,
@@ -100,11 +105,18 @@ impl MysqlReadPlan {
                 format!("oggetto {product} privo di colonne leggibili"),
             ));
         }
-        if operation.row_limit.is_some() && operation.order_by.is_empty() {
+        // La finestra vale quanto il tetto: senza un ordinamento esplicito due
+        // letture consecutive possono rendere righe diverse, e un offset su un
+        // risultato non ordinato non e riproducibile nemmeno in linea di
+        // principio.
+        if (operation.row_limit.is_some() || operation.row_offset.is_some())
+            && operation.order_by.is_empty()
+        {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
                 format!(
-                    "LIMIT {product} richiede ORDER BY esplicito per un risultato deterministico"
+                    "LIMIT e OFFSET {product} richiedono ORDER BY esplicito \
+                     per un risultato deterministico"
                 ),
             ));
         }
@@ -163,9 +175,24 @@ impl MysqlReadPlan {
             sql.push_str(" ORDER BY ");
             sql.push_str(&ordering.join(", "));
         }
-        if let Some(limit) = operation.row_limit {
-            sql.push_str(" LIMIT ");
-            sql.push_str(&limit.to_string());
+        // `OFFSET` senza `LIMIT` non e sintassi valida su questi motori, e il
+        // tetto massimo e la forma che il dialetto accetta per dire «da qui in
+        // poi, tutto». Il valore non arriva dal piano: e il limite del tipo, e
+        // metterlo qui e diverso dal dichiarare un limite che il chiamante non
+        // ha chiesto — chi legge il SQL vede che la finestra e aperta.
+        match (operation.row_limit, operation.row_offset) {
+            (Some(limit), _) => {
+                sql.push_str(" LIMIT ");
+                sql.push_str(&limit.to_string());
+            }
+            (None, Some(_)) => {
+                sql.push_str(" LIMIT 18446744073709551615");
+            }
+            (None, None) => {}
+        }
+        if let Some(offset) = operation.row_offset {
+            sql.push_str(" OFFSET ");
+            sql.push_str(&offset.to_string());
         }
         sql.push(';');
         let schema = contract_schema(
@@ -785,6 +812,7 @@ mod tests {
             projection: Vec::new(),
             order_by: Vec::new(),
             row_limit: Some(1),
+            row_offset: None,
             filter: None,
         };
         assert_eq!(
@@ -805,6 +833,71 @@ mod tests {
         assert_eq!(
             plan.sql,
             "SELECT `id` FROM `data`.`items` ORDER BY `id` ASC LIMIT 1;"
+        );
+    }
+
+    /// La finestra si rende, e da sola porta con se il tetto del tipo.
+    ///
+    /// `OFFSET n` senza `LIMIT` non e sintassi valida su questi motori, e il
+    /// massimo di `BIGINT UNSIGNED` e la forma con cui il dialetto dice «da
+    /// qui in poi, tutto». Il valore non arriva dal piano, ed e la ragione per
+    /// cui questo test scrive il SQL atteso per intero invece di cercare la
+    /// sottostringa `OFFSET`: un tetto inventato in silenzio sarebbe
+    /// esattamente il genere di cosa che una sottostringa non vede.
+    #[test]
+    fn the_window_renders_with_and_without_a_ceiling() {
+        let description = MysqlObjectDescription {
+            schema: "data".to_owned(),
+            name: "items".to_owned(),
+            kind: "BASE TABLE".to_owned(),
+            engine: Some("InnoDB".to_owned()),
+            columns: vec![column("id", "bigint", "bigint")],
+            indexes: Vec::new(),
+            token: crate::MysqlSchemaToken("token".to_owned()),
+        };
+        let ordered = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("data".to_owned()),
+                object: "items".to_owned(),
+            },
+            projection: Vec::new(),
+            order_by: vec![OrderBy {
+                field: "id".to_owned(),
+                direction: SortDirection::Asc,
+            }],
+            row_limit: None,
+            row_offset: Some(20),
+            filter: None,
+        };
+        assert_eq!(
+            MysqlReadPlan::compile(&description, &ordered)
+                .expect("finestra senza tetto")
+                .sql,
+            "SELECT `id` FROM `data`.`items` ORDER BY `id` ASC LIMIT 18446744073709551615 OFFSET 20;"
+        );
+
+        let bounded = ReadOperation {
+            row_limit: Some(5),
+            ..ordered.clone()
+        };
+        assert_eq!(
+            MysqlReadPlan::compile(&description, &bounded)
+                .expect("finestra con tetto")
+                .sql,
+            "SELECT `id` FROM `data`.`items` ORDER BY `id` ASC LIMIT 5 OFFSET 20;"
+        );
+
+        // E senza ordinamento la finestra e rifiutata, come il tetto.
+        let unordered = ReadOperation {
+            order_by: Vec::new(),
+            ..ordered
+        };
+        assert_eq!(
+            MysqlReadPlan::compile(&description, &unordered)
+                .expect_err("finestra non riproducibile")
+                .category,
+            ErrorCategory::InvalidPlan
         );
     }
 }
