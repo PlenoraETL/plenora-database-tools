@@ -68,6 +68,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1114,6 +1115,131 @@ def verdict(
     }
 
 
+#: Gli scope che hanno bisogno dei riferimenti accesi, nell'ordine in cui la
+#: campagna li misura. `live` per prima: e quella che dice se il SDK funziona,
+#: e se non funziona i tempi del bench non interessano piu.
+LIVE_SCOPES = ("live", "benchmark")
+
+
+def preconditions() -> None:
+    """Cio che deve valere prima di costruire qualunque cosa.
+
+    Le versioni dichiarate devono coincidere fra `pyproject.toml`,
+    `Cargo.toml`, `Cargo.lock` e il changelog, e il pin di maturin deve stare
+    dentro i limiti che il crate dichiara. Sono controlli su file, non su
+    server: stanno prima di Docker perche scoprirli dopo costa la build di due
+    artefatti e l'accensione di due riferimenti.
+
+    # Raises
+
+    `RuntimeError` per una divergenza.
+    """
+
+    declared_version()
+    validate_maturin_pin(
+        PYPROJECT.read_text(encoding="utf-8"),
+        BUILD_REQUIREMENTS.read_text(encoding="utf-8"),
+    )
+
+
+def preflight() -> str:
+    """Le precondizioni piu l'albero pulito, e il commit da cui si parte.
+
+    E' la forma che [`scripts.fixture_campaign.campaign`] si aspetta: viene
+    chiamata due volte, una prima di accendere i riferimenti e una a misura
+    finita, e le due risposte devono coincidere. Il verdetto nomina un commit,
+    e con l'albero sporco quel commit non descrive il codice che ha prodotto i
+    numeri — `main` ammette il caso con `--allow-dirty`, marcando il verdetto
+    non autorevole, ma una campagna non ha un operatore che legga quella
+    marcatura.
+
+    # Raises
+
+    `RuntimeError` se una precondizione non regge o l'albero ha modifiche non
+    committate.
+    """
+
+    preconditions()
+    assert_clean_worktree(porcelain_entries())
+    return git(["rev-parse", "HEAD"]).strip()
+
+
+def measure_scopes(
+    scopes: Sequence[str], *, dirty: list[str]
+) -> dict[str, dict[str, object]]:
+    """Costruisce gli artefatti **una volta** e misura gli scope richiesti.
+
+    Ricostruirli per ogni scope non renderebbe la misura piu solida: la
+    renderebbe meno confrontabile, perche `live` e `benchmark` parlerebbero di
+    due wheel diversi mentre il bench di parita esiste proprio per confrontare
+    due artefatti fra loro. Sono gli stessi, e il verdetto di ciascuno scope
+    porta gli stessi digest.
+
+    L'albero si riverifica dopo **ogni** scope, non solo alla fine: sapere
+    quale corsa lo ha toccato e cio che rende l'informazione utile.
+
+    # Raises
+
+    `RuntimeError` da una qualunque delle fasi che gia la sollevano — build,
+    esecuzione, contratto dello scope.
+    """
+
+    commit = git(["rev-parse", "HEAD"]).strip()
+    before = worktree_state()
+    documents: dict[str, dict[str, object]] = {}
+    with tempfile.TemporaryDirectory(prefix="plenora-sdk-artifacts-") as staging:
+        artifacts = Path(staging)
+        assert_artifacts_outside_repository(artifacts)
+        artifact = build_artifacts(artifacts)
+        assert_worktree_unchanged(before, "la build degli artefatti")
+        images = {
+            "build": image_identity(RUST_IMAGE),
+            "test": image_identity(PYTHON_IMAGE),
+        }
+        for scope in scopes:
+            output = run(
+                pytest_command(
+                    scope=scope, artifacts=artifacts, wheel=artifact["wheel"]
+                ),
+                capture=True,
+            )
+            assert_worktree_unchanged(before, f"l'esecuzione della suite ({scope})")
+            print(output)
+            summary = pytest_summary(output)
+            counts = assert_scope_contract(scope=scope, output=output, summary=summary)
+            # Copia, non aggiornamento in luogo: l'origine del package la
+            # dichiara l'interprete che ha eseguito **quello** scope, e
+            # sovrascriverla lascerebbe due verdetti che citano la stessa.
+            measured = dict(artifact)
+            measured.update(installed_origin(output))
+            documents[scope] = verdict(
+                scope=scope,
+                commit=commit,
+                dirty=dirty,
+                artifact=measured,
+                images=images,
+                versions=installed_versions(output),
+                counts=counts,
+                summary=summary,
+            )
+    return documents
+
+
+def measure_live_scopes() -> dict[str, object]:
+    """I due scope che hanno bisogno dei riferimenti, per la campagna.
+
+    Zero argomenti perche e cio che `campaign(measure=...)` chiama, e nessun
+    `dirty`: il preflight della campagna rifiuta un albero sporco, quindi qui
+    non esiste il caso.
+    """
+
+    return {
+        "schema_version": 1,
+        "gate": "python-sdk-suite",
+        "scopes": measure_scopes(LIVE_SCOPES, dirty=[]),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     scope = parser.add_mutually_exclusive_group()
@@ -1144,11 +1270,7 @@ def main() -> int:
         selected = "live"
 
     try:
-        declared_version()
-        validate_maturin_pin(
-            PYPROJECT.read_text(encoding="utf-8"),
-            BUILD_REQUIREMENTS.read_text(encoding="utf-8"),
-        )
+        preconditions()
         dirty = porcelain_entries()
         if not arguments.allow_dirty:
             assert_clean_worktree(dirty)
@@ -1158,51 +1280,12 @@ def main() -> int:
                 "sara authoritative=false",
                 file=sys.stderr,
             )
-        commit = git(["rev-parse", "HEAD"]).strip()
-        before = worktree_state()
-        with tempfile.TemporaryDirectory(prefix="plenora-sdk-artifacts-") as staging:
-            artifacts = Path(staging)
-            assert_artifacts_outside_repository(artifacts)
-            artifact = build_artifacts(artifacts)
-            assert_worktree_unchanged(before, "la build degli artefatti")
-            output = run(
-                pytest_command(
-                    scope=selected, artifacts=artifacts, wheel=artifact["wheel"]
-                ),
-                capture=True,
-            )
-            assert_worktree_unchanged(before, "l'esecuzione della suite")
-        summary = pytest_summary(output)
-        counts = assert_scope_contract(
-            scope=selected, output=output, summary=summary
-        )
-        artifact.update(installed_origin(output))
-        versions = installed_versions(output)
-        images = {
-            "build": image_identity(RUST_IMAGE),
-            "test": image_identity(PYTHON_IMAGE),
-        }
+        documents = measure_scopes([selected], dirty=dirty)
     except RuntimeError as error:
         print(f"sdk gate: {error}", file=sys.stderr)
         return 1
 
-    print(output)
-    print(
-        json.dumps(
-            verdict(
-                scope=selected,
-                commit=commit,
-                dirty=dirty,
-                artifact=artifact,
-                images=images,
-                versions=versions,
-                counts=counts,
-                summary=summary,
-            ),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
+    print(json.dumps(documents[selected], ensure_ascii=False, sort_keys=True))
     return 0
 
 

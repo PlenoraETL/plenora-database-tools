@@ -1,0 +1,116 @@
+name: sdk-assurance
+
+# La suite del SDK Python contro i due riferimenti veri.
+#
+# `scripts/check_sdk_tests.py` esiste da tempo e fa molto: costruisce wheel e
+# CLI nella stessa toolchain, li installa fuori dall'albero, verifica che
+# `plenora_database` arrivi da `site-packages` e non dal source tree, esegue
+# `pytest` e confronta la corsa con il contratto dello scope — quanti passati,
+# quanti saltati e per quale motivo, quanti deselezionati. Nessun workflow lo
+# eseguiva.
+#
+# Cio che girava in CI era la sola suite **offline**: `rust-ci` la lancia sul
+# wheel di debug, e prova che i parametri tipizzati, la normalizzazione Arrow
+# e l'AST portable reggono senza server. Non prova niente su cio che il SDK
+# esiste per fare, cioe parlare con un database. Duecentodiciannove test
+# stavano fuori da qualunque corsa automatica.
+#
+# La conseguenza sta scritta in `deny.toml`, ed e il motivo per cui questa
+# campagna arriva adesso: le due advisory di pyo3 restano ignorate perche la
+# migrazione a 0.29 e grande — `with_gil` -> `attach`, `allow_threads` ->
+# `detach`, via `PyObject` — e validarla con il solo compilatore porta piu
+# rischio delle due letture che chiude. Quell'argomento poggiava su una
+# copertura mancante. Ora la copertura c'e, e la migrazione torna a essere un
+# lavoro da fare invece che un lavoro che non si puo verificare.
+#
+# Non gira su push: accende due riferimenti, costruisce due artefatti in
+# release e lancia tre container: e troppo per ogni commit. Gira a cadenza
+# fissa, su richiesta, e sulle PR che toccano il binding o il suo ambiente —
+# dove un `paths:` non e una promessa vuota, perche il passo che lancia il
+# gate e incondizionato.
+#
+# Il ciclo di vita delle fixture non e qui: sta in
+# `scripts/fixture_campaign.py`, condiviso con le altre due campagne ed
+# eseguibile identico in locale. Uno YAML che accende container e una
+# decisione senza test.
+
+on:
+  schedule:
+    # Lunedi mattina, un'ora dopo l'evidenza MariaDB. Le tre campagne
+    # accendono container con nomi propri e progetti distinti, ma condividono
+    # il demone Docker del runner: non si incrociano perche non partono
+    # insieme.
+    - cron: '17 7 * * 1'
+  pull_request:
+    paths:
+      - ".github/workflows/sdk-assurance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/plenora-database-py/**"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-db-mysql/**"
+      - "crates/plenora-db-postgres/**"
+      - "docker-compose.mysql.yml"
+      - "docker-compose.postgres.yml"
+      - "docker/mysql/**"
+      - "docker/postgres/init/**"
+      - "requirements-sdk-build.txt"
+      - "requirements-sdk-tests.txt"
+      - "rust-toolchain.toml"
+      - "scripts/check_sdk_campaign.py"
+      - "scripts/check_sdk_tests.py"
+      - "scripts/compose_network.py"
+      - "scripts/fixture_campaign.py"
+      - "scripts/sdk_wheel_probe.py"
+  workflow_dispatch:
+
+# Sola lettura: la campagna misura, non scrive sul repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  sdk-assurance:
+    name: suite SDK sui riferimenti PostgreSQL e MySQL
+    # Il gate non installa Rust ne Python nel runner: costruisce dentro
+    # `rust:1.92` ed esegue dentro `python:3.13-slim`. Qui servono Docker,
+    # che il runner ha, e un Python qualunque per lanciare la campagna.
+    runs-on: ubuntu-24.04
+    # La build in release del wheel e del CLI e la parte lunga, e la suite
+    # live ne aggiunge un'altra. Sessanta minuti sono il budget delle altre
+    # due campagne, e questa non ha ragione di averne uno diverso.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # Log e diagnostica vivono **fuori** dal repository: il preflight della
+      # campagna pretende un albero pulito, e un file scritto qui dentro
+      # sarebbe proprio cio che lo fa fallire.
+      # La directory e preparazione, non misura, e sta in un passo suo perche
+      # il gate deve essere il primo comando del proprio `run`.
+      - name: directory di diagnostica
+        run: mkdir -p "$RUNNER_TEMP/sdk-assurance"
+
+      - name: campagna live del SDK
+        run: |
+          python3 scripts/check_sdk_campaign.py \
+            --diagnostics "$RUNNER_TEMP/sdk-assurance" 2>&1 \
+            | tee "$RUNNER_TEMP/sdk-assurance/sdk-assurance.log"
+
+      - name: diagnostica
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-assurance-results
+          path: ${{ runner.temp }}/sdk-assurance/
+          retention-days: 7

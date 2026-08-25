@@ -921,15 +921,6 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
         "check_mysql_performance.py": "campagna prestazionale MySQL, stesso motivo",
         "check_sqlserver_azure.py": "gate opt-in: richiede credenziali Azure SQL che il progetto non possiede",
         "check_sqlserver_polybase.py": "gate opzionale: richiede una fixture PolyBase reale",
-        # La dichiarazione precedente diceva che `offline_suite.sh` replicava
-        # il contratto di questo gate. Non e vero, e vale la pena scriverlo
-        # per esteso: quello script esegue la sola suite offline e verifica
-        # che almeno un test sia stato eseguito, mentre il gate fissa i
-        # conteggi esatti dei tre scope (offline 24 passati con 195 skip
-        # nominali, live 219, benchmark 2 con 217 deselezionati) e l'identita
-        # degli artefatti. Gli scope `live` e `benchmark` richiedono i
-        # riferimenti PostgreSQL e MySQL accesi, che `python-wheel` non avvia.
-        "check_sdk_tests.py": "solo lo scope offline e coperto in sostanza da .github/scripts/offline_suite.sh nei quattro job di python-wheel; gli scope live e benchmark richiedono i riferimenti PostgreSQL e MySQL accesi, che nessun workflow del wheel avvia, e restano da lanciare a mano",
     }
 
     #: Gate che un altro gate esegue per conto proprio, e **con quali misure**.
@@ -950,6 +941,18 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
             "scripts/check_mariadb_campaign.py",
             "scripts.check_mariadb_driver",
             {"measure": "verdict"},
+        ),
+        # Il gate del SDK non e nato con una campagna: costruiva gli
+        # artefatti, eseguiva la suite e confrontava i conteggi, ma pretendeva
+        # i due riferimenti gia accesi, quindi gli scope `live` e `benchmark`
+        # non li lanciava nessun workflow. Cio che girava in CI era la sola
+        # suite offline, che non tocca un database — e la conseguenza sta in
+        # `deny.toml`, dove la migrazione a pyo3 0.29 resta ferma per la
+        # copertura live che mancava.
+        "check_sdk_tests.py": (
+            "scripts/check_sdk_campaign.py",
+            "scripts.check_sdk_tests",
+            {"preflight": "preflight", "measure": "measure_live_scopes"},
         ),
     }
 

@@ -87,11 +87,20 @@ ignore = [
     # Perche un'eccezione e non l'aggiornamento: entrambe sono corrette solo
     # dalla 0.29.0, e il salto dalla 0.24 comporta la migrazione
     # `with_gil` -> `attach` e `allow_threads` -> `detach` piu la rimozione di
-    # `PyObject` — 79 errori di compilazione. La suite **offline** sul wheel
-    # ora gira (`.github/workflows/python-wheel.yml`), ma quella live no:
-    # nessun workflow esercita il SDK contro un database. Finche quella
-    # copertura manca, una migrazione di cinque minor version validata dal
-    # solo compilatore porta piu rischio delle due letture che chiude.
+    # `PyObject` — 79 errori di compilazione.
+    #
+    # L'argomento con cui questa eccezione e stata aperta era la copertura: la
+    # suite offline sul wheel girava, quella live no — nessun workflow
+    # esercitava il SDK contro un database — e una migrazione di cinque minor
+    # version validata dal solo compilatore portava piu rischio delle due
+    # letture che chiude.
+    #
+    # Quell'argomento non vale piu. `sdk-assurance` esegue
+    # `scripts/check_sdk_campaign.py` sui riferimenti PostgreSQL e MySQL, con
+    # i conteggi esatti dei due scope live come contratto. Cio che resta e la
+    # migrazione stessa, che e lavoro e non un impedimento: va fatta, e questa
+    # eccezione va tolta con lei. La distinzione conta — un'eccezione che
+    # dichiara un ostacolo inesistente si rinnova da sola a ogni revisione.
     #
     # Rimuovere insieme alla migrazione a pyo3 0.29.
     # Prossima revisione: 2027-Q1.
