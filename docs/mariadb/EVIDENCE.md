@@ -1490,3 +1490,68 @@ possono rendere la stessa stringa. Gli esiti coincidono.
 * **le funzioni spatial**: nessuna sonda le ha eseguite su questo prodotto, e la
   lista verified di `MySQL` — che questa stessa sessione ha dovuto accorciare da
   ventisei a quindici — e la prova che ereditarla sarebbe un errore.
+
+## Quattordicesima tranche: i savepoint, chiusi per non essere stati provati
+
+`transactions.savepoints` era `false` su questo profilo da sempre, e la ragione
+scritta accanto alla bandiera non diceva «il prodotto non li ha». Diceva:
+«nessuna sonda li ha toccati, e un savepoint dichiarato e non provato e
+esattamente il genere di promessa che si scopre rotta durante un rollback
+parziale».
+
+E' la forma di chiusura piu scomoda da leggere, perche non si distingue da
+un'assenza vera guardando solo il documento. Questa tranche la scioglie.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
+|---|---|---|---|---|---|
+| provider | profilo | `provider.profile_savepoint_partial_rollback` | commit=Committed — righe=1 contenuto `1:p1` | **identico** | **identico** |
+| provider | profilo | `provider.profile_savepoint_unknown_name` | **rifiutato** — `Execution`/`Write`, codice 1305 | **identico** | **identico** |
+
+### Cosa dice
+
+**Il rollback parziale annulla cio che e venuto dopo, e nient'altro.** Una riga,
+il savepoint, altre due righe, `ROLLBACK TO`, `RELEASE`, `COMMIT`: alla fine
+resta la sola riga scritta prima. La rilettura arriva da un'altra connessione,
+perche l'esito che il provider dichiara e cio che crede, e la tabella sul server
+e cio che e successo — le due si confondono proprio nel caso in cui si vuole
+distinguerle.
+
+**E il nome conta.** La seconda sonda chiede un rollback a un savepoint mai
+creato, e il server risponde 1305 su tutti e tre. E' la sonda che rende vera la
+prima: senza, un motore che dicesse di si a qualunque `ROLLBACK TO` supererebbe
+comunque il controllo sul conteggio — le due righe successive verrebbero
+annullate dal `ROLLBACK` finale della transazione, e il conteggio tornerebbe lo
+stesso. Il chiamante crederebbe di aver annullato qualcosa, e nessuno lo
+smentirebbe.
+
+**Nessuna divergenza.** Non era scontato che ci fosse — il crate implementa i
+savepoint una volta sola per i due prodotti — ma non era nemmeno scontato che
+non ci fosse: dodici tranche di questo documento esistono perche codice
+condiviso non significa comportamento condiviso, e la lista spatial di `MySQL`
+ne e la dimostrazione piu recente.
+
+### Cosa ne segue per le capability
+
+`transactions.savepoints` passa a `true`, e la guardia del profilo verifica che
+coincida con quella di `MySQL`: una divergenza inventata su una superficie
+condivisa e il difetto che ADR 0010 ha nominato, e va escluso dove il codice e
+lo stesso.
+
+`transactional_ddl` e `staged_swap` restano chiusi, e non per mancanza di
+misura: l'ottava tranche ha mostrato che su questi motori `CREATE TABLE` fa
+commit implicito, quindi il DDL sopravvive al rollback.
+
+### Cosa resta not_measured
+
+* **il codice 1305 non ha un verdetto condiviso.** Non compare in
+  `MEASURED_SERVER_CODES`, quindi cade nella classificazione generica e arriva
+  al chiamante come `Execution`. Ora e misurato due volte in questo repository,
+  e con due significati diversi: «savepoint inesistente» qui, «funzione
+  inesistente» nella sonda spatial di `MySQL`. Entrambi sono «il nome non
+  esiste», e un verdetto condiviso e difendibile — ma deciderlo riguarda
+  entrambi i significati insieme, e non e la domanda di questa tranche.
+* **la fase del rifiuto e `Write`**, per un `ROLLBACK TO` che una scrittura non
+  e. Misurata uguale sui tre riferimenti, quindi non e una divergenza: e una
+  classificazione da rivedere, non una differenza fra prodotti.

@@ -1011,15 +1011,23 @@ impl ProductProfile for MariadbProfile {
                 returning: false,
                 rollback_on_failure: true,
             },
-            // L'unica famiglia con dei `true`, e sono quelli che la terza
-            // tranche ha misurato: tredici sonde di sessione su tredici danno
-            // lo stesso esito sui tre riferimenti, commit e rollback compresi.
-            // `savepoints` no — nessuna sonda li ha toccati — e un savepoint
-            // dichiarato e non provato e esattamente il genere di promessa che
-            // si scopre rotta durante un rollback parziale.
+            // La terza tranche ha misurato commit, rollback e isolamento:
+            // tredici sonde di sessione su tredici, stesso esito sui tre
+            // riferimenti.
+            //
+            // `savepoints` si apre con la quattordicesima, e restava chiusa per
+            // una ragione che non era «il prodotto non li ha»: nessuna sonda li
+            // aveva toccati, e un savepoint dichiarato e non provato e proprio
+            // il genere di promessa che si scopre rotta durante un rollback
+            // parziale. Ora due sonde lo attraversano — il rollback parziale
+            // lascia la sola riga scritta prima del savepoint, riletta da
+            // un'altra connessione, e un nome mai creato viene rifiutato. La
+            // seconda e cio che rende vera la prima: senza, un motore che
+            // dicesse di si a qualunque `ROLLBACK TO` supererebbe comunque il
+            // controllo sul conteggio.
             transactions: TransactionCapabilities {
                 single_transaction: true,
-                savepoints: false,
+                savepoints: true,
                 transactional_ddl: false,
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
@@ -3564,7 +3572,19 @@ mod tests {
         // riferimenti. I savepoint no, e restano chiusi.
         let transactions = &published.transactions;
         assert!(transactions.single_transaction);
-        assert!(!transactions.savepoints);
+        // Aperta dalla quattordicesima tranche, e insieme a MySQL: il crate li
+        // implementa una volta sola per i due prodotti, e le due sonde danno lo
+        // stesso esito sui tre riferimenti. Il confronto sta qui perche una
+        // divergenza inventata su una superficie condivisa e il difetto che
+        // ADR 0010 ha nominato.
+        assert!(transactions.savepoints);
+        assert_eq!(
+            transactions.savepoints,
+            MYSQL_PROFILE
+                .capabilities("9.7.2".to_owned())
+                .transactions
+                .savepoints
+        );
         assert!(!transactions.transactional_ddl && !transactions.staged_swap);
 
         // I limiti non sono capability: dicono quanto il crate manda. `None`
