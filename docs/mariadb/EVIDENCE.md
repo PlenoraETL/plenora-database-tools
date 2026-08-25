@@ -1017,10 +1017,10 @@ Gira con lo stesso comando delle tranche precedenti:
 | provider | profilo | `provider.profile_write_update_rollback` | **rifiutato** — Conflict/Write/**RolledBack**/Never (1062), valori di prima tornati | **identico** | **identico** |
 | provider | profilo | `provider.profile_write_update_cancellation` | **rifiutato** — Cancelled/Write/Unknown/RequiresRecovery, valori di prima, ripresa 2 | **identico**, col proprio nome | **identico**, col proprio nome |
 | provider | profilo | `provider.profile_write_upsert` | confermate=6, `inserite=None`, `aggiornate=None` | **identico** | **identico** |
-| provider | profilo | `provider.profile_write_upsert_rollback` | **rifiutato** — Execution/Write/RolledBack/Never (1406), righe di prima tornate | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_upsert_rollback` | **rifiutato** — DataMapping/Write/RolledBack/Never (1406), righe di prima tornate | **identico** | **identico** |
 | provider | profilo | `provider.profile_write_upsert_cancellation` | **rifiutato** — Cancelled/…/RequiresRecovery, nulla applicato, ripresa 1 | **identico**, col proprio nome | **identico**, col proprio nome |
 | provider | profilo | `provider.profile_write_replace` | inserite=2, `cancellate=Some(0)`, target sostituito | **identico** | **identico** |
-| provider | profilo | `provider.profile_write_replace_rollback` | **rifiutato** — Execution/Write/RolledBack/Never (1406), **target non vuoto** | **identico** | **identico** |
+| provider | profilo | `provider.profile_write_replace_rollback` | **rifiutato** — DataMapping/Write/RolledBack/Never (1406), **target non vuoto** | **identico** | **identico** |
 | provider | profilo | `provider.profile_write_replace_cancellation` | **rifiutato** — Cancelled/…/RequiresRecovery, target intatto, ripresa 1 | **identico**, col proprio nome | **identico**, col proprio nome |
 | provider | profilo | `provider.profile_write_delete_by_keys` | cancellate=2, saltate=1 | **identico** | **identico** |
 | provider | profilo | `provider.profile_write_delete_by_keys_rollback` | **rifiutato** — batch intero tornato indietro | **identico** | **identico** |
@@ -1071,15 +1071,26 @@ nulla da fare dei valori — ma le prime tre sonde ponevano una domanda diversa
 da quella che credevano, e sono state riscritte con lo schema che la mode
 chiede.
 
-**Il valore fuori misura arriva come errore generico.** 1406, «Data too long»,
-non e in nessuna tabella di classificazione: il profilo gli attribuisce il
-verdetto dei codici non qualificati — `Execution`/`Never`, messaggio redatto —
-identico sui tre server. Non e sbagliato: l'operazione e fallita sul server e
-ritentarla non ha ragione di riuscire. E pero la stessa forma della lacuna che
-la quarta tranche ha chiuso su 1142, dove un permesso mancante si presentava
-come guasto generico: un dato troppo lungo lo corregge chi chiama, un guasto
-no, e sono due rimedi diversi. Registrata qui e chiusa a parte, perche tocca
-anche il provider MySQL qualificato.
+~~**Il valore fuori misura arriva come errore generico.**~~ **Chiuso.** 1406,
+«Data too long», e 1451, la cancellazione trattenuta da un vincolo
+referenziale, non erano in nessuna tabella di classificazione: il profilo gli
+attribuiva il verdetto dei codici non qualificati — `Execution`/`Never`,
+messaggio redatto — identico sui tre server. Non era sbagliato, ma era la
+stessa forma della lacuna che la quarta tranche ha chiuso su 1142: un dato
+troppo lungo lo corregge chi chiama, un guasto no, e sono due rimedi diversi.
+
+La classificazione condivisa conosce ora quattro codici in piu, e ciascuno
+arriva identico dai tre riferimenti: **1048** (colonna non nullable senza
+valore) e **1406** (valore oltre la larghezza) come `DataMapping`, **1451** e
+**1452** — i due lati dello stesso vincolo referenziale — come `Conflict`. La
+seconda scelta ha la stessa ragione di 1062: non e la riga a essere
+malformata, e lo stato del database a non ammetterla.
+
+Fuori dall'`Append` la diagnostica per riga non si attiva, quindi era proprio
+in queste cinque mode che quei codici perdevano il proprio nome. Il cambio
+tocca anche il provider MySQL qualificato, ed e in un commit suo — le sonde di
+rollback di questa tranche verificano ora le due quaterne al posto di quella
+generica.
 
 **Nessuna delle dodici distingue i tre server.** Le uniche differenze sono i
 nomi dei prodotti nei messaggi.

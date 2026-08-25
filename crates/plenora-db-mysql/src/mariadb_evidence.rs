@@ -3668,19 +3668,33 @@ async fn remaining_write_probes(
     }
 }
 
-/// Il rifiuto che ogni sonda di rollback attende dal server.
+/// Il rifiuto di un valore che non entra nella colonna.
 ///
-/// `Execution`/`Never` non e un «non so» travestito: e il verdetto che il
-/// profilo attribuisce a un codice che nessuna misura ha qualificato, e dice
-/// che l'operazione e fallita sul server e che ritentarla non ha ragione di
-/// riuscire. Cio che la sonda verifica e che l'effetto sia `RolledBack` —
-/// nessuna di queste tre mode esegue DDL, quindi il rollback e pieno.
-const SERVER_REFUSAL: RefusalContract = RefusalContract {
-    category: ErrorCategory::Execution,
+/// `DataMapping`/`Never`: il dato in ingresso e sbagliato e lo corregge chi
+/// chiama. Fino alla nona tranche questo codice — 1406 — arrivava come guasto
+/// generico `Execution`, che e vero ma non dice cosa fare. Cio che la sonda
+/// verifica oltre alla categoria e che l'effetto sia `RolledBack`: nessuna di
+/// queste mode esegue DDL, quindi il rollback e pieno e non lascia residui.
+const TOO_LONG_REFUSAL: RefusalContract = RefusalContract {
+    category: ErrorCategory::DataMapping,
     phase: ErrorPhase::Write,
     remote_effect: RemoteEffect::RolledBack,
     retry: RetryDisposition::Never,
-    message_contains: "errore server",
+    message_contains: "oltre la larghezza della colonna",
+};
+
+/// Il rifiuto di una cancellazione trattenuta da un vincolo referenziale.
+///
+/// `Conflict` e non `DataMapping`: non e la riga a essere malformata, e lo
+/// stato del database a non ammettere l'operazione — una figlia che trattiene
+/// la madre. Il chiamante che riceve i due verdetti fa due cose diverse:
+/// corregge il dato, oppure guarda cos'altro dipende da quella riga.
+const FOREIGN_KEY_REFUSAL: RefusalContract = RefusalContract {
+    category: ErrorCategory::Conflict,
+    phase: ErrorPhase::Write,
+    remote_effect: RemoteEffect::RolledBack,
+    retry: RetryDisposition::Never,
+    message_contains: "integrita referenziale",
 };
 
 /// Il rifiuto di una cancellazione, uguale per le tre mode.
@@ -3843,7 +3857,7 @@ async fn upsert_probes(
         ),
         Err(error) => {
             let contents = table_contents(connection, SCRATCH_UPSERT).await;
-            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+            let mismatch = refusal_mismatch(&TOO_LONG_REFUSAL, &error).or_else(|| {
                 (contents != initial)
                     .then(|| format!("le righe di partenza non sono tornate: [{contents}]"))
             });
@@ -4049,7 +4063,7 @@ async fn replace_probes(
         ),
         Err(error) => {
             let contents = table_contents(connection, SCRATCH_REPLACE).await;
-            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+            let mismatch = refusal_mismatch(&TOO_LONG_REFUSAL, &error).or_else(|| {
                 (contents != initial)
                     .then(|| format!("il DELETE non e stato annullato: [{contents}]"))
             });
@@ -4267,7 +4281,7 @@ async fn delete_probes(
         ),
         Err(error) => {
             let contents = table_contents(connection, SCRATCH_DELETE).await;
-            let mismatch = refusal_mismatch(&SERVER_REFUSAL, &error).or_else(|| {
+            let mismatch = refusal_mismatch(&FOREIGN_KEY_REFUSAL, &error).or_else(|| {
                 (contents != initial)
                     .then(|| format!("il batch non e tornato indietro per intero: [{contents}]"))
             });

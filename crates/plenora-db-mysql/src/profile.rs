@@ -1211,6 +1211,43 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
             message: format!("vincolo univoco {product} violato (codice 1062)"),
             remote_effect: None,
         },
+        // I tre codici che dicono «questa riga non va bene», e che fino alla
+        // nona tranche arrivavano come guasto generico fuori dall'`Append`.
+        //
+        // La diagnostica per riga si attiva **solo** per `Append`: li 1048 e
+        // 1406 diventano un rifiuto di riga con la sua causa. Per ogni altra
+        // mode la scrittura e un bulk, il codice passa da qui, e da qui
+        // usciva `Execution`/`Never` — «l'operazione e fallita sul server e
+        // ritentarla non ha ragione di riuscire». Vero, e inutile: un dato
+        // troppo lungo lo corregge chi chiama, un guasto no, e sono due
+        // rimedi diversi. E' la stessa lacuna che la quarta tranche ha chiuso
+        // su 1142, dove un permesso mancante si presentava come guasto.
+        //
+        // Tutti e tre arrivano identici dai tre riferimenti: 1048 e 1452 dalla
+        // quarta tranche, 1406 dalle sonde di rollback di Upsert e Replace,
+        // 1451 da quella di DeleteByKeys.
+        1_048 => ServerCodeVerdict {
+            category: ErrorCategory::DataMapping,
+            retry: RetryDisposition::Never,
+            message: format!("colonna {product} non nullable senza valore (codice 1048)"),
+            remote_effect: None,
+        },
+        1_406 => ServerCodeVerdict {
+            category: ErrorCategory::DataMapping,
+            retry: RetryDisposition::Never,
+            message: format!("valore oltre la larghezza della colonna {product} (codice 1406)"),
+            remote_effect: None,
+        },
+        // I due lati dello stesso vincolo, e la categoria e la stessa di 1062
+        // per la stessa ragione: non e la riga a essere malformata, e lo stato
+        // del database a non ammetterla — una figlia che trattiene la madre,
+        // o una madre che non c'e.
+        1_451 | 1_452 => ServerCodeVerdict {
+            category: ErrorCategory::Conflict,
+            retry: RetryDisposition::Never,
+            message: format!("integrita referenziale {product} violata (codice {code})"),
+            remote_effect: None,
+        },
         // L'unico codice che dichiara da se cosa e successo sul
         // server: la transazione vittima e gia annullata, e il
         // chiamante non ha nulla da ripulire.

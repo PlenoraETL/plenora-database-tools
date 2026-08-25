@@ -65,6 +65,20 @@ pub struct ReadCapabilities {
     /// una finestra senza `order_by` non e riproducibile — il contratto
     /// infatti rifiuta `row_offset` senza ordinamento.
     ///
+    /// # Sta nella sezione sbagliata, e la decisione e aperta
+    ///
+    /// `row_offset` vive su [`crate::query::QueryOperation`].
+    /// [`crate::plan::ReadOperation`] non ce l'ha — ha `row_limit` e basta —
+    /// quindi **un piano di lettura non puo chiedere una finestra**, e questo
+    /// campo, che sta in `ReadCapabilities`, promette una superficie che la
+    /// sua operazione non espone.
+    ///
+    /// Le due uscite sono entrambe una modifica di contratto: spostarlo dove
+    /// vive cio che descrive, oppure chiuderlo ovunque finche `ReadOperation`
+    /// non guadagna l'offset. Nessuna delle due si fa di passaggio, e nessuna
+    /// delle due e questa riga — che dichiara il difetto invece di
+    /// propagarlo aprendo la bandiera su altri due provider.
+    ///
     /// La definizione e arrivata tardi, e la sua assenza aveva gia prodotto
     /// due letture diverse dello stesso campo: `PostgreSQL` e SQL Server lo
     /// pubblicavano `true` rendendo `OFFSET`, `MySQL` e `MariaDB` lo
