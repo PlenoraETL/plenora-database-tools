@@ -289,6 +289,72 @@ class ComposeNetworkDiscovery(unittest.TestCase):
             environment["PLENORA_SQLSERVER_MISMATCH_HOST"], "127.0.0.2"
         )
 
+    def test_the_mismatch_address_is_published_by_the_fixture(self) -> None:
+        """L'indirizzo del mismatch deve avere qualcuno in ascolto.
+
+        La prova che quel test fa e sul **certificato**: connettersi a un
+        indirizzo che il certificato non copre e vedersi rifiutare la verifica
+        dell'hostname. Se li non risponde nessuno, la connessione muore prima,
+        al TCP, e il test riceve `Io` invece di `Authentication` — fallisce
+        dicendo la cosa giusta per la ragione sbagliata.
+
+        Non e teorico: legare la porta al solo `127.0.0.1` — per chiudere una
+        esposizione vera, l'`sa` di questo fixture ha una password versionata —
+        ha rotto quella prova nello stesso commit, e il gate e rimasto rosso
+        finche non si e risalito dal sintomo (`Io`) alla causa (nessuno in
+        ascolto su `127.0.0.2`).
+
+        Le due dichiarazioni vivono in file diversi e devono concordare: qui
+        l'una interroga l'altra.
+        """
+
+        compose = (gate.ROOT / "docker-compose.sqlserver.yml").read_text(encoding="utf-8")
+        with patch.dict(
+            gate.os.environ,
+            {"PLENORA_SQLSERVER_GATE_HOST_CARGO": "1"},
+            clear=False,
+        ):
+            _, environment = gate.cargo(["test"])
+        assert environment is not None
+        mismatch = environment["PLENORA_SQLSERVER_MISMATCH_HOST"]
+        self.assertIn(
+            f'"{mismatch}:1433:1433"',
+            compose,
+            f"il fixture non pubblica {mismatch}: la prova sul certificato "
+            "fallirebbe al TCP, prima di arrivare al TLS",
+        )
+
+    def test_the_mismatch_address_is_absent_from_the_certificate(self) -> None:
+        """E deve restare **fuori** dal certificato, altrimenti non e un mismatch.
+
+        L'altra meta della stessa condizione. L'indirizzo verificato ci sta
+        dentro, quello del mismatch no: se qualcuno aggiungesse il secondo ai
+        SAN per far passare un test, la prova continuerebbe a girare e non
+        proverebbe piu niente.
+        """
+
+        extensions = (gate.ROOT / "docker" / "sqlserver" / "tls" / "server.ext").read_text(
+            encoding="utf-8"
+        )
+        with patch.dict(
+            gate.os.environ,
+            {"PLENORA_SQLSERVER_GATE_HOST_CARGO": "1"},
+            clear=False,
+        ):
+            _, environment = gate.cargo(["test"])
+        assert environment is not None
+        self.assertIn(
+            f"IP:{environment['PLENORA_SQLSERVER_HOST']}",
+            extensions,
+            "l'indirizzo verificato non e fra i SAN: la prima meta del test "
+            "fallirebbe sulla verifica invece di riuscire",
+        )
+        self.assertNotIn(
+            f"IP:{environment['PLENORA_SQLSERVER_MISMATCH_HOST']}",
+            extensions,
+            "l'indirizzo del mismatch e fra i SAN: non e piu un mismatch",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

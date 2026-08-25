@@ -51,8 +51,22 @@ services:
     # Loopback esplicito: l'account `sa` di questo fixture ha una password
     # versionata, e senza indirizzo Compose la pubblicherebbe su 0.0.0.0.
     # Stessa forma gia usata dai fixture MySQL e MariaDB.
+    #
+    # **Due** indirizzi, e il secondo non e ridondante. Il certificato del
+    # server copre `sqlserver`, `localhost` e `127.0.0.1` (vedi
+    # `docker/sqlserver/tls/server.ext`), e il gate prova la verifica
+    # dell'hostname connettendosi a `127.0.0.2`, che nel certificato non c'e.
+    # Con il solo `127.0.0.1` quell'indirizzo non risponde al TCP, e la prova
+    # fallisce prima di arrivare al TLS: il test riceve `Io` — nessuno in
+    # ascolto — invece del rifiuto del certificato che deve misurare.
+    #
+    # E' successo davvero: legare la porta al solo `127.0.0.1` ha chiuso una
+    # esposizione vera e rotto quella prova nello stesso commit. Restano
+    # entrambi di loopback, quindi `127.0.0.0/8` non lascia la macchina e la
+    # ragione della prima riga vale identica per la seconda.
     ports:
       - "127.0.0.1:1433:1433"
+      - "127.0.0.2:1433:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
       - sqlserver_tls:/var/opt/mssql/tls:ro
