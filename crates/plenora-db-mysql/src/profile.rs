@@ -3754,12 +3754,10 @@ mod tests {
             .filter(|function| !spatial.functions.contains(function))
             .copied()
             .collect();
-        let only_mariadb: Vec<_> = spatial
+        let only_mariadb = spatial
             .functions
             .iter()
-            .filter(|function| !mysql_functions.contains(function))
-            .copied()
-            .collect();
+            .find(|function| !mysql_functions.contains(function));
         assert_eq!(
             only_mysql,
             vec![
@@ -3769,11 +3767,13 @@ mod tests {
             ],
             "cio che MySQL ha e MariaDB no"
         );
-        assert_eq!(
-            only_mariadb,
-            vec![plenora_database_core::query::SpatialFunction::Relate],
-            "cio che MariaDB ha e MySQL no"
-        );
+        // Vuoto, e non per costruzione: `Relate` c'e stato per una campagna.
+        // Il server ce l'ha — la sonda delle candidate lo aveva trovato — ma il
+        // gate lo ha bocciato con 1582, perche `MariaDB` lo vuole a tre
+        // argomenti e il contratto ne ammette anche due. Esiste e non e
+        // utilizzabile nella forma che il piano permette, che sono due cose
+        // diverse.
+        assert!(only_mariadb.is_none(), "cio che MariaDB ha e MySQL no");
         assert_eq!(
             spatial.write_wkb,
             MARIADB_PROFILE.write_spatial_is_qualified(),

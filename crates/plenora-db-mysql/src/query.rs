@@ -183,15 +183,25 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     // `IsValid` — la lista e l'intersezione, perche una capability e una
     // promessa a chi non sa su quale minor atterrera.
     //
-    // `Relate` c'e qui e non su `MySQL`, e `HausdorffDistance` e
-    // `FrechetDistance` il contrario.
+    // `HausdorffDistance` e `FrechetDistance` sono su `MySQL` e non qui.
+    //
+    // `Relate` ha fatto il percorso inverso e vale la pena raccontarlo: la
+    // sonda delle candidate lo aveva trovato **presente** — il server ha la
+    // funzione — ed e entrato in questa lista. Poi il gate lo ha bocciato con
+    // 1582, numero di parametri sbagliato: `MariaDB` lo vuole a tre argomenti
+    // — le due geometrie e il pattern DE-9IM — e il contratto ne ammette anche
+    // due, che e l'arieta con cui un chiamante puo scriverlo.
+    //
+    // Esiste, quindi, e non e utilizzabile nella forma che il contratto
+    // permette. E' la stessa regola che tolse `Union` dalla lista di `MySQL`:
+    // una funzione e qualificata quando lo e a **ogni** arieta che il piano
+    // ammette, non quando ne esiste una che funziona.
     SpatialFunction::X,
     SpatialFunction::Y,
     SpatialFunction::IsSimple,
     SpatialFunction::Touches,
     SpatialFunction::Crosses,
     SpatialFunction::Overlaps,
-    SpatialFunction::Relate,
     SpatialFunction::AsGeoJson,
 ];
 
