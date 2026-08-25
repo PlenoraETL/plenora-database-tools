@@ -223,6 +223,14 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # perche nessuno ha guardato e una promessa che il prodotto forse mantiene
     # gia, e che il consumatore non puo usare.
     "raw.spatial_candidate_functions": "quali funzioni mai provate il server possiede",
+    # Trentuno funzioni del contratto restituiscono geometria, e sono chiuse
+    # tutte da una causa sola: il mapper rifiuta `MYSQL_TYPE_GEOMETRY`. Prima di
+    # portare qui la forma del CRS dichiarato — che il percorso di lettura ha
+    # gia — servono due fatti: che `ST_AsBinary` di una funzione geometrica
+    # renda WKB, e che l'SRID sopravviva alla funzione. Il secondo decide il
+    # disegno: se `ST_Envelope` di una geometria 4326 rendesse zero, non ci
+    # sarebbe niente da verificare valore per valore.
+    "raw.geometry_result_forms": "cosa esce da una funzione che restituisce geometria",
 }
 
 # Le sonde il cui **rifiuto** e la prova.
@@ -296,6 +304,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.spatial_write_forms",
     "raw.spatial_index_forms",
     "raw.spatial_candidate_functions",
+    "raw.geometry_result_forms",
     "provider.test_connection",
     "provider.capabilities",
     "provider.describe_object",

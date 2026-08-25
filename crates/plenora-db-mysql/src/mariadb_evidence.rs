@@ -109,6 +109,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     spatial_write_probe(recorder, connection).await;
     spatial_index_probe(recorder, connection).await;
     spatial_candidates_probe(recorder, connection).await;
+    geometry_result_probe(recorder, connection).await;
 }
 
 /// La tabella su cui si misura la scrittura spatial.
@@ -5728,6 +5729,80 @@ async fn profile_probes(
         )
         .await;
     }
+}
+
+/// Cosa esce da una funzione che **restituisce** una geometria.
+///
+/// Trentuno delle settantadue funzioni del contratto restituiscono geometria, e
+/// sono chiuse tutte da una causa sola: il mapper del result set rifiuta
+/// `MYSQL_TYPE_GEOMETRY`, perche una geometria in uscita da una query non porta
+/// SRID ne profilo dimensionale dimostrati.
+///
+/// Il percorso di lettura ha risolto la stessa cosa: il CRS lo dichiara il
+/// piano e il provider lo verifica valore per valore. Prima di portare quella
+/// forma anche qui servono due fatti, e nessuno dei due e deducibile.
+///
+/// **`ST_AsBinary` di una funzione geometrica rende WKB?** Se rendesse il
+/// formato interno — quattro byte di SRID davanti al WKB — il contratto
+/// `GeoArrow` riceverebbe byte che non sono quelli che dichiara.
+///
+/// **L'SRID sopravvive alla funzione?** E' la domanda che decide il disegno.
+/// Se `ST_Buffer` di una geometria 4326 rendesse zero, non ci sarebbe **niente**
+/// da verificare valore per valore: il CRS dichiarato dal chiamante non
+/// potrebbe essere confermato da nulla, e la superficie resterebbe chiusa per
+/// una ragione diversa da quella di oggi.
+async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    let table = "plenora_driver_evidence_geometry_result";
+    for statement in [
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL) ENGINE = InnoDB"
+        ),
+        format!(
+            "INSERT INTO {table} VALUES (1, ST_GeomFromText('POINT(2 3)', 4326))"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella del risultato geometrico: harness, non divergenza");
+    }
+
+    let mut measured = Vec::new();
+    for (name, expression) in [
+        ("srid_colonna", "ST_SRID(shape)".to_owned()),
+        ("srid_envelope", "ST_SRID(ST_Envelope(shape))".to_owned()),
+        ("srid_centroid", "ST_SRID(ST_Centroid(shape))".to_owned()),
+        ("byte_colonna", "LENGTH(ST_AsBinary(shape))".to_owned()),
+        (
+            "byte_envelope",
+            "LENGTH(ST_AsBinary(ST_Envelope(shape)))".to_owned(),
+        ),
+    ] {
+        let verdict = match connection
+            .query_first::<i64, _>(format!("SELECT {expression} FROM {table} WHERE id = 1"))
+            .await
+        {
+            Ok(Some(value)) => value.to_string(),
+            Ok(None) => "nessuna riga".to_owned(),
+            Err(error) => {
+                server_code(&error).map_or_else(|| "rifiutato".to_owned(), |code| code.to_string())
+            }
+        };
+        measured.push(format!("{name}={verdict}"));
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await;
+
+    recorder.accepted(
+        "raw.geometry_result_forms",
+        "raw",
+        "spatial",
+        "cosa esce da una funzione che restituisce geometria, e con quale SRID",
+        measured.join(" "),
+    );
 }
 
 /// Le funzioni del contratto che nessuno ha mai chiesto a questo server.
