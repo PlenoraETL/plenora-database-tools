@@ -250,6 +250,15 @@ def generate_tls(entry: MatrixEntry) -> None:
             "/ca",
             "/tls",
             "/fixture/server.ext",
+            # Il nome per cui il certificato e emesso. Il generatore lo pretende
+            # da quando serve piu di una fixture — MySQL e MariaDB hanno host
+            # diversi — e questo chiamante era rimasto a tre argomenti: la
+            # matrice non riusciva ad avviarsi, e nessuno se n'era accorto
+            # perche il workflow che la esegue era rotto per un'altra ragione.
+            #
+            # `dataflow-mysql` non e una scelta: e l'alias di rete che
+            # `MatrixEntry.aliases` assegna, ed e l'unico nome nei SAN.
+            "dataflow-mysql",
         ],
         timeout=300,
     )

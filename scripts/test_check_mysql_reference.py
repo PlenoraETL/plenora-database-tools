@@ -820,6 +820,52 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
         self.assertEqual(command, [executable, "fmt", "--version"])
 
+    def test_every_caller_of_the_tls_generator_passes_all_its_arguments(self) -> None:
+        """Un gate che non riesce ad avviarsi non e un gate.
+
+        `docker/mysql/tls/generate.sh` dichiara i propri parametri obbligatori
+        con `${N:?...}`, e ne ha quattro da quando serve piu di una fixture:
+        MySQL e MariaDB hanno host diversi, e un default silenzioso emetterebbe
+        per un riferimento un certificato valido per l'altro.
+
+        `check_mysql_matrix.py` era rimasto a tre. La matrice delle versioni non
+        riusciva ad **avviarsi** — falliva sul certgen, prima di toccare un
+        server — e nessuno se n'era accorto per una settimana: il workflow che
+        la esegue era rotto per un'altra ragione ancora, le dipendenze Python
+        non installate.
+
+        Due gate rotti in punti diversi si sono nascosti a vicenda, ed e la
+        ragione per cui questa guardia guarda l'**invocazione** invece di
+        aspettare che qualcuno la esegua.
+        """
+
+        generator = (ROOT / "docker" / "mysql" / "tls" / "generate.sh").read_text(
+            encoding="utf-8"
+        )
+        required = len(re.findall(r"\$\{(\d+):\?", generator))
+        self.assertGreaterEqual(required, 4, "il generatore non dichiara i suoi parametri")
+
+        # I chiamanti sono dichiarati, non cercati: uno nuovo che questa lista
+        # non conoscesse verrebbe saltato in silenzio, che e esattamente il modo
+        # in cui il difetto e passato.
+        callers = {
+            "scripts/check_mysql_matrix.py": r'"/fixture/generate\.sh",\n((?:\s*(?:#[^\n]*|//[^\n]*|"[^"]*",)\n)+)\s*\]',
+            "docker-compose.mysql.yml": r'entrypoint: \["/bin/bash", "/fixture/generate\.sh"\]\n\s*command: \[([^\]]*)\]',
+            "docker-compose.mariadb.yml": r'entrypoint: \["/bin/bash", "/fixture/generate\.sh"\]\n\s*command: \[([^\]]*)\]',
+        }
+        for name, pattern in callers.items():
+            source = (ROOT / name).read_text(encoding="utf-8")
+            matches = re.findall(pattern, source)
+            self.assertTrue(matches, f"{name}: nessuna invocazione riconosciuta")
+            for arguments in matches:
+                passed = len(re.findall(r'"[^"]*"', arguments))
+                self.assertEqual(
+                    passed,
+                    required,
+                    f"{name}: passa {passed} argomenti a un generatore che ne "
+                    f"pretende {required}",
+                )
+
     def test_gate_source_does_not_duplicate_the_fixture_password(self) -> None:
         self.assertNotIn("DataFlow_Test_2026!", GATE.read_text(encoding="utf-8"))
 
