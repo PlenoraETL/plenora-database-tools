@@ -145,19 +145,25 @@ jobs:
       # nulla lo dica. Il ciclo le prova tutte prima di fallire, cosi una
       # combinazione rotta non nasconde la successiva.
       #
-      # I test che filtrano su `usage` vengono anche **eseguiti**, non solo
-      # compilati: sono la guardia che confronta comandi compilati,
-      # documentati e rami del dispatch, piu il test d'integrazione che
-      # verifica l'aiuto dal binario vero. Il loro valore sta tutto nelle
-      # configurazioni non di default — dove `cargo test` del job `test-unit`
-      # non arriva, ed e infatti li che l'aiuto mentiva.
+      # I test vengono anche **eseguiti**, non solo compilati: il loro valore
+      # sta tutto nelle configurazioni non di default, dove `cargo test` del
+      # job `test-unit` non arriva — ed e infatti li che l'aiuto mentiva.
+      #
+      # Girava un sottoinsieme scelto per nome, quelli che filtrano su
+      # `usage`, e il sottoinsieme era il difetto: due test delle factory di
+      # provider erano rossi con `--features mysql` e con `--features
+      # sqlserver` — pretendevano `Postgres` in un binario che non lo
+      # compila — e nessuno li eseguiva. Un filtro per nome sceglie cosa
+      # guardare in base a come si chiama, che e la stessa cosa che aveva
+      # lasciato rossa una suite per mesi. Ora gira tutto cio che non e
+      # `live_`, che qui non ha fixture da interrogare.
       - name: cargo clippy su ogni adapter isolato
         run: |
           status=0
           for features in "--no-default-features --features postgres" "--no-default-features --features mysql" "--no-default-features --features sqlserver" "--all-features"; do
             echo "::group::clippy $features"
             # shellcheck disable=SC2086  # le feature sono argomenti multipli
-            if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings                && cargo test --locked -p plenora-database-cli $features usage; then
+            if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings                && cargo test --locked -p plenora-database-cli $features -- --skip live_; then
               echo "OK   $features"
             else
               echo "FAIL $features"

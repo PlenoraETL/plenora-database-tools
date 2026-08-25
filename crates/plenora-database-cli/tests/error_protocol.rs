@@ -1,10 +1,21 @@
+// I tre helper del materiale TLS servono a due famiglie di test con
+// precondizioni diverse: quelli che confrontano le rotte dei provider
+// strutturati, che vogliono `mysql` **e** `sqlserver` compilati, e quelli
+// sulla coerenza TLS, che passano da un comando `PostgreSQL`. In un binario a
+// una feature sola non ne resta nessuna, e senza questo predicato gli helper
+// diventano codice morto — con `-D warnings`, un errore.
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 use base64::Engine;
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 use std::fs;
 #[cfg(all(feature = "mysql", feature = "sqlserver"))]
 use std::path::Path;
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 use std::path::PathBuf;
 use std::process::{Command, Output};
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECRET_SENTINEL: &str = "HERMES_SENTINEL_DATABASE_SECRET_7F3C91";
@@ -67,6 +78,7 @@ fn run_without_secret_with_tls_path(
         .expect("run plenora-database without secret and with isolated TLS path")
 }
 
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 fn unique_tls_path(suffix: &str) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -78,6 +90,7 @@ fn unique_tls_path(suffix: &str) -> PathBuf {
     ))
 }
 
+#[cfg(any(all(feature = "mysql", feature = "sqlserver"), feature = "postgres"))]
 fn pem_certificate(der: &[u8]) -> Vec<u8> {
     let mut pem = b"-----BEGIN CERTIFICATE-----\n".to_vec();
     for line in BASE64_STANDARD.encode(der).as_bytes().chunks(64) {
@@ -117,6 +130,14 @@ fn cli_errors_are_canonical_json_on_stdout_with_nonzero_exit() {
         .is_some_and(|message| message.starts_with("uso:")));
 }
 
+// Entrambe le rotte del test sono `PostgreSQL`: `database-probe postgres` e
+// `postgres-probe`. In un binario senza quella feature la prima risponde
+// «adapter non disponibile» e la seconda non e nemmeno un comando, quindi il
+// test cadeva su `unsupported` invece che sul fail-close del TLS che
+// sorveglia. Era rosso con `--features mysql` e con `--features sqlserver`
+// da prima di questo commit, e nessuno lo eseguiva: la matrice delle feature
+// filtrava i test per nome.
+#[cfg(feature = "postgres")]
 #[test]
 fn postgres_routes_share_private_ca_environment_contract() {
     for arguments in [
@@ -655,6 +676,11 @@ fn secrets_are_redacted_from_transport_errors_for_every_public_probe_route() {
 /// assente" come errore del chiamante, faceva fallire ogni sottocomando in
 /// fase `validate` con "variabile path TLS assente" — cioe la configurazione
 /// di produzione, quella senza CA privata, era l'unica che non funzionava.
+// `execute-scalar` e un comando `PostgreSQL`: senza quella feature il binario
+// non lo compila e risponde «non compilato in questo binario» in fase
+// `validate`, che e la risposta giusta a una domanda diversa da quella del
+// test. Stessa ragione, stessa storia del test qui sopra.
+#[cfg(feature = "postgres")]
 #[test]
 fn the_plain_secure_default_reaches_the_connection_attempt() {
     let output = cli(&["execute-scalar", "PG_DSN", "SELECT 1", "--type=i64"])
@@ -675,6 +701,9 @@ fn the_plain_secure_default_reaches_the_connection_attempt() {
 /// root pubblici e il certificato resterebbe inutilizzato, quindi il consumer
 /// crederebbe di avere mTLS senza averlo. Stessa logica per l'interruttore
 /// insicuro insieme a del materiale TLS: le due richieste si contraddicono.
+// Le combinazioni incoerenti si esercitano su `execute-scalar`, che vive
+// dietro `postgres`: stessa ragione dei due test qui sopra.
+#[cfg(feature = "postgres")]
 #[test]
 fn incoherent_tls_configuration_fails_instead_of_being_ignored() {
     /// Un caso: cosa si imposta, e cosa il messaggio deve contenere.

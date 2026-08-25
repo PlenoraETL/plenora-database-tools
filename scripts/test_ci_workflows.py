@@ -627,13 +627,27 @@ class CiWorkflowTests(unittest.TestCase):
             )
         # `--all-targets` porta dentro i test, che assumevano PostgreSQL.
         self.assertIn("--all-targets $features -- -D warnings", workflow)
-        # E la guardia dell'aiuto viene **eseguita**, non solo compilata: il
-        # suo valore sta nelle configurazioni non di default, dove il job
-        # `test-unit` non arriva.
+        # I test vengono **eseguiti**, non solo compilati: il loro valore sta
+        # nelle configurazioni non di default, dove il job `test-unit` non
+        # arriva.
         self.assertIn(
-            "cargo test --locked -p plenora-database-cli $features usage",
+            "cargo test --locked -p plenora-database-cli $features -- --skip live_",
             workflow,
         )
+        # E si eseguono **tutti**. Il passo filtrava per nome — solo i test che
+        # contenevano `usage` — e il filtro era il difetto: cinque test
+        # assumevano PostgreSQL e restavano rossi con `--features mysql` e con
+        # `--features sqlserver` senza che nessuno li lanciasse. Un filtro per
+        # nome sceglie cosa guardare in base a come si chiama, ed e la stessa
+        # forma che aveva lasciato rossa una suite per mesi. L'unica selezione
+        # ammessa qui e `live_`, che esclude cio che ha bisogno di un server.
+        matrix = parsed_jobs(workflow)["cli-feature-matrix"]
+        for filtered in (" $features usage", " $features -- usage"):
+            self.assertNotIn(
+                filtered,
+                matrix,
+                "la matrice esegue un sottoinsieme dei test scelto per nome",
+            )
         # Il ciclo prova tutte le combinazioni prima di uscire: fermarsi alla
         # prima nasconderebbe le altre tre dietro un errore solo.
         self.assertIn("status=1", workflow)
