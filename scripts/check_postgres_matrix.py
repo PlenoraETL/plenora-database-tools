@@ -19,12 +19,58 @@ IMAGE = "rust:1.92"
 NETWORK = "plenora-postgres-matrix"
 CACHE = ROOT.parent / "plenora-cargo-cache"
 PASSWORD = "plenora_matrix_test_2026"
+# I riferimenti della matrice, fissati per **digest**.
+#
+# Erano fissati per tag — `postgis/postgis:14-3.5` — e il gate rileggeva poi
+# dal server la versione che aveva davvero ottenuto, quindi il verdetto non
+# mentiva mai. Cio che mancava non era l'onesta del resoconto: era la
+# **riproducibilita**. Un tag si muove, e la stessa corsa fra un mese avrebbe
+# misurato un'altra patch senza che il comando cambiasse di una lettera.
+#
+# E' anche la sola forma che divergeva dalle altre tre matrici del repository,
+# dove `references.json` porta scritta la ragione: un digest non cambia mai
+# contenuto, quindi la riga e la prova della versione avviata invece di una
+# promessa su quale versione si otterra.
+#
+# Il tag resta accanto al digest e non e decorativo: e cio che si rilegge per
+# rinnovare la riga quando esce una patch, e senza di esso il digest sarebbe
+# un numero senza provenienza.
+#
+# Risolti il 2026-08-26. Le versioni che ne sono uscite — 14.18, 15.13, 16.9,
+# 17.5, 18.6, con PostGIS 3.5.2 e 3.6.4 — sono nel verdetto della corsa, e il
+# gate continua a pretenderle: un digest che rendesse una major diversa da
+# quella dichiarata viene rifiutato.
 TARGETS = [
-    ("14", "3.5", "postgis/postgis:14-3.5"),
-    ("15", "3.5", "postgis/postgis:15-3.5"),
-    ("16", "3.5", "postgis/postgis:16-3.5"),
-    ("17", "3.5", "postgis/postgis:17-3.5"),
-    ("18", "3.6", "postgis/postgis:18-3.6"),
+    (
+        "14",
+        "3.5",
+        "postgis/postgis:14-3.5",
+        "sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+    ),
+    (
+        "15",
+        "3.5",
+        "postgis/postgis:15-3.5",
+        "sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+    ),
+    (
+        "16",
+        "3.5",
+        "postgis/postgis:16-3.5",
+        "sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+    ),
+    (
+        "17",
+        "3.5",
+        "postgis/postgis:17-3.5",
+        "sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+    ),
+    (
+        "18",
+        "3.6",
+        "postgis/postgis:18-3.6",
+        "sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+    ),
 ]
 
 
@@ -177,8 +223,11 @@ def inspect_versions(container: str) -> dict[str, str]:
     return {"postgres": postgres, "postgis": postgis}
 
 
-def test_target(postgres: str, postgis: str, image: str) -> dict[str, str]:
+def test_target(postgres: str, postgis: str, tag: str, digest: str) -> dict[str, str]:
     container = f"plenora-matrix-pg{postgres}"
+    # Si avvia il digest, non il tag: e la sola forma che rende la corsa
+    # ripetibile. Il tag resta nel resoconto come provenienza della riga.
+    image = f"postgis/postgis@{digest}"
     run(
         [
             "docker",
@@ -216,6 +265,7 @@ def test_target(postgres: str, postgis: str, image: str) -> dict[str, str]:
             "declared_postgres": postgres,
             "declared_postgis": postgis,
             "image": image,
+            "declared_tag": tag,
             "actual_postgres": versions["postgres"],
             "actual_postgis": versions["postgis"],
             "status": "passed",
@@ -254,16 +304,17 @@ def main() -> int:
     failure: str | None = None
     try:
         ensure_network()
-        for postgres, postgis, image in TARGETS:
+        for postgres, postgis, tag, digest in TARGETS:
             try:
-                results.append(test_target(postgres, postgis, image))
+                results.append(test_target(postgres, postgis, tag, digest))
             except (RuntimeError, ValueError) as error:
                 failure = str(error)
                 results.append(
                     {
                         "declared_postgres": postgres,
                         "declared_postgis": postgis,
-                        "image": image,
+                        "image": f"postgis/postgis@{digest}",
+                        "declared_tag": tag,
                         "actual_postgres": "",
                         "actual_postgis": "",
                         "status": "failed",
