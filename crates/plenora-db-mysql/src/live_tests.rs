@@ -1147,6 +1147,7 @@ async fn live_scalar_single_source_query_uses_prepare_metadata_as_schema() {
         ("absent_note", "", DataType::Utf8, "varchar", true),
     ];
     let operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -1424,6 +1425,7 @@ async fn live_grouped_aggregate_having_bind_and_distinct_over_verified_tls() {
         alias: None,
     };
     let scalar_query = |source: QuerySource, projection: Vec<QueryProjection>| QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source),
         derived_source: None,
@@ -1719,6 +1721,7 @@ async fn live_physical_joins_bind_on_clauses_and_publish_outer_nullability() {
                   order: QueryExpression,
                   direction: SortDirection,
                   limit: u64| QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(relation("catalog_probe", "c")),
         derived_source: None,
@@ -2158,6 +2161,7 @@ async fn live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggr
     };
 
     let operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -2343,6 +2347,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
         },
     };
     let operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -2545,6 +2550,7 @@ async fn live_query_operation_cancellation_and_timeout_quarantine_the_session() 
             },
         };
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
@@ -5215,6 +5221,7 @@ async fn live_v12_every_verified_spatial_function_executes() {
                 .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
 
             let operation = QueryOperation {
+                declared_crs: Vec::new(),
                 common_table_expressions: Vec::new(),
                 source: Some(QuerySource {
                     object: ObjectRef {
@@ -5391,6 +5398,7 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
 
     // Query portable: SELECT id, ST_Area(shape) AS area FROM _v12_spatial ORDER BY id
     let mut operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -5527,6 +5535,7 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
     ];
 
     let operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {

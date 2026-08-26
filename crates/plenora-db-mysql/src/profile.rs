@@ -1711,33 +1711,27 @@ fn wire_column_spec_for(product: &str, column: &Column) -> Result<MysqlColumnSpe
         ColumnType::MYSQL_TYPE_MEDIUM_BLOB => text_kind(binary, flags, "mediumtext", "mediumblob"),
         ColumnType::MYSQL_TYPE_LONG_BLOB => text_kind(binary, flags, "longtext", "longblob"),
         ColumnType::MYSQL_TYPE_BLOB => text_kind(binary, flags, "text", "blob"),
-        // Una geometria in uscita da una query resta chiusa, e la ragione non
-        // e piu «manca un preflight»: e stata misurata, e non e la stessa che
-        // il percorso di lettura ha risolto.
+        // Una geometria che arriva **nel suo tipo wire** resta chiusa, e vale
+        // la pena dire con precisione cosa questo copre e cosa no, perche la
+        // ragione che stava qui e cambiata.
         //
-        // Li il CRS di una **colonna** puo essere dichiarato dal chiamante e
-        // verificato valore per valore, perche i valori lo portano. Qui la
-        // geometria e **calcolata**, e `raw.geometry_result_forms` dice cosa
-        // ne resta:
+        // Prima diceva che una geometria calcolata non ha un CRS dimostrabile,
+        // e concludeva che servirebbe una regola per funzione. Quella regola
+        // ora esiste — `SpatialFunction::crs_rule`, dichiarata nel catalogo — e
+        // il path query la usa: una geometria calcolata viene incapsulata dal
+        // renderer, arriva come BLOB, e il piano dice dove cade. Quel percorso
+        // non passa piu di qui.
         //
-        // * su `MySQL`, in un sistema di riferimento geografico — 4326, cioe
-        //   il caso comune — `ST_Envelope`, `ST_Centroid` e `ST_Buffer`
-        //   rispondono 3618: non sono implementate. Non c'e CRS da verificare
-        //   perche non c'e risultato;
-        // * su `MariaDB` funzionano, ma il CRS sopravvive **a seconda della
-        //   funzione**: `ST_Envelope` e `ST_Centroid` conservano 4326,
-        //   `ST_Buffer` rende 0;
-        // * in cartesiano entrambi rendono 0 ovunque, che e l'indefinito OGC:
-        //   pubblicarlo come CRS direbbe una cosa che nessuno ha dichiarato.
-        //
-        // Aprire questa superficie richiederebbe percio una regola di CRS per
-        // **funzione e per tipo di sistema di riferimento**, misurata una
-        // funzione alla volta — non un preflight. Finche quella regola non
-        // esiste, il contratto `GeoArrow` non ha un CRS da pubblicare, e
-        // pubblicarne uno inventato e l'unico esito peggiore del rifiuto.
+        // Qui passa cio che resta: una geometria **non incapsulata**, cioe una
+        // colonna proiettata tale e quale nel path query. Non ha involucro, e
+        // il suo valore arriva nel formato interno del prodotto invece che in
+        // WKB; e nessuna posizione nel piano la descrive, perche non e il
+        // risultato di una funzione. Il contratto `GeoArrow` pubblica un CRS, e
+        // qui non c'e niente da cui dedurlo.
         ColumnType::MYSQL_TYPE_GEOMETRY => {
             return Err(unsupported(format!(
-                "geometria calcolata {product} senza un CRS dimostrabile nel path query"
+                "colonna geometrica {product} non incapsulata nel path query: nessun CRS \
+                 dimostrabile"
             )));
         }
         other => {
@@ -2220,6 +2214,69 @@ mod tests {
     }
 
     #[test]
+    fn the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column() {
+        // Da quando il path query apre le geometrie calcolate, la forma
+        // dell'involucro e scritta in **due** posti: qui per una colonna, e nel
+        // renderer condiviso per un'espressione. Devono restare la stessa
+        // funzione, perche il controllo per valore in lettura e uno solo — e
+        // `geometry_output_is_unexpected` valida cio che *quella* funzione
+        // produce, non cio che ne produrrebbe un'altra.
+        let wrapper = MYSQL_PROFILE
+            .geometry_projection("`geom`")
+            .split_once('(')
+            .expect("la proiezione e una chiamata di funzione")
+            .0
+            .to_owned();
+        let rendered = crate::types::mysql_renderer()
+            .render_query(&plenora_database_core::query::QueryOperation {
+                declared_crs: vec![plenora_database_core::plan::DeclaredCrs {
+                    column: "geom".to_owned(),
+                    srid: 4_326,
+                }],
+                common_table_expressions: Vec::new(),
+                source: Some(plenora_database_core::query::QuerySource {
+                    object: plenora_database_core::plan::ObjectRef {
+                        catalog: None,
+                        schema: Some("app".to_owned()),
+                        object: "shapes".to_owned(),
+                    },
+                    alias: None,
+                }),
+                derived_source: None,
+                projection: vec![plenora_database_core::query::QueryProjection {
+                    alias: Some("hull".to_owned()),
+                    expression: plenora_database_core::query::QueryExpression::Spatial {
+                        function: plenora_database_core::query::SpatialFunction::Envelope,
+                        arguments: vec![plenora_database_core::query::QueryExpression::Column {
+                            column: plenora_database_core::query::ColumnRef {
+                                relation: None,
+                                field: "geom".to_owned(),
+                            },
+                        }],
+                    },
+                }],
+                joins: Vec::new(),
+                filter: None,
+                group_by: Vec::new(),
+                having: None,
+                order_by: Vec::new(),
+                distinct: false,
+                distinct_on: Vec::new(),
+                set_operations: Vec::new(),
+                row_limit: None,
+                row_offset: None,
+                locking: None,
+            })
+            .expect("render");
+        assert!(
+            rendered.sql.contains(&format!("{wrapper}(ST_Envelope(")),
+            "il renderer non incapsula la geometria calcolata come il profilo \
+             incapsula la colonna: {}",
+            rendered.sql
+        );
+    }
+
+    #[test]
     fn no_other_module_writes_the_geometry_projection() {
         // La proiezione e l'attesa sul suo output sono due meta della stessa
         // decisione. Se `types.rs` tornasse a scrivere la funzione, un
@@ -2526,6 +2583,7 @@ mod tests {
 
     fn oversized_identifier_query() -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {

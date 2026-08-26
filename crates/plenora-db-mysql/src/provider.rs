@@ -1435,6 +1435,7 @@ mod tests {
 
     fn parameterized_query() -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {

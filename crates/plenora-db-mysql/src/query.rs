@@ -239,9 +239,271 @@ pub(crate) fn render_query_with_profile(
     database: &str,
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<RenderedSql> {
+    Ok(render_query_plan(operation, database, profile)?.rendered)
+}
+
+/// Una geometria calcolata, e il sistema di riferimento in cui cade.
+///
+/// Il tipo wire non basta a descriverla: il renderer la incapsula in
+/// `ST_AsBinary`, quindi arriva come BLOB e nessuna ispezione dei metadati la
+/// distingue da un blob qualunque. Cio che la distingue e il **piano**, ed e da
+/// li che questa struttura viene.
+#[derive(Debug, Clone, Copy)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct MysqlQueryGeometry {
+    /// La posizione della projection nel result set.
+    pub result_index: usize,
+    /// Il CRS del risultato, dedotto dalla regola della funzione e dal CRS
+    /// dichiarato per la geometria d'ingresso.
+    pub srid: u32,
+}
+
+/// Cio che il path query deve sapere oltre al testo SQL.
+#[derive(Debug, Clone)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct MysqlRenderedQuery {
+    pub rendered: RenderedSql,
+    /// Le geometrie calcolate, per posizione.
+    pub geometries: Vec<MysqlQueryGeometry>,
+    /// Le colonne `ST_SRID` accodate, da confermare riga per riga.
+    pub crs_checks: Vec<crate::types::MysqlCrsCheck>,
+    /// Quante colonne appartengono al chiamante. Cio che sta oltre e il
+    /// controllo, e non compare in nessuno schema pubblicato.
+    pub visible_columns: usize,
+}
+
+/// Renderizza la query e prepara la verifica dei CRS dichiarati.
+///
+/// # Il problema che risolve
+///
+/// Una query puo **calcolare** una geometria, e cio che il motore rende non
+/// porta il sistema di riferimento: `raw.geometry_result_forms` ha misurato
+/// SRID 0 per `ST_Buffer` su una colonna in 4326, su entrambi i prodotti.
+/// Pubblicare quello 0 come CRS direbbe una cosa che nessuno ha dichiarato, e
+/// per questo la superficie era chiusa.
+///
+/// Il frame pero e noto: e quello dell'ingresso, che il piano dichiara e che
+/// [`SpatialFunction::crs_rule`] dice se il risultato eredita. Restava solo da
+/// **dimostrare** che l'ingresso stia davvero dove il piano dice.
+///
+/// # Come lo dimostra
+///
+/// Con lo stesso meccanismo del path di lettura, che qui costa ancora meno
+/// perche la colonna di controllo e essa stessa una projection: per ogni
+/// colonna geometrica sorgente si accoda un `ST_SRID` in fondo alla lista di
+/// selezione, e il decoder lo confronta con la dichiarazione **a ogni riga**.
+/// Le colonne accodate stanno dopo tutte le visibili, e cio le rende invisibili
+/// a tutto il resto: nessun indice cambia, e uno schema pubblicato resta
+/// identico a quello di una query senza geometrie.
+///
+/// Riga per riga e non una volta sola per la ragione di sempre: la colonna che
+/// richiede una dichiarazione e quella che nessuna DDL vincola, e due righe
+/// possono portare SRID diversi.
+///
+/// # Errors
+///
+/// Come `render_query`, e in piu `Crs` quando una geometria calcolata non ha un
+/// sistema di riferimento dimostrabile — che resta la risposta onesta, e ora e
+/// l'eccezione invece della regola.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn render_query_plan(
+    operation: &QueryOperation,
+    database: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<MysqlRenderedQuery> {
     validate_query_operation(operation, &Limits::default())?;
     ensure_qualified_shape(operation, database, profile)?;
-    mysql_renderer().render_query(operation)
+    let declared = declared_query_crs(operation, profile)?;
+    let geometries = resolve_query_geometries(operation, &declared, profile)?;
+    let visible_columns = operation.projection.len();
+    if geometries.is_empty() {
+        return Ok(MysqlRenderedQuery {
+            rendered: mysql_renderer().render_query(operation)?,
+            geometries: Vec::new(),
+            crs_checks: Vec::new(),
+            visible_columns,
+        });
+    }
+    let (checked, crs_checks) = append_crs_checks(operation, &geometries, profile)?;
+    Ok(MysqlRenderedQuery {
+        rendered: mysql_renderer().render_query(&checked)?,
+        geometries: geometries
+            .into_iter()
+            .map(|geometry| MysqlQueryGeometry {
+                result_index: geometry.result_index,
+                srid: geometry.srid,
+            })
+            .collect(),
+        crs_checks,
+        visible_columns,
+    })
+}
+
+/// Una geometria calcolata, con la colonna che le ha dato il frame.
+#[derive(Debug)]
+struct ResolvedGeometry {
+    result_index: usize,
+    source_column: String,
+    srid: u32,
+}
+
+/// I CRS dichiarati dal piano, indicizzati per colonna.
+fn declared_query_crs(
+    operation: &QueryOperation,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<std::collections::BTreeMap<String, u32>> {
+    let product = profile.product();
+    let mut declared = std::collections::BTreeMap::new();
+    for entry in &operation.declared_crs {
+        ensure_identifier(&entry.column)?;
+        if entry.srid == 0 {
+            // Zero e l'indefinito OGC: dichiararlo non aggiunge niente a cio
+            // che il motore gia risponde da solo, e darebbe l'aria di averlo
+            // fatto.
+            return Err(prepare_error(
+                ErrorCategory::Crs,
+                format!("CRS dichiarato {product} pari a zero: e l'indefinito OGC, non un sistema"),
+            ));
+        }
+        if declared.insert(entry.column.clone(), entry.srid).is_some() {
+            return Err(prepare_error(
+                ErrorCategory::Crs,
+                format!("colonna {product} con due CRS dichiarati: la fonte sarebbe ambigua"),
+            ));
+        }
+    }
+    Ok(declared)
+}
+
+/// Attribuisce un sistema di riferimento a ogni geometria calcolata, o rifiuta.
+fn resolve_query_geometries(
+    operation: &QueryOperation,
+    declared: &std::collections::BTreeMap<String, u32>,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<Vec<ResolvedGeometry>> {
+    let product = profile.product();
+    let mut resolved = Vec::new();
+    for (index, projection) in operation.projection.iter().enumerate() {
+        let QueryExpression::Spatial {
+            function,
+            arguments,
+        } = &projection.expression
+        else {
+            continue;
+        };
+        if !function.returns_geometry() {
+            continue;
+        }
+        // Il gruppo cambierebbe di significato: la colonna di controllo e una
+        // projection, e in una query raggruppata una projection non aggregata
+        // deve appartenere al gruppo. Rifiutare qui costa una forma che
+        // nessuno ha chiesto; ammetterla costerebbe un risultato arbitrario.
+        if !operation.group_by.is_empty() || operation.distinct {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                format!(
+                    "geometria calcolata {product} in una query raggruppata o DISTINCT: la \
+                     conferma del CRS non e esprimibile in questa forma"
+                ),
+            ));
+        }
+        let rule = function.crs_rule();
+        if rule != Some(plenora_database_core::spatial_catalog::CrsRule::Preserves) {
+            // `argument` e `undefined` non sono impossibili in linea di
+            // principio: sono non misurate. La differenza fra le due sta nel
+            // catalogo, e questo messaggio non la nasconde dietro un «non
+            // supportato» generico.
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                format!(
+                    "geometria calcolata {product}: la regola di CRS di questa funzione non e \
+                     «preserves», e nessuna misura ha ancora attraversato le altre"
+                ),
+            ));
+        }
+        let [QueryExpression::Column { column }] = arguments.as_slice() else {
+            // La regola dice «il risultato sta dov'e l'ingresso», e questo ha
+            // senso solo se l'ingresso e una colonna di cui qualcuno sa dire
+            // dove sta. Un'espressione annidata sposterebbe la domanda, non la
+            // risolverebbe.
+            return Err(prepare_error(
+                ErrorCategory::Crs,
+                format!(
+                    "geometria calcolata {product} su un argomento che non e una colonna: non \
+                     c'e un CRS dichiarato da ereditare"
+                ),
+            ));
+        };
+        let srid = declared.get(&column.field).copied().ok_or_else(|| {
+            prepare_error(
+                ErrorCategory::Crs,
+                format!(
+                    "geometria calcolata {product} senza CRS dichiarato per la colonna \
+                     d'ingresso: il contratto GeoArrow ne pubblica uno, e inventarlo sarebbe \
+                     l'unico esito peggiore del rifiuto"
+                ),
+            )
+        })?;
+        resolved.push(ResolvedGeometry {
+            result_index: index,
+            source_column: column.field.clone(),
+            srid,
+        });
+    }
+    Ok(resolved)
+}
+
+/// Accoda una colonna `ST_SRID` per ogni colonna geometrica sorgente.
+fn append_crs_checks(
+    operation: &QueryOperation,
+    geometries: &[ResolvedGeometry],
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<(QueryOperation, Vec<crate::types::MysqlCrsCheck>)> {
+    let product = profile.product();
+    if !profile
+        .verified_spatial_functions()
+        .contains(&SpatialFunction::Srid)
+    {
+        // La conferma si appoggia a una funzione che deve essere qualificata
+        // quanto quella che apre: un controllo reso con una funzione non
+        // dimostrata non e un controllo.
+        return Err(unsupported(format!(
+            "conferma del CRS {product} impossibile: ST_SRID non e fra le funzioni qualificate"
+        )));
+    }
+    let mut checked = operation.clone();
+    let mut checks = Vec::new();
+    let mut seen = BTreeSet::new();
+    for geometry in geometries {
+        if !seen.insert(geometry.source_column.clone()) {
+            continue;
+        }
+        checks.push(crate::types::MysqlCrsCheck {
+            result_index: checked.projection.len(),
+            column: geometry.source_column.clone(),
+            expected: geometry.srid,
+        });
+        checked
+            .projection
+            .push(plenora_database_core::query::QueryProjection {
+                // Senza alias, come sul path di lettura: un nome la farebbe
+                // sembrare una colonna del risultato.
+                alias: None,
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::Srid,
+                    arguments: vec![QueryExpression::Column {
+                        column: plenora_database_core::query::ColumnRef {
+                            relation: None,
+                            field: geometry.source_column.clone(),
+                        },
+                    }],
+                },
+            });
+    }
+    // Il piano cresciuto passa dallo stesso cancello dell'originale: le colonne
+    // accodate sono SQL come le altre, e non hanno una corsia riservata.
+    validate_query_operation(&checked, &Limits::default())?;
+    Ok((checked, checks))
 }
 
 /// Traduce i metadati di colonna del prepared statement nel contratto Arrow.
@@ -1135,6 +1397,7 @@ mod tests {
 
     fn base_query() -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(source("events")),
             derived_source: None,
@@ -1154,6 +1417,156 @@ mod tests {
             row_offset: None,
             locking: None,
         }
+    }
+
+    /// Una query che proietta una geometria calcolata sulla colonna `geom`.
+    ///
+    /// Non passa da `ensure_qualified_shape` in queste prove, ed e voluto: le
+    /// funzioni che rendono geometria non sono ancora qualificate su nessuno
+    /// dei due prodotti, e non lo saranno finche una misura live non le avra
+    /// attraversate. Cio che qui si verifica e il **meccanismo** che quella
+    /// misura userà, non il permesso di usarlo.
+    fn geometry_query(
+        function: SpatialFunction,
+        arguments: Vec<QueryExpression>,
+    ) -> QueryOperation {
+        let mut query = base_query();
+        query.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function,
+                arguments,
+            },
+            alias: Some("shape".to_owned()),
+        }];
+        query.declared_crs = vec![plenora_database_core::plan::DeclaredCrs {
+            column: "geom".to_owned(),
+            srid: 4_326,
+        }];
+        query
+    }
+
+    fn resolve(query: &QueryOperation) -> Result<Vec<ResolvedGeometry>> {
+        let declared = declared_query_crs(query, &crate::profile::MYSQL_PROFILE)?;
+        resolve_query_geometries(query, &declared, &crate::profile::MYSQL_PROFILE)
+    }
+
+    #[test]
+    fn a_preserving_function_inherits_the_declared_crs_of_its_column() {
+        let query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        let resolved = resolve(&query).expect("risolta");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].result_index, 0);
+        assert_eq!(resolved[0].source_column, "geom");
+        assert_eq!(resolved[0].srid, 4_326);
+    }
+
+    #[test]
+    fn without_a_declaration_there_is_nothing_to_inherit() {
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.declared_crs.clear();
+        let error = resolve(&query).expect_err("nessun CRS da ereditare");
+        assert_eq!(error.category, ErrorCategory::Crs);
+    }
+
+    #[test]
+    fn a_declaration_on_another_column_does_not_travel() {
+        // Il nome sbagliato e il caso pericoloso: se la ricerca fosse per
+        // posizione invece che per nome, questa dichiarazione verrebbe
+        // attribuita a `geom` e pubblicherebbe un CRS che nessuno ha detto.
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.declared_crs[0].column = "footprint".to_owned();
+        let error = resolve(&query).expect_err("dichiarazione altrove");
+        assert_eq!(error.category, ErrorCategory::Crs);
+    }
+
+    #[test]
+    fn a_rule_that_is_not_preserves_stays_closed() {
+        for function in [
+            // Due geometrie: il frame del risultato non e derivabile.
+            SpatialFunction::Intersection,
+            // L'SRID e in un argomento, e nessuna misura l'ha attraversato.
+            SpatialFunction::Transform,
+        ] {
+            let query = geometry_query(function, vec![column("geom"), column("geom")]);
+            let error = resolve(&query).expect_err("{function:?} non e preserves");
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+        }
+    }
+
+    #[test]
+    fn a_computed_argument_moves_the_question_instead_of_answering_it() {
+        let query = geometry_query(
+            SpatialFunction::Envelope,
+            vec![QueryExpression::Spatial {
+                function: SpatialFunction::Centroid,
+                arguments: vec![column("geom")],
+            }],
+        );
+        let error = resolve(&query).expect_err("argomento non colonna");
+        assert_eq!(error.category, ErrorCategory::Crs);
+    }
+
+    #[test]
+    fn a_grouped_query_cannot_carry_the_confirmation() {
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.group_by = vec![column("event_id")];
+        let error = resolve(&query).expect_err("gruppo");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.distinct = true;
+        let error = resolve(&query).expect_err("distinct");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+
+    #[test]
+    fn zero_is_the_ogc_undefined_and_is_not_a_declaration() {
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.declared_crs[0].srid = 0;
+        let error = resolve(&query).expect_err("zero");
+        assert_eq!(error.category, ErrorCategory::Crs);
+    }
+
+    #[test]
+    fn one_column_gets_one_confirmation_however_many_times_it_is_projected() {
+        let mut query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        query.projection.push(QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Centroid,
+                arguments: vec![column("geom")],
+            },
+            alias: Some("middle".to_owned()),
+        });
+        let resolved = resolve(&query).expect("risolte");
+        assert_eq!(resolved.len(), 2);
+        let (checked, checks) =
+            append_crs_checks(&query, &resolved, &crate::profile::MYSQL_PROFILE).expect("accodate");
+        assert_eq!(checks.len(), 1, "una colonna, una conferma");
+        assert_eq!(checks[0].result_index, 2);
+        assert_eq!(checks[0].column, "geom");
+        assert_eq!(checks[0].expected, 4_326);
+        // La conferma sta **in coda**: le posizioni delle colonne del chiamante
+        // non si spostano, ed e cio che la rende invisibile.
+        assert_eq!(checked.projection.len(), 3);
+        assert_eq!(checked.projection[0], query.projection[0]);
+        assert_eq!(checked.projection[1], query.projection[1]);
+        assert_eq!(checked.projection[2].alias, None);
+    }
+
+    #[test]
+    fn the_confirmation_column_renders_as_srid_of_the_source() {
+        let query = geometry_query(SpatialFunction::Envelope, vec![column("geom")]);
+        let resolved = resolve(&query).expect("risolta");
+        let (checked, _) =
+            append_crs_checks(&query, &resolved, &crate::profile::MYSQL_PROFILE).expect("accodate");
+        let sql = mysql_renderer().render_query(&checked).expect("render").sql;
+        assert!(
+            sql.contains("ST_AsBinary(ST_Envelope(`geom`)) AS `shape`"),
+            "{sql}"
+        );
+        assert!(sql.contains("ST_SRID(`geom`)"), "{sql}");
+        // Senza alias: nessun nome che qualcuno possa scambiare per una colonna
+        // del risultato.
+        assert!(!sql.contains("ST_SRID(`geom`) AS"), "{sql}");
     }
 
     #[test]

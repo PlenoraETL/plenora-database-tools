@@ -121,6 +121,7 @@ fn rich_query() -> QueryOperation {
         alias: Some(alias.to_owned()),
     };
     QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("events", "e")),
         derived_source: None,

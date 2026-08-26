@@ -483,6 +483,19 @@ impl Renderer {
                     rendered = match self.dialect {
                         Dialect::Postgres => format!("ST_AsEWKB({rendered})"),
                         Dialect::SqlServer => format!("({rendered}).AsBinaryZM()"),
+                        // `ST_AsBinary` di `MySQL` produce WKB **senza** SRID,
+                        // a differenza di `ST_AsEWKB`: qui l'involucro rende
+                        // trasportabile il valore e non porta il frame. Chi lo
+                        // riceve deve saperlo da altrove — dalla regola di CRS
+                        // della funzione e dal CRS dichiarato per la colonna
+                        // d'ingresso — e il provider rifiuta la geometria
+                        // quando quelle due cose non bastano.
+                        //
+                        // La stessa forma incapsula gia le colonne geometriche
+                        // sul path di lettura, e per la stessa ragione: senza
+                        // involucro il valore arriva come `MYSQL_TYPE_GEOMETRY`
+                        // nel formato interno del prodotto, che non e WKB.
+                        Dialect::Mysql => format!("ST_AsBinary({rendered})"),
                         _ => rendered,
                     };
                 }
@@ -1802,6 +1815,7 @@ mod tests {
 
     fn simple_query() -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2270,6 +2284,7 @@ mod tests {
     #[test]
     fn sqlserver_renders_cross_apply_without_an_on_clause() {
         let lateral = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("details", "d")),
             derived_source: None,
@@ -2435,6 +2450,7 @@ mod tests {
     #[test]
     fn postgres_query_ast_wraps_spatial_wkb_parameters() {
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2483,6 +2499,7 @@ mod tests {
     #[test]
     fn query_ast_limit_uses_each_dialect_syntax() {
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2576,6 +2593,7 @@ mod tests {
             arguments: vec![query_column("f", "id")],
         };
         let cte = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2608,6 +2626,7 @@ mod tests {
             locking: None,
         };
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: vec![CommonTableExpression {
                 name: "filtered".to_owned(),
                 recursive: false,
@@ -2681,6 +2700,7 @@ mod tests {
     #[test]
     fn postgres_renders_index_aware_spatial_query() {
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2742,6 +2762,7 @@ mod tests {
     #[test]
     fn postgres_renders_spatial_clustering_as_a_window() {
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2794,6 +2815,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn postgres_renders_derived_window_lateral_pagination_and_locking() {
         let inner = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2814,6 +2836,7 @@ mod tests {
             locking: None,
         };
         let lateral = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("details", "x")),
             derived_source: None,
@@ -2838,6 +2861,7 @@ mod tests {
             locking: None,
         };
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: None,
             derived_source: Some(QueryDerivedSource {
@@ -2902,6 +2926,7 @@ mod tests {
         assert!(sql.ends_with("LIMIT 10 OFFSET 5"));
 
         let mut locking_query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source("events", "e")),
             derived_source: None,
@@ -2941,6 +2966,7 @@ mod tests {
     #[test]
     fn postgres_renders_set_operations_and_recursive_cte() {
         let leaf = |table: &str, alias: &str| QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(query_source(table, alias)),
             derived_source: None,
@@ -2967,6 +2993,7 @@ mod tests {
             query: Box::new(leaf("tree", "t")),
         });
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: vec![CommonTableExpression {
                 name: "tree".to_owned(),
                 recursive: true,

@@ -1223,6 +1223,7 @@ async fn query_probes(
         "flags",
     ];
     let operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -7020,6 +7021,7 @@ async fn cross_spatial_function(
             .iter()
             .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
         let operation = QueryOperation {
+            declared_crs: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
                     catalog: None,

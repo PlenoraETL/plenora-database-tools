@@ -153,6 +153,53 @@ mod tests {
         );
     }
 
+    /// Il ponte fra il nome sul filo e la voce del catalogo.
+    ///
+    /// Serve a due prove, e nessuna delle due può fidarsi dell'ordine: `ALL` e
+    /// `functions` sono elenchi scritti a mano in due file diversi.
+    fn spec_of(function: crate::query::SpatialFunction) -> &'static SpatialFunctionSpec {
+        let catalog = spatial_function_catalog().expect("catalog fixture");
+        let wire = serde_json::to_value(function)
+            .expect("serialize spatial function")
+            .as_str()
+            .expect("spatial function string")
+            .to_owned();
+        catalog
+            .functions
+            .iter()
+            .find(|spec| spec.id == wire)
+            .unwrap_or_else(|| panic!("{wire} non e nel catalogo"))
+    }
+
+    #[test]
+    fn geometry_returning_functions_match_the_versioned_catalog() {
+        // `returns_geometry` decide se una projection viene incapsulata prima
+        // di finire sul filo, e il catalogo dichiara la stessa cosa a chi legge
+        // il contratto. Erano due elenchi scritti a mano che nessuno incrociava.
+        let disagreeing = crate::query::SpatialFunction::ALL
+            .iter()
+            .filter(|function| {
+                (spec_of(**function).returns == "geometry") != function.returns_geometry()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            disagreeing.is_empty(),
+            "il codice e il catalogo non concordano su cosa rende geometria: {disagreeing:?}"
+        );
+    }
+
+    #[test]
+    fn crs_rules_match_the_versioned_catalog() {
+        let disagreeing = crate::query::SpatialFunction::ALL
+            .iter()
+            .filter(|function| spec_of(**function).crs_rule() != function.crs_rule())
+            .collect::<Vec<_>>();
+        assert!(
+            disagreeing.is_empty(),
+            "il codice e il catalogo non concordano su dove cade il risultato: {disagreeing:?}"
+        );
+    }
+
     #[test]
     fn spatial_function_wire_names_match_the_versioned_catalog() {
         let catalog = spatial_function_catalog().expect("catalog fixture");

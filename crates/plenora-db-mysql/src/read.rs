@@ -176,7 +176,8 @@ pub(crate) async fn query_operation_with_profile(
             RemoteEffect::None,
         ));
     }
-    let rendered = crate::query::render_query_with_profile(operation, database, profile)?;
+    let plan_shape = crate::query::render_query_plan(operation, database, profile)?;
+    let rendered = &plan_shape.rendered;
     let bind_names = rendered
         .binds
         .iter()
@@ -203,7 +204,13 @@ pub(crate) async fn query_operation_with_profile(
     }
     let metadata = statement.columns();
     let columns = crate::query::query_result_columns_with_profile(&metadata, profile)?;
-    let plan = MysqlReadPlan::from_query_columns(rendered.sql, bind_names, columns, profile)?;
+    let plan = MysqlReadPlan::from_query_columns_with_geometry(
+        rendered.sql.clone(),
+        bind_names,
+        columns,
+        &plan_shape,
+        profile,
+    )?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;

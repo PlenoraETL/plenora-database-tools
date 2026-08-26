@@ -279,10 +279,27 @@ impl MysqlReadPlan {
     /// # Errors
     ///
     /// Fallisce chiuso quando il result set non espone colonne.
-    pub(crate) fn from_query_columns(
+    /// Il piano di una query, con le geometrie calcolate che il piano descrive.
+    ///
+    /// Il tipo wire di una geometria calcolata e BLOB, perche il renderer la
+    /// incapsula nella stessa forma che
+    /// [`crate::profile::ProductProfile::geometry_projection`] scrive per una
+    /// colonna, e nessuna ispezione dei metadati la distingue da un blob
+    /// qualunque. Cio che la distingue e la posizione nella projection, ed e la
+    /// ragione per cui questa funzione riceve il piano e non solo le colonne.
+    ///
+    /// # Errors
+    ///
+    /// `Schema` per un result set vuoto o piu corto di cio che il piano
+    /// descrive, e `Crs` quando la colonna in quella posizione non ha la forma
+    /// che l'involucro avrebbe prodotto — che significherebbe che il renderer e
+    /// il provider non stanno parlando della stessa query.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn from_query_columns_with_geometry(
         sql: String,
         bind_names: Vec<String>,
-        columns: Vec<MysqlColumnSpec>,
+        mut columns: Vec<MysqlColumnSpec>,
+        plan: &crate::query::MysqlRenderedQuery,
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<Self> {
         if columns.is_empty() {
@@ -290,6 +307,36 @@ impl MysqlReadPlan {
                 ErrorCategory::Schema,
                 "QueryOperation priva di colonne risultanti",
             ));
+        }
+        let product = profile.product();
+        for geometry in &plan.geometries {
+            let column = columns.get_mut(geometry.result_index).ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Schema,
+                    format!("result set {product} piu corto della projection del piano"),
+                )
+            })?;
+            if column.kind != MysqlColumnKind::Binary {
+                return Err(prepare_error(
+                    ErrorCategory::Crs,
+                    format!(
+                        "geometria calcolata {product} non incapsulata: il piano e il renderer \
+                         descrivono result set diversi"
+                    ),
+                ));
+            }
+            column.kind = MysqlColumnKind::Geometry;
+            "geometry".clone_into(&mut column.native_type);
+            column.spatial_srid = Some(geometry.srid);
+            // Dichiarato, non letto da un catalogo: e cio che il piano ha detto
+            // e che ogni riga deve confermare.
+            column.spatial_srid_declared = true;
+        }
+        // Le colonne di controllo stanno in coda e non appartengono al
+        // chiamante: lo schema pubblicato si ferma dove finisce la sua
+        // projection.
+        if plan.visible_columns < columns.len() {
+            columns.truncate(plan.visible_columns);
         }
         let schema = contract_schema(
             columns
@@ -299,11 +346,7 @@ impl MysqlReadPlan {
         );
         Ok(Self {
             columns,
-            // Il path query non passa dal catalogo e non riceve un piano di
-            // lettura: le dichiarazioni non hanno dove entrare, e le colonne
-            // geometriche restano rifiutate dal profilo. Vuoto qui non e una
-            // semplificazione, e la descrizione esatta di quel percorso.
-            crs_checks: Vec::new(),
+            crs_checks: plan.crs_checks.clone(),
             schema,
             sql,
             bind_names,

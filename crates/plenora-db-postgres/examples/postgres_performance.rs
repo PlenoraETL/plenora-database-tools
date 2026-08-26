@@ -336,6 +336,7 @@ async fn materialize(
             return Err("il benchmark QueryOperation usa il profilo narrow".into());
         }
         let query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: object(profile.source_table()),

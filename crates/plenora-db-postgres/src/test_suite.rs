@@ -1272,6 +1272,7 @@ mod tests {
         );
 
         let indexed_query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: spatial_read.source.clone(),
@@ -1396,6 +1397,7 @@ mod tests {
         assert!(explain_text.contains("events_geom_gix"), "{explain_text}");
 
         let query_operation = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: spatial_read.source.clone(),
@@ -1539,6 +1541,7 @@ mod tests {
         drop(empty_query_stream);
 
         let window_query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: spatial_read.source.clone(),
@@ -1620,6 +1623,7 @@ mod tests {
         drop(window_stream);
 
         let lateral_body = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: spatial_read.source.clone(),
@@ -1670,6 +1674,7 @@ mod tests {
             locking: None,
         };
         let lateral_query = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: spatial_read.source.clone(),

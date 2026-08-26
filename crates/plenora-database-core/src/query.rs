@@ -286,6 +286,45 @@ impl SpatialFunction {
         )
     }
 
+    /// In quale sistema di riferimento cade il risultato di questa funzione.
+    ///
+    /// Restituisce `None` per le funzioni che rendono uno scalare: un'area non
+    /// sta in nessun sistema di riferimento, e la domanda non si pone.
+    ///
+    /// # Perché esiste
+    ///
+    /// Un provider che riceve una geometria calcolata senza SRID non può
+    /// consegnarla: un WKB privo di sistema di riferimento non è una geometria
+    /// che questo contratto sappia descrivere. Ma il frame spesso è noto —
+    /// quello della colonna d'ingresso, che su `MySQL` e `MariaDB` è dichiarato
+    /// e verificato — e serve solo sapere se il risultato lo eredita.
+    ///
+    /// Questa è la risposta, ed è la stessa su ogni motore perché è una
+    /// proprietà della geometria e non del prodotto. La sua controparte
+    /// pubblicata sta nel catalogo spatial, e
+    /// `crs_rules_match_the_versioned_catalog` non lascia che le due divergano.
+    #[must_use]
+    pub const fn crs_rule(self) -> Option<crate::spatial_catalog::CrsRule> {
+        use crate::spatial_catalog::CrsRule;
+        match self {
+            // Il chiamante nomina l'SRID di destinazione, e il risultato ci sta
+            // per costruzione.
+            Self::SetSrid | Self::Transform => Some(CrsRule::Argument),
+            // Entrano due geometrie: il risultato conserva il frame soltanto se
+            // i due lo condividono, e questa è una condizione da dimostrare a
+            // ogni chiamata, non una regola da dichiarare. `AsMvtGeom` ci sta
+            // per una seconda ragione — porta le coordinate nello spazio di una
+            // tile, che non è un CRS.
+            Self::Intersection
+            | Self::Difference
+            | Self::SymDifference
+            | Self::Union
+            | Self::AsMvtGeom => Some(CrsRule::Undefined),
+            _ if self.returns_geometry() => Some(CrsRule::Preserves),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn is_unary_predicate(self) -> bool {
         matches!(
@@ -718,6 +757,29 @@ pub struct QueryOperation {
     pub row_offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locking: Option<QueryLock>,
+    /// Il CRS che il chiamante dichiara per una colonna geometrica sorgente.
+    ///
+    /// Ha la stessa forma e le stesse regole di
+    /// [`crate::plan::ReadOperation::declared_crs`], e serve alla stessa cosa
+    /// per una ragione che qui è più stretta: una query può **calcolare** una
+    /// geometria, e cio che il motore restituisce spesso non porta il sistema
+    /// di riferimento — `MySQL` e `MariaDB` rendono SRID 0 per un `ST_Buffer`
+    /// su una colonna in 4326.
+    ///
+    /// Il frame però non è ignoto: è quello della geometria d'ingresso, e
+    /// [`SpatialFunction::crs_rule`] dice se il risultato lo eredita. Questa
+    /// dichiarazione è l'altra metà — dove sta l'ingresso — e senza di essa
+    /// non c'è niente da ereditare.
+    ///
+    /// Come sul path di lettura, non è una promessa che si crede sulla parola:
+    /// il provider che l'accetta la verifica riga per riga, e una colonna che
+    /// porta geometrie in sistemi diversi fa fallire la lettura invece di
+    /// pubblicare un CRS falso.
+    ///
+    /// Additivo e opzionale: un piano che non lo dichiara si comporta come
+    /// prima, e prima significa che una geometria calcolata veniva rifiutata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_crs: Vec<crate::plan::DeclaredCrs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1347,6 +1409,7 @@ mod validation_tests {
 
     fn query_with_filter(filter: QueryExpression) -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {

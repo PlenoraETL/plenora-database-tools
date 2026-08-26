@@ -2089,6 +2089,7 @@ mod tests {
 
     fn base_query() -> QueryOperation {
         QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(source("events", "e")),
             derived_source: None,

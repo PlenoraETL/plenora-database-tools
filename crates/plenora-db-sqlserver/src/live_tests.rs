@@ -745,6 +745,7 @@ async fn live_common_provider_contract_read_and_write() {
         },
     };
     let query_operation = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: bounded_operation.source.clone(),
@@ -810,6 +811,7 @@ async fn live_common_provider_contract_read_and_write() {
         .is_none());
 
     let spatial_query = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: bounded_operation.source.clone(),
@@ -1051,6 +1053,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
     };
 
     let cte = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("stream_probe", "base")),
         derived_source: None,
@@ -1081,6 +1084,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         locking: None,
     };
     let aggregate = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: vec![CommonTableExpression {
             name: "filtered".to_owned(),
             recursive: false,
@@ -1168,6 +1172,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         .is_none());
 
     let window = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("stream_probe", "source")),
         derived_source: None,
@@ -1233,6 +1238,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
     assert_eq!(row_numbers.values(), &[3, 4]);
 
     let set_rhs = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("stream_probe", "right_source")),
         derived_source: None,
@@ -1257,6 +1263,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
         locking: None,
     };
     let set_query = QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("stream_probe", "left_source")),
         derived_source: None,
@@ -1319,6 +1326,7 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
     assert_eq!(set_ids.values(), &[1, 2, 5]);
 
     let native_projection = |parameter_name: &str| QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source("stream_probe", "native_source")),
         derived_source: None,
@@ -1583,6 +1591,7 @@ async fn live_every_verified_spatial_function_is_crossed() {
                 })
                 .collect();
             let operation = QueryOperation {
+                declared_crs: Vec::new(),
                 common_table_expressions: Vec::new(),
                 source: Some(QuerySource {
                     object: ObjectRef {
@@ -1732,6 +1741,7 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
         })
         .collect();
         let operation = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
@@ -1877,6 +1887,7 @@ async fn live_native_spatial_outputs_preserve_contract_and_zm() {
             }],
         };
         let operation = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
@@ -2075,6 +2086,7 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
         })
         .collect();
         let operation = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
@@ -2219,6 +2231,7 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
             arguments: vec![column("left"), column("right")],
         };
         let operation = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
                 object: ObjectRef {
@@ -2371,6 +2384,7 @@ async fn live_spatial_cte_derived_and_subquery_preserve_native_contract() {
         alias: Some(alias.to_owned()),
     };
     let empty_operation = |source, derived_source, projection| QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source,
         derived_source,
@@ -2664,6 +2678,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
         }),
     };
     let operation = |source, projection| QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(source),
         derived_source: None,
@@ -2801,6 +2816,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
                 query: Box::new(nested_base),
             });
         let nested_outer = QueryOperation {
+            declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: None,
             derived_source: Some(QueryDerivedSource {
@@ -2989,6 +3005,7 @@ INSERT INTO [plenora_test].[spatial_advanced_scope] VALUES
 
 fn locking_spatial_operation() -> QueryOperation {
     QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -3308,6 +3325,7 @@ fn mixed_slice(rows: i32) -> QueryOperation {
         },
     };
     QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
@@ -3565,6 +3583,7 @@ fn concurrency_slice(rows: i32) -> QueryOperation {
         },
     };
     QueryOperation {
+        declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
             object: ObjectRef {
