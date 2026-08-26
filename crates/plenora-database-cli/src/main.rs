@@ -279,6 +279,8 @@ async fn run() -> CliResult<()> {
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
         "database-probe" => database_probe(&mut args).await,
+        "database-execute-sql" => database_execute_sql(&mut args).await,
+        "database-execute-scalar" => database_execute_scalar(&mut args).await,
         "database-inspect-catalogs" => database_inspect(&mut args, list_catalogs_source).await,
         "database-inspect-schemas" => database_inspect(&mut args, list_schemas_source).await,
         "database-inspect-objects" => database_inspect(&mut args, list_objects_source).await,
@@ -523,6 +525,150 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
         "schema_version": 1,
         "connection": connection,
         "capabilities": capabilities
+    }))
+}
+
+/// `database-execute-sql <provider> <SECRET_ENV> <sql> [--allow-raw] <argomenti provider>`
+///
+/// Esegue uno statement dentro una transazione e ne stampa le righe toccate.
+///
+/// # Perche generica, e perche solo adesso
+///
+/// La stessa ragione di `database-inspect-*`: gli adapter implementano lo
+/// stesso contratto, e una copia per prodotto diverge alla prima correzione
+/// applicata a una sola. Le superfici che c'erano non lo riflettevano —
+/// `PostgreSQL` aveva `execute-sql`, `MySQL` aveva `mysql-execute-sql`,
+/// `MariaDB` e SQL Server niente.
+///
+/// «Solo adesso» perche fino a ieri non si poteva: il contratto che serve e
+/// `TransactionScope`, e SQL Server pubblicava `scope: Transaction` senza
+/// implementarlo. Un comando generico avrebbe risposto `Unsupported` su un
+/// quarto dei provider che accetta.
+///
+/// # `--allow-raw`
+///
+/// Senza, la transazione usa il profilo PFM, che restringe gli statement
+/// ammessi. E' il default perche un CLI che accetta qualunque SQL su un
+/// endpoint di produzione e una superficie piu larga di quella che il
+/// contratto descrive.
+///
+/// # Errors
+///
+/// Se il provider non e riconosciuto o non e compilato in questo binario, se
+/// il secret non c'e, se la connessione fallisce, o se lo statement viene
+/// rifiutato dalla policy o dal server.
+async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let sql = args
+        .next()
+        .ok_or_else(|| "manca lo statement SQL".to_owned())?;
+    // Il flag sta **prima** degli argomenti del provider, che consumano tutto
+    // cio che resta: dopo di loro non arriverebbe mai.
+    let mut peekable = args.peekable();
+    let allow_raw = peekable.next_if(|value| value == "--allow-raw").is_some();
+    let provider_arguments = parse_provider_arguments(kind, &mut peekable)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let options = if allow_raw {
+        plenora_database_core::transaction::TransactionOptions::default()
+    } else {
+        plenora_database_core::transaction::TransactionOptions::pfm_defaults()
+    };
+    let mut transaction = provider
+        .begin_transaction(&secret, &options, &budget, &cancellation)
+        .await?;
+    let statement = plenora_database_core::transaction::Statement {
+        sql,
+        params: Vec::new(),
+    };
+    let affected = transaction.execute(&statement, &cancellation).await?;
+    let commit = transaction.commit(&cancellation).await?;
+    print_json(&json!({
+        "provider": kind,
+        "status": commit_status(&commit),
+        "affected_rows": affected,
+        "commit": commit,
+    }))?;
+    commit_exit(&commit)
+}
+
+/// `database-execute-scalar <provider> <SECRET_ENV> <sql> <argomenti provider>`
+///
+/// Una `SELECT` che rende **al piu una riga, esattamente una colonna**.
+///
+/// Piu di una riga, o piu di una colonna, sono un errore: non una scelta
+/// arbitraria del primo valore. Una query sbagliata che rendesse un risultato
+/// plausibile e peggio di una che dice di esserlo.
+///
+/// # Errors
+///
+/// Come `database-execute-sql`, piu il rifiuto se il result set non e scalare.
+async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let sql = args
+        .next()
+        .ok_or_else(|| "manca lo statement SQL".to_owned())?;
+    let provider_arguments = parse_provider_arguments(kind, args)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    let statement = plenora_database_core::transaction::Statement {
+        sql,
+        params: Vec::new(),
+    };
+    let outcome = transaction.query(&statement, &cancellation).await;
+    // La transazione si chiude comunque: un rifiuto di forma non deve lasciare
+    // aperta una lettura sul server.
+    let value = match outcome {
+        Ok(rows) if rows.len() > 1 => {
+            let _ = transaction.rollback(&cancellation).await;
+            return Err("la query scalare ha reso piu di una riga".to_owned().into());
+        }
+        Ok(rows) => match rows.first() {
+            None => None,
+            Some(row) if row.values().len() != 1 => {
+                let _ = transaction.rollback(&cancellation).await;
+                return Err("la query scalare ha reso piu di una colonna"
+                    .to_owned()
+                    .into());
+            }
+            Some(row) => Some(row.values()[0].clone()),
+        },
+        Err(error) => {
+            let _ = transaction.rollback(&cancellation).await;
+            return Err(error.into());
+        }
+    };
+    transaction.commit(&cancellation).await?;
+    print_json(&json!({
+        "provider": kind,
+        "status": "ok",
+        "value": value,
     }))
 }
 
@@ -1703,6 +1849,8 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 /// `--features mysql` basta.
 const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     ("database-describe", None),
+    ("database-execute-scalar", None),
+    ("database-execute-sql", None),
     ("database-inspect-catalogs", None),
     ("database-inspect-objects", None),
     ("database-inspect-schemas", None),
@@ -1854,6 +2002,9 @@ fn common_usage() -> String {
         "== sempre disponibili ==".to_owned(),
         "  database-probe <provider> <secret-env> [args provider]".to_owned(),
         format!("    provider compilati in questo binario: {compiled}"),
+        "  database-execute-sql <provider> <secret-env> <sql> [--allow-raw] [args provider]"
+            .to_owned(),
+        "  database-execute-scalar <provider> <secret-env> <sql> [args provider]".to_owned(),
         "  database-inspect-catalogs <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-schemas <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-objects <provider> <secret-env> <schema> [args provider]".to_owned(),
