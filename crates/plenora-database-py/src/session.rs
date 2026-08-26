@@ -338,6 +338,26 @@ impl Session {
         Ok(obj.downcast_into::<PyDict>()?)
     }
 
+    /// Esegue DDL **fuori transazione**, in autocommit.
+    ///
+    /// Escape hatch per gli statement che il motore non ammette dentro una
+    /// transazione. Su PostgreSQL la DDL e transazionale, quindi qui serve di
+    /// rado — ma esisteva sulla sessione di famiglia e non su questa, ed era
+    /// un'asimmetria senza ragione: il provider lo implementa.
+    fn execute_ddl(&self, py: Python<'_>, sql: &str) -> PyResult<()> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let sql = sql.to_owned();
+        py.allow_threads(|| {
+            runtime().block_on(async move {
+                let cancel = CancellationToken::new();
+                provider.execute_ddl(&secret, &sql, &cancel).await
+            })
+        })
+        .map_err(to_py_err)
+    }
+
     /// Ritorna l'elenco dei catalog (database) accessibili.
     fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
@@ -578,7 +598,7 @@ impl Session {
 
 /// Helper: estrae `doc[key]` come `Vec<Value::String>` e la trasforma
 /// in `PyList<str>`.
-fn json_to_pylist_of_strings<'py>(
+pub fn json_to_pylist_of_strings<'py>(
     py: Python<'py>,
     doc: &serde_json::Value,
     key: &str,
@@ -599,7 +619,7 @@ fn json_to_pylist_of_strings<'py>(
 
 /// Helper: estrae `doc[key]` come `Vec<dict>` (ogni entry è un JSON
 /// object con `{name, kind, is_partition}`).
-fn json_to_pylist_of_dicts<'py>(
+pub fn json_to_pylist_of_dicts<'py>(
     py: Python<'py>,
     doc: &serde_json::Value,
     key: &str,
@@ -617,7 +637,7 @@ fn json_to_pylist_of_dicts<'py>(
 
 /// Converte un `serde_json::Value::Object` in `PyDict`. Se il Value non
 /// è un object, ritorna dict vuoto (il caller ha già filtrato).
-fn json_value_to_pydict<'py>(
+pub fn json_value_to_pydict<'py>(
     py: Python<'py>,
     value: &serde_json::Value,
 ) -> PyResult<Bound<'py, PyDict>> {

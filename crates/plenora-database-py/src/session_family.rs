@@ -45,6 +45,7 @@ use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
+use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::Row;
@@ -92,6 +93,25 @@ pub struct DatabaseSession {
 }
 
 impl DatabaseSession {
+    /// Esegue una `Operation` di ispezione e rende il documento JSON.
+    ///
+    /// Passa da `Provider::inspect`, che sta nel **trait**: e la ragione per
+    /// cui questi metodi arrivano a tutti e quattro i prodotti e non a uno
+    /// solo. Il CLI li offre gia da tempo alla famiglia `database-*`, e il SDK
+    /// li aveva soltanto su PostgreSQL — la stessa cosa raggiungibile da una
+    /// parte e no dall'altra, senza che nessuna ragione lo dicesse.
+    fn run_inspect(&self, py: Python<'_>, op: Operation) -> PyResult<serde_json::Value> {
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancel = CancellationToken::new();
+        let inspection = py
+            .allow_threads(|| {
+                runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
+            })
+            .map_err(to_py_err)?;
+        Ok(inspection.document)
+    }
+
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(format!(
@@ -500,6 +520,49 @@ impl DatabaseSession {
     }
 
     /// DDL raw (CREATE/DROP/ALTER). MySQL fa autocommit implicito.
+    /// Ritorna l'elenco dei catalog (database) accessibili.
+    fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let doc = self.run_inspect(py, Operation::DatabaseListCatalogs)?;
+        crate::session::json_to_pylist_of_strings(py, &doc, "catalogs")
+    }
+
+    /// Ritorna l'elenco degli schemas.
+    fn inspect_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let doc = self.run_inspect(py, Operation::DatabaseListSchemas { source: None })?;
+        crate::session::json_to_pylist_of_strings(py, &doc, "schemas")
+    }
+
+    /// Ritorna la lista degli oggetti nello schema indicato.
+    fn inspect_tables<'py>(&self, py: Python<'py>, schema: &str) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let source = Some(ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: String::new(),
+        });
+        let doc = self.run_inspect(py, Operation::DatabaseListObjects { source })?;
+        crate::session::json_to_pylist_of_dicts(py, &doc, "objects")
+    }
+
+    /// Descrive una tabella o vista: schema, colonne, `schema_token`.
+    fn inspect_describe<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        object: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_open()?;
+        let source = ObjectRef {
+            catalog: None,
+            schema: Some(schema.to_owned()),
+            object: object.to_owned(),
+        };
+        let doc = self.run_inspect(py, Operation::DatabaseDescribeObject { source })?;
+        crate::session::json_value_to_pydict(py, &doc)
+    }
+
     fn execute_ddl(&self, py: Python<'_>, sql: &str) -> PyResult<()> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
