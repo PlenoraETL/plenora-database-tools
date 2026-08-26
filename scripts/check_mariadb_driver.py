@@ -263,6 +263,13 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # davvero la regola dichiarata dal catalogo: se le coordinate del risultato
     # siano ancora dove erano quelle dell'ingresso.
     "raw.crs_rule_check": "se il risultato di una funzione geometrica resta dov'era l'ingresso",
+    # Trentuno funzioni del contratto rendono geometria. Tre sono state aperte
+    # dalla sonda qui sopra; le altre ventotto erano chiuse perche nessuno le
+    # aveva mai chieste — non perche qualcuno avesse guardato e non le avesse
+    # trovate. Finche il mapper rifiutava ogni geometria la domanda non aveva
+    # conseguenze; da quando non le rifiuta, l'assenza di risposta e una
+    # promessa che il prodotto forse mantiene gia.
+    "raw.geometry_function_forms": "quali funzioni che rendono geometria il server possiede",
     # Le due superfici spatial rimaste, e sono chiuse per ragioni diverse.
     #
     # `exact` e una forma che il piano ammette e che nessuna sonda ha
@@ -352,6 +359,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.spatial_candidate_functions",
     "raw.geometry_result_forms",
     "raw.crs_rule_check",
+    "raw.geometry_function_forms",
     "raw.exact_geometry_column",
     "raw.geometry_dimensions",
     "provider.test_connection",

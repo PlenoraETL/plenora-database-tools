@@ -2311,3 +2311,83 @@ nel piano dice niente.
   `INFORMATION_SCHEMA.ST_SPATIAL_REFERENCE_SYSTEMS` se l'SRID dichiarato e
   geografico. Non e stato fatto: e un giro in piu su un percorso caldo, e
   l'errore del server e chiaro e attribuito. E' una decisione dichiarata.
+
+## Ventiseiesima tranche: le ventotto, chieste
+
+La tranche precedente si chiude dicendo che ventotto funzioni geometriche
+restano `not_measured` e che la ragione non e piu il costo di una regola per
+funzione: e che nessuno le ha chieste. Questa le chiede.
+
+`raw.geometry_function_forms` attraversa tutte e **trentuno** — le tre gia
+aperte comprese, come controllo che la sonda concordi con cio che gia si sa — su
+tre sistemi di riferimento e tre forme geometriche. Il nome lo da
+`spatial_function_name`, cioe lo stesso che il renderer emetterebbe; l'arieta e
+i ruoli degli argomenti li danno `accepts_argument_count` e `takes_geometry_at`,
+cioe il contratto. Una sonda che deducesse la firma misurerebbe una funzione che
+il crate non scrive mai.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS | MariaDB 10.11 LTS |
+|---|---|---|---|---|---|---|
+| raw | spatial | `raw.geometry_function_forms` | proiettati: 13/31 presenti, tutte conservano l'SRID; 18 assenti | 13/31 presenti — 7 conservano, 6 perdono l'etichetta; 18 assenti | 12/31 presenti — 6 conservano, 6 perdono; 19 assenti | **identico a MariaDB 11.8** |
+
+### Cosa dice
+
+**Diciotto delle trentuno non esistono, su entrambi i prodotti.** `1305`, che e
+il codice dell'assenza. `ST_MakeValid`, `ST_Reverse`, `ST_SnapToGrid`,
+`ST_LineMerge`, `ST_OrientedEnvelope`, `ST_Subdivide`, `ST_OffsetCurve`,
+`ST_UnaryUnion`, `ST_SimplifyPreserveTopology`, `ST_AsMvtGeom` e i quattro
+`ST_Force*` non ci sono. Non e una lacuna di questo progetto: e cio che i due
+motori hanno.
+
+**`ST_Union` c'e, e risponde `1582`.** Numero di parametri sbagliato: entrambi
+lo vogliono binario, e il contratto ammette anche la forma unaria. E' la stessa
+regola che aveva gia tenuto fuori `Relate` — una funzione e qualificata quando lo
+e a **ogni** arieta che il piano ammette, non quando ne esiste una che funziona.
+
+**Delle tredici presenti, cinque restano fuori per una ragione che non e del
+prodotto.** `Transform` porta l'SRID di destinazione in un argomento;
+`Intersection`, `Difference` e `SymDifference` prendono due geometrie, e il
+frame del risultato non e derivabile dal contratto; `Collect` e un aggregato,
+che la macchina dei gruppi di questo crate non modella. Sono regole di CRS che
+il provider non sa ancora propagare, ed e una chiusura del **nostro** lato,
+scritta come tale.
+
+**Due divergenze nuove fra i prodotti, e vanno in direzioni opposte.**
+`ST_Boundary` e `ST_PointOnSurface` esistono su `MariaDB` e rispondono `1305` su
+`MySQL`; `ST_Transform` e `ST_SetSrid` esistono su `MySQL` e non su `MariaDB`.
+Le prime due entrano nella lista di `MariaDB` e non in quella di `MySQL` — ed e
+la prima volta che la divergenza va in quella direzione per una funzione che
+rende geometria. Le altre due non entrano da nessuna parte, per la regola di CRS.
+
+**`ST_Simplify` e la terza divergenza fra prodotti**, dopo `IsValid` e le due
+distanze: c'e su `MySQL`, e su `MariaDB` risponde `4212` sulla 12.3 e `1305`
+sulle due LTS. Nemmeno dove il server risponde qualcosa e utilizzabile.
+
+**Nessuna funzione ha spostato le coordinate.** La colonna `altrove` — un SRID
+in uscita diverso sia dall'ingresso sia da zero — e vuota in tutte e dodici le
+misure. L'unica intersezione mancante e quella del buffer su `MySQL` in 4326, ed
+e un artefatto della sonda: li la funzione risponde `3618` e non c'e risultato
+da intersecare.
+
+### Cosa ne segue
+
+Le liste qualificate crescono di cinque su `MySQL` — `StartPoint`, `EndPoint`,
+`PointN`, `ConvexHull`, `Simplify` — e di sei su `MariaDB`, dove al posto di
+`Simplify` entrano `PointOnSurface` e `Boundary`. Il gate del riferimento le
+esegue una per una, e il gate della matrice ripete la prova su `MySQL` 8.4 e
+8.0: una capability e una promessa a chi non sa su quale minor atterrera.
+
+### Cosa resta not_measured
+
+* **niente, di questa superficie.** Tutte e trentuno le funzioni che rendono
+  geometria sono ora caratterizzate: diciannove assenti dal motore, cinque
+  chiuse da una regola di CRS che questo provider non propaga, e sette aperte
+  con la misura in mano. Il conteggio delle «ventotto non caratterizzate» esce
+  dal documento perche non descrive piu niente.
+* **le regole `argument` e `undefined`**: aprire `Transform` significa
+  propagare l'SRID che il piano nomina; aprire `Intersection` significa
+  dimostrare a runtime che le due geometrie condividono il frame. Sono due
+  meccanismi, non due misure, e non sono stati costruiti. E' una decisione
+  dichiarata.

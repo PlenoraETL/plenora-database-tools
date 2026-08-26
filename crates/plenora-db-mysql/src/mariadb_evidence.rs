@@ -111,6 +111,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     spatial_candidates_probe(recorder, connection).await;
     geometry_result_probe(recorder, connection).await;
     crs_rule_probe(recorder, connection).await;
+    geometry_function_probe(recorder, connection).await;
     exact_and_dimension_probe(recorder, connection).await;
 }
 
@@ -6122,6 +6123,234 @@ async fn crs_rule_probe(recorder: &mut Recorder, connection: &mut mysql_async::C
         "spatial",
         "se il risultato di una funzione geometrica resta nel sistema dell'ingresso",
         measured.join(" "),
+    );
+}
+
+/// L'argomento scalare con cui questa funzione si lascia chiamare.
+///
+/// Non e una comodita: una funzione chiamata con uno scalare senza senso
+/// risponde con un errore del **dato**, e la sonda lo registrerebbe come
+/// assenza. `ST_PointN` vuole l'indice di un vertice, `ST_Subdivide` un numero
+/// massimo di vertici, `ST_Simplify` una tolleranza — e `1` va bene per quasi
+/// tutte, ma non per chi si aspetta un SRID.
+fn scalar_argument_for(
+    function: plenora_database_core::query::SpatialFunction,
+    srid: u32,
+) -> String {
+    use plenora_database_core::query::SpatialFunction as F;
+    match function {
+        // Chi nomina un sistema di riferimento di destinazione. Lo stesso
+        // dell'ingresso: la sonda chiede se la funzione **esiste**, e un
+        // cambio di sistema vero introdurrebbe un secondo modo di fallire.
+        F::SetSrid | F::Transform => srid.to_string(),
+        // Una tolleranza in unita del sistema: in gradi 0.001 e un centesimo di
+        // grado, in metri un millimetro. Un `1` in gradi cancellerebbe la
+        // geometria e misurerebbe il dato invece della funzione.
+        F::Simplify | F::SimplifyPreserveTopology | F::SnapToGrid => {
+            if srid == 4_326 { "0.001" } else { "10" }.to_owned()
+        }
+        F::Buffer | F::OffsetCurve => if srid == 4_326 { "0.01" } else { "100" }.to_owned(),
+        // Un numero di vertici, non una distanza.
+        F::Subdivide => "8".to_owned(),
+        _ => "1".to_owned(),
+    }
+}
+
+/// Le ventotto funzioni geometriche che nessuna sonda aveva mai chiesto.
+///
+/// # Perche esistevano senza essere misurate
+///
+/// Trentuno funzioni del contratto restituiscono geometria. Erano chiuse tutte
+/// dalla stessa riga — il mapper del result set rifiutava `MYSQL_TYPE_GEOMETRY`
+/// — e finche quella riga c'era, chiederle al server non avrebbe cambiato
+/// niente: la risposta sarebbe stata «esiste, e non la sai consegnare».
+///
+/// Quella riga non c'e piu. Tre sono state aperte con `raw.crs_rule_check`, e
+/// le altre ventotto sono rimaste chiuse per una ragione diversa da prima:
+/// nessuno le aveva chieste. E' la differenza che questo documento insegue da
+/// venti tranche — una capability chiusa perche misurata assente e una promessa
+/// che il prodotto non puo mantenere, una chiusa perche nessuno ha guardato e
+/// una promessa che il prodotto forse mantiene gia.
+///
+/// # Come chiede
+///
+/// Il nome lo da `plenora_database_sql::spatial_function_name`, cioe **lo
+/// stesso** che il renderer emetterebbe. L'arieta e i ruoli degli argomenti li
+/// da il contratto — `accepts_argument_count` e `takes_geometry_at` — e non una
+/// tabella scritta qui: una sonda che deduce la firma misura una funzione che
+/// il crate non scrive mai.
+///
+/// Tre sistemi di riferimento, perche e la variabile che `raw.crs_rule_check`
+/// ha trovato decisiva, e tre forme geometriche, perche `ST_StartPoint` vuole
+/// una linea e `ST_PointOnSurface` una superficie: chiedere a ciascuna solo la
+/// forma che le compete vorrebbe dire deciderlo qui per analogia, ed e il modo
+/// in cui una lista si gonfia.
+///
+/// # Cosa registra
+///
+/// Per ogni funzione e per ogni sistema: l'SRID del risultato, se il risultato
+/// **interseca** l'ingresso, e la lunghezza del WKB. L'intersezione e il
+/// segnale che falsifica la regola `preserves`: un motore che riproiettasse in
+/// silenzio renderebbe un SRID plausibile e coordinate lontane ordini di
+/// grandezza, e nessuna intersezione.
+///
+/// Non e un giudizio universale, ed e la ragione per cui il dato resta grezzo:
+/// una curva di offset a distanza positiva non interseca la linea da cui viene,
+/// e li uno zero non smentisce niente. Chi legge decide; la sonda misura.
+#[allow(clippy::too_many_lines)]
+async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    use plenora_database_core::query::SpatialFunction;
+    use plenora_database_sql::{spatial_function_name, Dialect};
+
+    let table = "plenora_driver_evidence_geometry_functions";
+    let fixtures = [
+        (
+            4_326,
+            "POINT(8 44)",
+            "LINESTRING(8 44, 8 45, 9 45)",
+            "POLYGON((8 44, 8 45, 9 45, 9 44, 8 44))",
+        ),
+        (
+            3_857,
+            "POINT(890000 5460000)",
+            "LINESTRING(890000 5460000, 890000 5620000, 1000000 5620000)",
+            "POLYGON((890000 5460000, 890000 5620000, 1000000 5620000, 1000000 5460000, \
+             890000 5460000))",
+        ),
+        (
+            3_003,
+            "POINT(1550000 4950000)",
+            "LINESTRING(1500000 4900000, 1500000 5000000, 1600000 5000000)",
+            "POLYGON((1500000 4900000, 1500000 5000000, 1600000 5000000, 1600000 4900000, \
+             1500000 4900000))",
+        ),
+    ];
+    for statement in [
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, pt GEOMETRY NOT NULL, \
+             ln GEOMETRY NOT NULL, pg GEOMETRY NOT NULL) ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella delle funzioni geometriche: harness, non divergenza");
+    }
+    for (srid, point, line, polygon) in fixtures {
+        connection
+            .query_drop(format!(
+                "INSERT INTO {table} VALUES ({srid}, ST_GeomFromText('{point}', {srid}), \
+                 ST_GeomFromText('{line}', {srid}), ST_GeomFromText('{polygon}', {srid}))"
+            ))
+            .await
+            .expect("riga delle funzioni geometriche: harness, non divergenza");
+    }
+
+    let geometric = SpatialFunction::ALL
+        .iter()
+        .filter(|function| function.returns_geometry())
+        .collect::<Vec<_>>();
+    let mut measured = Vec::new();
+    for (srid, _, _, _) in fixtures {
+        let mut kept = Vec::new();
+        let mut dropped = Vec::new();
+        let mut elsewhere = Vec::new();
+        let mut disjoint = Vec::new();
+        let mut absent = Vec::new();
+        for function in &geometric {
+            let name = spatial_function_name(Dialect::Mysql, **function);
+            let arity = (1..=4)
+                .find(|count| function.accepts_argument_count(*count))
+                .unwrap_or(1);
+            // Tre forme: basta che una attraversi. `ST_StartPoint` di un
+            // poligono non e un difetto del motore.
+            let mut verdict = None;
+            for column in ["ln", "pg", "pt"] {
+                let arguments = (0..arity)
+                    .map(|index| {
+                        if function.takes_geometry_at(index) {
+                            column.to_owned()
+                        } else {
+                            scalar_argument_for(**function, srid)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call = format!("{name}({arguments})");
+                match connection
+                    .query_first::<(Option<i64>, Option<i64>, Option<i64>), _>(format!(
+                        "SELECT ST_SRID({call}), ST_Intersects({column}, {call}), \
+                         LENGTH(ST_AsBinary({call})) FROM {table} WHERE id = {srid}"
+                    ))
+                    .await
+                {
+                    Ok(Some((Some(out), touching, Some(_)))) => {
+                        verdict = Some(Ok((out, touching)));
+                        break;
+                    }
+                    // Un risultato nullo o non leggibile non e un'assenza: la
+                    // funzione ha risposto. Si prova la forma successiva, e se
+                    // nessuna rende un valore resta registrato come tale.
+                    Ok(_) => {
+                        if verdict.is_none() {
+                            verdict = Some(Err("null".to_owned()));
+                        }
+                    }
+                    Err(error) => {
+                        let code = server_code(&error)
+                            .map_or_else(|| "rifiutato".to_owned(), |code| code.to_string());
+                        // 1305 e l'assenza, e vince su qualunque altro esito:
+                        // una funzione che non esiste non esiste per nessuna
+                        // forma.
+                        if code == "1305" {
+                            verdict = Some(Err(code));
+                            break;
+                        }
+                        if verdict.is_none() {
+                            verdict = Some(Err(code));
+                        }
+                    }
+                }
+            }
+            let label = format!("{function:?}");
+            match verdict {
+                Some(Ok((out, touching))) => {
+                    if touching == Some(0) {
+                        disjoint.push(label.clone());
+                    }
+                    if out == i64::from(srid) {
+                        kept.push(label);
+                    } else if out == 0 {
+                        dropped.push(label);
+                    } else {
+                        elsewhere.push(format!("{label}({out})"));
+                    }
+                }
+                Some(Err(code)) => absent.push(format!("{label}({code})")),
+                None => absent.push(format!("{label}(mai chiesta)")),
+            }
+        }
+        measured.push(format!(
+            "srs={srid} conservano={} perdono={} altrove=[{}] disgiunte=[{}] assenti=[{}]",
+            kept.len(),
+            dropped.len(),
+            elsewhere.join(" "),
+            disjoint.join(" "),
+            absent.join(" ")
+        ));
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await;
+
+    recorder.accepted(
+        "raw.geometry_function_forms",
+        "raw",
+        "spatial",
+        "quali delle trentuno funzioni che rendono geometria il server possiede",
+        measured.join(" | "),
     );
 }
 

@@ -3951,26 +3951,47 @@ mod tests {
             .filter(|function| !spatial.functions.contains(function))
             .copied()
             .collect();
-        let only_mariadb = spatial
+        let only_mariadb: Vec<_> = spatial
             .functions
             .iter()
-            .find(|function| !mysql_functions.contains(function));
+            .filter(|function| !mysql_functions.contains(function))
+            .copied()
+            .collect();
         assert_eq!(
             only_mysql,
             vec![
                 plenora_database_core::query::SpatialFunction::IsValid,
                 plenora_database_core::query::SpatialFunction::HausdorffDistance,
-                plenora_database_core::query::SpatialFunction::FrechetDistance
+                plenora_database_core::query::SpatialFunction::FrechetDistance,
+                // La quarta, e la prima che riguarda una funzione che rende
+                // geometria: `raw.geometry_function_forms` ha trovato
+                // `ST_Simplify` su `MySQL` e su nessuna major di `MariaDB` —
+                // `4212` sulla 12.3, `1305` sulle due LTS.
+                plenora_database_core::query::SpatialFunction::Simplify,
             ],
             "cio che MySQL ha e MariaDB no"
         );
-        // Vuoto, e non per costruzione: `Relate` c'e stato per una campagna.
-        // Il server ce l'ha — la sonda delle candidate lo aveva trovato — ma il
-        // gate lo ha bocciato con 1582, perche `MariaDB` lo vuole a tre
-        // argomenti e il contratto ne ammette anche due. Esiste e non e
-        // utilizzabile nella forma che il piano permette, che sono due cose
-        // diverse.
-        assert!(only_mariadb.is_none(), "cio che MariaDB ha e MySQL no");
+        // Non piu vuoto, e vale la pena dire che ci e voluto tempo. Per una
+        // campagna la lista di `MariaDB` fu un sottoinsieme di quella di
+        // `MySQL`, poi `Relate` la ruppe e torno indietro: il server ce l'ha,
+        // ma il gate lo boccio con 1582 — lo vuole a tre argomenti e il
+        // contratto ne ammette anche due — cioe esiste e non e utilizzabile
+        // nella forma che il piano permette.
+        //
+        // Le due che restano vengono dalla misura delle ventotto mai chieste, e
+        // sono assenze reali dall'altro prodotto: `ST_Boundary` e
+        // `ST_PointOnSurface` rispondono `1305` su `MySQL` 9.7. Nella direzione
+        // opposta viaggiano `ST_Transform` e `ST_SetSrid`, che su `MySQL` ci
+        // sono e qui no — e non compaiono in nessuna delle due liste perche la
+        // loro regola di CRS il provider non la sa propagare.
+        assert_eq!(
+            only_mariadb,
+            vec![
+                plenora_database_core::query::SpatialFunction::PointOnSurface,
+                plenora_database_core::query::SpatialFunction::Boundary,
+            ],
+            "cio che MariaDB ha e MySQL no"
+        );
         assert_eq!(
             spatial.write_wkb,
             MARIADB_PROFILE.write_spatial_is_qualified(),

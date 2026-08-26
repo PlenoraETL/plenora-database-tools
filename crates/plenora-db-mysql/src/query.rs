@@ -160,6 +160,30 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Envelope,
     SpatialFunction::Centroid,
     SpatialFunction::Buffer,
+    // Le cinque che `raw.geometry_function_forms` ha trovato presenti fra le
+    // ventotto mai chieste, e la cui regola il provider sa propagare.
+    //
+    // La sonda ha attraversato tutte e trentuno le funzioni che rendono
+    // geometria, su tre sistemi di riferimento e tre forme. Diciotto non
+    // esistono su questo prodotto — `1305` — e non e una scelta di prudenza:
+    // `ST_MakeValid`, `ST_Boundary`, `ST_Reverse`, `ST_SnapToGrid` e le altre
+    // sono assenti dal motore. `ST_Union` esiste e risponde `1582` all'arieta
+    // unaria che il contratto ammette, ed e la stessa regola che gia lo teneva
+    // fuori: una funzione e qualificata quando lo e a **ogni** arieta ammessa.
+    //
+    // Delle tredici presenti, cinque restano fuori per una ragione che non e
+    // del prodotto: `Transform` porta l'SRID in un argomento, `Intersection`,
+    // `Difference` e `SymDifference` prendono due geometrie — regole che
+    // questo provider non sa ancora propagare — e `Collect` e un **aggregato**,
+    // che la macchina dei gruppi di questo crate non modella.
+    SpatialFunction::StartPoint,
+    SpatialFunction::EndPoint,
+    SpatialFunction::PointN,
+    SpatialFunction::ConvexHull,
+    // `ST_Simplify` c'e su `MySQL` e non su `MariaDB`, dove le tre major
+    // rispondono `1305` o `4212`. E' la terza divergenza misurata fra i due
+    // prodotti, dopo `IsValid` e `HausdorffDistance`.
+    SpatialFunction::Simplify,
 ];
 
 /// Le funzioni spatial qualificate su `MariaDB`.
@@ -237,6 +261,29 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Envelope,
     SpatialFunction::Centroid,
     SpatialFunction::Buffer,
+    // Le sei che `raw.geometry_function_forms` ha trovato presenti su **tutte
+    // e tre** le major fra le ventotto mai chieste.
+    //
+    // Diciotto sono assenti anche qui, e in gran parte le stesse di `MySQL`:
+    // `ST_MakeValid`, `ST_Reverse`, `ST_SnapToGrid`, `ST_LineMerge`,
+    // `ST_OrientedEnvelope`, i quattro `ST_Force*`, `ST_Subdivide`,
+    // `ST_OffsetCurve`, `ST_UnaryUnion`. Due divergono da `MySQL` e vale la
+    // pena dirlo, perche vanno nelle due direzioni opposte: `ST_Transform` e
+    // `ST_SetSrid` non ci sono su questo prodotto e su `MySQL` si, mentre
+    // `ST_Boundary` e `ST_PointOnSurface` ci sono qui e su `MySQL` no.
+    //
+    // `Simplify` e escluso dalla regola dell'intersezione, e la sua misura e
+    // istruttiva: `MariaDB 12.3` risponde `4212`, le due LTS `1305`. Nemmeno
+    // sulla 12 e utilizzabile, e sulle altre non c'e affatto.
+    //
+    // `Collect` e escluso due volte: esiste solo sulla 12.3 — le due LTS
+    // rispondono `1305` — ed e comunque un aggregato.
+    SpatialFunction::StartPoint,
+    SpatialFunction::EndPoint,
+    SpatialFunction::PointN,
+    SpatialFunction::ConvexHull,
+    SpatialFunction::PointOnSurface,
+    SpatialFunction::Boundary,
 ];
 
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
