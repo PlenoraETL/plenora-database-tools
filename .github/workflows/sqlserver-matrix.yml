@@ -1,0 +1,72 @@
+name: sqlserver-matrix
+
+# Matrice delle major SQL Server: 2019 e 2025, fissate per digest. Il gate del
+# riferimento copre 2022, quindi insieme attraversano tre livelli di
+# compatibilita consecutivi — 150, 160, 170.
+#
+# Vive in un file suo, e non dentro `sqlserver-assurance.yml`, per la stessa
+# ragione della matrice PostgreSQL: quel workflow gira a ogni push su main e
+# su ogni PR che tocchi il provider, e due server SQL Server avviati uno dopo
+# l'altro non stanno in quel budget. Il vincolo sta nel trigger invece che in
+# una condizione dentro un job, che e il posto in cui si sbaglia.
+#
+# Che la matrice non girasse **affatto** era un'altra cosa, e si e vista alla
+# prima esecuzione manuale: falliva su un registro di test mantenuto a mano e
+# rimasto indietro di quattro prove, dopo che tutte erano passate. Il commento
+# accanto a quel registro raccontava gia la stessa caduta di tre settimane
+# prima. Accorgersene richiedeva eseguirlo, e non lo eseguiva nessuno.
+#
+# Questo file non contiene logica di qualifica: una invocazione, niente altro.
+# Digest, livelli di compatibilita attesi e inventario dei test vivono nello
+# script, che e anche il modo in cui la matrice si riproduce in locale con lo
+# stesso comando.
+
+on:
+  schedule:
+    # Lunedi 05:17 UTC, dopo `mysql-assurance` e `postgres-matrix`: le campagne
+    # pesanti non si accavallano sulla stessa finestra.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+  # La matrice presidia anche se stessa: una modifica allo script o a questo
+  # file va provata dove viene scritta, non alla schedulazione successiva.
+  pull_request:
+    paths:
+      - ".github/workflows/sqlserver-matrix.yml"
+      - "scripts/check_sqlserver_matrix.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlserver-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  matrix:
+    name: matrice major SQL Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      # Un gate Python installa le proprie dipendenze prima di girare. Senza,
+      # basta che uno degli script importi qualcosa che ne dipenda — anche
+      # indirettamente — perche il job fallisca all'import invece che su una
+      # verifica.
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: check_sqlserver_matrix.py
+        run: python3 scripts/check_sqlserver_matrix.py | tee sqlserver-version-matrix.log
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sqlserver-version-matrix
+          path: sqlserver-version-matrix.log
+          if-no-files-found: error

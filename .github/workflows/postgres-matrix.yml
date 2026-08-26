@@ -1,0 +1,71 @@
+name: postgres-matrix
+
+# Matrice delle major PostgreSQL supportate, da 14 a 18, ciascuna con la
+# propria immagine PostGIS fissata per digest.
+#
+# Vive in un file suo, e non dentro `postgres-assurance.yml`, per una ragione
+# che sta nel trigger: quel workflow gira a ogni push su main e su ogni PR che
+# tocchi il provider, e cinque riferimenti avviati uno dopo l'altro non stanno
+# in quel budget. Separare i file mette il vincolo nel trigger invece che in
+# una condizione dentro un job, che e il posto in cui si sbaglia.
+#
+# Che la matrice non girasse **affatto** era pero un'altra cosa. L'esclusione
+# era dichiarata — «dura oltre il budget di una CI a ogni push» — e la ragione
+# regge; giustifica pero «non a ogni push», non «mai». Lanciata a mano la prima
+# volta, la matrice ha trovato subito un registro scaduto: un gate che nessuno
+# esegue non e un gate, ed e la prima regola di questo repository.
+#
+# Questo file non contiene logica di qualifica: una invocazione, niente altro.
+# Digest, versioni attese e pulizia delle risorse vivono nello script, che e
+# anche il modo in cui la matrice si riproduce in locale con lo stesso comando.
+
+on:
+  schedule:
+    # Lunedi 04:17 UTC, un'ora dopo `mysql-assurance`: le campagne pesanti non
+    # si accavallano sulla stessa finestra, e i pull da Docker Hub restano
+    # distanziati.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+  # La matrice presidia anche se stessa: una modifica allo script o a questo
+  # file va provata dove viene scritta, non alla schedulazione successiva.
+  pull_request:
+    paths:
+      - ".github/workflows/postgres-matrix.yml"
+      - "scripts/check_postgres_matrix.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  matrix:
+    name: matrice major PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      # Un gate Python installa le proprie dipendenze prima di girare. Senza,
+      # basta che uno degli script importi qualcosa che ne dipenda — anche
+      # indirettamente — perche il job fallisca all'import invece che su una
+      # verifica.
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: check_postgres_matrix.py
+        run: python3 scripts/check_postgres_matrix.py | tee postgres-version-matrix.log
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: postgres-version-matrix
+          path: postgres-version-matrix.log
+          if-no-files-found: error

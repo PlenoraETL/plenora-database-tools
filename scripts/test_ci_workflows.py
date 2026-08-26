@@ -928,8 +928,6 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
     DECLARED_WITHOUT_A_WORKFLOW = {
         "check_phase0.py": "wrapper di comodo: esegue phase0_validate.py e la discovery completa di tests/, che il job static-self-tests di rust-ci lancia uno per uno",
         "check_mariadb_divergence.py": "harness manuale citato dalla documentazione MariaDB, si lancia con due riferimenti scelti dall'operatore",
-        "check_postgres_matrix.py": "matrice su piu major PostgreSQL: avvia N riferimenti, dura oltre il budget di una CI a ogni push",
-        "check_sqlserver_matrix.py": "matrice su piu major SQL Server, stesso motivo della matrice PostgreSQL",
         "check_postgres_performance.py": "campagna prestazionale: misura tempi, e su runner condivisi il risultato non e confrontabile",
         "check_postgres_spatial_performance.py": "campagna prestazionale bbox + KNN, stesso motivo",
         "check_mysql_performance.py": "campagna prestazionale MySQL, stesso motivo",
