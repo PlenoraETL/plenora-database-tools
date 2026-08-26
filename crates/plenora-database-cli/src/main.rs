@@ -12,7 +12,7 @@ use plenora_database_core::plan::{OrderBy, SortDirection};
 use plenora_database_core::query::QueryOperation;
 // Il percorso `postgres-read-ipc` e l'unico che pianifica una lettura e ne
 // misura il budget: fuori dalla feature questo nome non ha un chiamante.
-use plenora_database_core::provider::{Provider, SecretString};
+use plenora_database_core::provider::{Inspection, Provider, SecretString};
 // Lo streaming a batch esce solo dal percorso IPC.
 use plenora_database_core::provider::BatchStream;
 use plenora_database_core::provider::ParameterBag;
@@ -1052,12 +1052,33 @@ async fn database_inspect(
     let provider_arguments = prepare_provider_arguments(provider_arguments)?;
     let secret = secret_from_env(&env_name)?;
     let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let kind = provider.kind();
     let inspection = provider
         .inspect(&secret, &operation, &CancellationToken::new())
         .await?;
-    print_json(
-        &serde_json::to_value(inspection).map_err(|_| "output non serializzabile".to_owned())?,
-    )
+    print_json(&inspection_output(kind, inspection)?)
+}
+
+/// Envelope CLI stabile per tutti i documenti di introspezione.
+///
+/// `Inspection::document` e sempre un oggetto nei quattro adapter. Appiattirlo
+/// mantiene comodi `schemas`, `objects` e `columns`, mentre provider e
+/// operazione rendono la risposta auto-descrittiva come gli altri comandi
+/// `database-*`.
+fn inspection_output(kind: ProviderKind, inspection: Inspection) -> CliResult<serde_json::Value> {
+    let serde_json::Value::Object(document) = inspection.document else {
+        return Err("documento di introspezione non strutturato".into());
+    };
+    let mut output = serde_json::Map::new();
+    output.insert("schema_version".to_owned(), json!(1));
+    output.insert("provider".to_owned(), json!(kind));
+    output.insert("operation".to_owned(), json!(inspection.operation));
+    for (key, value) in document {
+        if output.insert(key, value).is_some() {
+            return Err("documento di introspezione usa un campo CLI riservato".into());
+        }
+    }
+    Ok(serde_json::Value::Object(output))
 }
 
 /// Il nome dello schema, che nessuna operazione puo dedurre.
@@ -2858,6 +2879,36 @@ mod tests {
             source(&mut args).expect("sorgente");
             assert_eq!(args.count(), 3);
         }
+    }
+
+    #[test]
+    fn provider_neutral_inspection_has_one_flat_self_describing_envelope() {
+        let output = inspection_output(
+            ProviderKind::Mysql,
+            Inspection {
+                operation: "database.list_schemas".to_owned(),
+                document: json!({"schemas": ["application"]}),
+            },
+        )
+        .expect("inspection envelope");
+        assert_eq!(output["schema_version"], 1);
+        assert_eq!(output["provider"], "mysql");
+        assert_eq!(output["operation"], "database.list_schemas");
+        assert_eq!(output["schemas"], json!(["application"]));
+        assert!(output.get("document").is_none());
+    }
+
+    #[test]
+    fn provider_neutral_inspection_rejects_reserved_document_fields() {
+        let error = inspection_output(
+            ProviderKind::Postgres,
+            Inspection {
+                operation: "database.list_schemas".to_owned(),
+                document: json!({"provider": "forged"}),
+            },
+        )
+        .expect_err("reserved field collision");
+        assert!(format!("{error:?}").contains("campo CLI riservato"));
     }
 
     #[cfg(feature = "postgres")]
