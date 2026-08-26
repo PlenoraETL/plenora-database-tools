@@ -327,8 +327,7 @@ async fn run() -> CliResult<()> {
         "inspect-objects" => inspect::inspect_objects(&mut args).await,
         #[cfg(feature = "postgres")]
         "postgres-query" => query_cmd::postgres_query(&mut args).await,
-        #[cfg(feature = "postgres")]
-        "portable-compile" => query_cmd::portable_compile(&mut args),
+        "portable-compile" => portable_cmd::portable_compile(&mut args),
         #[cfg(feature = "postgres")]
         "portable-execute" => query_cmd::portable_execute(&mut args).await,
         #[cfg(feature = "postgres")]
@@ -1728,7 +1727,10 @@ const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     ("inspect-schemas", Some("postgres")),
     ("inspect-tables", Some("postgres")),
     ("pool-status", Some("postgres")),
-    ("portable-compile", Some("postgres")),
+    // Puro: legge un AST e stampa SQL, senza aprire niente. Stava dietro
+    // `postgres` perche viveva in un modulo gated, e un binario
+    // `--features mysql` non poteva compilare un piano **per MySQL**.
+    ("portable-compile", None),
     ("portable-execute", Some("postgres")),
     ("postgres-describe", Some("postgres")),
     ("postgres-probe", Some("postgres")),
@@ -1920,7 +1922,7 @@ fn postgres_usage() -> String {
         "    wrapper EXPLAIN [ANALYZE]",
         "",
         "== PostgreSQL: portable AST ==",
-        "  portable-compile <postgres|mysql|sqlserver> <PORTABLE.json>",
+        "  portable-compile <postgres|mysql|mariadb> <PORTABLE.json>",
         "    stampa SQL + numero parametri compilati (per debug pipeline PFM)",
         "  portable-execute <dsn-env> <PORTABLE.json>",
         "    compila per Postgres, esegue in una tx, ritorna rows o affected_rows",
@@ -2175,6 +2177,7 @@ mod mysql_cmd;
 mod ops_cmd;
 #[cfg(feature = "postgres")]
 mod pfm;
+mod portable_cmd;
 #[cfg(feature = "postgres")]
 mod query_cmd;
 mod safety;

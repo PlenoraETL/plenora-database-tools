@@ -80,42 +80,6 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
     }))
 }
 
-/// `portable-compile PROVIDER PORTABLE.json`: compila il `PortableStatement`
-/// per il provider target (postgres/mysql/sqlserver) e stampa SQL + numero
-/// di parametri. Utile per debug pipeline PFM senza dover eseguire.
-pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider = args
-        .next()
-        .ok_or("manca il provider (postgres|mysql|sqlserver)")?;
-    let portable_path = args.next().ok_or("manca il percorso PORTABLE.json")?;
-    ensure_end(args)?;
-
-    let kind = match provider.as_str() {
-        "postgres" => ProviderKind::Postgres,
-        "mysql" => ProviderKind::Mysql,
-        "sqlserver" => ProviderKind::Sqlserver,
-        _ => return Err("provider sconosciuto: ammessi postgres, mysql, sqlserver".into()),
-    };
-    let contents = fs::read(&portable_path)
-        .map_err(|_| format!("PORTABLE.json non leggibile: {portable_path}"))?;
-    let ast: PortableStatement = serde_json::from_slice(&contents).map_err(|e| {
-        format!(
-            "PORTABLE.json non parsabile a riga {}, colonna {}",
-            e.line(),
-            e.column()
-        )
-    })?;
-    let compiled = compile_portable(kind, &ast)?;
-
-    print_json(&json!({
-        "status": "ok",
-        "provider": kind,
-        "sql": compiled.sql,
-        "param_count": compiled.params.len(),
-        // Non stampiamo i params: possono contenere valori sensibili.
-    }))
-}
-
 /// `portable-execute DSN_ENV PORTABLE.json`: compila per Postgres, apre una
 /// tx, esegue e stampa il risultato come JSON (rows per SELECT/*RETURNING,
 /// affected_rows altrimenti).
