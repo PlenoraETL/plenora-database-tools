@@ -3306,6 +3306,306 @@ async fn seed_concurrency_probe(
         .expect("fixture della contesa");
 }
 
+/// Ogni famiglia di tipo che il decoder della transazione dichiara.
+///
+/// # Perche esiste
+///
+/// Il decoder e nato con la transazione applicativa, e copre una ventina di
+/// varianti `ColumnType`. Le ho scritte guardando l'enum di tiberius, non
+/// interrogando un server: e un elenco **immaginato**, ed e la stessa forma
+/// per cui su `MySQL` la lista delle funzioni spatial e rimasta per mesi con
+/// undici voci mai utilizzabili.
+///
+/// Una tabella sola con una colonna per famiglia, due righe — una piena e una
+/// vuota — e la lettura che passa dal percorso della transazione, cioe
+/// esattamente quello che il decoder serve.
+///
+/// # Cosa verifica
+///
+/// Per ogni colonna, che il valore arrivi nella **variante** giusta del
+/// contratto: un `int` non deve diventare una stringa, e un `datetimeoffset`
+/// non deve perdere il fuso diventando un `Timestamp` senza.
+///
+/// La riga vuota verifica l'altra meta: che un `NULL` porti il **tipo** che
+/// TDS ha dichiarato invece di `unknown`, che e la ragione per cui il decoder
+/// ha un `null_value` invece di una costante.
+///
+/// I rifiuti si accumulano: una colonna rotta non deve nascondere le altre
+/// venti, o il difetto si scopre una famiglia per volta.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+#[allow(clippy::too_many_lines)]
+async fn live_transaction_decoder_crosses_every_declared_type_family() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin del decoder");
+
+    // colonna, DDL, valore, variante attesa
+    let columns: &[(&str, &str, &str, &str)] = &[
+        ("c_bit", "bit", "CAST(1 AS bit)", "Bool"),
+        ("c_tinyint", "tinyint", "CAST(200 AS tinyint)", "I32"),
+        ("c_smallint", "smallint", "CAST(-30000 AS smallint)", "I32"),
+        ("c_int", "int", "CAST(-2000000000 AS int)", "I32"),
+        (
+            "c_bigint",
+            "bigint",
+            "CAST(-9000000000000000000 AS bigint)",
+            "I64",
+        ),
+        ("c_real", "real", "CAST(1.5 AS real)", "F64"),
+        ("c_float", "float", "CAST(1.25 AS float)", "F64"),
+        (
+            "c_guid",
+            "uniqueidentifier",
+            "CAST('0f8fad5b-d9cb-469f-a165-70867728950e' AS uniqueidentifier)",
+            "Uuid",
+        ),
+        ("c_varbinary", "varbinary(16)", "0x0102FF", "Bytes"),
+        ("c_binary", "binary(4)", "0xDEADBEEF", "Bytes"),
+        (
+            "c_datetime",
+            "datetime",
+            "CAST('2026-08-26T01:02:03.100' AS datetime)",
+            "Timestamp",
+        ),
+        (
+            "c_datetime2",
+            "datetime2(6)",
+            "CAST('2026-08-26T01:02:03.123456' AS datetime2(6))",
+            "Timestamp",
+        ),
+        (
+            "c_smalldatetime",
+            "smalldatetime",
+            "CAST('2026-08-26T01:02:00' AS smalldatetime)",
+            "Timestamp",
+        ),
+        (
+            "c_datetimeoffset",
+            "datetimeoffset(6)",
+            "CAST('2026-08-26T01:02:03.123456+02:00' AS datetimeoffset(6))",
+            "TimestampTz",
+        ),
+        ("c_date", "date", "CAST('2026-08-26' AS date)", "Date"),
+        (
+            "c_time",
+            "time(6)",
+            "CAST('01:02:03.123456' AS time(6))",
+            "String",
+        ),
+        (
+            "c_decimal",
+            "decimal(18,4)",
+            "CAST(12345.6789 AS decimal(18,4))",
+            "Decimal",
+        ),
+        (
+            "c_numeric",
+            "numeric(9,2)",
+            "CAST(-42.50 AS numeric(9,2))",
+            "Decimal",
+        ),
+        ("c_money", "money", "CAST(1234.5678 AS money)", "Decimal"),
+        (
+            "c_smallmoney",
+            "smallmoney",
+            "CAST(-12.3456 AS smallmoney)",
+            "Decimal",
+        ),
+        ("c_nvarchar", "nvarchar(32)", "N'testo unicode'", "String"),
+        ("c_nchar", "nchar(8)", "N'fisso'", "String"),
+        ("c_varchar", "varchar(32)", "'testo ascii'", "String"),
+        ("c_char", "char(8)", "'padded'", "String"),
+        ("c_xml", "xml", "CAST('<a b=\"1\"/>' AS xml)", "String"),
+    ];
+
+    let ddl = columns
+        .iter()
+        .map(|(name, kind, _, _)| format!("[{name}] {kind} NULL"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let valori = columns
+        .iter()
+        .map(|(_, _, value, _)| (*value).to_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let nulli = columns
+        .iter()
+        .map(|_| "NULL".to_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let elenco = columns
+        .iter()
+        .map(|(name, _, _, _)| format!("[{name}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    admin
+        .execute_query(
+            Query::new(
+                // Il DROP sta in un batch **suo**. Insieme al resto, SQL Server
+                // compilerebbe gli INSERT contro la tabella che c'e ancora —
+                // quella di una corsa precedente, con un'altra forma — e
+                // risponderebbe 213 senza nominare la ragione vera.
+                "DROP TABLE IF EXISTS [plenora_test].[decoder_probe];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia preventiva della fixture del decoder");
+    admin
+        .execute_query(
+            Query::new(format!(
+                "CREATE TABLE [plenora_test].[decoder_probe] ([id] int NOT NULL, {ddl}); \
+                 INSERT INTO [plenora_test].[decoder_probe] VALUES (1, {valori}); \
+                 INSERT INTO [plenora_test].[decoder_probe] VALUES (2, {nulli});"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture del decoder");
+
+    let provider = SqlServerProvider::new(config, 1024, 4).expect("provider del decoder");
+    let mut transaction = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
+            &cancellation,
+        )
+        .await
+        .expect("transazione del decoder");
+
+    let rows = transaction
+        .query(
+            &Statement::new(format!(
+                "SELECT {elenco} FROM [plenora_test].[decoder_probe] ORDER BY [id]"
+            )),
+            &cancellation,
+        )
+        .await
+        .expect("il decoder deve attraversare ogni colonna");
+    assert_eq!(rows.len(), 2, "una riga piena e una vuota");
+
+    let variant = |value: &ParameterValue| -> String {
+        match value {
+            ParameterValue::Bool(_) => "Bool",
+            ParameterValue::I32(_) => "I32",
+            ParameterValue::I64(_) => "I64",
+            ParameterValue::F64(_) => "F64",
+            ParameterValue::String(_) => "String",
+            ParameterValue::Bytes(_) => "Bytes",
+            ParameterValue::Date(_) => "Date",
+            ParameterValue::Timestamp(_) => "Timestamp",
+            ParameterValue::TimestampTz(_) => "TimestampTz",
+            ParameterValue::Decimal(_) => "Decimal",
+            ParameterValue::Uuid(_) => "Uuid",
+            ParameterValue::Json(_) => "Json",
+            ParameterValue::Wkb { .. } => "Wkb",
+            ParameterValue::Enum { .. } => "Enum",
+            ParameterValue::Null { .. } => "Null",
+        }
+        .to_owned()
+    };
+
+    let mut sbagliate: Vec<String> = Vec::new();
+    for (index, (name, kind, _, atteso)) in columns.iter().enumerate() {
+        let osservato = variant(&rows[0].values()[index]);
+        if osservato != *atteso {
+            sbagliate.push(format!(
+                "{name} ({kind}): atteso {atteso}, reso {osservato}"
+            ));
+        }
+        // La riga vuota: `Null` con il tipo che TDS ha dichiarato, non
+        // «unknown». E' cio che distingue questo decoder dagli altri del
+        // repository, e senza questa verifica sarebbe una promessa.
+        match &rows[1].values()[index] {
+            ParameterValue::Null { type_name } if type_name != "unknown" => {}
+            ParameterValue::Null { type_name } => {
+                sbagliate.push(format!("{name} ({kind}): NULL senza tipo ({type_name})"));
+            }
+            other => {
+                sbagliate.push(format!(
+                    "{name} ({kind}): la cella vuota non e Null ma {}",
+                    variant(other)
+                ));
+            }
+        }
+    }
+    assert!(
+        sbagliate.is_empty(),
+        "il decoder sbaglia su {} colonne su {}: {}",
+        sbagliate.len(),
+        columns.len(),
+        sbagliate.join("; ")
+    );
+
+    // Le due famiglie su cui il **driver** muore, e che devono arrivare al
+    // chiamante come rifiuti.
+    //
+    // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per `Udt` e
+    // `SSVariant`: una SELECT che rende una geometria o un `sql_variant`
+    // faceva panicare la libreria sui **metadati**, prima di ogni riga. Un
+    // panico non e un errore — attraversa lo stack e lascia la connessione a
+    // meta protocollo — e quella connessione tornava nel pool.
+    //
+    // La prova pretende due cose insieme, e la seconda e quella che conta: che
+    // il rifiuto arrivi, e che la sessione **non sia piu utilizzabile** dopo.
+    // La seconda dice che la connessione avvelenata e stata messa in
+    // quarantena invece di essere restituita sana.
+    for veleno in [
+        "SELECT CAST(1 AS sql_variant) AS v",
+        "SELECT geometry::STGeomFromText('POINT(1 1)', 4326) AS g",
+    ] {
+        let mut avvelenata = provider
+            .begin_transaction(
+                &live_secret(),
+                &TransactionOptions::default(),
+                &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
+                &cancellation,
+            )
+            .await
+            .expect("transazione della famiglia non decodificabile");
+        let refused = avvelenata
+            .query(&Statement::new(veleno), &cancellation)
+            .await
+            .expect_err("il driver non decodifica questa famiglia");
+        assert_eq!(
+            refused.category,
+            ErrorCategory::Unsupported,
+            "{veleno}: il panico deve diventare un rifiuto"
+        );
+        let dopo = avvelenata
+            .query(&Statement::new("SELECT 1 AS uno"), &cancellation)
+            .await;
+        assert!(
+            dopo.is_err(),
+            "{veleno}: la sessione doveva restare in quarantena"
+        );
+        let _ = Box::new(avvelenata).rollback(&cancellation).await;
+    }
+
+    Box::new(transaction)
+        .rollback(&cancellation)
+        .await
+        .expect("rollback del decoder");
+
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[decoder_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia della fixture del decoder");
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live e contesa deterministica di un row lock"]
 async fn live_sqlserver_lock_hints_are_nowait_and_spatial_safe() {

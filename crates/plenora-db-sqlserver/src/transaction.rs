@@ -335,17 +335,6 @@ fn decode_cell(
                 || null_value(kind),
                 |value| ParameterValue::Bytes(value.to_vec()),
             )),
-        // `Udt` porta i tipi spaziali, che sul wire arrivano come byte: qui
-        // restano byte. Interpretarli come WKB sarebbe una promessa che questo
-        // percorso non puo mantenere — il formato nativo di `geometry` non e
-        // WKB, e la conversione la fa `.AsBinaryZM()` nel percorso di lettura.
-        Ct::Udt => Ok(row
-            .try_get::<&[u8], _>(index)
-            .map_err(|error| mapping(format!("decode udt idx={index}: {error}")))?
-            .map_or_else(
-                || null_value(kind),
-                |value| ParameterValue::Bytes(value.to_vec()),
-            )),
         Ct::Datetime | Ct::Datetime2 | Ct::Datetime4 | Ct::Datetimen => Ok(row
             .try_get::<chrono::NaiveDateTime, _>(index)
             .map_err(|error| mapping(format!("decode datetime idx={index}: {error}")))?
@@ -378,36 +367,85 @@ fn decode_cell(
             )),
         // Decimali e valuta: il testo e la sola forma che non perde cifre, ed
         // e cio che `ParameterValue::Decimal` porta.
-        Ct::Decimaln | Ct::Numericn | Ct::Money | Ct::Money4 => Ok(row
-            .try_get::<f64, _>(index)
+        //
+        // La prima stesura chiedeva un `f64`, e il driver lo rifiutava:
+        // «cannot interpret Numeric(Some(12345.6789)) as an f64 value». Il
+        // rifiuto era un favore. Un `decimal(38,10)` non entra in un `f64`
+        // senza perdere cifre, e la perdita sarebbe stata silenziosa — il
+        // valore sarebbe arrivato al chiamante plausibile e sbagliato.
+        //
+        // `Numeric` di tiberius porta parte intera, parte decimale e scala, e
+        // il suo `Display` le compone: testo esatto, che e cio che il
+        // contratto vuole.
+        Ct::Decimaln | Ct::Numericn => Ok(row
+            .try_get::<tiberius::numeric::Numeric, _>(index)
             .map_err(|error| mapping(format!("decode decimal idx={index}: {error}")))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Decimal(value.to_string()),
             )),
-        Ct::NVarchar
-        | Ct::NChar
-        | Ct::BigVarChar
-        | Ct::BigChar
-        | Ct::NText
-        | Ct::Text
-        | Ct::Xml => Ok(row
+        // Il denaro arriva come `f64`, e non e una scelta di questo codice: il
+        // driver lo consegna gia convertito, e chiedergli un `Numeric`
+        // risponde «cannot interpret F64 as an Numeric value».
+        //
+        // Il limite va detto perche e reale. `money` ha scala fissa 4 e arriva
+        // a ±922_337_203_685_477.5807, cioe oltre nove miliardi di miliardi di
+        // unita di scala: piu di quante un `f64` ne rappresenti esattamente,
+        // che si fermano a 2^53. Ai valori estremi la cifra meno significativa
+        // puo non tornare.
+        //
+        // Non e riparabile qui — la conversione e gia avvenuta prima che
+        // questo codice veda il valore — e rifiutare `money` sarebbe peggio:
+        // renderebbe illeggibile una colonna che nella stragrande maggioranza
+        // dei casi e esatta. Chi ha bisogno dell'esattezza su quell'ordine di
+        // grandezza usa `decimal(19,4)`, che passa dal ramo sopra e non perde
+        // niente.
+        Ct::Money | Ct::Money4 => Ok(row
+            .try_get::<f64, _>(index)
+            .map_err(|error| mapping(format!("decode money idx={index}: {error}")))?
+            .map_or_else(
+                || null_value(kind),
+                |value| ParameterValue::Decimal(value.to_string()),
+            )),
+        Ct::NVarchar | Ct::NChar | Ct::BigVarChar | Ct::BigChar | Ct::NText | Ct::Text => Ok(row
             .try_get::<&str, _>(index)
             .map_err(|error| mapping(format!("decode testo idx={index}: {error}")))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::String(value.to_owned()),
             )),
+        // `xml` non e una stringa per il driver: consegna un `XmlData`, che
+        // porta il documento e, quando c'e, lo schema che lo tipizza.
+        // Chiedergli un `&str` risponde «cannot interpret Xml(...) as a String
+        // value».
+        //
+        // Qui esce il documento e lo schema no: il contratto ha una stringa,
+        // non una coppia, e inventare una serializzazione che li unisca
+        // sarebbe un formato che nessuno ha dichiarato. Chi ha bisogno dello
+        // schema lo chiede al catalogo, dove sta.
+        Ct::Xml => Ok(row
+            .try_get::<&tiberius::xml::XmlData, _>(index)
+            .map_err(|error| mapping(format!("decode xml idx={index}: {error}")))?
+            .map_or_else(
+                || null_value(kind),
+                |value| ParameterValue::String(value.to_string()),
+            )),
         Ct::Null => Ok(null_value(kind)),
-        // `SSVariant` e nominata invece di finire in un `_`: cosi una
-        // variante nuova di tiberius **non compila** invece di scivolare in
-        // silenzio nel rifiuto. Per un decoder e la differenza fra accorgersi
-        // di un tipo nuovo e rifiutarlo per anni senza saperlo.
+        // Il ramo di scarto c'e, e prima non c'era: `Udt` e `SSVariant`
+        // avevano ciascuno il proprio, uno che rendeva byte e uno che
+        // rifiutava. Erano **irraggiungibili**: tiberius 0.12.3 muore in un
+        // `todo!()` mentre decodifica i loro metadati, quindi il decoder non
+        // li vede mai.
+        //
+        // Il panico e ora catturato dove nasce — in `connection.rs`, che mette
+        // la sessione in quarantena e rende un rifiuto — e qui restano soltanto
+        // le famiglie che arrivano davvero. Un ramo che dichiara di gestire
+        // qualcosa che non gli arriva e una promessa a nessuno.
         //
         // Il tipo non entra nel messaggio: un errore pubblico non porta
         // dettagli del payload, e il nome di un tipo TDS ne e il confine piu
-        // vicino. Chi deve saperlo lo legge dal proprio SQL.
-        Ct::SSVariant => Err(DatabaseError::unsupported(
+        // vicino.
+        _ => Err(DatabaseError::unsupported(
             ProviderKind::Sqlserver,
             ErrorPhase::Read,
             "tipo di colonna SQL Server fuori dal sottoinsieme mappato",

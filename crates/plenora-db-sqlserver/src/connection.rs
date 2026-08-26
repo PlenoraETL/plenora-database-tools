@@ -3,6 +3,7 @@ use crate::error::{driver_error, interruption_error, timeout_error};
 use crate::recovery::{TransactionEvent, TransactionState};
 use crate::session::{SessionState, SESSION_BOOTSTRAP_SQL};
 use crate::types::SqlServerColumnSpec;
+use futures_util::future::FutureExt;
 use futures_util::TryStreamExt;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -325,15 +326,42 @@ impl SqlServerSession {
             _ = cancellation.cancelled() => QueryOutcome::Cancelled,
             result = tokio::time::timeout(
                 self.operation_timeout,
-                query_and_drain(client, query),
+                // Il driver **va in panico** su due famiglie di tipo, e un
+                // panico non e un errore: attraversa lo stack e lascia la
+                // connessione a meta protocollo. Se tornasse al pool cosi, il
+                // prestito successivo la troverebbe con i pacchetti di
+                // qualcun altro in coda.
+                //
+                // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per
+                // `Udt` e `SSVariant`: basta che una SELECT renda una colonna
+                // `geometry`, `geography` o `sql_variant`, e succede sui
+                // **metadati**, prima di ogni riga — quindi nessun controllo
+                // sul valore potrebbe prevenirlo.
+                //
+                // Catturarlo qui e la sola forma che lasci il pool sano.
+                std::panic::AssertUnwindSafe(query_and_drain(client, query)).catch_unwind(),
             ) => match result {
-                Ok(Ok(rows)) => QueryOutcome::Completed(rows),
-                Ok(Err(error)) => QueryOutcome::Driver(error),
+                Ok(Ok(Ok(rows))) => QueryOutcome::Completed(rows),
+                Ok(Ok(Err(error))) => QueryOutcome::Driver(error),
+                Ok(Err(_)) => QueryOutcome::DriverPanic,
                 Err(_) => QueryOutcome::Timeout,
             },
         };
         match outcome {
             QueryOutcome::Completed(rows) => Ok(rows),
+            // Il messaggio nomina le famiglie e la via d'uscita — per una
+            // geometria, `.AsBinaryZM()` nella proiezione — invece di
+            // riportare il testo del panico, che e interno al driver e non
+            // aiuta chi legge.
+            QueryOutcome::DriverPanic => {
+                self.quarantine();
+                Err(DatabaseError::unsupported(
+                    plenora_database_core::plan::ProviderKind::Sqlserver,
+                    phase,
+                    "il driver SQL Server non decodifica le colonne UDT e sql_variant: \
+                     per una geometria usare .AsBinaryZM() nella proiezione",
+                ))
+            }
             QueryOutcome::Cancelled => {
                 self.quarantine();
                 Err(interruption_error(cancellation, phase, RemoteEffect::None))
@@ -372,15 +400,39 @@ impl SqlServerSession {
             _ = cancellation.cancelled() => QueryOutcome::Cancelled,
             result = tokio::time::timeout(
                 self.operation_timeout,
-                query_and_drain(client, query),
+                // Il driver **va in panico** su due famiglie di tipo, e un
+                // panico non e un errore: attraversa lo stack e lascia la
+                // connessione a meta protocollo. Se tornasse al pool cosi, il
+                // prestito successivo la troverebbe con i pacchetti di
+                // qualcun altro in coda.
+                //
+                // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per
+                // `Udt` e `SSVariant`: basta che una SELECT renda una colonna
+                // `geometry`, `geography` o `sql_variant`, e succede sui
+                // **metadati**, prima di ogni riga — quindi nessun controllo
+                // sul valore potrebbe prevenirlo.
+                //
+                // Catturarlo qui e la sola forma che lasci il pool sano.
+                std::panic::AssertUnwindSafe(query_and_drain(client, query)).catch_unwind(),
             ) => match result {
-                Ok(Ok(rows)) => QueryOutcome::Completed(rows),
-                Ok(Err(error)) => QueryOutcome::Driver(error),
+                Ok(Ok(Ok(rows))) => QueryOutcome::Completed(rows),
+                Ok(Ok(Err(error))) => QueryOutcome::Driver(error),
+                Ok(Err(_)) => QueryOutcome::DriverPanic,
                 Err(_) => QueryOutcome::Timeout,
             },
         };
         match outcome {
             QueryOutcome::Completed(rows) => Ok(RowQueryResult::Applied(rows)),
+            // Come nell'altro percorso: il panico del driver diventa un
+            // rifiuto, e la connessione non torna al pool.
+            QueryOutcome::DriverPanic => {
+                self.quarantine();
+                Err(DatabaseError::unsupported(
+                    plenora_database_core::plan::ProviderKind::Sqlserver,
+                    ErrorPhase::Write,
+                    "il driver SQL Server non decodifica le colonne UDT e sql_variant:                      per una geometria usare .AsBinaryZM() nella proiezione",
+                ))
+            }
             QueryOutcome::Cancelled => {
                 self.quarantine();
                 Err(interruption_error(
@@ -575,6 +627,12 @@ enum QueryOutcome {
     Cancelled,
     Timeout,
     Driver(tiberius::error::Error),
+    /// Il driver e morto in un `todo!()` invece di rendere un errore.
+    ///
+    /// Non e una condizione del server: e una famiglia di tipo che tiberius
+    /// 0.12.3 non sa decodificare, e la scopre sui metadati. La connessione
+    /// resta a meta protocollo, quindi va in quarantena e non torna al pool.
+    DriverPanic,
 }
 
 enum PumpOutcome {
