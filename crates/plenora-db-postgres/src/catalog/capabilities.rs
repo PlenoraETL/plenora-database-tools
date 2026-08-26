@@ -100,6 +100,9 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
                 read_wkb: false,
                 write_wkb: false,
                 geometry: false,
+                // Questo ramo e «PostGIS assente»: nessuno dei due tipi
+                // esiste, quindi non c'e nulla da pubblicare. Il ramo sopra li
+                // scopre dal catalogo quando l'estensione c'e.
                 geography: false,
                 spatial_index: false,
                 mixed_geometry_types: false,

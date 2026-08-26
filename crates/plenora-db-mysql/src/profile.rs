@@ -613,7 +613,27 @@ impl ProductProfile for MysqlProfile {
             transactions: TransactionCapabilities {
                 single_transaction: true,
                 savepoints: true,
+                // Le due chiuse hanno **una** ragione sola, ed e del motore.
+                //
+                // Ogni DDL di questo prodotto porta un commit implicito. Un
+                // `CREATE TABLE` dentro una transazione non aspetta il
+                // `COMMIT`: chiude quella in corso e apre la successiva, e cio
+                // che stava dentro resta scritto anche se poi qualcosa
+                // fallisce. `transactional_ddl` promette il contrario.
+                //
+                // `staged_swap` ne discende. Lo scambio pubblica una tabella
+                // costruita a parte, e vale se lo scambio e **atomico con il
+                // carico**: qui non lo e, perche la DDL che costruisce la
+                // tabella di staging ha gia committato prima. `RENAME TABLE`
+                // e atomico da solo, e non basta — l'atomicita che serve e
+                // quella dell'insieme.
+                //
+                // Nessuna delle due si aprira: non sono lacune di misura, sono
+                // il motore. PostgreSQL e SQL Server le hanno perche la loro
+                // DDL e transazionale.
                 transactional_ddl: false,
+                // Stessa ragione della riga sopra: senza DDL transazionale
+                // l'atomicita dell'insieme non c'e.
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
             },
@@ -1165,7 +1185,27 @@ impl ProductProfile for MariadbProfile {
             transactions: TransactionCapabilities {
                 single_transaction: true,
                 savepoints: true,
+                // Le due chiuse hanno **una** ragione sola, ed e del motore.
+                //
+                // Ogni DDL di questo prodotto porta un commit implicito. Un
+                // `CREATE TABLE` dentro una transazione non aspetta il
+                // `COMMIT`: chiude quella in corso e apre la successiva, e cio
+                // che stava dentro resta scritto anche se poi qualcosa
+                // fallisce. `transactional_ddl` promette il contrario.
+                //
+                // `staged_swap` ne discende. Lo scambio pubblica una tabella
+                // costruita a parte, e vale se lo scambio e **atomico con il
+                // carico**: qui non lo e, perche la DDL che costruisce la
+                // tabella di staging ha gia committato prima. `RENAME TABLE`
+                // e atomico da solo, e non basta — l'atomicita che serve e
+                // quella dell'insieme.
+                //
+                // Nessuna delle due si aprira: non sono lacune di misura, sono
+                // il motore. PostgreSQL e SQL Server le hanno perche la loro
+                // DDL e transazionale.
                 transactional_ddl: false,
+                // Stessa ragione della riga sopra: senza DDL transazionale
+                // l'atomicita dell'insieme non c'e.
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
             },
@@ -1791,6 +1831,14 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         read_wkb: true,
         write_wkb: true,
         geometry: true,
+        // Il tipo non esiste su questo prodotto. `GEOMETRY` con un SRID
+        // geografico non e la stessa cosa: le funzioni restano cartesiane, e
+        // una distanza su 4326 verrebbe resa in gradi invece che in metri.
+        // Pubblicare `true` perche l'SRID e geografico sarebbe promettere una
+        // semantica che il motore non applica.
+        //
+        // Non e una lacuna di misura: e la ragione per cui PostgreSQL e SQL
+        // Server hanno due tipi e questo ne ha uno.
         geography: false,
         // Aperta insieme a quella di MariaDB, e per la stessa misura: la
         // clausola entra nella `CREATE TABLE` della mode `Create`, e la sonda
