@@ -5,8 +5,8 @@ from . import spatial as spatial
 from ._async_session import AsyncSession
 from ._async_transaction import AsyncTransaction
 from ._native import (
-    AsyncMysqlSession,
-    MysqlSession,
+    AsyncDatabaseSession,
+    DatabaseSession,
     PlenoraAuthenticationError,
     PlenoraAuthorizationError,
     PlenoraCancelledError,
@@ -53,24 +53,24 @@ from .types import (
 
 
 
-class _MysqlSessionWrapper:
+class _DatabaseSessionWrapper:
     """Cio che `connect_mysql` restituisce davvero.
 
-    Non e `MysqlSession`: e il wrapper Python che gli sta davanti, aggiunge la
+    Non e `DatabaseSession`: e il wrapper Python che gli sta davanti, aggiunge la
     conversione automatica della sorgente in `copy_from` e delega tutto il
     resto. La delega passa da `__getattr__`, quindi la superficie nativa resta
     raggiungibile ma non tipizzata: cio che questo stub dichiara e cio che il
     wrapper definisce di suo.
     """
 
-    def __init__(self, native: MysqlSession) -> None: ...
+    def __init__(self, native: DatabaseSession) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
     @property
     def server_version(self) -> str: ...
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
-    def __enter__(self) -> _MysqlSessionWrapper: ...
+    def __enter__(self) -> _DatabaseSessionWrapper: ...
     def __exit__(
         self, exc_type: Any, exc_value: Any, traceback: Any
     ) -> bool: ...
@@ -119,19 +119,19 @@ class _MysqlSessionWrapper:
     def _execute_portable_count(self, ast_json: str) -> int: ...
 
 
-class _AsyncMysqlSessionWrapper:
+class _AsyncDatabaseSessionWrapper:
     """Cio che `aconnect_mysql` restituisce davvero: vedi
-    [`_MysqlSessionWrapper`], con `aread` e `acopy_from` al posto di `read` e
+    [`_DatabaseSessionWrapper`], con `aread` e `acopy_from` al posto di `read` e
     `copy_from`."""
 
-    def __init__(self, native: AsyncMysqlSession) -> None: ...
+    def __init__(self, native: AsyncDatabaseSession) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
     @property
     def server_version(self) -> str: ...
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
-    async def __aenter__(self) -> _AsyncMysqlSessionWrapper: ...
+    async def __aenter__(self) -> _AsyncDatabaseSessionWrapper: ...
     async def __aexit__(
         self, exc_type: Any, exc_value: Any, traceback: Any
     ) -> bool: ...
@@ -198,7 +198,7 @@ def connect_mysql(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
-) -> _MysqlSessionWrapper: ...
+) -> _DatabaseSessionWrapper: ...
 
 async def aconnect_mysql(
     host: str,
@@ -208,7 +208,7 @@ async def aconnect_mysql(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
-) -> _AsyncMysqlSessionWrapper: ...
+) -> _AsyncDatabaseSessionWrapper: ...
 
 def connect_mariadb(
     host: str,
@@ -218,7 +218,7 @@ def connect_mariadb(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
-) -> _MysqlSessionWrapper: ...
+) -> _DatabaseSessionWrapper: ...
 
 async def aconnect_mariadb(
     host: str,
@@ -228,7 +228,7 @@ async def aconnect_mariadb(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
-) -> _AsyncMysqlSessionWrapper: ...
+) -> _AsyncDatabaseSessionWrapper: ...
 
 
 __all__: list[str]

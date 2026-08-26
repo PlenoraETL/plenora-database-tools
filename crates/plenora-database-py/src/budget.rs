@@ -1,7 +1,7 @@
 //! Preset di `ResourceBudget` condivisi tra i moduli SDK.
 //!
 //! Prima di Fase E, `default_budget()` era ridefinito 5 volte identico
-//! (`session`/`async_session`/`mysql_session`/`async_mysql_session`/
+//! (`session`/`async_session`/`session_family`/`async_session_family`/
 //! `arrow_reader`) più una variante custom in `write.rs` per bulk write.
 //! Il rischio era che i 5 identici divergessero silenziosamente al
 //! prossimo tuning dei limiti default.

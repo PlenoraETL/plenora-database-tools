@@ -1,6 +1,6 @@
 //! Streaming Arrow read MySQL (v0.7).
 //!
-//! Espone `MysqlSession.read(schema, table, projection, order_by, limit)`
+//! Espone `DatabaseSession.read(schema, table, projection, order_by, limit)`
 //! che ritorna un `BatchReader` (pyclass provider-agnostic, ereditato
 //! dal path Postgres). Il consumer Python itera bytes Arrow IPC stream:
 //!
@@ -41,7 +41,7 @@ use std::sync::Arc;
 ///
 /// `DatabaseError` se `order_by` ha direzione invalida, o se il provider
 /// fallisce ad aprire lo stream.
-pub(crate) fn open_mysql_reader(
+pub(crate) fn open_family_reader(
     provider: &Arc<dyn Provider>,
     secret: &SecretString,
     schema: &str,

@@ -1119,10 +1119,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         """
 
         sync = (
-            ROOT / "crates" / "plenora-database-py" / "src" / "mysql_session.rs"
+            ROOT / "crates" / "plenora-database-py" / "src" / "session_family.rs"
         ).read_text(encoding="utf-8")
         asynchronous = (
-            ROOT / "crates" / "plenora-database-py" / "src" / "async_mysql_session.rs"
+            ROOT / "crates" / "plenora-database-py" / "src" / "async_session_family.rs"
         ).read_text(encoding="utf-8")
         binding = sync + asynchronous
         tests = (
@@ -1301,7 +1301,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         """
 
         source = (
-            ROOT / "crates" / "plenora-database-py" / "src" / "mysql_session.rs"
+            ROOT / "crates" / "plenora-database-py" / "src" / "session_family.rs"
         ).read_text(encoding="utf-8")
         # Il default resta `require`, nella firma pyo3.
         self.assertIn('tls_mode="require"', source)

@@ -41,7 +41,7 @@ def connect_mysql(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> MysqlSession: ...
+) -> DatabaseSession: ...
 
 def aconnect_mysql(
     host: str,
@@ -51,18 +51,18 @@ def aconnect_mysql(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> Any:  # awaitable → AsyncMysqlSession
+) -> Any:  # awaitable → AsyncDatabaseSession
     ...
 
-# ============================ MysqlSession ===================================
+# ============================ DatabaseSession ===================================
 
-class MysqlSession:
+class DatabaseSession:
     @property
     def server_version(self) -> str: ...
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
-    def __enter__(self) -> MysqlSession: ...
+    def __enter__(self) -> DatabaseSession: ...
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
     def __repr__(self) -> str: ...
     def execute(self, sql: str, params: list | None = None) -> int: ...
@@ -101,15 +101,15 @@ class MysqlSession:
         update_columns: list[str] | None = None,
     ) -> dict: ...
 
-# ============================ AsyncMysqlSession ==============================
+# ============================ AsyncDatabaseSession ==============================
 
-class AsyncMysqlSession:
+class AsyncDatabaseSession:
     @property
     def server_version(self) -> str: ...
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
-    def __aenter__(self) -> Any: ...  # awaitable → AsyncMysqlSession
+    def __aenter__(self) -> Any: ...  # awaitable → AsyncDatabaseSession
     def __aexit__(
         self, exc_type: object, exc_value: object, traceback: object
     ) -> Any: ...  # awaitable → bool

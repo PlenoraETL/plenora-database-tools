@@ -75,8 +75,8 @@ from ._native import SessionContext  # PFM CHG-002
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
 from ._native import (
-    AsyncMysqlSession,
-    MysqlSession,
+    AsyncDatabaseSession,
+    DatabaseSession,
     aconnect_mariadb as _native_aconnect_mariadb,
     aconnect_mysql as _native_aconnect_mysql,
     aconnect_sqlserver as _native_aconnect_sqlserver,
@@ -113,10 +113,10 @@ def connect_mysql(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_MysqlSessionWrapper":
+) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione MySQL (sync).
 
-    API disponibili in MysqlSession:
+    API disponibili in DatabaseSession:
     - `execute(sql, params) → int`
     - `execute_scalar(sql, params) → Any`
     - `execute_returning_rows(sql, params) → list[dict]`
@@ -166,7 +166,7 @@ def connect_mysql(
     native = _native_connect_mysql(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _MysqlSessionWrapper(native)
+    return _DatabaseSessionWrapper(native)
 
 
 def connect_mariadb(
@@ -177,7 +177,7 @@ def connect_mariadb(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_MysqlSessionWrapper":
+) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione MariaDB (sync).
 
     Stessa superficie di `connect_mysql` — stesso protocollo, stessi
@@ -224,7 +224,7 @@ def connect_mariadb(
     native = _native_connect_mariadb(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _MysqlSessionWrapper(native)
+    return _DatabaseSessionWrapper(native)
 
 
 def connect_sqlserver(
@@ -235,7 +235,7 @@ def connect_sqlserver(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_MysqlSessionWrapper":
+) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione SQL Server (sync).
 
     Stessa superficie delle altre factory della famiglia — `execute`,
@@ -267,17 +267,17 @@ def connect_sqlserver(
     native = _native_connect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _MysqlSessionWrapper(native)
+    return _DatabaseSessionWrapper(native)
 
 
-class _MysqlSessionWrapper:
+class _DatabaseSessionWrapper:
     """Wrapper Python-side che aggiunge `copy_from` con conversione
     automatica dell'input (pyarrow.Table / RecordBatch / list[dict] /
     pandas.DataFrame / bytes IPC) verso Arrow IPC bytes."""
 
     __slots__ = ("_native",)
 
-    def __init__(self, native: MysqlSession) -> None:
+    def __init__(self, native: DatabaseSession) -> None:
         self._native = native
 
     def __getattr__(self, name: str):
@@ -463,7 +463,7 @@ async def aconnect_mysql(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_AsyncMysqlSessionWrapper":
+) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione MySQL async.
 
     Awaitable analogo di `connect_mysql` — vedi docstring per TLS,
@@ -478,7 +478,7 @@ async def aconnect_mysql(
     native = await _native_aconnect_mysql(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _AsyncMysqlSessionWrapper(native)
+    return _AsyncDatabaseSessionWrapper(native)
 
 
 async def aconnect_mariadb(
@@ -489,7 +489,7 @@ async def aconnect_mariadb(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_AsyncMysqlSessionWrapper":
+) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione MariaDB async.
 
     Awaitable analogo di `connect_mariadb` — vedi la sua docstring per TLS,
@@ -503,7 +503,7 @@ async def aconnect_mariadb(
     native = await _native_aconnect_mariadb(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _AsyncMysqlSessionWrapper(native)
+    return _AsyncDatabaseSessionWrapper(native)
 
 
 async def aconnect_sqlserver(
@@ -514,7 +514,7 @@ async def aconnect_sqlserver(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
-) -> "_AsyncMysqlSessionWrapper":
+) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione SQL Server async.
 
     Awaitable analogo di `connect_sqlserver` — vedi la sua docstring per TLS,
@@ -528,17 +528,17 @@ async def aconnect_sqlserver(
     native = await _native_aconnect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
-    return _AsyncMysqlSessionWrapper(native)
+    return _AsyncDatabaseSessionWrapper(native)
 
 
-class _AsyncMysqlSessionWrapper:
-    """Wrapper Python-side per AsyncMysqlSession: aggiunge ergonomia
+class _AsyncDatabaseSessionWrapper:
+    """Wrapper Python-side per AsyncDatabaseSession: aggiunge ergonomia
     `acopy_from` con auto-conversion source + portable AST builders
     async (`await s.select(t).where_eq(...).all()`)."""
 
     __slots__ = ("_native",)
 
-    def __init__(self, native: AsyncMysqlSession) -> None:
+    def __init__(self, native: AsyncDatabaseSession) -> None:
         self._native = native
 
     def __getattr__(self, name: str):
@@ -586,7 +586,7 @@ class _AsyncMysqlSessionWrapper:
         context: "SessionContext | None" = None,  # noqa: F821
         native_query_policy: str | None = None,
     ):
-        """Come `_MysqlSessionWrapper.begin` sync — vedi docstring per
+        """Come `_DatabaseSessionWrapper.begin` sync — vedi docstring per
         `context` / `native_query_policy`."""
         return await self._native.begin(
             isolation,
@@ -621,7 +621,7 @@ class _AsyncMysqlSessionWrapper:
     ) -> dict:
         """Bulk write async MySQL.
 
-        Come `_MysqlSessionWrapper.copy_from` sync — vedi quella docstring
+        Come `_DatabaseSessionWrapper.copy_from` sync — vedi quella docstring
         per i 6 WriteMode disponibili su 7 (`truncate_insert` resta
         fail-closed) e per `mapping_policy` obbligatorio `"strict"` su
         MySQL.
@@ -680,6 +680,20 @@ async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
     return AsyncSession(native)
 
 
+#: I nomi storici delle due sessioni di famiglia.
+#:
+#: Si chiamavano `MysqlSession` e `AsyncMysqlSession` da quando servivano un
+#: prodotto solo. Oggi ne servono quattro — MySQL, MariaDB, SQL Server, e la
+#: differenza fra loro sta nel provider che tengono dietro `dyn Provider`, non
+#: nella superficie — e un utente SQL Server che riceve una `MysqlSession` legge
+#: una cosa che non e vera.
+#:
+#: Gli alias restano perche il pacchetto e pubblicato: rimuoverli romperebbe un
+#: `isinstance` o un\'annotazione di tipo scritti prima di questo cambiamento,
+#: e il costo di tenerli e due righe.
+MysqlSession = DatabaseSession
+AsyncMysqlSession = AsyncDatabaseSession
+
 __all__ = [
     "connect",
     "aconnect",
@@ -689,6 +703,8 @@ __all__ = [
     "aconnect_mariadb",
     "connect_sqlserver",
     "aconnect_sqlserver",
+    "DatabaseSession",
+    "AsyncDatabaseSession",
     "MysqlSession",
     "AsyncMysqlSession",
     "version",

@@ -26,29 +26,29 @@ use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
 mod arrow_reader;
-mod async_mysql_session;
 mod async_session;
+mod async_session_family;
 mod async_transaction;
 mod budget;
 mod errors;
 mod errors_commit;
-mod mysql_arrow_reader;
-mod mysql_session;
-mod mysql_write;
+mod family_arrow_reader;
+mod family_write;
 mod py_convert;
 mod session;
 mod session_context_py;
+mod session_family;
 mod transaction;
 mod write;
 
 use arrow_reader::{AsyncBatchReader, BatchReader};
-use async_mysql_session::{
-    aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncMysqlSession,
-};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
+use async_session_family::{
+    aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
+};
 use async_transaction::AsyncTransaction;
-use mysql_session::{connect_mariadb, connect_mysql, connect_sqlserver, MysqlSession};
 use session::{connect, Session};
+use session_family::{connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession};
 use transaction::Transaction;
 
 /// Runtime tokio globale condiviso da Session e Transaction. Costruito una
@@ -189,8 +189,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AsyncTransaction>()?;
     m.add_class::<BatchReader>()?;
     m.add_class::<AsyncBatchReader>()?;
-    m.add_class::<MysqlSession>()?;
-    m.add_class::<AsyncMysqlSession>()?;
+    m.add_class::<DatabaseSession>()?;
+    m.add_class::<AsyncDatabaseSession>()?;
     m.add_class::<session_context_py::PySessionContext>()?;
     errors::register(m)?;
     Ok(())

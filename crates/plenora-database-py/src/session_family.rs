@@ -1,4 +1,4 @@
-//! `MysqlSession` — sessione `MySQL` sincrona del SDK Python.
+//! `DatabaseSession` — sessione `MySQL` sincrona del SDK Python.
 //!
 //! Non e piu uno scaffold: la superficie e quella di `Session` su Postgres,
 //! meno spatial.
@@ -23,7 +23,7 @@
 //!
 //! Non esposto: spatial predicates e `SpatialReference`.
 //!
-//! L'equivalente async e [`crate::async_mysql_session`].
+//! L'equivalente async e [`crate::async_session_family`].
 //!
 //! Placeholder `MySQL`: `?` (non `$1` come Postgres). Il consumer deve
 //! fornire SQL provider-compatibile.
@@ -40,7 +40,7 @@
 
 use crate::arrow_reader::BatchReader;
 use crate::errors::to_py_err;
-use crate::mysql_arrow_reader::open_mysql_reader;
+use crate::family_arrow_reader::open_family_reader;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::runtime;
 use crate::transaction::{parse_isolation, Transaction};
@@ -77,7 +77,7 @@ use crate::budget::session_budget as default_budget;
 /// Prodotta da `plenora_database.connect_mysql(...)`. Context-manager
 /// friendly (`with connect_mysql(...) as s:`).
 #[pyclass(module = "plenora_database._native")]
-pub struct MysqlSession {
+pub struct DatabaseSession {
     provider: Arc<dyn Provider>,
     secret: SecretString,
     /// Il prodotto che questa sessione serve, per le superfici che lo
@@ -91,7 +91,7 @@ pub struct MysqlSession {
     closed: bool,
 }
 
-impl MysqlSession {
+impl DatabaseSession {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(format!(
@@ -150,7 +150,7 @@ impl MysqlSession {
 }
 
 #[pymethods]
-impl MysqlSession {
+impl DatabaseSession {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
@@ -181,7 +181,7 @@ impl MysqlSession {
 
     fn __repr__(&self) -> String {
         format!(
-            "<MysqlSession product='{}' server='{}' closed={}>",
+            "<DatabaseSession product='{}' server='{}' closed={}>",
             self.product, self.server_version, self.closed
         )
     }
@@ -413,7 +413,7 @@ impl MysqlSession {
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
         py.allow_threads(|| {
-            open_mysql_reader(
+            open_family_reader(
                 &self.provider,
                 &self.secret,
                 schema,
@@ -483,7 +483,7 @@ impl MysqlSession {
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
         let result = py.allow_threads(|| {
-            crate::mysql_write::copy_from_sync_mysql(
+            crate::family_write::copy_from_sync_mysql(
                 &self.provider,
                 &self.secret,
                 schema,
@@ -616,7 +616,7 @@ pub(crate) fn sqlserver_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provide
     ))
 }
 
-/// Apre una connessione MySQL e produce una `MysqlSession`.
+/// Apre una connessione MySQL e produce una `DatabaseSession`.
 ///
 /// Parametri:
 /// - `host`, `database`, `user`, `password`
@@ -646,7 +646,7 @@ pub fn connect_mysql(
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
-) -> PyResult<MysqlSession> {
+) -> PyResult<DatabaseSession> {
     let secret = SecretString::new(password.to_owned());
     let provider = mysql_provider(Endpoint {
         host: host.to_owned(),
@@ -703,7 +703,7 @@ pub(crate) fn family_config(
     }
 }
 
-/// Apre una connessione `MariaDB` e produce una `MysqlSession`.
+/// Apre una connessione `MariaDB` e produce una `DatabaseSession`.
 ///
 /// Una factory sua, non un parametro di [`connect_mysql`], ed e la meta di
 /// ADR 0014 che riguarda il SDK: «nessuna selezione automatica». Il
@@ -731,7 +731,7 @@ pub fn connect_mariadb(
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
-) -> PyResult<MysqlSession> {
+) -> PyResult<DatabaseSession> {
     let secret = SecretString::new(password.to_owned());
     let provider = mariadb_provider(Endpoint {
         host: host.to_owned(),
@@ -756,7 +756,7 @@ fn open_family_session(
     secret: SecretString,
     product: &'static str,
     factory: &'static str,
-) -> PyResult<MysqlSession> {
+) -> PyResult<DatabaseSession> {
     let provider_probe = Arc::clone(&provider);
     let secret_probe = secret.clone();
     let (connection, _capabilities) = runtime()
@@ -771,7 +771,7 @@ fn open_family_session(
             Ok::<_, DatabaseError>((conn, caps))
         })
         .map_err(to_py_err)?;
-    Ok(MysqlSession {
+    Ok(DatabaseSession {
         provider,
         secret,
         product,
@@ -812,7 +812,7 @@ pub fn connect_sqlserver(
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
-) -> PyResult<MysqlSession> {
+) -> PyResult<DatabaseSession> {
     let secret = SecretString::new(password.to_owned());
     let provider = sqlserver_provider(Endpoint {
         host: host.to_owned(),

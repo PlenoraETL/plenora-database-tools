@@ -1,7 +1,7 @@
 """Gli stub del SDK Python dicono cosa il SDK fa davvero.
 
-`__init__.pyi` dichiarava `connect_mysql(...) -> MysqlSession` e
-`aconnect_mysql(...) -> AsyncMysqlSession`, cioe i tipi nativi. Le due factory
+`__init__.pyi` dichiarava `connect_mysql(...) -> DatabaseSession` e
+`aconnect_mysql(...) -> AsyncDatabaseSession`, cioe i tipi nativi. Le due factory
 restituiscono invece i wrapper Python che gli stanno davanti, e le superfici
 divergono proprio dove conta: `copy_from` nativo vuole i byte Arrow IPC in
 posizione, il wrapper accetta `pyarrow`/`pandas`/`list[dict]` e argomenti per
@@ -51,7 +51,12 @@ PACKAGE = (
 )
 
 FACTORIES = ("connect_mysql", "aconnect_mysql")
-WRAPPERS = ("_MysqlSessionWrapper", "_AsyncMysqlSessionWrapper")
+#: I due wrapper Python della sessione di famiglia.
+#:
+#: Si chiamavano `_MysqlSessionWrapper` e `_AsyncMysqlSessionWrapper` da quando
+#: la famiglia era un prodotto solo. Oggi ne serve quattro, e il nome del
+#: prodotto piu vecchio non e piu una descrizione.
+WRAPPERS = ("_DatabaseSessionWrapper", "_AsyncDatabaseSessionWrapper")
 
 #: Stub senza modulo Python affiancato, con la ragione per cui non ce l'hanno.
 WITHOUT_RUNTIME_MODULE = {

@@ -40,7 +40,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Fase E: consolidato in `crate::budget::session_budget`. Re-export
-// pub(crate) perché `mysql_arrow_reader` continua ad accedere via
+// pub(crate) perché `family_arrow_reader` continua ad accedere via
 // `crate::arrow_reader::default_budget`.
 pub(crate) use crate::budget::session_budget as default_budget;
 

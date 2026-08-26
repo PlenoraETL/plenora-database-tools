@@ -1,9 +1,9 @@
-//! `AsyncMysqlSession` + `aconnect_mysql`.
+//! `AsyncDatabaseSession` + `aconnect_mysql`.
 //!
 //! Bridge asyncio <-> tokio per `MySQL`: i metodi ritornano awaitable Python.
 //! Ogni operazione fuori da `begin` apre una transazione in autocommit.
 //!
-//! La superficie e quella di [`crate::mysql_session`], con `aread` e
+//! La superficie e quella di [`crate::session_family`], con `aread` e
 //! `acopy_from` al posto di `read` e `copy_from`:
 //!
 //! * `aconnect_mysql(host, database, user, password, port, tls_ca_pem,
@@ -33,8 +33,8 @@
 use crate::arrow_reader::{default_budget as reader_default_budget, make_read_operation};
 use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
-use crate::mysql_session::ProviderBuilder;
 use crate::py_convert::{param_to_python, params_from_python};
+use crate::session_family::ProviderBuilder;
 use crate::transaction::parse_isolation;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
 use plenora_database_core::portable::PortableStatement;
@@ -56,7 +56,7 @@ use crate::budget::session_budget as default_budget;
 /// Sessione MySQL asincrona. Ottenuta da `await aconnect_mysql(...)`.
 #[pyclass(module = "plenora_database._native")]
 #[allow(dead_code)]
-pub struct AsyncMysqlSession {
+pub struct AsyncDatabaseSession {
     provider: Arc<dyn Provider>,
     /// Il prodotto che questa sessione serve, e la factory che l'ha aperta:
     /// una sessione `MariaDB` che si dichiarasse `MySQL` mentirebbe proprio a
@@ -68,7 +68,7 @@ pub struct AsyncMysqlSession {
     closed: bool,
 }
 
-impl AsyncMysqlSession {
+impl AsyncDatabaseSession {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(format!(
@@ -116,7 +116,7 @@ impl AsyncMysqlSession {
 }
 
 #[pymethods]
-impl AsyncMysqlSession {
+impl AsyncDatabaseSession {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
@@ -154,7 +154,7 @@ impl AsyncMysqlSession {
 
     fn __repr__(&self) -> String {
         format!(
-            "<AsyncMysqlSession server='{}' closed={}>",
+            "<AsyncDatabaseSession server='{}' closed={}>",
             self.server_version, self.closed
         )
     }
@@ -408,7 +408,7 @@ impl AsyncMysqlSession {
 
     /// Bulk write async. Awaitable → dict `WriteOutcome`.
     ///
-    /// Vedi `MysqlSession::copy_from` sync per WriteMode disponibili
+    /// Vedi `DatabaseSession::copy_from` sync per WriteMode disponibili
     /// (5 attivi, 2 fail-closed) e `mapping_policy` obbligatorio
     /// `"strict"` (default post py-v0.9.2).
     #[pyo3(signature = (
@@ -446,7 +446,7 @@ impl AsyncMysqlSession {
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
         future_into_py(py, async move {
-            let outcome = crate::mysql_write::do_copy_from_async_mysql(
+            let outcome = crate::family_write::do_copy_from_async_mysql(
                 provider,
                 secret,
                 schema,
@@ -468,7 +468,7 @@ impl AsyncMysqlSession {
     }
 }
 
-/// Factory async — apre una `AsyncMysqlSession`.
+/// Factory async — apre una `AsyncDatabaseSession`.
 ///
 /// Ritorna un awaitable Python: `s = await aconnect_mysql(...)`.
 ///
@@ -497,13 +497,13 @@ pub fn aconnect_mysql<'py>(
         port,
         tls_ca_pem,
         tls_mode,
-        crate::mysql_session::mysql_provider,
+        crate::session_family::mysql_provider,
         "MySQL",
         "aconnect_mysql",
     )
 }
 
-/// Factory async di `MariaDB` — apre una `AsyncMysqlSession` sul suo provider.
+/// Factory async di `MariaDB` — apre una `AsyncDatabaseSession` sul suo provider.
 ///
 /// Una factory sua e non un parametro di [`aconnect_mysql`], per la stessa
 /// ragione del percorso sincrono: ADR 0014 vieta la selezione automatica, e il
@@ -535,7 +535,7 @@ pub fn aconnect_mariadb<'py>(
         port,
         tls_ca_pem,
         tls_mode,
-        crate::mysql_session::mariadb_provider,
+        crate::session_family::mariadb_provider,
         "MariaDB",
         "aconnect_mariadb",
     )
@@ -574,7 +574,7 @@ pub fn aconnect_sqlserver<'py>(
         port,
         tls_ca_pem,
         tls_mode,
-        crate::mysql_session::sqlserver_provider,
+        crate::session_family::sqlserver_provider,
         "SQL Server",
         "aconnect_sqlserver",
     )
@@ -612,7 +612,7 @@ fn open_async<'py>(
         // silenzio il provider di un altro motore. Il rifiuto sarebbe poi
         // arrivato dalla probe, con la faccia di un problema di
         // configurazione del server invece che di un difetto qui.
-        let provider = build(crate::mysql_session::Endpoint {
+        let provider = build(crate::session_family::Endpoint {
             host,
             database,
             user,
@@ -631,7 +631,7 @@ fn open_async<'py>(
             .await
             .map_err(to_py_err)?;
         Python::with_gil(|py| {
-            let session = AsyncMysqlSession {
+            let session = AsyncDatabaseSession {
                 provider,
                 product,
                 factory,

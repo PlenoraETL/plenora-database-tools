@@ -1,6 +1,6 @@
 //! Bulk write MySQL via `Provider::prepare_write` + `Provider::write`.
 //!
-//! Chiamato da `MysqlSession.copy_from`. Riusa gli helper generici in
+//! Chiamato da `DatabaseSession.copy_from`. Riusa gli helper generici in
 //! `crate::write` (parse_mode/parse_profile/parse_mapping_policy,
 //! decode_ipc_stream, make_operation, default_budget, VecBatchStream,
 //! outcome_into_py, wrap_outcome) — differisce solo per il tipo di

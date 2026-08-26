@@ -2,7 +2,7 @@
 //!
 //! Prima di questo modulo, la stessa `DatabaseError` era ricostruita in
 //! 7 punti (`session`, `async_session`, `transaction`,
-//! `async_transaction`, `mysql_session`, `async_mysql_session` —
+//! `async_transaction`, `session_family`, `async_session_family` —
 //! quest'ultimo 2×). Rischio: metadati divergenti (`ErrorPhase`,
 //! provider, message) → consumer riceveva codici incoerenti a seconda
 //! del path che aveva chiamato.
