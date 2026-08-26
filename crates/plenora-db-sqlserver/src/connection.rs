@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-type TdsClient = Client<Compat<TcpStream>>;
+pub type TdsClient = Client<Compat<TcpStream>>;
 
 pub enum RowQueryResult {
     Applied(Vec<Vec<tiberius::Row>>),
@@ -237,6 +237,29 @@ impl SqlServerSession {
         .await?;
         let _ = self.transaction.apply(TransactionEvent::RollbackSucceeded);
         Ok(())
+    }
+
+    /// Il client TDS, per chi deve tenerlo prestato piu a lungo di una query.
+    ///
+    /// Esiste per lo **stream** della transazione. Ogni altro percorso passa da
+    /// `execute_query` o `execute_write_query`, che aprono e chiudono il
+    /// prestito dentro una chiamata sola; uno stream server-side no — vive
+    /// finche il chiamante consuma le righe, e in quel tempo nessun altro deve
+    /// poter usare la stessa sessione.
+    ///
+    /// Il vincolo non e affidato alla buona volonta: il prestito e `&mut`, e il
+    /// borrow checker rifiuta un secondo uso mentre lo stream e vivo. E' la
+    /// stessa garanzia che il contratto di `query_stream` descrive a parole —
+    /// «finche e vivo, nessun altro execute/query sulla stessa transazione e
+    /// consentito» — e qui e il compilatore a farla rispettare.
+    ///
+    /// # Errors
+    ///
+    /// Se la sessione non e in transazione, o il client e assente perche la
+    /// connessione e stata messa in quarantena.
+    pub fn client_mut(&mut self, phase: ErrorPhase) -> Result<&mut TdsClient> {
+        self.require_state(SessionState::Transaction, phase)?;
+        self.client.as_mut().ok_or_else(|| state_error(phase))
     }
 
     fn require_state(&self, expected: SessionState, phase: ErrorPhase) -> Result<()> {

@@ -54,6 +54,9 @@ use plenora_database_core::transaction::{
 };
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
+use plenora_db_sqlserver::{
+    CertificatePolicy as SqlServerCertificatePolicy, SqlServerConfig, SqlServerProvider,
+};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -512,6 +515,107 @@ impl MysqlSession {
     }
 }
 
+/// I parametri di connessione, uguali per i tre prodotti che questa sessione
+/// serve.
+///
+/// Esiste perche il **costruttore del provider** sia un argomento invece di
+/// una decisione presa qui dentro. Il percorso async sceglieva confrontando
+/// una stringa — `if product == "MariaDB"` — e aggiungere un terzo prodotto
+/// avrebbe allungato quella catena: un refuso nel nome avrebbe costruito in
+/// silenzio il provider sbagliato, e il rifiuto sarebbe arrivato dalla probe
+/// con la faccia di un problema di configurazione del server.
+pub(crate) struct Endpoint {
+    pub host: String,
+    pub database: String,
+    pub user: String,
+    pub secret: SecretString,
+    pub port: Option<u16>,
+    pub tls_ca_pem: Option<Vec<u8>>,
+    pub tls_mode: String,
+}
+
+/// Come si costruisce il provider di un prodotto dai suoi parametri.
+///
+/// Una funzione e non un enum: l'insieme dei prodotti non e chiuso, e ogni
+/// riga qui sotto e l'unico punto in cui quel prodotto viene scelto.
+pub(crate) type ProviderBuilder = fn(Endpoint) -> PyResult<Arc<dyn Provider>>;
+
+/// Il provider `MySQL`.
+pub(crate) fn mysql_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
+    let config = family_config(
+        &endpoint.host,
+        &endpoint.database,
+        &endpoint.user,
+        &endpoint.secret,
+        endpoint.port,
+        endpoint.tls_ca_pem,
+        &endpoint.tls_mode,
+    )?;
+    Ok(Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?))
+}
+
+/// Il provider `MariaDB`.
+pub(crate) fn mariadb_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
+    let config = family_config(
+        &endpoint.host,
+        &endpoint.database,
+        &endpoint.user,
+        &endpoint.secret,
+        endpoint.port,
+        endpoint.tls_ca_pem,
+        &endpoint.tls_mode,
+    )?;
+    Ok(Arc::new(
+        MariadbProvider::new(config, 4).map_err(to_py_err)?,
+    ))
+}
+
+/// Il provider `SQL Server`.
+///
+/// La configurazione e un tipo diverso — `SqlServerConfig` invece di
+/// `MysqlConfig` — perche il protocollo e un altro: TDS, porta 1433, e un
+/// nome applicativo che il server registra. Cio che **non** cambia e la
+/// sessione: tiene `Arc<dyn Provider>` e non sa quale prodotto le sia stato
+/// dato, quindi non c'e una terza copia della sua superficie.
+///
+/// Il fail-close TLS e lo stesso dei due prodotti della famiglia, e per la
+/// stessa ragione: `require` verifica catena e nome host,
+/// `insecure_trust_server` e un opt-out esplicito. Il default verifica.
+pub(crate) fn sqlserver_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
+    let mut config = SqlServerConfig::new(
+        &endpoint.host,
+        &endpoint.database,
+        &endpoint.user,
+        endpoint.secret.clone(),
+    );
+    if let Some(port) = endpoint.port {
+        config = config.with_port(port);
+    }
+    if let Some(pem) = endpoint.tls_ca_pem {
+        if pem.len() > 1024 * 1024 {
+            return Err(PyRuntimeError::new_err("CA PEM oltre 1 MiB"));
+        }
+        config = config
+            .with_private_ca_certificate_pem(&pem)
+            .map_err(to_py_err)?;
+    }
+    config =
+        match endpoint.tls_mode.as_str() {
+            "require" => config,
+            "insecure_trust_server" => {
+                config.with_certificate_policy(SqlServerCertificatePolicy::TrustServerCertificate)
+            }
+            _ => return Err(PyRuntimeError::new_err(
+                "tls_mode non riconosciuto. Valori: 'require' (default) | 'insecure_trust_server'",
+            )),
+        };
+    // Batch e pool: gli stessi valori del percorso MySQL, per la stessa
+    // ragione — sono il profilo del SDK, non una caratteristica del prodotto.
+    Ok(Arc::new(
+        SqlServerProvider::new(config, 1024, 4).map_err(to_py_err)?,
+    ))
+}
+
 /// Apre una connessione MySQL e produce una `MysqlSession`.
 ///
 /// Parametri:
@@ -544,8 +648,15 @@ pub fn connect_mysql(
     tls_mode: &str,
 ) -> PyResult<MysqlSession> {
     let secret = SecretString::new(password.to_owned());
-    let config = family_config(host, database, user, &secret, port, tls_ca_pem, tls_mode)?;
-    let provider: Arc<dyn Provider> = Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?);
+    let provider = mysql_provider(Endpoint {
+        host: host.to_owned(),
+        database: database.to_owned(),
+        user: user.to_owned(),
+        secret: secret.clone(),
+        port,
+        tls_ca_pem,
+        tls_mode: tls_mode.to_owned(),
+    })?;
     open_family_session(provider, secret, "MySQL", "connect_mysql")
 }
 
@@ -622,8 +733,15 @@ pub fn connect_mariadb(
     tls_mode: &str,
 ) -> PyResult<MysqlSession> {
     let secret = SecretString::new(password.to_owned());
-    let config = family_config(host, database, user, &secret, port, tls_ca_pem, tls_mode)?;
-    let provider: Arc<dyn Provider> = Arc::new(MariadbProvider::new(config, 4).map_err(to_py_err)?);
+    let provider = mariadb_provider(Endpoint {
+        host: host.to_owned(),
+        database: database.to_owned(),
+        user: user.to_owned(),
+        secret: secret.clone(),
+        port,
+        tls_ca_pem,
+        tls_mode: tls_mode.to_owned(),
+    })?;
     open_family_session(provider, secret, "MariaDB", "connect_mariadb")
 }
 
@@ -661,4 +779,49 @@ fn open_family_session(
         server_version: connection.server_version,
         closed: false,
     })
+}
+
+/// Apre una connessione `SQL Server` e produce una sessione della famiglia.
+///
+/// Una factory sua, come per `MariaDB`, e per la stessa meta di ADR 0014 che
+/// riguarda il SDK: nessuna selezione automatica. Il consumatore dichiara il
+/// prodotto, e la probe verifica quella scelta invece di compierla.
+///
+/// Parametri:
+/// - `host`, `database`, `user`, `password`
+/// - `port`: opzionale, default 1433
+/// - `tls_ca_pem`: opzionale, bytes del certificato CA privato PEM. Se
+///   `None`, la verifica usa il trust store pubblico
+/// - `tls_mode`: `require` (default) verifica catena e nome host;
+///   `insecure_trust_server` la disattiva ed e opt-in esplicito
+///
+/// Il default **verifica**, come sugli altri tre motori del SDK.
+///
+/// # Errors
+///
+/// `PlenoraError` se la configurazione e invalida, la connessione fallisce, o
+/// la probe delle capability restituisce errore.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql
+pub fn connect_sqlserver(
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+) -> PyResult<MysqlSession> {
+    let secret = SecretString::new(password.to_owned());
+    let provider = sqlserver_provider(Endpoint {
+        host: host.to_owned(),
+        database: database.to_owned(),
+        user: user.to_owned(),
+        secret: secret.clone(),
+        port,
+        tls_ca_pem,
+        tls_mode: tls_mode.to_owned(),
+    })?;
+    open_family_session(provider, secret, "SQL Server", "connect_sqlserver")
 }

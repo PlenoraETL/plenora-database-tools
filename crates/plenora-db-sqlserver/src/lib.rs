@@ -20,6 +20,7 @@ mod query;
 mod read;
 mod recovery;
 mod session;
+mod transaction;
 mod types;
 mod write;
 

@@ -56,7 +56,7 @@ fn validate_parameter_set(bind_names: &[String], parameters: &ParameterBag) -> R
     Ok(())
 }
 
-fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Result<()> {
+pub fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Result<()> {
     match value {
         ParameterValue::Bool(value) => query.bind(*value),
         ParameterValue::I32(value) => query.bind(*value),

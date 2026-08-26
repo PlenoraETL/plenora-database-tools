@@ -1,8 +1,8 @@
 """Python SDK per plenora-database-tools.
 
 Motori raggiungibili: **PostgreSQL** con `connect`, **MySQL** con
-`connect_mysql`, **MariaDB** con `connect_mariadb`, e i rispettivi `aconnect_*`
-per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
+`connect_mysql`, **MariaDB** con `connect_mariadb`, **SQL Server** con
+`connect_sqlserver`, e i rispettivi `aconnect_*` per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
 dichiara un motore e finisce sull'altro viene rifiutato alla probe.
 
 Uso base:
@@ -79,8 +79,10 @@ from ._native import (
     MysqlSession,
     aconnect_mariadb as _native_aconnect_mariadb,
     aconnect_mysql as _native_aconnect_mysql,
+    aconnect_sqlserver as _native_aconnect_sqlserver,
     connect_mariadb as _native_connect_mariadb,
     connect_mysql as _native_connect_mysql,
+    connect_sqlserver as _native_connect_sqlserver,
 )
 
 
@@ -220,6 +222,49 @@ def connect_mariadb(
     Parametri: identici a `connect_mysql`.
     """
     native = _native_connect_mariadb(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return _MysqlSessionWrapper(native)
+
+
+def connect_sqlserver(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> "_MysqlSessionWrapper":
+    """Apre una nuova sessione SQL Server (sync).
+
+    Stessa superficie delle altre factory della famiglia — `execute`,
+    `execute_scalar`, `execute_returning_rows`, `read`, `begin` — perche la
+    sessione tiene il provider dietro l'astrazione comune e non sa quale
+    motore le sia stato dato. Cio che cambia e il provider costruito, e con
+    lui il protocollo: TDS invece del protocollo MySQL, porta **1433** di
+    default.
+
+    Non c'e selezione automatica, come per gli altri: questa factory puntata
+    su un server che non e SQL Server viene rifiutata alla probe.
+
+    **Placeholder**: SQL Server usa `@P1`, `@P2`, ... nelle query native, non
+    `?`. Chi passa dal builder portabile — `s.select(...)`, `s.insert(...)` —
+    non se ne accorge, perche il rendering lo fa il provider.
+
+    **WriteMode**: tutte e sette, `truncate_insert` compresa, che su
+    MySQL e MariaDB resta chiusa per una ragione permanente.
+
+    **Spatial**: aperto su entrambe le semantiche, `geometry` e `geography`,
+    con curve, dimensioni XY/XYZ/XYM/XYZM, indice spaziale e ventiquattro
+    funzioni verificate. L'SRID viaggia dentro il valore, quindi non serve
+    dichiararlo nel piano come su MariaDB.
+
+    Parametri: come `connect_mysql`, salvo la porta di default.
+
+    L'equivalente async e `aconnect_sqlserver`.
+    """
+    native = _native_connect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
     )
     return _MysqlSessionWrapper(native)
@@ -461,6 +506,31 @@ async def aconnect_mariadb(
     return _AsyncMysqlSessionWrapper(native)
 
 
+async def aconnect_sqlserver(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> "_AsyncMysqlSessionWrapper":
+    """Apre una nuova sessione SQL Server async.
+
+    Awaitable analogo di `connect_sqlserver` — vedi la sua docstring per TLS,
+    placeholder, WriteMode e spatial.
+
+    Uso:
+
+        async with await aconnect_sqlserver("localhost", "db", "u", "p") as s:
+            rows = await s.execute_returning_rows("SELECT 1 AS n")
+    """
+    native = await _native_aconnect_sqlserver(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return _AsyncMysqlSessionWrapper(native)
+
+
 class _AsyncMysqlSessionWrapper:
     """Wrapper Python-side per AsyncMysqlSession: aggiunge ergonomia
     `acopy_from` con auto-conversion source + portable AST builders
@@ -617,6 +687,8 @@ __all__ = [
     "aconnect_mysql",
     "connect_mariadb",
     "aconnect_mariadb",
+    "connect_sqlserver",
+    "aconnect_sqlserver",
     "MysqlSession",
     "AsyncMysqlSession",
     "version",

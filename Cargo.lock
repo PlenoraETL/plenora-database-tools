@@ -1224,6 +1224,7 @@ dependencies = [
  "plenora-database-core",
  "plenora-db-mysql",
  "plenora-db-postgres",
+ "plenora-db-sqlserver",
  "pyo3",
  "pyo3-async-runtimes",
  "serde_json",

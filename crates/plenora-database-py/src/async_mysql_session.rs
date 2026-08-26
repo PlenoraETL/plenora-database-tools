@@ -33,6 +33,7 @@
 use crate::arrow_reader::{default_budget as reader_default_budget, make_read_operation};
 use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
+use crate::mysql_session::ProviderBuilder;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::transaction::parse_isolation;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
@@ -43,7 +44,6 @@ use plenora_database_core::transaction::{
     AccessMode, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, DatabaseError, Row};
-use plenora_db_mysql::{MariadbProvider, MysqlProvider};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -497,6 +497,7 @@ pub fn aconnect_mysql<'py>(
         port,
         tls_ca_pem,
         tls_mode,
+        crate::mysql_session::mysql_provider,
         "MySQL",
         "aconnect_mysql",
     )
@@ -534,17 +535,57 @@ pub fn aconnect_mariadb<'py>(
         port,
         tls_ca_pem,
         tls_mode,
+        crate::mysql_session::mariadb_provider,
         "MariaDB",
         "aconnect_mariadb",
     )
 }
 
-/// Il corpo comune delle due factory async.
+/// Factory async di `SQL Server` — apre una sessione della famiglia sul suo
+/// provider.
+///
+/// Awaitable analogo di `connect_sqlserver`, e come le altre due della
+/// famiglia non fa selezione automatica: il prodotto lo dichiara il
+/// consumatore, e la probe verifica quella scelta invece di compierla.
+///
+/// # Errors
+///
+/// Come [`aconnect_mysql`], piu il rifiuto della probe se il server non e
+/// `SQL Server`.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con aconnect_mysql
+pub fn aconnect_sqlserver<'py>(
+    py: Python<'py>,
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_pem: Option<Vec<u8>>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    open_async(
+        py,
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        crate::mysql_session::sqlserver_provider,
+        "SQL Server",
+        "aconnect_sqlserver",
+    )
+}
+
+/// Il corpo comune delle factory async.
 ///
 /// La configurazione — TLS compreso — passa da `family_config`, la stessa che
 /// usa il percorso sincrono: il fail-close TLS ha gia avuto il suo difetto una
 /// volta, e non puo permettersi ne due copie ne quattro.
-#[allow(clippy::too_many_arguments)] // gli argomenti sono quelli delle due API
+#[allow(clippy::too_many_arguments)] // gli argomenti sono quelli delle API
 fn open_async<'py>(
     py: Python<'py>,
     host: &str,
@@ -554,6 +595,7 @@ fn open_async<'py>(
     port: Option<u16>,
     tls_ca_pem: Option<Vec<u8>>,
     tls_mode: &str,
+    build: ProviderBuilder,
     product: &'static str,
     factory: &'static str,
 ) -> PyResult<Bound<'py, PyAny>> {
@@ -563,20 +605,22 @@ fn open_async<'py>(
     let secret = SecretString::new(password.to_owned());
     let tls_mode_owned = tls_mode.to_owned();
     future_into_py(py, async move {
-        let config = crate::mysql_session::family_config(
-            &host,
-            &database,
-            &user,
-            &secret,
+        // Il prodotto lo costruisce il **costruttore**, non un confronto fra
+        // stringhe. Qui c'era `if product == "MariaDB" { .. } else { .. }`, e
+        // il ramo `else` era MySQL: un terzo prodotto sarebbe finito nel ramo
+        // sbagliato per omissione, e un refuso nel nome avrebbe costruito in
+        // silenzio il provider di un altro motore. Il rifiuto sarebbe poi
+        // arrivato dalla probe, con la faccia di un problema di
+        // configurazione del server invece che di un difetto qui.
+        let provider = build(crate::mysql_session::Endpoint {
+            host,
+            database,
+            user,
+            secret: secret.clone(),
             port,
             tls_ca_pem,
-            &tls_mode_owned,
-        )?;
-        let provider: Arc<dyn Provider> = if product == "MariaDB" {
-            Arc::new(MariadbProvider::new(config, 4).map_err(to_py_err)?)
-        } else {
-            Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?)
-        };
+            tls_mode: tls_mode_owned,
+        })?;
         let cancel = CancellationToken::new();
         let connection = provider
             .test_connection(&secret, &cancel)

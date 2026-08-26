@@ -42,10 +42,12 @@ mod transaction;
 mod write;
 
 use arrow_reader::{AsyncBatchReader, BatchReader};
-use async_mysql_session::{aconnect_mariadb, aconnect_mysql, AsyncMysqlSession};
+use async_mysql_session::{
+    aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncMysqlSession,
+};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_transaction::AsyncTransaction;
-use mysql_session::{connect_mariadb, connect_mysql, MysqlSession};
+use mysql_session::{connect_mariadb, connect_mysql, connect_sqlserver, MysqlSession};
 use session::{connect, Session};
 use transaction::Transaction;
 
@@ -179,6 +181,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // compierla.
     m.add_function(wrap_pyfunction!(connect_mariadb, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mariadb, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_sqlserver, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect_sqlserver, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;

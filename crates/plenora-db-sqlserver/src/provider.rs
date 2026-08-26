@@ -371,6 +371,47 @@ impl Provider for SqlServerProvider {
         })
     }
 
+    /// Apre una transazione applicativa.
+    ///
+    /// # Perche esiste, e da quando
+    ///
+    /// Il documento capability di questo provider dichiara
+    /// `transactions.scope = Transaction`, e il contratto dice che devono
+    /// sovrascrivere questo metodo «soltanto i provider che pubblicano scope
+    /// pari a Transaction». Questo provider lo pubblicava e non lo
+    /// sovrascriveva: il default rispondeva `Unsupported`, e la capability era
+    /// una promessa che nessuno poteva mantenere.
+    ///
+    /// Nessun consumatore ci arrivava — il CLI generico non apre transazioni,
+    /// le prove live usano le primitive TDS direttamente — quindi il difetto e
+    /// rimasto invisibile finche il SDK Python non ha raggiunto questo motore.
+    /// L'ha trovato la prima riga di Python che ha provato a usarlo.
+    ///
+    /// # Errors
+    ///
+    /// Se il pool non consegna una sessione, se il server rifiuta il livello
+    /// di isolamento, o se il piano chiede la sola lettura, che su SQL Server
+    /// non ha una forma dichiarativa.
+    fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a plenora_database_core::transaction::TransactionOptions,
+        _budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            let session = pool.checkout(cancellation).await?;
+            let transaction =
+                crate::transaction::SqlServerTransaction::begin(session, options, cancellation)
+                    .await?;
+            Ok(Box::new(transaction)
+                as Box<
+                    dyn plenora_database_core::transaction::TransactionScope,
+                >)
+        })
+    }
+
     fn inspect<'a>(
         &'a self,
         secret: &'a SecretString,

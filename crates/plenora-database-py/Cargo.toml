@@ -21,6 +21,7 @@ crate-type = ["cdylib"]
 plenora-database-core.workspace = true
 plenora-db-postgres.workspace = true
 plenora-db-mysql.workspace = true
+plenora-db-sqlserver.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
 # RUSTSEC-2025-0020: fino alla 0.24.0 `PyString::from_object` passava un
