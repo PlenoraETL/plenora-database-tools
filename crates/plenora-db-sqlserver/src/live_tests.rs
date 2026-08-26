@@ -3040,6 +3040,329 @@ fn locking_spatial_operation() -> QueryOperation {
     }
 }
 
+/// La tabella che i lettori leggono mentre gli scrittori scrivono.
+const MIXED_READ: &str = "[plenora_test].[mixed_read_probe]";
+
+/// La tabella su cui gli scrittori si contendono lo stesso pool dei lettori.
+const MIXED_WRITE: &str = "[plenora_test].[mixed_write_probe]";
+
+/// Letture e scritture **insieme**, sullo stesso pool, per quanti giri si vuole.
+///
+/// # Cosa mancava
+///
+/// Le due prove di contesa scritte finora separano i carichi: dodici lettori in
+/// una, sei abbandoni nell'altra. Un pool puo sbagliare proprio dove si
+/// mescolano, e nessuna delle due poteva dirlo — una connessione che torna dal
+/// path di scrittura con la transazione non chiusa e innocua fra scrittori, che
+/// ne aprono un'altra subito, ed e velenosa per un lettore che la trova con un
+/// `BEGIN` implicito addosso.
+///
+/// Su `MySQL` e `MariaDB` questa misura c'e da qualche giorno. Qui no, ed e la
+/// stessa lacuna: non spatial, non di contratto, ma «nessuno ha mai chiesto a
+/// questo provider di fare le due cose insieme».
+///
+/// # Gli scrittori passano dalla transazione
+///
+/// Non dal path bulk, che ha gia le sue prove: dalla `TransactionScope` nata
+/// due giorni fa, che e il codice piu giovane di questo crate. Metterla sotto
+/// contesa e il modo piu economico di scoprire se regge.
+///
+/// # Perche e anche il soak
+///
+/// `PLENORA_SS_MIXED_ROUNDS` cambia il numero di giri, e nient'altro: la corsa
+/// lunga e la corsa breve sono lo **stesso codice**. Un soak che esercitasse un
+/// percorso diverso da quello del gate misurerebbe la tenuta di codice che
+/// nessuno attraversa mai.
+///
+/// Il gate ne fa pochi, perche un gate che dura ore non lo esegue nessuno.
+///
+/// # Cosa verifica
+///
+/// Le fette dei lettori hanno **lunghezze diverse**. Con fette uguali, due
+/// lettori che si scambiassero la connessione a meta stream renderebbero
+/// comunque il conteggio giusto; cosi lo scambio cambia il totale, e il
+/// conteggio diventa da solo la prova che ciascuno ha visto la propria.
+///
+/// Gli scrittori scrivono un payload che porta il **proprio** numero: il
+/// conteggio coglie una perdita, il payload coglie un'attribuzione sbagliata.
+///
+/// E alla fine il numero di sessioni utente che il **server** vede, letto da
+/// un'altra connessione: e cio che il motore sa, non cio che il pool crede.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+#[allow(clippy::too_many_lines)]
+async fn live_mixed_load_shares_one_pool_between_readers_and_writers() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use std::sync::Arc;
+
+    const READERS: i32 = 6;
+    const WRITERS: i32 = 6;
+    const BASE_SLICE: i32 = 5;
+    const ROWS_PER_WRITER: i32 = 4;
+
+    // Il gate ne fa pochi; la corsa lunga si chiede da fuori. Un valore
+    // illeggibile non fa fallire la prova per una ragione che non e il
+    // prodotto: si torna al default.
+    let rounds: i32 = std::env::var("PLENORA_SS_MIXED_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8);
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin del carico misto");
+
+    // Le fette crescono, quindi la tabella e lunga quanto la loro somma.
+    let seeded: i32 = (0..READERS).map(|reader| BASE_SLICE + reader).sum();
+    admin
+        .execute_query(
+            Query::new(format!(
+                "DROP TABLE IF EXISTS {MIXED_READ}; DROP TABLE IF EXISTS {MIXED_WRITE};"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia preventiva del carico misto");
+    admin
+        .execute_query(
+            Query::new(format!(
+                "CREATE TABLE {MIXED_READ} ([n] int NOT NULL PRIMARY KEY); \
+                 WITH numeri AS ( \
+                     SELECT 1 AS n UNION ALL SELECT n + 1 FROM numeri WHERE n < {seeded} \
+                 ) \
+                 INSERT INTO {MIXED_READ} ([n]) SELECT n FROM numeri; \
+                 CREATE TABLE {MIXED_WRITE} \
+                 ([id] int NOT NULL PRIMARY KEY, [payload] nvarchar(32) NOT NULL);"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture del carico misto");
+
+    let sessioni_prima = user_sessions(&mut admin, &cancellation).await;
+
+    // **Un** provider per tutti: e il pool condiviso a essere la domanda.
+    let provider =
+        Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider del carico misto"));
+
+    let mut letture = 0_usize;
+    let mut scritture = 0_u64;
+    for round in 0..rounds {
+        let mut tasks = Vec::new();
+        for reader in 0..READERS {
+            let provider = Arc::clone(&provider);
+            tasks.push(tokio::spawn(async move {
+                let cancellation = CancellationToken::new();
+                let budget =
+                    ResourceBudget::new(ResourceLimits::default()).expect("budget del lettore");
+                let length = BASE_SLICE + reader;
+                let first = (0..reader).map(|other| BASE_SLICE + other).sum::<i32>() + 1;
+                let parameters = ParameterBag::new(BTreeMap::from([(
+                    "first".to_owned(),
+                    ParameterValue::I32(first),
+                )]));
+                let mut stream = provider
+                    .query(
+                        &live_secret(),
+                        &mixed_slice(length),
+                        &parameters,
+                        &budget,
+                        &cancellation,
+                    )
+                    .await
+                    .expect("stream del lettore");
+                let mut seen = 0_usize;
+                while let Some(batch) = stream
+                    .next_batch(&cancellation)
+                    .await
+                    .expect("batch del lettore")
+                {
+                    seen += batch.num_rows();
+                }
+                assert_eq!(
+                    i32::try_from(seen).expect("righe"),
+                    length,
+                    "il lettore {reader} ha visto una fetta che non e la sua"
+                );
+                (seen, 0_u64)
+            }));
+        }
+        for writer in 0..WRITERS {
+            let provider = Arc::clone(&provider);
+            tasks.push(tokio::spawn(async move {
+                let cancellation = CancellationToken::new();
+                let budget =
+                    ResourceBudget::new(ResourceLimits::default()).expect("budget dello scrittore");
+                let mut transaction = provider
+                    .begin_transaction(
+                        &live_secret(),
+                        &TransactionOptions::default(),
+                        &budget,
+                        &cancellation,
+                    )
+                    .await
+                    .expect("transazione dello scrittore");
+                // Le chiavi non si ripetono fra i giri: un insert che trovasse
+                // la propria riga gia scritta fallirebbe sul primario, e la
+                // prova leggerebbe come contesa cio che e aritmetica.
+                let first = (round * WRITERS + writer) * ROWS_PER_WRITER + 1;
+                let mut written = 0_u64;
+                for id in first..first + ROWS_PER_WRITER {
+                    written += transaction
+                        .execute(
+                            &Statement {
+                                sql: format!(
+                                    "INSERT INTO {MIXED_WRITE} ([id], [payload]) VALUES (@P1, @P2)"
+                                ),
+                                params: vec![
+                                    ParameterValue::I32(id),
+                                    ParameterValue::String(format!("w{writer}-{id}")),
+                                ],
+                            },
+                            &cancellation,
+                        )
+                        .await
+                        .expect("insert dello scrittore");
+                }
+                Box::new(transaction)
+                    .commit(&cancellation)
+                    .await
+                    .expect("commit dello scrittore");
+                (0_usize, written)
+            }));
+        }
+        for task in tasks {
+            let (seen, written) = task.await.expect("worker del carico misto");
+            letture += seen;
+            scritture += written;
+        }
+    }
+
+    let attese_letture =
+        usize::try_from(seeded).expect("righe") * usize::try_from(rounds).expect("giri");
+    assert_eq!(
+        letture, attese_letture,
+        "le fette devono ricomporre la tabella"
+    );
+    let attese_scritture =
+        u64::try_from(WRITERS * ROWS_PER_WRITER * rounds).expect("righe scritte");
+    assert_eq!(
+        scritture, attese_scritture,
+        "ogni insert dichiara la sua riga"
+    );
+
+    // La rilettura da un'altra connessione: il payload di ogni riga deve
+    // nominare lo scrittore che le compete. Un'attribuzione sbagliata rende il
+    // conteggio giusto e questo confronto no.
+    let rows = admin
+        .execute_query(
+            Query::new(format!(
+                "SELECT COUNT_BIG(*) FROM {MIXED_WRITE} \
+                 WHERE [payload] <> CONCAT('w', (([id] - 1) / {ROWS_PER_WRITER}) % {WRITERS}, \
+                                           '-', [id]);"
+            )),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("attribuzioni");
+    assert_eq!(
+        rows[0][0].try_get::<i64, _>(0).unwrap(),
+        Some(0),
+        "una riga e finita sotto il nome di un altro scrittore"
+    );
+
+    drop(provider);
+    let sessioni_dopo = user_sessions(&mut admin, &cancellation).await;
+    // Il margine e il pool stesso: le sue connessioni possono essere ancora in
+    // chiusura quando il server risponde, e pretendere l'uguaglianza esatta
+    // misurerebbe la velocita con cui il sistema operativo chiude un socket
+    // invece della tenuta del pool.
+    assert!(
+        sessioni_dopo <= sessioni_prima + 5,
+        "sessioni {sessioni_prima} -> {sessioni_dopo}: il pool ne ha lasciate dietro"
+    );
+
+    admin
+        .execute_query(
+            Query::new(format!(
+                "DROP TABLE {MIXED_READ}; DROP TABLE {MIXED_WRITE};"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia del carico misto");
+}
+
+/// La fetta di un lettore: da `first` in avanti, ordinata, lunga quanto basta.
+fn mixed_slice(rows: i32) -> QueryOperation {
+    let column = QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("source".to_owned()),
+            field: "n".to_owned(),
+        },
+    };
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_test".to_owned()),
+                object: "mixed_read_probe".to_owned(),
+            },
+            alias: Some("source".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: column.clone(),
+            alias: Some("n".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column.clone()),
+            operator: plenora_database_core::plan::ComparisonOperator::Gte,
+            right: Box::new(QueryExpression::Parameter {
+                name: "first".to_owned(),
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column,
+            direction: SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(u64::try_from(rows).expect("fetta rappresentabile")),
+        row_offset: None,
+        locking: None,
+    }
+}
+
+/// Le sessioni utente che il **server** vede.
+///
+/// Non cio che il pool crede: le due divergono esattamente nel caso che questa
+/// misura cerca — una connessione che il pool ha dimenticato e che il motore
+/// tiene ancora aperta.
+async fn user_sessions(admin: &mut SqlServerSession, cancellation: &CancellationToken) -> i64 {
+    admin
+        .execute_query(
+            Query::new("SELECT COUNT_BIG(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1;"),
+            ErrorPhase::Read,
+            cancellation,
+        )
+        .await
+        .ok()
+        .and_then(|rows| rows.first()?.first()?.try_get::<i64, _>(0).ok().flatten())
+        .unwrap_or(-1)
+}
+
 /// La tabella su cui i lettori concorrenti si contendono il pool.
 const CONCURRENCY_PROBE: &str = "[plenora_test].[concurrency_probe]";
 
