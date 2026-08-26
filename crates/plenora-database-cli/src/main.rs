@@ -1,22 +1,20 @@
 #![allow(clippy::redundant_pub_crate)]
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use plenora_database_core::plan::ProviderKind;
 // `Operation` e `ObjectRef` non stanno piu dietro `postgres`: la famiglia
 // `database-*` di introspezione li costruisce per qualunque provider compilato,
 // ed e sempre presente come `database-probe`.
-use plenora_database_core::plan::{ObjectRef, Operation};
+use plenora_database_core::plan::{ObjectRef, Operation, ReadOperation, WriteOperation};
 #[cfg(feature = "postgres")]
 use plenora_database_core::plan::{OrderBy, SortDirection};
+use plenora_database_core::query::QueryOperation;
 // Il percorso `postgres-read-ipc` e l'unico che pianifica una lettura e ne
 // misura il budget: fuori dalla feature questo nome non ha un chiamante.
-#[cfg(feature = "postgres")]
-use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{Provider, SecretString};
 // Lo streaming a batch esce solo dal percorso IPC.
-#[cfg(feature = "postgres")]
 use plenora_database_core::provider::BatchStream;
-#[cfg(feature = "postgres")]
 use plenora_database_core::provider::ParameterBag;
 // Il budget non appartiene al percorso IPC: anche i comandi `database-*`
 // comuni aprono transazioni per qualunque provider compilato. Tenerlo dietro
@@ -35,19 +33,19 @@ use plenora_db_mysql::{MariadbProvider, MysqlConfig, MysqlProvider};
 use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
 #[cfg(feature = "sqlserver")]
 use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 use rustls::{pki_types::CertificateDer, RootCertStore};
 use serde_json::json;
 use std::env;
-#[cfg(feature = "postgres")]
 use std::fs::OpenOptions;
 use std::fs::{self, File};
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 use std::io::{Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
-#[cfg(feature = "postgres")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(feature = "postgres")]
 use arrow_ipc::writer::FileWriter;
 
 #[tokio::main]
@@ -188,15 +186,12 @@ pub(crate) fn require_committed(outcome: &CommitOutcome) -> CliResult<()> {
 
 pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
-#[cfg(feature = "postgres")]
 static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(feature = "postgres")]
 const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
-#[cfg(feature = "postgres")]
 const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-#[cfg(feature = "postgres")]
 const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 const TLS_MATERIAL_MAX_BYTES: u64 = 1024 * 1024;
 
 #[cfg(feature = "postgres")]
@@ -284,6 +279,11 @@ async fn run() -> CliResult<()> {
         "database-probe" => database_probe(&mut args).await,
         "database-execute-sql" => database_execute_sql(&mut args).await,
         "database-execute-scalar" => database_execute_scalar(&mut args).await,
+        "database-execute-ddl" => database_execute_ddl(&mut args).await,
+        "database-query-summary" => database_query_summary(&mut args).await,
+        "database-read-summary" => database_read(&mut args, None).await,
+        "database-read-ipc" => database_read_ipc(&mut args).await,
+        "database-write-ipc" => database_write_ipc(&mut args).await,
         "database-inspect-catalogs" => database_inspect(&mut args, list_catalogs_source).await,
         "database-inspect-schemas" => database_inspect(&mut args, list_schemas_source).await,
         "database-inspect-objects" => database_inspect(&mut args, list_objects_source).await,
@@ -681,7 +681,14 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
             &cancellation,
         )
         .await
-        .map(|rows| json!({"rows": rows.len()}))
+        .map(|rows| {
+            let count = rows.len();
+            let rows = rows
+                .iter()
+                .map(|row| json!({"columns": row.columns(), "values": row.values()}))
+                .collect::<Vec<_>>();
+            json!({"rows": rows, "count": count})
+        })
     } else {
         plenora_database_core::facade::execute_portable(
             transaction.as_mut(),
@@ -774,12 +781,240 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
             return Err(error.into());
         }
     };
-    transaction.commit(&cancellation).await?;
+    let commit = transaction.commit(&cancellation).await?;
     print_json(&json!({
         "provider": kind,
-        "status": "ok",
+        "status": commit_status(&commit),
         "value": value,
+        "commit": commit,
+    }))?;
+    commit_exit(&commit)
+}
+
+/// Esegue DDL attraverso il bordo comune del provider, fuori transazione.
+async fn database_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let sql = args
+        .next()
+        .ok_or_else(|| "manca lo statement DDL".to_owned())?;
+    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    provider
+        .execute_ddl(&secret, &sql, &CancellationToken::new())
+        .await?;
+    print_json(&json!({"provider": kind, "status": "ok"}))
+}
+
+fn read_parameters(path: &str) -> CliResult<ParameterBag> {
+    if path == "-" {
+        return Ok(ParameterBag::default());
+    }
+    let contents = fs::read(path).map_err(|_| "PARAMETERS.json non leggibile".to_owned())?;
+    serde_json::from_slice(&contents).map_err(|error| {
+        format!(
+            "PARAMETERS.json non parsabile a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        )
+        .into()
+    })
+}
+
+fn stream_fields(stream: &dyn BatchStream) -> Vec<serde_json::Value> {
+    stream
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field.name(),
+                "data_type": field.data_type().to_string(),
+                "nullable": field.is_nullable(),
+                "metadata": field.metadata(),
+            })
+        })
+        .collect()
+}
+
+async fn consume_summary(
+    kind: ProviderKind,
+    stream: &mut dyn BatchStream,
+    cancellation: &CancellationToken,
+) -> CliResult<()> {
+    let fields = stream_fields(stream);
+    let mut batches = 0_u64;
+    let mut rows = 0_u64;
+    while let Some(batch) = stream.next_batch(cancellation).await? {
+        batches = batches
+            .checked_add(1)
+            .ok_or_else(|| CliError::from("conteggio batch oltre u64"))?;
+        rows = rows
+            .checked_add(
+                u64::try_from(batch.num_rows())
+                    .map_err(|_| CliError::from("conteggio righe oltre u64"))?,
+            )
+            .ok_or_else(|| CliError::from("conteggio righe oltre u64"))?;
+    }
+    print_json(&json!({
+        "schema_version": 1,
+        "status": "ok",
+        "provider": kind,
+        "batches": batches,
+        "rows": rows,
+        "fields": fields,
     }))
+}
+
+/// Esegue un `QueryOperation` serializzato e rende uno summary bounded.
+async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let query_path = args
+        .next()
+        .ok_or_else(|| "manca il percorso QUERY.json".to_owned())?;
+    let parameters_path = args
+        .next()
+        .ok_or_else(|| "manca PARAMETERS.json (usa - per nessun parametro)".to_owned())?;
+    let query_contents = fs::read(query_path).map_err(|_| "QUERY.json non leggibile".to_owned())?;
+    let operation: QueryOperation = serde_json::from_slice(&query_contents).map_err(|error| {
+        format!(
+            "QUERY.json non parsabile a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    let parameters = read_parameters(&parameters_path)?;
+    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let cancellation = CancellationToken::new();
+    let mut stream = provider
+        .query(&secret, &operation, &parameters, &budget, &cancellation)
+        .await?;
+    consume_summary(kind, stream.as_mut(), &cancellation).await
+}
+
+async fn database_read(
+    args: &mut impl Iterator<Item = String>,
+    output: Option<String>,
+) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let read_path = args
+        .next()
+        .ok_or_else(|| "manca il percorso READ.json".to_owned())?;
+    let parameters_path = args
+        .next()
+        .ok_or_else(|| "manca PARAMETERS.json (usa - per nessun parametro)".to_owned())?;
+    let contents = fs::read(read_path).map_err(|_| "READ.json non leggibile".to_owned())?;
+    let operation: ReadOperation = serde_json::from_slice(&contents).map_err(|error| {
+        format!(
+            "READ.json non parsabile a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    let parameters = read_parameters(&parameters_path)?;
+    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: IPC_DEFAULT_MAX_ROWS,
+        output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
+        duration_ms: IPC_DEFAULT_TIMEOUT_MS,
+        ..ResourceLimits::default()
+    })?;
+    let cancellation = CancellationToken::new();
+    let mut stream = provider
+        .read(&secret, &operation, &parameters, &budget, &cancellation)
+        .await?;
+    if let Some(path) = output {
+        let mut report =
+            write_stream_to_ipc(Path::new(&path), stream.as_mut(), &cancellation).await?;
+        let document = report
+            .as_object_mut()
+            .ok_or_else(|| CliError::from("report Arrow IPC non valido"))?;
+        document.insert("provider".to_owned(), json!(kind));
+        document.insert(
+            "row_order".to_owned(),
+            json!(if operation.order_by.is_empty() {
+                "unspecified"
+            } else {
+                "deterministic"
+            }),
+        );
+        return print_json(&report);
+    }
+    consume_summary(kind, stream.as_mut(), &cancellation).await
+}
+
+async fn database_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let collected = args.by_ref().collect::<Vec<_>>();
+    if collected.len() < 5 {
+        return Err(
+            "database-read-ipc richiede provider, secret, READ.json, PARAMETERS.json e output"
+                .into(),
+        );
+    }
+    let output = collected[4].clone();
+    let mut forwarded = collected
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, value)| (index != 4).then_some(value));
+    database_read(&mut forwarded, Some(output)).await
+}
+
+/// Scrive un file Arrow IPC tramite il contratto `prepare_write` + `write`.
+async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let operation_path = args
+        .next()
+        .ok_or_else(|| "manca il percorso WRITE.json".to_owned())?;
+    let input_path = args
+        .next()
+        .ok_or_else(|| "manca il percorso INPUT.arrow".to_owned())?;
+    let contents = fs::read(operation_path).map_err(|_| "WRITE.json non leggibile".to_owned())?;
+    let operation: WriteOperation = serde_json::from_slice(&contents).map_err(|error| {
+        format!(
+            "WRITE.json non parsabile a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let stream = ipc_input::IpcFileBatchStream::open(&input_path)?;
+    let input_schema = stream.schema();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let cancellation = CancellationToken::new();
+    let prepared = provider
+        .prepare_write(&secret, &operation, input_schema, &budget, &cancellation)
+        .await?;
+    let outcome = provider
+        .write(&secret, prepared, Box::new(stream), &budget, &cancellation)
+        .await?;
+    print_json(&serde_json::to_value(outcome).map_err(|_| "outcome non serializzabile".to_owned())?)
 }
 
 /// Un'introspezione qualunque, sul provider nominato dal primo argomento.
@@ -1145,7 +1380,6 @@ fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
     Ok(parsed)
 }
 
-#[cfg(feature = "postgres")]
 async fn write_stream_to_ipc(
     output: &Path,
     stream: &mut dyn BatchStream,
@@ -1246,7 +1480,6 @@ async fn write_stream_to_ipc(
     }))
 }
 
-#[cfg(feature = "postgres")]
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> bool {
     File::open(parent)
@@ -1254,7 +1487,6 @@ fn sync_parent_directory(parent: &Path) -> bool {
         .is_ok()
 }
 
-#[cfg(feature = "postgres")]
 #[cfg(windows)]
 fn sync_parent_directory(parent: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
@@ -1268,7 +1500,6 @@ fn sync_parent_directory(parent: &Path) -> bool {
         .is_ok()
 }
 
-#[cfg(feature = "postgres")]
 fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)> {
     for _ in 0..100 {
         let sequence = IPC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1306,7 +1537,6 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
     ))
 }
 
-#[cfg(feature = "postgres")]
 async fn write_ipc_batches(
     file: &mut File,
     stream: &mut dyn BatchStream,
@@ -1385,7 +1615,6 @@ async fn write_ipc_batches(
     Ok((batches, rows))
 }
 
-#[cfg(feature = "postgres")]
 fn local_artifact_error(
     category: ErrorCategory,
     phase: ErrorPhase,
@@ -1437,6 +1666,7 @@ fn parse_provider_kind(value: &str) -> CliResult<ProviderKind> {
     }
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TlsPathEnvironments {
     ca: Option<String>,
@@ -1496,6 +1726,7 @@ enum PreparedProviderArguments {
     Sqlserver(SqlServerConfig),
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 fn parse_tls_path_environments(
     args: &mut impl Iterator<Item = String>,
 ) -> CliResult<TlsPathEnvironments> {
@@ -1525,10 +1756,16 @@ fn parse_tls_path_environments(
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    allow(clippy::needless_pass_by_ref_mut)
+)]
 fn parse_provider_arguments(
     kind: ProviderKind,
     args: &mut impl Iterator<Item = String>,
 ) -> CliResult<ProviderArguments> {
+    #[cfg(not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")))]
+    let _ = args;
     match kind {
         #[cfg(feature = "postgres")]
         ProviderKind::Postgres => {
@@ -1617,6 +1854,10 @@ fn build_provider(
     build_provider_from_prepared_arguments(provider_arguments, secret)
 }
 
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    allow(clippy::missing_const_for_fn, clippy::needless_pass_by_value)
+)]
 fn prepare_provider_arguments(
     arguments: ProviderArguments,
 ) -> CliResult<PreparedProviderArguments> {
@@ -1711,6 +1952,10 @@ fn mysql_family_config(
         reason = "senza altri adapter resta un solo ramo, e non puo fallire"
     )
 )]
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    allow(clippy::needless_pass_by_value)
+)]
 fn build_provider_from_prepared_arguments(
     arguments: PreparedProviderArguments,
     #[cfg_attr(
@@ -1741,6 +1986,7 @@ fn build_provider_from_prepared_arguments(
     }
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 fn tls_path_from_environment(env_name: Option<&str>) -> CliResult<Option<PathBuf>> {
     env_name
         .map(|name| {
@@ -1752,6 +1998,7 @@ fn tls_path_from_environment(env_name: Option<&str>) -> CliResult<Option<PathBuf
         .transpose()
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
     let file = File::open(path).map_err(|_| CliError::from("materiale TLS non leggibile"))?;
     let metadata = file
@@ -1817,6 +2064,7 @@ pub(crate) fn optional_private_ca_material(env_name: &str) -> CliResult<Option<V
     )?))
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u8>>> {
     let Some(path) = tls_path_from_environment(env_name)? else {
         return Ok(None);
@@ -1827,6 +2075,7 @@ fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u
     )?))
 }
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> CliResult<Vec<u8>> {
     let extension = path
         .extension()
@@ -1959,12 +2208,17 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 /// `--features mysql` basta.
 const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     ("database-describe", None),
+    ("database-execute-ddl", None),
     ("database-execute-scalar", None),
     ("database-execute-sql", None),
     ("database-inspect-catalogs", None),
     ("database-inspect-objects", None),
     ("database-inspect-schemas", None),
+    ("database-query-summary", None),
+    ("database-read-ipc", None),
+    ("database-read-summary", None),
     ("database-probe", None),
+    ("database-write-ipc", None),
     ("inspect-dataset", None),
     ("validate-plan", None),
     ("benchmark-oltp", Some("postgres")),
@@ -2116,6 +2370,11 @@ fn common_usage() -> String {
         "  database-execute-sql <provider> <secret-env> <sql> [--allow-raw] [args provider]"
             .to_owned(),
         "  database-execute-scalar <provider> <secret-env> <sql> [args provider]".to_owned(),
+        "  database-execute-ddl <provider> <secret-env> <sql> [args provider]".to_owned(),
+        "  database-query-summary <provider> <secret-env> <QUERY.json> <PARAMETERS.json|-> [args provider]".to_owned(),
+        "  database-read-summary <provider> <secret-env> <READ.json> <PARAMETERS.json|-> [args provider]".to_owned(),
+        "  database-read-ipc <provider> <secret-env> <READ.json> <PARAMETERS.json|-> <OUTPUT.arrow> [args provider]".to_owned(),
+        "  database-write-ipc <provider> <secret-env> <WRITE.json> <INPUT.arrow> [args provider]".to_owned(),
         "  database-inspect-catalogs <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-schemas <provider> <secret-env> [args provider]".to_owned(),
         "  database-inspect-objects <provider> <secret-env> <schema> [args provider]".to_owned(),
@@ -2437,6 +2696,7 @@ mod format;
 #[cfg(feature = "postgres")]
 mod inspect;
 mod inspect_dataset;
+mod ipc_input;
 mod mysql_cmd;
 #[cfg(feature = "postgres")]
 mod ops_cmd;

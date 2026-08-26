@@ -288,6 +288,10 @@ class _DatabaseSessionWrapper:
         return self._native.server_version
 
     @property
+    def capabilities(self) -> dict:
+        return self._native.capabilities
+
+    @property
     def is_closed(self) -> bool:
         return self._native.is_closed
 
@@ -315,6 +319,10 @@ class _DatabaseSessionWrapper:
 
     def execute_ddl(self, sql):
         return self._native.execute_ddl(sql)
+
+    @property
+    def inspect(self) -> "_DatabaseInspector":
+        return _DatabaseInspector(self._native)
 
     def begin(
         self,
@@ -455,6 +463,25 @@ class _DatabaseSessionWrapper:
         )
 
 
+class _DatabaseInspector:
+    __slots__ = ("_native",)
+
+    def __init__(self, native: DatabaseSession) -> None:
+        self._native = native
+
+    def catalogs(self) -> list[str]:
+        return self._native.inspect_catalogs()
+
+    def schemas(self) -> list[str]:
+        return self._native.inspect_schemas()
+
+    def tables(self, schema: str) -> list[dict]:
+        return self._native.inspect_tables(schema)
+
+    def describe(self, schema: str, table: str) -> dict:
+        return self._native.inspect_describe(schema, table)
+
+
 async def aconnect_mysql(
     host: str,
     database: str,
@@ -549,6 +576,10 @@ class _AsyncDatabaseSessionWrapper:
         return self._native.server_version
 
     @property
+    def capabilities(self) -> dict:
+        return self._native.capabilities
+
+    @property
     def is_closed(self) -> bool:
         return self._native.is_closed
 
@@ -577,6 +608,10 @@ class _AsyncDatabaseSessionWrapper:
 
     async def execute_ddl(self, sql):
         return await self._native.execute_ddl(sql)
+
+    @property
+    def inspect(self) -> "_AsyncDatabaseInspector":
+        return _AsyncDatabaseInspector(self._native)
 
     async def begin(
         self,
@@ -662,6 +697,25 @@ class _AsyncDatabaseSessionWrapper:
 
     async def _execute_portable_count(self, ast_json: str) -> int:
         return await self._native.execute_portable_count(ast_json)
+
+
+class _AsyncDatabaseInspector:
+    __slots__ = ("_native",)
+
+    def __init__(self, native: AsyncDatabaseSession) -> None:
+        self._native = native
+
+    async def catalogs(self) -> list[str]:
+        return await self._native.inspect_catalogs()
+
+    async def schemas(self) -> list[str]:
+        return await self._native.inspect_schemas()
+
+    async def tables(self, schema: str) -> list[dict]:
+        return await self._native.inspect_tables(schema)
+
+    async def describe(self, schema: str, table: str) -> dict:
+        return await self._native.inspect_describe(schema, table)
 
 
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:

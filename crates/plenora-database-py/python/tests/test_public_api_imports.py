@@ -56,6 +56,19 @@ def _module_all(path: Path) -> set[str]:
     return set()
 
 
+def _class_members(path: Path, class_name: str) -> set[str]:
+    """Nomi dichiarati da una classe in uno stub, senza importare il nativo."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                item.name
+                for item in node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    raise AssertionError(f"classe {class_name} assente in {path.name}")
+
+
 def test_errors_reexports_commit_outcome_unknown() -> None:
     """errors.py deve esporre PlenoraCommitOutcomeUnknownError.
 
@@ -80,6 +93,27 @@ def test_init_and_errors_are_consistent() -> None:
     assert not missing, (
         f"Errore names in __init__.__all__ ma non in errors.__all__: {sorted(missing)}"
     )
+
+
+def test_native_stub_matches_the_common_sync_and_async_session_surface() -> None:
+    """La parita pubblica non deve dipendere dal motore o dalla forma async."""
+    stub = PACKAGE_DIR / "_native.pyi"
+    common = {
+        "capabilities",
+        "execute_ddl",
+        "inspect_catalogs",
+        "inspect_schemas",
+        "inspect_tables",
+        "inspect_describe",
+    }
+    for class_name in ("Session", "DatabaseSession", "AsyncSession", "AsyncDatabaseSession"):
+        members = _class_members(stub, class_name)
+        assert common <= members, f"{class_name}: mancano {sorted(common - members)}"
+
+    async_family = _class_members(stub, "AsyncDatabaseSession")
+    assert "read" not in async_family
+    assert "copy_from" not in async_family
+    assert {"aread", "acopy_from"} <= async_family
 
 
 def _native_importable() -> bool:

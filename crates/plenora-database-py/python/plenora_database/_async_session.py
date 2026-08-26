@@ -48,6 +48,11 @@ class AsyncSession:
         return self._native.server_version
 
     @property
+    def capabilities(self) -> dict:
+        """Capability effettivamente sondate per questa connessione."""
+        return self._native.capabilities
+
+    @property
     def postgis_version(self) -> str | None:
         return self._native.postgis_version
 
@@ -82,6 +87,13 @@ class AsyncSession:
         self, sql: str, params: list | None = None
     ) -> list[dict]:
         return await self._native.execute_returning_rows(sql, params)
+
+    async def execute_ddl(self, sql: str) -> None:
+        return await self._native.execute_ddl(sql)
+
+    @property
+    def inspect(self) -> "_AsyncInspector":
+        return _AsyncInspector(self._native)
 
     # ------------------------ Arrow batch read -------------------------
 
@@ -198,3 +210,22 @@ class AsyncSession:
 
     async def _execute_portable_count(self, ast_json: str) -> int:
         return await self._native.execute_portable_count(ast_json)
+
+
+class _AsyncInspector:
+    __slots__ = ("_native",)
+
+    def __init__(self, native: "_NativeAsyncSession") -> None:
+        self._native = native
+
+    async def catalogs(self) -> list[str]:
+        return await self._native.inspect_catalogs()
+
+    async def schemas(self) -> list[str]:
+        return await self._native.inspect_schemas()
+
+    async def tables(self, schema: str) -> list[dict]:
+        return await self._native.inspect_tables(schema)
+
+    async def describe(self, schema: str, table: str) -> dict:
+        return await self._native.inspect_describe(schema, table)

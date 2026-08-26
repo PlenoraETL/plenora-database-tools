@@ -11,14 +11,12 @@ e il rischio di due copie e sempre lo stesso: una correzione applicata a una
 sola, e da quel giorno i due percorsi rispondono in modo diverso alla stessa
 domanda.
 
-# Cosa aveva gia prodotto
+# Cosa aveva prodotto prima della guardia
 
-Non un difetto, ma un'asimmetria che nessuno aveva deciso. `execute_ddl`
-esisteva sulla famiglia e non su PostgreSQL, che pure lo implementa. I quattro
-`inspect_*` esistevano su PostgreSQL e non sulla famiglia, benche passino da
-`Provider::inspect` — che sta nel trait, quindi funziona per tutti e quattro. Il
-CLI offriva l'ispezione del catalogo a tutti e quattro da tempo; il SDK a uno
-solo.
+Non un limite di prodotto, ma un'asimmetria che nessuno aveva deciso:
+`execute_ddl` esisteva sulla famiglia e non su PostgreSQL, mentre i quattro
+`inspect_*` esistevano su PostgreSQL e non sulla famiglia. La guardia li ha
+resi comuni e ora impedisce che una delle due copie torni a divergere.
 
 Nessuna delle due mancanze aveva una ragione scritta: erano dove il codice era
 arrivato, non dove qualcuno l'aveva mandato.

@@ -74,6 +74,16 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `returning` | `false` | `false` | `false` | `false` |
 | `rollback_on_failure` | `true` | `true` | `true` | `true` |
 
+### `transactions`
+
+| transactions | PostgreSQL | MySQL | MariaDB | SQL Server |
+| --- | --- | --- | --- | --- |
+| `single_transaction` | `true` | `true` | `true` | `true` |
+| `savepoints` | `true` | `true` | `true` | `true` |
+| `transactional_ddl` | `true` | `false` | `false` | `true` |
+| `staged_swap` | `true` | `false` | `false` | `true` |
+| `scope` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` |
+
 ## Sub-comandi del CLI
 
 Dal catalogo che il binario espone. La feature e quella che li
@@ -90,6 +100,7 @@ l'aiuto.
 | `bulk-write` | `postgres` |
 | `conditional-update` | `postgres` |
 | `database-describe` | `sempre` |
+| `database-execute-ddl` | `sempre` |
 | `database-execute-scalar` | `sempre` |
 | `database-execute-sql` | `sempre` |
 | `database-inspect-catalogs` | `sempre` |
@@ -97,6 +108,10 @@ l'aiuto.
 | `database-inspect-schemas` | `sempre` |
 | `database-portable-execute` | `sempre` |
 | `database-probe` | `sempre` |
+| `database-query-summary` | `sempre` |
+| `database-read-ipc` | `sempre` |
+| `database-read-summary` | `sempre` |
+| `database-write-ipc` | `sempre` |
 | `diagnose` | `postgres` |
 | `doctor` | `postgres` |
 | `execute-ddl` | `postgres` |

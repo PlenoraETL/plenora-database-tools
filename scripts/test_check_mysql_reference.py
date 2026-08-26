@@ -1497,12 +1497,18 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             self.assertIn(entry.exact_version, document)
 
 
-# Le credenziali che i compose dichiarano per i due riferimenti che la suite
+# Le credenziali che i compose dichiarano per i quattro riferimenti che la suite
 # SDK interroga. Sono esattamente quelle che il runner deve **chiedere ai
 # container**, e quelle che non deve contenere.
 SDK_FIXTURE_VARIABLES = {
     "dataflow-postgres": ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"),
     "dataflow-mysql": ("MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"),
+    "dataflow-mariadb": ("MARIADB_USER", "MARIADB_PASSWORD", "MARIADB_DATABASE"),
+    "dataflow-sqlserver": (
+        "PLENORA_TEST_USER",
+        "MSSQL_SA_PASSWORD",
+        "PLENORA_TEST_DATABASE",
+    ),
 }
 
 
@@ -1675,11 +1681,13 @@ class PythonSdkRunnerTests(unittest.TestCase):
         values = compose_declarations(
             "POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB"
             "|MYSQL_USER|MYSQL_PASSWORD|MYSQL_DATABASE"
+            "|MARIADB_USER|MARIADB_PASSWORD|MARIADB_DATABASE"
+            "|PLENORA_TEST_USER|MSSQL_SA_PASSWORD|PLENORA_TEST_DATABASE"
         )
         # Senza questa riga la guardia passerebbe anche a mani vuote: un
         # compose rinominato, e il ciclo sotto non gira nemmeno una volta.
         self.assertGreaterEqual(
-            len(values), 6, "i compose non dichiarano piu le credenziali attese"
+            len(values), 12, "i compose non dichiarano piu le credenziali attese"
         )
         for value in values:
             self.assertNotIn(
@@ -1710,6 +1718,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertIn("dbname=<POSTGRES_DB>", joined)
         self.assertIn("PLENORA_TEST_MYSQL_PASSWORD=<MYSQL_PASSWORD>", joined)
         self.assertIn("PLENORA_TEST_MYSQL_DATABASE=<MYSQL_DATABASE>", joined)
+        self.assertIn("PLENORA_TEST_MARIADB_PASSWORD=<MARIADB_PASSWORD>", joined)
+        self.assertIn("PLENORA_TEST_SQLSERVER_USER=<PLENORA_TEST_USER>", joined)
 
     def test_the_offline_scope_asks_the_references_nothing(self) -> None:
         """Senza server non si chiedono ne reti ne credenziali."""
@@ -2243,11 +2253,11 @@ class PythonSdkRunnerTests(unittest.TestCase):
         ereditare un default che puo cambiare senza che nessuno se ne accorga.
         """
 
-        self.assertEqual(sdk.CLI_FEATURES, ("postgres",))
+        self.assertEqual(sdk.CLI_FEATURES, ("postgres", "mysql", "sqlserver"))
         self.assertEqual(
             sdk.CLI_BUILD_COMMAND,
             "cargo build --release --locked -p plenora-database-cli "
-            "--no-default-features --features postgres",
+            "--no-default-features --features postgres,mysql,sqlserver",
         )
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
@@ -2422,13 +2432,13 @@ class PythonSdkRunnerTests(unittest.TestCase):
         offline = sdk.SCOPE_CONTRACTS["offline"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (219, 0, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (228, 0, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (24, 195, 0)
+            (offline.passed, offline.skipped, offline.deselected), (25, 203, 0)
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 217),
+            (2, 0, 226),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # offline salta cio che live esegue, e nessuno dei due deseleziona.
@@ -2513,7 +2523,14 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         contract = sdk.SCOPE_CONTRACTS["offline"]
         self.assertEqual(
-            set(contract.skips), {sdk.POSTGRES_SKIP, sdk.MYSQL_SKIP, sdk.BENCH_SKIP}
+            set(contract.skips),
+            {
+                sdk.POSTGRES_SKIP,
+                sdk.MYSQL_SKIP,
+                sdk.MARIADB_SKIP,
+                sdk.SQLSERVER_SKIP,
+                sdk.BENCH_SKIP,
+            },
         )
 
         substituted = dict(contract.skips)

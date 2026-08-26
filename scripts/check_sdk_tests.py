@@ -39,7 +39,7 @@ e un rapporto.
 
 Uso:
 
-    python scripts/check_sdk_tests.py                  # Postgres + MySQL
+    python scripts/check_sdk_tests.py                  # tutti i quattro provider
     python scripts/check_sdk_tests.py --offline        # solo test senza server
     python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
     python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
@@ -54,7 +54,7 @@ pip confrontati con il `pip freeze` di chi li ha installati. Chiamarlo
 ambiente, che nessuna di queste misure garantisce.
 
 Reti, volumi e credenziali non sono scritti a mano: si chiedono a Docker con
-gli stessi helper dei tre gate di riferimento. Una password ricopiata qui
+gli stessi helper dei gate di riferimento. Una password ricopiata qui
 sarebbe una seconda fonte per un dato che ne ha una sola, il compose.
 """
 
@@ -120,13 +120,13 @@ SITE_PACKAGES = "/site-packages/"
 # sa il commit — e il rapporto fra i due tempi metteva insieme due codici
 # diversi.
 #
-# Le feature sono esplicite in entrambe le direzioni: il bench chiama solo
-# `execute-scalar` su Postgres, e `--no-default-features` fa si che il
-# verdetto dichiari cio che c'e dentro invece di ereditare un default che puo
-# cambiare senza che nessuno se ne accorga.
+# Le feature sono esplicite in entrambe le direzioni: oltre al bench Postgres,
+# la suite attraversa la superficie CLI comune sui quattro provider. Il
+# verdetto dichiara quindi tutti gli adapter presenti nell'artefatto invece di
+# ereditare un default che puo cambiare senza che nessuno se ne accorga.
 CLI_PACKAGE = "plenora-database-cli"
 CLI_BINARY_NAME = "plenora-database"
-CLI_FEATURES = ("postgres",)
+CLI_FEATURES = ("postgres", "mysql", "sqlserver")
 CLI_BUILD_COMMAND = " ".join(
     [
         "cargo", "build", "--release", "--locked",
@@ -137,6 +137,8 @@ CLI_BUILD_COMMAND = " ".join(
 
 POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
+MARIADB_CONTAINER = "dataflow-mariadb"
+SQLSERVER_CONTAINER = "dataflow-sqlserver"
 POSTGRES_PORT = 5432
 
 
@@ -144,9 +146,9 @@ POSTGRES_PORT = 5432
 class ScopeContract:
     """Quanti test deve aver eseguito uno scope, e quali puo aver saltato.
 
-    Un conteggio di soli `passed` non descrive una corsa: gli stessi 24
-    `passed` escono da una suite che ne salta 195 e da una che ne deseleziona
-    195, e le due dicono cose diverse. `skips` va oltre il totale — associa a
+    Un conteggio di soli `passed` non descrive una corsa: lo stesso numero puo
+    uscire da una suite che salta il resto e da una che lo deseleziona, e le
+    due dicono cose diverse. `skips` va oltre il totale — associa a
     ogni motivo quante volte deve comparire — perche un totale coincidente e
     esattamente cio che rende invisibile una sostituzione: uno skip nuovo che
     ne rimpiazza uno atteso lascia il numero fermo.
@@ -170,6 +172,14 @@ MYSQL_SKIP = (
     "live test MySQL: mancano env PLENORA_TEST_MYSQL_HOST "
     "e/o PLENORA_TEST_MYSQL_PASSWORD"
 )
+MARIADB_SKIP = (
+    "live test MariaDB: mancano env PLENORA_TEST_MARIADB_HOST "
+    "e/o PLENORA_TEST_MARIADB_PASSWORD"
+)
+SQLSERVER_SKIP = (
+    "live test SQL Server: mancano env PLENORA_TEST_SQLSERVER_HOST "
+    "e/o PLENORA_TEST_SQLSERVER_PASSWORD"
+)
 BENCH_SKIP = (
     "bench opt-in: setta PLENORA_BENCH_PARITY=1 per lanciarlo "
     "(atteso ~10s di walltime per la sessione)"
@@ -179,13 +189,19 @@ BENCH_SKIP = (
 # la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
 # "passed" da solo cresce senza dire di cosa.
 SCOPE_CONTRACTS = {
-    "live": ScopeContract(passed=219, deselected=0, skips={}),
+    "live": ScopeContract(passed=228, deselected=0, skips={}),
     "offline": ScopeContract(
-        passed=24,
+        passed=25,
         deselected=0,
-        skips={POSTGRES_SKIP: 164, MYSQL_SKIP: 29, BENCH_SKIP: 2},
+        skips={
+            POSTGRES_SKIP: 165,
+            MYSQL_SKIP: 30,
+            MARIADB_SKIP: 3,
+            SQLSERVER_SKIP: 3,
+            BENCH_SKIP: 2,
+        },
     ),
-    "benchmark": ScopeContract(passed=2, deselected=217, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=226, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -732,6 +748,9 @@ def live_environment(*, cli: str) -> list[str]:
     postgres_user = container_variable(POSTGRES_CONTAINER, "POSTGRES_USER")
     postgres_password = container_variable(POSTGRES_CONTAINER, "POSTGRES_PASSWORD")
     postgres_database = container_variable(POSTGRES_CONTAINER, "POSTGRES_DB")
+    sqlserver_database = container_variable(SQLSERVER_CONTAINER, "PLENORA_TEST_DATABASE")
+    sqlserver_user = container_variable(SQLSERVER_CONTAINER, "PLENORA_TEST_USER")
+    sqlserver_password = container_variable(SQLSERVER_CONTAINER, "MSSQL_SA_PASSWORD")
     dsn = (
         f"host={POSTGRES_CONTAINER} port={POSTGRES_PORT} user={postgres_user} "
         f"password={postgres_password} dbname={postgres_database}"
@@ -749,6 +768,23 @@ def live_environment(*, cli: str) -> list[str]:
         f"PLENORA_TEST_MYSQL_PASSWORD="
         f"{container_variable(MYSQL_CONTAINER, 'MYSQL_PASSWORD')}",
         "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
+        "-e", f"PLENORA_TEST_MARIADB_HOST={MARIADB_CONTAINER}",
+        "-e",
+        f"PLENORA_TEST_MARIADB_DATABASE="
+        f"{container_variable(MARIADB_CONTAINER, 'MARIADB_DATABASE')}",
+        "-e",
+        f"PLENORA_TEST_MARIADB_USER="
+        f"{container_variable(MARIADB_CONTAINER, 'MARIADB_USER')}",
+        "-e",
+        f"PLENORA_TEST_MARIADB_PASSWORD="
+        f"{container_variable(MARIADB_CONTAINER, 'MARIADB_PASSWORD')}",
+        "-e", "PLENORA_TEST_MARIADB_CA=/mariadb-tls/ca.pem",
+        "-e", f"PLENORA_TEST_SQLSERVER_HOST={SQLSERVER_CONTAINER}",
+        "-e", f"PLENORA_TEST_SQLSERVER_DATABASE={sqlserver_database}",
+        "-e", f"PLENORA_TEST_SQLSERVER_USER={sqlserver_user}",
+        "-e",
+        f"PLENORA_TEST_SQLSERVER_PASSWORD={sqlserver_password}",
+        "-e", "PLENORA_TEST_SQLSERVER_CA=/sqlserver-tls/ca.pem",
         "-e", "PLENORA_BENCH_PARITY=1",
         "-e", f"PLENORA_CLI_BIN={cli}",
     ]
@@ -840,9 +876,20 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     selection = ["tests"]
 
     if scope != "offline":
-        command += compose_network_arguments(POSTGRES_CONTAINER, MYSQL_CONTAINER)
-        tls_volume = compose_volume(MYSQL_CONTAINER, "/etc/mysql/tls")
-        command += ["-v", f"{tls_volume}:/mysql-tls:ro"]
+        command += compose_network_arguments(
+            POSTGRES_CONTAINER,
+            MYSQL_CONTAINER,
+            MARIADB_CONTAINER,
+            SQLSERVER_CONTAINER,
+        )
+        mysql_tls = compose_volume(MYSQL_CONTAINER, "/etc/mysql/tls")
+        mariadb_tls = compose_volume(MARIADB_CONTAINER, "/etc/mysql/tls")
+        sqlserver_tls = compose_volume(SQLSERVER_CONTAINER, "/var/opt/mssql/tls")
+        command += [
+            "-v", f"{mysql_tls}:/mysql-tls:ro",
+            "-v", f"{mariadb_tls}:/mariadb-tls:ro",
+            "-v", f"{sqlserver_tls}:/sqlserver-tls:ro",
+        ]
         environment = live_environment(cli=cli_binary_path())
     if scope == "benchmark":
         selection += ["-k", "benchmark"]
@@ -1128,7 +1175,7 @@ def preconditions() -> None:
     `Cargo.toml`, `Cargo.lock` e il changelog, e il pin di maturin deve stare
     dentro i limiti che il crate dichiara. Sono controlli su file, non su
     server: stanno prima di Docker perche scoprirli dopo costa la build di due
-    artefatti e l'accensione di due riferimenti.
+    artefatti e l'accensione dei riferimenti.
 
     # Raises
 

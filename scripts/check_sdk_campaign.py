@@ -3,7 +3,7 @@
 
 `check_sdk_tests.py` sa costruire il wheel e il CLI, installarli fuori
 dall'albero, eseguire la suite e confrontare la corsa con il contratto di
-ciascuno scope. Pretende pero i due riferimenti gia accesi: in locale li ha,
+ciascuno scope. Pretende pero i quattro riferimenti gia accesi: in locale puo averli,
 su un runner pulito no. Finche e stato cosi, gli scope `live` e `benchmark`
 non li eseguiva nessun workflow — e la sola prova automatica sul SDK era che
 il wheel si importasse.
@@ -17,13 +17,10 @@ Il ciclo di vita delle fixture sta in `scripts/fixture_campaign.py`, condiviso
 con le campagne di sessione e dell'evidenza MariaDB. Qui restano le due cose
 che riguardano questa misura: da dove deve partire, e cosa la fa fallire.
 
-## Perche due riferimenti e non tre
-
-Il SDK espone PostgreSQL e MySQL, e nient'altro: non dipende da
-`plenora-db-sqlserver`, quindi accendere anche quel riferimento misurerebbe
-un container che nessun test interroga. Quando il binding SQL Server
-esistera, il compose si aggiunge qui e il contratto degli scope in
-`check_sdk_tests.py` cresce di conseguenza.
+La campagna accende un riferimento per ciascuna factory pubblica:
+PostgreSQL, MySQL, MariaDB e SQL Server. MariaDB usa la riga principale del
+suo ciclo di evidenza; le righe di compatibilita restano responsabilita del
+gate del provider.
 """
 
 from __future__ import annotations
@@ -39,10 +36,15 @@ sys.path.insert(0, str(ROOT))
 from scripts.check_sdk_tests import measure_live_scopes, preflight  # noqa: E402
 from scripts.fixture_campaign import campaign  # noqa: E402
 
-# I due riferimenti che la suite interroga. L'ordine e quello in cui vengono
-# accesi, e non conta: i due compose dichiarano progetti distinti e non si
+# I quattro riferimenti che la suite interroga. L'ordine e quello in cui vengono
+# accesi, e non conta: i compose dichiarano progetti distinti e non si
 # toccano fra loro.
-COMPOSE_FILES = ("docker-compose.postgres.yml", "docker-compose.mysql.yml")
+COMPOSE_FILES = (
+    "docker-compose.postgres.yml",
+    "docker-compose.mysql.yml",
+    "docker-compose.mariadb.yml",
+    "docker-compose.sqlserver.yml",
+)
 
 
 def main(arguments: list[str]) -> int:

@@ -44,6 +44,10 @@ def test_connect_mysql_returns_session_with_server_version(session) -> None:
     assert isinstance(session.server_version, str)
     assert session.server_version.startswith(("8.", "9."))
     assert session.is_closed is False
+    assert session.capabilities["provider"] == "mysql"
+    assert session.capabilities["reads"]["streaming"] is True
+    assert isinstance(session.inspect.catalogs(), list)
+    assert isinstance(session.inspect.schemas(), list)
 
 
 def test_execute_ddl_insert_scalar_roundtrip(session) -> None:

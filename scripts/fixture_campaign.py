@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Il ciclo di vita delle fixture di una campagna live, in un posto solo.
 
-Due campagne accendono gli stessi tre riferimenti per misurare cose diverse —
-la semantica di sessione e l'evidenza del driver — e il modo di accenderli e
-lo stesso. Tenerlo qui non e simmetria: le condizioni sono decisioni, e ogni
+Piu campagne accendono insiemi di riferimenti per misurare cose diverse, e il
+modo di accenderli e lo stesso. Tenerlo qui non e simmetria: le condizioni
+sono decisioni, e ogni
 riga di questo file e stata scritta dopo che una corsa reale e morta senza
 quella riga.
 

@@ -35,6 +35,10 @@ async def test_aconnect_returns_async_session() -> None:
         assert isinstance(s, p.AsyncSession)
         assert isinstance(s.server_version, str)
         assert any(c.isdigit() for c in s.server_version)
+        assert s.capabilities["provider"] == "postgres"
+        assert s.capabilities["reads"]["streaming"] is True
+        assert isinstance(await s.inspect.catalogs(), list)
+        assert "public" in await s.inspect.schemas()
         # PostGIS optional
         assert s.postgis_version is None or isinstance(s.postgis_version, str)
     finally:
@@ -85,8 +89,8 @@ async def test_execute_returning_rows_shape(session) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_dml_returns_affected(session) -> None:
-    await session.execute("DROP TABLE IF EXISTS _pyf7_dml")
-    await session.execute("CREATE TABLE _pyf7_dml (id INT PRIMARY KEY, x TEXT)")
+    await session.execute_ddl("DROP TABLE IF EXISTS _pyf7_dml")
+    await session.execute_ddl("CREATE TABLE _pyf7_dml (id INT PRIMARY KEY, x TEXT)")
     try:
         n = await session.execute(
             "INSERT INTO _pyf7_dml (id, x) VALUES ($1, $2), ($3, $4)",
@@ -94,7 +98,7 @@ async def test_execute_dml_returns_affected(session) -> None:
         )
         assert n == 2
     finally:
-        await session.execute("DROP TABLE IF EXISTS _pyf7_dml")
+        await session.execute_ddl("DROP TABLE IF EXISTS _pyf7_dml")
 
 
 @pytest.mark.asyncio

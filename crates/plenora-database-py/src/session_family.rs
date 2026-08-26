@@ -81,6 +81,7 @@ use crate::budget::session_budget as default_budget;
 pub struct DatabaseSession {
     provider: Arc<dyn Provider>,
     secret: SecretString,
+    capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     /// Il prodotto che questa sessione serve, per le superfici che lo
     /// nominano. Non si deduce da `server_version`: quella e una stringa del
     /// server, e leggerla per decidere sarebbe la selezione automatica che
@@ -149,11 +150,12 @@ impl DatabaseSession {
                 let result = work(tx.as_mut(), &cancel).await;
                 match result {
                     Ok(value) => {
+                        let provider_kind = tx.provider_kind();
                         let outcome = Box::new(tx).commit(&cancel).await?;
                         if !outcome.is_committed() {
                             // Fix review #9: helper unico.
                             return Err(crate::errors_commit::commit_outcome_unknown(
-                                plenora_database_core::plan::ProviderKind::Mysql,
+                                provider_kind,
                             ));
                         }
                         Ok(value)
@@ -174,6 +176,13 @@ impl DatabaseSession {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
+    }
+
+    #[getter]
+    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let value = serde_json::to_value(&self.capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability non serializzabili"))?;
+        crate::session::json_value_to_pydict(py, &value)
     }
 
     #[getter]
@@ -503,7 +512,7 @@ impl DatabaseSession {
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
         let result = py.allow_threads(|| {
-            crate::family_write::copy_from_sync_mysql(
+            crate::family_write::copy_from_sync_family(
                 &self.provider,
                 &self.secret,
                 schema,
@@ -822,7 +831,7 @@ fn open_family_session(
 ) -> PyResult<DatabaseSession> {
     let provider_probe = Arc::clone(&provider);
     let secret_probe = secret.clone();
-    let (connection, _capabilities) = runtime()
+    let (connection, capabilities) = runtime()
         .block_on(async move {
             let cancel = CancellationToken::new();
             let conn = provider_probe
@@ -837,6 +846,7 @@ fn open_family_session(
     Ok(DatabaseSession {
         provider,
         secret,
+        capabilities,
         product,
         factory,
         server_version: connection.server_version,

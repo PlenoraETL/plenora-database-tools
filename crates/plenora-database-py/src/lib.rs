@@ -1,6 +1,6 @@
 //! Bindings Python (`PyO3`) di `plenora-database-tools`.
 //!
-//! Due provider esposti, ciascuno sync e async:
+//! Quattro provider esposti, ciascuno sync e async:
 //!
 //! * `PostgreSQL`/`PostGIS` — `connect` / `aconnect`, con spatial predicates
 //!   e `SpatialReference`;
@@ -8,14 +8,13 @@
 //! * `MariaDB` — `connect_mariadb` / `aconnect_mariadb`, stessa superficie
 //!   e provider distinto: il prodotto lo dichiara il consumatore, e la
 //!   probe verifica quella scelta invece di compierla (ADR 0014).
+//! * `SQL Server` — `connect_sqlserver` / `aconnect_sqlserver`, via TDS.
 //!
-//! Su entrambi: `execute` / `execute_scalar` / `execute_returning_rows` /
+//! Su tutti: `execute` / `execute_scalar` / `execute_returning_rows` /
 //! `execute_ddl`, `begin` con isolamento, savepoint, `SessionContext` e
 //! `native_query_policy`, lettura Arrow IPC bounded (`read` / `aread`),
 //! bulk write (`copy_from` / `acopy_from`) e builder AST portabili
 //! (`select`/`insert`/`update`/`delete`/`upsert`).
-//!
-//! `SQL Server` resta raggiungibile solo dal driver Rust: nessun binding.
 //!
 //! Il modulo nativo e compilato come `plenora_database._native`; i wrapper
 //! Python idiomatici vivono in `python/plenora_database/__init__.py`, che e

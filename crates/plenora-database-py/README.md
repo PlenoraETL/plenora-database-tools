@@ -1,18 +1,18 @@
 # plenora-database
 
 Python SDK per `plenora-database-tools` — bindings PyO3 sopra al core
-Rust del progetto. Espone Postgres/PostGIS e MySQL con API sync + async
+Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB e SQL Server con API sync + async
 Pythonic, portable AST builder, error hierarchy tipizzata, spatial
 predicates e context manager per transazioni.
 
 - **Status**: Fase 3 completata (F3-1 → F3-8 + P0.7 + P0.8)
 - **Postgres**: OLTP + PostGIS coperti
-- **MySQL**: esposto sync e async (`connect_mysql` / `aconnect_mysql`)
+- **MySQL e MariaDB**: esposti sync e async con factory distinte
   con la stessa superficie di Postgres — execute*, `begin` con
   `SessionContext`, `read`/`aread` streaming Arrow, `copy_from`/`acopy_from`
   bulk e builder AST portabili. `TruncateInsert` resta fail-closed
-- **SQL Server**: driver Rust presente nel workspace ma non ancora
-  esposto al SDK Python
+- **SQL Server**: esposto sync e async (`connect_sqlserver` /
+  `aconnect_sqlserver`)
 - **Async**: `asyncio` bridge sopra al runtime tokio condiviso
 - **Performance**: ~13× più veloce del subprocess CLI (vedi bench)
 
@@ -46,6 +46,8 @@ python -c "import plenora_database as p; print(p.version())"
 import plenora_database as p
 
 with p.connect("host=localhost user=me dbname=app") as s:
+    caps = s.capabilities
+    schemas = s.inspect.schemas()
     # SQL raw con parametri positional
     n = s.execute("INSERT INTO users(name) VALUES ($1)", ["Ada"])
     cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
@@ -68,6 +70,8 @@ import plenora_database as p
 
 async def main():
     async with await p.aconnect("host=localhost user=me dbname=app") as s:
+        caps = s.capabilities
+        schemas = await s.inspect.schemas()
         cnt = await s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
         rows = await s.select("users").where_eq("active", True).all()
 
@@ -195,9 +199,8 @@ Mode:
   target esiste)
 - `replace` — CREATE TABLE staging + COPY + swap atomico verso target
 - `truncate_insert` — TRUNCATE + INSERT bulk (target deve esistere)
-- `update` / `upsert` / `delete_by_keys` — supportati dal provider ma
-  richiedono `keys` / `update_columns` (parametri v0.3+ per esporli
-  dal SDK; per ora usa il path OLTP `Transaction.upsert`)
+- `update` / `upsert` / `delete_by_keys` — richiedono `keys` e, per update,
+  accettano `update_columns`
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
 Mapping policy: `compatible` (default) / `strict` / `lossy` / `native`.
@@ -403,16 +406,11 @@ una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
 che il runner garantisce e di dire con cosa ha girato — id e digest delle due
 immagini, versione di rustc e di Python effettive.
 
-**Ogni scope ha un contratto, e la corsa deve corrispondergli.**
+**Ogni scope ha un contratto, e la corsa deve corrispondergli.** I conteggi
+sono letti da `SCOPE_CONTRACTS` nel runner, che e l'unica fonte: ricopiarli qui
+li farebbe diventare falsi al primo test aggiunto.
 
-| scope | passed | skipped | deselected |
-|---|---|---|---|
-| `live` | 219 | 0 | 0 |
-| `--offline` | 24 | 195 | 0 |
-| `--benchmark-only` | 2 | 0 | 217 |
-
-Un conteggio di soli `passed` non descrive una corsa: gli stessi 24 escono da
-una suite che ne salta 195 e da una che ne deseleziona 195. Uno skip e un
+Un conteggio di soli `passed` non descrive una corsa. Uno skip e un
 test che non ha risposto, e salta per motivi che somigliano a un errore di
 configurazione — un binario spostato, una variabile che nessuno passa piu —
 cioe resta verde proprio quando il gate ha smesso di misurare; una
@@ -420,8 +418,8 @@ deselezione fa lo stesso da un'altra porta, perche un `-k` che non seleziona
 piu niente non e un errore per pytest.
 
 Per `offline` il contratto va oltre il totale e fissa **quali** skip, e
-quanti per motivo: le famiglie live sono Postgres (164), MySQL (29) e il
-bench opt-in (2). Un totale coincidente e proprio cio che rende invisibile
+quanti per motivo per tutti e quattro i provider e per i benchmark opt-in.
+Un totale coincidente e proprio cio che rende invisibile
 una sostituzione — uno skip nuovo al posto di uno atteso lascia il numero
 fermo. I valori stanno tutti in `SCOPE_CONTRACTS`, dentro il runner: quando
 la suite cambia si aggiornano li, ed e il punto, perche un test aggiunto
@@ -440,8 +438,8 @@ cambiato l'albero di lavoro, untracked inclusi.
 I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
 e gia impostato). Il confronto SDK / CLI e un rapporto fra due tempi, quindi
 i due lati devono essere lo stesso codice: il CLI viene costruito dalla
-stessa corsa che costruisce il wheel — `cargo build --release --locked -p
-plenora-database-cli --no-default-features --features postgres` — esportato
+stessa corsa che costruisce il wheel — con le feature esplicite registrate nel
+verdetto — esportato
 accanto ad esso e montato in sola lettura, e il runner ne passa il percorso
 con `PLENORA_CLI_BIN`. Un binario preso da `target/release` del repository
 sopravvive alle sessioni e nessuno ne sa il commit: il rapporto misurava due

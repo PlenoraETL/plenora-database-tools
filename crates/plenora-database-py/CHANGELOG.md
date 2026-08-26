@@ -34,9 +34,17 @@ messaggio della sessione chiusa cita la factory giusta. Prima una sessione
 chiusa rimandava sempre a `connect_mysql`.
 
 Sei write mode su sette, come su MySQL, con `TruncateInsert` esclusa per la
-stessa ragione permanente. Lo **spatial resta chiuso**: su MariaDB
-`information_schema.columns.SRS_ID` non esiste, quindi una colonna geometrica
-non e descrivibile e viene rifiutata alla descrizione.
+stessa ragione permanente. Le colonne geometriche senza CRS nel catalogo
+richiedono una dichiarazione esplicita del chiamante, verificata sui valori:
+non viene inventato un sistema di riferimento che MariaDB non registra.
+
+### Aggiunto — superficie comune dei quattro provider
+
+Le sessioni sync e async espongono ora la proprietà `capabilities`, il
+namespace `inspect` e `execute_ddl` con la stessa forma su PostgreSQL, MySQL,
+MariaDB e SQL Server. Le varianti async dell'ispezione e del DDL sono
+coroutine; `read`/`copy_from` restano correttamente `aread`/`acopy_from` su una
+sessione async.
 
 ### 🚨 BREAKING — `execute_scalar` impone la cardinalita che dichiarava
 
@@ -144,7 +152,7 @@ prima di qualunque effetto remoto.
 Su PostgreSQL `"truncate_insert"` resta disponibile e usa un vero
 `TRUNCATE`: lì è transazionale, quindi rollback-safe.
 
-Le capability pubblicate da `capabilities()` riflettono le modalità
+Le capability pubblicate dalla proprietà `capabilities` riflettono le modalità
 effettivamente disponibili: su MySQL `create`, `append`, `update`, `upsert`,
 `replace`, `delete_by_keys` e `bulk` passano a `true`; `staged_swap` resta
 `false`, perché nessuna modalità pubblica più una tabella al posto di

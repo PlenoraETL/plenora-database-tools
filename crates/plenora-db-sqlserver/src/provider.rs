@@ -31,6 +31,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use tiberius::Query;
 
 struct CachedPool {
     secret_fingerprint: [u8; 32],
@@ -365,6 +366,7 @@ impl Provider for SqlServerProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
         Box::pin(async move {
+            crate::transaction::validate_options(options)?;
             let pool = self.pool_for(secret)?;
             let session = pool.checkout(cancellation).await?;
             let transaction =
@@ -521,6 +523,34 @@ impl Provider for SqlServerProvider {
             result
         })
     }
+
+    fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
+            let pool = self.pool_for(secret)?;
+            let mut session = pool.checkout(cancellation).await?;
+            let outcome = session
+                .session_mut()?
+                .execute_query(Query::new(sql.to_owned()), ErrorPhase::Write, cancellation)
+                .await;
+            drop(session);
+            outcome.map(|_| ()).map_err(ddl_execution_error)
+        })
+    }
+}
+
+/// Dopo l'invio di DDL non si puo dedurre dal solo errore se SQL Server abbia
+/// applicato zero, uno o piu statement del batch. Il bordo pubblico conserva
+/// quindi l'incertezza e obbliga il chiamante a verificare lo stato remoto.
+const fn ddl_execution_error(mut error: DatabaseError) -> DatabaseError {
+    error.remote_effect = RemoteEffect::Unknown;
+    error.retry = RetryDisposition::RequiresRecovery;
+    error
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -594,12 +624,12 @@ fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabi
     // e il blocco si chiude per intero invece di restare vero a meta.
     let spatial = geometry || geography;
     // Una voce per semantica dichiarata, e la voce di `geometry` e piu lunga:
-    // otto funzioni del contratto esistono su quel tipo e non sull'altro —
+    // sette funzioni del contratto esistono su quel tipo e non sull'altro —
     // `STCentroid`, `STEnvelope`, `STBoundary`, `STPointOnSurface`,
-    // `STIsSimple`, `STTouches`, `STCrosses`, `STRelate` — e il censimento le
+    // `STIsSimple`, `STTouches`, `STCrosses` — e il censimento le
     // ha misurate una per una.
     //
-    // Finche il contratto pubblicava una lista sola, quelle otto restavano
+    // Finche il contratto pubblicava una lista sola, quelle sette restavano
     // chiuse: offrirle accanto a `geography` sarebbe stata una promessa che li
     // non regge. Ora la semantica ce l'hanno scritta accanto.
     let mut functions_by_semantics = BTreeMap::new();
@@ -822,6 +852,63 @@ mod tests {
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(error.retry, RetryDisposition::Never);
         assert_eq!(error.provider, Some(ProviderKind::Sqlserver));
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_ddl_fails_without_network_and_without_remote_effect() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = provider()
+            .execute_ddl(
+                &SecretString::new("runtime-secret"),
+                "CREATE TABLE should_not_run (id int)",
+                &cancellation,
+            )
+            .await
+            .expect_err("cancelled");
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+        assert_eq!(error.phase, ErrorPhase::Write);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+    }
+
+    #[tokio::test]
+    async fn unsupported_transaction_options_fail_before_pool_checkout() {
+        use plenora_database_core::resource::ResourceLimits;
+        use plenora_database_core::transaction::{AccessMode, TransactionOptions};
+
+        let options = TransactionOptions {
+            access_mode: Some(AccessMode::ReadOnly),
+            ..TransactionOptions::default()
+        };
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let outcome = provider()
+            .begin_transaction(
+                &SecretString::new("runtime-secret"),
+                &options,
+                &budget,
+                &CancellationToken::new(),
+            )
+            .await;
+        let Err(error) = outcome else {
+            panic!("l'opzione deve fallire senza tentare la rete");
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+    }
+
+    #[test]
+    fn ddl_failure_after_dispatch_requires_remote_recovery() {
+        let error = provider_error(
+            ErrorCategory::Execution,
+            ErrorPhase::Write,
+            "DDL SQL Server rifiutato",
+        );
+        let classified = ddl_execution_error(error);
+        assert_eq!(classified.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(classified.retry, RetryDisposition::RequiresRecovery);
+        assert_eq!(classified.message, "DDL SQL Server rifiutato");
     }
 
     #[test]

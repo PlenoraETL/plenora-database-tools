@@ -60,6 +60,8 @@ class DatabaseSession:
     @property
     def server_version(self) -> str: ...
     @property
+    def capabilities(self) -> dict: ...
+    @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
     def __enter__(self) -> DatabaseSession: ...
@@ -71,6 +73,10 @@ class DatabaseSession:
         self, sql: str, params: list | None = None
     ) -> list[dict]: ...
     def execute_ddl(self, sql: str) -> None: ...
+    def inspect_catalogs(self) -> list[str]: ...
+    def inspect_schemas(self) -> list[str]: ...
+    def inspect_tables(self, schema: str) -> list[dict]: ...
+    def inspect_describe(self, schema: str, table: str) -> dict: ...
     def begin(
         self,
         isolation: str | None = None,
@@ -107,6 +113,8 @@ class AsyncDatabaseSession:
     @property
     def server_version(self) -> str: ...
     @property
+    def capabilities(self) -> dict: ...
+    @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
     def __aenter__(self) -> Any: ...  # awaitable → AsyncDatabaseSession
@@ -120,6 +128,10 @@ class AsyncDatabaseSession:
         self, sql: str, params: list | None = None
     ) -> Any: ...  # awaitable → list[dict]
     def execute_ddl(self, sql: str) -> Any: ...  # awaitable → None
+    def inspect_catalogs(self) -> Any: ...  # awaitable → list[str]
+    def inspect_schemas(self) -> Any: ...  # awaitable → list[str]
+    def inspect_tables(self, schema: str) -> Any: ...  # awaitable → list[dict]
+    def inspect_describe(self, schema: str, table: str) -> Any: ...  # awaitable → dict
     def begin(
         self,
         isolation: str | None = None,
@@ -149,31 +161,13 @@ class AsyncDatabaseSession:
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> Any: ...  # awaitable → dict
-    def read(
-        self,
-        schema: str,
-        object: str,
-        projection: list[str] | None = None,
-        order_by: list[tuple[str, str]] | None = None,
-        limit: int | None = None,
-    ) -> BatchReader: ...
-    def copy_from(
-        self,
-        schema: str,
-        table: str,
-        ipc_bytes: bytes,
-        mode: str = "append",
-        transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
-        keys: list[str] | None = None,
-        update_columns: list[str] | None = None,
-    ) -> dict: ...
-
 # ============================ Session (sync) ============================
 
 class Session:
     @property
     def server_version(self) -> str: ...
+    @property
+    def capabilities(self) -> dict: ...
     @property
     def postgis_version(self) -> str | None: ...
     @property
@@ -258,6 +252,8 @@ class AsyncSession:
     @property
     def server_version(self) -> str: ...
     @property
+    def capabilities(self) -> dict: ...
+    @property
     def postgis_version(self) -> str | None: ...
     @property
     def is_closed(self) -> bool: ...
@@ -274,6 +270,11 @@ class AsyncSession:
     def execute_returning_rows(
         self, sql: str, params: list | None = None
     ) -> Any: ...  # awaitable → list[dict]
+    def execute_ddl(self, sql: str) -> Any: ...  # awaitable → None
+    def inspect_catalogs(self) -> Any: ...  # awaitable → list[str]
+    def inspect_schemas(self) -> Any: ...  # awaitable → list[str]
+    def inspect_tables(self, schema: str) -> Any: ...  # awaitable → list[dict]
+    def inspect_describe(self, schema: str, table: str) -> Any: ...  # awaitable → dict
     def execute_portable_rows(self, ast_json: str) -> Any: ...  # awaitable → list[dict]
     def execute_portable_count(self, ast_json: str) -> Any: ...  # awaitable → int
     def begin(

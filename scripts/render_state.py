@@ -95,7 +95,11 @@ CAPABILITY_SOURCES = (
         None,
     ),
 )
-CAPABILITY_GROUPS = (("reads", "ReadCapabilities"), ("writes", "WriteCapabilities"))
+CAPABILITY_GROUPS = (
+    ("reads", "ReadCapabilities"),
+    ("writes", "WriteCapabilities"),
+    ("transactions", "TransactionCapabilities"),
+)
 PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
 # Un tipo che implementa il trait dei provider.
 PROVIDER_IMPL = r'\bimpl Provider for ([A-Za-z][A-Za-z0-9_]*)'

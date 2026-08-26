@@ -33,6 +33,11 @@ class Session:
         return self._native.server_version
 
     @property
+    def capabilities(self) -> dict:
+        """Capability effettivamente sondate per questa connessione."""
+        return self._native.capabilities
+
+    @property
     def postgis_version(self) -> str | None:
         return self._native.postgis_version
 

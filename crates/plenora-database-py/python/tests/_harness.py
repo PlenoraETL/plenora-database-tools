@@ -110,3 +110,84 @@ async def aconnect_mysql_reference():
 
     host, database, user, password, ca_pem = mysql_config_or_skip()
     return await p.aconnect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+# ================================ MariaDB ==================================
+
+MARIADB_HOST_ENV = "PLENORA_TEST_MARIADB_HOST"
+MARIADB_DB_ENV = "PLENORA_TEST_MARIADB_DATABASE"
+MARIADB_USER_ENV = "PLENORA_TEST_MARIADB_USER"
+MARIADB_PWD_ENV = "PLENORA_TEST_MARIADB_PASSWORD"
+MARIADB_CA_ENV = "PLENORA_TEST_MARIADB_CA"
+
+
+def mariadb_config_or_skip() -> tuple:
+    host = os.environ.get(MARIADB_HOST_ENV)
+    password = os.environ.get(MARIADB_PWD_ENV)
+    if not host or not password:
+        pytest.skip(
+            f"live test MariaDB: mancano env {MARIADB_HOST_ENV} e/o {MARIADB_PWD_ENV}"
+        )
+    ca_pem = None
+    ca_path = os.environ.get(MARIADB_CA_ENV)
+    if ca_path:
+        with open(ca_path, "rb") as handle:
+            ca_pem = handle.read()
+    return (
+        host,
+        os.environ.get(MARIADB_DB_ENV, "dataflow_test"),
+        os.environ.get(MARIADB_USER_ENV, "dataflow"),
+        password,
+        ca_pem,
+    )
+
+
+def connect_mariadb_reference():
+    host, database, user, password, ca_pem = mariadb_config_or_skip()
+    return p.connect_mariadb(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+async def aconnect_mariadb_reference():
+    host, database, user, password, ca_pem = mariadb_config_or_skip()
+    return await p.aconnect_mariadb(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+# ============================== SQL Server ================================
+
+SQLSERVER_HOST_ENV = "PLENORA_TEST_SQLSERVER_HOST"
+SQLSERVER_DB_ENV = "PLENORA_TEST_SQLSERVER_DATABASE"
+SQLSERVER_USER_ENV = "PLENORA_TEST_SQLSERVER_USER"
+SQLSERVER_PWD_ENV = "PLENORA_TEST_SQLSERVER_PASSWORD"
+SQLSERVER_CA_ENV = "PLENORA_TEST_SQLSERVER_CA"
+
+
+def sqlserver_config_or_skip() -> tuple:
+    host = os.environ.get(SQLSERVER_HOST_ENV)
+    password = os.environ.get(SQLSERVER_PWD_ENV)
+    if not host or not password:
+        pytest.skip(
+            "live test SQL Server: mancano env "
+            f"{SQLSERVER_HOST_ENV} e/o {SQLSERVER_PWD_ENV}"
+        )
+    ca_pem = None
+    ca_path = os.environ.get(SQLSERVER_CA_ENV)
+    if ca_path:
+        with open(ca_path, "rb") as handle:
+            ca_pem = handle.read()
+    return (
+        host,
+        os.environ.get(SQLSERVER_DB_ENV, "dataflow_test"),
+        os.environ.get(SQLSERVER_USER_ENV, "dataflow"),
+        password,
+        ca_pem,
+    )
+
+
+def connect_sqlserver_reference():
+    host, database, user, password, ca_pem = sqlserver_config_or_skip()
+    return p.connect_sqlserver(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+async def aconnect_sqlserver_reference():
+    host, database, user, password, ca_pem = sqlserver_config_or_skip()
+    return await p.aconnect_sqlserver(host, database, user, password, tls_ca_pem=ca_pem)

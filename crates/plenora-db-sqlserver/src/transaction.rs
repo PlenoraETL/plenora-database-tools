@@ -9,17 +9,14 @@
 //! non la sovrascriveva: il default rispondeva `Unsupported`, e la capability
 //! era una promessa che nessuno poteva mantenere.
 //!
-//! Non se n'era accorto nessuno perche nessun consumatore arrivava qui. Il CLI
-//! generico non apre transazioni, le prove live usano le primitive TDS
-//! direttamente, e il SDK Python non raggiungeva SQL Server affatto. Il difetto
-//! e emerso alla prima riga di Python che ha provato a usarlo, cioe con il
-//! mezzo piu economico che esista: usarlo.
+//! Non se n'era accorto nessuno perche i consumer e le prove non attraversavano
+//! questo bordo comune: le prove live usavano le primitive TDS direttamente.
 //!
 //! # Cosa copre
 //!
-//! Tutto il contratto tranne i savepoint, che restano rifiutati perche
-//! `transactions.savepoints` e dichiarato `false` — e li la dichiarazione e
-//! coerente con il codice, che e il punto.
+//! Il contratto transazionale comune, inclusi savepoint e rollback al punto.
+//! Il rilascio resta rifiutato perche T-SQL non ha `RELEASE SAVEPOINT`; la
+//! capability comune non promette quell'operazione distinta.
 
 use crate::connection::TdsClient;
 use crate::error::driver_error;
@@ -41,6 +38,7 @@ use tiberius::Query;
 pub struct SqlServerTransaction {
     session: PooledSqlServerSession,
     open: bool,
+    native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
 impl SqlServerTransaction {
@@ -60,6 +58,7 @@ impl SqlServerTransaction {
         options: &TransactionOptions,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
+        validate_options(options)?;
         if let Some(level) = isolation_statement(options) {
             let inner = session.session_mut()?;
             inner
@@ -71,35 +70,11 @@ impl SqlServerTransaction {
         // Server: non esiste `SET TRANSACTION READ ONLY`. Rifiutarlo qui e piu
         // onesto che accettarlo e non applicarlo — una transazione che il
         // chiamante crede in sola lettura e che scrive e peggio di un rifiuto.
-        if options.access_mode == Some(plenora_database_core::transaction::AccessMode::ReadOnly) {
-            let mut open = Self {
-                session,
-                open: true,
-            };
-            open.abort(cancellation).await;
-            return Err(DatabaseError::unsupported(
-                ProviderKind::Sqlserver,
-                ErrorPhase::Prepare,
-                "transazione in sola lettura non dichiarabile su SQL Server",
-            ));
-        }
         Ok(Self {
             session,
             open: true,
+            native_query_policy: options.native_query_policy,
         })
-    }
-
-    /// Chiude la transazione senza propagare l'esito: serve ai percorsi che
-    /// stanno gia rendendo un errore, e che non devono sostituirlo con un
-    /// secondo.
-    async fn abort(&mut self, cancellation: &CancellationToken) {
-        if !self.open {
-            return;
-        }
-        self.open = false;
-        if let Ok(session) = self.session.session_mut() {
-            let _ = session.rollback(cancellation).await;
-        }
     }
 
     fn ensure_open(&self, phase: ErrorPhase) -> Result<()> {
@@ -152,6 +127,36 @@ impl SqlServerTransaction {
             .await?;
         Ok(())
     }
+}
+
+/// Verifica prima di qualunque statement le opzioni che il provider non puo
+/// ancora mantenere. Ignorarle farebbe apparire applicati timeout o contesto
+/// che la sessione non ha mai ricevuto.
+pub fn validate_options(options: &TransactionOptions) -> Result<()> {
+    use plenora_database_core::transaction::AccessMode;
+
+    if options.access_mode == Some(AccessMode::ReadOnly) {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Sqlserver,
+            ErrorPhase::Prepare,
+            "transazione in sola lettura non dichiarabile su SQL Server",
+        ));
+    }
+    if options.statement_timeout_ms.is_some() {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Sqlserver,
+            ErrorPhase::Prepare,
+            "timeout per-transazione SQL Server non ancora qualificato",
+        ));
+    }
+    if !options.context.is_empty() {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Sqlserver,
+            ErrorPhase::Prepare,
+            "session context transazionale SQL Server non ancora qualificato",
+        ));
+    }
+    Ok(())
 }
 
 /// Lo statement che impone il livello di isolamento, se le opzioni ne
@@ -517,6 +522,10 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &statement.sql,
+            )?;
             let query = prepared(statement)?;
             self.session
                 .session_mut()?
@@ -564,6 +573,10 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Read)?;
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &statement.sql,
+            )?;
             let query = prepared(statement)?;
             let sets = self
                 .session
@@ -590,6 +603,10 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Read)?;
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &statement.sql,
+            )?;
             if batch_size == 0 {
                 return Err(DatabaseError::invalid_plan(
                     "batch_size dello stream deve essere > 0",
@@ -681,6 +698,16 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
+            plenora_database_core::native_query_policy::enforce_policy(
+                self.native_query_policy,
+                &request.update.sql,
+            )?;
+            if let Some(probe) = request.key_probe {
+                plenora_database_core::native_query_policy::enforce_policy(
+                    self.native_query_policy,
+                    &probe.sql,
+                )?;
+            }
             let affected = {
                 let query = prepared(request.update)?;
                 self.session
@@ -749,5 +776,61 @@ impl TransactionScope for SqlServerTransaction {
             self.open = false;
             self.session.session_mut()?.rollback(cancellation).await
         })
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::validate_options;
+    use plenora_database_core::native_query_policy::NativeQueryPolicy;
+    use plenora_database_core::session_context::{SessionEntry, SessionValue};
+    use plenora_database_core::transaction::{AccessMode, TransactionOptions};
+    use plenora_database_core::ErrorCategory;
+
+    #[test]
+    fn unsupported_options_fail_closed_before_io() {
+        let read_only = TransactionOptions {
+            access_mode: Some(AccessMode::ReadOnly),
+            ..TransactionOptions::default()
+        };
+        assert_eq!(
+            validate_options(&read_only)
+                .expect_err("read-only")
+                .category,
+            ErrorCategory::Unsupported
+        );
+
+        let timeout = TransactionOptions {
+            statement_timeout_ms: Some(50),
+            ..TransactionOptions::default()
+        };
+        assert_eq!(
+            validate_options(&timeout).expect_err("timeout").category,
+            ErrorCategory::Unsupported
+        );
+
+        let mut with_context = TransactionOptions::default();
+        with_context
+            .context
+            .insert(
+                "app.tenant",
+                SessionEntry::public(SessionValue::Text("tenant".to_owned())),
+            )
+            .expect("context valido");
+        assert_eq!(
+            validate_options(&with_context)
+                .expect_err("context")
+                .category,
+            ErrorCategory::Unsupported
+        );
+    }
+
+    #[test]
+    fn native_query_policy_is_an_enforced_option() {
+        let options = TransactionOptions {
+            native_query_policy: NativeQueryPolicy::Deny,
+            ..TransactionOptions::default()
+        };
+        validate_options(&options).expect("la policy e applicata dagli statement");
     }
 }

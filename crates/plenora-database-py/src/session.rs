@@ -80,6 +80,7 @@ pub(crate) fn build_provider(tls_mode: &str) -> PyResult<PostgresProvider> {
 pub struct Session {
     provider: Arc<PostgresProvider>,
     secret: SecretString,
+    capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
     closed: bool,
@@ -162,6 +163,14 @@ impl Session {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
+    }
+
+    /// Documento capability effettivamente sondato all'apertura.
+    #[getter]
+    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let value = serde_json::to_value(&self.capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability non serializzabili"))?;
+        json_value_to_pydict(py, &value)
     }
 
     /// Versione dell'estensione PostGIS se installata sul target, altrimenti None.
@@ -685,11 +694,14 @@ pub fn connect(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<Session> {
         })
     });
     let caps = caps_result.map_err(to_py_err)?;
+    let postgis_version = caps.extension_versions.get("postgis").cloned();
+    let server_version = caps.provider_version.clone();
     Ok(Session {
         provider,
         secret,
-        server_version: caps.provider_version,
-        postgis_version: caps.extension_versions.get("postgis").cloned(),
+        capabilities: caps,
+        server_version,
+        postgis_version,
         closed: false,
     })
 }

@@ -662,6 +662,140 @@ async fn live_transaction_scope_writes_reads_streams_and_rolls_back() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica la governance SQL nativa"]
+async fn live_native_query_policy_guards_every_transaction_entrypoint() {
+    use plenora_database_core::native_query_policy::NativeQueryPolicy;
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let provider = live_provider();
+    let secret = live_secret();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = TransactionOptions {
+        native_query_policy: NativeQueryPolicy::Deny,
+        ..TransactionOptions::default()
+    };
+    let mut transaction = provider
+        .begin_transaction(&secret, &options, &budget, &cancellation)
+        .await
+        .expect("transazione con policy Deny");
+    let ddl = Statement::new("CREATE TABLE [plenora_test].[policy_must_not_run] ([id] int)");
+
+    let execute_error = transaction
+        .execute(&ddl, &cancellation)
+        .await
+        .expect_err("execute deve negare il DDL");
+    assert_eq!(execute_error.category, ErrorCategory::InvalidPlan);
+    let query_error = transaction
+        .query(&ddl, &cancellation)
+        .await
+        .expect_err("query deve negare il DDL");
+    assert_eq!(query_error.category, ErrorCategory::InvalidPlan);
+    let stream_error = {
+        let stream_outcome = transaction.query_stream(&ddl, 1, &cancellation).await;
+        match stream_outcome {
+            Ok(_) => panic!("query_stream deve negare il DDL"),
+            Err(error) => error,
+        }
+    };
+    assert_eq!(stream_error.category, ErrorCategory::InvalidPlan);
+    let conditional_error = transaction
+        .execute_conditional_update(
+            ConditionalUpdate {
+                update: &ddl,
+                key_probe: None,
+                expected_affected_rows: 1,
+            },
+            &cancellation,
+        )
+        .await
+        .expect_err("conditional update deve negare il DDL");
+    assert_eq!(conditional_error.category, ErrorCategory::InvalidPlan);
+
+    let rows = transaction
+        .query(
+            &Statement::new("SELECT CAST(1 AS int) AS [value]"),
+            &cancellation,
+        )
+        .await
+        .expect("la policy Deny deve ammettere una SELECT");
+    assert_eq!(rows.len(), 1);
+    Box::new(transaction)
+        .rollback(&cancellation)
+        .await
+        .expect("rollback policy probe");
+
+    let mut admin = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("sessione di verifica");
+    let rows = admin
+        .execute_query(
+            Query::new(
+                "SELECT OBJECT_ID(N'[plenora_test].[policy_must_not_run]', N'U') AS [object_id]",
+            ),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("verifica assenza tabella");
+    assert!(rows[0][0].try_get::<i32, _>(0).unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture DDL isolata"]
+async fn live_provider_execute_ddl_creates_and_drops_table() {
+    let cancellation = CancellationToken::new();
+    let provider = live_provider();
+    let secret = live_secret();
+    let mut admin = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("sessione di verifica DDL");
+    admin
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[provider_ddl_probe]"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia fixture DDL");
+
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE TABLE [plenora_test].[provider_ddl_probe] ([id] int NOT NULL)",
+            &cancellation,
+        )
+        .await
+        .expect("create via Provider::execute_ddl");
+    let rows = admin
+        .execute_query(
+            Query::new(
+                "SELECT OBJECT_ID(N'[plenora_test].[provider_ddl_probe]', N'U') AS [object_id]",
+            ),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("verifica create");
+    assert!(rows[0][0].try_get::<i32, _>(0).unwrap().is_some());
+
+    provider
+        .execute_ddl(
+            &secret,
+            "DROP TABLE [plenora_test].[provider_ddl_probe]",
+            &cancellation,
+        )
+        .await
+        .expect("drop via Provider::execute_ddl");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture write"]
 #[allow(clippy::too_many_lines)]
 async fn live_common_provider_contract_read_and_write() {

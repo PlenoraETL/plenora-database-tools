@@ -48,6 +48,10 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "DataFlow_Test_2026!"
       MSSQL_PID: Developer
+      # Metadati che i gate chiedono al container: una sola fonte per il
+      # database e l'utente creati dagli script di inizializzazione.
+      PLENORA_TEST_DATABASE: "dataflow_test"
+      PLENORA_TEST_USER: "dataflow"
     # Loopback esplicito: l'account `sa` di questo fixture ha una password
     # versionata, e senza indirizzo Compose la pubblicherebbe su 0.0.0.0.
     # Stessa forma gia usata dai fixture MySQL e MariaDB.

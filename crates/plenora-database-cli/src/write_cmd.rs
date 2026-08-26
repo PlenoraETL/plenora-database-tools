@@ -3,56 +3,15 @@
 //! `bulk-write` (`WriteOperation` JSON + input Arrow IPC) e
 //! `postgres-write-ipc` (wrapper high-level SCHEMA/OBJECT/MODE).
 
+use crate::ipc_input::IpcFileBatchStream;
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliError, CliResult};
-use arrow_ipc::reader::FileReader;
-use plenora_database_core::arrow::array::RecordBatch;
-use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
-use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture};
+use plenora_database_core::provider::{BatchStream, Provider};
 use plenora_database_core::CancellationToken;
 use serde_json::json;
-use std::collections::VecDeque;
-use std::fs::{self, File};
-use std::sync::Arc;
-
-// ============================================================================
-//  BatchStream in-memory letto da un file Arrow IPC (per iniettare l'input)
-// ============================================================================
-
-struct IpcFileBatchStream {
-    schema: SchemaRef,
-    batches: VecDeque<RecordBatch>,
-}
-
-impl IpcFileBatchStream {
-    fn open(path: &str) -> CliResult<Self> {
-        let file =
-            File::open(path).map_err(|_| format!("input Arrow IPC non leggibile: {path}"))?;
-        let reader = FileReader::try_new(file, None).map_err(|_| "input Arrow IPC malformato")?;
-        let schema = reader.schema();
-        let mut batches = VecDeque::new();
-        for maybe_batch in reader {
-            let batch = maybe_batch.map_err(|_| "batch Arrow non leggibile")?;
-            batches.push_back(batch);
-        }
-        Ok(Self { schema, batches })
-    }
-}
-
-impl BatchStream for IpcFileBatchStream {
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-    fn next_batch<'a>(
-        &'a mut self,
-        _cancellation: &'a plenora_database_core::CancellationToken,
-    ) -> ProviderFuture<'a, Option<RecordBatch>> {
-        let next = self.batches.pop_front();
-        Box::pin(std::future::ready(Ok(next)))
-    }
-}
+use std::fs;
 
 // ============================================================================
 //  bulk-write DSN_ENV WRITE_OP.json INPUT.arrow [--dry-run]

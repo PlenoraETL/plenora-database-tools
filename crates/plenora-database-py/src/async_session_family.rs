@@ -37,6 +37,7 @@ use crate::py_convert::{param_to_python, params_from_python};
 use crate::session_family::ProviderBuilder;
 use crate::transaction::parse_isolation;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
+use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
@@ -64,6 +65,7 @@ pub struct AsyncDatabaseSession {
     product: &'static str,
     factory: &'static str,
     secret: SecretString,
+    capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     closed: bool,
 }
@@ -77,6 +79,28 @@ impl AsyncDatabaseSession {
             )));
         }
         Ok(())
+    }
+
+    fn inspect_strings<'py>(
+        &self,
+        py: Python<'py>,
+        operation: Operation,
+        key: &'static str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_to_pylist_of_strings(py, &inspection.document, key)
+                    .map(|value| value.into_any().unbind())
+            })
+        })
     }
 
     async fn run_tx<R>(
@@ -99,11 +123,10 @@ impl AsyncDatabaseSession {
         let result = work(tx.as_mut(), &cancel).await;
         match result {
             Ok(value) => {
+                let provider_kind = tx.provider_kind();
                 let outcome = Box::new(tx).commit(&cancel).await?;
                 if !outcome.is_committed() {
-                    return Err(crate::errors_commit::commit_outcome_unknown(
-                        plenora_database_core::plan::ProviderKind::Mysql,
-                    ));
+                    return Err(crate::errors_commit::commit_outcome_unknown(provider_kind));
                 }
                 Ok(value)
             }
@@ -120,6 +143,13 @@ impl AsyncDatabaseSession {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
+    }
+
+    #[getter]
+    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let value = serde_json::to_value(&self.capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability non serializzabili"))?;
+        crate::session::json_value_to_pydict(py, &value)
     }
 
     #[getter]
@@ -247,6 +277,71 @@ impl AsyncDatabaseSession {
                 .execute_ddl(&secret, &sql, &cancel)
                 .await
                 .map_err(to_py_err)
+        })
+    }
+
+    fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.inspect_strings(py, Operation::DatabaseListCatalogs, "catalogs")
+    }
+
+    fn inspect_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.inspect_strings(
+            py,
+            Operation::DatabaseListSchemas { source: None },
+            "schemas",
+        )
+    }
+
+    fn inspect_tables<'py>(&self, py: Python<'py>, schema: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let operation = Operation::DatabaseListObjects {
+            source: Some(ObjectRef {
+                catalog: None,
+                schema: Some(schema.to_owned()),
+                object: String::new(),
+            }),
+        };
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_to_pylist_of_dicts(py, &inspection.document, "objects")
+                    .map(|value| value.into_any().unbind())
+            })
+        })
+    }
+
+    fn inspect_describe<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        object: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let operation = Operation::DatabaseDescribeObject {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some(schema.to_owned()),
+                object: object.to_owned(),
+            },
+        };
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_value_to_pydict(py, &inspection.document)
+                    .map(|value| value.into_any().unbind())
+            })
         })
     }
 
@@ -446,7 +541,7 @@ impl AsyncDatabaseSession {
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
         future_into_py(py, async move {
-            let outcome = crate::family_write::do_copy_from_async_mysql(
+            let outcome = crate::family_write::do_copy_from_async_family(
                 provider,
                 secret,
                 schema,
@@ -626,7 +721,7 @@ fn open_async<'py>(
             .test_connection(&secret, &cancel)
             .await
             .map_err(to_py_err)?;
-        let _capabilities = provider
+        let capabilities = provider
             .probe_capabilities(&secret, &cancel)
             .await
             .map_err(to_py_err)?;
@@ -636,6 +731,7 @@ fn open_async<'py>(
                 product,
                 factory,
                 secret,
+                capabilities,
                 server_version: connection.server_version,
                 closed: false,
             };

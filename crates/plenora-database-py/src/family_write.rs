@@ -1,4 +1,5 @@
-//! Bulk write MySQL via `Provider::prepare_write` + `Provider::write`.
+//! Bulk write della sessione multi-provider via `Provider::prepare_write` +
+//! `Provider::write`.
 //!
 //! Chiamato da `DatabaseSession.copy_from`. Riusa gli helper generici in
 //! `crate::write` (parse_mode/parse_profile/parse_mapping_policy,
@@ -27,10 +28,10 @@ use plenora_database_core::CancellationToken;
 use plenora_database_core::DatabaseError;
 use std::sync::Arc;
 
-/// Bulk write MySQL: decodifica l'IPC, costruisce il piano, scrive.
+/// Bulk write della famiglia: decodifica l'IPC, costruisce il piano, scrive.
 ///
 /// `pub(crate)` perche la usano entrambi i binding — il sync tramite
-/// `copy_from_sync_mysql`, l'async direttamente da `acopy_from`. Finche non
+/// `copy_from_sync_family`, l'async direttamente da `acopy_from`. Finche non
 /// lo era, il percorso async ne teneva una copia riga per riga, e le due
 /// sarebbero divergute alla prima modifica di una sola.
 ///
@@ -38,7 +39,7 @@ use std::sync::Arc;
 ///
 /// `DatabaseError` per IPC malformato, mode/profile/policy invalidi, keys
 /// mancanti dove servono, o fallimento del provider in prepare/write.
-pub(crate) async fn do_copy_from_async_mysql(
+pub(crate) async fn do_copy_from_async_family(
     provider: Arc<dyn Provider>,
     secret: SecretString,
     schema_name: String,
@@ -79,14 +80,14 @@ pub(crate) async fn do_copy_from_async_mysql(
     Ok(outcome)
 }
 
-/// Bulk write MySQL sync (blocca il thread Python sul runtime tokio globale).
+/// Bulk write sync (blocca il thread Python sul runtime tokio globale).
 ///
 /// # Errors
 ///
 /// `DatabaseError` in caso di IPC malformato, mode/profile/policy invalidi,
 /// keys mancanti per mode che le richiedono, o errore del provider durante
 /// prepare/write.
-pub(crate) fn copy_from_sync_mysql(
+pub(crate) fn copy_from_sync_family(
     provider: &Arc<dyn Provider>,
     secret: &SecretString,
     schema: &str,
@@ -107,7 +108,7 @@ pub(crate) fn copy_from_sync_mysql(
     let profile_owned = transaction_profile.to_owned();
     let policy_owned = mapping_policy.to_owned();
     runtime().block_on(async move {
-        do_copy_from_async_mysql(
+        do_copy_from_async_family(
             provider_arc,
             secret_owned,
             schema_owned,

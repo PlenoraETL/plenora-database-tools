@@ -20,6 +20,7 @@ use crate::errors::to_py_err;
 use crate::py_convert::{param_to_python, params_from_python};
 use crate::transaction::parse_isolation;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
+use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
 // Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
@@ -47,6 +48,7 @@ use crate::budget::session_budget as default_budget;
 pub struct AsyncSession {
     provider: Arc<PostgresProvider>,
     secret: SecretString,
+    capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
     closed: bool,
@@ -60,6 +62,28 @@ impl AsyncSession {
             ));
         }
         Ok(())
+    }
+
+    fn inspect_strings<'py>(
+        &self,
+        py: Python<'py>,
+        operation: Operation,
+        key: &'static str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_to_pylist_of_strings(py, &inspection.document, key)
+                    .map(|value| value.into_any().unbind())
+            })
+        })
     }
 
     /// Esegue una closure async in una transazione auto-commit dedicata.
@@ -108,6 +132,13 @@ impl AsyncSession {
     #[getter]
     fn server_version(&self) -> &str {
         &self.server_version
+    }
+
+    #[getter]
+    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let value = serde_json::to_value(&self.capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability non serializzabili"))?;
+        crate::session::json_value_to_pydict(py, &value)
     }
 
     #[getter]
@@ -220,6 +251,85 @@ impl AsyncSession {
             .await
             .map_err(to_py_err)?;
             rows_to_pyobject(rows)
+        })
+    }
+
+    fn execute_ddl<'py>(&self, py: Python<'py>, sql: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let sql = sql.to_owned();
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            provider
+                .execute_ddl(&secret, &sql, &cancel)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.inspect_strings(py, Operation::DatabaseListCatalogs, "catalogs")
+    }
+
+    fn inspect_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.inspect_strings(
+            py,
+            Operation::DatabaseListSchemas { source: None },
+            "schemas",
+        )
+    }
+
+    fn inspect_tables<'py>(&self, py: Python<'py>, schema: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let operation = Operation::DatabaseListObjects {
+            source: Some(ObjectRef {
+                catalog: None,
+                schema: Some(schema.to_owned()),
+                object: String::new(),
+            }),
+        };
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_to_pylist_of_dicts(py, &inspection.document, "objects")
+                    .map(|value| value.into_any().unbind())
+            })
+        })
+    }
+
+    fn inspect_describe<'py>(
+        &self,
+        py: Python<'py>,
+        schema: &str,
+        object: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let operation = Operation::DatabaseDescribeObject {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some(schema.to_owned()),
+                object: object.to_owned(),
+            },
+        };
+        future_into_py(py, async move {
+            let cancel = CancellationToken::new();
+            let inspection = provider
+                .inspect(&secret, &operation, &cancel)
+                .await
+                .map_err(to_py_err)?;
+            Python::with_gil(|py| {
+                crate::session::json_value_to_pydict(py, &inspection.document)
+                    .map(|value| value.into_any().unbind())
+            })
         })
     }
 
@@ -486,11 +596,14 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
             .probe_capabilities(&secret_for_probe, &cancel)
             .await
             .map_err(to_py_err)?;
+        let postgis_version = caps.extension_versions.get("postgis").cloned();
+        let server_version = caps.provider_version.clone();
         let session = AsyncSession {
             provider,
             secret: secret_for_result,
-            server_version: caps.provider_version,
-            postgis_version: caps.extension_versions.get("postgis").cloned(),
+            capabilities: caps,
+            server_version,
+            postgis_version,
             closed: false,
         };
         Python::with_gil(|py| {

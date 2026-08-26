@@ -1,6 +1,6 @@
 name: sdk-assurance
 
-# La suite del SDK Python contro i due riferimenti veri.
+# La suite del SDK Python contro i quattro riferimenti veri.
 #
 # `scripts/check_sdk_tests.py` esiste da tempo e fa molto: costruisce wheel e
 # CLI nella stessa toolchain, li installa fuori dall'albero, verifica che
@@ -23,8 +23,8 @@ name: sdk-assurance
 # copertura mancante. Ora la copertura c'e, e la migrazione torna a essere un
 # lavoro da fare invece che un lavoro che non si puo verificare.
 #
-# Non gira su push: accende due riferimenti, costruisce due artefatti in
-# release e lancia tre container: e troppo per ogni commit. Gira a cadenza
+# Non gira su push: accende quattro riferimenti e costruisce due artefatti in
+# release: e troppo per ogni commit. Gira a cadenza
 # fissa, su richiesta, e sulle PR che toccano il binding o il suo ambiente —
 # dove un `paths:` non e una promessa vuota, perche il passo che lancia il
 # gate e incondizionato.
@@ -46,14 +46,20 @@ on:
       - ".github/workflows/sdk-assurance.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-database-core/**"
       - "crates/plenora-db-mysql/**"
       - "crates/plenora-db-postgres/**"
+      - "crates/plenora-db-sqlserver/**"
+      - "docker-compose.mariadb.yml"
       - "docker-compose.mysql.yml"
       - "docker-compose.postgres.yml"
+      - "docker-compose.sqlserver.yml"
+      - "docker/mariadb/**"
       - "docker/mysql/**"
       - "docker/postgres/init/**"
+      - "docker/sqlserver/**"
       - "requirements-sdk-build.txt"
       - "requirements-sdk-tests.txt"
       - "rust-toolchain.toml"
@@ -78,7 +84,7 @@ defaults:
 
 jobs:
   sdk-assurance:
-    name: suite SDK sui riferimenti PostgreSQL e MySQL
+    name: suite SDK sui quattro provider
     # Il gate non installa Rust ne Python nel runner: costruisce dentro
     # `rust:1.92` ed esegue dentro `python:3.13-slim`. Qui servono Docker,
     # che il runner ha, e un Python qualunque per lanciare la campagna.
