@@ -231,10 +231,19 @@ pub struct TransactionCapabilities {
     ///
     /// Non «il motore li supporta» — li supportano tutti — ma «il provider li
     /// mette a disposizione». `TransactionScope` non ha default per i tre
-    /// metodi, quindi chi implementa quel contratto li implementa: `MySQL` e
-    /// `PostgreSQL` li offrono entrambi. SQL Server no, e per una ragione a
-    /// monte — non espone affatto uno scope transazionale, quindi non c'e
-    /// niente su cui chiamarli.
+    /// metodi, quindi chi implementa quel contratto li implementa, e oggi lo
+    /// fanno tutti e quattro.
+    ///
+    /// Qui c'era scritto che SQL Server no, «per una ragione a monte: non
+    /// espone affatto uno scope transazionale, quindi non c'e niente su cui
+    /// chiamarli». Era vero, ed e la forma di documentazione piu insidiosa —
+    /// una ragione corretta che smette di esserlo senza che nessuno la
+    /// rilegga. Quello scope ora c'e, e con esso i savepoint.
+    ///
+    /// Cio che resta diverso e il **rilascio**: `PostgreSQL` e `MySQL` hanno
+    /// `RELEASE SAVEPOINT`, T-SQL no — i suoi savepoint si liberano al commit.
+    /// Questa bandiera non lo promette, e nomina soltanto le due istruzioni
+    /// che tutti e quattro offrono.
     ///
     /// **Descrittivo.** L'engine non lo consulta perche un savepoint non si
     /// chiede in un piano: lo usa chi tiene lo scope in mano, e lo scopre dal

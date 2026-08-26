@@ -418,9 +418,10 @@ async fn azure_sql_probe_uses_verified_tls_and_native_spatial_types() {
 ///   perche chiederlo alla stessa direbbe soltanto che la sessione e coerente
 ///   con se stessa.
 ///
-/// I savepoint sono rifiutati, e la prova lo pretende: `savepoints` dichiara
-/// `false`, e una capability chiusa con un percorso aperto sotto e lo stesso
-/// difetto al contrario.
+/// I savepoint funzionano, e la prova li attraversa: `SAVE TRANSACTION` e il
+/// `ROLLBACK` a un punto ci sono. Il **rilascio** no, e viene preteso il
+/// rifiuto: T-SQL non ha `RELEASE SAVEPOINT`, e una differenza fra prodotti si
+/// dichiara invece di simularla con un `Ok(())`.
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
 #[allow(clippy::too_many_lines)]
@@ -529,12 +530,64 @@ async fn live_transaction_scope_writes_reads_streams_and_rolls_back() {
         );
     }
 
-    // --- I savepoint restano chiusi -------------------------------------
-    let refused = transaction
+    // --- I savepoint, e cio che di essi non c'e --------------------------
+    //
+    // Sei righe stanno gia dentro. Se ne aggiunge una settima **dopo** il
+    // punto, e il rollback al punto deve togliere quella e lasciare le sei:
+    // un savepoint che non facesse niente lascerebbe sette righe, e uno che
+    // annullasse tutto ne lascerebbe zero. Il numero distingue i tre casi.
+    transaction
         .savepoint("punto", &cancellation)
         .await
-        .expect_err("savepoints e dichiarato false");
+        .expect("SAVE TRANSACTION esiste su questo prodotto");
+    transaction
+        .execute(
+            &Statement {
+                sql: "INSERT INTO [plenora_test].[transaction_probe] ([id], [label]) VALUES (@P1, @P2)"
+                    .to_owned(),
+                params: vec![
+                    ParameterValue::I32(7),
+                    ParameterValue::String("dopo-il-punto".to_owned()),
+                ],
+            },
+            &cancellation,
+        )
+        .await
+        .expect("insert dopo il savepoint");
+    transaction
+        .rollback_to_savepoint("punto", &cancellation)
+        .await
+        .expect("rollback al punto");
+    let dopo = transaction
+        .query(
+            &Statement::new("SELECT COUNT_BIG(*) AS n FROM [plenora_test].[transaction_probe]"),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio dopo il rollback al punto");
+    assert_eq!(
+        dopo[0].values()[0],
+        ParameterValue::I64(6),
+        "il rollback al punto deve togliere la settima riga e lasciare le sei"
+    );
+
+    // Il rilascio no: T-SQL non ha `RELEASE SAVEPOINT`, e il provider lo dice
+    // invece di rispondere Ok e lasciar credere irraggiungibile un punto che
+    // si raggiunge ancora.
+    let refused = transaction
+        .release_savepoint("punto", &cancellation)
+        .await
+        .expect_err("T-SQL non ha RELEASE SAVEPOINT");
     assert_eq!(refused.category, ErrorCategory::Unsupported);
+
+    // Un nome oltre i trentadue caratteri viene rifiutato qui e non troncato
+    // dal server: due punti che differiscono dopo il trentaduesimo carattere
+    // diventerebbero lo stesso, e un rollback andrebbe altrove in silenzio.
+    let troppo_lungo = transaction
+        .savepoint(&"p".repeat(33), &cancellation)
+        .await
+        .expect_err("oltre il limite di SQL Server");
+    assert_eq!(troppo_lungo.category, ErrorCategory::InvalidPlan);
 
     // --- Il rollback, visto da fuori ------------------------------------
     Box::new(transaction)
@@ -657,7 +710,10 @@ async fn live_common_provider_contract_read_and_write() {
     assert!(!capabilities.reads.resumable);
     assert!(!capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
-    assert!(!capabilities.transactions.savepoints);
+    // Aperta insieme allo scope transazionale: la ragione per cui era chiusa
+    // — «non espone affatto uno scope, quindi non c'e niente su cui
+    // chiamarli» — e caduta il giorno in cui lo scope e arrivato.
+    assert!(capabilities.transactions.savepoints);
 
     let bounded_operation = ReadOperation {
         source: ObjectRef {

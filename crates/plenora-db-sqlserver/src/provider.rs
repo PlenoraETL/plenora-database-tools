@@ -294,7 +294,19 @@ impl Provider for SqlServerProvider {
                 },
                 transactions: TransactionCapabilities {
                     single_transaction: true,
-                    savepoints: false,
+                    // Aperta insieme allo scope transazionale, e non prima: la
+                    // ragione per cui era chiusa — scritta nel contratto —
+                    // diceva «non espone affatto uno scope transazionale,
+                    // quindi non c'e niente su cui chiamarli», ed era vera
+                    // finche lo scope non c'era.
+                    //
+                    // La capability promette `SAVE TRANSACTION` e il
+                    // `ROLLBACK` a un punto, e T-SQL ha entrambi. Il rilascio
+                    // non e fra le due, e infatti resta rifiutato: T-SQL non
+                    // ha `RELEASE SAVEPOINT`, e simularlo con un `Ok(())`
+                    // farebbe credere irraggiungibile un punto che invece si
+                    // raggiunge ancora.
+                    savepoints: true,
                     transactional_ddl: true,
                     staged_swap: true,
                     scope: TransactionScope::Transaction,

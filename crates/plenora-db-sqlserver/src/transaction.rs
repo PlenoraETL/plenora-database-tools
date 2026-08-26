@@ -118,18 +118,39 @@ impl SqlServerTransaction {
         })
     }
 
-    /// Il rifiuto dei savepoint, uno per i tre metodi.
+    /// Il nome di un savepoint, validato e racchiuso per T-SQL.
     ///
-    /// Il motore li ha — `SAVE TRANSACTION` esiste — e non e per quello che
-    /// sono chiusi: e che `transactions.savepoints` dichiara `false`, e una
-    /// capability chiusa con un percorso aperto sotto e la stessa forma di
-    /// difetto che questo modulo esiste per correggere, al contrario.
-    fn savepoints_are_closed() -> DatabaseError {
-        DatabaseError::unsupported(
-            ProviderKind::Sqlserver,
-            ErrorPhase::Write,
-            "savepoint non pubblicati dal provider SQL Server",
-        )
+    /// Il validatore comune ammette fino a 63 caratteri, che e il limite di
+    /// `PostgreSQL` e `MySQL`. SQL Server ne ammette **32**: un nome piu lungo
+    /// viene troncato dal server, e due savepoint che differiscono dopo il
+    /// trentaduesimo carattere diventerebbero lo stesso senza che nessuno lo
+    /// dica. Un `ROLLBACK` andrebbe al punto sbagliato, e nessun errore
+    /// segnalerebbe niente.
+    ///
+    /// Le parentesi quadre bastano perche il validatore comune ammette
+    /// soltanto `[A-Za-z_][A-Za-z0-9_]*`: nessun `]` puo entrare.
+    fn quoted_savepoint(name: &str) -> Result<String> {
+        plenora_database_core::transaction::validate_savepoint_name(name)?;
+        if name.len() > 32 {
+            return Err(DatabaseError::invalid_plan(
+                "il nome di savepoint su SQL Server non puo superare 32 caratteri",
+            ));
+        }
+        Ok(format!("[{name}]"))
+    }
+
+    /// Esegue un comando di controllo della transazione.
+    ///
+    /// `SAVE TRANSACTION` e `ROLLBACK TRANSACTION` non rendono righe e non
+    /// hanno un conteggio: passano da `execute_query`, che li drena, invece
+    /// che da `execute_write_query`, che pretenderebbe un numero che il server
+    /// non manda.
+    async fn control(&mut self, sql: String, cancellation: &CancellationToken) -> Result<()> {
+        self.session
+            .session_mut()?
+            .execute_query(Query::new(sql), ErrorPhase::Write, cancellation)
+            .await?;
+        Ok(())
     }
 }
 
@@ -563,26 +584,56 @@ impl TransactionScope for SqlServerTransaction {
 
     fn savepoint<'a>(
         &'a mut self,
-        _name: &'a str,
-        _cancellation: &'a CancellationToken,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move { Err(Self::savepoints_are_closed()) })
+        Box::pin(async move {
+            self.ensure_open(ErrorPhase::Write)?;
+            let quoted = Self::quoted_savepoint(name)?;
+            self.control(format!("SAVE TRANSACTION {quoted}"), cancellation)
+                .await
+        })
     }
 
     fn rollback_to_savepoint<'a>(
         &'a mut self,
-        _name: &'a str,
-        _cancellation: &'a CancellationToken,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move { Err(Self::savepoints_are_closed()) })
+        Box::pin(async move {
+            self.ensure_open(ErrorPhase::Write)?;
+            let quoted = Self::quoted_savepoint(name)?;
+            self.control(format!("ROLLBACK TRANSACTION {quoted}"), cancellation)
+                .await
+        })
     }
 
+    /// Il rilascio, che su questo prodotto non esiste.
+    ///
+    /// `PostgreSQL` e `MySQL` hanno `RELEASE SAVEPOINT`, e dopo il rilascio un
+    /// `ROLLBACK` a quel nome fallisce. T-SQL non ha l'istruzione: i savepoint
+    /// si liberano da soli al commit, e fino ad allora restano raggiungibili.
+    ///
+    /// Rispondere `Ok(())` sarebbe la scorciatoia comoda, ed e la ragione per
+    /// cui non lo fa: dopo un rilascio finto il chiamante crederebbe che quel
+    /// punto non sia piu raggiungibile, e un `ROLLBACK` che invece riesce e
+    /// peggio di un rifiuto. Una differenza fra prodotti si dichiara, non si
+    /// simula.
+    ///
+    /// La capability resta coerente: `savepoints` promette `SAVEPOINT` e
+    /// `ROLLBACK TO`, che ci sono. Il rilascio non e fra le due.
     fn release_savepoint<'a>(
         &'a mut self,
         _name: &'a str,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move { Err(Self::savepoints_are_closed()) })
+        Box::pin(async move {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Sqlserver,
+                ErrorPhase::Write,
+                "T-SQL non ha RELEASE SAVEPOINT: un savepoint si libera al commit",
+            ))
+        })
     }
 
     fn execute_conditional_update<'a>(
