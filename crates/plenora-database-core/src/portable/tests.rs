@@ -225,12 +225,204 @@ fn identifiers_are_quoted_and_double_quotes_escaped() {
 }
 
 #[test]
-fn unsupported_provider_returns_unsupported() {
-    // SQL Server e Oracle non sono ancora supportati dal compiler
-    // portable — MySQL è stato aggiunto in sessione C.
+fn a_provider_without_a_dialect_is_refused_and_names_itself() {
+    // La prova nominava `Sqlserver`, ed e stata vera finche il compilatore non
+    // ha imparato il T-SQL. Il refuso da evitare e piu grande di un nome
+    // sbagliato: un elenco di «non supportati» che invecchia in silenzio e
+    // esattamente cio che teneva `Mariadb` nel ramo di scarto mentre il
+    // repository pubblicava il provider.
+    //
+    // Ora cammina su **tutti** i tipi di provider: quelli con un dialetto
+    // devono compilare, gli altri devono rifiutare nominandosi. Se domani
+    // qualcuno aggiunge un dialetto e dimentica questa prova, e la prova a
+    // seguirlo invece di restare indietro.
     let stmt = select_all("t").into_statement();
-    let err = compile_portable(ProviderKind::Sqlserver, &stmt).unwrap_err();
-    assert_eq!(err.category, crate::ErrorCategory::Unsupported);
+    for kind in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+        ProviderKind::Sqlite,
+        ProviderKind::Duckdb,
+    ] {
+        let compiled = compile_portable(kind, &stmt);
+        let has_provider = matches!(
+            kind,
+            ProviderKind::Postgres
+                | ProviderKind::Mysql
+                | ProviderKind::Mariadb
+                | ProviderKind::Sqlserver
+        );
+        match compiled {
+            Ok(statement) => assert!(
+                has_provider,
+                "{kind:?} non ha un provider in questo repository e compila: {}",
+                statement.sql
+            ),
+            Err(error) => {
+                assert!(!has_provider, "{kind:?} ha un provider e non compila");
+                assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+                assert!(
+                    error.message.contains(&format!("{kind:?}")),
+                    "il rifiuto non nomina il provider: {}",
+                    error.message
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sqlserver_speaks_tsql_where_the_others_speak_sql() {
+    // Le quattro divergenze in una prova sola, perche sono la stessa
+    // decisione: `@P1` invece di `$1` o `?`, `[ident]` invece di `"ident"`,
+    // `TOP` prima della projection invece di `LIMIT` dopo, e nessun `LIMIT` in
+    // coda a ricordarlo.
+    let mut select = select("t", vec!["id"]);
+    select.filter = Some(eq("id", ParameterValue::I64(7)));
+    select.order_by = vec![OrderBy {
+        column: "id".into(),
+        direction: Direction::Asc,
+        nulls: None,
+    }];
+    select.limit = Some(10);
+    let compiled =
+        compile_portable(ProviderKind::Sqlserver, &select.into_statement()).expect("compila");
+    assert_eq!(
+        compiled.sql,
+        "SELECT TOP (10) [id] FROM [t] WHERE [id] = @P1 ORDER BY [id] ASC"
+    );
+    assert_eq!(compiled.params.len(), 1);
+}
+
+#[test]
+fn what_a_tsql_write_returns_is_asked_in_the_middle() {
+    // `RETURNING` sta in coda su tre dialetti su quattro. `OUTPUT` no, e
+    // appenderlo avrebbe prodotto SQL che il server rifiuta: sta prima di
+    // `VALUES`, prima di `WHERE`, e subito dopo `DELETE FROM t`.
+    let insert = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("t"),
+        columns: vec!["a".into()],
+        values: vec![vec![Expression::literal(ParameterValue::I64(1))]],
+        returning: vec!["id".into()],
+    });
+    let compiled = compile_portable(ProviderKind::Sqlserver, &insert).expect("insert");
+    assert_eq!(
+        compiled.sql,
+        "INSERT INTO [t] ([a]) OUTPUT INSERTED.[id] VALUES (@P1)"
+    );
+
+    let delete = PortableStatement::Delete(DeleteStatement {
+        table: TableRef::new("t"),
+        filter: Some(eq("id", ParameterValue::I64(1))),
+        returning: vec!["id".into()],
+    });
+    let compiled = compile_portable(ProviderKind::Sqlserver, &delete).expect("delete");
+    // `DELETED`, non `INSERTED`: chiedere la riga inserita a una cancellazione
+    // renderebbe colonne nulle invece di un errore.
+    assert_eq!(
+        compiled.sql,
+        "DELETE FROM [t] OUTPUT DELETED.[id] WHERE [id] = @P1"
+    );
+
+    let update = PortableStatement::Update(UpdateStatement {
+        table: TableRef::new("t"),
+        assignments: vec![("v".into(), Expression::literal(ParameterValue::I64(2)))],
+        filter: Some(eq("id", ParameterValue::I64(1))),
+        returning: vec!["v".into()],
+    });
+    let compiled = compile_portable(ProviderKind::Sqlserver, &update).expect("update");
+    assert_eq!(
+        compiled.sql,
+        "UPDATE [t] SET [v] = @P1 OUTPUT INSERTED.[v] WHERE [id] = @P2"
+    );
+}
+
+#[test]
+fn the_tsql_upsert_locks_and_stays_on_one_row() {
+    let upsert =
+        |values: Vec<Vec<Expression>>, target: Vec<String>, sets: Vec<(String, Expression)>| {
+            PortableStatement::Upsert(UpsertStatement {
+                table: TableRef::new("t"),
+                columns: vec!["id".into(), "v".into()],
+                values,
+                conflict_target: target,
+                update_on_conflict: sets,
+                returning: Vec::new(),
+            })
+        };
+    let row = || {
+        vec![
+            Expression::literal(ParameterValue::I64(1)),
+            Expression::literal(ParameterValue::I64(2)),
+        ]
+    };
+    let stmt = upsert(
+        vec![row()],
+        vec!["id".into()],
+        vec![("v".into(), Expression::literal(ParameterValue::I64(3)))],
+    );
+    let compiled = compile_portable(ProviderKind::Sqlserver, &stmt).expect("upsert");
+    // Il segnaposto della chiave compare due volte e lega lo stesso valore: e
+    // cio che un `?` non permetterebbe.
+    assert!(
+        compiled.sql.contains("WHERE [id] = @P1"),
+        "{}",
+        compiled.sql
+    );
+    assert!(
+        compiled.sql.contains("VALUES (@P1, @P2)"),
+        "{}",
+        compiled.sql
+    );
+    assert!(
+        compiled.sql.contains("WITH (UPDLOCK, HOLDLOCK)"),
+        "{}",
+        compiled.sql
+    );
+    assert!(
+        compiled.sql.contains("IF @@ROWCOUNT = 0"),
+        "{}",
+        compiled.sql
+    );
+    // Tre valori legati: due della riga e uno dell'assegnamento.
+    assert_eq!(compiled.params.len(), 3);
+
+    // Il «non fare niente» guarda sotto lock e inserisce solo se non c'e.
+    let nothing = upsert(vec![row()], vec!["id".into()], Vec::new());
+    let compiled = compile_portable(ProviderKind::Sqlserver, &nothing).expect("do nothing");
+    assert!(
+        compiled
+            .sql
+            .starts_with("IF NOT EXISTS (SELECT 1 FROM [t] WITH (UPDLOCK, HOLDLOCK)"),
+        "{}",
+        compiled.sql
+    );
+
+    let two_rows = upsert(vec![row(), row()], vec!["id".into()], Vec::new());
+    let error = compile_portable(ProviderKind::Sqlserver, &two_rows).expect_err("due righe");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+
+    let no_target = upsert(vec![row()], Vec::new(), Vec::new());
+    let error = compile_portable(ProviderKind::Sqlserver, &no_target).expect_err("senza chiave");
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+}
+
+#[test]
+fn the_tsql_upsert_refuses_to_say_which_of_its_two_statements_acted() {
+    let stmt = PortableStatement::Upsert(UpsertStatement {
+        table: TableRef::new("t"),
+        columns: vec!["id".into()],
+        values: vec![vec![Expression::literal(ParameterValue::I64(1))]],
+        conflict_target: vec!["id".into()],
+        update_on_conflict: Vec::new(),
+        returning: vec!["id".into()],
+    });
+    let error = compile_portable(ProviderKind::Sqlserver, &stmt).expect_err("returning upsert");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert!(error.message.contains("OUTPUT"), "{}", error.message);
 }
 
 #[test]

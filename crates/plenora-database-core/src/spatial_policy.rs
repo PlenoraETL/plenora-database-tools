@@ -90,9 +90,40 @@ pub fn validate_predicate(
     match provider {
         ProviderKind::Postgres => validate_postgres(predicate, reference),
         ProviderKind::Mysql => validate_mysql(predicate),
+        ProviderKind::Sqlserver => validate_sqlserver(predicate),
         // Altri provider: la validazione portable non li supporta —
-        // il compilatore fallisce Unsupported prima di arrivare qui.
+        // il compilatore fallisce Unsupported prima di arrivare qui. La riga
+        // era vera per tre provider su quattro e ha smesso di esserlo il
+        // giorno in cui il dialetto T-SQL e entrato nel compilatore: senza il
+        // ramo qui sopra, SQL Server sarebbe passato **senza validazione**,
+        // che e peggio di non essere supportato.
         _ => Ok(()),
+    }
+}
+
+/// Cosa T-SQL non sa esprimere di un predicato spatial.
+///
+/// Una sola cosa, e non e una prudenza: `raw` ha chiesto `STDWithin` a SQL
+/// Server e il server ha risposto che il metodo non esiste, ne su `geometry` ne
+/// su `geography`.
+///
+/// Si potrebbe scrivere come `STDistance(...) <= d`, e non e la stessa cosa: su
+/// `geography` quella distanza e in metri e su `geometry` nelle unita del
+/// sistema di riferimento, mentre il contratto porta un `distance_meters`.
+/// Emetterlo su una colonna `geometry` in gradi confronterebbe metri con gradi
+/// e renderebbe righe sbagliate senza che nessuno se ne accorga — il difetto
+/// peggiore di un rifiuto.
+fn validate_sqlserver(predicate: &SpatialPredicate) -> Result<()> {
+    match predicate {
+        SpatialPredicate::DWithin { .. } => Err(DatabaseError::unsupported(
+            ProviderKind::Sqlserver,
+            crate::ErrorPhase::Prepare,
+            "STDWithin non esiste in T-SQL, su nessuna delle due semantiche. La forma con              STDistance confronterebbe i metri del contratto con le unita del sistema di              riferimento su una colonna geometry: usa Intersects su un buffer costruito dal              chiamante.",
+        )),
+        SpatialPredicate::Intersects
+        | SpatialPredicate::Contains
+        | SpatialPredicate::Within
+        | SpatialPredicate::BoundingBox => Ok(()),
     }
 }
 

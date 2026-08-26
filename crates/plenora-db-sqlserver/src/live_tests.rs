@@ -8434,3 +8434,229 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
         .await
         .expect("cleanup row diagnostics SQL Server live");
 }
+
+/// Il dialetto T-SQL, eseguito da un server vero.
+///
+/// # Perche non basta compilare
+///
+/// Le prove del compilatore confrontano stringhe, e una stringa sbagliata che
+/// somiglia a T-SQL passa. Qui ogni forma attraversa il `TransactionScope` e il
+/// server la esegue o la rifiuta: e la sola differenza fra «so scrivere SQL» e
+/// «so scrivere SQL che questo prodotto accetta».
+///
+/// # Cosa attraversa
+///
+/// Le cinque forme del `PortableStatement`, e le due varianti dell'upsert —
+/// quella che inserisce e quella che aggiorna — perche sono due statement
+/// diversi e una sola delle due avrebbe potuto reggere. `OUTPUT` viene chiesto
+/// dove esiste, e cio che rende viene **letto**: una clausola in una posizione
+/// sbagliata renderebbe zero righe invece di un errore.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per il dialetto portabile"]
+#[allow(clippy::too_many_lines)]
+async fn live_the_portable_facade_speaks_tsql_to_a_real_server() {
+    use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+    use plenora_database_core::portable::{
+        DeleteStatement, Expression, InsertStatement, PortableStatement, SelectStatement, TableRef,
+        UpdateStatement, UpsertStatement,
+    };
+    use plenora_database_core::transaction::{IsolationLevel, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin del dialetto");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[portable_probe]; \
+                 CREATE TABLE [plenora_test].[portable_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(32) NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture del dialetto");
+
+    let provider = SqlServerProvider::new(config, 1024, 4).expect("provider del dialetto");
+    let secret = live_secret();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget del dialetto");
+    let options = TransactionOptions {
+        isolation: Some(IsolationLevel::ReadCommitted),
+        ..TransactionOptions::default()
+    };
+    let mut transaction = provider
+        .begin_transaction(&secret, &options, &budget, &cancellation)
+        .await
+        .expect("la transazione si apre");
+    let table = || TableRef::qualified("plenora_test", "portable_probe");
+    let row_of = |id: i32, label: &str| {
+        vec![
+            Expression::literal(ParameterValue::I32(id)),
+            Expression::literal(ParameterValue::String(label.to_owned())),
+        ]
+    };
+
+    // --- INSERT, con OUTPUT prima di VALUES -----------------------------
+    let inserted = execute_portable_returning(
+        transaction.as_mut(),
+        &PortableStatement::Insert(InsertStatement {
+            table: table(),
+            columns: vec!["id".into(), "label".into()],
+            values: vec![row_of(1, "uno"), row_of(2, "due")],
+            returning: vec!["id".into()],
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("INSERT ... OUTPUT deve eseguire");
+    assert_eq!(
+        inserted.len(),
+        2,
+        "OUTPUT deve rendere una riga per riga inserita"
+    );
+
+    // --- SELECT, con TOP prima della projection -------------------------
+    let mut select = SelectStatement {
+        table: table(),
+        projection: plenora_database_core::portable::Projection::Columns(vec!["id".into()]),
+        filter: None,
+        order_by: Vec::new(),
+        limit: Some(1),
+    };
+    select.order_by = vec![plenora_database_core::portable::OrderBy {
+        column: "id".into(),
+        direction: plenora_database_core::portable::Direction::Asc,
+        nulls: None,
+    }];
+    let selected = execute_portable_returning(
+        transaction.as_mut(),
+        &PortableStatement::Select(select),
+        &cancellation,
+    )
+    .await
+    .expect("SELECT TOP deve eseguire");
+    assert_eq!(selected.len(), 1, "il tetto deve valere");
+
+    // --- UPDATE, con OUTPUT fra SET e WHERE -----------------------------
+    let updated = execute_portable_returning(
+        transaction.as_mut(),
+        &PortableStatement::Update(UpdateStatement {
+            table: table(),
+            assignments: vec![(
+                "label".into(),
+                Expression::literal(ParameterValue::String("aggiornato".to_owned())),
+            )],
+            filter: Some(plenora_database_core::portable::eq(
+                "id",
+                ParameterValue::I32(1),
+            )),
+            returning: vec!["label".into()],
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("UPDATE ... OUTPUT deve eseguire");
+    assert_eq!(updated.len(), 1);
+
+    // --- UPSERT: prima il ramo che inserisce, poi quello che aggiorna ----
+    let upsert = |id: i32, label: &str, sets: Vec<(String, Expression)>| {
+        PortableStatement::Upsert(UpsertStatement {
+            table: table(),
+            columns: vec!["id".into(), "label".into()],
+            values: vec![row_of(id, label)],
+            conflict_target: vec!["id".into()],
+            update_on_conflict: sets,
+            returning: Vec::new(),
+        })
+    };
+    let set_label = |value: &str| {
+        vec![(
+            "label".to_owned(),
+            Expression::literal(ParameterValue::String(value.to_owned())),
+        )]
+    };
+    execute_portable(
+        transaction.as_mut(),
+        &upsert(3, "tre", set_label("tre")),
+        &cancellation,
+    )
+    .await
+    .expect("l'upsert su una chiave nuova deve inserire");
+    execute_portable(
+        transaction.as_mut(),
+        &upsert(3, "tre", set_label("tre-aggiornato")),
+        &cancellation,
+    )
+    .await
+    .expect("l'upsert su una chiave esistente deve aggiornare");
+    // La forma «non fare niente», che e uno statement diverso.
+    execute_portable(
+        transaction.as_mut(),
+        &upsert(3, "ignorato", Vec::new()),
+        &cancellation,
+    )
+    .await
+    .expect("l'upsert senza assegnamenti deve eseguire");
+
+    let survived = execute_portable_returning(
+        transaction.as_mut(),
+        &PortableStatement::Select(SelectStatement {
+            table: table(),
+            projection: plenora_database_core::portable::Projection::Columns(vec!["label".into()]),
+            filter: Some(plenora_database_core::portable::eq(
+                "id",
+                ParameterValue::I32(3),
+            )),
+            order_by: Vec::new(),
+            limit: None,
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("rilettura dell'upsert");
+    assert_eq!(survived.len(), 1, "l'upsert non deve duplicare la chiave");
+
+    // --- DELETE, con OUTPUT DELETED -------------------------------------
+    let deleted = execute_portable_returning(
+        transaction.as_mut(),
+        &PortableStatement::Delete(DeleteStatement {
+            table: table(),
+            filter: Some(plenora_database_core::portable::eq(
+                "id",
+                ParameterValue::I32(2),
+            )),
+            returning: vec!["id".into()],
+        }),
+        &cancellation,
+    )
+    .await
+    .expect("DELETE ... OUTPUT deve eseguire");
+    assert_eq!(
+        deleted.len(),
+        1,
+        "OUTPUT DELETED deve rendere la riga tolta"
+    );
+
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("la transazione si chiude");
+
+    let mut cleanup = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("cleanup del dialetto");
+    cleanup
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[portable_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .ok();
+}

@@ -39,14 +39,15 @@ const DIALECTS: &[(&str, ProviderKind)] = &[
     ("postgres", ProviderKind::Postgres),
     ("mysql", ProviderKind::Mysql),
     ("mariadb", ProviderKind::Mariadb),
-    // `sqlserver` non c'e, e ci **era**: il CLI lo offriva da sempre, e
-    // `compile_portable` rispondeva «non supportato per Sqlserver». Una
-    // promessa che il compilatore non poteva mantenere, scritta anche
-    // nell'aiuto del comando.
+    // `sqlserver` e tornato, ed e la seconda volta che questa riga si muove.
+    // C'era, e il CLI lo offriva mentre `compile_portable` rispondeva «non
+    // supportato»: una promessa che il compilatore non poteva mantenere. E' poi
+    // uscito, e ora rientra perche il dialetto T-SQL esiste.
     //
-    // Il giorno in cui il dialetto T-SQL entrera nel compilatore, la riga
-    // torna qui — e la prova qui sotto se ne accorgera da sola, perche
-    // attraversa ogni nome di questo elenco compilando un piano vero.
+    // La prova qui sotto se ne e accorta da sola in entrambe le direzioni,
+    // perche attraversa ogni nome di questo elenco compilando un piano vero:
+    // un elenco piu corto del vero nasconde, uno piu lungo promette.
+    ("sqlserver", ProviderKind::Sqlserver),
 ];
 
 /// `portable-compile <dialetto> PORTABLE.json`: compila e stampa l'SQL.

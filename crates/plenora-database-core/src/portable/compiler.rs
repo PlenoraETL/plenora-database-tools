@@ -46,6 +46,14 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
         // decisione, era il default di un `match` scritto quando il provider
         // non esisteva.
         ProviderKind::Mariadb => DialectKind::Mariadb,
+        // `Sqlserver` finiva nel ramo di scarto, esattamente come `Mariadb`
+        // prima di lui, e con la stessa conseguenza: l'intero strato facade —
+        // `execute_portable`, `execute_portable_returning`, `query_portable` —
+        // era irraggiungibile su un provider che questo repository pubblica,
+        // con un `TransactionScope` funzionante e ventinove funzioni spatial
+        // qualificate. Non era una decisione: era il default di un `match`
+        // scritto quando il provider non c'era.
+        ProviderKind::Sqlserver => DialectKind::SqlServer,
         other => {
             return Err(DatabaseError::unsupported(
                 other,
@@ -72,6 +80,13 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
 enum DialectKind {
     Postgres,
     Mysql,
+    /// T-SQL, e diverge dagli altri tre piu di quanto i tre divergano fra
+    /// loro: il segnaposto ha un nome (`@P1`), l'identificatore sta fra
+    /// parentesi quadre, il tetto di righe e un `TOP` che precede la
+    /// projection invece di un `LIMIT` che la segue, cio che una scrittura
+    /// restituisce si chiede **in mezzo** allo statement e non in coda, e le
+    /// funzioni spatial sono metodi del valore invece che chiamate.
+    SqlServer,
     /// La sintassi di `MySQL`, tranne dove i due prodotti divergono davvero.
     ///
     /// Oggi la divergenza e una sola — `RETURNING` — e potrebbe sembrare che
@@ -135,6 +150,10 @@ impl CompileContext {
             // di cio che i due condividono e lunga, e ogni riga di questo file
             // che li tratta insieme e una riga in cui si somigliano davvero.
             DialectKind::Mysql | DialectKind::Mariadb => "?".to_owned(),
+            // Posizionale come gli altri, e con un nome: `tiberius` lega per
+            // ordine e si aspetta `@P1`, `@P2`. Il numero e lo stesso di
+            // PostgreSQL, la sintassi no.
+            DialectKind::SqlServer => format!("@P{}", self.params.len()),
         }
     }
 }
@@ -154,6 +173,9 @@ impl From<DialectKind> for IdentifierDialect {
             DialectKind::Postgres => Self::Postgres,
             // Il quoting: backtick raddoppiato, identico sui due prodotti.
             DialectKind::Mysql | DialectKind::Mariadb => Self::Mysql,
+            // Parentesi quadre, con la chiusa raddoppiata. La regola c'era
+            // gia: e lo stesso modulo che serve gli altri tre.
+            DialectKind::SqlServer => Self::SqlServer,
         }
     }
 }
@@ -286,7 +308,63 @@ fn compile_spatial(
         DialectKind::Mysql | DialectKind::Mariadb => {
             compile_spatial_mysql(&col, predicate, reference, ctx)
         }
+        DialectKind::SqlServer => compile_spatial_sqlserver(&col, predicate, reference, ctx),
     }
+}
+
+/// Il predicato spatial in T-SQL: un **metodo della colonna**.
+///
+/// Negli altri tre dialetti il predicato e una funzione che prende due
+/// geometrie. Qui la colonna e il ricevitore e il riferimento l'argomento, e
+/// cio che torna e un `bit` da confrontare con uno — non un booleano.
+///
+/// Il costruttore dipende dalla semantica dichiarata nel riferimento:
+/// `geometry` e `geography` sono due tipi, e chiamare il metodo dell'uno su un
+/// valore dell'altro non compila. E' l'unica cosa che il piano deve dire e che
+/// negli altri dialetti non serviva.
+fn compile_spatial_sqlserver(
+    col: &str,
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    reference.validate()?;
+    spatial_policy::validate_predicate(ProviderKind::Sqlserver, predicate, reference)?;
+    let constructor = match reference.semantics {
+        SpatialSemantics::Geometry => "geometry::STGeomFromWKB",
+        SpatialSemantics::Geography => "geography::STGeomFromWKB",
+    };
+    let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    let srid_i32 = i32::try_from(reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan(format!(
+            "SRID {} eccede il range i32 supportato da SQL Server (max {})",
+            reference.srid,
+            i32::MAX
+        ))
+    })?;
+    let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
+    let geom_expr = format!("{constructor}({geom_placeholder}, {srid_placeholder})");
+    let method = match predicate {
+        SpatialPredicate::Intersects => "STIntersects",
+        SpatialPredicate::Contains => "STContains",
+        SpatialPredicate::Within => "STWithin",
+        // Il rettangolo che contiene, su entrambi i lati. Non e
+        // un'approssimazione come il `Filter()` di T-SQL, che rende righe che
+        // **potrebbero** intersecare e che non e stato misurato: questa e la
+        // stessa cosa che `MBRIntersects` dice su MySQL, scritta con due
+        // metodi qualificati.
+        SpatialPredicate::BoundingBox => {
+            return Ok(format!(
+                "({col}.STEnvelope().STIntersects(({geom_expr}).STEnvelope()) = 1)"
+            ));
+        }
+        // Gia rifiutato da `validate_predicate`, e il match deve restare
+        // esaustivo.
+        SpatialPredicate::DWithin { .. } => unreachable!(
+            "spatial_policy::validate_predicate deve aver gia rifiutato DWithin su SQL Server"
+        ),
+    };
+    Ok(format!("({col}.{method}({geom_expr}) = 1)"))
 }
 
 fn compile_spatial_postgres(
@@ -460,9 +538,9 @@ fn compile_returning(
     returning: &[String],
     dialect: DialectKind,
     form: ReturningForm,
-) -> Result<String> {
+) -> Result<ReturningClause> {
     if returning.is_empty() {
-        return Ok(String::new());
+        return Ok(ReturningClause::Nothing);
     }
     let refusal = match dialect {
         DialectKind::Postgres => None,
@@ -472,6 +550,23 @@ fn compile_returning(
              Usa una SELECT esplicita post-DML."
                 .to_owned(),
         )),
+        // `OUTPUT` esiste su INSERT, UPDATE e DELETE, e le tre forme
+        // funzionano. Non sull'upsert, e non per una mancanza di T-SQL: quello
+        // che questo compilatore emette per l'upsert sono **due** statement
+        // sotto un lock — un UPDATE e, se non ha toccato niente, un INSERT — e
+        // un `OUTPUT` appartiene a uno statement solo. Chiederlo renderebbe le
+        // righe di quello dei due che ha agito, senza che il chiamante sappia
+        // quale: un risultato che dipende da cosa c'era gia nella tabella.
+        DialectKind::SqlServer => match form {
+            ReturningForm::Insert | ReturningForm::Update | ReturningForm::Delete => None,
+            ReturningForm::Upsert => Some((
+                ProviderKind::Sqlserver,
+                "l'upsert T-SQL e un UPDATE seguito da un INSERT condizionale sotto lock, e \
+                 OUTPUT appartiene a un solo statement: le righe restituite dipenderebbero \
+                 da quale dei due ha agito. Usa una SELECT esplicita post-scrittura."
+                    .to_owned(),
+            )),
+        },
         DialectKind::Mariadb => match form {
             ReturningForm::Insert | ReturningForm::Delete | ReturningForm::Upsert => None,
             ReturningForm::Update => Some((
@@ -495,7 +590,67 @@ fn compile_returning(
         .iter()
         .map(|c| quote_identifier(c, dialect))
         .collect();
-    Ok(format!(" RETURNING {}", cols?.join(", ")))
+    let cols = cols?;
+    if dialect == DialectKind::SqlServer {
+        // `DELETED` per la cancellazione, `INSERTED` per tutto il resto: sono
+        // due pseudo-tabelle, e chiedere la riga inserita a una `DELETE`
+        // renderebbe colonne nulle invece di un errore.
+        let table = if form == ReturningForm::Delete {
+            "DELETED"
+        } else {
+            "INSERTED"
+        };
+        let projected = cols
+            .iter()
+            .map(|column| format!("{table}.{column}"))
+            .collect::<Vec<_>>();
+        return Ok(ReturningClause::Output(format!(
+            " OUTPUT {}",
+            projected.join(", ")
+        )));
+    }
+    Ok(ReturningClause::Suffix(format!(
+        " RETURNING {}",
+        cols.join(", ")
+    )))
+}
+
+/// Dove il dialetto vuole le colonne che una scrittura restituisce.
+///
+/// Erano una stringa da appendere, e su tre dialetti su quattro lo sono
+/// ancora. T-SQL no: `OUTPUT` sta **prima** di `VALUES`, prima di `WHERE`, e
+/// subito dopo `DELETE FROM t`. Appenderlo in coda avrebbe prodotto SQL che il
+/// server rifiuta, e il posto in cui va non e una proprieta dello statement ma
+/// del dialetto — per questo la decisione torna a chi compone lo statement
+/// invece di restare dentro `compile_returning`.
+enum ReturningClause {
+    Nothing,
+    /// ` RETURNING a, b` — in coda.
+    Suffix(String),
+    /// ` OUTPUT INSERTED.a, INSERTED.b` — in mezzo.
+    Output(String),
+}
+
+impl ReturningClause {
+    /// Cio che va in mezzo allo statement, dove il dialetto lo vuole.
+    fn inline(&self) -> &str {
+        match self {
+            Self::Output(clause) => clause,
+            Self::Nothing | Self::Suffix(_) => "",
+        }
+    }
+
+    /// Cio che va in coda.
+    fn suffix(&self) -> &str {
+        match self {
+            Self::Suffix(clause) => clause,
+            Self::Nothing | Self::Output(_) => "",
+        }
+    }
+
+    const fn is_empty(&self) -> bool {
+        matches!(self, Self::Nothing)
+    }
 }
 
 // ---- Statement compilers ---------------------------------------------------
@@ -503,7 +658,15 @@ fn compile_returning(
 fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<String> {
     let projection = compile_projection(&s.projection, ctx.dialect)?;
     let table = qualify_table(&s.table, ctx.dialect)?;
-    let mut sql = format!("SELECT {projection} FROM {table}");
+    // `TOP` precede la projection, e va deciso prima di scriverla. Non
+    // richiede un ORDER BY come farebbe `OFFSET ... FETCH`, ed e la sola forma
+    // che serve qui: il `SelectStatement` portabile ha un tetto e non un
+    // offset.
+    let top = match (ctx.dialect, s.limit) {
+        (DialectKind::SqlServer, Some(limit)) => format!("TOP ({limit}) "),
+        _ => String::new(),
+    };
+    let mut sql = format!("SELECT {top}{projection} FROM {table}");
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         write!(sql, " WHERE {where_sql}").expect("write String");
@@ -513,7 +676,9 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
         write!(sql, " ORDER BY {ob}").expect("write String");
     }
     if let Some(limit) = s.limit {
-        write!(sql, " LIMIT {limit}").expect("write String");
+        if ctx.dialect != DialectKind::SqlServer {
+            write!(sql, " LIMIT {limit}").expect("write String");
+        }
     }
     Ok(sql)
 }
@@ -554,15 +719,13 @@ fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<Strin
             Ok(format!("({})", placeholders?.join(", ")))
         })
         .collect();
+    let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Insert)?;
     let mut sql = format!(
-        "INSERT INTO {table} ({cols_sql}) VALUES {}",
+        "INSERT INTO {table} ({cols_sql}){} VALUES {}",
+        returning.inline(),
         rows?.join(", ")
     );
-    sql.push_str(&compile_returning(
-        &s.returning,
-        ctx.dialect,
-        ReturningForm::Insert,
-    )?);
+    sql.push_str(returning.suffix());
     Ok(sql)
 }
 
@@ -582,32 +745,140 @@ fn compile_update(s: &UpdateStatement, ctx: &mut CompileContext) -> Result<Strin
             Ok(format!("{c} = {e}"))
         })
         .collect();
-    let mut sql = format!("UPDATE {table} SET {}", sets?.join(", "));
+    let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Update)?;
+    let mut sql = format!(
+        "UPDATE {table} SET {}{}",
+        sets?.join(", "),
+        returning.inline()
+    );
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         write!(sql, " WHERE {where_sql}").expect("write String");
     }
-    sql.push_str(&compile_returning(
-        &s.returning,
-        ctx.dialect,
-        ReturningForm::Update,
-    )?);
+    sql.push_str(returning.suffix());
     Ok(sql)
 }
 
 fn compile_delete(s: &DeleteStatement, ctx: &mut CompileContext) -> Result<String> {
     let table = qualify_table(&s.table, ctx.dialect)?;
-    let mut sql = format!("DELETE FROM {table}");
+    let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Delete)?;
+    let mut sql = format!("DELETE FROM {table}{}", returning.inline());
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         write!(sql, " WHERE {where_sql}").expect("write String");
     }
-    sql.push_str(&compile_returning(
-        &s.returning,
-        ctx.dialect,
-        ReturningForm::Delete,
-    )?);
+    sql.push_str(returning.suffix());
     Ok(sql)
+}
+
+/// L'upsert in T-SQL: un UPDATE e, se non ha toccato niente, un INSERT.
+///
+/// # Perche non `MERGE`
+///
+/// Perche il percorso di scrittura di questo repository lo evita gia, e
+/// deliberatamente. Due forme diverse per la stessa operazione dentro lo stesso
+/// prodotto sarebbero due comportamenti da spiegare a chi li incontra: qui si
+/// segue la decisione che c'e, invece di prenderne una seconda.
+///
+/// # Il lock
+///
+/// `WITH (UPDLOCK, HOLDLOCK)` sulla lettura e sull'UPDATE, come nel percorso di
+/// scrittura. Senza, fra l'UPDATE che non tocca niente e l'INSERT che segue
+/// c'e una finestra in cui un'altra transazione inserisce la stessa chiave, e
+/// cio che si ottiene e una violazione di chiave invece di un upsert. Il lock
+/// e la ragione per cui questa forma e corretta, non un ornamento.
+///
+/// # Una riga sola
+///
+/// La forma condizionale ragiona su **una** chiave: `IF @@ROWCOUNT = 0` dice
+/// che l'UPDATE non ha trovato la riga, e con due righe non direbbe quale.
+/// Renderla multi-riga vorrebbe dire ripetere la coppia per ogni riga —
+/// possibile, e un altro disegno: il numero di round trip diventa il numero di
+/// righe, e il conteggio che `execute` restituisce smette di significare
+/// quello che significa altrove.
+///
+/// Il rifiuto e percio esplicito e dice quale forma usare: un `INSERT`
+/// multi-riga per i dati nuovi, o un upsert per riga.
+fn compile_upsert_sqlserver(
+    s: &UpsertStatement,
+    table: &str,
+    cols_sql: &str,
+    rows: &[Vec<String>],
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    // Prima del resto: se il chiamante chiede le righe indietro, la ragione la
+    // da `compile_returning`, che di questa forma sa dire perche non puo.
+    let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?;
+    debug_assert!(returning.is_empty(), "il rifiuto precede questa riga");
+    let [row] = rows else {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Sqlserver,
+            crate::ErrorPhase::Prepare,
+            format!(
+                "l'upsert T-SQL vale su una riga per volta e ne sono arrivate {}: la forma \
+                 condizionale ragiona su una chiave sola. Usa un INSERT multi-riga per i dati \
+                 nuovi, oppure un upsert per riga.",
+                rows.len()
+            ),
+        ));
+    };
+    if s.conflict_target.is_empty() {
+        // Su PostgreSQL il bersaglio del conflitto e obbligatorio e su MySQL e
+        // ignorato — li lo sceglie il server dagli indici unici. Qui serve
+        // davvero: e la clausola WHERE della lettura e dell'UPDATE, e senza di
+        // essa non c'e niente su cui decidere.
+        return Err(DatabaseError::invalid_plan(
+            "l'upsert T-SQL richiede un conflict_target esplicito: e la condizione con cui              cerca la riga esistente",
+        ));
+    }
+    // Il segnaposto della colonna, riletto: `@P1` compare nella VALUES **e**
+    // nella condizione, e lega lo stesso valore in tutte e due.
+    let placeholder_of = |column: &str| -> Result<String> {
+        let index = s
+            .columns
+            .iter()
+            .position(|candidate| candidate == column)
+            .ok_or_else(|| {
+                DatabaseError::invalid_plan(format!(
+                    "conflict_target nomina una colonna che l'upsert non scrive: {column}"
+                ))
+            })?;
+        row.get(index).cloned().ok_or_else(|| {
+            DatabaseError::invalid_plan("riga upsert piu corta dell'elenco delle colonne")
+        })
+    };
+    let conditions: Result<Vec<_>> = s
+        .conflict_target
+        .iter()
+        .map(|column| {
+            let quoted = quote_identifier(column, ctx.dialect)?;
+            let value = placeholder_of(column)?;
+            Ok(format!("{quoted} = {value}"))
+        })
+        .collect();
+    let condition = conditions?.join(" AND ");
+    let values = format!("({})", row.join(", "));
+
+    if s.update_on_conflict.is_empty() {
+        // Il «non fare niente»: si guarda se la riga c'e, tenendo il lock, e si
+        // inserisce soltanto se non c'e.
+        return Ok(format!(
+            "IF NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE {condition})              INSERT INTO {table} ({cols_sql}) VALUES {values};"
+        ));
+    }
+    let sets: Result<Vec<_>> = s
+        .update_on_conflict
+        .iter()
+        .map(|(column, expression)| {
+            let quoted = quote_identifier(column, ctx.dialect)?;
+            let value = compile_expression(expression, ctx)?;
+            Ok(format!("{quoted} = {value}"))
+        })
+        .collect();
+    Ok(format!(
+        "UPDATE {table} WITH (UPDLOCK, HOLDLOCK) SET {} WHERE {condition};          IF @@ROWCOUNT = 0 INSERT INTO {table} ({cols_sql}) VALUES {values};",
+        sets?.join(", ")
+    ))
 }
 
 fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<String> {
@@ -637,18 +908,27 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         .map(|c| quote_identifier(c, ctx.dialect))
         .collect();
     let cols_sql = cols?.join(", ");
-    let rows: Result<Vec<String>> = s
+    // Le righe restano scomposte finche non si sa chi le usa: T-SQL ha
+    // bisogno di **rileggere** il segnaposto di una colonna per costruire la
+    // condizione di conflitto, e una stringa gia unita non lo permetterebbe.
+    // Che si possa rileggerlo e una proprieta del suo segnaposto: `@P1` ha un
+    // nome, quindi comparire due volte nello stesso statement lega lo stesso
+    // valore, mentre un `?` legherebbe il successivo.
+    let rows: Result<Vec<Vec<String>>> = s
         .values
         .iter()
-        .map(|row| {
-            let placeholders: Result<Vec<_>> =
-                row.iter().map(|e| compile_expression(e, ctx)).collect();
-            Ok(format!("({})", placeholders?.join(", ")))
-        })
+        .map(|row| row.iter().map(|e| compile_expression(e, ctx)).collect())
         .collect();
+    let rows = rows?;
+    if ctx.dialect == DialectKind::SqlServer {
+        return compile_upsert_sqlserver(s, &table, &cols_sql, &rows, ctx);
+    }
     let mut sql = format!(
         "INSERT INTO {table} ({cols_sql}) VALUES {}",
-        rows?.join(", ")
+        rows.iter()
+            .map(|row| format!("({})", row.join(", ")))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     match ctx.dialect {
         DialectKind::Postgres => {
@@ -677,6 +957,10 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         // `ON DUPLICATE KEY UPDATE` e `INSERT IGNORE`: stessa sintassi sui due
         // prodotti. La divergenza dell'upsert non e qui, e in cosa il server
         // consegna dopo — vedi `compile_returning`.
+        // Trattato prima del match, perche non e una variante della stessa
+        // forma: T-SQL non ha una clausola di conflitto e lo statement e un
+        // altro.
+        DialectKind::SqlServer => unreachable!("l'upsert T-SQL esce prima di questo match"),
         DialectKind::Mysql | DialectKind::Mariadb => {
             // MySQL: ON DUPLICATE KEY UPDATE. Il conflict_target NON è
             // esplicito in MySQL (usa la primary key / unique index
@@ -703,10 +987,6 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
             }
         }
     }
-    sql.push_str(&compile_returning(
-        &s.returning,
-        ctx.dialect,
-        ReturningForm::Upsert,
-    )?);
+    sql.push_str(compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?.suffix());
     Ok(sql)
 }
