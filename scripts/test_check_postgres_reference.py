@@ -453,6 +453,11 @@ class LiveTestsMustMeasure(unittest.TestCase):
         "scripts/check_postgres_matrix.py",
     )
 
+    #: Il gate che ha la fixture a CA privata, e che percio puo pretendere la
+    #: prova mTLS. Gli altri due la dichiarano «non qualificante», ed e giusto:
+    #: i loro compose sono plaintext.
+    TLS_GATE = "scripts/check_postgres_hardening.py"
+
     def test_no_live_test_reads_the_dsn_without_the_loud_helper(self) -> None:
         source = self.SUITE.read_text(encoding="utf-8")
         direct = re.findall(
@@ -471,6 +476,29 @@ class LiveTestsMustMeasure(unittest.TestCase):
             "l'helper che rende rumoroso il salto e sparito",
         )
         self.assertIn("PLENORA_REQUIRE_LIVE_POSTGRES", source)
+
+        # Il materiale TLS aveva la stessa forma, su variabili diverse, ed
+        # era sfuggito alla prima stesura di questa guardia proprio per
+        # quello: si cercava un nome, non una forma.
+        diretto_tls = re.findall(
+            r'std::env::var\(\"PLENORA_TEST_POSTGRES_TLS_\w+\"\)\s*,?\s*\n\s*\)\s*else',
+            source,
+        )
+        self.assertEqual(
+            diretto_tls,
+            [],
+            "una prova legge il materiale TLS senza passare da "
+            "live_tls_material_or_skip: tornerebbe a saltare in silenzio",
+        )
+        self.assertIn("fn live_tls_material_or_skip", source)
+
+    def test_the_tls_gate_demands_the_tls_measure(self) -> None:
+        source = (self.ROOT / self.TLS_GATE).read_text(encoding="utf-8")
+        self.assertIn(
+            "PLENORA_REQUIRE_LIVE_POSTGRES_TLS=1",
+            source,
+            "il gate con la fixture TLS non pretende la prova mTLS",
+        )
 
     def test_every_gate_demands_the_measure(self) -> None:
         for name in self.GATES:

@@ -122,6 +122,48 @@ mod tests {
     /// Senza quel segnale il salto resta, ed e voluto: `cargo test` su una
     /// macchina senza `PostgreSQL` deve continuare a funzionare, o la suite
     /// unitaria diventa eseguibile solo con Docker acceso.
+    /// Il materiale TLS della fixture a CA privata, oppure il permesso di non
+    /// misurare nulla.
+    ///
+    /// # Perche non basta il salto silenzioso
+    ///
+    /// Questa prova cominciava con un `let (Ok(..), Ok(..), Ok(..), Ok(..)) =
+    /// (..) else { return; }`: senza le quattro variabili si concludeva
+    /// subito, e `cargo test` la contava fra quelle passate.
+    ///
+    /// E' la stessa forma dei quindici salti sulla DSN, resi rumorosi oggi, e
+    /// questa era sfuggita perche guarda variabili diverse. Con una
+    /// differenza a suo favore: il gate di riferimento la **dichiara** fra le
+    /// prove che non qualificano, con la sua ragione — il suo compose e
+    /// plaintext, e la CA privata non c'e.
+    ///
+    /// # Dove invece deve misurare
+    ///
+    /// Nel gate di indurimento, che la fixture TLS ce l'ha e le quattro
+    /// variabili le passa. Li il salto sarebbe un difetto silenzioso, e
+    /// `PLENORA_REQUIRE_LIVE_POSTGRES_TLS` lo rende un fallimento.
+    ///
+    /// Il segnale e **suo** e non quello della DSN: il gate di riferimento
+    /// pretende la misura live e non puo pretendere quella TLS, e un segnale
+    /// solo lo farebbe fallire su una prova che ha ragione di saltare.
+    fn live_tls_material_or_skip() -> Option<(String, String, String, String)> {
+        let material = (
+            std::env::var("PLENORA_TEST_POSTGRES_TLS_DSN"),
+            std::env::var("PLENORA_TEST_POSTGRES_TLS_CA"),
+            std::env::var("PLENORA_TEST_POSTGRES_TLS_CLIENT_CERT"),
+            std::env::var("PLENORA_TEST_POSTGRES_TLS_CLIENT_KEY"),
+        );
+        if let (Ok(dsn), Ok(ca), Ok(certificate), Ok(key)) = material {
+            return Some((dsn, ca, certificate, key));
+        }
+        assert!(
+            std::env::var("PLENORA_REQUIRE_LIVE_POSTGRES_TLS").is_err(),
+            "PLENORA_REQUIRE_LIVE_POSTGRES_TLS e acceso ma il materiale TLS manca: \
+             questa prova avrebbe saltato la misura dichiarandosi passata"
+        );
+        None
+    }
+
     fn live_dsn_or_skip() -> Option<String> {
         let declared = std::env::var("PLENORA_TEST_POSTGRES_DSN").ok();
         if declared.is_none() {
@@ -952,12 +994,9 @@ mod tests {
 
     #[tokio::test]
     async fn live_private_ca_mtls_and_cancellation_when_configured() {
-        let (Ok(dsn), Ok(ca_path), Ok(client_certificate_path), Ok(client_private_key_path)) = (
-            std::env::var("PLENORA_TEST_POSTGRES_TLS_DSN"),
-            std::env::var("PLENORA_TEST_POSTGRES_TLS_CA"),
-            std::env::var("PLENORA_TEST_POSTGRES_TLS_CLIENT_CERT"),
-            std::env::var("PLENORA_TEST_POSTGRES_TLS_CLIENT_KEY"),
-        ) else {
+        let Some((dsn, ca_path, client_certificate_path, client_private_key_path)) =
+            live_tls_material_or_skip()
+        else {
             return;
         };
         let ca = std::fs::read(ca_path).expect("read private CA");

@@ -92,6 +92,12 @@ def cargo(
         ]
     if tls_dsn is not None:
         command += [
+            "-e",
+            # Il segnale sta **dentro** questa condizione, con il materiale che
+            # pretende. Fuori, un gate senza fixture TLS accenderebbe la
+            # pretesa e non i mezzi per soddisfarla, e la prova fallirebbe per
+            # una ragione che non e il prodotto.
+            "PLENORA_REQUIRE_LIVE_POSTGRES_TLS=1",
             "-v",
             f"{compose_volume(POSTGRES_CONTAINERS[1], TLS_CERTS_DESTINATION)}:/tls:ro",
             "-e",
