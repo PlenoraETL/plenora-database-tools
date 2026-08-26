@@ -1226,12 +1226,28 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "la validazione del context segue il primo statement",
         )
 
-    def test_the_published_package_does_not_advertise_a_missing_binding(self) -> None:
-        """La descrizione del pacchetto elenca solo i provider esposti.
+    def test_the_published_description_and_the_bindings_agree(self) -> None:
+        """La descrizione del pacchetto elenca esattamente i motori raggiungibili.
 
-        `pyproject.toml` prometteva SQL Server: e il testo che finisce
-        sull'indice del pacchetto, dove nessuno legge le note. Il binding non
-        esiste, quindi il nome non ci va.
+        E' il testo che finisce sull'indice del pacchetto, dove nessuno legge
+        le note: se promette un motore che non c'e, qualcuno installa e scopre
+        il vuoto; se ne tace uno che c'e, qualcuno non prova nemmeno.
+
+        # Perche nei due versi
+
+        Questa guardia ne controllava uno solo, e con una costante: pretendeva
+        che `def connect_sqlserver(` **non** esistesse, perche all'epoca il
+        binding non c'era e la descrizione lo prometteva lo stesso. Ha fatto il
+        suo lavoro fino in fondo — il giorno in cui quel binding e arrivato ha
+        detto «esiste un binding SQL Server: aggiornare questa guardia».
+
+        Girare l'asserzione avrebbe ricostruito la stessa trappola al
+        contrario. Cio che va preteso e la **corrispondenza**, e la
+        corrispondenza si guarda da entrambi i lati: nessun motore promesso
+        senza factory, nessuna factory taciuta dalla promessa.
+
+        E' cosi che si e visto che `MariaDB` mancava dalla descrizione da
+        quando la sua factory esiste.
         """
 
         native = (
@@ -1242,20 +1258,38 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             / "plenora_database"
             / "__init__.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn(
-            "def connect_sqlserver(",
-            native,
-            "esiste un binding SQL Server: aggiornare questa guardia",
-        )
-
         pyproject = (ROOT / "crates" / "plenora-database-py" / "pyproject.toml").read_text(
             encoding="utf-8"
         )
         description = next(
             line for line in pyproject.splitlines() if line.startswith("description =")
         )
-        for absent in ("SQL Server", "SQLServer", "sqlserver"):
-            self.assertNotIn(absent, description, description)
+
+        #: motore -> (come si chiama la factory, come si scrive nella descrizione)
+        engines = {
+            "postgres": ("def connect(", "Postgres"),
+            "mysql": ("def connect_mysql(", "MySQL"),
+            "mariadb": ("def connect_mariadb(", "MariaDB"),
+            "sqlserver": ("def connect_sqlserver(", "SQL Server"),
+        }
+
+        for engine, (factory, advertised) in engines.items():
+            has_binding = factory in native
+            is_advertised = advertised in description
+            self.assertEqual(
+                has_binding,
+                is_advertised,
+                f"{engine}: binding={has_binding} descrizione={is_advertised} — "
+                f"la descrizione del pacchetto e le factory non coincidono. "
+                f"{description}",
+            )
+
+        # Almeno una factory deve esserci, o il confronto sarebbe vero a vuoto
+        # su un pacchetto senza binding e senza descrizione.
+        self.assertTrue(
+            any(factory in native for factory, _ in engines.values()),
+            "nessuna factory riconosciuta: la guardia non sta guardando nulla",
+        )
 
     def test_the_mysql_tls_default_is_documented_as_verifying(self) -> None:
         """Nessuna doc puo dire che il default MySQL non verifica.

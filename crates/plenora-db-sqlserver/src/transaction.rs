@@ -462,7 +462,39 @@ impl TransactionScope for SqlServerTransaction {
             self.session
                 .session_mut()?
                 .execute_write_query(query, cancellation)
-                .await
+                .await?;
+            // Il conteggio arriva da `@@ROWCOUNT`, non dal contatore TDS.
+            //
+            // Il bootstrap della sessione impone `SET NOCOUNT ON`, ed e la
+            // scelta giusta per il percorso bulk: sopprime un pacchetto per
+            // statement, e quel percorso le righe se le conta dai batch che ha
+            // mandato. Ma sopprime anche cio che `execute` deve rendere, e il
+            // contratto qui e esplicito — un `u64` che sono le righe toccate.
+            //
+            // Delle tre vie possibili questa e l'unica che non ha effetti
+            // collaterali. Spegnere `NOCOUNT` per la durata della transazione
+            // cambierebbe uno stato che la sessione condivide con il percorso
+            // di scrittura quando torna al pool; appendere `; SELECT @@ROWCOUNT`
+            // all'SQL del chiamante vorrebbe dire riscrivere cio che ha
+            // scritto, che questo modulo si vieta due funzioni piu sopra.
+            //
+            // Il costo e un round-trip, e va letto per quello che e: il prezzo
+            // di un conteggio vero invece di uno zero comodo.
+            let counted = self
+                .session
+                .session_mut()?
+                .execute_query(
+                    Query::new("SELECT CAST(@@ROWCOUNT AS bigint)"),
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+            let affected = counted
+                .first()
+                .and_then(|set| set.first())
+                .and_then(|row| row.try_get::<i64, _>(0).ok().flatten())
+                .unwrap_or_default();
+            Ok(u64::try_from(affected).unwrap_or_default())
         })
     }
 

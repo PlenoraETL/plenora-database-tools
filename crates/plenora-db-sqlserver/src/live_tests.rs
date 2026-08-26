@@ -393,6 +393,221 @@ async fn azure_sql_probe_uses_verified_tls_and_native_spatial_types() {
     assert!(session.is_reusable());
 }
 
+/// La transazione applicativa esiste, e fa cio che la capability promette.
+///
+/// # Cosa esisteva prima
+///
+/// Niente. Il provider dichiarava `transactions.scope = Transaction` e non
+/// sovrascriveva `begin_transaction`: il default rispondeva `Unsupported`, e la
+/// capability era una promessa che nessuno poteva mantenere.
+///
+/// Nessun consumatore ci arrivava — il CLI generico non apre transazioni,
+/// queste prove usano le primitive TDS direttamente — quindi il difetto e
+/// rimasto invisibile finche il SDK Python non ha raggiunto questo motore.
+///
+/// # Cosa attraversa
+///
+/// Le quattro cose che distinguono una transazione da una sequenza di
+/// statement, e che una prova che si limitasse ad aprirla non direbbe:
+///
+/// * uno statement **scrive**, e il conteggio delle righe torna;
+/// * una `query` nella stessa transazione **vede** cio che ha appena scritto,
+///   che e la proprieta per cui una transazione esiste;
+/// * lo **stream** consegna le righe a batch, e il batch e quello chiesto;
+/// * il **rollback** cancella tutto, verificato da **un'altra** connessione —
+///   perche chiederlo alla stessa direbbe soltanto che la sessione e coerente
+///   con se stessa.
+///
+/// I savepoint sono rifiutati, e la prova lo pretende: `savepoints` dichiara
+/// `false`, e una capability chiusa con un percorso aperto sotto e lo stesso
+/// difetto al contrario.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+#[allow(clippy::too_many_lines)]
+async fn live_transaction_scope_writes_reads_streams_and_rolls_back() {
+    use plenora_database_core::transaction::{IsolationLevel, Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin della transazione");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[transaction_probe]; \
+                 CREATE TABLE [plenora_test].[transaction_probe] \
+                 ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(32) NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture della transazione");
+
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let secret = live_secret();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = TransactionOptions {
+        isolation: Some(IsolationLevel::ReadCommitted),
+        ..TransactionOptions::default()
+    };
+
+    // --- Scrive, e si rilegge da dentro ---------------------------------
+    let mut transaction = provider
+        .begin_transaction(&secret, &options, &budget, &cancellation)
+        .await
+        .expect("la transazione si apre");
+
+    let mut inserted = 0_u64;
+    for id in 1..=6_i32 {
+        let statement = Statement {
+            sql: "INSERT INTO [plenora_test].[transaction_probe] ([id], [label]) \
+                  VALUES (@P1, @P2)"
+                .to_owned(),
+            params: vec![
+                ParameterValue::I32(id),
+                ParameterValue::String(format!("riga-{id}")),
+            ],
+        };
+        inserted += transaction
+            .execute(&statement, &cancellation)
+            .await
+            .expect("insert nella transazione");
+    }
+    assert_eq!(inserted, 6, "ogni insert deve dichiarare la propria riga");
+
+    let seen = transaction
+        .query(
+            &Statement::new(
+                "SELECT [id], [label] FROM [plenora_test].[transaction_probe] ORDER BY [id]",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("query dentro la transazione");
+    assert_eq!(
+        seen.len(),
+        6,
+        "una transazione deve vedere cio che ha appena scritto"
+    );
+    assert_eq!(
+        seen[0].values()[1],
+        ParameterValue::String("riga-1".to_owned()),
+        "il decoder deve rendere il testo scritto"
+    );
+
+    // --- Lo stream, a batch --------------------------------------------
+    {
+        // Lo statement vive fuori dalla chiamata: lo stream lo presta per tutta
+        // la propria vita, e un temporaneo morirebbe prima di lui.
+        let streamed =
+            Statement::new("SELECT [id] FROM [plenora_test].[transaction_probe] ORDER BY [id]");
+        let mut stream = transaction
+            .query_stream(&streamed, 4, &cancellation)
+            .await
+            .expect("stream dentro la transazione");
+        let first = stream
+            .next_batch(&cancellation)
+            .await
+            .expect("primo batch")
+            .expect("righe del primo batch");
+        assert_eq!(first.len(), 4, "il batch deve essere quello chiesto");
+        let second = stream
+            .next_batch(&cancellation)
+            .await
+            .expect("secondo batch")
+            .expect("righe del secondo batch");
+        assert_eq!(second.len(), 2, "l'ultimo batch porta il resto");
+        assert!(
+            stream
+                .next_batch(&cancellation)
+                .await
+                .expect("fine dello stream")
+                .is_none(),
+            "lo stream esaurito deve dire di esserlo"
+        );
+    }
+
+    // --- I savepoint restano chiusi -------------------------------------
+    let refused = transaction
+        .savepoint("punto", &cancellation)
+        .await
+        .expect_err("savepoints e dichiarato false");
+    assert_eq!(refused.category, ErrorCategory::Unsupported);
+
+    // --- Il rollback, visto da fuori ------------------------------------
+    Box::new(transaction)
+        .rollback(&cancellation)
+        .await
+        .expect("rollback");
+
+    // La verifica arriva da **un'altra** connessione: chiederlo alla stessa
+    // direbbe soltanto che la sessione e coerente con se stessa.
+    let rows = admin
+        .execute_query(
+            Query::new("SELECT COUNT_BIG(*) FROM [plenora_test].[transaction_probe];"),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("conteggio dopo il rollback");
+    assert_eq!(
+        rows[0][0].try_get::<i64, _>(0).unwrap(),
+        Some(0),
+        "il rollback deve aver cancellato ogni riga"
+    );
+
+    // --- E il commit invece le tiene -------------------------------------
+    let mut committed = provider
+        .begin_transaction(&secret, &options, &budget, &cancellation)
+        .await
+        .expect("seconda transazione");
+    committed
+        .execute(
+            &Statement {
+                sql: "INSERT INTO [plenora_test].[transaction_probe] ([id], [label]) \
+                      VALUES (@P1, @P2)"
+                    .to_owned(),
+                params: vec![
+                    ParameterValue::I32(99),
+                    ParameterValue::String("sopravvive".to_owned()),
+                ],
+            },
+            &cancellation,
+        )
+        .await
+        .expect("insert della seconda transazione");
+    let outcome = Box::new(committed)
+        .commit(&cancellation)
+        .await
+        .expect("commit");
+    assert!(outcome.is_committed(), "il commit deve dichiararsi tale");
+
+    let rows = admin
+        .execute_query(
+            Query::new("SELECT COUNT_BIG(*) FROM [plenora_test].[transaction_probe];"),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("conteggio dopo il commit");
+    assert_eq!(
+        rows[0][0].try_get::<i64, _>(0).unwrap(),
+        Some(1),
+        "il commit deve aver tenuto la riga"
+    );
+
+    admin
+        .execute_query(
+            Query::new("DROP TABLE [plenora_test].[transaction_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia della fixture della transazione");
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture write"]
 #[allow(clippy::too_many_lines)]
