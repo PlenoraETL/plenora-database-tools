@@ -122,7 +122,8 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
-    // Le nove che `raw.spatial_candidate_functions` ha trovato presenti fra le
+    // Le nove che `raw.scalar_function_forms` — allora
+    // `raw.spatial_candidate_functions` — ha trovato presenti fra le
     // ventisei mai chieste. Presenti non vuol dire qualificate: la sonda
     // `live_v12_every_verified_spatial_function_executes` le attraversa una per
     // una, e cio che non esegue esce da questa lista con la misura in mano —

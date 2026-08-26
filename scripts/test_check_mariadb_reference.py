@@ -566,8 +566,25 @@ class MariadbDriverEvidenceTests(unittest.TestCase):
         self.assertEqual(
             probes - documented, set(), "sonde misurate e non registrate"
         )
+        # Un nome vecchio e citabile solo se il gate dichiara in cosa si e
+        # trasformato: la tranche che lo eseguì resta leggibile, e un nome
+        # inventato resta un errore.
+        from scripts.check_mariadb_driver import RENAMED_PROBES
+
         self.assertEqual(
-            documented - probes, set(), "il documento cita sonde inesistenti"
+            documented - probes - set(RENAMED_PROBES),
+            set(),
+            "il documento cita sonde inesistenti e non dichiarate come rinominate",
+        )
+        self.assertEqual(
+            set(RENAMED_PROBES.values()) - probes,
+            set(),
+            "un rinominamento punta a una sonda che non esiste",
+        )
+        self.assertEqual(
+            set(RENAMED_PROBES) & probes,
+            set(),
+            "un nome dichiarato vecchio e ancora in uso",
         )
 
 

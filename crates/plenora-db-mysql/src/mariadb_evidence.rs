@@ -108,7 +108,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     returning_form_probe(recorder, connection).await;
     spatial_write_probe(recorder, connection).await;
     spatial_index_probe(recorder, connection).await;
-    spatial_candidates_probe(recorder, connection).await;
+    scalar_function_probe(recorder, connection).await;
     geometry_result_probe(recorder, connection).await;
     crs_rule_probe(recorder, connection).await;
     geometry_function_probe(recorder, connection).await;
@@ -6386,7 +6386,7 @@ async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql
 /// contratto dichiara, con l'arieta che dichiara, attraverso il percorso del
 /// provider. Questa sonda produce un elenco di **candidate**, e il passo dopo e
 /// la lista verified, dove il gate le attraversa una per una.
-async fn spatial_candidates_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+async fn scalar_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     use plenora_database_core::query::SpatialFunction;
 
     let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
@@ -6407,15 +6407,12 @@ async fn spatial_candidates_probe(recorder: &mut Recorder, connection: &mut mysq
     let mut present = Vec::new();
     let mut absent = Vec::new();
     for function in SpatialFunction::ALL {
-        // Le geometriche restano fuori: il mapper del result set rifiuta
-        // `MYSQL_TYPE_GEOMETRY`, quindi chiederle qui misurerebbe una
-        // superficie che il provider non puo comunque consegnare.
+        // Le geometriche restano fuori, e la ragione e cambiata: non piu «il
+        // mapper le rifiuta comunque» — non le rifiuta piu — ma che
+        // `raw.geometry_function_forms` le chiede **meglio**, con l'arieta e i
+        // ruoli del contratto invece che a zero argomenti. Chiederle anche qui
+        // aggiungerebbe una misura piu debole della stessa cosa.
         if returns(*function) == "geometry" {
-            continue;
-        }
-        if crate::query::VERIFIED_SPATIAL_FUNCTIONS.contains(function)
-            || crate::query::MARIADB_VERIFIED_SPATIAL_FUNCTIONS.contains(function)
-        {
             continue;
         }
         let name = plenora_database_sql::spatial_function_name(
@@ -6434,10 +6431,10 @@ async fn spatial_candidates_probe(recorder: &mut Recorder, connection: &mut mysq
     }
 
     recorder.accepted(
-        "raw.spatial_candidate_functions",
+        "raw.scalar_function_forms",
         "raw",
         "spatial",
-        "quali funzioni del contratto, mai provate, il server possiede",
+        "quali delle quarantuno funzioni che rendono uno scalare il server possiede",
         condense(&format!(
             "presenti={}/{} [{}] assenti=[{}]",
             present.len(),

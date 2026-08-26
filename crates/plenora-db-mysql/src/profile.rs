@@ -2277,6 +2277,38 @@ mod tests {
     }
 
     #[test]
+    fn the_scalar_census_does_not_skip_what_is_already_published() {
+        // La sonda delle scalari filtrava sulle due liste pubblicate, e cio la
+        // rendeva una misura che **scadeva**: una funzione aperta su `MySQL`
+        // smetteva di essere chiesta a `MariaDB`, dove non era aperta.
+        // `HausdorffDistance` e `FrechetDistance` sono state misurate assenti da
+        // `MariaDB` una volta sola, e per venti tranche il documento ha ripetuto
+        // quel fatto senza riverificarlo.
+        //
+        // Il filtro sarebbe naturale da riscrivere — chiedere cio che si sa gia
+        // sembra spreco — e costa una SELECT per funzione. E' il prezzo di una
+        // misura ripetibile proprio dove i due prodotti divergono.
+        let source = include_str!("mariadb_evidence.rs");
+        let probe = source
+            .split_once("async fn scalar_function_probe")
+            .expect("la sonda delle scalari")
+            .1;
+        // Fino alla funzione successiva, e non fino alla prima graffa a inizio
+        // riga: il file ha terminatori di riga Windows, e un `\n}\n` non ci
+        // compare mai.
+        let probe = probe
+            .split_once("async fn ")
+            .map_or(probe, |(body, _)| body);
+        for list in ["VERIFIED_SPATIAL_FUNCTIONS", "MARIADB_VERIFIED_SPATIAL"] {
+            assert!(
+                !probe.contains(list),
+                "la sonda delle scalari consulta {list}: la sua misura tornerebbe \
+                 a scadere su cio che i due prodotti non condividono"
+            );
+        }
+    }
+
+    #[test]
     fn no_other_module_writes_the_geometry_projection() {
         // La proiezione e l'attesa sul suo output sono due meta della stessa
         // decisione. Se `types.rs` tornasse a scrivere la funzione, un

@@ -127,6 +127,7 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::the_pure_paths_no_longer_contradict_the_attribution",
     "profile::tests::the_query_module_no_longer_maps_wire_types",
     "profile::tests::the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column",
+    "profile::tests::the_scalar_census_does_not_skip_what_is_already_published",
     "profile::tests::the_shared_paths_name_the_product_in_their_messages",
     "profile::tests::the_shared_verdicts_are_shared_only_where_they_were_measured",
     "profile::tests::the_spatial_decisions_diverge_only_where_the_catalog_cannot_answer",

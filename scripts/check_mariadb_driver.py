@@ -244,7 +244,17 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # assente e una promessa che il prodotto non puo mantenere; una chiusa
     # perche nessuno ha guardato e una promessa che il prodotto forse mantiene
     # gia, e che il consumatore non puo usare.
-    "raw.spatial_candidate_functions": "quali funzioni mai provate il server possiede",
+    # Chiedeva le "mai provate", cioe cio che non era in nessuna delle due liste
+    # pubblicate, e quel filtro l'ha resa una misura che scadeva: una funzione
+    # aperta su MySQL smetteva di essere chiesta a MariaDB, dove non era aperta.
+    # HausdorffDistance e FrechetDistance sono state misurate assenti da MariaDB
+    # una volta sola, nella diciannovesima tranche, e da allora il documento
+    # ripeteva quel fatto senza riverificarlo.
+    #
+    # Ora chiede tutte e quarantuno le scalari a ogni server. Costa una SELECT
+    # per funzione e rende la misura ripetibile proprio dove i due prodotti
+    # divergono.
+    "raw.scalar_function_forms": "quali delle quarantuno scalari il server possiede",
     # Trentuno funzioni del contratto restituiscono geometria, e sono chiuse
     # tutte da una causa sola: il mapper rifiuta `MYSQL_TYPE_GEOMETRY`. Prima di
     # portare qui la forma del CRS dichiarato — che il percorso di lettura ha
@@ -339,6 +349,24 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 # L'ordine e parte del contratto perche e cio che rende leggibile il documento
 # — le famiglie stanno insieme — e perche una sonda spostata e quasi sempre una
 # sonda riscritta.
+#: I nomi che una sonda ha portato prima di oggi.
+#:
+#: Il documento e un verbale, e una tranche che dice «misurato con X» non si
+#: riscrive quando X cambia nome: direbbe che allora si chiamava come si chiama
+#: adesso, e chi legge non saprebbe piu cosa fu eseguito.
+#:
+#: Ma la guardia pretende che ogni sonda citata esista, ed e giusto — un
+#: documento che nomina una sonda che nessuno esegue e la stessa bugia di una
+#: capability senza prova. Questa tabella e il ponte fra le due esigenze: un
+#: nome vecchio resta citabile **se e dichiarato qui**, cioe se qualcuno ha
+#: detto in cosa si e trasformato. Un nome vecchio e basta resta un errore.
+RENAMED_PROBES: dict[str, str] = {
+    # Chiedeva le funzioni «mai provate», e il filtro sulle liste pubblicate
+    # faceva scadere la misura dove i due prodotti divergono. Ora chiede tutte
+    # e quarantuno le scalari, e il nome «candidate» non descriveva piu niente.
+    "raw.spatial_candidate_functions": "raw.scalar_function_forms",
+}
+
 EXPECTED_PROBES: tuple[str, ...] = (
     "raw.tls_cipher",
     "raw.type_table",
@@ -356,7 +384,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.returning_forms",
     "raw.spatial_write_forms",
     "raw.spatial_index_forms",
-    "raw.spatial_candidate_functions",
+    "raw.scalar_function_forms",
     "raw.geometry_result_forms",
     "raw.crs_rule_check",
     "raw.geometry_function_forms",

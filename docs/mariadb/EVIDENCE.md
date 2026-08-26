@@ -1837,6 +1837,12 @@ non puo usare.
 | famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS |
 |---|---|---|---|---|---|
 | raw | spatial | `raw.spatial_candidate_functions` | presenti 9/26 | presenti 9/26 | presenti **8/26** |
+
+> La sonda si chiama oggi `raw.scalar_function_forms` e chiede tutte e
+> quarantuno le scalari, non piu le sole mai provate: vedi la ventisettesima
+> tranche. Il nome qui sopra e quello che portava quando questa misura fu
+> eseguita, e il gate lo dichiara fra i nomi rinominati perche resti
+> citabile senza che nessuno lo scambi per una sonda corrente.
 | provider | profilo | `provider.profile_spatial_functions` | eseguite 24/24 | eseguite 21/21 | eseguite 21/21 |
 
 ### Cosa dice
@@ -2391,3 +2397,70 @@ esegue una per una, e il gate della matrice ripete la prova su `MySQL` 8.4 e
   dimostrare a runtime che le due geometrie condividono il frame. Sono due
   meccanismi, non due misure, e non sono stati costruiti. E' una decisione
   dichiarata.
+
+## Ventisettesima tranche: il censimento scalare, e una misura che scadeva
+
+Le trentuno funzioni che rendono geometria sono caratterizzate. Restano le
+quarantuno che rendono uno scalare, ed erano gia chiuse — ogni bandiera aperta
+con una misura o chiusa con una ragione misurata. Il difetto non era li: era in
+**come** quella misura veniva ripetuta.
+
+`raw.spatial_candidate_functions` chiedeva al server le funzioni «mai provate»,
+cioe quelle che non stavano in nessuna delle due liste pubblicate. Il filtro
+sembra ovvio — chiedere cio che si sa gia e spreco — e ha un effetto che non si
+vede subito: **una funzione aperta su `MySQL` smette di essere chiesta a
+`MariaDB`**, dove non e aperta.
+
+`HausdorffDistance` e `FrechetDistance` sono entrate nella lista di `MySQL` nella
+diciannovesima tranche. Da quel momento nessuna campagna le ha piu chieste a
+`MariaDB`, e il documento ha continuato a dire che li non ci sono ripetendo una
+misura vecchia di sette tranche. Era ancora vero, e non era piu verificato.
+
+La sonda si chiama ora `raw.scalar_function_forms`, in simmetria con quella
+geometrica, e chiede tutte e quarantuno le scalari a ogni server.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS | MariaDB 10.11 LTS |
+|---|---|---|---|---|---|---|
+| raw | spatial | `raw.scalar_function_forms` | presenti **24/41** | presenti **24/41** | presenti **22/41** | **identico a MariaDB 11.8** |
+
+### Cosa dice
+
+**Su `MySQL` il conto torna esatto: 24 presenti, 24 pubblicate.** Non c'e una
+sola funzione scalare che il server possiede e che la lista non offre. Le
+diciassette assenti — clustering, MVT, geobuf, azimuth, distanze 3D, `ST_Z` e
+`ST_M` — sono `PostGIS` che il motore non ha.
+
+**Su `MariaDB` la differenza fra presenti e pubblicate e tre, e ciascuna ha gia
+il suo nome.** `IsValid` e `CoveredBy` esistono sulla 12.3 e non sulle due LTS,
+e la lista e l'intersezione perche una capability e una promessa a chi non sa su
+quale minor atterrera. `Relate` esiste su tutte e tre e risponde `1582`
+all'arieta che il contratto ammette: esiste e non e utilizzabile, che sono due
+cose diverse.
+
+**Le due assenze che erano ricordate ora sono rimisurate.**
+`HausdorffDistance` e `FrechetDistance` rispondono `1305` su tutte e tre le major
+di `MariaDB`. Il fatto non cambia; cambia che da oggi lo dice una campagna e non
+la memoria di una campagna.
+
+### Cosa ne segue
+
+Niente si apre, ed e il risultato giusto: la superficie era chiusa bene, e cio
+che mancava era la ripetibilita della prova. Una guardia impedisce al filtro di
+tornare — e stata falsificata rimettendolo in due forme, su entrambe le liste e
+su una sola, e morde in tutte e due.
+
+Con questa tranche il catalogo e coperto per intero. Delle settantadue funzioni:
+trentuno rendono geometria e sono caratterizzate dalla tranche precedente,
+quarantuno rendono uno scalare e sono censite qui. Nessuna resta «mai chiesta»,
+su nessuno dei due prodotti.
+
+### Cosa resta not_measured
+
+* **le regole `argument` e `undefined`**, invariate dalla tranche precedente:
+  sono due meccanismi da costruire, non due misure da fare.
+* **il profilo per major**: `IsValid` e `CoveredBy` tornerebbero sulla 12.3 il
+  giorno in cui il profilo di `MariaDB` si sdoppiasse. E' una decisione
+  dichiarata da sedici tranche, e questa misura ne conferma il prezzo esatto —
+  due funzioni.
