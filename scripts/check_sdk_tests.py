@@ -139,6 +139,9 @@ POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
 MARIADB_CONTAINER = "dataflow-mariadb"
 SQLSERVER_CONTAINER = "dataflow-sqlserver"
+# Il container si ispeziona con il nome esplicito sopra; i client invece
+# devono usare il DNS Compose coperto dal certificato della fixture.
+SQLSERVER_TLS_HOST = "sqlserver"
 POSTGRES_PORT = 5432
 
 
@@ -779,7 +782,7 @@ def live_environment(*, cli: str) -> list[str]:
         f"PLENORA_TEST_MARIADB_PASSWORD="
         f"{container_variable(MARIADB_CONTAINER, 'MARIADB_PASSWORD')}",
         "-e", "PLENORA_TEST_MARIADB_CA=/mariadb-tls/ca.pem",
-        "-e", f"PLENORA_TEST_SQLSERVER_HOST={SQLSERVER_CONTAINER}",
+        "-e", f"PLENORA_TEST_SQLSERVER_HOST={SQLSERVER_TLS_HOST}",
         "-e", f"PLENORA_TEST_SQLSERVER_DATABASE={sqlserver_database}",
         "-e", f"PLENORA_TEST_SQLSERVER_USER={sqlserver_user}",
         "-e",

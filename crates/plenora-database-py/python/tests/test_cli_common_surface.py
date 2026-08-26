@@ -213,12 +213,15 @@ def test_cli_common_surface_roundtrips_arrow(provider: str, tmp_path: Path) -> N
         },
     )
 
+    created = False
     try:
         _run(spec, "database-execute-ddl", f"DROP TABLE IF EXISTS {spec.qualified}")
         _run(spec, "database-execute-ddl", spec.create_sql)
+        created = True
 
         written = _run(spec, "database-write-ipc", write_path, str(input_path))
-        assert written["rows"]["written"] == 2
+        assert written["rows"]["received"] == 2
+        assert written["rows"]["confirmed"] == 2
 
         summary = _run(spec, "database-read-summary", read_path, "-")
         assert summary["provider"] == provider
@@ -247,4 +250,5 @@ def test_cli_common_surface_roundtrips_arrow(provider: str, tmp_path: Path) -> N
         assert scalar["status"] == "committed"
         assert scalar["value"] == 2
     finally:
-        _run(spec, "database-execute-ddl", f"DROP TABLE IF EXISTS {spec.qualified}")
+        if created:
+            _run(spec, "database-execute-ddl", f"DROP TABLE IF EXISTS {spec.qualified}")

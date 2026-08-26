@@ -12,7 +12,7 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
-use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
+use plenora_db_postgres::PostgresProvider;
 use serde_json::json;
 
 /// Helper storico per test / call sites legacy non ancora migrati
@@ -37,7 +37,8 @@ pub(crate) const POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL
 /// `PostgresProvider::default()` in `pfm.rs` e `context.rs`, e tre siti in
 /// `main.rs` che onoravano `PLENORA_TLS_INSECURE_LOCAL` — con il risultato che
 /// alcuni comandi potevano parlare con un riferimento di test e altri no,
-/// nello stesso binario. Le sorgenti divergono; questa e l'unica.
+/// nello stesso binario. Questo wrapper legge le variabili storiche; la
+/// decisione comune vive in `postgres_provider_from_tls_material`.
 ///
 /// Tre configurazioni:
 ///
@@ -81,7 +82,7 @@ pub(crate) fn postgres_provider_for_pfm() -> CliResult<PostgresProvider> {
             )
             .into());
         }
-        return Ok(PostgresProvider::insecure_local());
+        return crate::postgres_provider_from_tls_material(true, None, None, None);
     }
 
     let Some(ca) = ca else {
@@ -93,25 +94,23 @@ pub(crate) fn postgres_provider_for_pfm() -> CliResult<PostgresProvider> {
             )
             .into());
         }
-        return Ok(PostgresProvider::default());
+        return crate::postgres_provider_from_tls_material(false, None, None, None);
     };
 
-    let tls_config = match (certificate, key) {
-        (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
-        (Some(certificate), Some(key)) => {
-            PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
-        }
-        _ => {
-            return Err(format!(
-                "l'identita client TLS richiede {POSTGRES_CLIENT_CERT_PATH_ENV} e \
+    match (certificate, key) {
+        (None, None) => crate::postgres_provider_from_tls_material(false, Some(ca), None, None),
+        (Some(certificate), Some(key)) => crate::postgres_provider_from_tls_material(
+            false,
+            Some(ca),
+            Some(certificate),
+            Some(key),
+        ),
+        _ => Err(format!(
+            "l'identita client TLS richiede {POSTGRES_CLIENT_CERT_PATH_ENV} e \
                  {POSTGRES_CLIENT_KEY_PATH_ENV} insieme"
-            )
-            .into());
-        }
-    };
-    Ok(PostgresProvider::default()
-        .with_tls_mode(PostgresTlsMode::Require)
-        .with_tls_config(tls_config))
+        )
+        .into()),
+    }
 }
 
 pub(crate) fn pfm_budget() -> CliResult<ResourceBudget> {

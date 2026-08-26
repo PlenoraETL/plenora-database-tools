@@ -1720,6 +1720,10 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertIn("PLENORA_TEST_MYSQL_DATABASE=<MYSQL_DATABASE>", joined)
         self.assertIn("PLENORA_TEST_MARIADB_PASSWORD=<MARIADB_PASSWORD>", joined)
         self.assertIn("PLENORA_TEST_SQLSERVER_USER=<PLENORA_TEST_USER>", joined)
+        self.assertIn(
+            f"PLENORA_TEST_SQLSERVER_HOST={sdk.SQLSERVER_TLS_HOST}", joined
+        )
+        self.assertNotEqual(sdk.SQLSERVER_TLS_HOST, sdk.SQLSERVER_CONTAINER)
 
     def test_the_offline_scope_asks_the_references_nothing(self) -> None:
         """Senza server non si chiedono ne reti ne credenziali."""

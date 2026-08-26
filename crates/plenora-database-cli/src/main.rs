@@ -2138,26 +2138,77 @@ fn validate_sqlserver_private_ca_material(pem: &[u8]) -> CliResult<()> {
 
 #[cfg(feature = "postgres")]
 fn postgres_provider_for_probe_with_tls(tls: &TlsPathEnvironments) -> CliResult<PostgresProvider> {
+    postgres_provider_for_probe_with_tls_policy(
+        tls,
+        std::env::var_os(pfm::POSTGRES_INSECURE_LOCAL_ENV).is_some(),
+    )
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_provider_for_probe_with_tls_policy(
+    tls: &TlsPathEnvironments,
+    insecure_local: bool,
+) -> CliResult<PostgresProvider> {
+    if insecure_local {
+        if tls.ca.is_some() || tls.client_certificate.is_some() || tls.client_key.is_some() {
+            return Err(format!(
+                "{} disattiva TLS e non puo convivere con opzioni TLS provider",
+                pfm::POSTGRES_INSECURE_LOCAL_ENV
+            )
+            .into());
+        }
+        return postgres_provider_from_tls_material(true, None, None, None);
+    }
     let Some(ca) = prepare_private_ca_material(tls.ca.as_deref())? else {
-        return Ok(postgres_provider_for_probe());
+        return postgres_provider_from_tls_material(false, None, None, None);
     };
-    let tls_config = match (
+    match (
         tls_path_from_environment(tls.client_certificate.as_deref())?,
         tls_path_from_environment(tls.client_key.as_deref())?,
     ) {
-        (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
+        (None, None) => postgres_provider_from_tls_material(false, Some(ca), None, None),
         (Some(certificate_path), Some(key_path)) => {
             let certificate = read_bounded_tls_material(&certificate_path)?;
             let key = read_bounded_tls_material(&key_path)?;
-            PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
+            postgres_provider_from_tls_material(false, Some(ca), Some(certificate), Some(key))
         }
         // Il parser accetta certificato e chiave solo insieme, quindi qui non
         // si arriva. La coppia di `Option` pero' non lo dice al compilatore, e
         // un errore e' preferibile al processo abbattuto se quell'invariante
         // dovesse cambiare.
-        _ => {
-            return Err("l'identità client TLS richiede certificato e chiave insieme".into());
+        _ => Err("l'identità client TLS richiede certificato e chiave insieme".into()),
+    }
+}
+
+/// Unica decisione TLS `PostgreSQL` condivisa dai comandi storici e dalla
+/// superficie provider-neutral. I chiamanti differiscono solo nel modo in cui
+/// nominano i percorsi; una volta letto il materiale, la policy non diverge.
+#[cfg(feature = "postgres")]
+pub(crate) fn postgres_provider_from_tls_material(
+    insecure_local: bool,
+    ca: Option<Vec<u8>>,
+    certificate: Option<Vec<u8>>,
+    key: Option<Vec<u8>>,
+) -> CliResult<PostgresProvider> {
+    if insecure_local {
+        if ca.is_some() || certificate.is_some() || key.is_some() {
+            return Err("l'opt-out TLS locale non puo convivere con materiale TLS".into());
         }
+        return Ok(PostgresProvider::insecure_local());
+    }
+
+    let Some(ca) = ca else {
+        if certificate.is_some() || key.is_some() {
+            return Err("l'identita client TLS richiede anche una CA privata".into());
+        }
+        return Ok(postgres_provider_for_probe());
+    };
+    let tls_config = match (certificate, key) {
+        (None, None) => PostgresTlsConfig::private_ca_pem(&ca)?,
+        (Some(certificate), Some(key)) => {
+            PostgresTlsConfig::private_ca_with_client_identity_pem(&ca, &certificate, &key)?
+        }
+        _ => return Err("l'identita client TLS richiede certificato e chiave insieme".into()),
     };
     Ok(PostgresProvider::default()
         .with_tls_mode(PostgresTlsMode::Require)
@@ -3260,6 +3311,27 @@ mod tests {
             format!("{provider:?}").contains("tls_mode: Require"),
             "PostgreSQL probe must not silently downgrade to plaintext: {provider:?}"
         );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn provider_neutral_postgres_probe_honors_only_unambiguous_insecure_local() {
+        let provider =
+            postgres_provider_for_probe_with_tls_policy(&TlsPathEnvironments::default(), true)
+                .expect("explicit local opt-out");
+        assert!(
+            format!("{provider:?}").contains("tls_mode: Disabled"),
+            "explicit local opt-out must select plaintext: {provider:?}"
+        );
+
+        let configured_tls = TlsPathEnvironments {
+            ca: Some("PLENORA_TEST_CA".to_owned()),
+            client_certificate: None,
+            client_key: None,
+        };
+        let error = postgres_provider_for_probe_with_tls_policy(&configured_tls, true)
+            .expect_err("insecure-local plus TLS material must fail closed");
+        assert!(format!("{error:?}").contains(pfm::POSTGRES_INSECURE_LOCAL_ENV));
     }
 
     #[cfg(feature = "mysql")]
