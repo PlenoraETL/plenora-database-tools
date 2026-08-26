@@ -1207,11 +1207,22 @@ impl ProductProfile for MariadbProfile {
                 // `ST_Z` e `ST_M` sono assenti da entrambi. Non c'e una terza
                 // dimensione da dichiarare.
                 dimensions: vec![plenora_database_core::geometry::Dimensions::Xy],
-                // Quattordici, misurate da `provider.profile_spatial_functions`
-                // attraversando il percorso di query su entrambe le major. La
-                // quindicesima di MySQL — `IsValid` — resta fuori: la 12.3 ce
-                // l'ha, la 11.8 LTS risponde 1305, e una capability e una
-                // promessa a chi non sa su quale minor atterrera.
+                // Il catalogo **di questo prodotto**, misurato da
+                // `provider.profile_spatial_functions` attraversando il
+                // percorso di query su ogni riferimento della matrice. Non
+                // coincide con quello di `MySQL`, e la sonda deve camminare su
+                // questa lista e non sull'altra: il giorno in cui ha camminato
+                // sull'altra misurava la propria guardia.
+                //
+                // Qui c'era scritto «quattordici», ed era il numero giusto
+                // quando la riga e stata scritta. La lista e poi cresciuta e il
+                // commento no: un conteggio in un commento e una data di
+                // scadenza, quindi ora la riga nomina la fonte invece di
+                // ripeterne la lunghezza.
+                //
+                // `IsValid` resta fuori, e quello e un fatto e non un numero:
+                // la 12.3 ce l'ha, la 11.8 LTS risponde 1305, e una capability
+                // e una promessa a chi non sa su quale minor atterrera.
                 functions: self.verified_spatial_functions().to_vec(),
                 requires_declared_crs: true,
             },

@@ -1,6 +1,9 @@
 """Python SDK per plenora-database-tools.
 
-Milestone corrente: F3-4 (portable AST builder Pythonic).
+Motori raggiungibili: **PostgreSQL** con `connect`, **MySQL** con
+`connect_mysql`, **MariaDB** con `connect_mariadb`, e i rispettivi `aconnect_*`
+per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
+dichiara un motore e finisce sull'altro viene rifiutato alla probe.
 
 Uso base:
 
@@ -15,7 +18,9 @@ Uso base:
         new = s.insert("users").values(name="Ada").returning("id").one()
         n = s.update("users").set(name="Alan").where_eq("id", 1).execute()
 
-Le API di spatial / transaction / async arrivano in F3-5..F3-8.
+Le API di spatial, transaction e async **ci sono**: `spatial`, `Transaction` /
+`AsyncTransaction`, e le factory `aconnect*`. Questa riga diceva che sarebbero
+arrivate in una milestone futura, ed e rimasta invariata mentre arrivavano.
 """
 
 from ._native import version
@@ -187,9 +192,28 @@ def connect_mariadb(
     da assecondare.
 
     WriteMode: le stesse 6 su 7 di MySQL, `TruncateInsert` esclusa per la
-    stessa ragione permanente. Lo **spatial resta chiuso**: su MariaDB
-    `information_schema.columns.SRS_ID` non esiste, quindi una colonna
-    geometrica non e descrivibile e viene rifiutata.
+    stessa ragione permanente.
+
+    **Spatial: aperto**, in lettura e in scrittura. Questa docstring diceva il
+    contrario — «lo spatial resta chiuso, `information_schema.columns.SRS_ID`
+    non esiste» — e la ragione era vera quando e stata scritta: senza quella
+    colonna il catalogo non sa dire l'SRID, e una geometria senza CRS non e
+    descrivibile.
+
+    Cio che e cambiato non e il prodotto: nessuna DDL di MariaDB puo ancora
+    vincolare una colonna a un SRID, e il registro OGC risponde sempre zero. E'
+    cambiato il percorso. Il CRS lo **dichiara il chiamante**, nel piano, e il
+    provider lo verifica valore per valore mentre le righe passano: una
+    dichiarazione che i valori smentiscono fa fallire la lettura alla riga che
+    la smentisce, invece di essere creduta sulla parola.
+
+    Da li discendono le bandiere aperte: lettura e scrittura WKB, tipi
+    geometrici misti nella stessa colonna, indice spaziale, e ventuno funzioni
+    spatial verificate — le **sue**, non quelle di MySQL, perche l'insieme dei
+    due prodotti non coincide.
+
+    Resta chiusa `geography`: non esiste su questo prodotto, e non e una lacuna
+    di misura. Le dimensioni sono XY soltanto.
 
     L'equivalente async e `aconnect_mariadb`.
 
