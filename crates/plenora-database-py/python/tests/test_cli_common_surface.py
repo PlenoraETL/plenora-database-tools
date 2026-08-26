@@ -248,7 +248,11 @@ def test_cli_common_surface_roundtrips_arrow(provider: str, tmp_path: Path) -> N
 
         scalar = _run(spec, "database-execute-scalar", "SELECT COUNT(*) FROM " + spec.qualified)
         assert scalar["status"] == "ok"
-        assert scalar["value"] == 2
+        # Il protocollo conserva il tipo nativo: COUNT(*) e bigint sui tre
+        # motori della famiglia PostgreSQL/MySQL, int su SQL Server. Il valore
+        # e portabile; forzare anche il tipo perderebbe informazione.
+        expected_type = "i32" if provider == "sqlserver" else "i64"
+        assert scalar["value"] == {"type": expected_type, "value": 2}
     finally:
         if created:
             _run(spec, "database-execute-ddl", f"DROP TABLE IF EXISTS {spec.qualified}")
