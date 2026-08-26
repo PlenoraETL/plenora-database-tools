@@ -247,7 +247,7 @@ def test_cli_common_surface_roundtrips_arrow(provider: str, tmp_path: Path) -> N
         assert isinstance(inspected["schemas"], list)
 
         scalar = _run(spec, "database-execute-scalar", "SELECT COUNT(*) FROM " + spec.qualified)
-        assert scalar["status"] == "committed"
+        assert scalar["status"] == "ok"
         assert scalar["value"] == 2
     finally:
         if created:
