@@ -18,7 +18,10 @@ use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::provider::BatchStream;
 #[cfg(feature = "postgres")]
 use plenora_database_core::provider::ParameterBag;
-#[cfg(feature = "postgres")]
+// Il budget non appartiene al percorso IPC: anche i comandi `database-*`
+// comuni aprono transazioni per qualunque provider compilato. Tenerlo dietro
+// `postgres` rendeva percio non compilabili i binari mysql-only e
+// sqlserver-only, proprio nelle superfici che quei comandi avevano aperto.
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
@@ -2120,6 +2123,12 @@ fn common_usage() -> String {
         "    introspezione via Provider::inspect, uguale su tutti i provider compilati".to_owned(),
         "    le posizionali stanno prima degli args del provider, che sono in numero variabile"
             .to_owned(),
+        "  portable-compile <postgres|mysql|mariadb|sqlserver> <PORTABLE.json>".to_owned(),
+        "    compila e stampa SQL + numero parametri, senza aprire una connessione".to_owned(),
+        "  database-portable-execute <provider> <secret-env> <PORTABLE.json> [args provider]"
+            .to_owned(),
+        "    compila per il provider, esegue in una transazione e rende rows o affected_rows"
+            .to_owned(),
         "  inspect-dataset <file.arrow>".to_owned(),
         "  validate-plan <file.json> [--capabilities <file.json>]".to_owned(),
     ]
@@ -2181,11 +2190,8 @@ fn postgres_usage() -> String {
         "    wrapper EXPLAIN [ANALYZE]",
         "",
         "== PostgreSQL: portable AST ==",
-        "  portable-compile <postgres|mysql|mariadb> <PORTABLE.json>",
-        "    stampa SQL + numero parametri compilati (per debug pipeline PFM)",
         "  portable-execute <dsn-env> <PORTABLE.json>",
-        "  database-portable-execute <provider> <SECRET_ENV> <PORTABLE.json> ...",
-        "    compila per Postgres, esegue in una tx, ritorna rows o affected_rows",
+        "    compatibilita del comando storico PostgreSQL; la famiglia generica e sopra",
         "",
         "== PostgreSQL: transazioni / concorrenza (test) ==",
         "  transaction-test <dsn-env>              — smoke: begin + savepoint + release + commit",
@@ -2239,9 +2245,8 @@ fn sqlserver_usage() -> String {
         "    database-inspect-schemas sqlserver <args...>",
         "    database-inspect-objects sqlserver <secret-env> <schema> <resto args...>",
         "    database-describe sqlserver <secret-env> <schema> <object> <resto args...>",
-        "  non raggiungibile: esecuzione SQL, DDL e transazioni. Non e una scelta",
-        "  del CLI — l'adapter non implementa `Provider::begin_transaction` ne",
-        "  `execute_ddl`, e il default del contratto per entrambi e `Unsupported`.",
+        "  esecuzione e transazioni passano dagli stessi comandi `database-*` comuni",
+        "  documentati sopra; `execute_ddl` resta fuori dalla superficie del provider.",
     ]
     .join("\n")
 }
