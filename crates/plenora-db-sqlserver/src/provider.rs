@@ -12,6 +12,7 @@ use plenora_database_core::capabilities::{
     TransactionCapabilities, TransactionScope, WriteCapabilities,
 };
 use plenora_database_core::geometry::Dimensions;
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
     ObjectRef, Operation, ProviderKind, ReadOperation, WriteOperation,
@@ -592,6 +593,32 @@ fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabi
     // Senza nessuno dei due UDT non c'e una superficie spatial di cui parlare,
     // e il blocco si chiude per intero invece di restare vero a meta.
     let spatial = geometry || geography;
+    // Una voce per semantica dichiarata, e la voce di `geometry` e piu lunga:
+    // otto funzioni del contratto esistono su quel tipo e non sull'altro —
+    // `STCentroid`, `STEnvelope`, `STBoundary`, `STPointOnSurface`,
+    // `STIsSimple`, `STTouches`, `STCrosses`, `STRelate` — e il censimento le
+    // ha misurate una per una.
+    //
+    // Finche il contratto pubblicava una lista sola, quelle otto restavano
+    // chiuse: offrirle accanto a `geography` sarebbe stata una promessa che li
+    // non regge. Ora la semantica ce l'hanno scritta accanto.
+    let mut functions_by_semantics = BTreeMap::new();
+    if geometry {
+        functions_by_semantics.insert(
+            SpatialSemantics::Geometry,
+            crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS
+                .iter()
+                .chain(crate::query::VERIFIED_SPATIAL_FUNCTIONS)
+                .copied()
+                .collect(),
+        );
+    }
+    if geography {
+        functions_by_semantics.insert(
+            SpatialSemantics::Geography,
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
+        );
+    }
     SpatialCapabilities {
         // L'SRID viaggia **dentro** il valore: `geometry` e `geography` sono
         // UDT che se lo portano dietro, e `.STSrid` lo rende senza interrogare
@@ -642,11 +669,10 @@ fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabi
         // `live_the_spatial_census_leaves_no_usable_function_unexplained`, che
         // attraversa tutte e settantadue quelle del catalogo. Sono metodi di un
         // tipo: senza il tipo non c'e niente da offrire.
-        functions: if spatial {
-            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec()
-        } else {
-            Vec::new()
-        },
+        functions: plenora_database_core::capabilities::intersect_spatial_functions(
+            &functions_by_semantics,
+        ),
+        functions_by_semantics,
     }
 }
 
@@ -671,6 +697,55 @@ mod tests {
             geometry_type_id: geometry,
             geography_type_id: geography,
             polybase_installed: false,
+        }
+    }
+
+    #[test]
+    fn the_guaranteed_list_is_the_intersection_of_what_each_semantics_offers() {
+        // L'invariante che rende il campo nuovo leggibile: `functions` non e
+        // una terza lista scritta a mano accanto alle due, e cio che vale
+        // ovunque. La calcola il core da `functions_by_semantics`, e questa
+        // prova pretende che il conto torni con cio che le due liste dicono.
+        let both = spatial_capabilities(&probe_with(Some(240), Some(241)));
+        assert_eq!(both.functions_by_semantics.len(), 2);
+        let on_geometry = &both.functions_by_semantics[&SpatialSemantics::Geometry];
+        let on_geography = &both.functions_by_semantics[&SpatialSemantics::Geography];
+        assert_eq!(
+            on_geometry.len(),
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.len()
+                + crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS.len()
+        );
+        assert_eq!(
+            on_geography.len(),
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.len()
+        );
+        // L'intersezione **e** la lista garantita, e nessuna delle sette la
+        // raggiunge.
+        assert_eq!(
+            both.functions,
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec()
+        );
+        for function in crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS {
+            assert!(on_geometry.contains(function), "{function:?}");
+            assert!(!on_geography.contains(function), "{function:?}");
+            assert!(!both.functions.contains(function), "{function:?}");
+        }
+    }
+
+    #[test]
+    fn one_semantics_alone_publishes_only_its_own_list() {
+        // Una chiave per una semantica non dichiarata sarebbe una promessa su
+        // un tipo che il prodotto dice di non avere.
+        let only_geometry = spatial_capabilities(&probe_with(Some(240), None));
+        assert_eq!(only_geometry.functions_by_semantics.len(), 1);
+        assert!(only_geometry
+            .functions_by_semantics
+            .contains_key(&SpatialSemantics::Geometry));
+        // Con una semantica sola, l'intersezione **e** quella lista: le sette
+        // diventano garantite, perche non c'e un secondo tipo su cui possano
+        // mancare.
+        for function in crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS {
+            assert!(only_geometry.functions.contains(function), "{function:?}");
         }
     }
 

@@ -282,6 +282,7 @@ mod tests {
                 scope: TransactionScope::Transaction,
             },
             spatial: SpatialCapabilities {
+                functions_by_semantics: std::collections::BTreeMap::new(),
                 read_wkb: true,
                 write_wkb: true,
                 geometry: true,

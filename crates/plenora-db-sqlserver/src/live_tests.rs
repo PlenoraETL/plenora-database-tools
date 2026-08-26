@@ -1691,29 +1691,132 @@ async fn probe_tsql_member(
 /// **e** su geography deve stare o nella lista pubblicata o qui: non esiste una
 /// terza casella in cui una superficie usabile possa restare in silenzio.
 const DECLARED_SPATIAL_EXCLUSIONS: &[(SpatialFunction, &str)] = &[
-    // Le coordinate di un punto ci sono su entrambe le semantiche, e si
-    // chiamano in due modi: `STX` e `STY` su `geometry`, `Long` e `Lat` su
-    // `geography`. Nessun'altra funzione del contratto cambia nome fra le due.
+    // Le due coordinate stavano qui, e ci sono rimaste un pomeriggio: il membro
+    // T-SQL cambia fra le semantiche e quella del ricevitore non arrivava al
+    // renderer. Ora ci arriva, e `X` e `Y` sono pubblicate.
     //
-    // La tabella dei nomi T-SQL prende una funzione e rende un nome, e non ha
-    // dove ospitare quella distinzione. Aggiungergliela non basterebbe: la
-    // semantica di una **colonna** ricevitrice la risolve il preflight del
-    // provider, e al renderer non arriva — al renderer arriva soltanto quella
-    // dei parametri, che e un'altra cosa.
+    // `STRelate` resta, e per una ragione diversa da tutte le altre: non e
+    // l'assenza dal prodotto ne un impianto che manca a noi, e l'**arieta**.
+    // T-SQL il pattern DE-9IM lo pretende, e il contratto ammette `Relate`
+    // anche a due argomenti. Una funzione e qualificata quando lo e a ogni
+    // arieta che il piano ammette, non quando ne esiste una che funziona.
     //
-    // Non e una chiusura del prodotto ed e giusto che si legga come tale:
-    // SQL Server le ha, e a mancare e un impianto nostro.
+    // E' la stessa funzione, e la stessa regola, che `MariaDB` rifiuta con
+    // 1582 — li perche ne vuole tre. Due prodotti diversi, la stessa
+    // discrepanza fra cio che il contratto ammette e cio che il server accetta.
     (
-        SpatialFunction::X,
-        "il membro T-SQL cambia fra le semantiche (STX/Long) e la semantica del \
-         ricevitore non raggiunge il renderer",
-    ),
-    (
-        SpatialFunction::Y,
-        "il membro T-SQL cambia fra le semantiche (STY/Lat) e la semantica del \
-         ricevitore non raggiunge il renderer",
+        SpatialFunction::Relate,
+        "T-SQL pretende il pattern DE-9IM e il contratto ammette Relate a due argomenti: \
+         qualificata a una arieta e non a tutte",
     ),
 ];
+
+/// Le sette che valgono su `geometry` e non su `geography`, dalle due parti.
+///
+/// # Cosa dimostra
+///
+/// Che la voce per semantica del contratto non e una dichiarazione: da un lato
+/// le sette attraversano il percorso completo su una colonna `geometry`,
+/// dall'altro vengono **rifiutate** su una colonna `geography`, e il rifiuto
+/// arriva dal preflight e non dal server.
+///
+/// La differenza fra i due rifiuti conta. Quello del server sarebbe «Could not
+/// find method», vero e inutile: non direbbe che la funzione c'e e che la
+/// colonna e quella sbagliata. Quello del preflight lo dice, e arriva prima che
+/// lo statement parta.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per le funzioni geometry-only"]
+async fn live_geometry_only_functions_run_on_geometry_and_are_refused_on_geography() {
+    use plenora_database_core::plan::ObjectRef;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::ResourceBudget;
+
+    let cancellation = CancellationToken::new();
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        32,
+        2,
+    )
+    .expect("provider delle geometry-only");
+    let secret = live_secret();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+
+    let mut refused_on_geometry = Vec::new();
+    let mut accepted_on_geography = Vec::new();
+    for function in crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS {
+        for (field, expects_success) in [("shape", true), ("position", false)] {
+            let arity = (1..=4)
+                .find(|count| function.accepts_argument_count(*count))
+                .unwrap_or(1);
+            // Le binarie confrontano la colonna con se stessa: cio che si
+            // misura e se il membro esiste su quel tipo, non cosa risponde.
+            let arguments = (0..arity)
+                .map(|_| QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: Some("source".to_owned()),
+                        field: field.to_owned(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            let operation = QueryOperation {
+                declared_crs: Vec::new(),
+                common_table_expressions: Vec::new(),
+                source: Some(QuerySource {
+                    object: ObjectRef {
+                        catalog: None,
+                        schema: Some("plenora_test".to_owned()),
+                        object: "stream_probe".to_owned(),
+                    },
+                    alias: Some("source".to_owned()),
+                }),
+                derived_source: None,
+                projection: vec![QueryProjection {
+                    expression: QueryExpression::Spatial {
+                        function: *function,
+                        arguments,
+                    },
+                    alias: Some("sonda".to_owned()),
+                }],
+                joins: Vec::new(),
+                filter: None,
+                group_by: Vec::new(),
+                having: None,
+                order_by: Vec::new(),
+                distinct: false,
+                distinct_on: Vec::new(),
+                set_operations: Vec::new(),
+                row_limit: Some(1),
+                row_offset: None,
+                locking: None,
+            };
+            let opened = provider
+                .query(
+                    &secret,
+                    &operation,
+                    &plenora_database_core::provider::ParameterBag::default(),
+                    &budget,
+                    &cancellation,
+                )
+                .await;
+            match (opened.is_ok(), expects_success) {
+                (true, true) | (false, false) => {}
+                (false, true) => refused_on_geometry.push(format!("{function:?}")),
+                (true, false) => accepted_on_geography.push(format!("{function:?}")),
+            }
+        }
+    }
+
+    assert!(
+        refused_on_geometry.is_empty(),
+        "pubblicate sotto geometry e rifiutate su una colonna geometry: {refused_on_geometry:?}"
+    );
+    assert!(
+        accepted_on_geography.is_empty(),
+        "offerte solo su geometry e accettate su una colonna geography: {accepted_on_geography:?}"
+    );
+}
 
 /// Il censimento delle settantadue funzioni del catalogo su SQL Server.
 ///
@@ -1740,6 +1843,7 @@ const DECLARED_SPATIAL_EXCLUSIONS: &[(SpatialFunction, &str)] = &[
 ///   richiede una decisione, e che questo test non lascia in silenzio.
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito per il censimento spatial"]
+#[allow(clippy::too_many_lines)]
 async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
     let cancellation = CancellationToken::new();
     let mut session = SqlServerSession::open(
@@ -1751,6 +1855,7 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
 
     let mut both = Vec::new();
     let mut geometry_only = Vec::new();
+    let mut geometry_only_functions = Vec::new();
     let mut geography_only = Vec::new();
     let mut absent = Vec::new();
     for function in SpatialFunction::ALL {
@@ -1788,6 +1893,7 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
             (MethodPresence::Present, MethodPresence::Present) => both.push(*function),
             (MethodPresence::Present, MethodPresence::Absent) => {
                 geometry_only.push(format!("{function:?}"));
+                geometry_only_functions.push(*function);
             }
             (MethodPresence::Absent, MethodPresence::Present) => {
                 geography_only.push(format!("{function:?}"));
@@ -1806,6 +1912,30 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
         both.len() + geometry_only.len() + geography_only.len() + absent.len(),
         SpatialFunction::ALL.len(),
         "il censimento non copre l'intero catalogo"
+    );
+
+    // Cio che il provider offre su una semantica: l'intersezione, e le sette
+    // che valgono solo su `geometry`. La domanda che questo test pone e la
+    // stessa di prima — «esiste e non lo offriamo, e nessuno ha scritto
+    // perche?» — ma ora la pone anche per le geometry-only, che fino a ieri
+    // stavano in una casella descrittiva ed erano tutte chiuse.
+    let offered_on_geometry = |function: &SpatialFunction| {
+        crate::query::VERIFIED_SPATIAL_FUNCTIONS.contains(function)
+            || crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(function)
+    };
+    let geometry_only_unexplained = geometry_only_functions
+        .iter()
+        .filter(|function| !offered_on_geometry(function))
+        .filter(|function| {
+            !DECLARED_SPATIAL_EXCLUSIONS
+                .iter()
+                .any(|(excluded, _)| excluded == *function)
+        })
+        .map(|function| format!("{function:?}"))
+        .collect::<Vec<_>>();
+    assert!(
+        geometry_only_unexplained.is_empty(),
+        "SQL Server le espone su geometry, il contratto sa dirlo, e nessuno ha scritto          perche non le offriamo: {geometry_only_unexplained:?}"
     );
 
     let unexplained = both
@@ -1828,17 +1958,33 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
         both.len(),
     );
 
+    // Una esclusione che nel frattempo e stata **aperta** e la ragione scaduta
+    // nella sua forma piu silenziosa: la funzione si offre, e il documento
+    // continua a spiegare perche non si offre. E' successo alle due
+    // coordinate, ed e passato inosservato per un pomeriggio.
+    let offered_and_excluded = DECLARED_SPATIAL_EXCLUSIONS
+        .iter()
+        .filter(|(function, _)| offered_on_geometry(function))
+        .map(|(function, _)| format!("{function:?}"))
+        .collect::<Vec<_>>();
+    assert!(
+        offered_and_excluded.is_empty(),
+        "pubblicate e insieme dichiarate escluse: {offered_and_excluded:?}"
+    );
+
     // Una esclusione dichiarata su una funzione che il prodotto non ha sarebbe
     // una ragione che parla di niente, e invecchierebbe senza che nessuno lo
     // veda — la stessa classe della ragione scaduta.
     let hollow = DECLARED_SPATIAL_EXCLUSIONS
         .iter()
-        .filter(|(function, _)| !both.contains(function))
+        .filter(|(function, _)| {
+            !both.contains(function) && !geometry_only_functions.contains(function)
+        })
         .map(|(function, _)| format!("{function:?}"))
         .collect::<Vec<_>>();
     assert!(
         hollow.is_empty(),
-        "escluse con una ragione ma non esposte da SQL Server su entrambe le semantiche:          {hollow:?}"
+        "escluse con una ragione ma non esposte da SQL Server su nessuna semantica:          {hollow:?}"
     );
 }
 

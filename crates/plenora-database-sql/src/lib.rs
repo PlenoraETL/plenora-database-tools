@@ -1808,6 +1808,29 @@ pub const fn sql_server_spatial_method(
         SpatialFunction::Union => ("STUnion", SqlServerSpatialShape::BinaryValue),
         SpatialFunction::ConvexHull => ("STConvexHull", SqlServerSpatialShape::Unary),
         SpatialFunction::MakeValid => ("MakeValid", SqlServerSpatialShape::Unary),
+        // Le sette che esistono su `geometry` e non su `geography`. Il nome e
+        // la forma sono gli stessi sui due tipi; cio che cambia e che
+        // sull'altro il membro **non esiste**, e non e questa tabella a
+        // saperlo — lo dice la capability, che le pubblica solo nella voce di
+        // `geometry`.
+        //
+        // Il renderer le scrive comunque, e deve: rifiutarle anche qui sarebbe
+        // la stessa decisione presa due volte, e la seconda e quella che
+        // invecchia. Chi impedisce di chiamarle sul tipo sbagliato e il
+        // preflight, che la semantica della colonna la legge dal catalogo.
+        //
+        // `STRelate` non e fra loro benche esista su `geometry`: il contratto
+        // ammette `Relate` a **due** argomenti e T-SQL il pattern DE-9IM lo
+        // pretende. E' la stessa regola che lo tiene fuori da `MariaDB`, che lo
+        // vuole a tre — una funzione e qualificata quando lo e a ogni arieta
+        // che il piano ammette.
+        SpatialFunction::Centroid => ("STCentroid", SqlServerSpatialShape::Unary),
+        SpatialFunction::Envelope => ("STEnvelope", SqlServerSpatialShape::Unary),
+        SpatialFunction::Boundary => ("STBoundary", SqlServerSpatialShape::Unary),
+        SpatialFunction::PointOnSurface => ("STPointOnSurface", SqlServerSpatialShape::Unary),
+        SpatialFunction::IsSimple => ("STIsSimple", SqlServerSpatialShape::UnaryPredicate),
+        SpatialFunction::Touches => ("STTouches", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Crosses => ("STCrosses", SqlServerSpatialShape::BinaryPredicate),
         SpatialFunction::Z => ("Z", SqlServerSpatialShape::Property),
         SpatialFunction::M => ("M", SqlServerSpatialShape::Property),
         _ => return None,
@@ -2407,16 +2430,21 @@ mod tests {
             assert_eq!(rendered_sql.binds[0].name, parameter);
         }
 
-        // L'esempio era `MakeValid`, che il censimento ha poi trovato su
-        // entrambe le semantiche e che ora e pubblicata. `Centroid` e un
-        // esempio migliore, e non solo perche e ancora chiusa: SQL Server
-        // **ce l'ha** su `geometry`, quindi il rifiuto dice cio che deve dire
-        // — questo renderer non la scrive — invece di sembrare un fatto sul
-        // prodotto.
+        // L'esempio ha cambiato funzione due volte, e la storia dice qualcosa.
+        // Era `MakeValid`, che il censimento ha trovato su entrambe le
+        // semantiche. E' diventato `Centroid`, che esiste su `geometry` e non
+        // su `geography`, e si e aperta il giorno in cui il contratto ha
+        // imparato a dire su quale semantica vale una funzione.
+        //
+        // Ora e `Reverse`, e questa e piu solida delle altre due: SQL Server
+        // non ce l'ha, su nessuna delle due semantiche, e prende un argomento
+        // solo — quindi il rifiuto arriva da dove deve, e non da un piano
+        // malformato. E' un fatto sul prodotto, e nessun cambiamento di questo
+        // repository lo apre.
         let mut unsupported = simple_query();
         unsupported.projection[0] = QueryProjection {
             expression: QueryExpression::Spatial {
-                function: SpatialFunction::Centroid,
+                function: SpatialFunction::Reverse,
                 arguments: vec![query_column("e", "shape")],
             },
             alias: Some("value".to_owned()),

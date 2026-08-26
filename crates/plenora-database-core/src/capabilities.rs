@@ -29,6 +29,7 @@
 // schema, il test in fondo a questo file lo deserializza.
 
 use crate::geometry::Dimensions;
+use crate::geometry::SpatialSemantics;
 use crate::plan::ProviderKind;
 use crate::query::SpatialFunction;
 use serde::{Deserialize, Serialize};
@@ -297,6 +298,31 @@ pub struct TransactionCapabilities {
     pub scope: TransactionScope,
 }
 
+/// L'intersezione delle funzioni offerte su ogni semantica.
+///
+/// Esiste perche `SpatialCapabilities::functions` non venga scritto a mano
+/// accanto a `functions_by_semantics`: sarebbero due fonti per lo stesso fatto,
+/// e la prima smetterebbe di seguire la seconda il giorno in cui qualcuno apre
+/// una funzione su una semantica sola.
+///
+/// Una mappa vuota rende una lista vuota, che e la risposta giusta: un prodotto
+/// senza semantiche spatial dichiarate non garantisce nessuna funzione.
+#[must_use]
+pub fn intersect_spatial_functions(
+    by_semantics: &BTreeMap<SpatialSemantics, Vec<SpatialFunction>>,
+) -> Vec<SpatialFunction> {
+    let mut entries = by_semantics.values();
+    let Some(first) = entries.next() else {
+        return Vec::new();
+    };
+    let rest: Vec<_> = entries.collect();
+    first
+        .iter()
+        .filter(|function| rest.iter().all(|other| other.contains(function)))
+        .copied()
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpatialCapabilities {
@@ -311,13 +337,60 @@ pub struct SpatialCapabilities {
     #[serde(default)]
     pub mixed_geometry_types: bool,
     pub dimensions: Vec<Dimensions>,
-    /// Sottoinsieme garantito per ogni semantica spatial pubblicizzata.
+    /// Sottoinsieme garantito per **ogni** semantica spatial pubblicizzata.
     ///
-    /// Un provider con capability native asimmetriche deve sotto-dichiarare
-    /// l'intersezione; il contratto non consente di attribuire una funzione
-    /// soltanto a `geometry` o soltanto a `geography`.
+    /// Un provider con capability native asimmetriche sotto-dichiara qui
+    /// l'intersezione. Il significato non e cambiato da quando questo campo
+    /// esiste, ed e cio che permette a un consumatore scritto ieri di
+    /// continuare a leggere solo questo: cio che trova qui vale su qualunque
+    /// colonna spatial del prodotto, senza che debba sapere di che tipo sia.
+    ///
+    /// Cio che invece e cambiato e che l'intersezione non e piu **tutto** cio
+    /// che il prodotto offre — vedi `functions_by_semantics`.
     #[serde(default)]
     pub functions: Vec<SpatialFunction>,
+    /// Le funzioni offerte su ciascuna semantica, per intero.
+    ///
+    /// # Perche l'intersezione da sola non bastava
+    ///
+    /// Perche nasconde. Su SQL Server `STCentroid`, `STEnvelope`, `STBoundary`
+    /// e altre cinque esistono su `geometry` e non su `geography`, e su
+    /// `PostGIS` la differenza e ancora piu larga — sessantacinque funzioni
+    /// invocabili su `geometry` contro undici su entrambe. Un contratto che
+    /// pubblicava solo l'intersezione diceva il vero e diceva **meno** del
+    /// vero: chi lavora su una colonna `geometry` non poteva sapere che
+    /// cinquantaquattro funzioni erano li a disposizione.
+    ///
+    /// L'alternativa era pubblicare l'unione, ed e la scelta sbagliata gia
+    /// commessa e gia corretta su `PostGIS`: prometteva a chi usa una colonna
+    /// `geography` funzioni che li non esistono.
+    ///
+    /// # La forma
+    ///
+    /// Ogni voce e **completa** per la sua semantica, non un elenco di aggiunte
+    /// da unire all'intersezione. Un consumatore legge la voce del tipo della
+    /// propria colonna e ha finito; non deve fare aritmetica su due liste per
+    /// sapere cosa puo chiamare.
+    ///
+    /// Le chiavi sono esattamente le semantiche dichiarate: una voce per una
+    /// semantica non pubblicizzata sarebbe una promessa su un tipo che il
+    /// prodotto dice di non avere.
+    ///
+    /// # L'invariante
+    ///
+    /// `functions` e l'intersezione di queste voci, e non e una convenzione
+    /// che ogni provider ricalcola a mano: la calcola
+    /// [`intersect_spatial_functions`], e `ProviderCapabilities::validate` la
+    /// pretende. Due fonti per lo stesso fatto sarebbero una fonte di troppo, e
+    /// qui la seconda sarebbe quella che invecchia in silenzio.
+    ///
+    /// # Additivo
+    ///
+    /// Vuoto per un documento scritto prima che questo campo esistesse, e un
+    /// documento vuoto qui non afferma niente: chi legge ha l'intersezione, che
+    /// e cio che aveva prima.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub functions_by_semantics: BTreeMap<SpatialSemantics, Vec<SpatialFunction>>,
     /// Le colonne geometriche si leggono solo con un CRS dichiarato dal piano.
     ///
     /// Serve perche `geometry` da sola non sa dire la verita su un prodotto

@@ -75,7 +75,10 @@ pub enum TypesDeclaration {
     Unresolved,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// `Ord` perche il contratto la usa come chiave di
+// `SpatialCapabilities::functions_by_semantics`, e un ordine stabile e cio che
+// rende il documento pubblicato confrontabile byte per byte fra due corse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpatialSemantics {
     Geometry,

@@ -1221,6 +1221,16 @@ impl ProductProfile for MariadbProfile {
             // seconda: senza, `geometry: true` significherebbe che il provider
             // ripete cio che il chiamante gli ha detto.
             spatial: SpatialCapabilities {
+                // Una semantica sola, quindi la voce e l'intersezione: su questo
+                // prodotto `geography` non esiste, e non e una lacuna di misura.
+                // La mappa non aggiunge niente qui, e dirlo esplicitamente e
+                // meglio del silenzio — un consumatore che legge per semantica
+                // trova la sua risposta senza dover sapere che il prodotto ne
+                // ha una sola.
+                functions_by_semantics: std::collections::BTreeMap::from([(
+                    plenora_database_core::geometry::SpatialSemantics::Geometry,
+                    self.verified_spatial_functions().to_vec(),
+                )]),
                 read_wkb: true,
                 write_wkb: self.write_spatial_is_qualified(),
                 geometry: true,
@@ -1822,6 +1832,11 @@ fn decimal_kind(product: &str, column: &Column, unsigned: bool) -> Result<MysqlC
 
 fn mysql_spatial_capabilities() -> SpatialCapabilities {
     SpatialCapabilities {
+        // Stessa forma del profilo: una semantica, una voce.
+        functions_by_semantics: std::collections::BTreeMap::from([(
+            plenora_database_core::geometry::SpatialSemantics::Geometry,
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
+        )]),
         read_wkb: true,
         write_wkb: true,
         geometry: true,

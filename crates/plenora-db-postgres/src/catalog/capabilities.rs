@@ -4,6 +4,7 @@ use plenora_database_core::capabilities::{
     TransactionCapabilities, TransactionScope, WriteCapabilities,
 };
 use plenora_database_core::geometry::Dimensions;
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::query::SpatialFunction;
 use plenora_database_core::{ErrorPhase, Result};
@@ -106,6 +107,10 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
                 geography: false,
                 spatial_index: false,
                 mixed_geometry_types: false,
+                // Nessuna semantica dichiarata, nessuna voce: una chiave qui
+                // sarebbe una promessa su un tipo che il prodotto dice di non
+                // avere.
+                functions_by_semantics: BTreeMap::new(),
                 dimensions: Vec::new(),
                 functions: Vec::new(),
                 // Senza PostGIS non c'e geometria da leggere, quindi non c'e
@@ -345,85 +350,111 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
     let write_wkb = geometry && callable("st_geomfromewkb", &[], 1, "geometry");
 
     let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()?;
-    let functions: Vec<SpatialFunction> = SpatialFunction::ALL
+    // La stessa domanda, posta una semantica per volta. Era un `all()` su tutte
+    // le semantiche dichiarate, cioe l'intersezione calcolata dentro il filtro:
+    // una forma che non lasciava modo di sapere cosa fosse invocabile su una
+    // sola.
+    let callable_on = |wanted: &str| -> Vec<SpatialFunction> {
+        SpatialFunction::ALL
+            .iter()
+            .copied()
+            .filter(|function| {
+                if advertised.is_empty() {
+                    return false;
+                }
+                let Some(id) = wire_name(*function) else {
+                    return false;
+                };
+                let Some(spec) = catalog.functions.iter().find(|spec| spec.id == id) else {
+                    return false;
+                };
+                let name = spec.postgres.to_lowercase();
+                // Le posizioni geometriche vengono da `takes_geometry_at`, cioe
+                // dallo **stesso predicato che usa il renderer**, non dal record
+                // canonico del catalogo: i due possono divergere — `Collect` ha una
+                // seconda posizione geometrica nel renderer e non nel catalogo — e
+                // una capability provata su posizioni diverse da quelle che il SQL
+                // occupera non prova la chiamata che verra emessa.
+                //
+                // Vanno pero ritagliate sull'arita che si sta sondando: una lista
+                // sola per tutte le arita chiedeva a `ST_Collect` unaria una
+                // geometria in posizione 1, che quell'overload non ha, e nessun
+                // `PostGIS` avrebbe potuto soddisfare la richiesta.
+                let geometry_positions = |count: usize| -> Vec<usize> {
+                    (0..count)
+                        .filter(|position| function.takes_geometry_at(*position))
+                        .collect()
+                };
+                // **Ogni** arita che il core accetta, non solo quella canonica del
+                // catalogo. Una capability e indivisibile: se il core sa comporre
+                // `ST_Intersection` con tre argomenti e `PostGIS` la offre a tre
+                // solo per `geometry`, pubblicarla mentre si dichiara anche
+                // `geography` autorizza una chiamata che il server non ha.
+                let accepted: Vec<usize> = (1..=MAX_SPATIAL_ARGUMENTS)
+                    .filter(|count| function.accepts_argument_count(*count))
+                    .collect();
+                // Qualunque posizione geometrica puo ricevere un
+                // `QueryExpression::Parameter`, che il renderer lega con
+                // `ST_GeomFromEWKB` — **anche la prima**. Legare la richiesta al
+                // solo caso "piu di una posizione" lasciava pubblicata una funzione
+                // unaria come `ST_SRID` mentre `Spatial(Srid, [Parameter])` non era
+                // formabile. Senza un piano concreto da ispezionare, la risposta
+                // conservativa e richiedere il trasporto per ogni funzione che
+                // accetta una geometria da qualche parte.
+                let takes_a_geometry = accepted
+                    .iter()
+                    .any(|count| !geometry_positions(*count).is_empty());
+                if takes_a_geometry && !write_wkb {
+                    return false;
+                }
+                if spec.returns == "geometry" && !read_wkb {
+                    return false;
+                }
+                // Una funzione senza **nessuna** posizione geometrica non e
+                // sondabile per semantica: `Overload::accepts` confronta i tipi
+                // degli argomenti nelle posizioni geometriche, e con la lista vuota
+                // il confronto e vacuo — la stessa funzione risulta invocabile su
+                // `geometry` e su `geography` senza che nulla lo abbia provato.
+                //
+                // Sono `ST_AsMVT` e `ST_AsGeobuf`, che prendono una riga intera:
+                // `PostGIS` richiede che quella riga contenga una colonna
+                // `geometry`, e nessun overload dimostra il caso `geography`. Il
+                // contratto v2 pubblica **una sola** lista di funzioni per tutte le
+                // semantiche dichiarate, quindi pubblicarle accanto a `geography`
+                // sarebbe una promessa senza prova: restano solo dove la sola
+                // semantica dichiarata e quella per cui esiste la prova.
+                // Sono `ST_AsMVT` e `ST_AsGeobuf`, e la condizione ora si legge per
+                // quello che e: valgono su `geometry` e non su `geography`. Prima
+                // doveva guardare l'intero elenco delle semantiche dichiarate,
+                // perche la lista era una sola per tutte.
+                if !takes_a_geometry && wanted != "geometry" {
+                    return false;
+                }
+                !accepted.is_empty()
+                    && accepted
+                        .iter()
+                        .all(|count| callable(&name, &geometry_positions(*count), *count, wanted))
+            })
+            .collect()
+    };
+
+    // Una lista **per semantica**, completa. L'intersezione la calcola il core
+    // da queste, invece di essere una terza cosa scritta a mano: su `PostGIS`
+    // la differenza fra le due e larga — sessantacinque funzioni invocabili su
+    // `geometry` contro undici su entrambe — e per anni il contratto ha
+    // pubblicato solo le undici, dicendo il vero e dicendo molto meno del vero.
+    let functions_by_semantics: BTreeMap<SpatialSemantics, Vec<SpatialFunction>> = advertised
         .iter()
-        .copied()
-        .filter(|function| {
-            if advertised.is_empty() {
-                return false;
-            }
-            let Some(id) = wire_name(*function) else {
-                return false;
+        .map(|semantics| {
+            let key = match *semantics {
+                "geography" => SpatialSemantics::Geography,
+                _ => SpatialSemantics::Geometry,
             };
-            let Some(spec) = catalog.functions.iter().find(|spec| spec.id == id) else {
-                return false;
-            };
-            let name = spec.postgres.to_lowercase();
-            // Le posizioni geometriche vengono da `takes_geometry_at`, cioe
-            // dallo **stesso predicato che usa il renderer**, non dal record
-            // canonico del catalogo: i due possono divergere — `Collect` ha una
-            // seconda posizione geometrica nel renderer e non nel catalogo — e
-            // una capability provata su posizioni diverse da quelle che il SQL
-            // occupera non prova la chiamata che verra emessa.
-            //
-            // Vanno pero ritagliate sull'arita che si sta sondando: una lista
-            // sola per tutte le arita chiedeva a `ST_Collect` unaria una
-            // geometria in posizione 1, che quell'overload non ha, e nessun
-            // `PostGIS` avrebbe potuto soddisfare la richiesta.
-            let geometry_positions = |count: usize| -> Vec<usize> {
-                (0..count)
-                    .filter(|position| function.takes_geometry_at(*position))
-                    .collect()
-            };
-            // **Ogni** arita che il core accetta, non solo quella canonica del
-            // catalogo. Una capability e indivisibile: se il core sa comporre
-            // `ST_Intersection` con tre argomenti e `PostGIS` la offre a tre
-            // solo per `geometry`, pubblicarla mentre si dichiara anche
-            // `geography` autorizza una chiamata che il server non ha.
-            let accepted: Vec<usize> = (1..=MAX_SPATIAL_ARGUMENTS)
-                .filter(|count| function.accepts_argument_count(*count))
-                .collect();
-            // Qualunque posizione geometrica puo ricevere un
-            // `QueryExpression::Parameter`, che il renderer lega con
-            // `ST_GeomFromEWKB` — **anche la prima**. Legare la richiesta al
-            // solo caso "piu di una posizione" lasciava pubblicata una funzione
-            // unaria come `ST_SRID` mentre `Spatial(Srid, [Parameter])` non era
-            // formabile. Senza un piano concreto da ispezionare, la risposta
-            // conservativa e richiedere il trasporto per ogni funzione che
-            // accetta una geometria da qualche parte.
-            let takes_a_geometry = accepted
-                .iter()
-                .any(|count| !geometry_positions(*count).is_empty());
-            if takes_a_geometry && !write_wkb {
-                return false;
-            }
-            if spec.returns == "geometry" && !read_wkb {
-                return false;
-            }
-            // Una funzione senza **nessuna** posizione geometrica non e
-            // sondabile per semantica: `Overload::accepts` confronta i tipi
-            // degli argomenti nelle posizioni geometriche, e con la lista vuota
-            // il confronto e vacuo — la stessa funzione risulta invocabile su
-            // `geometry` e su `geography` senza che nulla lo abbia provato.
-            //
-            // Sono `ST_AsMVT` e `ST_AsGeobuf`, che prendono una riga intera:
-            // `PostGIS` richiede che quella riga contenga una colonna
-            // `geometry`, e nessun overload dimostra il caso `geography`. Il
-            // contratto v2 pubblica **una sola** lista di funzioni per tutte le
-            // semantiche dichiarate, quindi pubblicarle accanto a `geography`
-            // sarebbe una promessa senza prova: restano solo dove la sola
-            // semantica dichiarata e quella per cui esiste la prova.
-            if !takes_a_geometry && advertised != ["geometry"] {
-                return false;
-            }
-            !accepted.is_empty()
-                && advertised.iter().all(|semantics| {
-                    accepted.iter().all(|count| {
-                        callable(&name, &geometry_positions(*count), *count, semantics)
-                    })
-                })
+            (key, callable_on(semantics))
         })
         .collect();
+    let functions =
+        plenora_database_core::capabilities::intersect_spatial_functions(&functions_by_semantics);
 
     Ok(SpatialCapabilities {
         // Il CRS lo sa il catalogo. `geometry_columns` porta l'SRID di ogni
@@ -480,6 +511,7 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
         // dimensionalita per semantica e materia di `contracts/v3`.
         dimensions: dimensional_profiles(advertised.is_empty(), &callable),
         functions,
+        functions_by_semantics,
     })
 }
 

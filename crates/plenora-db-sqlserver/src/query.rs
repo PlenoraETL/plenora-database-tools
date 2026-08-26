@@ -38,6 +38,46 @@ WHERE is_hidden = 0
 ORDER BY column_ordinal;
 ";
 
+/// Se il provider offre questa funzione su **qualche** semantica.
+///
+/// Da quando il contratto sa dire su quale semantica vale una funzione, «cio
+/// che il provider offre» sono due liste. I controlli di politica pongono
+/// questa domanda; a restringere sul tipo giusto e il preflight, che la
+/// semantica della colonna la legge dal catalogo.
+fn sql_server_offers(function: SpatialFunction) -> bool {
+    VERIFIED_SPATIAL_FUNCTIONS.contains(&function)
+        || GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(&function)
+}
+
+/// Le funzioni che SQL Server offre su `geometry` e **non** su `geography`.
+///
+/// # Perche una seconda lista
+///
+/// Perche il contratto ha imparato a dirlo. `SpatialCapabilities::functions`
+/// resta l'intersezione — cio che vale su qualunque colonna spatial del
+/// prodotto — e `functions_by_semantics` porta la lista completa di ciascuna
+/// semantica. Queste sette stanno nella voce di `geometry` e in nessun'altra.
+///
+/// Fino a ieri erano chiuse, e la ragione era buona: una lista sola per due
+/// semantiche non puo contenerle senza promettere a chi usa `geography`
+/// funzioni che li non esistono. Il censimento le aveva misurate una per una e
+/// lasciate nella casella «esiste su una semantica sola», che era una
+/// descrizione esatta e una porta chiusa.
+///
+/// # Chi impedisce di chiamarle sul tipo sbagliato
+///
+/// Il preflight, che legge la semantica della colonna dal catalogo — la stessa
+/// lettura che serve alle due coordinate.
+pub const GEOMETRY_ONLY_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
+    SpatialFunction::Centroid,
+    SpatialFunction::Envelope,
+    SpatialFunction::Boundary,
+    SpatialFunction::PointOnSurface,
+    SpatialFunction::IsSimple,
+    SpatialFunction::Touches,
+    SpatialFunction::Crosses,
+];
+
 /// Le funzioni spatial qualificate su SQL Server.
 ///
 /// # Cosa la delimita
@@ -483,6 +523,20 @@ pub async fn validate_spatial_inputs(
                 ));
             }
         };
+        // Sette funzioni esistono su `geometry` e non su `geography`, e la
+        // capability le pubblica soltanto nella voce di `geometry`. Qui si
+        // impedisce di chiamarle sull'altro tipo, ed e il solo posto che
+        // puo: il renderer il tipo della colonna non lo conosce, e il server
+        // risponderebbe «Could not find method» — vero e inutile, perche non
+        // direbbe che la funzione c'e e che la colonna e quella sbagliata.
+        if observed_semantics == plenora_database_core::geometry::SpatialSemantics::Geography
+            && GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(&usage.function)
+        {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "funzione spatial offerta solo su geometry, chiamata su una colonna geography",
+            ));
+        }
         // La stessa lettura che serve a validare serve a rendere: qui la
         // semantica c'e gia, e senza questa riga il renderer avrebbe dovuto
         // chiederla una seconda volta al catalogo.
@@ -1387,7 +1441,7 @@ async fn profile_spatial_outputs(
         // Aggiungerne una alla lista e dimenticarla qui la faceva morire nel
         // preflight con «fuori dal sottoinsieme verificato», che e un messaggio
         // vero e che indicava il posto sbagliato.
-        if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
+        if !sql_server_offers(*function) {
             return Err(query_error(
                 ErrorCategory::Unsupported,
                 "output spatial SQL Server fuori dal sottoinsieme verificato",
@@ -1581,6 +1635,13 @@ fn validate_bound_spatial_arguments(
 struct SpatialUse {
     column: ColumnRef,
     argument: SpatialArgument,
+    /// Quale funzione ha usato quella colonna.
+    ///
+    /// Serviva gia implicitamente — la forma dell'argomento viene da lei — e
+    /// ora serve esplicitamente: sette funzioni valgono su `geometry` e non su
+    /// `geography`, e per rifiutarle sul tipo sbagliato bisogna sapere quale
+    /// funzione era.
+    function: SpatialFunction,
 }
 
 fn collect_operation_spatial_uses(
@@ -1641,7 +1702,7 @@ fn collect_expression_spatial_uses(
             // nel ramo finale per un accidente della loro compilazione. Derivare
             // le firme dal contratto ha tolto quell'accidente, e la domanda che
             // restava senza casa e questa.
-            if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
+            if !sql_server_offers(*function) {
                 return Err(query_error(
                     ErrorCategory::Unsupported,
                     "funzione spatial fuori dal sottoinsieme SQL Server verificato",
@@ -1656,6 +1717,7 @@ fn collect_expression_spatial_uses(
                 }
                 uses.push(SpatialUse {
                     column: column.clone(),
+                    function: *function,
                     argument: SpatialArgument::None,
                 });
             } else if sql_server_binary_spatial_function(*function) {
@@ -1682,6 +1744,7 @@ fn collect_expression_spatial_uses(
                 };
                 uses.push(SpatialUse {
                     column: column.clone(),
+                    function: *function,
                     argument,
                 });
             } else if sql_server_numeric_spatial_function(*function) {
@@ -1699,6 +1762,7 @@ fn collect_expression_spatial_uses(
                 };
                 uses.push(SpatialUse {
                     column: column.clone(),
+                    function: *function,
                     argument: if *function == SpatialFunction::PointN {
                         SpatialArgument::PointIndex(name.clone())
                     } else {
@@ -2344,19 +2408,36 @@ mod tests {
         // `SpatialFunction` non e `Ord` — non ha un ordine naturale, e imporgliene
         // uno per una guardia sarebbe una modifica al core per comodita di un
         // test. Si confrontano gli elenchi nell'ordine canonico di `ALL`.
+        // Cio che il provider offre sono **due** liste da quando il contratto
+        // sa dire su quale semantica vale una funzione: l'intersezione, e le
+        // sette che valgono solo su `geometry`.
+        let offered = |function: &SpatialFunction| {
+            VERIFIED_SPATIAL_FUNCTIONS.contains(function)
+                || GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(function)
+        };
         let writable_but_unoffered = SpatialFunction::ALL
             .iter()
-            .filter(|function| {
-                sql_server_spatial_shape(**function).is_some()
-                    && !VERIFIED_SPATIAL_FUNCTIONS.contains(function)
-            })
+            .filter(|function| sql_server_spatial_shape(**function).is_some() && !offered(function))
             .map(|function| format!("{function:?}"))
             .collect::<Vec<_>>();
-        let offered_but_unwritable = VERIFIED_SPATIAL_FUNCTIONS
+        let offered_but_unwritable = SpatialFunction::ALL
             .iter()
-            .filter(|function| sql_server_spatial_shape(**function).is_none())
+            .filter(|function| offered(function) && sql_server_spatial_shape(**function).is_none())
             .map(|function| format!("{function:?}"))
             .collect::<Vec<_>>();
+        // Le due liste non si sovrappongono, e non e pedanteria: una funzione
+        // in entrambe verrebbe pubblicata come garantita su ogni semantica
+        // **e** come valida su una sola, che sono due affermazioni che non
+        // possono essere vere insieme.
+        let in_both = VERIFIED_SPATIAL_FUNCTIONS
+            .iter()
+            .filter(|function| GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(function))
+            .map(|function| format!("{function:?}"))
+            .collect::<Vec<_>>();
+        assert!(
+            in_both.is_empty(),
+            "pubblicate come garantite ovunque e come valide solo su geometry: {in_both:?}"
+        );
         assert!(
             offered_but_unwritable.is_empty(),
             "pubblicate e non scrivibili dal renderer: {offered_but_unwritable:?}"
@@ -2369,7 +2450,13 @@ mod tests {
 
     #[test]
     fn spatial_use_collection_accepts_only_verified_sql_server_signatures() {
-        for function in VERIFIED_SPATIAL_FUNCTIONS {
+        // L'unione, non la sola lista garantita: le sette che valgono su
+        // `geometry` hanno una firma quanto le altre, e una firma sbagliata le
+        // farebbe morire in prepare sul tipo su cui invece funzionano.
+        for function in VERIFIED_SPATIAL_FUNCTIONS
+            .iter()
+            .chain(GEOMETRY_ONLY_SPATIAL_FUNCTIONS)
+        {
             // La forma viene dal contratto, non da un elenco scritto qui.
             // Elencarla a mano faceva coincidere la domanda con la risposta: il
             // test costruiva soltanto le firme che gia conosceva, e il giorno
@@ -2430,13 +2517,17 @@ mod tests {
         );
 
         for expression in [
-            // Era `MakeValid`, che il censimento ha poi trovata su entrambe le
-            // semantiche e che ora e pubblicata. `Centroid` la sostituisce, e
-            // dice una cosa piu precisa: SQL Server ce l'ha su `geometry` e
-            // non su `geography`, quindi la chiusura e la regola
-            // dell'intersezione e non un'assenza dal prodotto.
+            // L'esempio ha cambiato funzione due volte in un pomeriggio —
+            // `MakeValid`, poi `Centroid` — e tutte e due si sono aperte. La
+            // morale non e che sceglievo male: e che una prova che dimostra un
+            // rifiuto va ancorata a un fatto **del prodotto**, non a una
+            // decisione di questo repository, se non si vuole che invecchi ogni
+            // volta che il repository decide qualcosa.
+            //
+            // `Reverse` lo e: SQL Server non ha `STReverse`, su nessuna delle
+            // due semantiche, e nessun lavoro qui dentro lo apre.
             QueryExpression::Spatial {
-                function: SpatialFunction::Centroid,
+                function: SpatialFunction::Reverse,
                 arguments: vec![column("e", "shape")],
             },
             QueryExpression::Spatial {
