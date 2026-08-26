@@ -110,6 +110,7 @@ async fn raw_probes(recorder: &mut Recorder, connection: &mut mysql_async::Conn)
     spatial_index_probe(recorder, connection).await;
     spatial_candidates_probe(recorder, connection).await;
     geometry_result_probe(recorder, connection).await;
+    crs_rule_probe(recorder, connection).await;
     exact_and_dimension_probe(recorder, connection).await;
 }
 
@@ -5917,6 +5918,14 @@ async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mys
 /// da verificare valore per valore: il CRS dichiarato dal chiamante non
 /// potrebbe essere confermato da nulla, e la superficie resterebbe chiusa per
 /// una ragione diversa da quella di oggi.
+///
+/// # Cosa questa sonda non ha chiesto
+///
+/// Due sistemi di riferimento: 4326, geografico, e 0, l'indefinito OGC. In
+/// mezzo ce n'e una terza categoria — i sistemi **proiettati**, 3857 e 3003 fra
+/// gli altri — e non e una sfumatura: su `MySQL` e esattamente li che queste
+/// funzioni esistono. `crs_rule_probe`, qui sotto, e la sonda che l'ha chiesto,
+/// e ha trovato una superficie che questa aveva concluso assente.
 async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     let table = "plenora_driver_evidence_geometry_result";
     for statement in [
@@ -5985,6 +5994,133 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
         "raw",
         "spatial",
         "cosa esce da una funzione che restituisce geometria, e con quale SRID",
+        measured.join(" "),
+    );
+}
+
+/// La regola di CRS dichiarata dal catalogo, messa alla prova.
+///
+/// Il catalogo dichiara `preserves` per ventiquattro funzioni: una geometria
+/// entra, e cio che esce sta nello stesso sistema di riferimento. E' una
+/// affermazione geometrica, e questa sonda la attacca da tre lati.
+///
+/// **La funzione esiste su questo sistema?** `geometry_result_probe` aveva
+/// provato 4326 e 0, e aveva concluso che su `MySQL` queste funzioni non ci
+/// sono. La conclusione era tratta da un campione che non conteneva il caso in
+/// cui esistono: 3857 e 3003 sono sistemi **proiettati**, e li `MySQL` le
+/// esegue tutte e tre. Il 3618 non dice «non implementata», dice «non
+/// implementata per i sistemi geografici», ed e una condizione sul sistema di
+/// riferimento e non sul prodotto.
+///
+/// **L'etichetta sopravvive?** A volte no, e non e un problema: su `MariaDB`
+/// `ST_Buffer` rende SRID 0. Cio che il provider pubblica non e quell'etichetta
+/// — e il CRS dichiarato per la colonna d'ingresso, confermato riga per riga
+/// sull'ingresso stesso.
+///
+/// **Le coordinate restano dove sono?** Questa e la domanda che falsifica
+/// davvero la regola, e le altre due non la sostituiscono: un motore che
+/// riproiettasse in silenzio renderebbe un SRID plausibile e una geometria
+/// altrove. `ST_Contains` e `ST_Within` — entrambe fra le funzioni qualificate,
+/// quindi misurate a loro volta — chiedono al motore se il risultato e ancora
+/// nello stesso posto dell'ingresso. Un envelope contiene la sua geometria, un
+/// centroide vi sta dentro, un buffer la contiene: se il frame fosse cambiato,
+/// nessuna delle tre reggerebbe.
+async fn crs_rule_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
+    let table = "plenora_driver_evidence_crs_rule";
+    // Un poligono per ciascuna delle tre categorie di sistema, con coordinate
+    // plausibili per quel sistema: un poligono in gradi dichiarato 3003 sarebbe
+    // fuori dal dominio della proiezione, e cio che il motore ne fa sarebbe la
+    // misura di un caso degenere invece che della regola.
+    let fixtures = [
+        (
+            4_326,
+            "POLYGON((8 44, 8 45, 9 45, 9 44, 8 44))",
+            "geografico",
+        ),
+        (
+            3_857,
+            "POLYGON((890000 5460000, 890000 5620000, 1000000 5620000, 1000000 5460000, \
+             890000 5460000))",
+            "proiettato",
+        ),
+        (
+            3_003,
+            "POLYGON((1500000 4900000, 1500000 5000000, 1600000 5000000, 1600000 4900000, \
+             1500000 4900000))",
+            "proiettato",
+        ),
+    ];
+    for statement in [
+        format!("DROP TABLE IF EXISTS {table}"),
+        format!(
+            "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, area GEOMETRY NOT NULL) \
+             ENGINE = InnoDB"
+        ),
+    ] {
+        connection
+            .query_drop(statement)
+            .await
+            .expect("tabella della regola di CRS: harness, non divergenza");
+    }
+    for (srid, wkt, _) in fixtures {
+        connection
+            .query_drop(format!(
+                "INSERT INTO {table} VALUES ({srid}, ST_GeomFromText('{wkt}', {srid}))"
+            ))
+            .await
+            .expect("riga della regola di CRS: harness, non divergenza");
+    }
+
+    let mut measured = Vec::new();
+    for (srid, _, family) in fixtures {
+        for (name, result, same_place) in [
+            (
+                "envelope",
+                "ST_Envelope(area)",
+                "ST_Contains(ST_Envelope(area), area)",
+            ),
+            (
+                "centroid",
+                "ST_Centroid(area)",
+                "ST_Within(ST_Centroid(area), area)",
+            ),
+            (
+                "buffer",
+                "ST_Buffer(area, 1)",
+                "ST_Contains(ST_Buffer(area, 1), area)",
+            ),
+        ] {
+            // Le tre domande in una sola andata: se la funzione non esiste su
+            // questo sistema, il server rifiuta l'intera riga e il codice che
+            // rende dice quale delle due assenze e.
+            let verdict = match connection
+                .query_first::<(Option<i64>, Option<i64>, Option<i64>), _>(format!(
+                    "SELECT ST_SRID({result}), {same_place}, LENGTH(ST_AsBinary({result})) \
+                     FROM {table} WHERE id = {srid}"
+                ))
+                .await
+            {
+                Ok(Some((Some(out), Some(place), Some(bytes)))) => {
+                    format!("srid={out},stessoposto={place},wkb={bytes}")
+                }
+                Ok(Some(_)) => "null".to_owned(),
+                Ok(None) => "nessuna riga".to_owned(),
+                Err(error) => server_code(&error)
+                    .map_or_else(|| "rifiutato".to_owned(), |code| code.to_string()),
+            };
+            measured.push(format!("{family}.{srid}.{name}={verdict}"));
+        }
+    }
+
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await;
+
+    recorder.accepted(
+        "raw.crs_rule_check",
+        "raw",
+        "spatial",
+        "se il risultato di una funzione geometrica resta nel sistema dell'ingresso",
         measured.join(" "),
     );
 }
@@ -6931,10 +7067,15 @@ async fn spatial_function_probe(
     for statement in [
         format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_FN}"),
         format!(
-            "CREATE TABLE {SCRATCH_SPATIAL_FN} (id INT NOT NULL PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE = InnoDB"
+            "CREATE TABLE {SCRATCH_SPATIAL_FN} (id INT NOT NULL PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL, framed_point GEOMETRY NOT NULL, framed_line GEOMETRY NOT NULL, framed_poly GEOMETRY NOT NULL) ENGINE = InnoDB"
         ),
+        // Le tre geometrie senza sistema di riferimento e le stesse tre in
+        // 3003, che e proiettato. Una funzione che **rende** geometria pretende
+        // un CRS dichiarato sull'ingresso, e su una colonna senza SRID il piano
+        // sarebbe rifiutato dal provider: la misura direbbe della sonda invece
+        // che del prodotto.
         format!(
-            "INSERT INTO {SCRATCH_SPATIAL_FN} VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))"
+            "INSERT INTO {SCRATCH_SPATIAL_FN} VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'), ST_GeomFromText('POINT(1550000 4950000)', 3003), ST_GeomFromText('LINESTRING(1500000 4900000, 1550000 4950000, 1600000 4900000)', 3003), ST_GeomFromText('POLYGON((1500000 4900000, 1500000 5000000, 1600000 5000000, 1600000 4900000, 1500000 4900000))', 3003))"
         ),
     ] {
         connection
@@ -6997,10 +7138,18 @@ async fn cross_spatial_function(
         .find(|count| function.accepts_argument_count(*count))
         .unwrap_or(1);
     let mut reason = String::new();
+    // Una funzione che rende geometria si chiede sulle colonne con un sistema
+    // di riferimento, e dichiarandolo: e la sola forma in cui il provider la
+    // ammette.
+    let framed = function.returns_geometry();
     // Tre geometrie, non due. `ST_X` vuole un punto e su una linea fallisce
     // per il dato, non per il motore: la stessa falsa assenza che `ST_Area` su
     // una `LINESTRING` aveva quasi fatto registrare.
-    for field in ["point", "line", "poly"] {
+    for field in if framed {
+        ["framed_point", "framed_line", "framed_poly"]
+    } else {
+        ["point", "line", "poly"]
+    } {
         let arguments: Vec<QueryExpression> = (0..arity)
             .map(|index| {
                 if function.takes_geometry_at(index) {
@@ -7021,7 +7170,14 @@ async fn cross_spatial_function(
             .iter()
             .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
         let operation = QueryOperation {
-            declared_crs: Vec::new(),
+            declared_crs: if framed {
+                vec![plenora_database_core::plan::DeclaredCrs {
+                    column: field.to_owned(),
+                    srid: 3_003,
+                }]
+            } else {
+                Vec::new()
+            },
             source: Some(QuerySource {
                 object: ObjectRef {
                     catalog: None,

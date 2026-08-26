@@ -253,6 +253,16 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # disegno: se `ST_Envelope` di una geometria 4326 rendesse zero, non ci
     # sarebbe niente da verificare valore per valore.
     "raw.geometry_result_forms": "cosa esce da una funzione che restituisce geometria",
+    # La sonda qui sopra aveva provato due sistemi di riferimento — 4326,
+    # geografico, e 0, l'indefinito OGC — e ne aveva concluso che su MySQL le
+    # funzioni che rendono geometria non ci sono. Fra i due c'e una terza
+    # categoria, i sistemi proiettati, ed e esattamente li che esistono: il
+    # 3618 e una condizione sul sistema di riferimento, non sul prodotto.
+    #
+    # Questa chiede la terza categoria, e chiede in piu la cosa che falsifica
+    # davvero la regola dichiarata dal catalogo: se le coordinate del risultato
+    # siano ancora dove erano quelle dell'ingresso.
+    "raw.crs_rule_check": "se il risultato di una funzione geometrica resta dov'era l'ingresso",
     # Le due superfici spatial rimaste, e sono chiuse per ragioni diverse.
     #
     # `exact` e una forma che il piano ammette e che nessuna sonda ha
@@ -341,6 +351,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "raw.spatial_index_forms",
     "raw.spatial_candidate_functions",
     "raw.geometry_result_forms",
+    "raw.crs_rule_check",
     "raw.exact_geometry_column",
     "raw.geometry_dimensions",
     "provider.test_connection",

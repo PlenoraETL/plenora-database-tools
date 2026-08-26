@@ -140,6 +140,26 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::HausdorffDistance,
     SpatialFunction::FrechetDistance,
     SpatialFunction::AsGeoJson,
+    // Le prime tre che **rendono geometria**, e le tre che
+    // `raw.crs_rule_check` ha attraversato.
+    //
+    // La misura precedente le dava assenti su questo prodotto: `ST_Envelope`,
+    // `ST_Centroid` e `ST_Buffer` rispondevano 3618 su una colonna 4326. Il
+    // campione conteneva due sistemi di riferimento — geografico e
+    // l'indefinito OGC — e non conteneva quello in cui esistono: in 3857 e in
+    // 3003, che sono **proiettati**, tutte e tre girano e conservano l'SRID.
+    // Il 3618 e una condizione sul sistema di riferimento, non una assenza dal
+    // prodotto, ed e una distinzione che cambia la decisione.
+    //
+    // Sono qui e non fra le scalari perche il piano deve dichiarare il CRS
+    // della colonna d'ingresso: il provider lo pretende, lo propaga secondo la
+    // regola della funzione e lo conferma riga per riga. Una colonna in un
+    // sistema geografico fallira sul server con 3618, ed e il limite del
+    // prodotto — non c'e lista che lo possa nascondere, e la ragione ora e
+    // scritta dove qualcuno la trova.
+    SpatialFunction::Envelope,
+    SpatialFunction::Centroid,
+    SpatialFunction::Buffer,
 ];
 
 /// Le funzioni spatial qualificate su `MariaDB`.
@@ -203,6 +223,20 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Crosses,
     SpatialFunction::Overlaps,
     SpatialFunction::AsGeoJson,
+    // Le tre che rendono geometria, e qui la misura e piu larga che su `MySQL`:
+    // `raw.crs_rule_check` le ha attraversate su tutti e tre i sistemi di
+    // riferimento — geografico, e i due proiettati — e su tutte e tre le major.
+    // Nessun 3618: questo prodotto le implementa ovunque.
+    //
+    // `ST_Buffer` rende SRID 0 partendo da 3003, e non e un motivo per
+    // chiuderlo: `ST_Contains(ST_Buffer(area, 1), area)` risponde 1, cioe le
+    // coordinate sono rimaste dove erano e il motore ha lasciato cadere
+    // l'etichetta invece di riproiettare. Cio che il provider pubblica non e
+    // quell'etichetta ma il CRS dichiarato per l'ingresso, confermato riga per
+    // riga sull'ingresso stesso.
+    SpatialFunction::Envelope,
+    SpatialFunction::Centroid,
+    SpatialFunction::Buffer,
 ];
 
 /// Renderizza una `QueryOperation` scalare a sorgente singola.
@@ -421,7 +455,17 @@ fn resolve_query_geometries(
                 ),
             ));
         }
-        let [QueryExpression::Column { column }] = arguments.as_slice() else {
+        // Gli argomenti **geometrici**, che sono quelli da cui un frame puo
+        // arrivare. `ST_Buffer` ne ha uno solo e prende in piu una distanza:
+        // guardare l'arieta invece del ruolo lo avrebbe rifiutato per un
+        // argomento che con il sistema di riferimento non c'entra.
+        let geometry_arguments = arguments
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| function.takes_geometry_at(*index))
+            .map(|(_, argument)| argument)
+            .collect::<Vec<_>>();
+        let [QueryExpression::Column { column }] = geometry_arguments.as_slice() else {
             // La regola dice «il risultato sta dov'e l'ingresso», e questo ha
             // senso solo se l'ingresso e una colonna di cui qualcuno sa dire
             // dove sta. Un'espressione annidata sposterebbe la domanda, non la
@@ -1456,6 +1500,28 @@ mod tests {
         let resolved = resolve(&query).expect("risolta");
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].result_index, 0);
+        assert_eq!(resolved[0].source_column, "geom");
+        assert_eq!(resolved[0].srid, 4_326);
+    }
+
+    #[test]
+    fn a_scalar_argument_is_not_a_place_a_frame_could_come_from() {
+        // `ST_Buffer` prende una geometria **e** una distanza. La prima stesura
+        // pretendeva un argomento solo, e lo rifiutava dicendo «l'argomento non
+        // e una colonna»: guardava l'arieta invece del ruolo, e la distanza con
+        // il sistema di riferimento non c'entra niente. Il gate live l'ha
+        // trovato, e non avrebbe dovuto: si vede qui, senza un server.
+        let query = geometry_query(
+            SpatialFunction::Buffer,
+            vec![
+                column("geom"),
+                QueryExpression::Parameter {
+                    name: "distanza".to_owned(),
+                },
+            ],
+        );
+        let resolved = resolve(&query).expect("il buffer eredita il frame della sua geometria");
+        assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].source_column, "geom");
         assert_eq!(resolved[0].srid, 4_326);
     }
@@ -3679,49 +3745,46 @@ mod tests {
         );
     }
 
-    /// Nessuna funzione verified restituisce una geometria.
+    /// Una funzione verified che rende geometria porta una regola usabile.
     ///
-    /// Undici delle ventisei che questa lista pubblicava sono state bocciate
-    /// dal riferimento tutte per la stessa ragione: il mapper del result set
-    /// rifiuta `MYSQL_TYPE_GEOMETRY`, quindi una funzione che restituisce una
-    /// geometria non arriva mai a consegnare una riga. Nessuna delle undici
-    /// aveva bisogno di un server per essere scoperta — il tipo di ritorno sta
-    /// nel catalogo versionato, e il rifiuto sta in `profile.rs`. Servivano
-    /// due gate live e una fixture in piedi per vedere una cosa che qui si
-    /// vede in trenta millisecondi.
+    /// # Cosa diceva prima, e perche non lo dice piu
     ///
-    /// Questa guardia non e una riscrittura della lista in un'altra forma: la
-    /// lista dice **quali** funzioni, il catalogo dice **cosa restituiscono**,
-    /// e le due cose si contraddicono senza che nessuno se ne accorga. Il
-    /// giorno che il preflight SRID esiste, questo test cade — ed e il segnale
-    /// giusto: e il momento di riaprirle, non di allentare il test.
+    /// Questa guardia pretendeva che **nessuna** funzione verified rendesse
+    /// geometria, e aveva ragione: il mapper del result set rifiutava
+    /// `MYSQL_TYPE_GEOMETRY`, quindi una funzione che ne restituisce una non
+    /// arrivava mai a consegnare una riga. Undici funzioni erano state bocciate
+    /// da due gate live per una cosa che qui si vedeva in trenta millisecondi.
+    ///
+    /// Quel rifiuto non c'e piu — il renderer incapsula, il piano dichiara il
+    /// CRS dell'ingresso e la regola della funzione dice se il risultato lo
+    /// eredita — e la guardia sarebbe scaduta se fosse rimasta com'era. La
+    /// forma che resta vera e piu stretta: il provider sa propagare **una**
+    /// regola, `preserves`, e una funzione pubblicata con un'altra passerebbe
+    /// il cancello del renderer per morire nel risolutore del CRS.
+    ///
+    /// Come prima, non e la lista riscritta in un'altra forma: la lista dice
+    /// quali funzioni, il catalogo dice dove cade il loro risultato, e le due
+    /// cose possono contraddirsi senza che nessuno se ne accorga.
     #[test]
-    fn no_verified_function_returns_a_geometry() {
-        let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()
-            .expect("catalogo spatial incorporato");
-        let returns = |function: &SpatialFunction| -> String {
-            let id = serde_json::to_value(function)
-                .expect("serializza la funzione")
-                .as_str()
-                .expect("l'id di wire e una stringa")
-                .to_owned();
-            catalog
-                .functions
+    fn a_verified_geometry_function_carries_a_rule_the_provider_can_use() {
+        for (product, functions) in [
+            ("MySQL", VERIFIED_SPATIAL_FUNCTIONS),
+            ("MariaDB", MARIADB_VERIFIED_SPATIAL_FUNCTIONS),
+        ] {
+            let unusable = functions
                 .iter()
-                .find(|specification| specification.id == id)
-                .unwrap_or_else(|| panic!("{id} non e nel catalogo"))
-                .returns
-                .clone()
-        };
-        let geometries = VERIFIED_SPATIAL_FUNCTIONS
-            .iter()
-            .filter(|function| returns(function) == "geometry")
-            .map(|function| format!("{function:?}"))
-            .collect::<Vec<_>>();
-        assert!(
-            geometries.is_empty(),
-            "pubblicate come verified ma il result set non le sa mappare: {}",
-            geometries.join(", ")
-        );
+                .filter(|function| function.returns_geometry())
+                .filter(|function| {
+                    function.crs_rule()
+                        != Some(plenora_database_core::spatial_catalog::CrsRule::Preserves)
+                })
+                .map(|function| format!("{function:?}"))
+                .collect::<Vec<_>>();
+            assert!(
+                unusable.is_empty(),
+                "{product} pubblica funzioni geometriche la cui regola di CRS il                  provider non sa propagare: {}",
+                unusable.join(", ")
+            );
+        }
     }
 }

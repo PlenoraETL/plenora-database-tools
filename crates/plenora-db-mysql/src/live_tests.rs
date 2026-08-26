@@ -5124,9 +5124,16 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 ///
 /// # Cosa dimostra, e cosa no
 ///
-/// Il SRID e 0, cartesiano. Cio che si dimostra e che il renderer produce SQL
-/// che `MySQL` esegue; se una funzione valga anche su un sistema geografico e
-/// un'altra domanda, e questa lista non la pone.
+/// Il SRID e 0, cartesiano, per le funzioni che rendono uno scalare. Cio che si
+/// dimostra e che il renderer produce SQL che `MySQL` esegue; se una funzione
+/// valga anche su un sistema geografico e un'altra domanda, e questa lista non
+/// la pone.
+///
+/// Per le funzioni che rendono **geometria** il sistema di riferimento non e
+/// un dettaglio della fixture: senza un SRID sull'ingresso non c'e un frame da
+/// ereditare, e il provider rifiuterebbe il piano prima di scrivere SQL. Quelle
+/// girano percio su tre colonne in 3003 — proiettato — con il CRS dichiarato
+/// dal piano, che e la sola forma in cui un chiamante puo chiederle.
 ///
 /// Se una funzione non esegue, questo test diventa rosso e la lista va
 /// accorciata: e il modo in cui una capability si chiude con una prova in mano
@@ -5157,13 +5164,26 @@ async fn live_v12_every_verified_spatial_function_executes() {
             .ok();
         connection
             .query_drop(
-                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL) ENGINE=InnoDB",
+                "CREATE TABLE _v12_spatial_all (id BIGINT PRIMARY KEY, point GEOMETRY NOT NULL, line GEOMETRY NOT NULL, poly GEOMETRY NOT NULL, framed_point GEOMETRY NOT NULL, framed_line GEOMETRY NOT NULL, framed_poly GEOMETRY NOT NULL) ENGINE=InnoDB",
             )
             .await
             .expect("create della tabella della sonda");
+        // Tre geometrie senza sistema di riferimento e le stesse tre in
+        // **3003**, che e un sistema proiettato.
+        //
+        // La coppia serve perche le funzioni che rendono geometria si chiedono
+        // in un modo diverso dalle altre: portano un CRS dichiarato, e senza un
+        // SRID sull'ingresso non ci sarebbe niente da ereditare — il piano
+        // verrebbe rifiutato dal provider invece che dal server, e la sonda
+        // misurerebbe se stessa.
+        //
+        // Proiettato e non geografico perche e la condizione in cui la
+        // superficie esiste su entrambi i prodotti: `raw.crs_rule_check` ha
+        // trovato che su `MySQL` queste funzioni rispondono 3618 in un sistema
+        // geografico, e girano in uno proiettato.
         connection
             .query_drop(
-                "INSERT INTO _v12_spatial_all VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'))",
+                "INSERT INTO _v12_spatial_all VALUES (1, ST_GeomFromText('POINT(2 3)'), ST_GeomFromText('LINESTRING(0 0, 5 5, 10 0)'), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))'), ST_GeomFromText('POINT(1550000 4950000)', 3003), ST_GeomFromText('LINESTRING(1500000 4900000, 1550000 4950000, 1600000 4900000)', 3003), ST_GeomFromText('POLYGON((1500000 4900000, 1500000 5000000, 1600000 5000000, 1600000 4900000, 1500000 4900000))', 3003))",
             )
             .await
             .expect("seed della sonda");
@@ -5190,9 +5210,18 @@ async fn live_v12_every_verified_spatial_function_executes() {
         // qui, per analogia, che e il modo in cui questa lista si era gonfiata
         // la prima volta.
         let mut refusals: Vec<String> = Vec::new();
+        // Una funzione che **rende** geometria si chiede sulle colonne con un
+        // sistema di riferimento, e dichiarandolo: e la sola forma in cui il
+        // provider la ammette, quindi e la sola che questa sonda deve
+        // attraversare.
+        let framed = function.returns_geometry();
         // Tre geometrie, non due: `ST_X` vuole un punto, e su una linea
         // fallirebbe per il dato invece che per il motore.
-        for field in ["point", "line", "poly"] {
+        for field in if framed {
+            ["framed_point", "framed_line", "framed_poly"]
+        } else {
+            ["point", "line", "poly"]
+        } {
             // L'arieta dichiarata dal contratto, non una tabella scritta a mano
             // qui: se il core la cambia, la sonda la segue.
             let arity = (1..=4)
@@ -5221,7 +5250,14 @@ async fn live_v12_every_verified_spatial_function_executes() {
                 .any(|argument| matches!(argument, QueryExpression::Parameter { .. }));
 
             let operation = QueryOperation {
-                declared_crs: Vec::new(),
+                declared_crs: if framed {
+                    vec![plenora_database_core::plan::DeclaredCrs {
+                        column: field.to_owned(),
+                        srid: 3_003,
+                    }]
+                } else {
+                    Vec::new()
+                },
                 common_table_expressions: Vec::new(),
                 source: Some(QuerySource {
                     object: ObjectRef {
@@ -5343,6 +5379,244 @@ async fn live_v12_every_verified_spatial_function_executes() {
         .connection_mut()
         .expect("connessione di cleanup")
         .query_drop("DROP TABLE IF EXISTS _v12_spatial_all")
+        .await
+        .ok();
+}
+
+/// Il CRS pubblicato per una geometria calcolata, e cosa succede se e falso.
+///
+/// # La domanda
+///
+/// Il contratto `GeoArrow` pubblica un sistema di riferimento. Per una
+/// geometria **calcolata** il motore spesso non lo dice — `raw.crs_rule_check`
+/// ha misurato `ST_Buffer` su `MariaDB` rendere SRID 0 partendo da 3003 — e cio
+/// che il provider pubblica non e quell'etichetta ma il CRS dichiarato per la
+/// colonna d'ingresso, propagato dalla regola della funzione.
+///
+/// Una regola e una dichiarazione, e una dichiarazione senza verifica e una
+/// promessa. Questo test chiede le due meta.
+///
+/// # Le due meta
+///
+/// La prima: su una colonna che porta davvero 3003, il campo Arrow del
+/// risultato dichiara 3003 e i byte sono WKB leggibile. Non e scontato che sia
+/// 3003 — il motore ne rende un altro per il buffer, e se il provider
+/// ripubblicasse cio che il motore dice, questo assert cadrebbe.
+///
+/// La seconda, che e quella che conta: sulla stessa colonna con **una riga in
+/// 3857**, la lettura fallisce. Non fallisce al prepare — li nessuno puo
+/// saperlo, perche una colonna geometrica che nessuna DDL vincola puo contenere
+/// qualunque cosa — ma alla riga che smentisce la dichiarazione. Un provider
+/// che si fidasse della parola del piano pubblicherebbe 3003 su una geometria
+/// che sta altrove, ed e esattamente il difetto che il rifiuto di ieri
+/// preveniva rifiutando tutto.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_v12_a_computed_geometry_carries_the_declared_frame_and_refuses_a_lie() {
+    use plenora_database_core::arrow::array::Array;
+    use plenora_database_core::plan::{DeclaredCrs, ObjectRef};
+    use plenora_database_core::provider::ParameterBag;
+    use plenora_database_core::query::{
+        ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource,
+    };
+    use plenora_database_core::resource::ResourceBudget;
+
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "_v12_computed_geometry_crs";
+
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione di setup");
+        connection
+            .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+            .await
+            .ok();
+        connection
+            .query_drop(format!(
+                "CREATE TABLE {table} (id BIGINT PRIMARY KEY, area GEOMETRY NOT NULL) \
+                 ENGINE=InnoDB"
+            ))
+            .await
+            .expect("create");
+        // Due righe oneste e una che mente. La terza non e un caso di
+        // laboratorio: una colonna geometrica che nessuna DDL vincola e
+        // esattamente quella che puo contenerla, ed e la ragione per cui il
+        // contratto chiede una dichiarazione **e** la verifica.
+        for (id, srid) in [(1, 3_003), (2, 3_003), (3, 3_857)] {
+            connection
+                .query_drop(format!(
+                    "INSERT INTO {table} VALUES ({id}, ST_GeomFromText('POLYGON((1500000 \
+                     4900000, 1500000 5000000, 1600000 5000000, 1600000 4900000, 1500000 \
+                     4900000))', {srid}))"
+                ))
+                .await
+                .expect("seed");
+        }
+    }
+
+    let plan = |limit: Option<u64>| QueryOperation {
+        declared_crs: vec![DeclaredCrs {
+            column: "area".to_owned(),
+            srid: 3_003,
+        }],
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("dataflow_test".to_owned()),
+                object: table.to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: plenora_database_core::query::SpatialFunction::Envelope,
+                arguments: vec![QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "area".to_owned(),
+                    },
+                }],
+            },
+            alias: Some("frame".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![plenora_database_core::query::QueryOrdering {
+            expression: QueryExpression::Column {
+                column: ColumnRef {
+                    relation: None,
+                    field: "id".to_owned(),
+                },
+            },
+            direction: plenora_database_core::plan::SortDirection::Asc,
+        }],
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        // Le due righe oneste soltanto: la stessa query senza limite incontra
+        // la terza, ed e la seconda meta di questo test.
+        row_limit: limit,
+        row_offset: None,
+        locking: None,
+    };
+
+    // --- La prima meta: il frame dichiarato arriva fino ad Arrow ------------
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &plan(Some(2)),
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("una geometria calcolata con un CRS dichiarato deve aprirsi");
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("la lettura deve attraversare le due righe oneste")
+        .expect("un batch");
+    assert_eq!(batch.num_rows(), 2);
+    // Una colonna sola: quella di conferma sta oltre la projection del
+    // chiamante, e nessuno schema pubblicato la nomina.
+    assert_eq!(
+        batch.num_columns(),
+        1,
+        "la colonna di conferma non deve comparire nello schema"
+    );
+    let field = batch.schema().field(0).clone();
+    assert_eq!(field.name(), "frame");
+    let metadata = field.metadata();
+    assert_eq!(
+        metadata
+            .get(plenora_database_core::protocol::GEOMETRY_SRID)
+            .map(String::as_str),
+        Some("3003"),
+        "il CRS pubblicato deve essere quello dichiarato per l'ingresso, non \
+         quello che il motore rende: {metadata:?}"
+    );
+    assert_eq!(
+        metadata
+            .get(plenora_database_core::protocol::GEOARROW_EXTENSION_NAME)
+            .map(String::as_str),
+        Some("geoarrow.wkb"),
+        "{metadata:?}"
+    );
+    let values = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<plenora_database_core::arrow::array::BinaryArray>()
+        .expect("una geometria e WKB binario");
+    for row in 0..values.len() {
+        let wkb = values.value(row);
+        assert!(!wkb.is_empty(), "WKB vuoto alla riga {row}");
+        // Il primo byte e l'ordine dei byte del WKB: 0 big endian, 1 little.
+        // Se qui ci fosse il formato interno del prodotto, i primi quattro
+        // byte sarebbero l'SRID e questo assert cadrebbe.
+        assert!(wkb[0] <= 1, "byte iniziale {} alla riga {row}", wkb[0]);
+    }
+    while stream
+        .next_batch(&cancellation)
+        .await
+        .expect("chiusura dello stream")
+        .is_some()
+    {}
+
+    // --- La seconda meta: la riga che smentisce ferma la lettura -----------
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &plan(None),
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("il prepare non puo sapere cosa contengono le righe");
+    let mut refusal = None;
+    loop {
+        match stream.next_batch(&cancellation).await {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) => {
+                refusal = Some(error);
+                break;
+            }
+        }
+    }
+    let refusal = refusal.expect(
+        "una riga in 3857 sotto una dichiarazione 3003 deve fermare la lettura: \
+         pubblicare 3003 su quella geometria sarebbe un CRS falso",
+    );
+    assert_eq!(refusal.category, plenora_database_core::ErrorCategory::Crs);
+    assert!(
+        refusal.message.contains("3003") && refusal.message.contains("3857"),
+        "il messaggio deve nominare i due SRID: {}",
+        refusal.message
+    );
+    // Un SRID e un identificatore di registro, non una cella: la geometria che
+    // l'ha portato non compare nel messaggio.
+    assert!(
+        !refusal.message.contains("POLYGON") && !refusal.message.contains("1500000"),
+        "il messaggio pubblico porta il payload: {}",
+        refusal.message
+    );
+
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("cleanup");
+    cleanup
+        .connection_mut()
+        .expect("connessione di cleanup")
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
         .await
         .ok();
 }

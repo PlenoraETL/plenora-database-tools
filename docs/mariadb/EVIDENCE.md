@@ -2234,3 +2234,80 @@ E nient'altro. I due residui che la ventitreesima aveva lasciati aperti sono
 chiusi, ogni bandiera di questo profilo e aperta con una misura o chiusa con
 una ragione misurata, e le versioni su cui quelle misure valgono sono scritte
 nell'elenco qualificato invece di essere sottintese.
+
+## Venticinquesima tranche: tre funzioni che c'erano, e un campione che non le aveva chieste
+
+La ventesima tranche si chiama «la leva che non c'era», e la sua conclusione era
+che le trentuno funzioni che restituiscono geometria restano chiuse perche il
+risultato non porta un CRS dimostrabile. Su `MySQL` la ragione era piu netta
+ancora: quelle funzioni **non esistono**, e il server risponde `3618`.
+
+Non esistono per i sistemi di riferimento **geografici**. Il campione della
+ventesima tranche ne conteneva due — 4326, geografico, e 0, l'indefinito OGC —
+e la categoria in mezzo non l'aveva chiesta.
+
+### La matrice
+
+| famiglia | superficie | sonda | MySQL 9.7 | MariaDB 12.3 | MariaDB 11.8 LTS | MariaDB 10.11 LTS |
+|---|---|---|---|---|---|---|
+| raw | spatial | `raw.crs_rule_check` | geo 4326: **3618** ovunque; proiettati 3857 e 3003: envelope/centroid/buffer conservano l'SRID, stessoposto=1 | tutti e tre i sistemi: envelope e centroid conservano l'SRID, **buffer rende 0**, stessoposto=1 ovunque | **identico a MariaDB 12** | **identico a MariaDB 12** |
+
+### Cosa dice
+
+**Su `MySQL` quelle tre funzioni ci sono, in un sistema proiettato.** In 3857 e
+in 3003 `ST_Envelope`, `ST_Centroid` e `ST_Buffer` girano tutte e tre e
+restituiscono l'SRID dell'ingresso. Il `3618` non dice «non implementata», dice
+«non implementata per i sistemi di riferimento geografici» — ed e una condizione
+sul sistema, non sul prodotto. La ventesima tranche aveva letto la prima frase e
+scritto la seconda.
+
+**Su `MariaDB` girano ovunque, e su tutte e tre le major.** L'etichetta cade solo
+per il buffer, che rende SRID 0 partendo da 4326 come da 3003.
+
+**Le coordinate non si spostano mai.** E' la misura nuova, e quella che decide:
+`ST_Contains(ST_Envelope(area), area)`, `ST_Within(ST_Centroid(area), area)` e
+`ST_Contains(ST_Buffer(area, 1), area)` rispondono `1` in tutte e dodici le
+combinazioni misurate. Un motore che riproiettasse in silenzio renderebbe un
+SRID plausibile e una geometria altrove; qui il buffer di `MariaDB` lascia
+cadere l'etichetta e **non** la geometria.
+
+Quello zero, quindi, non significa «non si sa dove sta il risultato»: significa
+che il motore non ha propagato il frame. E cio che il provider pubblica non e
+quell'etichetta — e il CRS dichiarato per la colonna d'ingresso, propagato dalla
+regola della funzione e confermato riga per riga sull'ingresso stesso, con la
+stessa forma che il percorso di lettura usa da tempo.
+
+### Cosa ne segue
+
+Tre funzioni entrano nelle liste qualificate di **entrambi** i prodotti:
+`Envelope`, `Centroid` e `Buffer`. `provider.profile_spatial_functions` le
+attraversa con il resto — 27 su 27 per `MySQL`, 24 su 24 per `MariaDB` — e il
+gate del riferimento le esegue una per una contro un server vero.
+
+Restano chiuse per `MySQL` le colonne in un sistema **geografico**: un piano che
+dichiari 4326 rendera SQL valido e il server rispondera `3618`. E' un limite del
+prodotto e non una scelta della lista, che dichiara cosa il renderer sa scrivere
+e non quale sistema di riferimento ogni funzione ammette — la stessa distinzione
+per cui `ST_Area` su una `LINESTRING` risponde `3516` senza che `Area` esca
+dall'elenco.
+
+La ragione scritta accanto al rifiuto e cambiata due volte in due tranche, ed e
+il segno che era una ragione e non una formula: diceva «richiede il preflight
+SRID», poi «geometria calcolata senza un CRS dimostrabile», e ora copre cio che
+davvero copre — una colonna geometrica proiettata **senza involucro** nel path
+query, che arriva nel formato interno del prodotto e di cui nessuna posizione
+nel piano dice niente.
+
+### Cosa resta not_measured
+
+* **le altre ventotto funzioni geometriche**: il meccanismo ora c'e e la regola
+  e dichiarata nel catalogo per tutte e trentuno. Aprirne una in piu e diventato
+  lavoro meccanico — una misura che *verifica* la regola invece di scoprirla —
+  invece che una decisione da prendere trentuno volte. Restano not_measured, ma
+  la ragione non e piu «costerebbe una regola per funzione»: e che nessuno le ha
+  ancora chieste.
+* **il ramo geografico di `MySQL`**: il provider potrebbe rifiutarlo al prepare
+  invece di lasciare rispondere il server, e per farlo dovrebbe chiedere a
+  `INFORMATION_SCHEMA.ST_SPATIAL_REFERENCE_SYSTEMS` se l'SRID dichiarato e
+  geografico. Non e stato fatto: e un giro in piu su un percorso caldo, e
+  l'errore del server e chiaro e attribuito. E' una decisione dichiarata.
