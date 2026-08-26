@@ -171,14 +171,39 @@ pub struct WriteCapabilities {
     /// rende cio che ha scritto — chiavi generate, valori di default,
     /// timestamp calcolati — senza una seconda interrogazione.
     ///
-    /// Falso ovunque, e per una ragione che sta a monte dei provider:
-    /// [`crate::outcome::WriteOutcome`] conta righe e non le trasporta. Il
-    /// giorno che le trasportasse sarebbe una major del contratto, non
-    /// l'apertura di una bandiera.
+    /// Falso ovunque, e per una ragione che sta a monte dei provider — ma non
+    /// quella che c'era scritta qui.
     ///
-    /// **Descrittivo** finche quel giorno non arriva. Da non confondere con
-    /// il `returning` degli statement portable, che e un'altra superficie e
-    /// vive nel piano.
+    /// Diceva: «il giorno che [`crate::outcome::WriteOutcome`] le trasportasse
+    /// sarebbe una major del contratto». Misurato, non regge: le quattro
+    /// varianti dell'esito in `write-outcome.schema.json` **non** chiudono le
+    /// proprieta aggiuntive — solo `rows` e `recovery` lo fanno — quindi un
+    /// campo opzionale in piu sarebbe additivo, e un consumatore fermo alla v2
+    /// continuerebbe a validare.
+    ///
+    /// La ragione vera sta nella **forma** del percorso, ed e piu forte.
+    /// [`crate::provider::Provider::write`] riceve uno stream di batch e rende
+    /// un riassunto: e un pozzo che consuma e conta. Trasportare ogni riga
+    /// restituita dentro quel riassunto vuol dire trattenere in memoria una
+    /// quantita proporzionale a uno stream **illimitato per costruzione**, e
+    /// il contratto non ha un posto dove far scorrere le righe che tornano.
+    /// Cambiarlo non e aggiungere un campo: e cambiare la direzione di
+    /// quell'API.
+    ///
+    /// **Descrittivo**, quindi, e non «in attesa di una major».
+    ///
+    /// # Cio che invece si puo fare oggi
+    ///
+    /// Il `returning` degli statement portable e un'altra superficie, vive nel
+    /// piano, ed e limitata da cio che il chiamante scrive in quello statement.
+    /// Rende cio che il server ha generato — chiavi di sequenza, default
+    /// calcolati — e funziona: `live_portable_returning_carries_what_the_server_generated`
+    /// lo attraversa nelle quattro forme su `PostgreSQL`.
+    ///
+    /// Quella prova e nata il giorno in cui si e scoperto che **nessuno** aveva
+    /// mai eseguito un `INSERT ... RETURNING` contro un server, ne da Rust ne
+    /// dal SDK, benche l'espressione fosse l'esempio in vetrina del modulo
+    /// Python.
     #[serde(default)]
     pub returning: bool,
     /// Un fallimento prima del commit annulla **le righe** scritte

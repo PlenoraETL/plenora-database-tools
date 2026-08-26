@@ -1201,6 +1201,174 @@ mod live {
         teardown_enum_domain_scratch("p1a_dom").await;
     }
 
+    /// Le quattro forme di `RETURNING` del piano portabile, attraversate.
+    ///
+    /// # Cosa non c'era
+    ///
+    /// Niente. Il compilatore ha le sue prove unitarie — l'SQL che emette e
+    /// verificato — ma **nessuno aveva mai eseguito** un `INSERT ... RETURNING`
+    /// contro un server, ne da Rust ne dal SDK Python. E' la stessa forma per
+    /// cui su `MySQL` undici funzioni spatial sono rimaste pubblicate per mesi
+    /// senza essere utilizzabili: compilate, mai attraversate.
+    ///
+    /// Pesa piu del solito perche quell'espressione e l'esempio in vetrina del
+    /// SDK, scritto in testa al modulo:
+    ///
+    /// ```text
+    /// new = s.insert("users").values(name="Ada").returning("id").one()
+    /// ```
+    ///
+    /// # Cosa verifica
+    ///
+    /// Che le righe tornino, e che tornino **cio che il chiamante non aveva**:
+    /// la chiave generata dalla sequenza e il default calcolato dal server. Un
+    /// `RETURNING` che rendesse i valori appena mandati sarebbe un giro a
+    /// vuoto — il chiamante li ha gia.
+    ///
+    /// Le quattro forme insieme, perche il compilatore le tratta in quattro
+    /// rami distinti e un solo insert ne proverebbe uno.
+    ///
+    /// # Da non confondere con la capability
+    ///
+    /// `writes.returning` e chiusa su tutti e quattro i motori, e resta chiusa:
+    /// riguarda il percorso **bulk**, dove `write()` consuma uno stream
+    /// illimitato e rende un riassunto. Questa e un'altra superficie — uno
+    /// statement per volta, limitato da cio che il chiamante scrive — e vive
+    /// nel piano.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn live_portable_returning_carries_what_the_server_generated() {
+        use plenora_database_core::facade::execute_portable_returning;
+        use plenora_database_core::portable::{
+            DeleteStatement, Expression, InsertStatement, PortableStatement, Predicate, TableRef,
+            UpdateStatement,
+        };
+
+        let name = "a1_returning";
+        {
+            use tokio_postgres::NoTls;
+            let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
+                .await
+                .expect("connect setup");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            client
+                .batch_execute(&format!(
+                    "DROP TABLE IF EXISTS {name};
+                     CREATE TABLE {name} (
+                         id SERIAL PRIMARY KEY,
+                         v TEXT NOT NULL,
+                         creato TIMESTAMPTZ NOT NULL DEFAULT now());"
+                ))
+                .await
+                .expect("tabella del returning");
+        }
+
+        let provider = provider();
+        let cancel = CancellationToken::new();
+        let mut tx = provider
+            .begin_transaction(
+                &secret(),
+                &TransactionOptions::default(),
+                &budget(),
+                &cancel,
+            )
+            .await
+            .expect("begin del returning");
+
+        let table = TableRef {
+            schema: None,
+            name: name.to_owned(),
+        };
+
+        // --- INSERT: due righe, e cio che torna e cio che il server ha fatto
+        let inserted = execute_portable_returning(
+            tx.as_mut(),
+            &PortableStatement::Insert(InsertStatement {
+                table: table.clone(),
+                columns: vec!["v".to_owned()],
+                values: vec![
+                    vec![Expression::Literal(ParameterValue::String(
+                        "ada".to_owned(),
+                    ))],
+                    vec![Expression::Literal(ParameterValue::String(
+                        "alan".to_owned(),
+                    ))],
+                ],
+                returning: vec!["id".to_owned(), "creato".to_owned()],
+            }),
+            &cancel,
+        )
+        .await
+        .expect("insert con returning");
+        assert_eq!(inserted.len(), 2, "una riga per valore inserito");
+        // La chiave arriva dalla sequenza, e il chiamante non l'aveva.
+        assert!(
+            matches!(inserted[0].get_index(0), Some(ParameterValue::I32(1))),
+            "la chiave generata deve tornare: {:?}",
+            inserted[0].get_index(0)
+        );
+        // E il default calcolato dal server: senza, `RETURNING` renderebbe
+        // soltanto cio che il chiamante ha mandato.
+        assert!(
+            !matches!(
+                inserted[0].get_index(1),
+                None | Some(ParameterValue::Null { .. })
+            ),
+            "il default del server deve tornare"
+        );
+
+        // --- UPDATE
+        let updated = execute_portable_returning(
+            tx.as_mut(),
+            &PortableStatement::Update(UpdateStatement {
+                table: table.clone(),
+                assignments: vec![(
+                    "v".to_owned(),
+                    Expression::Literal(ParameterValue::String("ada-lovelace".to_owned())),
+                )],
+                filter: Some(Predicate::Eq {
+                    column: "id".to_owned(),
+                    value: Expression::Literal(ParameterValue::I32(1)),
+                }),
+                returning: vec!["v".to_owned()],
+            }),
+            &cancel,
+        )
+        .await
+        .expect("update con returning");
+        assert_eq!(updated.len(), 1);
+        assert!(matches!(
+            updated[0].get_index(0),
+            Some(ParameterValue::String(value)) if value == "ada-lovelace"
+        ));
+
+        // --- DELETE
+        let deleted = execute_portable_returning(
+            tx.as_mut(),
+            &PortableStatement::Delete(DeleteStatement {
+                table,
+                filter: Some(Predicate::Eq {
+                    column: "id".to_owned(),
+                    value: Expression::Literal(ParameterValue::I32(2)),
+                }),
+                returning: vec!["id".to_owned()],
+            }),
+            &cancel,
+        )
+        .await
+        .expect("delete con returning");
+        assert_eq!(deleted.len(), 1);
+        assert!(matches!(
+            deleted[0].get_index(0),
+            Some(ParameterValue::I32(2))
+        ));
+
+        tx.rollback(&cancel).await.expect("rollback del returning");
+        drop_table(name).await;
+    }
+
     // === F1e: Spatial predicate nell'AST portable ===
 
     #[tokio::test]

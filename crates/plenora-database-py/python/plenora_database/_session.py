@@ -63,6 +63,15 @@ class Session:
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
         return self._native.execute_scalar(sql, params)
 
+    def execute_ddl(self, sql: str) -> None:
+        """Esegue DDL fuori transazione, in autocommit.
+
+        Esisteva sulla classe nativa e non qui: il metodo era irraggiungibile
+        da Python, e nessuna guardia lo diceva perche il confronto fra le due
+        sessioni guardava i tipi Rust, non i wrapper che li avvolgono.
+        """
+        return self._native.execute_ddl(sql)
+
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return self._native.execute_returning_rows(sql, params)
 
