@@ -48,6 +48,7 @@ CAMPAIGN = load_campaign()
 
 LIFECYCLE = importlib.import_module("scripts.fixture_campaign")
 from scripts.mariadb_references import REFERENCES as MARIADB_REFERENCES
+from scripts.mysql_references import BASELINE as MYSQL_BASELINE
 
 
 def observations(probes, outcome: str = "accepted", detail: str = "uguale"):
@@ -289,7 +290,12 @@ class SessionMatrixTests(unittest.TestCase):
         e falliva sul runner — verde dove non serviva, rossa dove serviva.
         """
 
-        declared = "sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e"
+        # Il digest arriva da `references.json`, non ricopiato qui: la prova
+        # riguarda il **confronto**, e usare quello vero la rende piu forte
+        # senza darle una seconda fonte da tenere allineata. L'altro digest di
+        # questa prova e sintetico apposta — rappresenta l'ID della config, che
+        # non e dichiarato da nessuna parte.
+        declared = MYSQL_BASELINE.digest
 
         # Store containerd: l'ID **e** il digest del manifest.
         self.assertTrue(

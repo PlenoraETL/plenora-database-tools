@@ -27,6 +27,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.compose_network import container_variable  # noqa: E402
+from scripts.mysql_references import REFERENCES, MysqlReference  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.92"
@@ -36,11 +37,43 @@ APPEND_MODE = "append_single_transaction"
 MODES = ("read", "append")
 DEFAULT_MANIFEST = ROOT / "benchmarks/manifests/mysql-performance-reference.json"
 DEFAULT_BUDGET = ROOT / "benchmarks/baseline/mysql-performance-budget.json"
-EXPECTED_DIGEST = (
-    "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb"
-)
-EXPECTED_REFERENCE = f"mysql@{EXPECTED_DIGEST}"
-EXPECTED_VERSION_PREFIX = "8.4."
+#: Il riferimento su cui questa campagna misura.
+#:
+#: Non la riga `baseline` — quella e la versione piu recente, e i tempi si
+#: confrontano fra corse, quindi devono cadere sempre sullo stesso motore — ma
+#: la LTS, che e la riga che resta ferma piu a lungo.
+#:
+#: Il **nome** e qui, il digest no. Prima c'erano entrambi, e il digest era una
+#: copia di quello che `references.json` gia porta: due fonti per lo stesso
+#: fatto, e il giorno in cui la riga 8.4.11 diventasse 8.4.12 questa campagna
+#: avrebbe continuato a pretendere l'immagine vecchia — o sarebbe fallita con
+#: un messaggio che non nomina la ragione vera.
+#:
+#: E' la stessa forma del registro dei test della matrice SQL Server, rimasto a
+#: quarantaquattro mentre la sorgente arrivava a quarantotto.
+PERFORMANCE_REFERENCE_LABEL = "MySQL 8.4 LTS"
+
+
+def _performance_reference() -> MysqlReference:
+    """La riga della campagna, cercata per nome.
+
+    Se sparisce, questo gate si ferma qui con il nome che cercava, invece di
+    misurare su un motore che nessuno ha scelto.
+    """
+
+    for reference in REFERENCES:
+        if reference.label == PERFORMANCE_REFERENCE_LABEL:
+            return reference
+    raise RuntimeError(
+        f"riferimento '{PERFORMANCE_REFERENCE_LABEL}' assente da references.json: "
+        f"presenti {[item.label for item in REFERENCES]}"
+    )
+
+
+PERFORMANCE_REFERENCE = _performance_reference()
+EXPECTED_DIGEST = PERFORMANCE_REFERENCE.digest
+EXPECTED_REFERENCE = PERFORMANCE_REFERENCE.image
+EXPECTED_VERSION_PREFIX = PERFORMANCE_REFERENCE.version_prefix
 MANIFEST_BOUNDS = (
     ("rows", 1, 1_000_000),
     ("batch_rows", 1, 65_536),
