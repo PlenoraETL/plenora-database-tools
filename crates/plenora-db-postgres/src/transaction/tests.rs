@@ -91,6 +91,7 @@ mod live {
     use crate::PostgresProvider;
     use plenora_database_core::provider::{Provider, SecretString};
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    use std::sync::Arc;
 
     /// DSN del riferimento plaintext, usato quando il runner non ne impone
     /// uno.
@@ -249,6 +250,223 @@ mod live {
             0
         );
         drop_table("a1_rollback").await;
+    }
+
+    /// Letture e scritture **insieme**, sullo stesso pool, per quanti giri si
+    /// vuole.
+    ///
+    /// # Cosa mancava
+    ///
+    /// `live_postgres_concurrent_pool_stress_when_dsn_is_available` mette
+    /// dodici **lettori** su un pool da quattro, e verifica le metriche del
+    /// pool riga per riga. E' la prova di contesa piu ricca del repository, e
+    /// legge soltanto.
+    ///
+    /// Un pool puo sbagliare proprio dove i due carichi si mescolano: una
+    /// connessione che torna dal path di scrittura con la transazione non
+    /// chiusa e innocua fra scrittori, che ne aprono un'altra subito, ed e
+    /// velenosa per un lettore che la trova con un `BEGIN` addosso.
+    ///
+    /// Su `MySQL`, `MariaDB` e `SQL Server` questa misura c'e. Qui era l'ultima a
+    /// mancare.
+    ///
+    /// # Perche e anche il soak
+    ///
+    /// `PLENORA_PG_MIXED_ROUNDS` cambia il numero di giri e nient'altro: la
+    /// corsa lunga e la corsa breve sono lo **stesso codice**. Un soak che
+    /// esercitasse un percorso diverso da quello del test misurerebbe la
+    /// tenuta di codice che nessuno attraversa mai.
+    ///
+    /// # Cosa verifica
+    ///
+    /// Ogni lettore ha una **fetta di lunghezza diversa**: con fette uguali,
+    /// due lettori che si scambiassero la connessione a meta transazione
+    /// renderebbero comunque il totale giusto. Cosi lo scambio cambia il
+    /// totale.
+    ///
+    /// Ogni scrittore scrive un payload che porta il proprio numero, e la
+    /// rilettura arriva da **un'altra connessione**: il conteggio coglie una
+    /// perdita, il payload coglie un'attribuzione sbagliata.
+    ///
+    /// Le metriche del pool chiudono il cerchio, e sono cio che `PostgreSQL` ha
+    /// e gli altri tre no: nessun timeout, nessuna sessione invalidata, e un
+    /// numero di connessioni nuove che resta dentro la capacita dichiarata —
+    /// cioe il pool non ne ha aperte e dimenticate lungo la strada.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn live_postgres_mixed_load_shares_one_pool_between_readers_and_writers() {
+        const READERS: i32 = 6;
+        const WRITERS: i32 = 6;
+        const BASE_SLICE: i32 = 5;
+        const ROWS_PER_WRITER: i32 = 4;
+
+        let rounds: i32 = std::env::var("PLENORA_PG_MIXED_ROUNDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8);
+
+        let seeded: i32 = (0..READERS).map(|reader| BASE_SLICE + reader).sum();
+        scratch_table("a1_mixed_read").await;
+        scratch_table("a1_mixed_write").await;
+        seed_mixed_read("a1_mixed_read", seeded).await;
+
+        let provider =
+            Arc::new(PostgresProvider::insecure_local_with_batch_rows(2).with_pool_size(4, 5_000));
+        let secret = Arc::new(secret());
+
+        let mut letture = 0_i32;
+        let mut scritture = 0_u64;
+        for round in 0..rounds {
+            let mut tasks = Vec::new();
+            for reader in 0..READERS {
+                let provider = Arc::clone(&provider);
+                let secret = Arc::clone(&secret);
+                tasks.push(tokio::spawn(async move {
+                    let cancel = CancellationToken::new();
+                    let length = BASE_SLICE + reader;
+                    let first = (0..reader).map(|other| BASE_SLICE + other).sum::<i32>() + 1;
+                    let mut tx = provider
+                        .begin_transaction(
+                            &secret,
+                            &TransactionOptions::default(),
+                            &budget(),
+                            &cancel,
+                        )
+                        .await
+                        .expect("begin del lettore");
+                    let rows = tx
+                        .query(
+                            &Statement::new(
+                                "SELECT id FROM a1_mixed_read WHERE id >= $1 ORDER BY id LIMIT $2",
+                            )
+                            .with_params(vec![
+                                ParameterValue::I32(first),
+                                ParameterValue::I64(i64::from(length)),
+                            ]),
+                            &cancel,
+                        )
+                        .await
+                        .expect("query del lettore");
+                    Box::new(tx)
+                        .commit(&cancel)
+                        .await
+                        .expect("commit del lettore");
+                    assert_eq!(
+                        i32::try_from(rows.len()).expect("righe"),
+                        length,
+                        "il lettore {reader} ha visto una fetta che non e la sua"
+                    );
+                    (rows.len(), 0_u64)
+                }));
+            }
+            for writer in 0..WRITERS {
+                let provider = Arc::clone(&provider);
+                let secret = Arc::clone(&secret);
+                tasks.push(tokio::spawn(async move {
+                    let cancel = CancellationToken::new();
+                    let mut tx = provider
+                        .begin_transaction(
+                            &secret,
+                            &TransactionOptions::default(),
+                            &budget(),
+                            &cancel,
+                        )
+                        .await
+                        .expect("begin dello scrittore");
+                    // Le chiavi non si ripetono fra i giri: un insert che
+                    // trovasse la propria riga gia scritta fallirebbe sul
+                    // primario, e la prova leggerebbe come contesa cio che e
+                    // aritmetica.
+                    let first = (round * WRITERS + writer) * ROWS_PER_WRITER + 1;
+                    let mut written = 0_u64;
+                    for id in first..first + ROWS_PER_WRITER {
+                        written += tx
+                            .execute(
+                                &Statement::new("INSERT INTO a1_mixed_write VALUES ($1, $2)")
+                                    .with_params(vec![
+                                        ParameterValue::I32(id),
+                                        ParameterValue::String(format!("w{writer}-{id}")),
+                                    ]),
+                                &cancel,
+                            )
+                            .await
+                            .expect("insert dello scrittore");
+                    }
+                    Box::new(tx)
+                        .commit(&cancel)
+                        .await
+                        .expect("commit dello scrittore");
+                    (0_usize, written)
+                }));
+            }
+            for task in tasks {
+                let (seen, written) = task.await.expect("worker del carico misto");
+                letture += i32::try_from(seen).expect("righe lette");
+                scritture += written;
+            }
+        }
+
+        assert_eq!(
+            letture,
+            seeded * rounds,
+            "le fette devono ricomporre la tabella a ogni giro"
+        );
+        assert_eq!(
+            scritture,
+            u64::try_from(WRITERS * ROWS_PER_WRITER * rounds).expect("righe scritte"),
+            "ogni insert dichiara la sua riga"
+        );
+
+        // La rilettura da un'altra connessione: il payload deve nominare lo
+        // scrittore che compete a quella chiave.
+        let sbagliate = count(
+            &provider,
+            &format!(
+                "SELECT COUNT(*) FROM a1_mixed_write \
+                 WHERE v <> 'w' || (((id - 1) / {ROWS_PER_WRITER}) % {WRITERS})::text \
+                       || '-' || id::text"
+            ),
+        )
+        .await;
+        assert_eq!(
+            sbagliate, 0,
+            "una riga e finita sotto il nome di un altro scrittore"
+        );
+
+        let metrics = provider.metrics_snapshot();
+        assert_eq!(
+            metrics.pool_timeouts, 0,
+            "il pool si e fermato ad aspettare"
+        );
+        assert_eq!(
+            metrics.invalidated_sessions, 0,
+            "una sessione e stata invalidata sotto contesa"
+        );
+        assert!(
+            (1..=4).contains(&metrics.pool_new_connections),
+            "connessioni nuove {}: il pool ne ha aperte oltre la capacita",
+            metrics.pool_new_connections
+        );
+
+        drop_table("a1_mixed_read").await;
+        drop_table("a1_mixed_write").await;
+    }
+
+    /// Riempie la tabella di lettura con `rows` chiavi contigue.
+    async fn seed_mixed_read(name: &str, rows: i32) {
+        use tokio_postgres::NoTls;
+        let (client, connection) = tokio_postgres::connect(&live_dsn(), NoTls)
+            .await
+            .expect("connect seed");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                "INSERT INTO {name} SELECT g, 'r' || g::text FROM generate_series(1, {rows}) g;"
+            ))
+            .await
+            .expect("seed della tabella di lettura");
     }
 
     #[tokio::test]
