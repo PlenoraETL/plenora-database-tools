@@ -264,7 +264,7 @@ impl Provider for SqlServerProvider {
             ProviderCapabilities {
                 schema_version: 2,
                 provider: ProviderKind::Sqlserver,
-                provider_version: probe.product_version,
+                provider_version: probe.product_version.clone(),
                 extension_versions: BTreeMap::new(),
                 reads: ReadCapabilities {
                     streaming: true,
@@ -311,55 +311,7 @@ impl Provider for SqlServerProvider {
                     staged_swap: true,
                     scope: TransactionScope::Transaction,
                 },
-                spatial: SpatialCapabilities {
-                    // L'SRID viaggia **dentro** il valore: `geometry` e
-                    // `geography` sono UDT che se lo portano dietro, e
-                    // `.STSrid` lo rende senza interrogare un catalogo. Non
-                    // c'e niente da dichiarare.
-                    requires_declared_crs: false,
-                    read_wkb: true,
-                    write_wkb: true,
-                    geometry: probe.geometry_type_id.is_some(),
-                    geography: probe.geography_type_id.is_some(),
-                    // La presenza dei due UDT e la condizione, non la prova. Il
-                    // DDL vero — `GEOMETRY_AUTO_GRID` con bounding box calcolato
-                    // sui dati, `GEOGRAPHY_AUTO_GRID` senza — lo attraversa
-                    // `live_create_and_replace_round_trip_all_reference_types`,
-                    // che dopo il create **e** dopo il replace staged rilegge il
-                    // catalogo e pretende i due indici con il loro schema di
-                    // tessellazione: un percorso che smettesse di emettere la
-                    // DDL non renderebbe questo flag falso, ma farebbe cadere
-                    // quella prova.
-                    spatial_index: probe.geometry_type_id.is_some()
-                        && probe.geography_type_id.is_some(),
-                    // Stessa forma, e per un po' e stata una deduzione soltanto:
-                    // `geometry` e `geography` sono UDT non vincolati a un
-                    // singolo tipo geometrico — a differenza di una colonna
-                    // `POINT` di MySQL — e da li si concludeva che i tipi misti
-                    // reggessero. Il ragionamento e solido, ed e esattamente cio
-                    // che su MySQL aveva tenuto in piedi per mesi undici
-                    // funzioni mai utilizzabili.
-                    //
-                    // Ora c'e la misura:
-                    // `live_mixed_geometry_types_share_one_column_on_both_semantics`
-                    // scrive `Point`, `LineString` e `Polygon` nella stessa
-                    // colonna, in un batch solo, e si fa dire dal server il tipo
-                    // di ogni riga riletta.
-                    mixed_geometry_types: probe.geometry_type_id.is_some()
-                        || probe.geography_type_id.is_some(),
-                    // Le quattro dimensioni non sono un elenco di comodo:
-                    // `live_spatial_write_round_trips_z_m_and_zm_losslessly`
-                    // scrive `xyz`, `xym` e `xyzm` su entrambe le semantiche e
-                    // pretende il ritorno **byte per byte**, e `Xy` la
-                    // attraversa mezzo repository.
-                    dimensions: vec![
-                        Dimensions::Xy,
-                        Dimensions::Xyz,
-                        Dimensions::Xym,
-                        Dimensions::Xyzm,
-                    ],
-                    functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
-                },
+                spatial: spatial_capabilities(&probe),
                 limits: ProviderLimits {
                     // Il limite SQL Server e in **caratteri** — 128, per
                     // `nvarchar(128)` — mentre questo campo e in byte. I due
@@ -614,10 +566,155 @@ fn provider_error(
     }
 }
 
+/// Il blocco spatial delle capability, dal solo esito della sonda.
+///
+/// # Perche una funzione e non un letterale in mezzo al documento
+///
+/// Perche cosi si puo interrogare senza un server, ed e cio che ha fatto
+/// emergere l'incoerenza che questa funzione corregge.
+///
+/// `geometry` e `geography` erano sondate — il provider contempla che i due UDT
+/// non ci siano — mentre `read_wkb`, `write_wkb`, `dimensions` e l'elenco delle
+/// funzioni erano costanti. Un server senza tipi spaziali avrebbe percio
+/// pubblicato «non ho geometrie» e insieme «so leggere WKB, conosco quattro
+/// profili dimensionali e ventinove funzioni». Nessuna delle due meta e
+/// sbagliata da sola; insieme non descrivono niente.
+///
+/// E' la stessa classe che `PostgreSQL` aveva gia corretto, e il commento la
+/// nomina per esteso: li `read_wkb` e `write_wkb` sono `geometry &&
+/// callable(...)`, perche la funzione di trasporto puo mancare anche dove il
+/// tipo c'e. Su SQL Server il trasporto non puo mancare — `.AsBinaryZM()` e
+/// `STGeomFromWKB` appartengono al tipo — ma il **tipo** si, e la condizione
+/// che restava da scrivere era quella.
+fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabilities {
+    let geometry = probe.geometry_type_id.is_some();
+    let geography = probe.geography_type_id.is_some();
+    // Senza nessuno dei due UDT non c'e una superficie spatial di cui parlare,
+    // e il blocco si chiude per intero invece di restare vero a meta.
+    let spatial = geometry || geography;
+    SpatialCapabilities {
+        // L'SRID viaggia **dentro** il valore: `geometry` e `geography` sono
+        // UDT che se lo portano dietro, e `.STSrid` lo rende senza interrogare
+        // un catalogo. Non c'e niente da dichiarare.
+        requires_declared_crs: false,
+        read_wkb: spatial,
+        write_wkb: spatial,
+        geometry,
+        geography,
+        // La presenza dei due UDT e la condizione, non la prova. Il DDL vero —
+        // `GEOMETRY_AUTO_GRID` con bounding box calcolato sui dati,
+        // `GEOGRAPHY_AUTO_GRID` senza — lo attraversa
+        // `live_create_and_replace_round_trip_all_reference_types`, che dopo il
+        // create **e** dopo il replace staged rilegge il catalogo e pretende i
+        // due indici con il loro schema di tessellazione: un percorso che
+        // smettesse di emettere la DDL non renderebbe questo flag falso, ma
+        // farebbe cadere quella prova.
+        spatial_index: geometry && geography,
+        // Stessa forma, e per un po' e stata una deduzione soltanto: `geometry`
+        // e `geography` sono UDT non vincolati a un singolo tipo geometrico — a
+        // differenza di una colonna `POINT` di MySQL — e da li si concludeva
+        // che i tipi misti reggessero. Il ragionamento e solido, ed e
+        // esattamente cio che su MySQL aveva tenuto in piedi per mesi undici
+        // funzioni mai utilizzabili.
+        //
+        // Ora c'e la misura:
+        // `live_mixed_geometry_types_share_one_column_on_both_semantics` scrive
+        // `Point`, `LineString` e `Polygon` nella stessa colonna, in un batch
+        // solo, e si fa dire dal server il tipo di ogni riga riletta.
+        mixed_geometry_types: spatial,
+        // Le quattro dimensioni non sono un elenco di comodo:
+        // `live_spatial_write_round_trips_z_m_and_zm_losslessly` scrive `xyz`,
+        // `xym` e `xyzm` su entrambe le semantiche e pretende il ritorno **byte
+        // per byte**, e `Xy` la attraversa mezzo repository.
+        dimensions: if spatial {
+            vec![
+                Dimensions::Xy,
+                Dimensions::Xyz,
+                Dimensions::Xym,
+                Dimensions::Xyzm,
+            ]
+        } else {
+            Vec::new()
+        },
+        // La lista e misurata da
+        // `live_every_verified_spatial_function_is_crossed` su **entrambe** le
+        // semantiche, e delimitata da
+        // `live_the_spatial_census_leaves_no_usable_function_unexplained`, che
+        // attraversa tutte e settantadue quelle del catalogo. Sono metodi di un
+        // tipo: senza il tipo non c'e niente da offrire.
+        functions: if spatial {
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CertificatePolicy;
+
+    /// Una sonda con o senza i due UDT, e nient'altro di variabile.
+    fn probe_with(geometry: Option<i32>, geography: Option<i32>) -> crate::catalog::SqlServerProbe {
+        crate::catalog::SqlServerProbe {
+            product_version: "16.0.4255.1".to_owned(),
+            product_level: "RTM".to_owned(),
+            edition: "Developer Edition (64-bit)".to_owned(),
+            engine_edition: 3,
+            hadr_enabled: false,
+            database: "dataflow_test".to_owned(),
+            compatibility_level: 160,
+            collation: "Latin1_General_100_CI_AS_SC".to_owned(),
+            read_committed_snapshot: false,
+            snapshot_isolation_state: 0,
+            geometry_type_id: geometry,
+            geography_type_id: geography,
+            polybase_installed: false,
+        }
+    }
+
+    #[test]
+    fn without_the_spatial_types_the_whole_spatial_block_closes() {
+        // `geometry` e `geography` erano sondate — il provider contempla che i
+        // due UDT non ci siano — e accanto stavano quattro affermazioni
+        // costanti: so leggere WKB, so scriverlo, conosco quattro profili
+        // dimensionali, offro ventinove funzioni. Su un server senza tipi
+        // spaziali il documento diceva le due meta insieme, e insieme non
+        // descrivono niente.
+        //
+        // E' la classe che PostgreSQL aveva gia corretto, dove `read_wkb` e
+        // `write_wkb` sono `geometry && callable(...)`.
+        let closed = spatial_capabilities(&probe_with(None, None));
+        assert!(!closed.geometry && !closed.geography);
+        assert!(!closed.read_wkb, "so leggere WKB di quale geometria?");
+        assert!(!closed.write_wkb);
+        assert!(!closed.spatial_index);
+        assert!(!closed.mixed_geometry_types);
+        assert!(closed.dimensions.is_empty());
+        assert!(closed.functions.is_empty());
+    }
+
+    #[test]
+    fn one_spatial_type_is_enough_to_transport_wkb_and_not_enough_to_index() {
+        // Le due condizioni sono diverse e vanno tenute diverse: il trasporto
+        // WKB appartiene al tipo, quindi uno solo basta; l'indice spaziale il
+        // provider lo emette per **entrambe** le semantiche nella stessa DDL,
+        // quindi ne pretende due.
+        let only_geometry = spatial_capabilities(&probe_with(Some(240), None));
+        assert!(only_geometry.read_wkb && only_geometry.write_wkb);
+        assert!(only_geometry.geometry && !only_geometry.geography);
+        assert!(!only_geometry.spatial_index);
+        assert!(!only_geometry.functions.is_empty());
+
+        let both = spatial_capabilities(&probe_with(Some(240), Some(241)));
+        assert!(both.spatial_index);
+        assert_eq!(
+            both.functions,
+            crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec()
+        );
+        assert_eq!(both.dimensions.len(), 4);
+    }
 
     fn provider() -> SqlServerProvider {
         let config = SqlServerConfig::new(
