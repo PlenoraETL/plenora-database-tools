@@ -27,6 +27,8 @@ ed e cio che l'action fa senza input.
 from __future__ import annotations
 
 import ast
+import importlib
+import importlib.util
 import re
 import tempfile
 import tomllib
@@ -1539,6 +1541,117 @@ class PythonGateDependencyTests(unittest.TestCase):
                 ["check"],
                 f"forma non riconosciuta: {command}",
             )
+
+class TheSweepCoversTheFastCi(unittest.TestCase):
+    """`scripts/sweep.py` esegue cio che la CI eseguira, o dichiara perche no.
+
+    La spazzata prima di un push serve a non aspettare la CI per sapere una
+    cosa che si poteva sapere subito. Vale finche contiene cio che la CI
+    contiene: un passo aggiunto la e non qui trasforma la spazzata in un
+    sottoinsieme, e un sottoinsieme si accorge di meno cose ogni volta.
+
+    E' successo due volte nello stesso giorno. Prima mancava
+    `cargo fmt --all -- --check`, e il codice e arrivato sul ramo non
+    formattato. Poi mancava `cargo test`, e una prova rimasta indietro rispetto
+    a una capability aperta e passata inosservata.
+
+    Questa guardia confronta i due elenchi per **impronta** — il percorso dello
+    script, o il sottocomando cargo — e non per stringa: la CI scrive `python3`
+    e la spazzata usa l'interprete corrente, e pretendere l'uguaglianza
+    letterale farebbe fallire su una differenza che non riguarda nessuno.
+    """
+
+    WORKFLOW = ROOT / ".github" / "workflows" / "rust-ci.yml"
+
+    #: I passi della CI che la spazzata non esegue, e perche.
+    DECLARED_ABSENT = {
+        "pip": "installa le dipendenze dei self-test; su una macchina di sviluppo ci sono gia",
+        "wheel": "costruisce e installa il wheel: vuole maturin e minuti, non secondi",
+        "offline_suite": "gira sul wheel appena installato, quindi dipende dal passo sopra",
+        "clippy-adapters": "clippy su ogni adapter isolato: la stessa domanda del clippy di workspace, moltiplicata per i tempi di build",
+    }
+
+    def fingerprint(self, command: str) -> str | None:
+        """Cio che identifica un passo, ignorando come e stato invocato."""
+
+        command = command.strip()
+        # L'ordine conta: `pip install dist/*.whl` e il wheel, non le
+        # dipendenze, e il controllo generico su `pip install` lo
+        # rivendicherebbe per primo.
+        if "maturin" in command or "dist/*.whl" in command:
+            return "wheel"
+        if "pip install" in command:
+            return "pip"
+        if "offline_suite" in command:
+            return "offline_suite"
+        match = re.search(r"(scripts/[\w./]+\.py)", command)
+        if match:
+            return match.group(1)
+        match = re.search(r"unittest\s+(?:discover\s+-s\s+)?([\w./]+)", command)
+        if match:
+            return f"unittest:{match.group(1)}"
+        match = re.search(r"\bcargo (\w+)", command)
+        if match:
+            return f"cargo:{match.group(1)}"
+        return None
+
+    def test_every_static_ci_step_is_swept_or_declared(self) -> None:
+        # Il modulo si carica dal **percorso**, non dal nome: la CI esegue
+        # questo file come script — `python3 scripts/test_ci_workflows.py` —
+        # e in quel modo `sys.path[0]` e `scripts/`, quindi il pacchetto
+        # `scripts` non esiste e l'import per nome fallisce. Caricarlo dal
+        # percorso funziona in entrambi i modi.
+        specification = importlib.util.spec_from_file_location(
+            "plenora_sweep", ROOT / "scripts" / "sweep.py"
+        )
+        sweep = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(sweep)
+        swept = {
+            self.fingerprint(" ".join(command)) for _, command in sweep.STEPS
+        }
+        swept.discard(None)
+        self.assertTrue(swept, "la spazzata non dichiara nessun passo")
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        # Il blocco `run: |` multilinea e il clippy per adapter: si riconosce
+        # dal corpo, perche la riga `run:` da sola non dice niente.
+        if "cargo clippy" in workflow and "run: |" in workflow:
+            swept.add("clippy-adapters")
+
+        mancanti: list[str] = []
+        for command in re.findall(r"^\s+run: (.+)$", workflow, re.M):
+            impronta = self.fingerprint(command)
+            if impronta is None:
+                # `run: |` apre un blocco: il suo corpo e gia coperto sopra.
+                continue
+            if impronta in swept or impronta in self.DECLARED_ABSENT:
+                continue
+            mancanti.append(f"{impronta}  ({command.strip()[:60]})")
+
+        self.assertEqual(
+            mancanti,
+            [],
+            "questi passi della CI non sono nella spazzata e non dichiarano "
+            f"perche: {mancanti}. Chi li aggiunge alla CI li aggiunge a "
+            "scripts/sweep.py, o scrive qui la ragione per cui restano fuori.",
+        )
+
+    def test_no_declared_absence_has_disappeared(self) -> None:
+        """Un passo dichiarato assente e sparito dalla CI e una riga scaduta."""
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        impronte = {
+            self.fingerprint(command)
+            for command in re.findall(r"^\s+run: (.+)$", workflow, re.M)
+        }
+        impronte.discard(None)
+        scadute = sorted(set(self.DECLARED_ABSENT) - impronte - {"clippy-adapters"})
+        self.assertEqual(
+            scadute,
+            [],
+            f"questi passi sono dichiarati assenti ma la CI non li esegue piu: {scadute}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

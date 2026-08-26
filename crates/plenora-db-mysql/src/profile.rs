@@ -3288,11 +3288,19 @@ mod tests {
         // esistono, con quale codice arriva il timeout — non e stato misurato.
         //
         // La qualifica e per serie minor, che e la granularita con cui il
-        // repository dichiara i riferimenti: `11.8` LTS e `12.3`, fissate per
-        // digest e aggiornate di patch in patch.
+        // repository dichiara i riferimenti: `10.11` LTS, `11.8` LTS e `12.3`,
+        // fissate per digest e aggiornate di patch in patch.
+        //
+        // `10.11` e entrata dopo che questa prova era scritta, e stava
+        // nell'elenco di sotto — quello delle versioni **non** misurate. Era
+        // giusto finche la matrice ne aveva due, e sbagliato dall'istante in
+        // cui ne ha avute tre: una capability e la sua prova si muovono
+        // insieme, o una delle due mente.
         for qualified in [
+            "10.11.19-MariaDB-ubu2204",
             "11.8.8-MariaDB-ubu2404",
             "12.3.2-MariaDB-ubu2404",
+            "10.11.0",
             "11.8.0",
             "12.3.19-MariaDB",
         ] {
@@ -3302,7 +3310,9 @@ mod tests {
             );
         }
         for unqualified in [
-            "10.11.5-MariaDB",
+            // Una LTS piu vecchia di quelle misurate: 10.6 e supportata fino
+            // al 2026 e nessuno l'ha accesa.
+            "10.6.21-MariaDB",
             "13.0.0-MariaDB",
             "12.4.0-MariaDB",
             "",
