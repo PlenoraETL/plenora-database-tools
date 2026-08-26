@@ -198,6 +198,19 @@ pub struct Renderer {
     dialect: Dialect,
     capabilities: DialectCapabilities,
     sql_server_spatial_parameters: BTreeMap<String, SqlServerSpatialParameter>,
+    /// La semantica di ogni colonna spatial che il piano nomina.
+    ///
+    /// Serve a una cosa sola e la fa per tutte: `geometry` e `geography` non
+    /// espongono sempre lo stesso membro, e le coordinate di un punto si
+    /// leggono `STX`/`STY` sulla prima e `Long`/`Lat` sulla seconda. Senza
+    /// questa mappa il renderer poteva scrivere solo i membri che i due tipi
+    /// chiamano allo stesso modo.
+    ///
+    /// La popola il preflight del provider, che la legge dal catalogo. Il
+    /// renderer non la deduce e non la indovina: una colonna che non e qui e
+    /// una colonna di cui non si sa la semantica, e le funzioni che ne hanno
+    /// bisogno vengono rifiutate.
+    sql_server_spatial_columns: BTreeMap<(Option<String>, String), SpatialSemantics>,
 }
 
 impl Renderer {
@@ -207,6 +220,7 @@ impl Renderer {
             dialect,
             capabilities,
             sql_server_spatial_parameters: BTreeMap::new(),
+            sql_server_spatial_columns: BTreeMap::new(),
         }
     }
 
@@ -216,6 +230,22 @@ impl Renderer {
         parameters: BTreeMap<String, SqlServerSpatialParameter>,
     ) -> Self {
         self.sql_server_spatial_parameters = parameters;
+        self
+    }
+
+    /// La semantica delle colonne spatial, letta dal catalogo dal chiamante.
+    ///
+    /// # Errors
+    ///
+    /// Nessuno: un renderer senza questa mappa e un renderer che rifiutera le
+    /// funzioni il cui membro T-SQL dipende dalla semantica, e il rifiuto e
+    /// esplicito.
+    #[must_use]
+    pub fn with_sql_server_spatial_columns(
+        mut self,
+        columns: BTreeMap<(Option<String>, String), SpatialSemantics>,
+    ) -> Self {
+        self.sql_server_spatial_columns = columns;
         self
     }
 
@@ -1147,7 +1177,17 @@ impl Renderer {
         // Nome e forma vengono dalla stessa tabella, e da nessun'altra parte:
         // era l'unico dialetto in cui la sonda e il renderer potevano divergere
         // senza che nessuno lo vedesse.
-        let Some((method, shape)) = sql_server_spatial_method(function) else {
+        // La semantica del **ricevitore**, quando il piano la porta: e cio che
+        // permette di scrivere le due coordinate, che i due tipi chiamano in
+        // modo diverso.
+        let receiver_semantics = match arguments.first() {
+            Some(QueryExpression::Column { column }) => self
+                .sql_server_spatial_columns
+                .get(&(column.relation.clone(), column.field.clone()))
+                .copied(),
+            _ => None,
+        };
+        let Some((method, shape)) = sql_server_spatial_method(function, receiver_semantics) else {
             return Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1719,7 +1759,27 @@ pub enum SqlServerSpatialShape {
 #[must_use]
 pub const fn sql_server_spatial_method(
     function: SpatialFunction,
+    semantics: Option<SpatialSemantics>,
 ) -> Option<(&'static str, SqlServerSpatialShape)> {
+    // Le due coordinate sono le sole a cambiare nome fra i due tipi, e senza
+    // sapere quale sia non si puo scrivere ne l'uno ne l'altro. `None` qui non
+    // significa «SQL Server non ce l'ha»: significa che il piano non dice su
+    // quale semantica sta la colonna, e indovinare renderebbe SQL che il
+    // server rifiuta su meta delle tabelle.
+    if let SpatialFunction::X | SpatialFunction::Y = function {
+        let Some(semantics) = semantics else {
+            return None;
+        };
+        return Some((
+            match (function, semantics) {
+                (SpatialFunction::X, SpatialSemantics::Geometry) => "STX",
+                (SpatialFunction::X, SpatialSemantics::Geography) => "Long",
+                (SpatialFunction::Y, SpatialSemantics::Geometry) => "STY",
+                (_, _) => "Lat",
+            },
+            SqlServerSpatialShape::Property,
+        ));
+    }
     Some(match function {
         SpatialFunction::GeometryType => ("STGeometryType", SqlServerSpatialShape::Unary),
         SpatialFunction::Srid => ("STSrid", SqlServerSpatialShape::Property),

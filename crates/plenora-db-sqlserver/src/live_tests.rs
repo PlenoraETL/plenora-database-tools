@@ -1501,8 +1501,6 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
 /// sulla seconda. Un nome solo avrebbe registrato una falsa assenza su meta
 /// delle righe.
 const CANDIDATE_SPATIAL_METHODS: &[(SpatialFunction, &str, &str)] = &[
-    (SpatialFunction::X, "STX", "Long"),
-    (SpatialFunction::Y, "STY", "Lat"),
     (SpatialFunction::Z, "Z", "Z"),
     (SpatialFunction::M, "M", "M"),
     (SpatialFunction::NRings, "STNRings", "STNRings"),
@@ -1758,19 +1756,30 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
     for function in SpatialFunction::ALL {
         // Il nome del renderer quando c'e, l'ipotesi quando non c'e: la sonda
         // non deve mai dedurre un nome da se.
-        let (geometry_name, geography_name) =
-            plenora_database_sql::sql_server_spatial_method(*function).map_or_else(
-                || {
-                    let (_, geometry, geography) = CANDIDATE_SPATIAL_METHODS
-                        .iter()
-                        .find(|(candidate, _, _)| candidate == function)
-                        .unwrap_or_else(|| {
-                            panic!("{function:?} non ha ne un nome del renderer ne un'ipotesi")
-                        });
-                    (*geometry, *geography)
-                },
-                |(method, _)| (method, method),
-            );
+        // Il nome si chiede **per semantica**, perche il renderer lo da per
+        // semantica: `X` e `Y` si scrivono `STX`/`STY` su una e `Long`/`Lat`
+        // sull'altra, e una domanda sola avrebbe registrato una falsa assenza
+        // su meta delle righe.
+        let renderer_name = |semantics| {
+            plenora_database_sql::sql_server_spatial_method(*function, Some(semantics))
+                .map(|(method, _)| method)
+        };
+        let candidate = || {
+            let (_, geometry, geography) = CANDIDATE_SPATIAL_METHODS
+                .iter()
+                .find(|(candidate, _, _)| candidate == function)
+                .unwrap_or_else(|| {
+                    panic!("{function:?} non ha ne un nome del renderer ne un'ipotesi")
+                });
+            (*geometry, *geography)
+        };
+        let (geometry_name, geography_name) = match (
+            renderer_name(SpatialSemantics::Geometry),
+            renderer_name(SpatialSemantics::Geography),
+        ) {
+            (Some(geometry), Some(geography)) => (geometry, geography),
+            _ => candidate(),
+        };
         let on_geometry =
             probe_tsql_member(&mut session, "geometry", geometry_name, &cancellation).await;
         let on_geography =

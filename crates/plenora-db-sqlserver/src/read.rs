@@ -145,7 +145,6 @@ pub async fn read_query_operation(
     cancellation: &CancellationToken,
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
-    let rendered = render_query(operation, parameters, budget)?;
     validate_query_sources(operation, database)?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
@@ -160,6 +159,20 @@ pub async fn read_query_operation(
         &internal,
     )
     .await?;
+    // La resa segue il preflight, e non lo precede piu. Non e un riordino di
+    // comodo: due funzioni del contratto — `X` e `Y` — si scrivono con membri
+    // T-SQL diversi su `geometry` e su `geography`, e quale sia la colonna lo
+    // dice il catalogo. Rendendo prima, il renderer non poteva saperlo e le
+    // rifiutava entrambe.
+    //
+    // Nulla fra le due chiamate usava `rendered`: il preflight vuole il piano,
+    // non l'SQL.
+    let rendered = render_query(
+        operation,
+        parameters,
+        budget,
+        &spatial_validation.column_semantics,
+    )?;
     let mut plan = describe_query(pooled.session_mut()?, rendered, parameters, &internal).await?;
     for output in spatial_validation.outputs {
         plan.apply_query_spatial_contract(

@@ -115,6 +115,18 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Overlaps,
     SpatialFunction::Simplify,
     SpatialFunction::MakeValid,
+    // Le due che il censimento aveva trovato e che sono rimaste chiuse per un
+    // pomeriggio, con la ragione scritta: il membro T-SQL cambia fra le
+    // semantiche — `STX`/`STY` contro `Long`/`Lat` — e quella del ricevitore
+    // non arrivava al renderer.
+    //
+    // Ora ci arriva: il preflight la legge dal catalogo, come gia leggeva
+    // l'SRID, e la porta al renderer con la stessa mappa che portava la
+    // semantica dei parametri. Una colonna di cui il piano non dice la
+    // semantica resta rifiutata, ed e la sola risposta onesta — indovinare
+    // renderebbe SQL valido su meta delle tabelle.
+    SpatialFunction::X,
+    SpatialFunction::Y,
 ];
 
 const MAX_SPATIAL_OUTPUTS: usize = 64;
@@ -131,6 +143,10 @@ pub struct SpatialOutputContract {
 pub struct SpatialValidation {
     pub outputs: Vec<SpatialOutputContract>,
     pub source_tokens: Vec<SpatialSourceToken>,
+    /// La semantica di ogni colonna spatial che il piano nomina, letta dal
+    /// catalogo. Il renderer ne ha bisogno per i membri che i due tipi CLR
+    /// chiamano in modo diverso.
+    pub column_semantics: BTreeMap<(Option<String>, String), SpatialSemantics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,14 +155,29 @@ pub struct SpatialSourceToken {
     pub token: crate::SqlServerSchemaToken,
 }
 
+/// La resa, con la semantica delle colonne che il preflight ha letto.
+///
+/// # Perche non basta la forma senza mappa
+///
+/// Perche due funzioni del contratto — `X` e `Y` — si scrivono con membri
+/// diversi sui due tipi CLR, e senza sapere quale sia la colonna il renderer
+/// non puo scrivere ne l'uno ne l'altro. Le rifiuta, ed e giusto: la mappa
+/// vuota e la condizione di chi non ha ancora chiesto al catalogo.
+///
+/// # Errors
+///
+/// Come `render_query`, e in piu `Unsupported` per una funzione il cui membro
+/// dipende dalla semantica su una colonna che la mappa non nomina.
 pub fn render_query(
     operation: &QueryOperation,
     parameters: &ParameterBag,
     budget: &ResourceBudget,
+    columns: &BTreeMap<(Option<String>, String), SpatialSemantics>,
 ) -> Result<RenderedSql> {
     validate_bound_spatial_arguments(operation, parameters)?;
     sql_server_renderer()
         .with_sql_server_spatial_parameters(spatial_parameter_profiles(parameters, budget)?)
+        .with_sql_server_spatial_columns(columns.clone())
         .render_query(operation)
 }
 
@@ -342,10 +373,12 @@ pub async fn validate_spatial_inputs(
     if !operation_has_spatial(operation) {
         return Ok(SpatialValidation {
             outputs: Vec::new(),
+            column_semantics: BTreeMap::new(),
             source_tokens: Vec::new(),
         });
     }
     let mut uses = Vec::new();
+    let mut column_semantics = BTreeMap::new();
     collect_operation_spatial_uses(operation, &mut uses)?;
     if operation
         .joins
@@ -450,6 +483,13 @@ pub async fn validate_spatial_inputs(
                 ));
             }
         };
+        // La stessa lettura che serve a validare serve a rendere: qui la
+        // semantica c'e gia, e senza questa riga il renderer avrebbe dovuto
+        // chiederla una seconda volta al catalogo.
+        column_semantics.insert(
+            (usage.column.relation.clone(), usage.column.field.clone()),
+            observed_semantics,
+        );
         match &usage.argument {
             SpatialArgument::None => {}
             SpatialArgument::PointIndex(name) => {
@@ -556,6 +596,7 @@ pub async fn validate_spatial_inputs(
         profile_spatial_outputs(session, operation, parameters, budget, cancellation).await?;
     Ok(SpatialValidation {
         outputs,
+        column_semantics,
         source_tokens: sources
             .into_iter()
             .map(|source| SpatialSourceToken {
@@ -607,6 +648,7 @@ async fn validate_nested_spatial_inputs(
         profile_spatial_outputs(session, operation, parameters, budget, cancellation).await?;
     Ok(SpatialValidation {
         outputs,
+        column_semantics: BTreeMap::new(),
         source_tokens,
     })
 }
@@ -1728,7 +1770,13 @@ fn collect_expression_spatial_uses(
 /// smentito — il contratto ne ammette due, `STIsValid()` di T-SQL nessuno. La
 /// firma di un metodo appartiene al prodotto, non al piano.
 fn sql_server_spatial_shape(function: SpatialFunction) -> Option<SqlServerSpatialShape> {
-    plenora_database_sql::sql_server_spatial_method(function).map(|(_, shape)| shape)
+    // La **forma** non dipende dalla semantica: `STX` e `Long` si scrivono
+    // entrambe senza parentesi, e cosi ogni altra coppia. Il nome si, ed e per
+    // quello che la tabella la chiede — qui non serve, e
+    // `the_tsql_shape_does_not_depend_on_the_semantics` non lascia che quella
+    // affermazione invecchi.
+    plenora_database_sql::sql_server_spatial_method(function, Some(SpatialSemantics::Geometry))
+        .map(|(_, shape)| shape)
 }
 
 fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
@@ -2199,7 +2247,8 @@ mod tests {
         });
         let budget =
             ResourceBudget::new(plenora_database_core::ResourceLimits::default()).expect("budget");
-        let rendered = render_query(&query, &ParameterBag::default(), &budget).expect("rendered");
+        let rendered = render_query(&query, &ParameterBag::default(), &budget, &BTreeMap::new())
+            .expect("rendered");
         assert!(rendered.sql.starts_with("WITH [filtered] AS"));
         assert!(rendered
             .sql
@@ -2257,6 +2306,33 @@ mod tests {
     }
 
     #[test]
+    fn the_tsql_shape_does_not_depend_on_the_semantics() {
+        // `sql_server_spatial_shape` chiede il nome con una semantica sola e
+        // tiene la forma, e vale finche le due semantiche non divergono sulla
+        // **forma** di qualche membro. Oggi divergono solo sul nome — `STX`
+        // contro `Long` — e sono entrambe proprieta.
+        //
+        // Il giorno in cui una funzione fosse un metodo su un tipo e una
+        // proprieta sull'altro, quella scorciatoia scriverebbe SQL sbagliato
+        // per meta delle colonne senza che nessuno lo veda.
+        for function in SpatialFunction::ALL {
+            let geometry = plenora_database_sql::sql_server_spatial_method(
+                *function,
+                Some(SpatialSemantics::Geometry),
+            );
+            let geography = plenora_database_sql::sql_server_spatial_method(
+                *function,
+                Some(SpatialSemantics::Geography),
+            );
+            assert_eq!(
+                geometry.map(|(_, shape)| shape),
+                geography.map(|(_, shape)| shape),
+                "{function:?} ha forme diverse sulle due semantiche"
+            );
+        }
+    }
+
+    #[test]
     fn what_the_provider_offers_and_what_the_renderer_can_write_are_the_same_list() {
         // Due elenchi scritti a mano in due crate diversi, e nessuno li
         // incrociava. Una funzione pubblicata che il renderer non sa scrivere
@@ -2271,16 +2347,14 @@ mod tests {
         let writable_but_unoffered = SpatialFunction::ALL
             .iter()
             .filter(|function| {
-                plenora_database_sql::sql_server_spatial_method(**function).is_some()
+                sql_server_spatial_shape(**function).is_some()
                     && !VERIFIED_SPATIAL_FUNCTIONS.contains(function)
             })
             .map(|function| format!("{function:?}"))
             .collect::<Vec<_>>();
         let offered_but_unwritable = VERIFIED_SPATIAL_FUNCTIONS
             .iter()
-            .filter(|function| {
-                plenora_database_sql::sql_server_spatial_method(**function).is_none()
-            })
+            .filter(|function| sql_server_spatial_shape(**function).is_none())
             .map(|function| format!("{function:?}"))
             .collect::<Vec<_>>();
         assert!(
@@ -2419,7 +2493,7 @@ mod tests {
             };
             let parameters = ParameterBag::new(BTreeMap::from([("value".to_owned(), value)]));
             assert_eq!(
-                render_query(&query, &parameters, &budget)
+                render_query(&query, &parameters, &budget, &BTreeMap::new())
                     .expect_err("invalid numeric spatial argument")
                     .category,
                 ErrorCategory::InvalidPlan
