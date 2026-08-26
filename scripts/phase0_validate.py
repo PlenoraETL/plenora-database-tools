@@ -400,6 +400,26 @@ def validate_benchmark_manifest() -> int:
     return len(cases)
 
 
+#: Cosa succede al sistema di riferimento di una geometria calcolata.
+#:
+#: Nasce da una misura: `raw.geometry_result_forms` ha attraversato envelope,
+#: centroide e buffer sui tre riferimenti, e ha trovato tre esiti diversi — su
+#: `MySQL` in un sistema geografico non esistono affatto (errore 3618), su
+#: MariaDB esistono e il CRS sopravvive **a seconda della funzione**, e in
+#: cartesiano entrambi rendono SRID 0.
+#:
+#: Quello 0 non vuol dire «non si sa dove sta il risultato»: vuol dire che il
+#: motore non l'ha propagato. Per un envelope o un centroide il risultato e
+#: nello stesso frame dell'ingresso, ed e un fatto geometrico e non una
+#: caratteristica del prodotto. La regola dichiara quel fatto, e una misura per
+#: funzione lo verifica prima che la funzione si apra.
+#:
+#: * `preserves` — una geometria entra, il risultato sta nello stesso sistema.
+#: * `argument`  — il chiamante nomina l'SRID di destinazione.
+#: * `undefined` — il frame del risultato non e derivabile dal contratto.
+CRS_RULES = frozenset({"preserves", "argument", "undefined"})
+
+
 def validate_spatial_catalog() -> int:
     catalog = load_json(SPATIAL_CATALOG)
     if catalog.get("schema_version") != 1:
@@ -412,13 +432,36 @@ def validate_spatial_catalog() -> int:
         required = {
             "id", "category", "arguments", "returns", "portable", "postgres"
         }
+        # La regola di CRS appartiene a chi rende geometria, e **soltanto** a
+        # quelli: un risultato scalare non sta in nessun sistema di
+        # riferimento, e dichiararglielo sarebbe un campo che non significa
+        # niente.
+        if function.get("returns") == "geometry":
+            required = required | {"crs"}
         if set(function) != required:
             raise ValidationError(
                 f"campi catalogo spatial non validi: {function.get('id')}"
             )
+        if function.get("returns") == "geometry" and function["crs"] not in CRS_RULES:
+            raise ValidationError(
+                f"regola di CRS non riconosciuta: {function['id']} = {function['crs']}"
+            )
         if not function["arguments"] or not function["postgres"].startswith("ST_"):
             raise ValidationError(
                 f"firma catalogo spatial non valida: {function['id']}"
+            )
+        # `undefined` e la sola regola ammessa quando entrano due geometrie:
+        # il risultato conserva il frame soltanto se i due lo condividono, e
+        # quella e una condizione da dimostrare a runtime, non una regola da
+        # dichiarare qui.
+        if (
+            function.get("returns") == "geometry"
+            and function["arguments"].count("geometry") > 1
+            and function["crs"] != "undefined"
+        ):
+            raise ValidationError(
+                f"{function['id']} prende due geometrie: la sua regola di CRS "
+                f"non puo essere '{function['crs']}'"
             )
     capability_schema = load_json(CAPABILITIES_SCHEMA)
     try:
