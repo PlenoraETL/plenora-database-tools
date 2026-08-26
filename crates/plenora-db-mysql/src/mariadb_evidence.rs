@@ -6495,7 +6495,10 @@ async fn mixed_load_probe(
                 // cambia il totale, e il conteggio diventa da solo la prova
                 // che ciascuno ha visto la propria.
                 let length = ROWS_PER_READER + reader;
-                let first = (0..reader).map(|other| ROWS_PER_READER + other).sum::<i64>() + 1;
+                let first = (0..reader)
+                    .map(|other| ROWS_PER_READER + other)
+                    .sum::<i64>()
+                    + 1;
                 let last = first + length - 1;
                 let statement = Statement {
                     sql: format!(

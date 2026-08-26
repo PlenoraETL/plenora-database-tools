@@ -2806,15 +2806,14 @@ async fn live_concurrent_readers_share_the_pool_without_mixing_rows() {
     let config = live_config(CertificatePolicy::TrustServerCertificate);
     seed_concurrency_probe(&config, WORKERS * ROWS_PER_WORKER, &cancellation).await;
 
-    let provider =
-        Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider della contesa"));
+    let provider = Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider della contesa"));
     let mut tasks = Vec::new();
     for worker in 0..WORKERS {
         let provider = Arc::clone(&provider);
         tasks.push(tokio::spawn(async move {
             let cancellation = CancellationToken::new();
-            let budget = ResourceBudget::new(ResourceLimits::default())
-                .expect("budget della contesa");
+            let budget =
+                ResourceBudget::new(ResourceLimits::default()).expect("budget della contesa");
             let first = worker * ROWS_PER_WORKER + 1;
             let parameters = ParameterBag::new(BTreeMap::from([(
                 "first".to_owned(),
@@ -2895,16 +2894,15 @@ async fn live_concurrent_abandonment_does_not_starve_the_pool() {
     let config = live_config(CertificatePolicy::TrustServerCertificate);
     seed_concurrency_probe(&config, WORKERS * ROWS_PER_WORKER, &cancellation).await;
 
-    let provider =
-        Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider dell'abbandono"));
+    let provider = Arc::new(SqlServerProvider::new(config, 2, 4).expect("provider dell'abbandono"));
     let mut tasks = Vec::new();
     for worker in 0..WORKERS {
         let provider = Arc::clone(&provider);
         let abandons = worker % 2 == 0;
         tasks.push(tokio::spawn(async move {
             let cancellation = CancellationToken::new();
-            let budget = ResourceBudget::new(ResourceLimits::default())
-                .expect("budget dell'abbandono");
+            let budget =
+                ResourceBudget::new(ResourceLimits::default()).expect("budget dell'abbandono");
             let first = worker * ROWS_PER_WORKER + 1;
             let parameters = ParameterBag::new(BTreeMap::from([(
                 "first".to_owned(),
@@ -4300,7 +4298,10 @@ async fn live_mixed_geometry_types_share_one_column_on_both_semantics() {
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![Arc::new(BinaryArray::from(
-                values.iter().map(|value| Some(value.as_slice())).collect::<Vec<_>>(),
+                values
+                    .iter()
+                    .map(|value| Some(value.as_slice()))
+                    .collect::<Vec<_>>(),
             ))],
         )
         .expect("batch dei tipi misti");
