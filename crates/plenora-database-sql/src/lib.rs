@@ -1144,36 +1144,23 @@ impl Renderer {
             let argument = renderer.render_query_expression(argument, binds)?;
             Ok(format!("{receiver}.{method}({argument})"))
         };
-        match function {
-            SpatialFunction::GeometryType => unary("STGeometryType"),
-            SpatialFunction::Srid => Ok(format!("{receiver}.STSrid")),
-            SpatialFunction::Dimensions => unary("STDimension"),
-            SpatialFunction::NPoints => unary("STNumPoints"),
-            SpatialFunction::IsEmpty => unary_predicate("STIsEmpty"),
-            SpatialFunction::IsValid => unary_predicate("STIsValid"),
-            SpatialFunction::IsClosed => unary_predicate("STIsClosed"),
-            SpatialFunction::Intersects => binary_predicate(self, "STIntersects", binds),
-            SpatialFunction::Contains => binary_predicate(self, "STContains", binds),
-            SpatialFunction::Within => binary_predicate(self, "STWithin", binds),
-            SpatialFunction::Disjoint => binary_predicate(self, "STDisjoint", binds),
-            SpatialFunction::Equals => binary_predicate(self, "STEquals", binds),
-            SpatialFunction::Distance => binary(self, "STDistance", binds),
-            SpatialFunction::Area => unary("STArea"),
-            SpatialFunction::Length => unary("STLength"),
-            SpatialFunction::StartPoint => unary("STStartPoint"),
-            SpatialFunction::EndPoint => unary("STEndPoint"),
-            SpatialFunction::PointN => numeric(self, "STPointN", binds),
-            SpatialFunction::Buffer => numeric(self, "STBuffer", binds),
-            SpatialFunction::Intersection => binary(self, "STIntersection", binds),
-            SpatialFunction::Difference => binary(self, "STDifference", binds),
-            SpatialFunction::SymDifference => binary(self, "STSymDifference", binds),
-            SpatialFunction::Union => binary(self, "STUnion", binds),
-            SpatialFunction::ConvexHull => unary("STConvexHull"),
-            _ => Err(DatabaseError::unsupported(
+        // Nome e forma vengono dalla stessa tabella, e da nessun'altra parte:
+        // era l'unico dialetto in cui la sonda e il renderer potevano divergere
+        // senza che nessuno lo vedesse.
+        let Some((method, shape)) = sql_server_spatial_method(function) else {
+            return Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
                 "funzione spatial non disponibile nel sottoinsieme SQL Server verificato",
-            )),
+            ));
+        };
+        match shape {
+            SqlServerSpatialShape::Property => Ok(format!("{receiver}.{method}")),
+            SqlServerSpatialShape::Unary => unary(method),
+            SqlServerSpatialShape::UnaryPredicate => unary_predicate(method),
+            SqlServerSpatialShape::BinaryValue => binary(self, method, binds),
+            SqlServerSpatialShape::BinaryPredicate => binary_predicate(self, method, binds),
+            SqlServerSpatialShape::Numeric => numeric(self, method, binds),
         }
     }
 
@@ -1669,6 +1656,102 @@ const fn mysql_spatial_name(function: SpatialFunction) -> Option<&'static str> {
         SpatialFunction::NPoints => Some("ST_NumPoints"),
         _ => None,
     }
+}
+
+/// La forma con cui un membro T-SQL si scrive.
+///
+/// Su ogni altro dialetto una funzione spatial e una chiamata e il nome basta a
+/// comporla. Qui `geometry` e `geography` sono tipi CLR e la funzione e un
+/// **membro del valore**, che si scrive in modi diversi: `g.STSrid` non ha
+/// parentesi, `g.STIsValid()` rende un bit da confrontare, `g.Reduce(1)` vuole
+/// un numero. La forma e percio una proprieta del metodo T-SQL, non una cosa
+/// che si deduca dal contratto.
+///
+/// # Perche non si deduce
+///
+/// Ci si e provato, e il tentativo e durato quanto una prova: l'arieta del
+/// contratto sembrava bastare — due argomenti di cui il secondo non geometrico
+/// vuol dire «numerico» — e `ST_IsValid` l'ha smentito. Il contratto ne ammette
+/// due, perche `PostGIS` accetta un secondo argomento di flag; `STIsValid()` di
+/// T-SQL non ne prende nessuno. Cio che il **piano** puo esprimere e cio che il
+/// **metodo** accetta sono due cose diverse, e confonderle avrebbe reso
+/// `shape.STIsValid(@p1)`, valido per il renderer e rifiutato dal server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlServerSpatialShape {
+    /// `g.Nome` — una proprieta: nessuna parentesi.
+    Property,
+    /// `g.Nome()`.
+    Unary,
+    /// `g.Nome()`, e il risultato e un bit: in posizione di predicato va
+    /// confrontato con 1.
+    UnaryPredicate,
+    /// `g.Nome(altra)`, con una seconda geometria.
+    BinaryValue,
+    /// `g.Nome(altra)` il cui risultato e un bit.
+    BinaryPredicate,
+    /// `g.Nome(numero)`.
+    Numeric,
+}
+
+/// Il membro T-SQL che il renderer invoca per questa funzione, e la sua forma.
+///
+/// # Perche esiste
+///
+/// Il nome stava come letterale dentro ogni arma del match del renderer, e la
+/// forma stava in **tre** elenchi scritti a mano nel crate del provider —
+/// unarie, binarie, numeriche. Quattro fonti per la stessa firma, e nessuna che
+/// incrociasse le altre: aprire `Overlaps` significava ricordarsene in tutte e
+/// quattro, e il giorno in cui non ce se ne ricordava la funzione moriva in
+/// prepare mentre la capability la offriva.
+///
+/// Qui la firma sta scritta una volta. Il renderer ne ricava come comporre la
+/// chiamata, il provider come validare gli argomenti, e una sonda puo chiedere
+/// **lo stesso nome** che verrebbe emesso — che e cio che permette di misurare
+/// il prodotto invece di misurare le proprie convinzioni.
+///
+/// # `None` non significa «assente dal prodotto»
+///
+/// Significa che **questo renderer** non la scrive. SQL Server puo averla:
+/// `STCentroid`, `STEnvelope` e `STBoundary` esistono su `geometry`, e nessuna
+/// delle tre e qui. La differenza fra «il prodotto non ce l'ha» e «noi non la
+/// scriviamo» e cio che il censimento misura, e sono due chiusure diverse — la
+/// prima e un fatto, la seconda e lavoro.
+#[must_use]
+pub const fn sql_server_spatial_method(
+    function: SpatialFunction,
+) -> Option<(&'static str, SqlServerSpatialShape)> {
+    Some(match function {
+        SpatialFunction::GeometryType => ("STGeometryType", SqlServerSpatialShape::Unary),
+        SpatialFunction::Srid => ("STSrid", SqlServerSpatialShape::Property),
+        SpatialFunction::Dimensions => ("STDimension", SqlServerSpatialShape::Unary),
+        SpatialFunction::NPoints => ("STNumPoints", SqlServerSpatialShape::Unary),
+        SpatialFunction::IsEmpty => ("STIsEmpty", SqlServerSpatialShape::UnaryPredicate),
+        SpatialFunction::IsValid => ("STIsValid", SqlServerSpatialShape::UnaryPredicate),
+        SpatialFunction::IsClosed => ("STIsClosed", SqlServerSpatialShape::UnaryPredicate),
+        SpatialFunction::Intersects => ("STIntersects", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Contains => ("STContains", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Within => ("STWithin", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Disjoint => ("STDisjoint", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Equals => ("STEquals", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Overlaps => ("STOverlaps", SqlServerSpatialShape::BinaryPredicate),
+        SpatialFunction::Distance => ("STDistance", SqlServerSpatialShape::BinaryValue),
+        SpatialFunction::Area => ("STArea", SqlServerSpatialShape::Unary),
+        SpatialFunction::Length => ("STLength", SqlServerSpatialShape::Unary),
+        SpatialFunction::StartPoint => ("STStartPoint", SqlServerSpatialShape::Unary),
+        SpatialFunction::EndPoint => ("STEndPoint", SqlServerSpatialShape::Unary),
+        SpatialFunction::PointN => ("STPointN", SqlServerSpatialShape::Numeric),
+        SpatialFunction::Buffer => ("STBuffer", SqlServerSpatialShape::Numeric),
+        SpatialFunction::Simplify => ("Reduce", SqlServerSpatialShape::Numeric),
+        SpatialFunction::Intersection => ("STIntersection", SqlServerSpatialShape::BinaryValue),
+        SpatialFunction::Difference => ("STDifference", SqlServerSpatialShape::BinaryValue),
+        SpatialFunction::SymDifference => ("STSymDifference", SqlServerSpatialShape::BinaryValue),
+        SpatialFunction::Union => ("STUnion", SqlServerSpatialShape::BinaryValue),
+        SpatialFunction::ConvexHull => ("STConvexHull", SqlServerSpatialShape::Unary),
+        SpatialFunction::MakeValid => ("MakeValid", SqlServerSpatialShape::Unary),
+        SpatialFunction::Z => ("Z", SqlServerSpatialShape::Property),
+        SpatialFunction::M => ("M", SqlServerSpatialShape::Property),
+        _ => return None,
+    })
 }
 
 /// Il nome che un dialetto da a una funzione spatial.
@@ -2264,10 +2347,16 @@ mod tests {
             assert_eq!(rendered_sql.binds[0].name, parameter);
         }
 
+        // L'esempio era `MakeValid`, che il censimento ha poi trovato su
+        // entrambe le semantiche e che ora e pubblicata. `Centroid` e un
+        // esempio migliore, e non solo perche e ancora chiusa: SQL Server
+        // **ce l'ha** su `geometry`, quindi il rifiuto dice cio che deve dire
+        // — questo renderer non la scrive — invece di sembrare un fatto sul
+        // prodotto.
         let mut unsupported = simple_query();
         unsupported.projection[0] = QueryProjection {
             expression: QueryExpression::Spatial {
-                function: SpatialFunction::MakeValid,
+                function: SpatialFunction::Centroid,
                 arguments: vec![query_column("e", "shape")],
             },
             alias: Some("value".to_owned()),

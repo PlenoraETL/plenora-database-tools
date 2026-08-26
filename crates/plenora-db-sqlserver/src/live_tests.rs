@@ -1467,6 +1467,372 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
 /// `.AsBinaryZM()`, quindi le geometrie potrebbero uscire — ma «potrebbero» non
 /// e una misura.
 ///
+/// I nomi T-SQL che il censimento **ipotizza** per le funzioni che il renderer
+/// non sa scrivere.
+///
+/// # Perche una tabella di ipotesi
+///
+/// Il catalogo versionato porta per ogni funzione il nome `PostGIS`, e su
+/// `MySQL` il renderer ne ha uno per ognuna: una sonda puo chiedere al server
+/// lo stesso nome che verrebbe emesso. Su SQL Server no — il renderer conosce
+/// ventiquattro metodi e per le altre quarantotto non ha niente da emettere.
+///
+/// Senza questa tabella il censimento potrebbe dire una cosa sola, «il renderer
+/// non la scrive», che e vera e inutile: non distingue la funzione che SQL
+/// Server non ha da quella che ha e che noi non chiediamo. E' precisamente la
+/// distinzione fra una capability chiusa perche misurata assente e una chiusa
+/// perche nessuno ha guardato.
+///
+/// # Cosa vale e cosa no
+///
+/// Un nome qui e un'**ipotesi**, e la sonda la trasforma in un fatto. Un esito
+/// «assente» significa percio «T-SQL non ha un metodo che si chiami cosi», che
+/// e piu debole di «SQL Server non sa fare questa cosa»: `NRings` e chiesto
+/// come `STNRings` e non c'e, mentre `STNumInteriorRing` esiste e conta gli
+/// anelli **interni**, che e un'altra quantita. Dove il nome T-SQL e noto e
+/// diverso dall'analogo `PostGIS` la tabella lo dice — `Simplify` si chiama
+/// `Reduce` — e dove non lo e resta il nome diretto, perche una assenza
+/// misurata su un nome dichiarato e leggibile, mentre una dedotta non lo e.
+///
+/// # Due nomi per due semantiche
+///
+/// `geometry` e `geography` non espongono sempre lo stesso metodo: le
+/// coordinate di un punto si leggono `STX`/`STY` sulla prima e `Long`/`Lat`
+/// sulla seconda. Un nome solo avrebbe registrato una falsa assenza su meta
+/// delle righe.
+const CANDIDATE_SPATIAL_METHODS: &[(SpatialFunction, &str, &str)] = &[
+    (SpatialFunction::X, "STX", "Long"),
+    (SpatialFunction::Y, "STY", "Lat"),
+    (SpatialFunction::Z, "Z", "Z"),
+    (SpatialFunction::M, "M", "M"),
+    (SpatialFunction::NRings, "STNRings", "STNRings"),
+    (SpatialFunction::IsSimple, "STIsSimple", "STIsSimple"),
+    (
+        SpatialFunction::ContainsProperly,
+        "STContainsProperly",
+        "STContainsProperly",
+    ),
+    (SpatialFunction::Covers, "STCovers", "STCovers"),
+    (SpatialFunction::CoveredBy, "STCoveredBy", "STCoveredBy"),
+    (SpatialFunction::Touches, "STTouches", "STTouches"),
+    (SpatialFunction::Crosses, "STCrosses", "STCrosses"),
+    (SpatialFunction::Overlaps, "STOverlaps", "STOverlaps"),
+    (SpatialFunction::Relate, "STRelate", "STRelate"),
+    (SpatialFunction::DWithin, "STDWithin", "STDWithin"),
+    (SpatialFunction::SetSrid, "STSetSrid", "STSetSrid"),
+    (SpatialFunction::Transform, "STTransform", "STTransform"),
+    (SpatialFunction::Force2d, "STForce2D", "STForce2D"),
+    (SpatialFunction::Force3d, "STForce3D", "STForce3D"),
+    (SpatialFunction::Force3dm, "STForce3DM", "STForce3DM"),
+    (SpatialFunction::Force4d, "STForce4D", "STForce4D"),
+    (
+        SpatialFunction::OffsetCurve,
+        "STOffsetCurve",
+        "STOffsetCurve",
+    ),
+    (SpatialFunction::UnaryUnion, "STUnaryUnion", "STUnaryUnion"),
+    (SpatialFunction::Simplify, "Reduce", "Reduce"),
+    (
+        SpatialFunction::SimplifyPreserveTopology,
+        "STSimplifyPreserveTopology",
+        "STSimplifyPreserveTopology",
+    ),
+    (SpatialFunction::MakeValid, "MakeValid", "MakeValid"),
+    (SpatialFunction::Centroid, "STCentroid", "STCentroid"),
+    (
+        SpatialFunction::PointOnSurface,
+        "STPointOnSurface",
+        "STPointOnSurface",
+    ),
+    (SpatialFunction::Envelope, "STEnvelope", "STEnvelope"),
+    (
+        SpatialFunction::OrientedEnvelope,
+        "STOrientedEnvelope",
+        "STOrientedEnvelope",
+    ),
+    (SpatialFunction::Boundary, "STBoundary", "STBoundary"),
+    (SpatialFunction::LineMerge, "STLineMerge", "STLineMerge"),
+    (SpatialFunction::Reverse, "STReverse", "STReverse"),
+    (SpatialFunction::Subdivide, "STSubdivide", "STSubdivide"),
+    (SpatialFunction::SnapToGrid, "STSnapToGrid", "STSnapToGrid"),
+    (SpatialFunction::Distance3d, "STDistance3D", "STDistance3D"),
+    (
+        SpatialFunction::MaxDistance,
+        "STMaxDistance",
+        "STMaxDistance",
+    ),
+    (
+        SpatialFunction::HausdorffDistance,
+        "STHausdorffDistance",
+        "STHausdorffDistance",
+    ),
+    (
+        SpatialFunction::FrechetDistance,
+        "STFrechetDistance",
+        "STFrechetDistance",
+    ),
+    (SpatialFunction::Azimuth, "STAzimuth", "STAzimuth"),
+    (SpatialFunction::Perimeter, "STPerimeter", "STPerimeter"),
+    (SpatialFunction::Collect, "STCollect", "STCollect"),
+    (SpatialFunction::Extent, "STExtent", "STExtent"),
+    (SpatialFunction::AsGeoJson, "AsGeoJson", "AsGeoJson"),
+    (SpatialFunction::AsMvtGeom, "STAsMvtGeom", "STAsMvtGeom"),
+    (SpatialFunction::AsMvt, "STAsMvt", "STAsMvt"),
+    (SpatialFunction::AsGeobuf, "STAsGeobuf", "STAsGeobuf"),
+    (
+        SpatialFunction::ClusterDbscan,
+        "STClusterDbscan",
+        "STClusterDbscan",
+    ),
+    (
+        SpatialFunction::ClusterKMeans,
+        "STClusterKMeans",
+        "STClusterKMeans",
+    ),
+];
+
+/// Cosa il censimento ha trovato per una funzione su una semantica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MethodPresence {
+    /// Il metodo esiste: ha eseguito, oppure ha protestato sugli argomenti —
+    /// che e la stessa distinzione fra `1305` e `1582` su `MySQL`.
+    Present,
+    /// Ne il metodo ne la proprieta esistono con quel nome.
+    Absent,
+}
+
+/// Chiede al server se un nome esiste su una semantica, e non altro.
+///
+/// # Le due forme
+///
+/// Una prima stesura chiedeva soltanto `@g.Nome()` e registrava assente
+/// qualunque «Could not find method». Sbagliava su ogni **proprieta**: `STSrid`
+/// e `Z` non sono chiamate, non vogliono parentesi, e rispondevano con quel
+/// messaggio pur esistendo — `STSrid` la usa il renderer da sempre.
+///
+/// Un nome e assente solo se **entrambe** le forme dicono di non trovarlo. Un
+/// errore diverso — «requires 1 argument(s)» — dice che il metodo c'e e che la
+/// sonda l'ha chiamato male, che e cio che si voleva sapere.
+///
+/// # Perche il valore non torna mai al client
+///
+/// La prima stesura scriveva `SELECT @g.Metodo()`, e su `STCentroid` faceva
+/// **andare in panico il driver**: il risultato e una geometria, cioe un UDT, e
+/// `tiberius` non lo decodifica. Il `catch_unwind` del provider ha fatto il suo
+/// mestiere — ha messo in quarantena la connessione invece di lasciare
+/// attraversare il panico — ma il difetto era della sonda, che chiedeva un
+/// valore di cui non le importava niente.
+///
+/// `WHERE @g.Metodo() IS NOT NULL` compila e valuta il membro senza che il suo
+/// valore attraversi il filo: cio che torna e un conteggio. La domanda era «un
+/// membro con questo nome esiste», e la risposta non ha bisogno del valore.
+///
+/// # Perche `sp_executesql`
+///
+/// La risoluzione di un metodo avviene alla compilazione del batch, e un batch
+/// che non compila non e catturabile da `TRY`. Dentro `sp_executesql` il
+/// batch interno compila per conto suo, e l'errore torna come valore invece di
+/// abbattere la connessione.
+async fn probe_tsql_member(
+    session: &mut SqlServerSession,
+    semantics: &str,
+    method: &str,
+    cancellation: &CancellationToken,
+) -> MethodPresence {
+    let literal = if semantics == "geography" {
+        "geography::STGeomFromText('POINT(8 44)', 4326)"
+    } else {
+        "geometry::STGeomFromText('POINT(8 44)', 0)"
+    };
+    let sql = format!(
+        "DECLARE @g {semantics} = {literal}; \
+         DECLARE @missing bit = 1; \
+         BEGIN TRY EXEC sp_executesql \
+             N'SELECT COUNT_BIG(*) FROM (SELECT 1 AS c) p WHERE @g.{method}() IS NOT NULL', \
+             N'@g {semantics}', @g = @g; \
+           SET @missing = 0; \
+         END TRY BEGIN CATCH \
+           IF ERROR_MESSAGE() NOT LIKE '%Could not find%' SET @missing = 0; \
+         END CATCH \
+         IF @missing = 1 BEGIN \
+           BEGIN TRY EXEC sp_executesql \
+               N'SELECT COUNT_BIG(*) FROM (SELECT 1 AS c) p WHERE @g.{method} IS NOT NULL', \
+               N'@g {semantics}', @g = @g; \
+             SET @missing = 0; \
+           END TRY BEGIN CATCH \
+             IF ERROR_MESSAGE() NOT LIKE '%Could not find%' SET @missing = 0; \
+           END CATCH \
+         END \
+         SELECT @missing;"
+    );
+    let batches = session
+        .execute_query(Query::new(sql), ErrorPhase::Read, cancellation)
+        .await
+        .expect("il censimento non deve poter fallire per il trasporto");
+    let missing: bool = batches
+        .last()
+        .and_then(|rows| rows.last())
+        .and_then(|row| row.get::<bool, _>(0))
+        .expect("il censimento rende un bit");
+    if missing {
+        MethodPresence::Absent
+    } else {
+        MethodPresence::Present
+    }
+}
+
+/// Le funzioni che SQL Server possiede su entrambe le semantiche e che questo
+/// provider **non** offre, ciascuna con la ragione.
+///
+/// Una lista pubblicata dice cosa si puo fare. Questa dice cosa si potrebbe e
+/// non si fa, ed e la meta che di solito non viene scritta: senza, una
+/// capability chiusa non si distingue da una dimenticata, e chi legge non sa se
+/// aspettarsela domani o mai.
+///
+/// Il censimento la pretende. Ogni funzione che il prodotto espone su geometry
+/// **e** su geography deve stare o nella lista pubblicata o qui: non esiste una
+/// terza casella in cui una superficie usabile possa restare in silenzio.
+const DECLARED_SPATIAL_EXCLUSIONS: &[(SpatialFunction, &str)] = &[
+    // Le coordinate di un punto ci sono su entrambe le semantiche, e si
+    // chiamano in due modi: `STX` e `STY` su `geometry`, `Long` e `Lat` su
+    // `geography`. Nessun'altra funzione del contratto cambia nome fra le due.
+    //
+    // La tabella dei nomi T-SQL prende una funzione e rende un nome, e non ha
+    // dove ospitare quella distinzione. Aggiungergliela non basterebbe: la
+    // semantica di una **colonna** ricevitrice la risolve il preflight del
+    // provider, e al renderer non arriva — al renderer arriva soltanto quella
+    // dei parametri, che e un'altra cosa.
+    //
+    // Non e una chiusura del prodotto ed e giusto che si legga come tale:
+    // SQL Server le ha, e a mancare e un impianto nostro.
+    (
+        SpatialFunction::X,
+        "il membro T-SQL cambia fra le semantiche (STX/Long) e la semantica del \
+         ricevitore non raggiunge il renderer",
+    ),
+    (
+        SpatialFunction::Y,
+        "il membro T-SQL cambia fra le semantiche (STY/Lat) e la semantica del \
+         ricevitore non raggiunge il renderer",
+    ),
+];
+
+/// Il censimento delle settantadue funzioni del catalogo su SQL Server.
+///
+/// # Cosa colma
+///
+/// `live_every_verified_spatial_function_is_crossed` attraversa la lista
+/// **pubblicata** e non il catalogo: prova che niente e offerto senza essere
+/// stato eseguito, e non dice niente sulle quarantotto che nessuno offre. Su
+/// `MySQL` e `MariaDB` quella domanda ha una sonda da venti tranche; qui non
+/// l'aveva nessuno, e ventiquattro funzioni su settantadue erano pubblicate
+/// senza che il resto fosse mai stato chiesto.
+///
+/// # Le tre caselle
+///
+/// Per ogni funzione e per ognuna delle due semantiche il censimento risponde
+/// una cosa sola: il prodotto ha un membro con quel nome. Da li, tre esiti che
+/// non vanno confusi:
+///
+/// * **il prodotto non ce l'ha** — un fatto su SQL Server, e la chiusura piu
+///   solida che esista;
+/// * **ce l'ha su una semantica sola** — e il contratto pubblica una lista per
+///   entrambe, quindi resta chiusa finche quella regola vale;
+/// * **ce l'ha su entrambe e noi non la offriamo** — l'unico esito che
+///   richiede una decisione, e che questo test non lascia in silenzio.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito per il censimento spatial"]
+async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
+    let cancellation = CancellationToken::new();
+    let mut session = SqlServerSession::open(
+        &live_config(CertificatePolicy::TrustServerCertificate),
+        &cancellation,
+    )
+    .await
+    .expect("sessione del censimento");
+
+    let mut both = Vec::new();
+    let mut geometry_only = Vec::new();
+    let mut geography_only = Vec::new();
+    let mut absent = Vec::new();
+    for function in SpatialFunction::ALL {
+        // Il nome del renderer quando c'e, l'ipotesi quando non c'e: la sonda
+        // non deve mai dedurre un nome da se.
+        let (geometry_name, geography_name) =
+            plenora_database_sql::sql_server_spatial_method(*function).map_or_else(
+                || {
+                    let (_, geometry, geography) = CANDIDATE_SPATIAL_METHODS
+                        .iter()
+                        .find(|(candidate, _, _)| candidate == function)
+                        .unwrap_or_else(|| {
+                            panic!("{function:?} non ha ne un nome del renderer ne un'ipotesi")
+                        });
+                    (*geometry, *geography)
+                },
+                |(method, _)| (method, method),
+            );
+        let on_geometry =
+            probe_tsql_member(&mut session, "geometry", geometry_name, &cancellation).await;
+        let on_geography =
+            probe_tsql_member(&mut session, "geography", geography_name, &cancellation).await;
+        match (on_geometry, on_geography) {
+            (MethodPresence::Present, MethodPresence::Present) => both.push(*function),
+            (MethodPresence::Present, MethodPresence::Absent) => {
+                geometry_only.push(format!("{function:?}"));
+            }
+            (MethodPresence::Absent, MethodPresence::Present) => {
+                geography_only.push(format!("{function:?}"));
+            }
+            (MethodPresence::Absent, MethodPresence::Absent) => {
+                absent.push(format!("{function:?}"));
+            }
+        }
+    }
+
+    // Il censimento e completo per costruzione: ogni funzione cade in una delle
+    // quattro caselle. Che il conto torni lo dice questa riga, e serve il
+    // giorno in cui qualcuno aggiunga una funzione al contratto senza toccare
+    // ne il renderer ne la tabella delle ipotesi.
+    assert_eq!(
+        both.len() + geometry_only.len() + geography_only.len() + absent.len(),
+        SpatialFunction::ALL.len(),
+        "il censimento non copre l'intero catalogo"
+    );
+
+    let unexplained = both
+        .iter()
+        .filter(|function| !crate::query::VERIFIED_SPATIAL_FUNCTIONS.contains(function))
+        .filter(|function| {
+            !DECLARED_SPATIAL_EXCLUSIONS
+                .iter()
+                .any(|(excluded, _)| excluded == *function)
+        })
+        .map(|function| format!("{function:?}"))
+        .collect::<Vec<_>>();
+    assert!(
+        unexplained.is_empty(),
+        "SQL Server le espone su entrambe le semantiche, questo provider non le offre,          e nessuno ha scritto perche: {unexplained:?}          
+  su entrambe: {} 
+  solo geometry: {geometry_only:?}          
+  solo geography: {geography_only:?} 
+  assenti: {absent:?}",
+        both.len(),
+    );
+
+    // Una esclusione dichiarata su una funzione che il prodotto non ha sarebbe
+    // una ragione che parla di niente, e invecchierebbe senza che nessuno lo
+    // veda — la stessa classe della ragione scaduta.
+    let hollow = DECLARED_SPATIAL_EXCLUSIONS
+        .iter()
+        .filter(|(function, _)| !both.contains(function))
+        .map(|(function, _)| format!("{function:?}"))
+        .collect::<Vec<_>>();
+    assert!(
+        hollow.is_empty(),
+        "escluse con una ragione ma non esposte da SQL Server su entrambe le semantiche:          {hollow:?}"
+    );
+}
+
 /// # Cosa fa, e perche non sostituisce l'altra
 ///
 /// Cammina sulla **costante**, non su un elenco scritto qui: se la lista si
@@ -1525,134 +1891,146 @@ async fn live_every_verified_spatial_function_is_crossed() {
         // Cio che resta preteso e la cosa giusta: una funzione pubblicata deve
         // essere attraversabile in **almeno una** delle forme che il piano
         // ammette. Nessuna, e la funzione non merita la lista.
-        let mut shapes = Vec::new();
-        for arity in (1..=4).filter(|count| function.accepts_argument_count(*count)) {
-            for (field, semantics, coordinates) in [
-                ("shape", SpatialSemantics::Geometry, [3.0_f64, 3.0_f64]),
-                (
-                    "position",
-                    SpatialSemantics::Geography,
-                    [13.0_f64, 43.0_f64],
-                ),
-            ] {
-                shapes.push((arity, field, semantics, coordinates));
-            }
-        }
         let mut refusals: Vec<String> = Vec::new();
-        for (arity, field, semantics, coordinates) in shapes {
-            let mut parameters = BTreeMap::new();
-            let arguments: Vec<QueryExpression> = (0..arity)
-                .map(|index| {
-                    if index == 0 {
-                        QueryExpression::Column {
-                            column: ColumnRef {
-                                relation: Some("source".to_owned()),
-                                field: field.to_owned(),
-                            },
+        for (field, semantics, coordinates) in [
+            ("shape", SpatialSemantics::Geometry, [3.0_f64, 3.0_f64]),
+            (
+                "position",
+                SpatialSemantics::Geography,
+                [13.0_f64, 43.0_f64],
+            ),
+        ] {
+            // Le arieta si perdonano fra loro, le **semantiche** no, ed e la
+            // correzione che questo ciclo porta. Prima le due stavano appiattite
+            // in un elenco solo e il primo successo chiudeva la funzione: una
+            // che girasse su `geometry` e non su `geography` passava il gate, e
+            // finiva in una lista che il contratto pubblica per **entrambe**.
+            let mut unsupported_here: Vec<String> = Vec::new();
+            for arity in (1..=4).filter(|count| function.accepts_argument_count(*count)) {
+                let mut parameters = BTreeMap::new();
+                let arguments: Vec<QueryExpression> = (0..arity)
+                    .map(|index| {
+                        if index == 0 {
+                            QueryExpression::Column {
+                                column: ColumnRef {
+                                    relation: Some("source".to_owned()),
+                                    field: field.to_owned(),
+                                },
+                            }
+                        } else if function.takes_geometry_at(index) {
+                            parameters.insert(
+                                "needle".to_owned(),
+                                ParameterValue::Wkb {
+                                    bytes: ewkb_point(1, &coordinates),
+                                    srid: Some(4_326),
+                                    dimensions: Dimensions::Xy,
+                                    semantics,
+                                },
+                            );
+                            QueryExpression::Parameter {
+                                name: "needle".to_owned(),
+                            }
+                        } else {
+                            // Lo scalare non e uno solo: il renderer classifica
+                            // l'argomento non geometrico prima di emetterlo, e
+                            // pretende un `F64` **finito** per la distanza di
+                            // `STBuffer` e un `I32` maggiore o uguale a uno per
+                            // l'indice di vertice di `STPointN`. Bindare `1` per
+                            // entrambi faceva rifiutare `Buffer` dal prepare, e la
+                            // prima lettura di quel rifiuto era «il riferimento non
+                            // attraversa `Buffer`»: era invece la sonda a chiedergli
+                            // la cosa sbagliata.
+                            //
+                            // Il renderer parametrizza soltanto `Parameter` — un
+                            // letterale nell'AST non esiste, e non deve esistere.
+                            parameters.insert(
+                                "scalare".to_owned(),
+                                // `PointN` e l'unico che vuole un indice: e la
+                                // stessa distinzione che il provider fa fra
+                                // `SpatialArgument::PointIndex` e `Distance`.
+                                // Nominare `Buffer` come il solo che vuole un
+                                // float e stato vero per un pomeriggio, finche
+                                // il censimento non ha aperto `Reduce`, che una
+                                // tolleranza la vuole float quanto una distanza.
+                                if matches!(function, SpatialFunction::PointN) {
+                                    ParameterValue::I32(1)
+                                } else {
+                                    ParameterValue::F64(1.0)
+                                },
+                            );
+                            QueryExpression::Parameter {
+                                name: "scalare".to_owned(),
+                            }
                         }
-                    } else if function.takes_geometry_at(index) {
-                        parameters.insert(
-                            "needle".to_owned(),
-                            ParameterValue::Wkb {
-                                bytes: ewkb_point(1, &coordinates),
-                                srid: Some(4_326),
-                                dimensions: Dimensions::Xy,
-                                semantics,
-                            },
-                        );
-                        QueryExpression::Parameter {
-                            name: "needle".to_owned(),
-                        }
-                    } else {
-                        // Lo scalare non e uno solo: il renderer classifica
-                        // l'argomento non geometrico prima di emetterlo, e
-                        // pretende un `F64` **finito** per la distanza di
-                        // `STBuffer` e un `I32` maggiore o uguale a uno per
-                        // l'indice di vertice di `STPointN`. Bindare `1` per
-                        // entrambi faceva rifiutare `Buffer` dal prepare, e la
-                        // prima lettura di quel rifiuto era «il riferimento non
-                        // attraversa `Buffer`»: era invece la sonda a chiedergli
-                        // la cosa sbagliata.
-                        //
-                        // Il renderer parametrizza soltanto `Parameter` — un
-                        // letterale nell'AST non esiste, e non deve esistere.
-                        parameters.insert(
-                            "scalare".to_owned(),
-                            if matches!(function, SpatialFunction::Buffer) {
-                                ParameterValue::F64(1.0)
-                            } else {
-                                ParameterValue::I32(1)
-                            },
-                        );
-                        QueryExpression::Parameter {
-                            name: "scalare".to_owned(),
-                        }
-                    }
-                })
-                .collect();
-            let operation = QueryOperation {
-                declared_crs: Vec::new(),
-                common_table_expressions: Vec::new(),
-                source: Some(QuerySource {
-                    object: ObjectRef {
-                        catalog: None,
-                        schema: Some("plenora_test".to_owned()),
-                        object: "stream_probe".to_owned(),
-                    },
-                    alias: Some("source".to_owned()),
-                }),
-                derived_source: None,
-                projection: vec![QueryProjection {
-                    expression: QueryExpression::Spatial {
-                        function: *function,
-                        arguments,
-                    },
-                    alias: Some("sonda".to_owned()),
-                }],
-                joins: Vec::new(),
-                filter: None,
-                group_by: Vec::new(),
-                having: None,
-                order_by: Vec::new(),
-                distinct: false,
-                distinct_on: Vec::new(),
-                set_operations: Vec::new(),
-                row_limit: Some(1),
-                row_offset: None,
-                locking: None,
-            };
-            let bag = ParameterBag::new(parameters);
-            match provider
-                .query(&secret, &operation, &bag, &budget, &cancellation)
-                .await
-            {
-                Err(error) => {
-                    refusals.push(format!(
-                        "su {field} con {arity} argomenti il prepare fallisce ({})",
-                        error.message
-                    ));
-                    continue;
-                }
-                Ok(mut stream) => match stream.next_batch(&cancellation).await {
+                    })
+                    .collect();
+                let operation = QueryOperation {
+                    declared_crs: Vec::new(),
+                    common_table_expressions: Vec::new(),
+                    source: Some(QuerySource {
+                        object: ObjectRef {
+                            catalog: None,
+                            schema: Some("plenora_test".to_owned()),
+                            object: "stream_probe".to_owned(),
+                        },
+                        alias: Some("source".to_owned()),
+                    }),
+                    derived_source: None,
+                    projection: vec![QueryProjection {
+                        expression: QueryExpression::Spatial {
+                            function: *function,
+                            arguments,
+                        },
+                        alias: Some("sonda".to_owned()),
+                    }],
+                    joins: Vec::new(),
+                    filter: None,
+                    group_by: Vec::new(),
+                    having: None,
+                    order_by: Vec::new(),
+                    distinct: false,
+                    distinct_on: Vec::new(),
+                    set_operations: Vec::new(),
+                    row_limit: Some(1),
+                    row_offset: None,
+                    locking: None,
+                };
+                let bag = ParameterBag::new(parameters);
+                match provider
+                    .query(&secret, &operation, &bag, &budget, &cancellation)
+                    .await
+                {
                     Err(error) => {
-                        refusals.push(format!(
-                            "su {field} con {arity} argomenti non esegue ({})",
+                        unsupported_here.push(format!(
+                            "su {field} con {arity} argomenti il prepare fallisce ({})",
                             error.message
                         ));
                         continue;
                     }
-                    Ok(first) => {
-                        if first.is_none_or(|batch| batch.num_rows() != 1) {
-                            refusals.push(format!(
-                                "su {field} con {arity} argomenti non rende la riga della sonda"
+                    Ok(mut stream) => match stream.next_batch(&cancellation).await {
+                        Err(error) => {
+                            unsupported_here.push(format!(
+                                "su {field} con {arity} argomenti non esegue ({})",
+                                error.message
                             ));
                             continue;
                         }
-                    }
-                },
+                        Ok(first) => {
+                            if first.is_none_or(|batch| batch.num_rows() != 1) {
+                                unsupported_here.push(format!(
+                                    "su {field} con {arity} argomenti non rende la riga della sonda"
+                                ));
+                                continue;
+                            }
+                        }
+                    },
+                }
+                unsupported_here.clear();
+                break;
             }
-            refusals.clear();
-            break;
+            // Una semantica che non regge in **nessuna** arieta e un rifiuto
+            // della funzione, non una forma da saltare.
+            refusals.extend(unsupported_here);
         }
         if refusals.is_empty() {
             crossed += 1;

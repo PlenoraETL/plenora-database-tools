@@ -15,6 +15,7 @@ use plenora_database_core::{
 };
 use plenora_database_sql::{
     Dialect, DialectCapabilities, RenderedSql, Renderer, SqlServerSpatialParameter,
+    SqlServerSpatialShape,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -37,6 +38,51 @@ WHERE is_hidden = 0
 ORDER BY column_ordinal;
 ";
 
+/// Le funzioni spatial qualificate su SQL Server.
+///
+/// # Cosa la delimita
+///
+/// Il catalogo ne dichiara settantadue e questa lista ne porta ventinove. La
+/// differenza non e una scelta di prudenza, ed e stata **misurata**:
+/// `live_the_spatial_census_leaves_no_usable_function_unexplained` attraversa
+/// tutte e settantadue su entrambe le semantiche e le divide in quattro
+/// caselle.
+///
+/// * **trentatre non esistono** su nessuna delle due — clustering, MVT,
+///   geobuf, azimuth, distanze 3D, i quattro `Force*`, `Transform`,
+///   `SetSrid`, `Reverse`, `SnapToGrid`, `Subdivide`. Sono un fatto su SQL
+///   Server, non lavoro rimasto;
+/// * **otto esistono soltanto su `geometry`** — `IsSimple`, `Touches`,
+///   `Crosses`, `Relate`, `Centroid`, `PointOnSurface`, `Envelope`,
+///   `Boundary`. Restano fuori per la regola dell'intersezione, non per
+///   assenza: vedi sotto;
+/// * **nessuna** esiste soltanto su `geography`;
+/// * **trentuno esistono su entrambe**, e sono queste ventinove piu `X` e `Y`,
+///   che `DECLARED_SPATIAL_EXCLUSIONS` tiene fuori con la sua ragione.
+///
+/// # Perche l'intersezione
+///
+/// `ProviderCapabilities` pubblica **una lista sola** per tutte le semantiche
+/// dichiarate, e SQL Server dichiara sia `geometry` sia `geography`. Offrire
+/// l'unione prometterebbe a chi usa una colonna `geography` funzioni che li non
+/// esistono — ed e il difetto gia corretto su `PostgreSQL`, dove pubblicare
+/// l'unione faceva promettere settantadue funzioni là dove undici valevano per
+/// entrambe le semantiche.
+///
+/// Il gate lo pretende: `live_every_verified_spatial_function_is_crossed`
+/// attraversa ogni funzione su **entrambe** le semantiche, e una che regga solo
+/// su una fa fallire il riferimento. Le arieta invece si perdonano fra loro,
+/// perche una funzione che non vale su ogni forma geometrica non e assente dal
+/// prodotto.
+///
+/// # Come si scrive cio che c'e qui
+///
+/// Nome e forma di ogni membro T-SQL stanno in
+/// `plenora_database_sql::sql_server_spatial_method`, e in nessun altro posto.
+/// Erano quattro — i letterali del renderer e tre elenchi di firme in questo
+/// modulo — e aprire una funzione voleva dire ricordarsene in tutti e quattro.
+/// `what_the_provider_offers_and_what_the_renderer_can_write_are_the_same_list`
+/// tiene questa lista e quella tabella allineate.
 pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::GeometryType,
     SpatialFunction::Srid,
@@ -62,6 +108,13 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::SymDifference,
     SpatialFunction::Union,
     SpatialFunction::ConvexHull,
+    // Le cinque aperte dal censimento: presenti su geometry **e** su
+    // geography, e fino a ieri chiuse perche nessuno le aveva chieste.
+    SpatialFunction::Z,
+    SpatialFunction::M,
+    SpatialFunction::Overlaps,
+    SpatialFunction::Simplify,
+    SpatialFunction::MakeValid,
 ];
 
 const MAX_SPATIAL_OUTPUTS: usize = 64;
@@ -413,7 +466,7 @@ pub async fn validate_spatial_inputs(
                 {
                     return Err(query_error(
                         ErrorCategory::InvalidPlan,
-                        "STBuffer SQL Server richiede una distanza float finita bindata",
+                        "argomento numerico di lunghezza SQL Server: richiede un float finito bindato",
                     ));
                 }
             }
@@ -655,7 +708,7 @@ fn validate_nested_spatial_operation<'a>(
                     ) {
                         return Err(query_error(
                             ErrorCategory::InvalidPlan,
-                            "STBuffer SQL Server richiede una distanza float finita bindata",
+                            "argomento numerico di lunghezza SQL Server: richiede un float finito bindato",
                         ));
                     }
                 }
@@ -1283,18 +1336,16 @@ async fn profile_spatial_outputs(
         if !function.returns_geometry() {
             continue;
         }
-        if !matches!(
-            function,
-            SpatialFunction::StartPoint
-                | SpatialFunction::EndPoint
-                | SpatialFunction::PointN
-                | SpatialFunction::Buffer
-                | SpatialFunction::Intersection
-                | SpatialFunction::Difference
-                | SpatialFunction::SymDifference
-                | SpatialFunction::Union
-                | SpatialFunction::ConvexHull
-        ) {
+        // Era un **terzo** elenco scritto a mano — dopo la lista pubblicata e
+        // la tabella dei nomi T-SQL — e conteneva esattamente le geometriche
+        // fra le pubblicate. Tre elenchi che devono coincidere sono due di
+        // troppo: qui la domanda e gia dentro un `returns_geometry`, quindi cio
+        // che restava da chiedere era solo se la funzione fosse offerta.
+        //
+        // Aggiungerne una alla lista e dimenticarla qui la faceva morire nel
+        // preflight con «fuori dal sottoinsieme verificato», che e un messaggio
+        // vero e che indicava il posto sbagliato.
+        if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
             return Err(query_error(
                 ErrorCategory::Unsupported,
                 "output spatial SQL Server fuori dal sottoinsieme verificato",
@@ -1475,7 +1526,7 @@ fn validate_bound_spatial_arguments(
             {
                 return Err(query_error(
                     ErrorCategory::InvalidPlan,
-                    "STBuffer SQL Server richiede una distanza float finita bindata",
+                    "argomento numerico di lunghezza SQL Server: richiede un float finito bindato",
                 ));
             }
             _ => {}
@@ -1542,6 +1593,18 @@ fn collect_expression_spatial_uses(
                     "AST spatial SQL Server richiede una colonna come ricevitore",
                 ));
             };
+            // La **politica**, esplicita, prima della forma. Stava nascosta
+            // dentro i tre elenchi di firme: erano scritti a mano e contenevano
+            // solo funzioni pubblicate, quindi una funzione fuori lista cadeva
+            // nel ramo finale per un accidente della loro compilazione. Derivare
+            // le firme dal contratto ha tolto quell'accidente, e la domanda che
+            // restava senza casa e questa.
+            if !VERIFIED_SPATIAL_FUNCTIONS.contains(function) {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "funzione spatial fuori dal sottoinsieme SQL Server verificato",
+                ));
+            }
             if sql_server_unary_spatial_function(*function) {
                 if arguments.len() != 1 {
                     return Err(query_error(
@@ -1579,7 +1642,7 @@ fn collect_expression_spatial_uses(
                     column: column.clone(),
                     argument,
                 });
-            } else if matches!(function, SpatialFunction::PointN | SpatialFunction::Buffer) {
+            } else if sql_server_numeric_spatial_function(*function) {
                 if arguments.len() != 2 {
                     return Err(query_error(
                         ErrorCategory::Unsupported,
@@ -1651,37 +1714,45 @@ fn collect_expression_spatial_uses(
     Ok(())
 }
 
-const fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
+/// La forma T-SQL di una funzione, chiesta a chi la scrive.
+///
+/// Erano tre elenchi scritti a mano qui dentro — unarie, binarie, numeriche —
+/// e dicevano la stessa cosa che il renderer diceva con i suoi letterali:
+/// quattro copie della stessa firma. Aprire `Overlaps` voleva dire ricordarsene
+/// in tutte e quattro, e il giorno in cui non ce se ne ricordava la funzione
+/// moriva in prepare mentre la capability la offriva.
+///
+/// Un tentativo di **derivarle dal contratto** e fallito, e vale la pena
+/// ricordarlo perche era convincente: due argomenti di cui il secondo non
+/// geometrico sembrava voler dire «numerico», finche `ST_IsValid` non l'ha
+/// smentito — il contratto ne ammette due, `STIsValid()` di T-SQL nessuno. La
+/// firma di un metodo appartiene al prodotto, non al piano.
+fn sql_server_spatial_shape(function: SpatialFunction) -> Option<SqlServerSpatialShape> {
+    plenora_database_sql::sql_server_spatial_method(function).map(|(_, shape)| shape)
+}
+
+fn sql_server_unary_spatial_function(function: SpatialFunction) -> bool {
     matches!(
-        function,
-        SpatialFunction::GeometryType
-            | SpatialFunction::Srid
-            | SpatialFunction::Dimensions
-            | SpatialFunction::NPoints
-            | SpatialFunction::IsEmpty
-            | SpatialFunction::IsValid
-            | SpatialFunction::IsClosed
-            | SpatialFunction::Area
-            | SpatialFunction::Length
-            | SpatialFunction::StartPoint
-            | SpatialFunction::EndPoint
-            | SpatialFunction::ConvexHull
+        sql_server_spatial_shape(function),
+        Some(
+            SqlServerSpatialShape::Property
+                | SqlServerSpatialShape::Unary
+                | SqlServerSpatialShape::UnaryPredicate
+        )
     )
 }
 
-const fn sql_server_binary_spatial_function(function: SpatialFunction) -> bool {
+fn sql_server_binary_spatial_function(function: SpatialFunction) -> bool {
     matches!(
-        function,
-        SpatialFunction::Intersects
-            | SpatialFunction::Contains
-            | SpatialFunction::Within
-            | SpatialFunction::Disjoint
-            | SpatialFunction::Equals
-            | SpatialFunction::Distance
-            | SpatialFunction::Intersection
-            | SpatialFunction::Difference
-            | SpatialFunction::SymDifference
-            | SpatialFunction::Union
+        sql_server_spatial_shape(function),
+        Some(SqlServerSpatialShape::BinaryValue | SqlServerSpatialShape::BinaryPredicate)
+    )
+}
+
+fn sql_server_numeric_spatial_function(function: SpatialFunction) -> bool {
+    matches!(
+        sql_server_spatial_shape(function),
+        Some(SqlServerSpatialShape::Numeric)
     )
 }
 
@@ -2186,20 +2257,63 @@ mod tests {
     }
 
     #[test]
+    fn what_the_provider_offers_and_what_the_renderer_can_write_are_the_same_list() {
+        // Due elenchi scritti a mano in due crate diversi, e nessuno li
+        // incrociava. Una funzione pubblicata che il renderer non sa scrivere
+        // e una promessa che muore in prepare; un nome che il renderer sa
+        // scrivere e che nessuno offre e lavoro fatto e non consegnato.
+        //
+        // La stessa classe che teneva `Relate` fra le verified di `MariaDB` e
+        // che ha prodotto la guardia sul catalogo spatial del core.
+        // `SpatialFunction` non e `Ord` — non ha un ordine naturale, e imporgliene
+        // uno per una guardia sarebbe una modifica al core per comodita di un
+        // test. Si confrontano gli elenchi nell'ordine canonico di `ALL`.
+        let writable_but_unoffered = SpatialFunction::ALL
+            .iter()
+            .filter(|function| {
+                plenora_database_sql::sql_server_spatial_method(**function).is_some()
+                    && !VERIFIED_SPATIAL_FUNCTIONS.contains(function)
+            })
+            .map(|function| format!("{function:?}"))
+            .collect::<Vec<_>>();
+        let offered_but_unwritable = VERIFIED_SPATIAL_FUNCTIONS
+            .iter()
+            .filter(|function| {
+                plenora_database_sql::sql_server_spatial_method(**function).is_none()
+            })
+            .map(|function| format!("{function:?}"))
+            .collect::<Vec<_>>();
+        assert!(
+            offered_but_unwritable.is_empty(),
+            "pubblicate e non scrivibili dal renderer: {offered_but_unwritable:?}"
+        );
+        assert!(
+            writable_but_unoffered.is_empty(),
+            "scrivibili dal renderer e non pubblicate: {writable_but_unoffered:?}"
+        );
+    }
+
+    #[test]
     fn spatial_use_collection_accepts_only_verified_sql_server_signatures() {
         for function in VERIFIED_SPATIAL_FUNCTIONS {
+            // La forma viene dal contratto, non da un elenco scritto qui.
+            // Elencarla a mano faceva coincidere la domanda con la risposta: il
+            // test costruiva soltanto le firme che gia conosceva, e il giorno
+            // in cui `Reduce` e entrata nella lista la prova ha chiesto una
+            // funzione a un argomento a qualcosa che ne vuole due.
+            let numeric = if *function == SpatialFunction::PointN {
+                "point_index"
+            } else {
+                "distance"
+            };
             let mut arguments = vec![column("e", "shape")];
             if sql_server_binary_spatial_function(*function) {
                 arguments.push(QueryExpression::Parameter {
                     name: "needle".to_owned(),
                 });
-            } else if *function == SpatialFunction::PointN {
+            } else if sql_server_numeric_spatial_function(*function) {
                 arguments.push(QueryExpression::Parameter {
-                    name: "point_index".to_owned(),
-                });
-            } else if *function == SpatialFunction::Buffer {
-                arguments.push(QueryExpression::Parameter {
-                    name: "distance".to_owned(),
+                    name: numeric.to_owned(),
                 });
             }
             let mut uses = Vec::new();
@@ -2215,9 +2329,9 @@ mod tests {
             let expected = if sql_server_binary_spatial_function(*function) {
                 SpatialArgument::Geometry("needle".to_owned())
             } else if *function == SpatialFunction::PointN {
-                SpatialArgument::PointIndex("point_index".to_owned())
-            } else if *function == SpatialFunction::Buffer {
-                SpatialArgument::Distance("distance".to_owned())
+                SpatialArgument::PointIndex(numeric.to_owned())
+            } else if sql_server_numeric_spatial_function(*function) {
+                SpatialArgument::Distance(numeric.to_owned())
             } else {
                 SpatialArgument::None
             };
@@ -2242,8 +2356,13 @@ mod tests {
         );
 
         for expression in [
+            // Era `MakeValid`, che il censimento ha poi trovata su entrambe le
+            // semantiche e che ora e pubblicata. `Centroid` la sostituisce, e
+            // dice una cosa piu precisa: SQL Server ce l'ha su `geometry` e
+            // non su `geography`, quindi la chiusura e la regola
+            // dell'intersezione e non un'assenza dal prodotto.
             QueryExpression::Spatial {
-                function: SpatialFunction::MakeValid,
+                function: SpatialFunction::Centroid,
                 arguments: vec![column("e", "shape")],
             },
             QueryExpression::Spatial {
