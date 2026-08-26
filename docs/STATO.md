@@ -95,6 +95,7 @@ l'aiuto.
 | `database-inspect-catalogs` | `sempre` |
 | `database-inspect-objects` | `sempre` |
 | `database-inspect-schemas` | `sempre` |
+| `database-portable-execute` | `sempre` |
 | `database-probe` | `sempre` |
 | `diagnose` | `postgres` |
 | `doctor` | `postgres` |

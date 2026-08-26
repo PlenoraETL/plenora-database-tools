@@ -332,6 +332,7 @@ async fn run() -> CliResult<()> {
         "portable-compile" => portable_cmd::portable_compile(&mut args),
         #[cfg(feature = "postgres")]
         "portable-execute" => query_cmd::portable_execute(&mut args).await,
+        "database-portable-execute" => database_portable_execute(&mut args).await,
         #[cfg(feature = "postgres")]
         "bulk-write" => write_cmd::bulk_write(&mut args).await,
         #[cfg(feature = "postgres")]
@@ -596,6 +597,112 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
         "provider": kind,
         "status": commit_status(&commit),
         "affected_rows": affected,
+        "commit": commit,
+    }))?;
+    commit_exit(&commit)
+}
+
+/// `database-portable-execute <provider> <SECRET_ENV> <PORTABLE.json> <argomenti provider>`
+///
+/// Compila un `PortableStatement` per il dialetto del provider e lo esegue in
+/// una transazione, stampando le righe se lo statement ne restituisce.
+///
+/// # Perche generico
+///
+/// `portable-execute` esiste da tempo ed e legato a `PostgreSQL`. Non era una
+/// scelta: il compilatore parlava un dialetto solo. Ne parla quattro, e un
+/// comando per provider sarebbe stato quattro copie della stessa funzione —
+/// mentre la facade dispatcha gia da se su `tx.provider_kind()`.
+///
+/// # Le due forme
+///
+/// Uno statement con `RETURNING` — o una `SELECT` — rende righe, e va
+/// attraversato con `execute_portable_returning`; gli altri rendono un
+/// conteggio. Sceglierne una sola avrebbe significato rifiutare meta degli
+/// statement che il contratto ammette, e chiedere al chiamante di sapere quale
+/// comando usare per una distinzione che il piano gia dichiara.
+///
+/// # Errors
+///
+/// Se il provider non e riconosciuto o non e compilato in questo binario, se
+/// il file non e leggibile o non e un AST valido, se il compilatore rifiuta il
+/// piano per quel dialetto, o se il server lo rifiuta.
+async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+    let kind = parse_provider_kind(&provider_name)?;
+    ensure_adapter_available(kind)?;
+    let env_name = args
+        .next()
+        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let path = args
+        .next()
+        .ok_or_else(|| "manca il percorso di PORTABLE.json".to_owned())?;
+    let provider_arguments = parse_provider_arguments(kind, args)?;
+    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
+    let secret = secret_from_env(&env_name)?;
+    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+
+    let source = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "lettura dello statement portabile fallita: {}",
+            error.kind()
+        )
+    })?;
+    let statement: plenora_database_core::portable::PortableStatement =
+        serde_json::from_str(&source).map_err(|error| {
+            format!(
+                "PortableStatement JSON non parsabile a riga {}, colonna {}",
+                error.line(),
+                error.column()
+            )
+        })?;
+
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default())?;
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    // La forma decide quale meta della facade serve, e la decide il **piano**:
+    // il chiamante non deve saperlo.
+    // La domanda la pone il core, che e anche chi la usa per rifiutare la meta
+    // sbagliata: una seconda copia qui smetterebbe di seguirlo in silenzio.
+    let outcome = if plenora_database_core::facade::statement_returns_rows(&statement) {
+        plenora_database_core::facade::execute_portable_returning(
+            transaction.as_mut(),
+            &statement,
+            &cancellation,
+        )
+        .await
+        .map(|rows| json!({"rows": rows.len()}))
+    } else {
+        plenora_database_core::facade::execute_portable(
+            transaction.as_mut(),
+            &statement,
+            &cancellation,
+        )
+        .await
+        .map(|affected| json!({"affected_rows": affected}))
+    };
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // Un rifiuto del compilatore o del server lascia la transazione
+            // aperta: chiuderla e responsabilita di chi l'ha aperta, e un
+            // rollback silenzioso e la sola cosa onesta da fare qui.
+            let _ = transaction.rollback(&cancellation).await;
+            return Err(error.into());
+        }
+    };
+    let commit = transaction.commit(&cancellation).await?;
+    print_json(&json!({
+        "provider": kind,
+        "status": commit_status(&commit),
+        "outcome": outcome,
         "commit": commit,
     }))?;
     commit_exit(&commit)
@@ -1880,6 +1987,7 @@ const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     // `--features mysql` non poteva compilare un piano **per MySQL**.
     ("portable-compile", None),
     ("portable-execute", Some("postgres")),
+    ("database-portable-execute", None),
     ("postgres-describe", Some("postgres")),
     ("postgres-probe", Some("postgres")),
     ("postgres-query", Some("postgres")),
@@ -2076,6 +2184,7 @@ fn postgres_usage() -> String {
         "  portable-compile <postgres|mysql|mariadb> <PORTABLE.json>",
         "    stampa SQL + numero parametri compilati (per debug pipeline PFM)",
         "  portable-execute <dsn-env> <PORTABLE.json>",
+        "  database-portable-execute <provider> <SECRET_ENV> <PORTABLE.json> ...",
         "    compila per Postgres, esegue in una tx, ritorna rows o affected_rows",
         "",
         "== PostgreSQL: transazioni / concorrenza (test) ==",

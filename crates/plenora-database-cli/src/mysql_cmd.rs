@@ -463,105 +463,22 @@ pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -
     }
 }
 
-/// `mysql-portable-execute` — **non disponibile** (v1.2).
-///
-/// Il facade `execute_portable` del core supporta il compile-portable solo
-/// per Postgres. Estendere a `MySQL` richiede refactor cross-crate del
-/// facade + un dispatcher `compile_portable_for_provider(provider_kind)`
-/// non ancora implementato. Deferito a giro futuro.
-#[allow(dead_code)]
-async fn mysql_portable_execute_unused(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let (provider, secret, remaining) = mysql_provider_from_args(args)?;
-    let mut it = remaining.into_iter();
-    let path = it
-        .next()
-        .ok_or_else(|| "manca PORTABLE.json path".to_owned())?;
-    if it.next().is_some() {
-        return Err("argomenti extra dopo PORTABLE.json".to_owned().into());
-    }
-    let json_str = std::fs::read_to_string(&path)
-        .map_err(|error| format!("lettura del file dello statement fallita: {}", error.kind()))?;
-    let portable: plenora_database_core::portable::PortableStatement =
-        serde_json::from_str(&json_str).map_err(|e| {
-            format!(
-                "PortableStatement JSON non parsabile a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )
-        })?;
-    let cancellation = CancellationToken::new();
-    let budget = ResourceBudget::new(ResourceLimits::default())?;
-    let mut tx = provider
-        .begin_transaction(
-            &secret,
-            &plenora_database_core::transaction::TransactionOptions::default(),
-            &budget,
-            &cancellation,
-        )
-        .await?;
-    // Semplificazione: solo Select ritorna rows deterministicamente.
-    // Insert/Update/Delete/Upsert con RETURNING (Postgres-only) non
-    // sono tipicamente usati con MySQL — se emerge use case, il caller
-    // può usare execute_portable_returning direttamente.
-    let returns_rows = matches!(
-        portable,
-        plenora_database_core::portable::PortableStatement::Select(_)
-    );
-    let result = if returns_rows {
-        let rows = plenora_database_core::facade::execute_portable_returning(
-            tx.as_mut(),
-            &portable,
-            &cancellation,
-        )
-        .await?;
-        let commit = tx.commit(&cancellation).await?;
-        let json_rows: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|row| {
-                let names: Vec<String> = row.columns().to_vec();
-                let values: Vec<plenora_database_core::provider::ParameterValue> =
-                    row.values().to_vec();
-                let mut obj = serde_json::Map::new();
-                for (name, value) in names.iter().zip(values.iter()) {
-                    obj.insert(
-                        name.clone(),
-                        serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                serde_json::Value::Object(obj)
-            })
-            .collect();
-        json!({
-            "provider": "mysql",
-            "status": crate::commit_status(&commit),
-            "kind": "select",
-            "rows": json_rows,
-            "row_count": json_rows.len(),
-            "commit": commit,
-        })
-    } else {
-        let affected =
-            plenora_database_core::facade::execute_portable(tx.as_mut(), &portable, &cancellation)
-                .await?;
-        let commit = tx.commit(&cancellation).await?;
-        json!({
-            "provider": "mysql",
-            "status": crate::commit_status(&commit),
-            "kind": "dml",
-            "affected_rows": affected,
-            "commit": commit,
-        })
-    };
-    // I due rami producono `commit` in scope diversi: l'uscita segue lo stato
-    // gia scritto nel documento, che e la stessa cosa detta una volta sola.
-    let certain = result["status"] == "ok";
-    print_json(&result)?;
-    if certain {
-        Ok(())
-    } else {
-        Err(crate::CliError::Silent)
-    }
-}
+// `mysql-portable-execute` non esiste, e non e piu una cosa da fare.
+//
+// C'era una funzione qui, `#[allow(dead_code)]`, con scritto accanto che il
+// facade del core «supporta il compile-portable solo per Postgres» e che
+// estenderlo avrebbe richiesto «un dispatcher
+// `compile_portable_for_provider(provider_kind)` non ancora implementato».
+//
+// Quel dispatcher esiste, ed e la riga che il facade scrive da tempo:
+// `compile_portable(tx.provider_kind(), statement)`. La ragione era scaduta e
+// teneva ferma una superficie intera — la funzione era scritta, compilata e
+// mai raggiungibile.
+//
+// Cio che l'ha sostituita non e un comando per prodotto ma uno solo,
+// `database-portable-execute`, che serve tutti e quattro: quattro copie della
+// stessa funzione sarebbero state quattro posti in cui correggere lo stesso
+// difetto.
 
 /// `mysql-transaction-test <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]`
 ///

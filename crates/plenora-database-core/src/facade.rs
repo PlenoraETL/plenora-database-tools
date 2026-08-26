@@ -185,7 +185,21 @@ macro_rules! scalar_getter {
 //  Facade portable: compila l'AST + esegue in un colpo solo.
 // ============================================================================
 
-const fn statement_has_returning(stmt: &PortableStatement) -> bool {
+/// Se lo statement rende righe, e non un conteggio.
+///
+/// Pubblica perche la domanda la deve porre anche chi **sceglie** quale delle
+/// due meta della facade chiamare — il CLI, per esempio, che riceve un AST da
+/// un file e non sa cosa contenga. La risposta e una proprieta dell'AST, e
+/// averne due copie sarebbe stato il difetto solito: quella del chiamante
+/// smetterebbe di seguire questa senza che nessuno se ne accorga, e la
+/// conseguenza sarebbe un `execute_portable` chiamato su uno statement che
+/// rende righe — rifiutato con un `InvalidPlan` che sembrerebbe colpa del
+/// piano.
+///
+/// Una `SELECT` rende righe sempre, anche senza `returning`: e cio che una
+/// SELECT e.
+#[must_use]
+pub const fn statement_returns_rows(stmt: &PortableStatement) -> bool {
     match stmt {
         PortableStatement::Select(_) => true, // SELECT ritorna sempre righe
         PortableStatement::Insert(s) => !s.returning.is_empty(),
@@ -215,7 +229,7 @@ pub async fn execute_portable(
             "execute_portable non accetta SELECT: usa execute_portable_returning",
         ));
     }
-    if statement_has_returning(statement) {
+    if statement_returns_rows(statement) {
         return Err(DatabaseError::invalid_plan(
             "execute_portable non accetta statement con RETURNING: usa execute_portable_returning",
         ));
@@ -255,7 +269,7 @@ pub async fn execute_portable_returning(
     statement: &PortableStatement,
     cancellation: &CancellationToken,
 ) -> Result<Vec<Row>> {
-    if !statement_has_returning(statement) {
+    if !statement_returns_rows(statement) {
         return Err(DatabaseError::invalid_plan(
             "execute_portable_returning richiede RETURNING (o SELECT)",
         ));
