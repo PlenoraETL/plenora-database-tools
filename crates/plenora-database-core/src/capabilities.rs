@@ -1,32 +1,15 @@
 #![allow(clippy::struct_excessive_bools)]
-// Il wire contract usa flag indipendenti: un bitset o enum renderebbe il JSON
-// meno stabile e non rappresenterebbe capability combinabili liberamente.
-//
-// # Perche i campi opzionali hanno `#[serde(default)]`
-//
-// `contracts/v2/capabilities.schema.json` dichiara obbligatorio molto meno di
-// quanto questi tipi pretendessero: `server_cursor`, `pagination`,
-// `resumable`, mezze `writes`, l'intera sezione `transactions`, quattro flag
-// spatial ed `extension_versions` erano facoltativi nello schema e
-// obbligatori qui. Un documento valido secondo il contratto falliva la
-// deserializzazione: il "contratto unico" era unico solo finche nessuno
-// scriveva il documento minimo.
-//
-// L'allineamento va nella direzione che non rompe nulla — Rust diventa
-// tollerante quanto lo schema, invece che lo schema severo quanto Rust — cosi
-// non serve una major v3: un documento che era valido prima lo resta.
-//
-// I default non sono neutri, sono **fail-closed**, ed e la regola del
-// progetto: una capability resta `false` finche non esiste una prova
-// riproducibile che la sostiene, e `not_measured` non e un `no` ma non apre
-// niente lo stesso. Un campo assente e una capability non dichiarata, quindi
-// `false`; uno `scope` assente e [`TransactionScope::None`].
-//
-// La serializzazione non cambia: questi tipi continuano a emettere tutti i
-// campi, quindi l'uscita resta valida per lo schema. Le due direzioni sono
-// verificate su un unico documento, `contracts/v2/examples/
-// capabilities-minimal.json`: `scripts/phase0_validate.py` lo valida contro lo
-// schema, il test in fondo a questo file lo deserializza.
+//! Capability dichiarate dai provider sul bordo pubblico.
+//!
+//! Il wire contract usa flag indipendenti: un bitset o un enum non
+//! rappresenterebbe capability combinabili liberamente e renderebbe meno
+//! stabile il JSON.
+//!
+//! I campi opzionali deserializzano con default fail-closed: una capability
+//! assente resta `false` e uno scope assente resta [`TransactionScope::None`].
+//! La serializzazione continua invece a emettere l'envelope completo. Il
+//! documento minimo condiviso fra schema e decoder è
+//! `contracts/v2/examples/capabilities-minimal.json`.
 
 use crate::geometry::Dimensions;
 use crate::geometry::SpatialSemantics;
@@ -52,11 +35,8 @@ pub struct ReadCapabilities {
     /// prima cosa e non la seconda — e nessun piano lo chiede, quindi
     /// l'engine non lo consulta.
     ///
-    /// **Descrittivo.** Sta nel documento capability perche un consumatore
-    /// che pianifica una lettura lunga vuole sapere se puo riprenderla, e la
-    /// risposta e no. Il giorno che un provider lo offrisse, servirebbe prima
-    /// un'operazione nel contratto che lo chieda: aprirlo senza sarebbe una
-    /// promessa senza superficie.
+    /// **Descrittivo.** Un valore `true` richiederebbe anche un'operazione del
+    /// contratto capace di indirizzare e riaprire il cursore.
     #[serde(default)]
     pub server_cursor: bool,
     /// La lettura sa saltare le prime `row_offset` righe.
@@ -66,26 +46,9 @@ pub struct ReadCapabilities {
     /// una finestra senza `order_by` non e riproducibile — il contratto
     /// infatti rifiuta `row_offset` senza ordinamento.
     ///
-    /// # Come e stata chiusa
-    ///
-    /// Il campo prometteva una superficie che la sua operazione non esponeva:
-    /// `row_offset` viveva su [`crate::query::QueryOperation`] e
-    /// [`crate::plan::ReadOperation`] aveva il solo `row_limit`, quindi **un
-    /// piano di lettura non poteva chiedere una finestra**. Una promessa che
-    /// nessun piano puo riscuotere non e ne mantenuta ne smentita.
-    ///
-    /// La sua assenza di definizione aveva gia prodotto due letture diverse
-    /// dello stesso campo: `PostgreSQL` e SQL Server lo pubblicavano `true`,
-    /// `MySQL` e `MariaDB` `false`, e nessuno dei quattro rendeva un offset
-    /// su quel percorso — perche il percorso non ce l'aveva.
-    ///
-    /// Delle due uscite possibili — spostare il campo, o chiuderlo ovunque —
-    /// e stata presa la terza: dare all'operazione cio che il campo
-    /// descriveva. `ReadOperation` ha ora `row_offset`, i quattro provider lo
-    /// rendono nella forma del proprio dialetto, e l'engine lega la bandiera
-    /// al campo — un offset chiesto a un provider che non la pubblica viene
-    /// rifiutato in `prepare`. Da descrittiva e diventata governata, ed e
-    /// l'unica delle sei ad averlo fatto.
+    /// E governata da [`crate::plan::ReadOperation::row_offset`]: i provider
+    /// la rendono nel proprio dialetto e `prepare` rifiuta un offset quando la
+    /// capability non e pubblicata.
     #[serde(default)]
     pub pagination: bool,
     /// La lettura sa restituire un sottoinsieme delle colonne.
@@ -93,8 +56,8 @@ pub struct ReadCapabilities {
     /// La lettura sa filtrare, nelle forme che il renderer qualifica.
     ///
     /// `true` non significa «qualunque filtro»: significa le forme che il
-    /// provider rende, e quelle che non rende restano rifiutate. Per `MySQL`
-    /// e `MariaDB` sono tredici, e ciascuna ha la propria sonda.
+    /// provider rende, e quelle che non rende restano rifiutate e misurate
+    /// dalle rispettive sonde.
     pub filter: bool,
     /// La lettura sa ordinare.
     pub ordering: bool,
@@ -118,23 +81,10 @@ pub struct WriteCapabilities {
     pub append: bool,
     /// Se il provider qualifica `TruncateInsert`, che **non** e un `Append`.
     ///
-    /// Le due mode hanno condiviso una bandiera fino al contratto v1, e per
-    /// `MySQL` quella bandiera diceva gia il falso: pubblica `append = true` e
-    /// rifiuta `TruncateInsert` in prepare, perche li `TRUNCATE TABLE` e DDL
-    /// con commit implicito — le righe sparirebbero prima dell'INSERT e nessun
-    /// rollback le riporterebbe indietro. Il contratto prometteva percio cio
-    /// che il provider negava, e il consumatore lo scopriva a piano gia
-    /// compilato.
-    ///
-    /// L'alias e emerso qualificando `MariaDB`, che un provider pubblico non
-    /// ce l'ha ancora: e stato il tentativo di aprire il suo `append` a far
-    /// guardare **chi legge** la bandiera. La sovradichiarazione era di
-    /// `MySQL`, e c'era da prima.
-    ///
-    /// Separarle non e una formalita: sono due promesse diverse su cosa
+    /// `Append` e `TruncateInsert` sono promesse diverse su cosa
     /// succede alle righe che c'erano prima. `Append` le lascia, questa le
-    /// toglie — e il modo in cui le toglie decide se un fallimento e
-    /// recuperabile.
+    /// toglie. Su `MySQL` `TRUNCATE TABLE` implica commit, quindi la seconda non
+    /// e recuperabile come un normale append e resta qualificata separatamente.
     pub truncate_insert: bool,
     pub update: bool,
     pub upsert: bool,
@@ -172,17 +122,7 @@ pub struct WriteCapabilities {
     /// rende cio che ha scritto — chiavi generate, valori di default,
     /// timestamp calcolati — senza una seconda interrogazione.
     ///
-    /// Falso ovunque, e per una ragione che sta a monte dei provider — ma non
-    /// quella che c'era scritta qui.
-    ///
-    /// Diceva: «il giorno che [`crate::outcome::WriteOutcome`] le trasportasse
-    /// sarebbe una major del contratto». Misurato, non regge: le quattro
-    /// varianti dell'esito in `write-outcome.schema.json` **non** chiudono le
-    /// proprieta aggiuntive — solo `rows` e `recovery` lo fanno — quindi un
-    /// campo opzionale in piu sarebbe additivo, e un consumatore fermo alla v2
-    /// continuerebbe a validare.
-    ///
-    /// La ragione vera sta nella **forma** del percorso, ed e piu forte.
+    /// Falso ovunque per la **forma** del percorso:
     /// [`crate::provider::Provider::write`] riceve uno stream di batch e rende
     /// un riassunto: e un pozzo che consuma e conta. Trasportare ogni riga
     /// restituita dentro quel riassunto vuol dire trattenere in memoria una
@@ -191,9 +131,9 @@ pub struct WriteCapabilities {
     /// Cambiarlo non e aggiungere un campo: e cambiare la direzione di
     /// quell'API.
     ///
-    /// **Descrittivo**, quindi, e non «in attesa di una major».
+    /// **Descrittivo**: questa superficie non restituisce righe.
     ///
-    /// # Cio che invece si puo fare oggi
+    /// # Superficie disponibile
     ///
     /// Il `returning` degli statement portable e un'altra superficie, vive nel
     /// piano, ed e limitata da cio che il chiamante scrive in quello statement.
@@ -201,10 +141,6 @@ pub struct WriteCapabilities {
     /// calcolati — e funziona: `live_portable_returning_carries_what_the_server_generated`
     /// lo attraversa nelle quattro forme su `PostgreSQL`.
     ///
-    /// Quella prova e nata il giorno in cui si e scoperto che **nessuno** aveva
-    /// mai eseguito un `INSERT ... RETURNING` contro un server, ne da Rust ne
-    /// dal SDK, benche l'espressione fosse l'esempio in vetrina del modulo
-    /// Python.
     #[serde(default)]
     pub returning: bool,
     /// Un fallimento prima del commit annulla **le righe** scritte
@@ -257,14 +193,7 @@ pub struct TransactionCapabilities {
     ///
     /// Non «il motore li supporta» — li supportano tutti — ma «il provider li
     /// mette a disposizione». `TransactionScope` non ha default per i tre
-    /// metodi, quindi chi implementa quel contratto li implementa, e oggi lo
-    /// fanno tutti e quattro.
-    ///
-    /// Qui c'era scritto che SQL Server no, «per una ragione a monte: non
-    /// espone affatto uno scope transazionale, quindi non c'e niente su cui
-    /// chiamarli». Era vero, ed e la forma di documentazione piu insidiosa —
-    /// una ragione corretta che smette di esserlo senza che nessuno la
-    /// rilegga. Quello scope ora c'e, e con esso i savepoint.
+    /// metodi, quindi chi implementa quel contratto li implementa.
     ///
     /// Cio che resta diverso e il **rilascio**: `PostgreSQL` e `MySQL` hanno
     /// `RELEASE SAVEPOINT`, T-SQL no — i suoi savepoint si liberano al commit.
@@ -339,31 +268,15 @@ pub struct SpatialCapabilities {
     pub dimensions: Vec<Dimensions>,
     /// Sottoinsieme garantito per **ogni** semantica spatial pubblicizzata.
     ///
-    /// Un provider con capability native asimmetriche sotto-dichiara qui
-    /// l'intersezione. Il significato non e cambiato da quando questo campo
-    /// esiste, ed e cio che permette a un consumatore scritto ieri di
-    /// continuare a leggere solo questo: cio che trova qui vale su qualunque
-    /// colonna spatial del prodotto, senza che debba sapere di che tipo sia.
-    ///
-    /// Cio che invece e cambiato e che l'intersezione non e piu **tutto** cio
-    /// che il prodotto offre — vedi `functions_by_semantics`.
+    /// Un provider con capability native asimmetriche dichiara qui
+    /// l'intersezione. Cio che compare vale su qualunque colonna spatial del
+    /// prodotto; l'offerta completa sta in `functions_by_semantics`.
     #[serde(default)]
     pub functions: Vec<SpatialFunction>,
     /// Le funzioni offerte su ciascuna semantica, per intero.
     ///
-    /// # Perche l'intersezione da sola non bastava
-    ///
-    /// Perche nasconde. Su SQL Server `STCentroid`, `STEnvelope`, `STBoundary`
-    /// e altre cinque esistono su `geometry` e non su `geography`, e su
-    /// `PostGIS` la differenza e ancora piu larga — sessantacinque funzioni
-    /// invocabili su `geometry` contro undici su entrambe. Un contratto che
-    /// pubblicava solo l'intersezione diceva il vero e diceva **meno** del
-    /// vero: chi lavora su una colonna `geometry` non poteva sapere che
-    /// cinquantaquattro funzioni erano li a disposizione.
-    ///
-    /// L'alternativa era pubblicare l'unione, ed e la scelta sbagliata gia
-    /// commessa e gia corretta su `PostGIS`: prometteva a chi usa una colonna
-    /// `geography` funzioni che li non esistono.
+    /// L'intersezione da sola nasconde le funzioni disponibili su una sola
+    /// semantica; l'unione prometterebbe invece funzioni non valide per tutte.
     ///
     /// # La forma
     ///
@@ -386,9 +299,8 @@ pub struct SpatialCapabilities {
     ///
     /// # Additivo
     ///
-    /// Vuoto per un documento scritto prima che questo campo esistesse, e un
-    /// documento vuoto qui non afferma niente: chi legge ha l'intersezione, che
-    /// e cio che aveva prima.
+    /// Il default vuoto non aggiunge promesse; il lettore conserva
+    /// l'intersezione in `functions`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub functions_by_semantics: BTreeMap<SpatialSemantics, Vec<SpatialFunction>>,
     /// Le colonne geometriche si leggono solo con un CRS dichiarato dal piano.
@@ -453,12 +365,8 @@ impl ProviderCapabilities {
     /// Il controllo e provider-independent: riguarda la forma e le
     /// contraddizioni interne, non cosa un singolo motore sappia fare.
     ///
-    /// Viveva soltanto in `plenora-database-testkit`, cioe era raggiungibile
-    /// solo da chi scriveva test di conformita. Chi *consuma* un documento —
-    /// `plenora_database_engine::prepare`, e da li la CLI — non lo attraversava
-    /// e poteva quindi dichiarare "prepared" un piano confrontato con un
-    /// documento che il contratto rifiuta. Sta qui perche ci sia una fonte
-    /// sola: il testkit ora delega.
+    /// Vive nel core perche provider, engine e testkit condividano lo stesso
+    /// validatore del contratto.
     ///
     /// Verifica **soltanto** cio che il contratto dichiara: major, campi non
     /// vuoti, lunghezze massime, duplicati, limiti diversi da zero. Le
@@ -535,10 +443,8 @@ impl ProviderCapabilities {
     /// chi produce non ha alcun motivo di emettere un documento che sa
     /// contraddittorio.
     ///
-    /// Nessuno dei tre provider chiamava nulla prima di restituire il proprio
-    /// documento. La versione del motore veniva da una probe: bastava un
-    /// server che rispondesse una stringa vuota perche uscisse un documento
-    /// fuori contratto, e il primo a saperlo sarebbe stato il consumatore.
+    /// La validazione avviene sul bordo del provider, prima che un documento
+    /// incoerente raggiunga il consumatore.
     ///
     /// # Errors
     ///
@@ -558,11 +464,9 @@ impl ProviderCapabilities {
     /// `contracts/v2/capabilities.schema.json` non le dichiara: un documento
     /// che le viola e **valido secondo il contratto pubblico**.
     ///
-    /// Per questo non stanno in [`Self::validate`], che sta sul percorso di
-    /// consumo di `prepare`. Averle messe li ha fatto rifiutare al prodotto
-    /// documenti che la major v2 ammette, e restringere cio che una major
-    /// accetta e proprio quello che la regola 2 di AGENTS.md vieta senza una
-    /// major nuova.
+    /// Per questo non stanno in [`Self::validate`], sul percorso di consumo di
+    /// `prepare`: rifiutare documenti ammessi dallo schema restringerebbe la
+    /// major v2 senza una nuova major.
     ///
     /// Restano pero verificate dove il repository **pubblica**: la conformita
     /// dei provider le chiama, quindi nessun provider di questo workspace puo

@@ -159,7 +159,7 @@ fn resolve_mapping(sqlstate: Option<&str>, transport_closed: bool, phase: ErrorP
     }
 }
 
-#[allow(clippy::too_many_lines)] // tabella SQLSTATE intenzionalmente lineare per review
+#[allow(clippy::too_many_lines)] // tabella SQLSTATE lineare per mantenere visibili i mapping
 fn mapping_for_sqlstate(code: &str) -> Option<Mapping> {
     let mapping = match code {
         // Class 08 — connection exception

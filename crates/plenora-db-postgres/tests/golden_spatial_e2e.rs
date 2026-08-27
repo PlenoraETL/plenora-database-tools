@@ -1,10 +1,6 @@
 //! Test end-to-end del profilo spaziale (PostGIS).
 //!
-//! Chiude il buco di copertura identificato in P0.5 pre-Fase 3: prima di
-//! questo file esisteva un solo scenario spatial end-to-end
-//! (`pfm_h4_spatial_portable_query_uses_index`). Il Python SDK sarà consumer
-//! di prima classe del profilo spaziale (layer building del PFM): serve
-//! copertura più larga prima di aprire il bindings layer.
+//! Copre il profilo spaziale usato dal layer applicativo e dall'SDK Python.
 //!
 //! Aree coperte:
 //!   1. WKB (senza SRID) roundtrip write/read
@@ -14,7 +10,7 @@
 //!   5. Predicati portable ST_Contains / ST_Within / ST_DWithin end-to-end
 //!   6. Geometrie 3D (POINT Z / POINT ZM) preserva Z/M
 //!
-//! Il test "estensione PostGIS assente" vive in un file dedicato (Task #4 di P0.5).
+//! Il caso senza estensione PostGIS vive nel test di preflight dedicato.
 //!
 //! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres` con
 //! PostGIS 3.4+ installato.
@@ -441,8 +437,7 @@ async fn spatial_s3_srid_preserved_read_mismatch_rejected_write() {
 // su geography ritornano distanze in metri (calcoli geodetici), su geometry
 // in gradi (unità dell'SRS). Verifica con distanza nota Milano-Roma ≈ 477 km.
 //
-// (Il portable DWithin verso colonne geography è coperto in S.7 dopo il fix
-// v0.2 del cast condizionale in spatial.rs.)
+// Il portable DWithin verso colonne geography è coperto separatamente in S.7.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
 #[tokio::test]
@@ -550,8 +545,8 @@ async fn spatial_s4_geography_distance_in_meters() {
 //   - ST_DWithin(g::geography, REF::geography, 5_000_000 m): quali g sono
 //     entro ~5000 km da REF? → {R1, R2}. R3 (100°,100°) è a distanza
 //     geodetica maggiore.
-//     NB post-review #5: DWithin con SpatialSemantics::Geometry su SRID
-//     4326 è fail-closed (silent wrong result rischio). Usiamo Geography.
+//     DWithin con Geometry su SRID 4326 è fail-closed perché confronterebbe
+//     gradi con metri; il test usa Geography.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
 #[tokio::test]
@@ -645,10 +640,10 @@ async fn spatial_s5_portable_contains_within_dwithin_e2e() {
         rows.len()
     );
 
-    // Portable DWithin — con Geography (fix review #5): distanza in metri
-    // veri. 5000 km coprono R1/R2 (vicini), R3 a >5000 km di distanza
+    // Geography rende la distanza in metri. 5000 km coprono R1/R2 (vicini),
+    // mentre R3 resta oltre la soglia
     // geodetica da REF (2.5..3.5) — R3 è a lon 100° dove il gap è enorme.
-    // Nota: il compiler ora casta col::geography e ref::geography.
+    // Il compilatore applica il cast geography a colonna e riferimento.
     let reference_geog = SpatialReference {
         ewkb: reference.ewkb.clone(),
         srid: 4326,
@@ -799,12 +794,9 @@ async fn spatial_s6_3d_zm_roundtrip() {
 //  S.7 — Portable DWithin su colonna geography: distance in metri
 // ============================================================================
 //
-// v0.2 (fix P0.5 finding): il portable `SpatialPredicate::DWithin` ora casta
-// il ref a `::geography` quando `SpatialReference.semantics = Geography`.
-// Prima produceva sempre `::geometry`, causando fallimento su colonne
-// geography ("operator does not exist: geography && geometry").
-//
-// Verifica end-to-end: DWithin(500 m) su tabella geography(Point, 4326)
+// Il riferimento deve essere castato a geography quando la semantica lo
+// richiede; PostGIS non applica un cast implicito fra i due tipi. DWithin
+// (500 m) su tabella geography(Point, 4326)
 // deve trovare le entità entro 500 metri dalla ref, con distanza in metri
 // (semantica geografica geodetica).
 

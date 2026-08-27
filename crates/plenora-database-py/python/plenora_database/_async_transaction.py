@@ -8,18 +8,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .async_query import _AsyncBuilderFactory
+
 if TYPE_CHECKING:
     from ._native import AsyncTransaction as _NativeAsyncTransaction
-    from .async_query import (
-        AsyncDelete,
-        AsyncInsert,
-        AsyncSelect,
-        AsyncUpdate,
-        AsyncUpsert,
-    )
 
 
-class AsyncTransaction:
+class AsyncTransaction(_AsyncBuilderFactory):
     """Transazione asincrona user-managed. Costruita da
     `await session.begin(...)`.
 
@@ -97,33 +92,6 @@ class AsyncTransaction:
         self, sql: str, params: list | None = None
     ) -> list[dict]:
         return await self._native.execute_returning_rows(sql, params)
-
-    # ---------------------- portable AST builders -----------------------
-
-    def select(self, table: str, schema: str | None = None) -> "AsyncSelect":
-        from .async_query import AsyncSelect
-
-        return AsyncSelect(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None) -> "AsyncInsert":
-        from .async_query import AsyncInsert
-
-        return AsyncInsert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None) -> "AsyncUpdate":
-        from .async_query import AsyncUpdate
-
-        return AsyncUpdate(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None) -> "AsyncDelete":
-        from .async_query import AsyncDelete
-
-        return AsyncDelete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None) -> "AsyncUpsert":
-        from .async_query import AsyncUpsert
-
-        return AsyncUpsert(self, table, schema)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

@@ -78,11 +78,10 @@ def cargo(
 
     `insecure_local` esporta `PLENORA_TLS_INSECURE_LOCAL` al CLI. Serve
     perche il riferimento di questo gate e **plaintext** per costruzione — il
-    riferimento TLS e un compose separato, `dataflow-postgres-tls`, ed e
-    `check_postgres_hardening.py` a provarne la verifica. Dopo ADR-011 il CLI
-    pretende TLS per default, quindi senza l'interruttore il passo IPC
-    falliva in `connect` con un errore di protocollo: non una debolezza
-    scoperta, ma un riferimento che non parla quel protocollo.
+    riferimento TLS e un Compose separato, `dataflow-postgres-tls`, ed e
+    `check_postgres_hardening.py` a provarne la verifica. Il CLI richiede TLS
+    per default, quindi il fixture plaintext deve abilitarne esplicitamente la
+    deroga locale.
 
     L'interruttore vale solo per i passi che lo chiedono. Estenderlo a tutta
     la suite renderebbe invisibile una regressione sul default sicuro.
@@ -185,10 +184,8 @@ def live_test_inventory() -> set[str]:
     incluso, `cfg` che lo esclude — sparisce anche dalla lista di `cargo`, e
     confrontare cargo con cargo non lo vedrebbe mai.
 
-    Il prefisso `live_` non basta a fare di una funzione un test: i sorgenti
-    contengono anche `fn live_dsn()` in due moduli, e raccoglierlo rendeva il
-    gate impossibile da superare — dopo l'intera suite falliva sempre nominando
-    un helper che nessuna corsa puo riportare `ok`.
+    Il prefisso `live_` non basta: anche un helper può portarlo. Serve
+    l'attributo Rust che rende la funzione un test eseguibile.
     """
 
     return live_inventory.source_inventory(
@@ -270,12 +267,8 @@ def validate_live_row_diagnostics(output: str) -> None:
 
 def main() -> int:
     dsn = os.environ.get("PLENORA_TEST_POSTGRES_DSN", DEFAULT_DSN)
-    # I passi che il gate ha **davvero** completato, registrati uno alla volta
-    # mentre accadono. La versione precedente pubblicava una lista di
-    # quarantatre voci tematiche scritta a mano: restava identica se un passo
-    # veniva tolto, e un artifact `passed` attestava verifiche di cui non
-    # esisteva piu la prova. Un passo che non gira non compare, perche la riga
-    # che lo nomina sta dopo la riga che lo esegue.
+    # I passi completati sono registrati dopo l'esecuzione. Un passo saltato o
+    # fallito non può quindi comparire nell'attestazione.
     steps: list[str] = []
     try:
         state = run(
@@ -294,10 +287,8 @@ def main() -> int:
             "-p", "plenora-database-sql",
         ]))
         steps.append("core_and_sql_unit_tests")
-        # `--include-ignored`: senza, i test marcati `#[ignore]` del provider
-        # non entravano nella corsa, e il report li dichiarava lo stesso. Un
-        # test che non gira non prova niente, e dichiararlo eseguito e peggio
-        # che non averlo.
+        # `--include-ignored` allinea la corsa all'inventario del provider; un
+        # test non eseguito non può entrare nel report.
         #
         # Niente `--nocapture`, ed e il punto di questa invocazione.
         #

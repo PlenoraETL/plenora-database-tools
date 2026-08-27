@@ -1,17 +1,7 @@
-//! Preset di `ResourceBudget` condivisi tra i moduli SDK.
+//! Preset di `ResourceBudget` condivisi tra sessioni e bulk write del binding.
 //!
-//! Prima di Fase E, `default_budget()` era ridefinito 5 volte identico
-//! (`session`/`async_session`/`session_family`/`async_session_family`/
-//! `arrow_reader`) più una variante custom in `write.rs` per bulk write.
-//! Il rischio era che i 5 identici divergessero silenziosamente al
-//! prossimo tuning dei limiti default.
-//!
-//! Ora due preset nominati:
-//! - [`session_budget`]: default lightweight per session/query — usa
-//!   i limiti di `ResourceLimits::default()`.
-//! - [`write_bulk_budget`]: generoso per bulk write via COPY — 10M
-//!   righe, 128 MiB memoria/output, cell 4 MiB. Allineato al preset
-//!   che il CLI usa per `write-arrow`.
+//! Centralizzarli impedisce che i percorsi sync e async applichino limiti
+//! diversi alla stessa operazione.
 
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 
@@ -23,9 +13,8 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 ///
 /// # Panics
 ///
-/// `ResourceBudget::new(ResourceLimits::default())` non fallisce mai
-/// nelle build attuali (limiti hardcoded > 0), ma il costruttore
-/// ritorna `Result` per estensione futura.
+/// `ResourceBudget::new(ResourceLimits::default())` è sicuro perché il preset
+/// usa limiti positivi.
 #[must_use]
 pub fn session_budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("session default budget")

@@ -13,12 +13,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .query import _BuilderFactory
+
 if TYPE_CHECKING:
     from ._native import Transaction as _NativeTransaction
-    from .query import Delete, Insert, Select, Update, Upsert
 
 
-class Transaction:
+class Transaction(_BuilderFactory):
     """Transazione user-managed. Costruita da `Session.begin(...)`.
 
     Uso raccomandato con context manager:
@@ -126,33 +127,6 @@ class Transaction:
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return self._native.execute_returning_rows(sql, params)
-
-    # ---------------------- portable AST builders -----------------------
-
-    def select(self, table: str, schema: str | None = None) -> "Select":
-        from .query import Select
-
-        return Select(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None) -> "Insert":
-        from .query import Insert
-
-        return Insert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None) -> "Update":
-        from .query import Update
-
-        return Update(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None) -> "Delete":
-        from .query import Delete
-
-        return Delete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None) -> "Upsert":
-        from .query import Upsert
-
-        return Upsert(self, table, schema)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

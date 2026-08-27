@@ -1,5 +1,5 @@
 use plenora_database_core::provider::SecretString;
-use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 #[cfg(unix)]
 use std::fs::Permissions;
 use std::fs::{File, OpenOptions};
@@ -430,16 +430,12 @@ impl SqlServerConfig {
 }
 
 fn invalid_configuration(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidConfiguration,
-        phase: ErrorPhase::Validate,
-        remote_effect: RemoteEffect::None,
-        retry: plenora_database_core::RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::InvalidConfiguration,
+        ErrorPhase::Validate,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]

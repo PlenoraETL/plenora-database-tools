@@ -1,7 +1,5 @@
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeSet;
 use tiberius::Query;
 
@@ -215,16 +213,12 @@ fn validate_uuid(value: &str) -> Result<()> {
 }
 
 fn parameter_error(message: &'static str) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidPlan,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.to_owned(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::InvalidPlan,
+        ErrorPhase::Prepare,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 fn unsupported(message: &'static str) -> DatabaseError {

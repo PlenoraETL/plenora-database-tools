@@ -1,9 +1,7 @@
 //! Scenari end-to-end che simulano il consumer PFM reale.
 //!
-//! Ogni test rappresenta un flow che il PFM eseguirà via Python SDK o
-//! direttamente via API Rust. Vogliono catturare "l'API è scomoda?" prima
-//! di scrivere il Python SDK, così eventuali gap ergonomici emergono
-//! ancora nel piano Rust dove il fix è economico.
+//! Ogni test rappresenta un flusso che il PFM esegue via SDK Python o API
+//! Rust e rende verificabili i requisiti ergonomici sul bordo pubblico.
 //!
 //! Scenari:
 //! 1. Multi-tenant: N tenant paralleli con session context isolato,

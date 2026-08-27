@@ -7,8 +7,8 @@
 //!   --session-context app.user_id=42:int --session-context app.request_id=abc-123:string
 //!
 //! Le voci sono aggiunte come `SessionEntry::public(SessionValue::...)`. Se
-//! serve il flavour secret, aggiungeremo `--session-context-secret KEY=...`
-//! (non ancora implementato: il tool non deve mai loggare secret).
+//! Le entry secret non sono accettate: il tool non deve ricevere valori che
+//! potrebbe accidentalmente mostrare nei log o nell'output.
 
 use crate::typed_params::parse_named_value_type;
 use crate::CliResult;

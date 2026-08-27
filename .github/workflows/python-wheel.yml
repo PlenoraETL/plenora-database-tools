@@ -2,8 +2,8 @@ name: python-wheel
 
 # Builda wheel abi3-py310 per Linux (manylinux_2_34), macOS (arm64) e
 # Windows (x86_64). Un unico wheel per platform copre Python >= 3.10.
-# macOS produce **solo** ARM: il runner Intel e stato rimosso, e la nota
-# sul job `macos` dice perche.
+# macOS produce solo l'artefatto ARM; il job documenta il comando per la build
+# Intel, che resta fuori da questa matrice.
 #
 # Ogni job di build installa e verifica il proprio wheel **prima**
 # dell'upload: un artefatto rotto non deve nemmeno diventare scaricabile,
@@ -11,11 +11,9 @@ name: python-wheel
 # lo ha compilato. Le tre verifiche stanno in
 # `.github/scripts/verify_wheel.py`, una sola volta.
 #
-# Il workflow **non pubblica**: costruisce, verifica e consegna artifact. La
-# distribuzione dei wheel e manuale, quindi qui non esiste ne un passo di
-# upload ne un token per farlo — un percorso di pubblicazione che nessuno usa
-# resta comunque un percorso, e il giorno che qualcuno lo attiva per sbaglio
-# non c'e modo di ritirare una versione da PyPI.
+# Il workflow non pubblica su un package index: costruisce e verifica artifact
+# e, sull'evento `release`, li allega alla release GitHub. Non possiede token
+# per PyPI.
 #
 # Triggers:
 #   - `workflow_dispatch` (manuale): preflight. Produce artifact scaricabili
@@ -41,10 +39,7 @@ jobs:
       - name: Build wheel (manylinux_2_34)
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
-          # Il pin dell'action non fissa maturin: l'action lo scarica a
-          # parte, quindi senza questa riga due build dello stesso commit
-          # potevano usare due maturin diversi — e i wheel finiscono
-          # allegati a una release.
+          # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
           maturin-version: '1.14.1'
           command: build
           args: >-
@@ -62,7 +57,7 @@ jobs:
         run: |
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
-      # Il wheel si importa: adesso si guarda se funziona. La suite offline
+      # Dopo l'import, la suite offline verifica il comportamento:
       # esercita parametri tipizzati, Arrow, AST portable e spatial senza
       # bisogno di un server; i test live si saltano da soli.
       - name: Offline SDK suite
@@ -74,10 +69,8 @@ jobs:
           path: dist/*.whl
 
   # ---------------- macOS (arm64 only) ----------------
-  # Nota: Intel Mac x86_64 rimosso — Apple ha terminato Intel Mac nel
-  # 2022, i runner GitHub `macos-13` sono spesso in coda a lungo e
-  # rallentano il release. Se serve wheel Intel Mac, buildarlo
-  # localmente con `maturin build --target x86_64-apple-darwin`.
+  # La matrice distribuisce solo ARM. Per Intel usare localmente
+  # `maturin build --target x86_64-apple-darwin`.
   macos:
     name: build macos-aarch64
     runs-on: macos-latest       # runner ARM (M1/M2)
@@ -86,10 +79,7 @@ jobs:
       - name: Build wheel (aarch64)
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
-          # Il pin dell'action non fissa maturin: l'action lo scarica a
-          # parte, quindi senza questa riga due build dello stesso commit
-          # potevano usare due maturin diversi — e i wheel finiscono
-          # allegati a una release.
+          # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
           maturin-version: '1.14.1'
           command: build
           args: >-
@@ -107,7 +97,7 @@ jobs:
         run: |
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
-      # Il wheel si importa: adesso si guarda se funziona. La suite offline
+      # Dopo l'import, la suite offline verifica il comportamento:
       # esercita parametri tipizzati, Arrow, AST portable e spatial senza
       # bisogno di un server; i test live si saltano da soli.
       - name: Offline SDK suite
@@ -127,10 +117,7 @@ jobs:
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
-          # Il pin dell'action non fissa maturin: l'action lo scarica a
-          # parte, quindi senza questa riga due build dello stesso commit
-          # potevano usare due maturin diversi — e i wheel finiscono
-          # allegati a una release.
+          # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
           maturin-version: '1.14.1'
           command: build
           args: >-
@@ -147,7 +134,7 @@ jobs:
         run: |
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
-      # Il wheel si importa: adesso si guarda se funziona. La suite offline
+      # Dopo l'import, la suite offline verifica il comportamento:
       # esercita parametri tipizzati, Arrow, AST portable e spatial senza
       # bisogno di un server; i test live si saltano da soli.
       - name: Offline SDK suite
@@ -159,11 +146,8 @@ jobs:
           path: dist/*.whl
 
   # ---------------- Smoke test ----------------
-  # I tre job di build hanno gia verificato il proprio wheel prima di
-  # caricarlo. Questo job verifica l'artefatto **dopo** il giro di
-  # upload/download, che e la forma in cui arriva a chi lo scarica, e usa
-  # lo stesso script: una seconda definizione di "verificato" divergerebbe
-  # dalla prima al primo cambiamento.
+  # Verifica l'artefatto dopo upload/download, nella stessa forma ricevuta da
+  # chi lo scarica, riusando la definizione comune di wheel valido.
   smoke-test:
     name: smoke-test linux wheel
     needs: [linux]
@@ -182,7 +166,7 @@ jobs:
         run: |
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
-      # Il wheel si importa: adesso si guarda se funziona. La suite offline
+      # Dopo l'import, la suite offline verifica il comportamento:
       # esercita parametri tipizzati, Arrow, AST portable e spatial senza
       # bisogno di un server; i test live si saltano da soli.
       - name: Offline SDK suite

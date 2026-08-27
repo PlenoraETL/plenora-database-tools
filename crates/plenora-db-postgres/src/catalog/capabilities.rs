@@ -43,11 +43,7 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             // Il data path usa RowStream con backpressure, ma non espone un
             // cursore server nominato o riprendibile.
             server_cursor: false,
-            // Dichiarata `true` da sempre, e da oggi con qualcosa sotto: il
-            // piano di lettura rende `OFFSET n`, e l'engine lega la bandiera
-            // al campo. Prima nessun piano di lettura poteva chiedere una
-            // finestra, quindi la promessa non era ne mantenuta ne
-            // smentita — era irriscuotibile.
+            // Il piano rende `OFFSET n` e l'engine lega la bandiera al campo.
             pagination: true,
             projection: true,
             filter: true,
@@ -72,23 +68,8 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         },
         transactions: TransactionCapabilities {
             single_transaction: true,
-            // Il contratto `TransactionScope` non ha default per i tre
-            // metodi del savepoint: chi lo implementa li implementa, e questo
-            // provider li esegue davvero — `SAVEPOINT`, `ROLLBACK TO` e
-            // `RELEASE` sul client, con il nome validato.
-            //
-            // La bandiera diceva `false`, e accanto c'era scritto che il
-            // provider «non espone operazioni SAVEPOINT/ROLLBACK TO al
-            // chiamante». Non era vero, e la prova stava nel repository da
-            // prima: `live_savepoint_rollback_preserves_prior_statements`
-            // inserisce, mette il savepoint, inserisce ancora, torna indietro,
-            // rilascia e committa — e verifica che resti **una** riga. Non e
-            // uno smoke test: e il contratto del savepoint.
-            //
-            // Una capability sotto-dichiarata non e prudenza. Chi legge il
-            // documento decide di non usare una superficie che c'e, e la
-            // regola 1 parla di aprire senza prove — non di tenere chiuso
-            // cio che una prova sostiene.
+            // `live_savepoint_rollback_preserves_prior_statements` prova
+            // SAVEPOINT, ROLLBACK TO e RELEASE attraverso lo scope pubblico.
             savepoints: true,
             transactional_ddl: true,
             staged_swap: true,
@@ -296,13 +277,8 @@ async fn postgis_shapes(client: &Client) -> Result<(bool, bool, bool, bool)> {
 
 /// Cosa `PostGIS` mette davvero a disposizione, chiesto a `PostGIS`.
 ///
-/// Prima bastava trovare una `extversion` non vuota per pubblicare geometry,
-/// geography, indici spaziali, tutti i profili dimensionali e **tutte** le 72
-/// funzioni del catalogo. Era una deduzione dal fatto che l'estensione
-/// esistesse, non una prova che facesse quelle cose: una `PostGIS` piu vecchia,
-/// o installata parzialmente, riceveva piani non eseguibili. La regola del
-/// progetto dice il contrario — una capability resta `false` finche non esiste
-/// una prova che la sostiene — e questa e la prova.
+/// La presenza dell'estensione non basta: ogni capability deriva dagli
+/// oggetti e dagli overload osservati nel catalogo del server.
 ///
 /// Le funzioni si intersecano con il catalogo versionato
 /// (`catalog/spatial-functions.v1.json`), che per ciascun id porta il nome
@@ -343,17 +319,14 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
     // Il trasporto che il renderer usa per **formare** una chiamata spatial.
     // Un predicato binario lega la geometria di confronto con
     // `ST_GeomFromEWKB`, e una funzione che restituisce geometria la riporta
-    // con `ST_AsEWKB`: senza quelle due, la funzione non e componibile anche
-    // se esiste. E' la stessa classe di difetto corretta per `read_wkb` e
-    // `write_wkb`, che pero era rimasta nei consumatori.
+    // con `ST_AsEWKB`: senza entrambe, la funzione non è componibile anche se
+    // esiste.
     let read_wkb = geometry && callable("st_asewkb", &[0], 1, "geometry");
     let write_wkb = geometry && callable("st_geomfromewkb", &[], 1, "geometry");
 
     let catalog = plenora_database_core::spatial_catalog::spatial_function_catalog()?;
-    // La stessa domanda, posta una semantica per volta. Era un `all()` su tutte
-    // le semantiche dichiarate, cioe l'intersezione calcolata dentro il filtro:
-    // una forma che non lasciava modo di sapere cosa fosse invocabile su una
-    // sola.
+    // La stessa domanda viene posta una semantica per volta; un'intersezione
+    // anticipata perderebbe le funzioni invocabili su una sola semantica.
     let callable_on = |wanted: &str| -> Vec<SpatialFunction> {
         SpatialFunction::ALL
             .iter()
@@ -423,10 +396,7 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
                 // semantiche dichiarate, quindi pubblicarle accanto a `geography`
                 // sarebbe una promessa senza prova: restano solo dove la sola
                 // semantica dichiarata e quella per cui esiste la prova.
-                // Sono `ST_AsMVT` e `ST_AsGeobuf`, e la condizione ora si legge per
-                // quello che e: valgono su `geometry` e non su `geography`. Prima
-                // doveva guardare l'intero elenco delle semantiche dichiarate,
-                // perche la lista era una sola per tutte.
+                // `ST_AsMVT` e `ST_AsGeobuf` restano quindi limitate a geometry.
                 if !takes_a_geometry && wanted != "geometry" {
                     return false;
                 }
@@ -495,10 +465,8 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
         // `ST_Force3DM` per la M, `ST_Force4D` per entrambe. `Xy` e la forma
         // base di qualunque geometria e non ha una funzione dedicata.
         //
-        // Quelle funzioni hanno overload su `geometry` e non su `geography`, e
-        // la sonda le cerca li. Il commento precedente diceva che i profili
-        // "valgono per qualunque semantica spatial": e piu di quanto la sonda
-        // dimostri, ed e il tipo di deduzione che la regola 1 vieta.
+        // Quelle funzioni hanno overload su `geometry` e non su `geography`:
+        // la prova copre solo la semantica su cui la sonda le cerca.
         //
         // La lista resta una sola perche il contratto ne prevede una sola:
         // `spatial.dimensions` non e articolata per semantica, quindi non c'e
@@ -517,8 +485,8 @@ async fn probe_spatial(client: &Client) -> Result<SpatialCapabilities> {
 
 /// Numero massimo di argomenti che una forma spatial del core puo avere.
 ///
-/// Il massimo effettivo oggi e cinque (`ST_AsMVT`, `ST_SnapToGrid`); il margine
-/// evita che l'aggiunta di una forma piu larga passi inosservata restringendo
+/// Il margine sopra le forme correnti evita che una funzione più larga passi
+/// inosservata restringendo
 /// in silenzio cio che viene verificato.
 const MAX_SPATIAL_ARGUMENTS: usize = 8;
 

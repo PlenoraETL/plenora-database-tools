@@ -47,6 +47,15 @@ pub const LIMIT_BATCHES_ALREADY_PUBLISHED: &str = "read.batches_already_publishe
 /// Limite di conoscenza: la riga sorgente del difetto non è attribuibile.
 pub const LIMIT_ROW_ATTRIBUTION_UNAVAILABLE: &str = "read.row_attribution_unavailable";
 
+/// Calcola il primo indice successivo a un batch senza permettere wraparound.
+///
+/// I provider mantengono il proprio envelope d'errore, ma condividono qui
+/// l'aritmetica che definisce la base assoluta delle righe sorgente.
+#[must_use]
+pub const fn checked_source_row_end(batch_start: u64, rows: u64) -> Option<u64> {
+    batch_start.checked_add(rows)
+}
+
 /// Valore massimo intero rappresentabile senza perdita dal contratto JSON.
 const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_991;
 
@@ -306,15 +315,13 @@ impl RowDiagnostics {
     /// la codifica JSON fallisce.
     pub fn to_json(&self) -> Result<String> {
         self.validate()?;
-        serde_json::to_string(self).map_err(|_| DatabaseError {
-            category: ErrorCategory::Internal,
-            phase: ErrorPhase::Finalize,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: None,
-            execution_id: None,
-            message: "codifica JSON della diagnostica row-scoped fallita".to_owned(),
-            diagnostics: None,
+        serde_json::to_string(self).map_err(|_| {
+            DatabaseError::new(
+                ErrorCategory::Internal,
+                ErrorPhase::Finalize,
+                None,
+                "codifica JSON della diagnostica row-scoped fallita",
+            )
         })
     }
 
@@ -1194,6 +1201,12 @@ fn invalid(message: &str) -> DatabaseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_source_offsets_are_checked_once_for_every_provider() {
+        assert_eq!(checked_source_row_end(1_000, 25), Some(1_025));
+        assert_eq!(checked_source_row_end(u64::MAX, 1), None);
+    }
 
     fn policy() -> RowDiagnosticsPolicy {
         RowDiagnosticsPolicy {

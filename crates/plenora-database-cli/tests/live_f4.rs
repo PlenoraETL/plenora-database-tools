@@ -1,4 +1,4 @@
-//! Live test end-to-end dei nuovi sottocomandi Fase 4 invocati come binario.
+//! Live test end-to-end dei sottocomandi operativi invocati come binario.
 //!
 //! Richiedono un Postgres raggiungibile all'hostname `dataflow-postgres`
 //! (compose network `plenora-postgres_default`) e la variabile ambiente `PG_DSN`

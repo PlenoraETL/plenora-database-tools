@@ -1,17 +1,13 @@
 use crate::{MysqlColumn, MysqlObjectDescription};
-use plenora_database_core::arrow::schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use plenora_database_core::plan::{
-    ComparisonOperator, FilterExpression, ReadOperation, SortDirection,
-};
-use plenora_database_core::protocol;
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
+use plenora_database_core::plan::{FilterExpression, ReadOperation, SortDirection};
+use plenora_database_core::protocol::{self, contract_schema};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
-    Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Renderer,
+    lower_filter, select_columns_by_name, Dialect, DialectCapabilities, Expression, FilterLowering,
+    Identifier, ObjectName, Renderer,
 };
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MysqlColumnKind {
@@ -679,133 +675,32 @@ fn select_columns(
     available: &[MysqlColumnSpec],
     projection: &[String],
 ) -> Result<Vec<MysqlColumnSpec>> {
-    if projection.is_empty() {
-        return Ok(available.to_vec());
-    }
-    let by_name = available
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<HashMap<_, _>>();
-    projection
-        .iter()
-        .map(|name| {
-            by_name.get(name.as_str()).map_or_else(
-                || {
-                    Err(prepare_error(
-                        ErrorCategory::NotFound,
-                        "colonna projection non trovata",
-                    ))
-                },
-                |column| Ok((*column).clone()),
-            )
-        })
-        .collect()
+    select_columns_by_name(
+        available,
+        projection,
+        |column| column.name.as_str(),
+        || prepare_error(ErrorCategory::NotFound, "colonna projection non trovata"),
+    )
 }
 
 fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
-    match expression {
-        FilterExpression::And { args } => Ok(Expression::And(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Or { args } => Ok(Expression::Or(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Eq { field, parameter } => {
-            comparison(field, ComparisonOperator::Eq, parameter)
-        }
-        FilterExpression::Ne { field, parameter } => {
-            comparison(field, ComparisonOperator::Ne, parameter)
-        }
-        FilterExpression::Lt { field, parameter } => {
-            comparison(field, ComparisonOperator::Lt, parameter)
-        }
-        FilterExpression::Lte { field, parameter } => {
-            comparison(field, ComparisonOperator::Lte, parameter)
-        }
-        FilterExpression::Gt { field, parameter } => {
-            comparison(field, ComparisonOperator::Gt, parameter)
-        }
-        FilterExpression::Gte { field, parameter } => {
-            comparison(field, ComparisonOperator::Gte, parameter)
-        }
-        FilterExpression::IsNull { field } => Ok(Expression::IsNull(mysql_identifier(field)?)),
-        FilterExpression::IsNotNull { field } => {
-            Ok(Expression::IsNotNull(mysql_identifier(field)?))
-        }
-        FilterExpression::In { field, parameters } => Ok(Expression::In {
-            field: mysql_identifier(field)?,
-            parameters: parameters.clone(),
-        }),
-        FilterExpression::Between {
-            field,
-            lower_parameter,
-            upper_parameter,
-        } => Ok(Expression::Between {
-            field: mysql_identifier(field)?,
-            lower_parameter: lower_parameter.clone(),
-            upper_parameter: upper_parameter.clone(),
-        }),
-        FilterExpression::Like {
-            field,
-            parameter,
-            case_insensitive,
-        } => {
-            if *case_insensitive {
-                return Err(prepare_error(
-                    ErrorCategory::Unsupported,
-                    "LIKE case-insensitive richiede collation esplicita",
-                ));
-            }
-            Ok(Expression::Like {
-                field: mysql_identifier(field)?,
-                parameter: parameter.clone(),
-                case_insensitive: false,
-            })
-        }
-        FilterExpression::Spatial { .. } => Err(prepare_error(
-            ErrorCategory::Unsupported,
-            "filtro spatial richiede validazione WKB e SRID",
-        )),
-    }
-}
-
-fn comparison(field: &str, operator: ComparisonOperator, parameter: &str) -> Result<Expression> {
-    Ok(Expression::Compare {
-        field: mysql_identifier(field)?,
-        operator,
-        parameter: parameter.to_owned(),
-    })
+    lower_filter(
+        expression,
+        FilterLowering {
+            provider: crate::profile::PROVISIONAL_KIND,
+            case_insensitive_like: false,
+            spatial: false,
+        },
+        mysql_identifier,
+    )
 }
 
 fn ensure_filter_columns(expression: &FilterExpression, columns: &[MysqlColumnSpec]) -> Result<()> {
-    fn visit(expression: &FilterExpression, available: &BTreeSet<&str>) -> bool {
-        match expression {
-            FilterExpression::And { args } | FilterExpression::Or { args } => {
-                args.iter().all(|argument| visit(argument, available))
-            }
-            FilterExpression::Eq { field, .. }
-            | FilterExpression::Ne { field, .. }
-            | FilterExpression::Lt { field, .. }
-            | FilterExpression::Lte { field, .. }
-            | FilterExpression::Gt { field, .. }
-            | FilterExpression::Gte { field, .. }
-            | FilterExpression::IsNull { field }
-            | FilterExpression::IsNotNull { field }
-            | FilterExpression::In { field, .. }
-            | FilterExpression::Between { field, .. }
-            | FilterExpression::Like { field, .. }
-            | FilterExpression::Spatial { field, .. } => available.contains(field.as_str()),
-        }
-    }
     let available = columns
         .iter()
         .map(|column| column.name.as_str())
         .collect::<BTreeSet<_>>();
-    if visit(expression, &available) {
+    if expression.all_fields(&|field| available.contains(field)) {
         Ok(())
     } else {
         Err(prepare_error(
@@ -813,16 +708,6 @@ fn ensure_filter_columns(expression: &FilterExpression, columns: &[MysqlColumnSp
             "colonna filtro non trovata",
         ))
     }
-}
-
-fn contract_schema(fields: Vec<Field>) -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(
-        fields,
-        HashMap::from([(
-            protocol::CONTRACT_VERSION_KEY.to_owned(),
-            protocol::CONTRACT_VERSION.to_owned(),
-        )]),
-    ))
 }
 
 pub fn mysql_identifier(value: &str) -> Result<Identifier> {
@@ -839,8 +724,8 @@ pub const fn mysql_renderer() -> Renderer {
     Renderer::new(
         Dialect::Mysql,
         DialectCapabilities {
-            // v1.2: abilita l'AST spatial (predicate + funzioni scalari).
-            // Il rendering usa `ST_*` naming standard MySQL 8.4 e
+            // Abilita predicati e funzioni scalari dell'AST spatial.
+            // Il rendering usa i nomi `ST_*` e
             // `ST_GeomFromWKB` per i parametri geometry.
             spatial_intersects: true,
         },
@@ -848,16 +733,12 @@ pub const fn mysql_renderer() -> Renderer {
 }
 
 fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]

@@ -19,8 +19,9 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
+use plenora_database_engine::DeadlineGuard;
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, Renderer};
-use resources::WriteBatchResources;
+use resources::reserve_write_batch;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -201,28 +202,6 @@ pub async fn prepare_write_with_mode(
     .await
 }
 
-pub async fn prepare_write_with_options(
-    pool: &Arc<SqlServerPool>,
-    operation: &WriteOperation,
-    input_schema: SchemaRef,
-    budget: &ResourceBudget,
-    cancellation: &CancellationToken,
-    insert_mode: SqlServerInsertMode,
-    schema_evolution: SqlServerSchemaEvolution,
-) -> Result<PreparedSqlServerWrite> {
-    prepare_write_inner(
-        pool,
-        operation,
-        input_schema,
-        budget,
-        cancellation,
-        true,
-        insert_mode,
-        schema_evolution,
-    )
-    .await
-}
-
 /// Variante usata dall'adattatore del trait comune.
 ///
 /// Il [`plenora_database_core::provider::PreparedWrite`] mantiene già i lease
@@ -282,7 +261,7 @@ async fn prepare_write_inner(
     let columns_lease = acquire_contract_leases
         .then(|| budget.try_lease(ResourceKind::Columns, columns))
         .transpose()?;
-    let control = BudgetCancellation::new(cancellation, budget);
+    let control = BudgetCancellation::new(cancellation, budget)?;
     let schema = operation.target.schema.as_deref().ok_or_else(|| {
         write_error(
             ErrorCategory::InvalidPlan,
@@ -452,7 +431,7 @@ async fn write_prepared_inner(
             )
         })
         .transpose()?;
-    let control = BudgetCancellation::new(cancellation, &prepared.budget);
+    let control = BudgetCancellation::new(cancellation, &prepared.budget)?;
     let execution_id = format!(
         "sqlserver-{}-{}",
         std::process::id(),
@@ -500,7 +479,7 @@ async fn write_prepared_inner(
                 Ok(None) => break,
                 Err(error) => return Err(rollback_after_error(&mut pooled, error).await),
             };
-            let reservation = match WriteBatchResources::reserve(
+            let reservation = match reserve_write_batch(
                 &batch,
                 &prepared.plan,
                 &prepared.budget,
@@ -1291,52 +1270,14 @@ fn sql_identifier(value: &str) -> Result<Identifier> {
     Identifier::new(value.to_owned())
 }
 
-struct BudgetCancellation {
-    token: CancellationToken,
-    deadline_task: tokio::task::JoinHandle<()>,
-}
-
-impl BudgetCancellation {
-    fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
-        let token = parent.child_token_with_deadline(Some(budget.deadline()));
-        let deadline_token = token.clone();
-        let deadline = tokio::time::Instant::from_std(budget.deadline());
-        let deadline_task = tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            deadline_token.cancel_due_to_deadline();
-        });
-        Self {
-            token,
-            deadline_task,
-        }
-    }
-
-    const fn token(&self) -> &CancellationToken {
-        &self.token
-    }
-}
-
-impl Drop for BudgetCancellation {
-    fn drop(&mut self) {
-        self.deadline_task.abort();
-    }
-}
+type BudgetCancellation = DeadlineGuard;
 
 fn write_error(
     category: ErrorCategory,
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError {
-        category,
-        phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(category, phase, Some(ProviderKind::Sqlserver), message)
 }
 
 #[cfg(test)]

@@ -355,12 +355,9 @@ def server_identity() -> dict[str, str]:
 def validate_live_result(output: str, listing: str) -> list[str]:
     """Ogni test live definito deve essere nella suite, ed essere passato.
 
-    Il controllo precedente era un conteggio — quarantacinque passati su
-    quarantacinque — e un totale non distingue un test da un altro: toglierne
-    uno e aggiungerne un altro lasciava la matrice piena e il gate verde. Ora
-    le prove sono due e sono per nome: i sorgenti contro la suite compilata, e
-    la suite contro l'esecuzione. I due test che questo riferimento non puo
-    eseguire sono dichiarati, con il motivo che portano nel codice.
+    Le prove sono per nome: sorgenti contro suite compilata e suite contro
+    esecuzione. Un totale non distinguerebbe la sostituzione di un test con un
+    altro. Le esclusioni del riferimento sono dichiarate con la loro ragione.
 
     Restituisce i nomi eseguiti, che entrano nel verdetto.
     """

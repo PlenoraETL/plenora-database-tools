@@ -1,8 +1,5 @@
 use crate::SqlServerSession;
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use tiberius::{FromSql, Query, Row};
 
@@ -310,16 +307,12 @@ fn lifecycle_error(
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]
@@ -360,10 +353,8 @@ mod tests {
     /// SQL Server non rinomina in un colpo solo: il target diventa il backup,
     /// lo staging diventa il target, e il backup sparisce. Ogni passo dipende
     /// dal precedente, e invertirne due lascerebbe il target con i dati
-    /// vecchi o senza dati affatto. La garanzia stava in una frase di un
-    /// documento — per giunta imprecisa, perche diceva "publish invece di
-    /// RENAME" mentre il publish e fatto di due `sp_rename` — e quel
-    /// documento non c'e piu.
+    /// vecchi o senza dati affatto. Il test fissa quindi l'intera sequenza di
+    /// publish, composta da due `sp_rename` e dal drop del backup.
     #[test]
     fn the_replace_publish_renames_twice_and_drops_only_the_backup() {
         let publish = PublishStatement::new(
@@ -389,7 +380,7 @@ mod tests {
         assert_eq!(
             publish.binds,
             vec![
-                // 1. il target di oggi prende il nome del backup
+                // 1. il target corrente prende il nome del backup
                 "[dbo].[assets]".to_owned(),
                 "assets__pln_backup_1_2".to_owned(),
                 // 2. lo staging prende il nome del target

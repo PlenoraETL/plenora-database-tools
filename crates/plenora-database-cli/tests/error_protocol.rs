@@ -130,13 +130,8 @@ fn cli_errors_are_canonical_json_on_stdout_with_nonzero_exit() {
         .is_some_and(|message| message.starts_with("uso:")));
 }
 
-// Entrambe le rotte del test sono `PostgreSQL`: `database-probe postgres` e
-// `postgres-probe`. In un binario senza quella feature la prima risponde
-// «adapter non disponibile» e la seconda non e nemmeno un comando, quindi il
-// test cadeva su `unsupported` invece che sul fail-close del TLS che
-// sorveglia. Era rosso con `--features mysql` e con `--features sqlserver`
-// da prima di questo commit, e nessuno lo eseguiva: la matrice delle feature
-// filtrava i test per nome.
+// Entrambe le rotte richiedono l'adapter PostgreSQL; senza la feature non
+// raggiungerebbero il fail-close TLS che il test deve sorvegliare.
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_routes_share_private_ca_environment_contract() {
@@ -430,10 +425,7 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
     // token essenziali per il contratto database-probe siano documentati.
     assert!(message.contains("database-probe"));
 
-    // I provider elencati sono quelli **compilati**. Questo test pretendeva
-    // `postgres | mysql | sqlserver` sempre: era vero finché l'aiuto elencava
-    // tutto a prescindere dalle feature, cioè finché mentiva in tre
-    // configurazioni su quattro. La riga si legge intera, non per
+    // I provider elencati sono quelli **compilati**. La riga si legge intera, non per
     // sottostringa: `portable-compile <postgres|mysql|sqlserver>` nomina i tre
     // provider anche in un binario che ne ha compilato uno solo.
     let providers = message
@@ -468,10 +460,8 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
 
 #[test]
 fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
-    // `mariadb` e uscito da questo elenco: l'adapter esiste da quando esiste
-    // `MariadbProvider`. Cio che resta e la sua meta simmetrica, qui sotto —
-    // il provider c'e se e solo se la feature che lo compila c'e, e la
-    // risposta deve dire quale delle due cose manca.
+    // I provider senza adapter pubblico devono fallire prima di qualunque
+    // tentativo di connessione.
     for provider in ["oracle", "db2", "sqlite", "duckdb"] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);
@@ -487,9 +477,8 @@ fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
 ///
 /// Le due risposte non sono intercambiabili, ed e il motivo per cui il test
 /// esiste: «adapter non disponibile» si risolve ricostruendo il binario,
-/// «manca il secret» si risolve scrivendo un argomento. Prima della nascita di
-/// `MariadbProvider` il CLI dava sempre la prima, anche a chi aveva compilato
-/// tutto.
+/// «manca il secret» si risolve scrivendo un argomento. Il test mantiene
+/// distinte le due condizioni.
 #[test]
 fn every_provider_is_reachable_exactly_where_its_adapter_is_compiled() {
     for (provider, compiled) in [
@@ -725,7 +714,7 @@ fn secrets_are_redacted_from_transport_errors_for_every_public_probe_route() {
 // `execute-scalar` e un comando `PostgreSQL`: senza quella feature il binario
 // non lo compila e risponde «non compilato in questo binario» in fase
 // `validate`, che e la risposta giusta a una domanda diversa da quella del
-// test. Stessa ragione, stessa storia del test qui sopra.
+// test.
 #[cfg(feature = "postgres")]
 #[test]
 fn the_plain_secure_default_reaches_the_connection_attempt() {

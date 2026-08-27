@@ -7,23 +7,11 @@ del problema — `capability_surface`, nel motore, pretende che ogni campo sia
 consultato oppure dichiarato descrittivo — ma nessuna per questa: che cio che
 un provider **dichiara** di saper fare esista davvero nel suo codice.
 
-# Il difetto che l'ha prodotta
-
-`SQL Server` pubblicava `transactions.scope = Transaction`. Il contratto
-`Provider` dice, accanto al metodo, che devono sovrascrivere `begin_transaction`
-«soltanto i provider che pubblicano scope pari a Transaction»: quel provider lo
-pubblicava e non lo sovrascriveva, quindi il default rispondeva `Unsupported`.
-
-Nessun consumatore ci arrivava — il CLI generico non apre transazioni, le prove
-live usavano le primitive TDS direttamente, il SDK Python non raggiungeva quel
-motore — e la promessa e rimasta a vuoto finche la prima riga di Python che ha
-provato a usarla non l'ha scoperta.
-
 # Perche una guardia statica
 
-Perche il difetto era **statico**: si vedeva nel sorgente, senza accendere
-niente. Una prova live lo avrebbe colto solo dove qualcuno l'avesse scritta, ed
-e esattamente cio che mancava.
+La coerenza fra bandiera e override si vede nel sorgente senza avviare un
+server. La guardia copre ogni provider anche in assenza di una prova live
+dedicata a quello specifico bordo.
 """
 
 from __future__ import annotations

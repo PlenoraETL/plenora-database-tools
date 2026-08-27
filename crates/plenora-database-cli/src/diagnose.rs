@@ -77,7 +77,7 @@ pub(crate) async fn diagnose(args: &mut impl Iterator<Item = String>) -> CliResu
         },
         "findings": findings,
     }))?;
-    // Fix review #10.
+    // Uno stato unhealthy deve produrre anche un exit code non-zero.
     if overall_pass {
         Ok(())
     } else {

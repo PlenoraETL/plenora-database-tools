@@ -209,8 +209,7 @@ fn batch_rows(batch: &RecordBatch) -> Result<u64> {
 }
 
 fn checked_batch_end(batch_start: u64, rows: u64) -> Result<u64> {
-    batch_start
-        .checked_add(rows)
+    plenora_database_core::checked_source_row_end(batch_start, rows)
         .ok_or_else(|| row_error("overflow nell'offset sorgente"))
 }
 

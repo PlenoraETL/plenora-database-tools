@@ -258,9 +258,7 @@ mod tests {
     }
 
     /// La contesa sul pool e locale e transitoria: nessuno statement e
-    /// partito, quindi un nuovo tentativo e sicuro. `PostgreSQL` la classifica
-    /// gia `Safe`; qui rispondeva `Never`, e lo stesso evento aveva due
-    /// semantiche a seconda del provider.
+    /// partito, quindi un nuovo tentativo e sicuro e viene classificato `Safe`.
     ///
     /// Il test non apre nessuna connessione: satura il semaforo, cosi il
     /// timeout scatta sull'acquisizione del permit e il TDS non viene mai

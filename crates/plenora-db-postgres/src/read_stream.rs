@@ -8,49 +8,19 @@ use super::{
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::SchemaRef;
 use futures_util::{Stream, StreamExt};
-use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::provider::{BatchStream, ProviderFuture};
-use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
+use plenora_database_core::resource::{ResourceBudget, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ReadDiagnosticsTracker, Result,
 };
+use plenora_database_engine::{inspect_spatial_arrays, DeadlineGuard, ReadBatchReservation};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio_postgres::{CancelToken, NoTls, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-pub struct BudgetCancellation {
-    token: CancellationToken,
-    deadline_task: tokio::task::JoinHandle<()>,
-}
-
-impl BudgetCancellation {
-    pub fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Result<Self> {
-        budget.ensure_active()?;
-        let token = parent.child_token_with_deadline(Some(budget.deadline()));
-        let deadline_token = token.clone();
-        let deadline = tokio::time::Instant::from_std(budget.deadline());
-        let deadline_task = tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            deadline_token.cancel_due_to_deadline();
-        });
-        Ok(Self {
-            token,
-            deadline_task,
-        })
-    }
-
-    pub const fn token(&self) -> &CancellationToken {
-        &self.token
-    }
-}
-
-impl Drop for BudgetCancellation {
-    fn drop(&mut self) {
-        self.deadline_task.abort();
-    }
-}
+pub type BudgetCancellation = DeadlineGuard;
 
 pub struct PostgresBatchStream {
     client: PooledClient,
@@ -205,39 +175,18 @@ impl PostgresBatchStream {
         }
     }
 
-    fn reserve_batch(&self) -> Result<BatchReservation> {
+    fn reserve_batch(&self) -> Result<ReadBatchReservation> {
         self.budget.ensure_active()?;
-        let rows = self
-            .budget
-            .remaining(ResourceKind::Rows)
-            .min(u64::try_from(self.batch_rows).unwrap_or(u64::MAX));
-        let bytes = self
-            .max_batch_bytes
-            .min(self.budget.remaining(ResourceKind::MemoryBytes))
-            .min(self.budget.remaining(ResourceKind::OutputBytes));
         let has_spatial = self
             .columns
             .iter()
             .any(|column| matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography));
-        let component_limit = if has_spatial {
-            self.budget.remaining(ResourceKind::GeometryComponents)
-        } else {
-            0
-        };
-        Ok(BatchReservation {
-            rows_lease: self.budget.try_lease(ResourceKind::Rows, rows)?,
-            memory_lease: self.budget.try_lease(ResourceKind::MemoryBytes, bytes)?,
-            output_lease: self.budget.try_lease(ResourceKind::OutputBytes, bytes)?,
-            geometry_lease: (component_limit > 0)
-                .then(|| {
-                    self.budget
-                        .try_lease(ResourceKind::GeometryComponents, component_limit)
-                })
-                .transpose()?,
-            row_limit: usize::try_from(rows).unwrap_or(usize::MAX),
-            byte_limit: bytes,
-            component_limit,
-        })
+        ReadBatchReservation::acquire(
+            &self.budget,
+            self.batch_rows,
+            Some(self.max_batch_bytes),
+            has_spatial,
+        )
     }
 
     fn observe_batch_size(&mut self, actual_bytes: u64, estimated_bytes: u64) {
@@ -415,30 +364,6 @@ impl BatchStream for PostgresBatchStream {
     }
 }
 
-struct BatchReservation {
-    rows_lease: ResourceLease,
-    memory_lease: ResourceLease,
-    output_lease: ResourceLease,
-    geometry_lease: Option<ResourceLease>,
-    row_limit: usize,
-    byte_limit: u64,
-    component_limit: u64,
-}
-
-impl BatchReservation {
-    fn commit(self, rows: u64, bytes: u64, geometry_components: u64) -> Result<()> {
-        self.rows_lease.commit(rows)?;
-        self.memory_lease.commit(bytes)?;
-        self.output_lease.commit(bytes)?;
-        if geometry_components > 0 {
-            self.geometry_lease
-                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico esaurito"))?
-                .commit(geometry_components)?;
-        }
-        Ok(())
-    }
-}
-
 impl Drop for PostgresBatchStream {
     fn drop(&mut self) {
         if !self.finished {
@@ -539,7 +464,7 @@ fn enforce_batch_limits(
             "RecordBatch PostgreSQL oltre max_batch_bytes",
         ));
     }
-    let mut geometry_components = 0_u64;
+    let mut arrays = Vec::new();
     for (index, column) in columns.iter().enumerate() {
         if matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography) {
             let array = batch
@@ -549,47 +474,19 @@ fn enforce_batch_limits(
                 .ok_or_else(|| {
                     read_mapping_error("colonna spaziale PostgreSQL non codificata come Binary")
                 })?;
-            for row in 0..array.len() {
-                if !array.is_null(row) {
-                    let value = array.value(row);
-                    if u64::try_from(value.len()).unwrap_or(u64::MAX) > max_wkb_cell_bytes {
-                        return Err(public_error(
-                            ErrorCategory::ResourceLimit,
-                            ErrorPhase::Read,
-                            false,
-                            "cella WKB oltre max_wkb_cell_bytes",
-                        ));
-                    }
-                    let remaining = max_geometry_components
-                        .checked_sub(geometry_components)
-                        .ok_or_else(|| {
-                            DatabaseError::resource_limit("budget componenti geometriche esaurito")
-                        })?;
-                    if remaining == 0 {
-                        return Err(DatabaseError::resource_limit(
-                            "budget componenti geometriche esaurito",
-                        ));
-                    }
-                    let stats =
-                        inspect_ewkb(value, remaining, max_geometry_depth).map_err(|error| {
-                            attribute_conversion_defect(
-                                diagnostics,
-                                columns,
-                                error,
-                                Some(row),
-                                Some(index),
-                            )
-                        })?;
-                    geometry_components = geometry_components
-                        .checked_add(stats.components)
-                        .ok_or_else(|| {
-                            DatabaseError::resource_limit("overflow componenti geometriche")
-                        })?;
-                }
-            }
+            arrays.push((index, array));
         }
     }
-    Ok(geometry_components)
+    inspect_spatial_arrays(
+        arrays,
+        max_geometry_components,
+        max_wkb_cell_bytes,
+        max_geometry_depth,
+        |error, row, column| {
+            attribute_conversion_defect(diagnostics, columns, error, Some(row), Some(column))
+        },
+        |_, _, _| Ok(()),
+    )
 }
 
 pub fn batch_memory_bytes(batch: &RecordBatch) -> u64 {

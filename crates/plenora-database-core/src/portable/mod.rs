@@ -13,8 +13,8 @@
 //! 2. **Governance uniforme**: la validazione (identificatori, keyword,
 //!    bind safety) vive in un solo posto.
 //!
-//! Scope Fase 1: primitive minime CRUD + RETURNING. `JOIN`, `CTE`, window
-//! functions, aggregation sono estensioni additive future.
+//! La superficie comprende le primitive CRUD e `RETURNING`; `JOIN`, CTE,
+//! funzioni finestra e aggregazioni non appartengono a questo AST.
 
 use crate::provider::ParameterValue;
 use crate::spatial_predicate::{SpatialPredicate, SpatialReference};

@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """Campagna live del SDK Python: fixture, wheel, suite, verdetto.
 
-`check_sdk_tests.py` sa costruire il wheel e il CLI, installarli fuori
-dall'albero, eseguire la suite e confrontare la corsa con il contratto di
-ciascuno scope. Pretende pero i quattro riferimenti gia accesi: in locale puo averli,
-su un runner pulito no. Finche e stato cosi, gli scope `live` e `benchmark`
-non li eseguiva nessun workflow — e la sola prova automatica sul SDK era che
-il wheel si importasse.
-
-Non e un buco teorico. L'eccezione di `deny.toml` su pyo3 lo cita per nome:
-la migrazione a 0.29 resta ferma perche una suite validata dal solo
-compilatore non basta a giustificarla, e la copertura che servirebbe non
-esisteva. Questa campagna e quella copertura.
+`check_sdk_tests.py` costruisce wheel e CLI, li installa fuori dall'albero ed
+esegue gli scope dichiarati. Questa campagna gli fornisce i quattro riferimenti
+live e registra un verdetto riproducibile; la copertura e necessaria anche per
+valutare l'eccezione pyo3 dichiarata in `deny.toml`.
 
 Il ciclo di vita delle fixture sta in `scripts/fixture_campaign.py`, condiviso
 con le campagne di sessione e dell'evidenza MariaDB. Qui restano le due cose

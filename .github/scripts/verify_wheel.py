@@ -7,11 +7,8 @@ possono rompersi non si vedono nell'output di `maturin build`:
 * il modulo nativo puo non caricarsi — linking, ABI, target sbagliato — e
   l'unico modo di saperlo e importarlo **su quella piattaforma**, non su
   quella comoda;
-* la versione puo essere due: `importlib.metadata` legge quella con cui il
-  wheel e stato impacchettato, `p.version()` quella compilata nel modulo
-  nativo. Divergono quando si bumpa `pyproject.toml` e non il `Cargo.toml`
-  del crate — e successo nella v0.1.0 — e il pacchetto pubblicato mente su
-  se stesso a chi lo interroga;
+* la versione puo essere due: `importlib.metadata` legge quella del pacchetto,
+  `p.version()` quella compilata nel modulo nativo. Devono coincidere;
 * il tag della release puo non essere quello del pacchetto, e allora gli
   asset allegati a `py-v0.10.0` contengono `0.9.2` senza che nessuno lo veda.
 
@@ -66,9 +63,7 @@ def main() -> int:
                 f"il tag atteso e {expected!r}"
             )
 
-    # Due superfici pubbliche che il packaging ha gia rotto in passato: un
-    # `__init__` che non ri-esporta e un `.pyi` senza il modulo nativo
-    # producono un import valido e un pacchetto inutile.
+    # L'import da solo non prova che i re-export pubblici siano completi.
     if not hasattr(p.Session, "execute"):
         return fail("Session senza execute: la superficie pubblica non e completa")
     if not hasattr(p, "PlenoraError"):

@@ -14,10 +14,10 @@ che ADR 0014 chiede prima di decidere se qualificarla. Chiamarla baseline la
 farebbe leggere come una piattaforma supportata, che e proprio l'equivoco che
 il fail-close esiste per impedire.
 
-Le righe sono due perche un fork ha una storia: la principale e l'attuale
-LTS, la seconda la LTS precedente. L'evidenza raccolta su una versione non si
-butta quando ne esce un'altra — semmai e il confronto fra le due a dire se la
-divergenza dipende dalla versione.
+Una riga porta il ruolo `evidence`; le righe `compatibility` conservano la
+copertura delle versioni più anziane. Il confronto distingue così le
+divergenze del fork da quelle legate alla versione senza fissare qui il numero
+dei riferimenti.
 """
 
 from __future__ import annotations

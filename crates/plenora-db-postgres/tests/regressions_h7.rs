@@ -1,13 +1,6 @@
-//! Regression tests per i finding scoperti durante l'hardening H7
-//! (2026-08-12). Documentano il **comportamento attuale** e falliranno se
-//! quel comportamento cambia (voluto o meno) — così il consumer PFM viene
-//! avvertito di un breaking change prima di aggiornare la libreria.
+//! Contratti live per introspezione degli schemi e cancellazione degli stream.
 //!
 //! Sono `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
-//!
-//! **Piano di fix**: entrambi i finding sono targetati per v0.2 (breaking
-//! change del trait). Quando si fixano, aggiornare l'asserzione qui e
-//! documentare la migration path per il consumer.
 
 #![cfg(test)]
 #![allow(clippy::doc_markdown)]
@@ -29,24 +22,8 @@ fn budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("budget")
 }
 
-// ============================================================================
-//  H7.1 — Provider::inspect::DatabaseListSchemas filtra i system schema
-// ============================================================================
-//
-// Contesto (v0.2, fix applicato):
-//   Il metodo `Provider::inspect(DatabaseListSchemas)` filtra pg_catalog,
-//   information_schema, pg_toast, pg_temp_* e pg_toast_temp_*. Il consumer
-//   che ha bisogno anche dei system schemas deve interrogare pg_namespace
-//   direttamente (o usare la CLI con un'opzione futura --include-system,
-//   quando disponibile).
-//
-// Storia:
-//   In v0.1 il metodo restituiva l'elenco grezzo. La CLI `inspect-schemas`
-//   filtrava client-side. Con v0.2 il filtro è built-in: se un consumer
-//   dipendeva dal comportamento precedente, deve aggiornarsi.
-//
-// Se questo test fallisce:
-//   Il filtro è stato rimosso o modificato: valutare l'impatto downstream.
+// `DatabaseListSchemas` espone soltanto schemi applicativi. Chi necessita dei
+// namespace di sistema deve interrogare `pg_namespace` direttamente.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
@@ -85,26 +62,8 @@ async fn h7_1_list_schemas_excludes_system_schemas_by_default() {
     );
 }
 
-// ============================================================================
-//  H7.2 — BatchStream::next_batch è cancel-aware
-// ============================================================================
-//
-// Contesto (v0.2, fix applicato):
-//   Il metodo `BatchStream::next_batch(&mut self, &CancellationToken)`
-//   accetta ora obbligatoriamente un `CancellationToken`. Le implementazioni
-//   (postgres/mysql/sqlserver) usano `tokio::select!` fra la fetch e
-//   `cancellation.cancelled()`, quindi un consumer può interrompere read
-//   in flight — Python SDK compreso.
-//
-// Storia:
-//   In v0.1 il trait aveva `next_batch(&mut self)` senza token e un
-//   `next_batch_with_cancellation(&CancellationToken)` come default impl.
-//   La firma inconsistente permetteva ai consumer di dimenticare la
-//   cancellazione. v0.2 unifica il metodo.
-//
-// Se questo test fallisce:
-//   Il trait o l'impl postgres non è più cancel-aware. Investigare
-//   PostgresBatchStream::next_batch: deve consumare il token via select!.
+// Ogni `next_batch` deve osservare il token ricevuto, compresi i FETCH già in
+// flight; la firma rende impossibile omettere accidentalmente la cancellazione.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]
@@ -130,7 +89,7 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
         .await
         .expect("read");
 
-    // Consuma il primo batch (esiste sempre — spatial_ref_sys ha >>0 righe).
+    // `spatial_ref_sys` garantisce un primo batch non vuoto nella fixture.
     let first = stream
         .next_batch(&cancel)
         .await
@@ -138,11 +97,10 @@ async fn h7_2_batch_stream_honors_cancellation_after_start() {
         .expect("some");
     assert!(first.num_rows() > 0);
 
-    // Cancella il token DOPO lo start del batch.
+    // La cancellazione avviene fra due richieste per provare il bordo stream.
     cancel.cancel();
 
-    // Il PROSSIMO next_batch DEVE riflettere la cancellazione con
-    // Err(Cancelled) — il trait ora è cancel-aware.
+    // Il batch successivo deve riflettere la cancellazione.
     let post = stream.next_batch(&cancel).await;
     match post {
         Ok(_) => panic!(

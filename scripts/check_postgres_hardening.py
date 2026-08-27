@@ -54,10 +54,8 @@ def run(command: list[str], *, capture: bool = False) -> str:
     return completed.stdout if capture else ""
 
 
-# I due riferimenti PostgreSQL — plaintext e TLS — vivono in progetti Compose
-# distinti, quindi su reti distinte. Il gate li interroga entrambi nella stessa
-# esecuzione e si attacca a entrambe le reti: prima pretendeva che
-# condividessero il progetto, e la separazione dei progetti lo ha rotto.
+# I riferimenti plaintext e TLS vivono in progetti e reti Compose distinti; il
+# gate li interroga nella stessa esecuzione e deve collegarsi a entrambe.
 POSTGRES_CONTAINERS = ("dataflow-postgres", "dataflow-postgres-tls")
 
 
@@ -143,13 +141,7 @@ def validate_required_live_tests(output: str) -> list[str]:
 
 
 def live_cli_probe_command(tls_dsn: str) -> list[str]:
-    """Il comando dei probe CLI mTLS. Eseguirlo spetta a chi registra i passi.
-
-    Prima questa funzione eseguiva **e** validava, e il passo veniva registrato
-    dal chiamante: un comando fuori dall'unico esecutore che tiene il conto.
-    Il verdetto restava corretto per costruzione, ma la garanzia che `steps`
-    fosse completa valeva solo finche nessuno aggiungeva un altro helper.
-    """
+    """Costruisce il probe CLI mTLS; il chiamante lo esegue e registra."""
 
     return cargo(
         [
@@ -190,23 +182,15 @@ def validate_live_cli_probes(output: str) -> None:
 def main() -> int:
     dsn = os.environ.get("PLENORA_TEST_POSTGRES_DSN", DEFAULT_DSN)
     tls_dsn = os.environ.get("PLENORA_TEST_POSTGRES_TLS_DSN", DEFAULT_TLS_DSN)
-    # I passi che il gate ha **davvero** completato, registrati mentre
-    # accadono. La versione precedente pubblicava cinquantotto voci tematiche
-    # scritte a mano, nessuna legata al nome di un test: cancellare il test che
-    # sostiene `write_deadline_verified_rollback` non toglieva la voce e non
-    # faceva fallire niente, e l'artifact continuava a dichiarare `passed` su
-    # una prova che non esisteva piu.
+    # I passi completati sono registrati durante l'esecuzione, non dichiarati
+    # in un inventario separato dai comandi che li provano.
     steps: list[str] = []
 
     def step(name: str, command: list[str], *, capture: bool = False) -> str:
         """Esegue, e **solo dopo** registra il passo.
 
-        L'ordine non e un dettaglio di stile: una riga scritta prima del
-        comando resta vera anche quando il comando fallisce o sparisce, ed e
-        esattamente la forma delle cinquantotto attestazioni statiche che
-        questo verdetto pubblicava. Passare da qui per ogni comando rende
-        `steps` l'inventario completo di cio che il gate ha fatto, non di
-        alcuni suoi punti scelti a mano.
+        Registrare dopo il comando impedisce a un fallimento di apparire come
+        prova completata. Ogni comando qualificante passa da qui.
         """
 
         output = run(command, capture=capture)

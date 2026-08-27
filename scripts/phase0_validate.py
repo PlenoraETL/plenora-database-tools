@@ -30,10 +30,8 @@ except ImportError as exc:  # pragma: no cover - dipendenza del tooling
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Una sola major di contratto vive nel worktree, ed e quella che il codice
-# emette. Le versioni precedenti stanno in Git, che e dove sta la storia: un
-# archivio dentro l'albero di lavoro e una seconda copia che si legge come se
-# fosse ancora valida.
+# Una sola major di contratto vive nel worktree ed è quella emessa dal codice;
+# la storia appartiene al controllo versione, non a copie ancora validabili.
 ACTIVE_MAJOR = "v2"
 ACTIVE_CONTRACT_ROOT = REPO_ROOT / "contracts" / ACTIVE_MAJOR
 CONTRACT_ROOTS = tuple(
@@ -73,13 +71,8 @@ FOREIGN_DOMAIN_TERMS = (
     "edit_request",
     "commit_or_edit_requested",
 )
-# Dove si cerca. Non solo i contratti, per due ragioni imparate una alla volta:
-# un artefatto di misura committato qui dentro porta con se cio che ha
-# misurato — un inventario di un'altra base di codice ha tenuto ArcGIS nel
-# repository per una campagna intera — e il codice e il posto dove un nome
-# sopravvive piu a lungo, perche nessuno rilegge i commenti. `profile.rs`
-# elencava `object_id_windows` fra le capability chiuse tre commit dopo che
-# quella capability non esisteva piu.
+# La ricerca include contratti, artefatti, codice e commenti: un termine
+# estraneo in qualunque superficie mantiene aperta la dipendenza dal dominio.
 DOMAIN_SCOPES = (
     "contracts",
     "golden",
@@ -279,12 +272,8 @@ def validate_active_domain() -> int:
     quella superficie e stata tolta. In quel caso la superficie e ancora li,
     raggiungibile, e chi valida non se ne accorge.
 
-    Il primo copre i benchmark e il codice, non solo i contratti, perche
-    l'ha imparato due volte: un raw di inventario di un'altra base di codice ha
-    tenuto ArcGIS nel repository per una campagna intera, e un commento in
-    `profile.rs` ha continuato a elencare una capability tre commit dopo che
-    era stata tolta dal contratto. La guardia di allora non guardava ne l'uno
-    ne l'altro.
+    Il primo copre anche benchmark, codice e commenti, perché ognuna di queste
+    superfici può mantenere una dipendenza dal dominio estraneo.
     """
     if not any(ACTIVE_CONTRACT_ROOT.rglob("*.json")):
         raise ValidationError(f"major attiva assente: {ACTIVE_MAJOR}")
@@ -506,11 +495,8 @@ def markdown_documents() -> list[Path]:
 def validate_documents() -> int:
     """Ogni documento e leggibile e ha i fence bilanciati.
 
-    Qui c'era un elenco di undici percorsi scritti a mano, e il controllo era
-    che esistessero. Presidiava documenti scelti una volta sola: due di quei
-    percorsi non esistevano piu, e degli altri — la maggioranza — non diceva
-    niente. Un elenco che va aggiornato a mano non e una guardia, e un secondo
-    posto dove la verita puo restare indietro.
+    I documenti sono scoperti dall'albero: un elenco manuale sarebbe una
+    seconda fonte e non coprirebbe i file aggiunti in seguito.
     """
     for path in markdown_documents():
         try:
@@ -592,12 +578,9 @@ def collect_refs(node: Any, out: set[str]) -> None:
 def validate_no_orphan_defs(schemas: Mapping[Path, Mapping[str, Any]]) -> int:
     """Nessuna definizione pubblicata senza nessuno che la usi.
 
-    Un `$defs` non riferito non partecipa a nessuna validazione: non descrive
-    niente, ma sta in un file pubblicato e si legge come se lo facesse. Ne e
-    stato trovato uno — `geometry_contract` — che descriveva un documento JSON
-    che questo prodotto non emette (il contratto di una colonna geometrica
-    viaggia nei metadata di campo Arrow) e contraddiceva il tipo Rust con lo
-    stesso nome. Nessuno se n'era accorto perche nessuno lo leggeva.
+    Un `$defs` non riferito non partecipa a nessuna validazione, ma resta in un
+    file pubblico come una falsa superficie. Il contratto geometrico, per
+    esempio, viaggia nei metadata Arrow e non deve avere un duplicato JSON.
     """
     referenced: set[str] = set()
     for schema in schemas.values():

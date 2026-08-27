@@ -21,18 +21,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .async_query import _AsyncBuilderFactory
+
 if TYPE_CHECKING:
     from ._native import AsyncSession as _NativeAsyncSession
-    from .async_query import (
-        AsyncDelete,
-        AsyncInsert,
-        AsyncSelect,
-        AsyncUpdate,
-        AsyncUpsert,
-    )
 
 
-class AsyncSession:
+class AsyncSession(_AsyncBuilderFactory):
     """Handle asincrono alla sessione Postgres. Ottenuto da
     `await plenora_database.aconnect(dsn)`."""
 
@@ -132,7 +127,7 @@ class AsyncSession:
     ) -> dict:
         """Bulk write async — analogo di `Session.copy_from`. Vedi la
         docstring lì per l'input `source`, i mode, le mapping policy
-        e i parametri `keys` / `update_columns` (v0.3.0+).
+        e i parametri `keys` / `update_columns`.
         """
         from ._arrow_io import _to_ipc_bytes
         ipc_bytes = _to_ipc_bytes(source)
@@ -175,33 +170,6 @@ class AsyncSession:
             native_query_policy,
         )
         return AsyncTransaction(native_tx)
-
-    # -------------------- portable AST builders -------------------------
-
-    def select(self, table: str, schema: str | None = None) -> "AsyncSelect":
-        from .async_query import AsyncSelect
-
-        return AsyncSelect(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None) -> "AsyncInsert":
-        from .async_query import AsyncInsert
-
-        return AsyncInsert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None) -> "AsyncUpdate":
-        from .async_query import AsyncUpdate
-
-        return AsyncUpdate(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None) -> "AsyncDelete":
-        from .async_query import AsyncDelete
-
-        return AsyncDelete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None) -> "AsyncUpsert":
-        from .async_query import AsyncUpsert
-
-        return AsyncUpsert(self, table, schema)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

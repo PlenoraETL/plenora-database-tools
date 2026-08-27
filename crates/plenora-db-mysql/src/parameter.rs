@@ -1,8 +1,6 @@
 use mysql_async::{Params, Value};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeSet;
 
 /// Codifica una sequenza posizionale di `ParameterValue` in `Params`.
@@ -123,16 +121,12 @@ pub fn parameter_value(value: &ParameterValue) -> Result<Value> {
 }
 
 fn parameter_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]

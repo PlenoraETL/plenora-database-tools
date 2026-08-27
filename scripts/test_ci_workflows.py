@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
 """Self-test dei workflow CI: cosa eseguono, e su quale revisione.
 
-Sostituisce `test_candidate_sha_workflows.py`, che nominava quattordici
-workflow uno per uno. Nove di quelli sono stati rimossi con la CI vecchia, il
-file ha continuato ad aprirli, e da allora falliva con ventisette errori — ma
-nessun job lo eseguiva, quindi il rosso non arrivava a nessuno. Un test che
-fallisce e che nessuno guarda e peggio di un test che non esiste: occupa il
-posto della verifica che manca.
+Due regole determinano la forma di questa suite:
 
-Due conseguenze, e sono la forma di questo file:
-
-* i workflow si **scoprono**, non si elencano. Un elenco scritto a mano e
-  esattamente cio che e invecchiato: descriveva un repository che non c'era
-  piu, e ogni file rimosso lo rendeva piu falso;
+* i workflow si scoprono, non si elencano: un inventario manuale diventerebbe
+  una seconda fonte da mantenere;
 * la suite gira in CI a ogni push, dentro `rust-ci`, in un job che non
   compila niente.
 
-Il contratto verificato e quello **corrente**: ogni job che usa i sorgenti li
+Il contratto verificato e quello corrente: ogni job che usa i sorgenti li
 prende con `actions/checkout` sulla revisione dell'evento — il default
-dell'action — e nessuno la sovrascrive verso `main` o verso un altro ref. Il
-vecchio contratto `CANDIDATE_SHA`, che ancorava le corse al head della PR
-invece che al merge, non e stato ripristinato: la policy oggi e il merge SHA,
-ed e cio che l'action fa senza input.
+dell'action — e nessuno la sovrascrive verso `main` o verso un altro ref.
 """
 
 from __future__ import annotations
@@ -134,13 +123,9 @@ def job_text(workflow: str, name: str) -> str:
     identificatore quotato e rifiutava anchor e alias, che GitHub Actions
     ammette.
 
-    E non serializzando il job intero, che era la prima versione di questa
-    funzione: `env`, `name` e `with` finivano nella stessa stringa dei comandi,
-    quindi una guardia che cercava `python3 scripts/x.py` era soddisfatta da
-    una variabile d'ambiente che lo nominava, anche dopo aver cancellato il
-    passo che lo lanciava. Qui entrano soltanto `run`, `uses` con i propri
-    input e `shell`, cioe le chiavi che fanno accadere qualcosa o decidono
-    **come** accade.
+    Entrano soltanto `run`, `uses` con i propri input e `shell`: serializzare
+    anche `env`, `name` e `with` permetterebbe a una semplice menzione di
+    sembrare un comando eseguito.
     """
 
     lines: list[str] = []
@@ -160,14 +145,8 @@ def job_text(workflow: str, name: str) -> str:
 def parsed_jobs(workflow: str) -> dict[str, dict]:
     """I job del workflow, letti con un parser YAML vero.
 
-    Quattro cicli di review hanno sciolto la questione che questo file aveva
-    deciso al contrario. La lettura fatta a mano era arrivata a gestire
-    rientri, commenti in coda, scalari a blocco, quote e collezioni — cioe a
-    reimplementare male un parser — e ogni giro faceva emergere una forma
-    valida che leggeva male **in silenzio**: `with: {run: ...}` contato per un
-    comando, un `env.if` scambiato per la condizione del passo, un `steps:` con
-    anchor che faceva sparire l'intero job, un `run: >` letto come se
-    conservasse i ritorni a capo.
+    Un parser YAML vero gestisce rientri, commenti, scalari, quote, collezioni
+    e anchor senza ricostruire parzialmente la grammatica nel test.
 
     L'obiezione originale — la dipendenza puo mancare nel job che esegue
     questa suite — non regge: una dipendenza necessaria e non dichiarata e un
@@ -339,10 +318,8 @@ def local_bindings(tree: ast.Module) -> dict[str, tuple[str, str]]:
     """Per ogni nome locale, da quale modulo e con quale simbolo arriva.
 
     Serve perche un import puo essere spezzato in piu istruzioni e puo dare un
-    alias: `from a.b import x as y` lega `y` al simbolo `x` di `a.b`. La
-    versione precedente pretendeva tutti i simboli nello stesso `ImportFrom` e
-    trattava l'alias come se fosse il nome originale — un falso rosso su un
-    refactoring innocuo, e un falso verde su un alias che punta altrove.
+    alias: `from a.b import x as y` lega `y` al simbolo `x` di `a.b`. Origine e
+    nome originale vanno conservati entrambi.
     """
 
     bindings: dict[str, tuple[str, str]] = {}
@@ -372,9 +349,7 @@ def imports_from(caller: Path, module: str, symbols: tuple[str, ...]) -> bool:
 def measures_with(caller: Path, module: str, expected: dict[str, str]) -> bool:
     """Il caller passa alla campagna, **su quella keyword**, quel simbolo.
 
-    Le quattro versioni precedenti provavano a dedurre l'esecuzione dalla
-    sintassi, e ogni volta restava un modo di certificare un caller che il gate
-    non lo lancia. Qui la relazione e dichiarata e si verifica esattamente:
+    La relazione è dichiarata e verificata esattamente:
     `campaign(preflight=..., measure=...)` deve ricevere, su ciascuna keyword,
     un nome legato al simbolo giusto del modulo giusto.
 
@@ -525,11 +500,8 @@ class CiWorkflowTests(unittest.TestCase):
     def test_every_job_that_uses_the_sources_checks_them_out(self) -> None:
         """Chi legge i file versionati deve prenderli, non presumerli.
 
-        Sia l'uso dei sorgenti sia il checkout si leggono dall'albero: la
-        versione precedente cercava le due sottostringhe nel testo del job, e
-        un `echo 'uses: actions/checkout@...'` dentro un comando valeva come
-        checkout — un job poteva usare i sorgenti senza prenderli e superare
-        comunque la guardia.
+        Uso dei sorgenti e checkout si leggono dall'albero YAML: una menzione
+        dentro un comando non conta come action eseguita.
         """
 
         for path in workflow_files():
@@ -586,8 +558,7 @@ class CiWorkflowTests(unittest.TestCase):
         `main` mentre il verdetto parla della PR, e i due si somigliano
         abbastanza da non far sospettare nulla.
 
-        Il vecchio contratto `CANDIDATE_SHA` ancorava invece le corse al head
-        della PR. Non viene ripristinato: qui si fissa cio che la CI fa oggi.
+        Il test fissa il comportamento effettivo della CI, non un ref parallelo.
         """
 
         for path in workflow_files():
@@ -608,13 +579,8 @@ class CiWorkflowTests(unittest.TestCase):
     def test_every_adapter_is_checked_in_isolation(self) -> None:
         """Le quattro combinazioni di feature del CLI restano verificate.
 
-        Due di esse non compilavano affatto, e nessuno se ne accorgeva perche
-        la CI costruiva solo i default e `--all-features` — le due dove
-        PostgreSQL c'e sempre. Girano in un job solo: la prima stesura le
-        aveva messe in `strategy.matrix` e sei job in parallelo hanno fatto
-        rifiutare da `codeload` il download dell'action di cache, con un 429.
-        Un job che verifica quattro cose non deve moltiplicare per quattro le
-        sue dipendenze di rete.
+        Le combinazioni girano nello stesso job per condividere checkout e
+        dipendenze di rete senza perdere l'isolamento fra build.
         """
 
         workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
@@ -636,13 +602,8 @@ class CiWorkflowTests(unittest.TestCase):
             "cargo test --locked -p plenora-database-cli $features -- --skip live_",
             workflow,
         )
-        # E si eseguono **tutti**. Il passo filtrava per nome — solo i test che
-        # contenevano `usage` — e il filtro era il difetto: cinque test
-        # assumevano PostgreSQL e restavano rossi con `--features mysql` e con
-        # `--features sqlserver` senza che nessuno li lanciasse. Un filtro per
-        # nome sceglie cosa guardare in base a come si chiama, ed e la stessa
-        # forma che aveva lasciato rossa una suite per mesi. L'unica selezione
-        # ammessa qui e `live_`, che esclude cio che ha bisogno di un server.
+        # Si eseguono **tutti** i test offline. L'unica selezione ammessa e
+        # `live_`, che esclude cio che richiede un server.
         matrix = parsed_jobs(workflow)["cli-feature-matrix"]
         for filtered in (" $features usage", " $features -- usage"):
             self.assertNotIn(
@@ -661,16 +622,7 @@ class CiWorkflowTests(unittest.TestCase):
         )
 
     def test_the_static_job_runs_every_serverless_self_test(self) -> None:
-        """I self-test che non chiedono un server girano a ogni push.
-
-        Restare fuori dalla CI e la condizione in cui un test smette di essere
-        letto: `test_candidate_sha_workflows.py` e morto cosi. PostgreSQL non
-        aveva un gate veloce come MySQL, quindi le sue guardie giravano solo
-        quando qualcuno lanciava il gate completo — cioe con i container su.
-
-        MySQL resta nel suo gate statico e MariaDB nella propria suite: qui si
-        aggiunge cio che non era eseguito da nessuno.
-        """
+        """I self-test che non chiedono un server girano a ogni push."""
 
         workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
         static = job_text(workflow, "static-self-tests")
@@ -683,6 +635,7 @@ class CiWorkflowTests(unittest.TestCase):
             "scripts/test_check_session_matrix.py",
             "scripts/test_check_sqlserver_reference.py",
             "scripts/phase0_validate.py",
+            "scripts/check_comments.py",
             "scripts/render_state.py --check",
         ):
             self.assertIn(f"python3 {suite}", static, f"{suite} non eseguito")
@@ -696,7 +649,7 @@ class CiWorkflowTests(unittest.TestCase):
         # senza la nota, il prossimo lettore la toglie credendola una svista.
         # La nota e un **commento**, e i commenti non stanno nell'albero: va
         # cercata nel file, che e la forma in cui un lettore la incontra.
-        self.assertIn("Duplicazione dichiarata", workflow)
+        self.assertIn("Anche il workflow SQL Server lo esegue", workflow)
         self.assertIn(
             "python3 scripts/test_check_sqlserver_reference.py",
             (WORKFLOW_DIRECTORY / "sqlserver-assurance.yml").read_text(
@@ -713,9 +666,8 @@ class CiWorkflowTests(unittest.TestCase):
     def test_fuzz_lock_uses_the_workspace_core_version(self) -> None:
         """Il lock del fuzz segue la versione del workspace.
 
-        Sopravvissuto alla CI vecchia perche non riguarda un workflow: `fuzz/`
-        ha un lock proprio, e se resta indietro il fuzzing esercita una
-        versione del core diversa da quella che il repository sviluppa.
+        `fuzz/` ha un lock proprio: deve esercitare la stessa versione del core
+        sviluppata dal workspace.
         """
 
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
@@ -895,18 +847,12 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("softprops/action-gh-release@", workflow)
 
     def test_the_header_does_not_promise_an_intel_mac_wheel(self) -> None:
-        """Il commento diceva "macOS (arm64 + x86_64)"; x86_64 non esiste.
-
-        Il job Intel era stato rimosso e la nota accanto lo spiegava, ma
-        l'intestazione — la prima cosa che si legge — continuava a
-        prometterlo. Chi cerca il wheel Intel fra gli artifact non lo trova e
-        non sa se sia un guasto o una scelta.
-        """
+        """L'intestazione deve promettere solo gli artifact prodotti."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("arm64 + x86_64", workflow)
         self.assertIn("macOS (arm64)", workflow)
-        self.assertIn("macOS produce **solo** ARM", workflow)
+        self.assertIn("macOS produce solo l'artefatto ARM", workflow)
         self.assertNotIn("macos-13", workflow.split("# Nota:")[0])
 
 
@@ -1042,11 +988,7 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
         return invoked_gates(workflow, "check_inventato.py")
 
     def test_a_path_trigger_alone_does_not_count_as_execution(self) -> None:
-        """La mutazione che la prima versione della guardia non vedeva.
-
-        Tolto il passo che lo lancia, il gate resta nominato fra i `paths:` e
-        nei commenti — e la guardia, che leggeva il file intero, restava
-        verde.
+        """Un trigger o un commento non contano come esecuzione del gate.
         """
 
         workflow = (WORKFLOW_DIRECTORY / "postgres-assurance.yml").read_text(
@@ -1267,11 +1209,8 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
     def test_the_delegation_is_verified_on_the_measures_not_on_a_mention(self) -> None:
         """Importare non basta, e nemmeno passare i simboli in ordine libero.
 
-        Le quattro versioni precedenti provavano a dedurre l'esecuzione dalla
-        sintassi, e ogni volta restava un modo di certificare un caller che il
-        gate non lo lancia. Qui la relazione e dichiarata — quale keyword della
-        campagna riceve quale simbolo di quale modulo — e si verifica
-        esattamente.
+        La relazione dichiara quale keyword della campagna riceve quale simbolo
+        di quale modulo, e viene verificata esattamente.
         """
 
         casi = {
@@ -1455,22 +1394,7 @@ class PythonGateDependencyTests(unittest.TestCase):
     """Un gate Python che gira in CI ne installa le dipendenze."""
 
     def test_every_job_running_a_python_gate_installs_its_requirements(self) -> None:
-        """Il difetto che questa guardia chiude e costato tre giorni di rosso.
-
-        `mysql-static-gate` esegue `check_mysql_reference.py --static`, che
-        importa `render_state`, che importa `phase0_validate`, che senza
-        `jsonschema` esce **all'import**. Il workflow non installava niente, e
-        il job falliva in nove secondi con un messaggio che parlava di una
-        dipendenza e non di una verifica.
-
-        Nessuno se n'era accorto perche l'import indiretto e arrivato dopo: il
-        gate era verde un giorno e rosso il giorno seguente, senza che nessuno
-        avesse toccato quel workflow.
-
-        `rust-ci` aveva gia il passo, e il commento accanto diceva la regola per
-        esteso — «era un gate che in CI non poteva passare». La regola c'era,
-        valeva per un job solo, e gli altri sette non la conoscevano.
-        """
+        """Ogni gate installa i requisiti prima della propria invocazione."""
 
         offenders: list[str] = []
         for path in workflow_files():
@@ -1545,15 +1469,9 @@ class PythonGateDependencyTests(unittest.TestCase):
 class TheSweepCoversTheFastCi(unittest.TestCase):
     """`scripts/sweep.py` esegue cio che la CI eseguira, o dichiara perche no.
 
-    La spazzata prima di un push serve a non aspettare la CI per sapere una
-    cosa che si poteva sapere subito. Vale finche contiene cio che la CI
-    contiene: un passo aggiunto la e non qui trasforma la spazzata in un
-    sottoinsieme, e un sottoinsieme si accorge di meno cose ogni volta.
-
-    E' successo due volte nello stesso giorno. Prima mancava
-    `cargo fmt --all -- --check`, e il codice e arrivato sul ramo non
-    formattato. Poi mancava `cargo test`, e una prova rimasta indietro rispetto
-    a una capability aperta e passata inosservata.
+    La spazzata locale e affidabile soltanto se resta equivalente ai gate
+    offline della CI. Un passo presente da una sola parte rende il controllo
+    locale un sottoinsieme e deve essere una scelta esplicita.
 
     Questa guardia confronta i due elenchi per **impronta** — il percorso dello
     script, o il sottocomando cargo — e non per stringa: la CI scrive `python3`

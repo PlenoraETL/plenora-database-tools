@@ -1,4 +1,4 @@
-"""v0.3.0 P1 — upsert/update/delete_by_keys + read filters + pandas/list-of-dict."""
+"""Upsert, update, delete-by-keys, filtri e input pandas/list-of-dict."""
 from __future__ import annotations
 
 import io

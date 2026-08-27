@@ -21,14 +21,13 @@
 )]
 
 use crate::errors::to_py_err;
-use crate::py_convert::{param_to_python, params_from_python};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
-use plenora_database_core::portable::PortableStatement;
-use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionScope};
-use plenora_database_core::{CancellationToken, DatabaseError, Row};
+use crate::py_convert::{portable_from_json, scalar_to_python, statement_from_python};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::transaction::{ConditionalUpdate, TransactionScope};
+use plenora_database_core::{CancellationToken, Row};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -57,10 +56,9 @@ async fn locked_tx(
     Ok(guard)
 }
 
-// Rimossa `unsendable`: `Arc<tokio::Mutex<Option<Box<dyn TransactionScope>>>>`
-// è Send + Sync (Mutex<Send> è Sync, Arc<Send+Sync> è Send+Sync). Necessario
-// perché pyo3-async-runtimes può muovere il future tra thread del runtime
-// tokio multi-thread.
+// La classe deve restare Send: pyo3-async-runtimes può muovere il future tra
+// thread del runtime multi-thread. SharedTx soddisfa il vincolo tramite Arc e
+// tokio::Mutex.
 #[pyclass(module = "plenora_database._native")]
 pub struct AsyncTransaction {
     inner: SharedTx,
@@ -90,8 +88,7 @@ impl AsyncTransaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
@@ -108,8 +105,7 @@ impl AsyncTransaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let rows: Vec<Row> = {
@@ -122,13 +118,7 @@ impl AsyncTransaction {
             // una riga o piu di una colonna invece di prendere la prima e
             // buttare via il resto. E' la stessa regola dei costruttori
             // scalar tipizzati del core.
-            let value = scalar_opt(rows).map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                value.as_ref().map_or_else(
-                    || Ok(py.None()),
-                    |v| param_to_python(py, v).map(Bound::unbind),
-                )
-            })
+            Python::with_gil(|py| scalar_to_python(py, rows).map(Bound::unbind))
         })
     }
 
@@ -139,8 +129,7 @@ impl AsyncTransaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let rows: Vec<Row> = {
@@ -149,7 +138,7 @@ impl AsyncTransaction {
                 let cancel = CancellationToken::new();
                 tx.query(&statement, &cancel).await.map_err(to_py_err)?
             };
-            rows_to_pyobject(rows)
+            crate::async_session_ops::rows_to_pyobject(rows)
         })
     }
 
@@ -158,13 +147,7 @@ impl AsyncTransaction {
         py: Python<'py>,
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let rows: Vec<Row> = {
@@ -175,7 +158,7 @@ impl AsyncTransaction {
                     .await
                     .map_err(to_py_err)?
             };
-            rows_to_pyobject(rows)
+            crate::async_session_ops::rows_to_pyobject(rows)
         })
     }
 
@@ -184,13 +167,7 @@ impl AsyncTransaction {
         py: Python<'py>,
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
@@ -220,11 +197,9 @@ impl AsyncTransaction {
         key_probe_sql: Option<&str>,
         key_probe_params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let update_values = params_from_python(update_params.as_ref())?;
-        let update_stmt = Statement::new(update_sql.to_owned()).with_params(update_values);
+        let update_stmt = statement_from_python(update_sql, update_params.as_ref())?;
         let probe_stmt = if let Some(sql) = key_probe_sql {
-            let probe_values = params_from_python(key_probe_params.as_ref())?;
-            Some(Statement::new(sql.to_owned()).with_params(probe_values))
+            Some(statement_from_python(sql, key_probe_params.as_ref())?)
         } else {
             None
         };
@@ -289,7 +264,7 @@ impl AsyncTransaction {
                 let mut guard = inner.lock().await;
                 guard.take().ok_or_else(tx_closed_error)?
             };
-            // Fix review: leggo provider_kind PRIMA di consumare tx.
+            // Il provider va letto prima che `commit` consumi la transazione.
             let provider = tx.provider_kind();
             let cancel = CancellationToken::new();
             let outcome = tx.commit(&cancel).await.map_err(to_py_err)?;
@@ -356,18 +331,4 @@ impl AsyncTransaction {
     fn __repr__(&self) -> String {
         "<AsyncTransaction>".to_owned()
     }
-}
-
-fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<PyObject> {
-    Python::with_gil(|py| {
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            for (col, val) in row.columns().iter().zip(row.values().iter()) {
-                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out.into_any().unbind())
-    })
 }

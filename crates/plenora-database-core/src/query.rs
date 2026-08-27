@@ -409,10 +409,8 @@ impl SpatialFunction {
     /// | `ST_Union(x, y)` | `(geometry, geometry)` scalare **o** `(geometry set, float8)` aggregata |
     /// | `ST_Union(x, y, z)` | `(geometry, geometry, float8)` scalare |
     ///
-    /// Una stesura precedente sosteneva che le forme ambigue non fossero
-    /// esprimibili, perche il renderer avvolge in `ST_GeomFromEWKB` gli
-    /// argomenti nelle posizioni geometriche. Non e vero: quel wrapping tocca
-    /// **solo** i `QueryExpression::Parameter`
+    /// Le forme ambigue restano esprimibili: il wrapping in
+    /// `ST_GeomFromEWKB` tocca solo i `QueryExpression::Parameter`
     /// (`plenora_database_sql`, `render_spatial_function`). Una
     /// `QueryExpression::Column` passa invariata, quindi
     /// `ST_Union(geom, gridsize)` con due colonne e formabile e il server
@@ -776,10 +774,27 @@ pub struct QueryOperation {
     /// porta geometrie in sistemi diversi fa fallire la lettura invece di
     /// pubblicare un CRS falso.
     ///
-    /// Additivo e opzionale: un piano che non lo dichiara si comporta come
-    /// prima, e prima significa che una geometria calcolata veniva rifiutata.
+    /// Additivo e opzionale: senza dichiarazione una geometria calcolata che
+    /// richiede un CRS dimostrabile resta rifiutata.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_crs: Vec<crate::plan::DeclaredCrs>,
+}
+
+impl QueryOperation {
+    /// Espressioni dichiarate direttamente nelle clausole dell'operazione.
+    ///
+    /// Non include le condizioni dei join ne le query annidate: i chiamanti
+    /// che devono attraversare l'intero albero usano [`walk_query`].
+    pub fn clause_expressions(&self) -> impl Iterator<Item = &QueryExpression> {
+        self.projection
+            .iter()
+            .map(|projection| &projection.expression)
+            .chain(self.filter.iter())
+            .chain(&self.group_by)
+            .chain(self.having.iter())
+            .chain(self.order_by.iter().map(|ordering| &ordering.expression))
+            .chain(&self.distinct_on)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -789,6 +804,182 @@ pub struct CommonTableExpression {
     #[serde(default, skip_serializing_if = "is_false")]
     pub recursive: bool,
     pub query: Box<QueryOperation>,
+}
+
+/// Nodo osservabile durante la visita iterativa di una query.
+///
+/// La visita espone anche le sorgenti per evitare che ogni provider debba
+/// replicare il traversal dell'intero AST solo per applicare una propria
+/// politica su cataloghi e schemi.
+#[derive(Debug, Clone, Copy)]
+pub enum QueryWalkNode<'a> {
+    Operation(&'a QueryOperation),
+    Expression(&'a QueryExpression),
+    Source(&'a QuerySource),
+}
+
+/// Controllo restituito da un visitor dell'AST query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryWalkControl {
+    /// Visita anche i figli del nodo corrente.
+    Continue,
+    /// Non visita i figli del nodo corrente, ma continua con gli altri nodi.
+    Skip,
+    /// Interrompe immediatamente l'intera visita.
+    Break,
+}
+
+/// Visita iterativamente un'operazione e tutte le query annidate.
+///
+/// Restituisce `false` quando il visitor interrompe la visita con
+/// [`QueryWalkControl::Break`], `true` quando l'AST viene percorso per intero.
+pub fn walk_query<'a>(
+    operation: &'a QueryOperation,
+    visitor: impl FnMut(QueryWalkNode<'a>) -> QueryWalkControl,
+) -> bool {
+    walk_query_nodes(vec![QueryWalkNode::Operation(operation)], visitor)
+}
+
+/// Visita iterativamente un'espressione, comprese le eventuali query annidate.
+///
+/// Restituisce `false` quando il visitor interrompe la visita con
+/// [`QueryWalkControl::Break`], `true` quando l'AST viene percorso per intero.
+pub fn walk_query_expression<'a>(
+    expression: &'a QueryExpression,
+    visitor: impl FnMut(QueryWalkNode<'a>) -> QueryWalkControl,
+) -> bool {
+    walk_query_nodes(vec![QueryWalkNode::Expression(expression)], visitor)
+}
+
+fn walk_query_nodes<'a>(
+    mut stack: Vec<QueryWalkNode<'a>>,
+    mut visitor: impl FnMut(QueryWalkNode<'a>) -> QueryWalkControl,
+) -> bool {
+    while let Some(node) = stack.pop() {
+        match visitor(node) {
+            QueryWalkControl::Break => return false,
+            QueryWalkControl::Skip => {}
+            QueryWalkControl::Continue => match node {
+                QueryWalkNode::Operation(operation) => {
+                    push_operation_children(operation, &mut stack);
+                }
+                QueryWalkNode::Expression(expression) => {
+                    push_expression_children(expression, &mut stack);
+                }
+                QueryWalkNode::Source(_) => {}
+            },
+        }
+    }
+    true
+}
+
+fn push_operation_children<'a>(operation: &'a QueryOperation, stack: &mut Vec<QueryWalkNode<'a>>) {
+    stack.extend(
+        operation
+            .set_operations
+            .iter()
+            .rev()
+            .map(|set| QueryWalkNode::Operation(&set.query)),
+    );
+    stack.extend(
+        operation
+            .distinct_on
+            .iter()
+            .rev()
+            .map(QueryWalkNode::Expression),
+    );
+    stack.extend(
+        operation
+            .order_by
+            .iter()
+            .rev()
+            .map(|ordering| QueryWalkNode::Expression(&ordering.expression)),
+    );
+    stack.extend(operation.having.iter().map(QueryWalkNode::Expression));
+    stack.extend(
+        operation
+            .group_by
+            .iter()
+            .rev()
+            .map(QueryWalkNode::Expression),
+    );
+    stack.extend(operation.filter.iter().map(QueryWalkNode::Expression));
+    stack.extend(
+        operation
+            .projection
+            .iter()
+            .rev()
+            .map(|projection| QueryWalkNode::Expression(&projection.expression)),
+    );
+    for join in operation.joins.iter().rev() {
+        stack.extend(join.on.iter().map(QueryWalkNode::Expression));
+        if let Some(derived) = &join.derived_source {
+            stack.push(QueryWalkNode::Operation(&derived.query));
+        }
+        stack.extend(join.source.iter().map(QueryWalkNode::Source));
+    }
+    for cte in operation.common_table_expressions.iter().rev() {
+        stack.push(QueryWalkNode::Operation(&cte.query));
+    }
+    if let Some(derived) = &operation.derived_source {
+        stack.push(QueryWalkNode::Operation(&derived.query));
+    }
+    stack.extend(operation.source.iter().map(QueryWalkNode::Source));
+}
+
+fn push_expression_children<'a>(
+    expression: &'a QueryExpression,
+    stack: &mut Vec<QueryWalkNode<'a>>,
+) {
+    match expression {
+        QueryExpression::Scalar { arguments, .. }
+        | QueryExpression::Spatial { arguments, .. }
+        | QueryExpression::And { arguments }
+        | QueryExpression::Or { arguments } => {
+            stack.extend(arguments.iter().rev().map(QueryWalkNode::Expression));
+        }
+        QueryExpression::SpatialOperator { left, right, .. }
+        | QueryExpression::Compare { left, right, .. } => {
+            stack.push(QueryWalkNode::Expression(right));
+            stack.push(QueryWalkNode::Expression(left));
+        }
+        QueryExpression::Window {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        }
+        | QueryExpression::SpatialWindow {
+            arguments,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            stack.extend(
+                order_by
+                    .iter()
+                    .rev()
+                    .map(|ordering| QueryWalkNode::Expression(&ordering.expression)),
+            );
+            stack.extend(partition_by.iter().rev().map(QueryWalkNode::Expression));
+            stack.extend(arguments.iter().rev().map(QueryWalkNode::Expression));
+        }
+        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
+            stack.push(QueryWalkNode::Operation(query));
+        }
+        QueryExpression::InSubquery {
+            expression, query, ..
+        } => {
+            stack.push(QueryWalkNode::Operation(query));
+            stack.push(QueryWalkNode::Expression(expression));
+        }
+        QueryExpression::IsNull { expression, .. } => {
+            stack.push(QueryWalkNode::Expression(expression));
+        }
+        QueryExpression::Wildcard { .. }
+        | QueryExpression::Column { .. }
+        | QueryExpression::Parameter { .. } => {}
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -930,50 +1121,22 @@ pub fn validate_query_operation(
     }
 
     fn contains_locking_incompatible_expression(expression: &QueryExpression) -> bool {
-        let mut stack = vec![expression];
-        while let Some(item) = stack.pop() {
-            match item {
-                QueryExpression::Window { .. } | QueryExpression::SpatialWindow { .. } => {
-                    return true;
-                }
-                QueryExpression::Scalar {
-                    function,
-                    arguments,
-                    ..
-                } => {
-                    if function.is_aggregate() {
-                        return true;
-                    }
-                    stack.extend(arguments);
-                }
-                QueryExpression::Spatial {
-                    function,
-                    arguments,
-                    ..
-                } => {
-                    if function.is_aggregate(arguments.len()) {
-                        return true;
-                    }
-                    stack.extend(arguments);
-                }
-                QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
-                    stack.extend(arguments);
-                }
-                QueryExpression::SpatialOperator { left, right, .. }
-                | QueryExpression::Compare { left, right, .. } => {
-                    stack.push(left);
-                    stack.push(right);
-                }
-                QueryExpression::IsNull { expression, .. }
-                | QueryExpression::InSubquery { expression, .. } => stack.push(expression),
-                QueryExpression::Wildcard { .. }
-                | QueryExpression::Column { .. }
-                | QueryExpression::Parameter { .. }
-                | QueryExpression::ScalarSubquery { .. }
-                | QueryExpression::Exists { .. } => {}
+        !walk_query_expression(expression, |node| match node {
+            QueryWalkNode::Expression(
+                QueryExpression::Window { .. } | QueryExpression::SpatialWindow { .. },
+            ) => QueryWalkControl::Break,
+            QueryWalkNode::Expression(QueryExpression::Scalar { function, .. })
+                if function.is_aggregate() =>
+            {
+                QueryWalkControl::Break
             }
-        }
-        false
+            QueryWalkNode::Expression(QueryExpression::Spatial {
+                function,
+                arguments,
+            }) if function.is_aggregate(arguments.len()) => QueryWalkControl::Break,
+            QueryWalkNode::Operation(_) => QueryWalkControl::Skip,
+            QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+        })
     }
 
     let mut stack = vec![Node::Operation(query, 1)];
@@ -1444,6 +1607,69 @@ mod validation_tests {
     }
 
     #[test]
+    fn query_walker_reaches_sources_inside_subqueries() {
+        let nested = query_with_filter(QueryExpression::IsNull {
+            expression: Box::new(QueryExpression::Parameter {
+                name: "nested".to_owned(),
+            }),
+            negated: false,
+        });
+        let query = query_with_filter(QueryExpression::Exists {
+            query: Box::new(nested),
+            negated: false,
+        });
+        let mut sources = 0;
+        let mut parameters = Vec::new();
+
+        assert!(walk_query(&query, |node| {
+            match node {
+                QueryWalkNode::Source(_) => sources += 1,
+                QueryWalkNode::Expression(QueryExpression::Parameter { name }) => {
+                    parameters.push(name.as_str());
+                }
+                QueryWalkNode::Operation(_) | QueryWalkNode::Expression(_) => {}
+            }
+            QueryWalkControl::Continue
+        }));
+
+        assert_eq!(sources, 2);
+        assert_eq!(parameters, ["nested"]);
+    }
+
+    #[test]
+    fn query_walker_can_skip_or_break_a_subtree() {
+        let expression = QueryExpression::And {
+            arguments: vec![
+                QueryExpression::Parameter {
+                    name: "first".to_owned(),
+                },
+                QueryExpression::IsNull {
+                    expression: Box::new(QueryExpression::Parameter {
+                        name: "hidden".to_owned(),
+                    }),
+                    negated: false,
+                },
+            ],
+        };
+        let mut visited = Vec::new();
+        assert!(walk_query_expression(&expression, |node| {
+            if let QueryWalkNode::Expression(expression) = node {
+                match expression {
+                    QueryExpression::IsNull { .. } => return QueryWalkControl::Skip,
+                    QueryExpression::Parameter { name } => visited.push(name.as_str()),
+                    _ => {}
+                }
+            }
+            QueryWalkControl::Continue
+        }));
+        assert_eq!(visited, ["first"]);
+
+        assert!(!walk_query_expression(&expression, |_| {
+            QueryWalkControl::Break
+        }));
+    }
+
+    #[test]
     fn rejects_deep_query_without_recursive_validation() {
         let mut expression = QueryExpression::Parameter {
             name: "value".to_owned(),
@@ -1808,10 +2034,8 @@ mod validation_tests {
     /// una lettura della documentazione. Il caso che conta e
     /// `ST_Union` a due argomenti: `(geometry, geometry)` e scalare e
     /// `(geometry set, float8)` e aggregata, e il piano non porta i tipi che
-    /// li distinguerebbero. Una stesura precedente rispondeva `false`
-    /// sostenendo che la forma aggregata non fosse esprimibile; lo e, perche
-    /// il renderer tipizza solo i `Parameter` e lascia passare invariata una
-    /// `Column`.
+    /// li distinguerebbero. La risposta deve essere `true`: il renderer tipizza
+    /// solo i `Parameter` e lascia passare invariata una `Column`.
     #[test]
     fn an_ambiguous_arity_answers_that_the_aggregate_is_possible() {
         // Ambigue: aggregata **o** scalare, e il piano non lo dice.
@@ -1937,12 +2161,8 @@ mod validation_tests {
     /// Il filtro `spatial` del piano ammette esattamente i predicati che questo
     /// motore sa valutare come booleani.
     ///
-    /// La divergenza esisteva ed era muta nella direzione peggiore: lo schema
-    /// v2 elencava undici funzioni, `returns_boolean` ne riconosceva sedici, e
-    /// un piano con `is_simple`, `is_closed`, `contains_properly`,
-    /// `covered_by` o `equals` — che il motore pianifica e i provider
-    /// rendono — era fuori contratto. Allargare l'enum e compatibile: nessun
-    /// documento prima valido smette di esserlo.
+    /// Il test confronta direttamente lo schema v2 con `returns_boolean`, cosi
+    /// il contratto non puo omettere un predicato che l'engine valuta.
     ///
     /// `relate` resta fuori di proposito: e booleana solo con tre argomenti, e
     /// la forma del filtro nel piano ne prevede due.

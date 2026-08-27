@@ -212,8 +212,7 @@ class CliLiveFixtures(unittest.TestCase):
     def test_the_provider_suite_includes_the_ignored_tests(self) -> None:
         """I `#[ignore]` del provider devono entrare nella corsa.
 
-        Senza `--include-ignored` restavano fuori, e il report li dichiarava
-        eseguiti lo stesso.
+        L'opzione deve restare nella stessa invocazione inventariata dal report.
         """
         source = self.source()
         start = source.index('"-p",\n                    "plenora-db-postgres",')
@@ -239,11 +238,8 @@ class LiveInventory(unittest.TestCase):
     def test_a_helper_named_like_a_live_test_stays_out(self) -> None:
         """Il prefisso non basta: serve l'attributo di test.
 
-        `fn live_dsn()` esiste in due moduli del provider ed e un helper, non
-        un test: nessuna corsa puo riportarlo `ok`. Raccoglierlo rendeva il
-        gate impossibile da superare — dopo l'intera suite live falliva sempre
-        nominando `live_dsn`, e i test di questo file restavano verdi perche
-        verificavano solo il prefisso.
+        `fn live_dsn()` è un helper: nessuna corsa può riportarlo `ok`, anche se
+        il nome porta il prefisso live.
         """
 
         self.assertNotIn("live_dsn", gate.live_test_inventory())
@@ -274,7 +270,7 @@ class LiveInventory(unittest.TestCase):
         )
 
     def test_a_test_with_comments_between_attributes_and_signature_is_kept(self) -> None:
-        """La forma reale che una prima versione della regex aveva escluso."""
+        """I commenti tra attributo e firma non nascondono il test."""
 
         self.assertIn(
             "live_postgis_read_when_dsn_is_available", gate.live_test_inventory()
@@ -406,10 +402,10 @@ class LiveInventory(unittest.TestCase):
             self.assertIn(f"fn {name}(", source, name)
 
     def test_the_observed_name_is_matched_outside_test_suite_too(self) -> None:
-        """La forma precedente ancorava a `test_suite::tests::`.
+        """L'inventario osserva i test live in qualunque modulo.
 
-        I test live degli altri moduli non erano nemmeno osservabili: qualunque
-        inventario costruito su quel pattern li avrebbe dichiarati mancanti.
+        Legare il pattern a `test_suite::tests::` escluderebbe le altre
+        superfici live.
         """
         name = sorted(gate.live_test_inventory())[0]
         self.assertIn(
@@ -477,9 +473,8 @@ class LiveTestsMustMeasure(unittest.TestCase):
         )
         self.assertIn("PLENORA_REQUIRE_LIVE_POSTGRES", source)
 
-        # Il materiale TLS aveva la stessa forma, su variabili diverse, ed
-        # era sfuggito alla prima stesura di questa guardia proprio per
-        # quello: si cercava un nome, non una forma.
+        # Il materiale TLS usa variabili diverse ma la stessa forma; la guardia
+        # cerca quindi la struttura e non un singolo nome.
         diretto_tls = re.findall(
             r'std::env::var\(\"PLENORA_TEST_POSTGRES_TLS_\w+\"\)\s*,?\s*\n\s*\)\s*else',
             source,

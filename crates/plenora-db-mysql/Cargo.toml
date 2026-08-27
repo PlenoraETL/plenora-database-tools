@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 plenora-database-core.workspace = true
+plenora-database-engine.workspace = true
 plenora-database-sql.workspace = true
 mysql_async.workspace = true
 chrono.workspace = true

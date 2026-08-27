@@ -30,12 +30,9 @@ impl RowStream for PostgresRowStream<'_> {
                 "FETCH FORWARD {} FROM {}",
                 self.batch_size, self.cursor_name
             );
-            // Fix review post-79665ca: `next_batch` faceva `.await`
-            // diretto. Un cancel durante il FETCH restava in coda al
-            // termine della query server-side. Ora race in-flight con
-            // `select_with_cancellation`. Sul cancel marcato exhausted
-            // per bloccare successivi `next_batch` — il cursor viene
-            // chiuso dal commit/rollback della tx.
+            // Il FETCH corre insieme al token. Su cancellazione lo stream
+            // diventa exhausted per bloccare altri batch; commit o rollback
+            // chiudono il cursore transaction-scoped.
             let Some(fetch_result) =
                 select_with_cancellation(self.client.query(fetch_sql.as_str(), &[]), cancellation)
                     .await

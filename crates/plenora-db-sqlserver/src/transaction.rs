@@ -1,19 +1,5 @@
 //! La transazione applicativa di SQL Server.
 //!
-//! # Perche esiste
-//!
-//! Il documento capability di questo provider dichiarava
-//! `transactions.scope = Transaction`, e il trait `Provider` dice a chiare
-//! lettere che devono sovrascrivere `begin_transaction` «soltanto i provider
-//! che pubblicano scope pari a Transaction». Questo provider lo pubblicava e
-//! non la sovrascriveva: il default rispondeva `Unsupported`, e la capability
-//! era una promessa che nessuno poteva mantenere.
-//!
-//! Non se n'era accorto nessuno perche i consumer e le prove non attraversavano
-//! questo bordo comune: le prove live usavano le primitive TDS direttamente.
-//!
-//! # Cosa copre
-//!
 //! Il contratto transazionale comune, inclusi savepoint e rollback al punto.
 //! Il rilascio resta rifiutato perche T-SQL non ha `RELEASE SAVEPOINT`; la
 //! capability comune non promette quell'operazione distinta.
@@ -29,7 +15,7 @@ use plenora_database_core::transaction::{
 };
 use plenora_database_core::{
     CancellationToken, CommitOutcome, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
-    Result, RetryDisposition, Row,
+    Result, Row,
 };
 use std::sync::Arc;
 use tiberius::Query;
@@ -81,16 +67,12 @@ impl SqlServerTransaction {
         if self.open {
             return Ok(());
         }
-        Err(DatabaseError {
-            category: ErrorCategory::InvalidPlan,
+        Err(DatabaseError::new(
+            ErrorCategory::InvalidPlan,
             phase,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(ProviderKind::Sqlserver),
-            execution_id: None,
-            diagnostics: None,
-            message: "transazione SQL Server gia conclusa".to_owned(),
-        })
+            Some(ProviderKind::Sqlserver),
+            "transazione SQL Server gia conclusa",
+        ))
     }
 
     /// Il nome di un savepoint, validato e racchiuso per T-SQL.
@@ -267,43 +249,32 @@ fn decode_cell(
 ) -> Result<ParameterValue> {
     use tiberius::ColumnType as Ct;
 
-    let mapping = |message: String| DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Sqlserver),
-        execution_id: None,
-        diagnostics: None,
-        message,
-    };
-
     match kind {
         Ct::Bit | Ct::Bitn => Ok(row
             .try_get::<bool, _>(index)
-            .map_err(|error| mapping(format!("decode bit idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "bit"))?
             .map_or_else(|| null_value(kind), ParameterValue::Bool)),
         Ct::Int1 => Ok(row
             .try_get::<u8, _>(index)
-            .map_err(|error| mapping(format!("decode tinyint idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "tinyint"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::I32(i32::from(value)),
             )),
         Ct::Int2 => Ok(row
             .try_get::<i16, _>(index)
-            .map_err(|error| mapping(format!("decode smallint idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "smallint"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::I32(i32::from(value)),
             )),
         Ct::Int4 => Ok(row
             .try_get::<i32, _>(index)
-            .map_err(|error| mapping(format!("decode int idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "int"))?
             .map_or_else(|| null_value(kind), ParameterValue::I32)),
         Ct::Int8 => Ok(row
             .try_get::<i64, _>(index)
-            .map_err(|error| mapping(format!("decode bigint idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "bigint"))?
             .map_or_else(|| null_value(kind), ParameterValue::I64)),
         // `Intn` e la forma nullable, e il wire non dice quale larghezza
         // portava: si prova dalla piu larga, che le contiene tutte.
@@ -313,36 +284,36 @@ fn decode_cell(
                 row.try_get::<i32, _>(index)
                     .map(|value| value.map(i64::from))
             })
-            .map_err(|error| mapping(format!("decode intn idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "intn"))?
             .map_or_else(|| null_value(kind), ParameterValue::I64)),
         Ct::Float4 => Ok(row
             .try_get::<f32, _>(index)
-            .map_err(|error| mapping(format!("decode real idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "real"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::F64(f64::from(value)),
             )),
         Ct::Float8 | Ct::Floatn => Ok(row
             .try_get::<f64, _>(index)
-            .map_err(|error| mapping(format!("decode float idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "float"))?
             .map_or_else(|| null_value(kind), ParameterValue::F64)),
         Ct::Guid => Ok(row
             .try_get::<tiberius::Uuid, _>(index)
-            .map_err(|error| mapping(format!("decode uniqueidentifier idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "uniqueidentifier"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Uuid(value.hyphenated().to_string()),
             )),
         Ct::BigVarBin | Ct::BigBinary | Ct::Image => Ok(row
             .try_get::<&[u8], _>(index)
-            .map_err(|error| mapping(format!("decode binary idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "binary"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Bytes(value.to_vec()),
             )),
         Ct::Datetime | Ct::Datetime2 | Ct::Datetime4 | Ct::Datetimen => Ok(row
             .try_get::<chrono::NaiveDateTime, _>(index)
-            .map_err(|error| mapping(format!("decode datetime idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "datetime"))?
             .map_or_else(
                 || null_value(kind),
                 |value| {
@@ -351,21 +322,21 @@ fn decode_cell(
             )),
         Ct::DatetimeOffsetn => Ok(row
             .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
-            .map_err(|error| mapping(format!("decode datetimeoffset idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "datetimeoffset"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::TimestampTz(value.to_rfc3339()),
             )),
         Ct::Daten => Ok(row
             .try_get::<chrono::NaiveDate, _>(index)
-            .map_err(|error| mapping(format!("decode date idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "date"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Date(value.format("%Y-%m-%d").to_string()),
             )),
         Ct::Timen => Ok(row
             .try_get::<chrono::NaiveTime, _>(index)
-            .map_err(|error| mapping(format!("decode time idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "time"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::String(value.format("%H:%M:%S%.6f").to_string()),
@@ -373,9 +344,7 @@ fn decode_cell(
         // Decimali e valuta: il testo e la sola forma che non perde cifre, ed
         // e cio che `ParameterValue::Decimal` porta.
         //
-        // La prima stesura chiedeva un `f64`, e il driver lo rifiutava:
-        // «cannot interpret Numeric(Some(12345.6789)) as an f64 value». Il
-        // rifiuto era un favore. Un `decimal(38,10)` non entra in un `f64`
+        // Un `decimal(38,10)` non entra in un `f64`
         // senza perdere cifre, e la perdita sarebbe stata silenziosa — il
         // valore sarebbe arrivato al chiamante plausibile e sbagliato.
         //
@@ -384,7 +353,7 @@ fn decode_cell(
         // contratto vuole.
         Ct::Decimaln | Ct::Numericn => Ok(row
             .try_get::<tiberius::numeric::Numeric, _>(index)
-            .map_err(|error| mapping(format!("decode decimal idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "decimal"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Decimal(value.to_string()),
@@ -407,14 +376,14 @@ fn decode_cell(
         // niente.
         Ct::Money | Ct::Money4 => Ok(row
             .try_get::<f64, _>(index)
-            .map_err(|error| mapping(format!("decode money idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "money"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::Decimal(value.to_string()),
             )),
         Ct::NVarchar | Ct::NChar | Ct::BigVarChar | Ct::BigChar | Ct::NText | Ct::Text => Ok(row
             .try_get::<&str, _>(index)
-            .map_err(|error| mapping(format!("decode testo idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "testo"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::String(value.to_owned()),
@@ -430,20 +399,15 @@ fn decode_cell(
         // schema lo chiede al catalogo, dove sta.
         Ct::Xml => Ok(row
             .try_get::<&tiberius::xml::XmlData, _>(index)
-            .map_err(|error| mapping(format!("decode xml idx={index}: {error}")))?
+            .map_err(|_| decode_mapping_error(index, "xml"))?
             .map_or_else(
                 || null_value(kind),
                 |value| ParameterValue::String(value.to_string()),
             )),
         Ct::Null => Ok(null_value(kind)),
-        // Il ramo di scarto c'e, e prima non c'era: `Udt` e `SSVariant`
-        // avevano ciascuno il proprio, uno che rendeva byte e uno che
-        // rifiutava. Erano **irraggiungibili**: tiberius 0.12.3 muore in un
-        // `todo!()` mentre decodifica i loro metadati, quindi il decoder non
-        // li vede mai.
-        //
-        // Il panico e ora catturato dove nasce — in `connection.rs`, che mette
-        // la sessione in quarantena e rende un rifiuto — e qui restano soltanto
+        // `Udt` e `SSVariant` possono fallire gia nella decodifica dei metadati
+        // del driver. Il panico e catturato in `connection.rs`, che mette la
+        // sessione in quarantena; qui restano soltanto
         // le famiglie che arrivano davvero. Un ramo che dichiara di gestire
         // qualcosa che non gli arriva e una promessa a nessuno.
         //
@@ -456,6 +420,15 @@ fn decode_cell(
             "tipo di colonna SQL Server fuori dal sottoinsieme mappato",
         )),
     }
+}
+
+fn decode_mapping_error(index: usize, kind: &str) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Read,
+        Some(ProviderKind::Sqlserver),
+        format!("decode {kind} idx={index} fallito"),
+    )
 }
 
 /// Lo stream di righe di una transazione.
@@ -742,16 +715,12 @@ impl TransactionScope for SqlServerTransaction {
                     ),
                 )
             } else {
-                Err(DatabaseError {
-                    category: ErrorCategory::NotFound,
-                    phase: ErrorPhase::Write,
-                    remote_effect: RemoteEffect::None,
-                    retry: RetryDisposition::Never,
-                    provider: Some(ProviderKind::Sqlserver),
-                    execution_id: None,
-                    diagnostics: None,
-                    message: "update condizionato SQL Server: chiave assente".to_owned(),
-                })
+                Err(DatabaseError::new(
+                    ErrorCategory::NotFound,
+                    ErrorPhase::Write,
+                    Some(ProviderKind::Sqlserver),
+                    "update condizionato SQL Server: chiave assente",
+                ))
             }
         })
     }
@@ -776,6 +745,17 @@ impl TransactionScope for SqlServerTransaction {
             self.open = false;
             self.session.session_mut()?.rollback(cancellation).await
         })
+    }
+}
+
+#[cfg(test)]
+mod decode_error_tests {
+    use super::decode_mapping_error;
+
+    #[test]
+    fn public_decode_error_contains_only_operational_context() {
+        let error = decode_mapping_error(7, "decimal");
+        assert_eq!(error.message, "decode decimal idx=7 fallito");
     }
 }
 

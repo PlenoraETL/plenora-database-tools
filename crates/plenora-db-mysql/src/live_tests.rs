@@ -3846,7 +3846,7 @@ async fn live_append_timeout_quarantines_and_replaces_the_pooled_session() {
     drop(setup);
 }
 
-// ============================ v1.2 — Transaction OLTP live ================
+// ============================ Transaction OLTP live =======================
 
 #[tokio::test]
 async fn live_v12_transaction_execute_and_commit() {
@@ -4056,12 +4056,8 @@ async fn live_v12_session_context_does_not_reach_the_next_transaction() {
 
 /// Il `SessionContext` raggiunge il server, con la chiave che il core produce.
 ///
-/// Il core impone `namespace.name`, quindi un punto, e il provider teneva
-/// una regola locale che ammetteva solo alfanumerici e `_`: le due
-/// validazioni erano mutuamente esclusive, e `begin_transaction` con un
-/// context non vuoto falliva sempre in `Prepare` — una capability pubblicata
-/// che nessuna chiave valida poteva esercitare. Il rifiuto era nostro: il
-/// server le variabili con il punto le accetta, quotate o no.
+/// Il core impone `namespace.name`, quindi il provider deve accettare il punto.
+/// Il server accetta queste variabili, quotate o no.
 #[tokio::test]
 async fn live_v12_transaction_session_context_reaches_the_server() {
     use plenora_database_core::session_context::{SessionEntry, SessionValue};
@@ -4422,7 +4418,7 @@ async fn live_v12_conditional_update_rolls_back_on_mismatch() {
         .ok();
 }
 
-// ============================ v1.2 — Write bulk modes (Create/TruncateInsert) ==
+// ============================ Write bulk: Create/TruncateInsert ============
 
 fn write_op_scalar(
     schema: &str,
@@ -5051,7 +5047,7 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
         .ok();
 }
 
-// ============================ v1.2 — Blocco C: spatial verified ===========
+// ============================ Spatial verificato ==========================
 
 /// Cio che le capability pubblicano e **esattamente** la lista verified.
 ///
@@ -5081,7 +5077,7 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
         .expect("probe caps");
     assert!(
         !caps.spatial.functions.is_empty(),
-        "v1.2 deve pubblicare funzioni spatial verified"
+        "il provider deve pubblicare funzioni spatial verificate"
     );
     assert_eq!(
         caps.spatial.functions,
@@ -5093,13 +5089,6 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 /// Ogni funzione di `VERIFIED_SPATIAL_FUNCTIONS`, eseguita contro il
 /// riferimento.
 ///
-/// La lista ne dichiarava ventisei e le prove live ne attraversavano due:
-/// `Area` e `Intersects`. Il test di capability qui sopra conta la lista e ci
-/// cerca dentro cinque nomi, che dimostra qualcosa sulla costante e niente sul
-/// motore — la differenza che la regola 1 chiede di non confondere. Quando
-/// questa sonda le ha attraversate davvero, dodici delle ventisei non
-/// eseguivano, e la lista e scesa a quindici.
-///
 /// La sonda le prova tutte, costruendo gli argomenti da
 /// `accepts_argument_count` e `takes_geometry_at`: dove il contratto vuole una
 /// geometria arriva la colonna, altrove un intero.
@@ -5107,12 +5096,8 @@ async fn live_v12_capabilities_publish_verified_spatial_functions() {
 /// # Due geometrie, non una
 ///
 /// Ogni funzione viene provata su una `LINESTRING` **e** su un `POLYGON`, e
-/// conta se ne attraversa almeno una. La prima stesura ne usava una sola, e la
-/// `LINESTRING` che serviva a `IsClosed` e `NPoints` faceva rispondere `3516`
-/// ad `ST_Area`, che su una linea non e definita. Sarebbe stata una falsa
-/// assenza: una capability chiusa per colpa del dato della sonda, cioe
-/// l'errore opposto a quello che questa sonda esiste per prevenire, e
-/// altrettanto sbagliato.
+/// conta se ne attraversa almeno una. Alcune funzioni non sono definite per
+/// entrambe le forme; usarne una sola produrrebbe una falsa assenza.
 ///
 /// # I rifiuti si raccolgono
 ///
@@ -5986,7 +5971,7 @@ async fn live_v12_write_upsert_without_keys_rejected() {
 }
 
 // ============================================================================
-//  PFM CHG-003 — NativeQueryPolicy MySQL parity
+//  NativeQueryPolicy
 // ============================================================================
 //
 // I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (già
@@ -7334,12 +7319,6 @@ async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
 
 /// Uno stream lasciato a meta **non** rompe la transazione.
 ///
-/// E' il test che ha smentito la prima stesura di `query_stream`. Quella
-/// dichiarava — in un commento, in un documento e in una bandiera di stato —
-/// che abbandonare un result set `MySQL` lascia i pacchetti in coda e rende la
-/// connessione inservibile, e faceva fallire ogni operazione successiva della
-/// transazione con `RequiresRecovery`. Il riferimento ha risposto `Committed`.
-///
 /// `mysql_async` drena il result set pendente prima dello statement
 /// successivo. Il pericolo esisteva sul filo e non esisteva nel driver, e la
 /// differenza fra le due cose e esattamente quello che una misura serve a
@@ -7611,8 +7590,7 @@ async fn live_concurrent_cancellation_does_not_disturb_the_other_readers() {
                 }
             }
             // La transazione resta usabile anche dopo una lettura cancellata:
-            // e cio che la settima tranche ha misurato, e qui lo si attraversa
-            // sotto contesa.
+            // il test la verifica anche sotto contesa.
             transaction
                 .commit(&cancellation)
                 .await

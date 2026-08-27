@@ -1,14 +1,8 @@
 name: supply-chain
 
-# `deny.toml` esisteva, con una policy articolata — advisory negate, allowlist
-# di licenze, sorgenti ristrette, eccezioni datate — e nessun workflow la
-# eseguiva. Una policy che nessuno applica non e una policy: e un documento
-# che descrive un controllo immaginario, e le sue eccezioni scadono senza che
-# nessuno se ne accorga (la revisione 2026-Q2 di deny.toml e passata cosi).
-#
-# Il gate legge `Cargo.lock`, che e uno solo per tutto il workspace: comprende
+# Applica la policy di `deny.toml` all'intero `Cargo.lock`, che comprende
 # anche tiberius, mysql_async e pyo3, che `default-members` esclude dal build
-# ma non dalla risoluzione. E' voluto — la superficie da controllare e quella
+# ma non dalla risoluzione. La superficie da controllare e quella
 # che il repository dichiara, non quella che `cargo build` tocca per default.
 #
 # Gira anche a calendario perche il rischio qui non arriva da un commit: una

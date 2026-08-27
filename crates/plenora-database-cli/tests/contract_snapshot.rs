@@ -220,7 +220,7 @@ fn snapshot_execute_sql_affected_rows_shape() {
         ],
         &[("PG_DSN", DSN)],
     );
-    // Ora execute-sql su una tabella temp per verificare shape affected_rows.
+    // Verifica la forma `affected_rows` con una tabella temporanea.
     // Uso una tx unica multiline non è possibile — usiamo un UPDATE su
     // una tabella non esistente: ci basta che il payload sia strutturato.
     // Alternative pulito: usiamo execute-sql su una query che modifica 0

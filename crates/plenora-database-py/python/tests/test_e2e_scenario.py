@@ -86,7 +86,7 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
             )
             assert n == 1
 
-            # 4. Spatial query via portable AST (F3-6c + driver v0.2)
+            # 4. Spatial query via portable AST
             ref_ewkb = await tx.execute_scalar(
                 "SELECT ST_AsEWKB(ST_SetSRID("
                 " ST_MakeEnvelope(9.0, 45.0, 10.0, 46.0), 4326))"
@@ -182,7 +182,7 @@ def test_e2e_pfm_building_lifecycle_sync(clean_schema) -> None:
                 .all()
             )
             # Il predicate d_within su geometry(Point,4326) userà cast
-            # ::geography se semantics=geography → fix v0.2 driver.
+            # ::geography se semantics=geography.
             # Il record inserted è alla stessa posizione → matcha.
             assert [r["code"] for r in near] == ["DUOMO-MI"]
 

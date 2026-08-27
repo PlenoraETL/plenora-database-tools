@@ -1,3 +1,5 @@
+//! Budget condivisi e lease atomiche per le risorse consumate dalle operazioni.
+
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

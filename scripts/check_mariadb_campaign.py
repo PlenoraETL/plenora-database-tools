@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """Campagna live dell'evidenza MariaDB: fixture, misura, verdetto, uscita.
 
-Il runner `check_mariadb_driver.py` sa misurare e sa giudicare, ma pretende
-tre server gia accesi: in locale li ha, su un runner pulito no. Finche e stato
-cosi, settantasei sonde — e i contratti che le rendono prove — erano
-presidiate solo da chi si ricordava di lanciarle.
-
-Il punto 3 della fase 3 comincia ad aprire capability di **scrittura**. Ogni
-prova nuova deve entrare subito in una campagna che gira su runner puliti, non
-recuperare quella garanzia poco prima di esporre il provider: e la differenza
-fra una misura che qualcuno rifa e una che qualcuno ricorda.
+Il runner `check_mariadb_driver.py` misura e giudica server gia disponibili;
+questa campagna aggiunge il lifecycle riproducibile delle fixture sui runner
+puliti e propaga il verdetto come exit code.
 
 Il ciclo di vita delle fixture sta in `scripts/fixture_campaign.py`, condiviso
 con la campagna di sessione. Qui restano le due cose che riguardano questa

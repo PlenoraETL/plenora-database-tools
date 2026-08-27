@@ -278,8 +278,7 @@ async fn audit_count() -> String {
 /// che e la corsa di due sessioni sugli indici del catalogo, non un difetto
 /// del provider.
 ///
-/// La prima corsa del gate live dopo l'aggiunta del workflow li ha fatti
-/// scontrare. Il turno rende la condivisione una proprieta dichiarata invece
+/// Il turno rende la condivisione del fixture una proprieta dichiarata invece
 /// di una coincidenza dello scheduler.
 static FIXTURE: Mutex<()> = Mutex::const_new(());
 

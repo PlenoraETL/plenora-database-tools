@@ -8,9 +8,7 @@ use plenora_database_core::arrow::array::{
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::ewkb::inspect_ewkb_detailed;
 use plenora_database_core::protocol;
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use tiberius::{IntoSql, Query, TokenRow};
 
 #[derive(Debug)]
@@ -577,16 +575,12 @@ fn enforce_cell(length: usize, limit: u64) -> Result<()> {
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Write,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]

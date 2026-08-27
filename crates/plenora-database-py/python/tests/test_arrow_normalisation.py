@@ -123,11 +123,8 @@ def test_a_list_of_narrow_types_is_left_untouched() -> None:
 def test_struct_of_large_utf8_is_narrowed() -> None:
     """Lo struct **e** un tipo qualificato: range e composite lo usano.
 
-    Il test precedente fissava il contrario — "nessun writer accetta struct,
-    quindi non si tocca" — ed era falso: `PostgreSQL` scrive i `range` come
-    struct di `lower`/`upper` testuali piu i flag, e i `composite` come
-    struct di campi testuali. Uno `struct<large_string>` arrivava intatto al
-    writer, che lo rifiutava.
+    PostgreSQL rappresenta `range` e `composite` come struct: la
+    normalizzazione deve quindi attraversare ricorsivamente i campi testuali.
     """
 
     inner = pyarrow.field("nome", pyarrow.large_string(), nullable=False)

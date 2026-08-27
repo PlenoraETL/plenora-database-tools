@@ -5,7 +5,7 @@ riferimento) e lo passa a `where_spatial(...)` di Select/Update/Delete
 builder. Il portable AST viene tradotto lato Rust nel dialetto del
 provider (PostGIS `ST_Intersects` / `ST_Contains` / `ST_Within` /
 `ST_DWithin` con cast condizionale `::geometry` o `::geography` in
-base alle semantics — v0.2 fix del driver).
+base alle semantics).
 
 Uso tipico:
 
@@ -57,7 +57,7 @@ _VALID_SEMANTICS = frozenset({"geometry", "geography"})
 # il compilatore Rust rifiuta (silent wrong result: distanza in gradi).
 # Client-side fast-fail per UX migliore.
 #
-# Fase A1: la lista è caricata **al primo accesso** dal modulo nativo
+# La lista e caricata **al primo accesso** dal modulo nativo
 # `plenora_database._native.geographic_srids()` che a sua volta legge da
 # `plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS`.
 # Single-source-of-truth Rust: se il core aggiunge un SRID, Python lo
@@ -65,12 +65,11 @@ _VALID_SEMANTICS = frozenset({"geometry", "geography"})
 def _load_geographic_srids() -> Optional[frozenset[int]]:
     """Legge la lista dal core Rust. `None` se il modulo nativo non c'e.
 
-    Qui viveva anche una copia hardcoded come "safety net". Non lo era: una
-    seconda copia di una policy e una policy che diverge in silenzio, e questa
-    alimenta una guardia di **rifiuto** — se la lista non contiene un SRID
-    geografico, `d_within` con `semantics='geometry'` passa e restituisce una
-    distanza in gradi presentata come metri. Un fallback che sbaglia in quella
-    direzione e peggio di nessun fallback.
+    Una copia Python della policy potrebbe divergere in silenzio. Questa lista
+    alimenta una guardia di **rifiuto**: se manca un SRID geografico,
+    `d_within` con `semantics='geometry'` restituirebbe una distanza in gradi
+    presentata come metri. Un fallback che sbaglia in quella direzione e
+    peggio di nessun fallback.
 
     Chi non puo leggere la lista autorevole non tira a indovinare: fallisce
     chiuso al momento dell'uso, in `_require_geographic_srids`. La risoluzione
@@ -122,7 +121,7 @@ class SpatialReference:
             la colonna target).
         dimensions (str): "xy" / "xyz" / "xym" / "xyzm" / "unknown".
         semantics (str): "geometry" o "geography" — determina il cast
-            server-side (`::geometry` vs `::geography`, fix driver v0.2).
+            server-side (`::geometry` vs `::geography`).
     """
 
     __slots__ = ("ewkb", "srid", "dimensions", "semantics")
@@ -135,7 +134,7 @@ class SpatialReference:
         dimensions: str = "xy",
         semantics: str = "geometry",
     ) -> "SpatialReference":
-        """Come `SpatialReference(...)` ma verifica l'EWKB (fix review #5).
+        """Come `SpatialReference(...)` ma verifica l'EWKB.
 
         Se il buffer EWKB ha SRID embedded (formato Postgres EWKB),
         deve combaciare con `srid` dichiarato. Se contiene coordinate
@@ -221,7 +220,7 @@ def geometry(
     """SpatialReference con semantics=geometry (predicati usano il cast
     server-side `::geometry`; distanze in unità SRS).
 
-    Fix review #5: usa `SpatialReference.validated` per verificare che
+    Usa `SpatialReference.validated` per verificare che
     SRID/dimensioni dichiarati coincidano con l'EWKB reale (prevenzione
     bypass della `spatial_policy`).
     """
@@ -236,7 +235,7 @@ def geography(
     """SpatialReference con semantics=geography (predicati usano il cast
     server-side `::geography`; distanze in metri, calcoli geodetici).
 
-    Fix review #5: usa `SpatialReference.validated` — vedi `geometry()`.
+    Usa `SpatialReference.validated`; vedi `geometry()`.
     """
     return SpatialReference.validated(ewkb, srid, dimensions, "geography")
 
@@ -275,7 +274,7 @@ def _validate_predicate_reference_combo(
 ) -> None:
     """Fast-fail client-side per combinazioni fuorvianti.
 
-    Reason: il compilatore Rust rifiuta comunque (fix review #5), ma il
+    Il compilatore Rust rifiuta comunque, ma il
     round-trip include serialization + IPC + parsing — errore locale
     dà stacktrace più utile.
     """

@@ -2,9 +2,9 @@
 name = "plenora-database-py"
 description = "Bindings Python (PyO3) di plenora-database-tools"
 # Version esplicita — NON eredita workspace. Il SDK Python ha ciclo di
-# release proprio (semver PyPI) separato dal Rust workspace (v1.x).
-# Deve coincidere con `pyproject.toml::version` altrimenti wheel filename
-# e `p.version()` divergono (bug v0.1.0 fixato in v0.1.1).
+# release proprio (semver PyPI) separato dal Rust workspace.
+# Deve coincidere con `pyproject.toml::version`: il nome della wheel e
+# `p.version()` derivano da fonti diverse.
 version = "0.11.0"
 edition.workspace = true
 rust-version.workspace = true

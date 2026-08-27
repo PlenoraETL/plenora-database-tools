@@ -1,4 +1,6 @@
-use crate::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
+//! Ispezione bounded di geometrie EWKB senza dipendenze dal provider.
+
+use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EwkbStats {
@@ -308,16 +310,12 @@ pub fn inspect_ewkb_detailed(
 }
 
 fn mapping_error(message: &str) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Validate,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: None,
-        execution_id: None,
-        message: message.to_owned(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Validate,
+        None,
+        message,
+    )
 }
 
 fn resource_error(message: &str) -> DatabaseError {

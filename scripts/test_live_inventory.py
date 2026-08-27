@@ -40,7 +40,7 @@ class AnnotatedTests(unittest.TestCase):
         self.assertEqual(inventory.annotated_tests(source), [])
 
     def test_comments_between_the_attribute_and_the_signature_keep_the_test(self) -> None:
-        """La forma reale che una prima versione della regex aveva escluso."""
+        """I commenti tra attributo e firma non nascondono il test."""
 
         source = (
             "    #[tokio::test]\n"
@@ -147,9 +147,8 @@ class AnnotatedTests(unittest.TestCase):
     def test_test_must_be_the_last_segment_of_the_path(self) -> None:
         """`#[foo::test::case]` non dichiara un test.
 
-        La forma precedente cercava `test` come parola: bastava che comparisse
-        in mezzo al path perche una funzione qualunque entrasse nell'inventario
-        come test, e nessuna corsa avrebbe potuto eseguirla.
+        `test` deve essere l'ultimo segmento del path; una semplice occorrenza
+        nel mezzo non dichiara un test eseguibile.
         """
 
         source = "    #[foo::test::case]\n    fn live_finto() {}\n"
@@ -435,34 +434,14 @@ class CitedTests(unittest.TestCase):
     deduzione. Il commento e percio parte del contratto, e come il contratto
     puo mentire.
 
-    Ha mentito due volte, in modi diversi.
-
-    La prima: su SQL Server il commento accanto a `mixed_geometry_types`
-    dichiarava che «il roundtrip mixed Point+Polygon e qualificato dal gate
-    live per entrambe le semantiche». Non lo era. Nessuno aveva mai scritto un
-    Point e un Polygon nella stessa colonna, e l'unica prova che sfiorava il
-    flag lo rileggeva da `probe_capabilities` per asserire che fosse vero — la
-    deduzione confrontata con se stessa.
-
-    La seconda, mezz'ora dopo, scrivendo la misura che mancava: il commento
-    nuovo nominava `live_additive_schema_evolution_is_opt_in_atomic_and_reported`
-    per l'indice spaziale, e le asserzioni sull'indice stanno invece in
-    `live_create_and_replace_round_trip_all_reference_types`. Un nome plausibile
-    e sbagliato e peggio di nessun nome: chi lo legge crede di poter andare a
-    controllare.
-
-    Questa guardia coglie soltanto la seconda forma — il nome che non esiste —
-    e non la prima, perche nessuno statico puo sapere se una prova che esiste
-    verifica davvero cio che il commento le attribuisce. Ma la seconda e quella
-    che si commette per distrazione, ed e l'unica delle due che si puo chiudere
-    a costo zero.
+    La guardia verifica che ogni nome citato esista. Non può dimostrare
+    staticamente che il corpo del test sostenga davvero la capability: quella
+    resta responsabilità della prova e della review.
 
     # Perche i nomi si raccolgono da tutto il repository
 
-    Le prove live non stanno in un solo posto: `live_tests.rs` per MySQL e SQL
-    Server, `transaction/tests.rs` e `test_suite.rs` per PostgreSQL. Un primo
-    tentativo di questa scansione guardava solo `live_tests.rs` e dichiarava
-    rotta una citazione di PostgreSQL che era perfettamente valida.
+    Le prove live non stanno in un solo file, quindi la scansione copre tutto
+    il repository invece di assumere un nome di modulo.
     """
 
     #: Quello che sembra un nome e non lo e. `live_tests` e un modulo; una

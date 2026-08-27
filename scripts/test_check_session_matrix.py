@@ -2,7 +2,7 @@
 """Self-test della matrice della semantica di sessione.
 
 La matrice giustifica una decisione architetturale: il codice di sessione
-resta condiviso perche i tre riferimenti si comportano allo stesso modo. Una
+resta condiviso finché tutti i riferimenti si comportano allo stesso modo. Una
 matrice che smettesse di accorgersi di una divergenza — o che chiamasse
 "accordo" un fallimento comune — lascerebbe quella decisione in piedi senza
 la prova che la regge.
@@ -183,11 +183,8 @@ class SessionMatrixTests(unittest.TestCase):
     def recorded_matrix(self) -> str:
         """Il documento generato, se esiste.
 
-        E un artefatto: prima della prima esecuzione non c'e, e pretenderlo
-        renderebbe rosso il commit che introduce il runner. Dopo, il runner
-        pretende un albero pulito, quindi cio che si legge qui descrive un
-        commit preciso. Il salto vale per l'assenza, non per un documento
-        vecchio: quello fa fallire le asserzioni sotto, ed e giusto cosi.
+        L'assenza è ammessa perché il file nasce dalla campagna live. Se
+        presente, deve invece descrivere esattamente il commit misurato.
         """
 
         if not MATRIX.EVIDENCE.exists():
@@ -282,12 +279,11 @@ class SessionMatrixTests(unittest.TestCase):
         self.assertIn("albero e cambiato durante la misura", str(raised.exception))
 
     def test_the_image_is_recognised_whatever_the_daemon_reports(self) -> None:
-        """Il caso che ha fatto fallire la prima campagna su CI.
+        """Riconosce le diverse identità restituite dai runtime Docker.
 
-        `{{.Image}}` e l'**ID** dell'immagine: con containerd coincide con il
+        `{{.Image}}` e l'ID dell'immagine: con containerd coincide con il
         digest del manifest, con il graph driver classico e il digest della
-        *config*, un valore diverso. Confrontarlo con il pin passava in locale
-        e falliva sul runner — verde dove non serviva, rossa dove serviva.
+        config, un valore diverso dal pin del manifest.
         """
 
         # Il digest arriva da `references.json`, non ricopiato qui: la prova
@@ -303,8 +299,8 @@ class SessionMatrixTests(unittest.TestCase):
                 (f"mysql@{declared}", declared, f"mysql@{declared}"), declared
             )
         )
-        # Graph driver: l'ID e il digest della config, e solo `RepoDigests`
-        # porta quello del manifest. E la forma che rompeva.
+        # Graph driver: l'ID è il digest della config; il manifest compare in
+        # `RepoDigests`.
         self.assertTrue(
             MATRIX.declares_image(
                 (
@@ -509,7 +505,7 @@ class SessionMatrixTests(unittest.TestCase):
             self.assertTrue((tmp / "SESSION-MATRIX.md").exists(), "documento non scritto")
 
         # Il preflight sull'albero precede qualunque comando Docker: farlo dopo
-        # significava scoprire l'albero sporco con tre server gia accesi.
+        # evita di scoprire un albero sporco soltanto dopo l'avvio delle fixture.
         self.assertEqual(calls[0], ("git", "preflight"))
         self.assertEqual(
             [file for file, action in calls if action == "up"],

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Matrice della semantica di sessione sui tre riferimenti accesi.
+"""Matrice della semantica di sessione sui riferimenti accesi.
 
-La fase 1 ha lasciato fuori dal profilo il bootstrap di sessione, i livelli di
-isolamento e `START TRANSACTION`. Un residuo dichiarato non e una decisione:
-questa matrice misura se quelle superfici coincidono su MySQL 9.7, MariaDB
-12.3 e MariaDB 11.8, perche la regola architetturale dipende dalla risposta.
+La matrice confronta bootstrap di sessione, livelli di isolamento e avvio
+della transazione sui riferimenti dichiarati. La regola architetturale deriva
+dalla misura, non da una presunta compatibilita fra prodotti.
 
-Cio che il runner **non** fa: interpretare. Registra cosa i tre server hanno
+Cio che il runner **non** fa: interpretare. Registra cosa i server hanno
 fatto, e quali sonde divergono. La decisione su cosa spostare nel profilo si
 prende leggendo la matrice, non generandola.
 
@@ -36,7 +35,7 @@ from scripts.check_mariadb_driver import (  # noqa: E402
 )
 
 # L'inventario esatto e ordinato delle sonde. Non si deduce dal documento del
-# primo server: se una sonda sparisse da tutti e tre, dedurlo farebbe passare
+# primo server: se una sonda sparisse da tutti, dedurlo farebbe passare
 # una matrice piu piccola per una matrice intatta, e la decisione resterebbe
 # in piedi con meno prove di quante ne dichiara.
 EXPECTED_PROBES: tuple[str, ...] = (
@@ -103,7 +102,7 @@ def validate(documents: dict[str, dict[str, object]], results: list[dict[str, ob
 
     # 2. Ogni sonda deve essere accettata. `accepted` significa contratto
     #    soddisfatto, non misura riuscita: senza questo, "coincidono" sarebbe
-    #    vero anche per tre server che sbagliano allo stesso modo.
+    #    vero anche per riferimenti che sbagliano tutti allo stesso modo.
     unaccepted = [
         f"{entry['probe']}@{key}"
         for entry in results
@@ -171,10 +170,8 @@ def worktree_changes() -> list[str]:
 def preflight() -> str:
     """Pretende un albero pulito e restituisce il commit da cui si parte.
 
-    Estratto da `verdict` perche la campagna deve poterlo eseguire **prima**
-    di accendere i container: farlo dopo significava scoprire l'albero sporco
-    con tre server gia su, e soprattutto rendeva falsa l'affermazione che il
-    controllo precede Docker.
+    La campagna lo esegue prima di accendere i container, così un albero sporco
+    fallisce senza avviare fixture e il controllo precede davvero Docker.
 
     # Raises
 
@@ -211,7 +208,7 @@ def verdict() -> dict[str, object]:
         server.key: measure(server, MARKER, TEST_COMMAND) for server in fleet
     }
 
-    # Il bootstrap misurato deve essere quello del pool, su tutti e tre: se
+    # Il bootstrap misurato deve essere quello del pool su ogni riferimento: se
     # due server riportassero SQL diversi, staremmo confrontando due misure e
     # non due comportamenti.
     statements = {document["bootstrap_sql"] for document in documents.values()}

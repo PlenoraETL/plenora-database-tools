@@ -1,31 +1,19 @@
 name: sdk-assurance
 
-# La suite del SDK Python contro i quattro riferimenti veri.
+# Suite live del SDK Python contro i provider configurati dalla campagna.
 #
-# `scripts/check_sdk_tests.py` esiste da tempo e fa molto: costruisce wheel e
-# CLI nella stessa toolchain, li installa fuori dall'albero, verifica che
+# `scripts/check_sdk_tests.py` costruisce wheel e CLI nella stessa toolchain,
+# li installa fuori dall'albero, verifica che
 # `plenora_database` arrivi da `site-packages` e non dal source tree, esegue
 # `pytest` e confronta la corsa con il contratto dello scope — quanti passati,
-# quanti saltati e per quale motivo, quanti deselezionati. Nessun workflow lo
-# eseguiva.
+# quanti saltati e per quale motivo, quanti deselezionati.
 #
-# Cio che girava in CI era la sola suite **offline**: `rust-ci` la lancia sul
-# wheel di debug, e prova che i parametri tipizzati, la normalizzazione Arrow
-# e l'AST portable reggono senza server. Non prova niente su cio che il SDK
-# esiste per fare, cioe parlare con un database. Duecentodiciannove test
-# stavano fuori da qualunque corsa automatica.
+# `rust-ci` copre la suite offline; questa campagna aggiunge il comportamento
+# del wheel installato contro database reali.
 #
-# La conseguenza sta scritta in `deny.toml`, ed e il motivo per cui questa
-# campagna arriva adesso: le due advisory di pyo3 restano ignorate perche la
-# migrazione a 0.29 e grande — `with_gil` -> `attach`, `allow_threads` ->
-# `detach`, via `PyObject` — e validarla con il solo compilatore porta piu
-# rischio delle due letture che chiude. Quell'argomento poggiava su una
-# copertura mancante. Ora la copertura c'e, e la migrazione torna a essere un
-# lavoro da fare invece che un lavoro che non si puo verificare.
-#
-# Non gira su push: accende quattro riferimenti e costruisce due artefatti in
-# release: e troppo per ogni commit. Gira a cadenza
-# fissa, su richiesta, e sulle PR che toccano il binding o il suo ambiente —
+# Non gira su ogni push perché accende più riferimenti e costruisce gli
+# artefatti in release. Gira a cadenza fissa, su richiesta e sulle PR che
+# toccano il binding o il suo ambiente —
 # dove un `paths:` non e una promessa vuota, perche il passo che lancia il
 # gate e incondizionato.
 #

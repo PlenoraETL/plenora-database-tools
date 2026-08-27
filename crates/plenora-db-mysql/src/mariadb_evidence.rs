@@ -1,10 +1,8 @@
 //! Misura di evidenza `MariaDB`: cosa fa il driver, e cosa fa il provider.
 //!
-//! ADR 0014 chiede evidenza prima di scegliere fra provider dedicato e
-//! qualificazione. La prima tranche l'ha raccolta dal **client**, con SQL
-//! eseguito da `mariadb`/`mysql`: ha smentito tre delle cinque divergenze
-//! dichiarate e ne ha trovate due che nessuno aveva nominato. Quello che il
-//! client non puo vedere e il resto: il protocollo dei prepared statement, i
+//! Le sonde confrontano i prodotti attraverso il client e il provider. Il
+//! client misura la semantica SQL; il provider copre inoltre il protocollo dei
+//! prepared statement, i
 //! tipi wire che il server dichiara nei metadata, e cosa succede quando e il
 //! **provider** ad attraversare quelle superfici.
 //!
@@ -24,7 +22,7 @@
 //!
 //! **Il bypass supera solo il rifiuto.** Non tocca SQL, mapping, timeout,
 //! transazioni ne classificazione degli errori: cio che si osserva dopo e
-//! esattamente cio che il provider fa oggi. Una sonda che fallisce **e** il
+//! esattamente cio che il provider fa. Una sonda che fallisce **e** il
 //! risultato: qui non si aggiungono rami `MariaDB` per proseguire, perche
 //! sarebbero la risposta alla domanda che si sta ancora misurando.
 //!
@@ -90,9 +88,8 @@ const SCRATCH_LOCK: &str = "plenora_driver_evidence_lock";
 
 /// Una query che il timer del server interrompe davvero.
 ///
-/// `SELECT SLEEP(1)` non va bene, e non e una supposizione: la prima corsa di
-/// questa tranche l'ha misurato. Su `MySQL` 9.7 `MAX_EXECUTION_TIME` era
-/// applicato e la `SLEEP` finiva indisturbata — "nessun errore" dove ci si
+/// `SELECT SLEEP(1)` non attraversa il controllo del tempo: con
+/// `MAX_EXECUTION_TIME` la `SLEEP` finisce indisturbata, producendo "nessun errore" dove ci si
 /// aspettava un codice — perche il controllo del tempo non passa di li. Una
 /// scansione incrociata ci passa, e i due motori la interrompono entrambi.
 const INTERRUPTIBLE_QUERY: &str = "SELECT COUNT(*) FROM information_schema.columns a, \
@@ -131,8 +128,8 @@ const SCRATCH_SPATIAL_WRITE: &str = "plenora_driver_evidence_spatial_write";
 /// # La DDL
 ///
 /// Il percorso di scrittura emette `GEOMETRY SRID <n>` quando crea la colonna.
-/// La prima tranche ha gia misurato che `MariaDB` rifiuta quella forma con
-/// 1064; qui la si rimisura accanto alle altre due, perche il verdetto sulla
+/// `MariaDB` rifiuta quella forma con 1064; qui la si misura accanto alle
+/// alternative, perche il verdetto sulla
 /// scrittura si legge tutto insieme.
 ///
 /// # Il valore in ingresso
@@ -146,7 +143,7 @@ const SCRATCH_SPATIAL_WRITE: &str = "plenora_driver_evidence_spatial_write";
 /// **La domanda che conta.** Su un prodotto dove nessuna DDL puo vincolare la
 /// colonna, l'SRID puo vivere solo dentro i valori: se il server accettasse il
 /// secondo argomento e poi memorizzasse zero, la scrittura perderebbe il CRS in
-/// silenzio — e la lettura, che da oggi lo verifica valore per valore,
+/// silenzio — e la lettura, che lo verifica valore per valore,
 /// rifiuterebbe righe scritte da questo stesso crate. Le due meta si
 /// incastrano o non si incastrano, e questa sonda e il punto in cui si vede.
 async fn spatial_write_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
@@ -270,10 +267,8 @@ async fn returning_form_probe(recorder: &mut Recorder, connection: &mut mysql_as
     // E ogni forma rende le **righe**, non un `Ok`. Che il parser accetti la
     // sintassi e meta della domanda: `RETURNING` esiste per i valori che
     // consegna, e una forma accettata che non consegnasse niente sarebbe una
-    // capability aperta su una promessa vuota. La prima stesura di questa
-    // sonda si fermava all'accettazione, e sull'upsert — dove la
-    // documentazione dice il contrario di quello che il server fa — era
-    // proprio li che smetteva di misurare.
+    // capability aperta su una promessa vuota. La sonda verifica quindi anche
+    // i valori consegnati, compreso l'upsert.
     let forms = [
         (
             "insert",
@@ -586,10 +581,9 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
     //
     // # Il predicato si ricava dalla forma, non si indovina
     //
-    // La prima stesura di questa sonda interrogava `WHERE TABLE_NAME`, e ha
-    // preso 1054 da entrambe le `MariaDB`. Stava per registrare un'assenza
-    // che non c'era: nel registro OGC la colonna si chiama `F_TABLE_NAME`, e
-    // l'errore riguardava il predicato, non l'SRID. Chiedere prima **quali
+    // Nel registro OGC la colonna si chiama `F_TABLE_NAME`; usare
+    // `TABLE_NAME` produrrebbe 1054 e confonderebbe un predicato errato con
+    // l'assenza dell'SRID. Chiedere prima **quali
     // colonne** il registro abbia, e costruire la query da quelle, e l'unico
     // modo in cui la risposta parla dell'SRID invece che del nome che la sonda
     // ha immaginato.
@@ -659,8 +653,8 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
     // La domanda che conta e un'altra — se una colonna possa essere vincolata,
     // e con quale attributo — perche da li dipende se il CRS si possa sapere.
     //
-    // La prima tranche ha misurato che `SRID` nella DDL e rifiutato da
-    // `MariaDB` con un errore di sintassi, e si era fermata li. `REF_SYSTEM_ID`
+    // `SRID` nella DDL e rifiutato da `MariaDB` con un errore di sintassi.
+    // `REF_SYSTEM_ID`
     // e l'attributo che quel prodotto documenta al suo posto: la sonda prova
     // entrambe le forme su tutti e tre i server e registra quale sia accettata
     // e cosa il registro renda dopo. Provarne una sola direbbe «non si puo»
@@ -1741,8 +1735,8 @@ async fn drain_read(
 
 /// Esegue una lettura, la confronta con il contratto, e registra l'esito.
 ///
-/// La differenza con la prima stesura sta tutta qui: `accepted` non significa
-/// piu "la chiamata non ha dato errore" ma "il risultato e quello dichiarato".
+/// `accepted` significa "il risultato e quello dichiarato", non soltanto
+/// "la chiamata non ha dato errore".
 /// Una projection ignorata, un filtro che non filtra o uno stream consegnato
 /// in un colpo solo restituiscono `Ok`, e senza questo confronto sarebbero
 /// finiti verdi su tutti e tre i server — con l'aria di una convergenza.
@@ -1815,11 +1809,9 @@ const TYPE_TABLE_COLUMNS: &[&str] = &[
 
 /// `provider.read` attraversato con il profilo del prodotto, fino al contenuto.
 ///
-/// E il punto 1 della fase 3: schema, valori e namespace sui due riferimenti
-/// qualificati. La sonda storica `provider.read` resta dov'e e continua a
-/// misurare il provider `MySQL`; questa misura cosa succede quando a leggere e
-/// il profilo che il prodotto merita, ed e l'unica che su `MariaDB` arriva in
-/// fondo — l'altra si ferma al catalogo che non risponde.
+/// Misura schema, valori e namespace su tutti i riferimenti di evidenza usando
+/// il profilo `MariaDB`. `provider.read` resta la prova distinta del profilo
+/// `MySQL`.
 ///
 /// Le sonde sono separate perche rispondono a domande separate, e una sola
 /// riga verde su tutte non direbbe **quale** parte regge.
@@ -2137,9 +2129,8 @@ async fn streaming_read_probes(
             // e leggere la tabella spatial vera non andrebbe: il provider la
             // rifiuta prima, per SRID non dichiarato, mascherando la causa.
             //
-            // La prima stesura nominava `geom`, che quella tabella non ha, e
-            // il rifiuto arrivava da `NotFound`: il fail-close sembrava
-            // verificato e non lo era. E il contratto ad averlo scoperto.
+            // La colonna deve esistere, altrimenti `NotFound` maschererebbe il
+            // fail-close che la sonda intende verificare.
             ParameterBag::new(std::collections::BTreeMap::from([(
                 "punto".to_owned(),
                 ParameterValue::Bytes(vec![
@@ -2284,11 +2275,9 @@ async fn streaming_read_probes(
 /// `MySQL`, la misura no, e «condivide il codice» e un argomento che questo
 /// documento non accetta per nessun'altra bandiera.
 ///
-/// La seconda sonda e quella che conta di piu, e per una ragione che riguarda
-/// la storia di questo percorso. La prima stesura di `query_stream`
-/// dichiarava che abbandonare un result set a meta rende la connessione
-/// inservibile, e faceva fallire con `RequiresRecovery` ogni operazione
-/// successiva della transazione. Il riferimento `MySQL` ha smentito:
+/// La seconda sonda verifica direttamente che abbandonare un result set a meta
+/// non renda la connessione inservibile e che le operazioni successive della
+/// transazione restino possibili:
 /// `mysql_async` drena i pacchetti pendenti, e la transazione committa. Se
 /// `MariaDB` si comportasse diversamente sarebbe una divergenza vera fra i due
 /// prodotti — e sarebbe il tipo di divergenza che non si scopre finche un
@@ -2490,17 +2479,17 @@ const SCRATCH_GENERATED_ONLY: &str = "plenora_driver_evidence_generated_only";
 /// Come il catalogo pubblica una colonna generata e l'indice che la usa, e
 /// cosa ne segue per il preflight dell'Upsert.
 ///
-/// E il punto 2 della fase 3. La domanda non e "`MariaDB` sa indicizzare
-/// un'espressione" — sa farlo, in un modo solo — ma **come si presenta** al
+/// La domanda non e "`MariaDB` sa indicizzare un'espressione" — sa farlo, in
+/// un modo solo — ma **come si presenta** al
 /// catalogo, perche da li discendono due decisioni: se la colonna sia
 /// scrivibile e se l'indice sia confrontabile con le keys di un Upsert.
 ///
-/// La prima ha un rischio che questa tranche esiste per escludere. Su `MariaDB`
+/// La prima ha un rischio che la sonda deve escludere. Su `MariaDB`
 /// `GENERATION_EXPRESSION` e NULL per le colonne **non** generate, e il
 /// profilo la normalizza con `COALESCE(..., '')` perche il lettore pretende
 /// una stringa. Se fosse NULL anche per quelle generate, quella normalizzazione
-/// trasformerebbe una colonna non scrivibile in una scrivibile — un fail-open
-/// introdotto da una correzione. La sonda lo misura invece di fidarsi.
+/// trasformerebbe una colonna non scrivibile in una scrivibile. La sonda
+/// impedisce questo fail-open misurando il comportamento reale.
 #[allow(clippy::too_many_lines)]
 async fn generated_column_probes(
     recorder: &mut Recorder,
@@ -2752,10 +2741,8 @@ async fn upsert_preflight_probes(
             transaction_profile: TransactionProfile::SingleTransaction,
             keys,
             // Vuote: le colonne da aggiornare si dichiarano solo per
-            // `WriteMode::Update`, e la prima stesura le passava anche
-            // all'Upsert — il piano rifiutava prima, e il preflight sugli
-            // indici non veniva mai raggiunto. La sonda lo ha detto invece di
-            // registrare quel rifiuto come se fosse il suo.
+            // `WriteMode::Update`; passarle all'Upsert farebbe fallire il
+            // piano prima del preflight sugli indici che questa sonda misura.
             update_columns: Vec::new(),
             srid_policy: None,
             create_spatial_index: false,
@@ -2888,10 +2875,8 @@ fn scratch_batch(ids: &[i32]) -> plenora_database_core::arrow::RecordBatch {
 /// Non e una semplificazione dell'harness, e il contratto della mode: il
 /// piano rifiuta uno schema che porti colonne non-key — «`DeleteByKeys`:
 /// colonna 'payload' non e una key» — e ha ragione, perche una cancellazione
-/// non ha nulla da fare dei valori. La prima stesura di queste tre sonde
-/// mandava lo schema comune a due colonne e veniva respinta in `prepare`: un
-/// rifiuto legittimo, ma di una domanda diversa da quella che la sonda
-/// poneva.
+/// non ha nulla da fare dei valori. Le sonde usano quindi uno schema composto
+/// soltanto dalle keys, per raggiungere il comportamento che intendono misurare.
 fn key_schema() -> plenora_database_core::arrow::SchemaRef {
     use plenora_database_core::arrow::schema::{DataType, Field, Schema};
     std::sync::Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
@@ -2919,10 +2904,9 @@ fn scratch_batch_labelled(prefix: &str, ids: &[i32]) -> plenora_database_core::a
 ///
 /// Il prefisso non basta piu da quando una sonda deve costruire un conflitto:
 /// far collidere due righe vuol dire dare a un id il payload **di un'altra**, e
-/// un valore derivato dall'id non puo esprimerlo. La prima stesura della sonda
-/// di rollback dell'Update ci e cascata — assegnava all'id 4 il valore che
-/// aveva gia, quindi un no-op invece di un duplicato, e la scrittura riusciva
-/// dove doveva fallire. La misura l'ha detto, ed e per questo che esiste
+/// un valore derivato dall'id non puo esprimerlo. La sonda deve assegnare un
+/// payload gia appartenente a un'altra riga, altrimenti misura un no-op. Per
+/// questo esiste
 /// questa forma.
 fn scratch_batch_pairs(rows: &[(i32, String)]) -> plenora_database_core::arrow::RecordBatch {
     use plenora_database_core::arrow::array::{Int32Array, StringArray};
@@ -2947,10 +2931,8 @@ fn scratch_batch_pairs(rows: &[(i32, String)]) -> plenora_database_core::arrow::
 /// chiamante costruisce la propria.
 /// La contabilita che una mode deve pubblicare, dichiarata dalla sonda.
 ///
-/// Era un numero solo, e bastava finche le mode misurate scrivevano righe
-/// nuove: `Append` e `Create` inseriscono cio che ricevono, quindi «sei» le
-/// descriveva per intero. `Update` no — aggiorna invece di inserire, e una
-/// chiave che non trova riscontro non e un errore ma una riga **saltata** —
+/// `Append` e `Create` inseriscono cio che ricevono. `Update` invece aggiorna:
+/// una chiave che non trova riscontro non e un errore ma una riga **saltata** —
 /// e con un numero solo l'attesa sarebbe stata scritta dentro il
 /// confronto invece che dalla sonda che sa cosa ha chiesto.
 ///
@@ -3117,16 +3099,15 @@ async fn reset_append(connection: &mut mysql_async::Conn) {
 
 /// La mode `Append` attraversata con il profilo del prodotto, per intero.
 ///
-/// Punto 3 della fase 3, una mode alla volta. `Append` e la piu semplice —
+/// `Append` e la mode più semplice —
 /// nessun DDL, nessuna keys — e proprio per questo e quella su cui si decide
 /// **come** si misura una scrittura: la riuscita si verifica rileggendo da
 /// un'altra sessione, il rollback pretende due batch di cui il primo arrivato
 /// davvero al server, e la cancellazione una barriera dichiarata invece di un
 /// timeout.
 ///
-/// `writes.append` resta chiusa finche le tre sonde non sono verdi su
-/// entrambi i riferimenti: la capability si apre nel commit che le vede
-/// passare, non in quello che le scrive.
+/// `writes.append` resta chiusa finché tutte le sonde non sono verdi su ogni
+/// riferimento dichiarato.
 #[allow(clippy::too_many_lines)]
 async fn append_write_probes(
     recorder: &mut Recorder,
@@ -3470,8 +3451,7 @@ const SCRATCH_CREATE: &str = "plenora_driver_evidence_create";
 /// Due stringhe e non una, perche dicono due cose diverse. Nomi, ordine,
 /// nullability e chiave primaria sono cio che `Create` promette, e devono
 /// coincidere sui tre server. I tipi nativi no: sono la resa del catalogo, e
-/// `INT` esce `int` da `MySQL` e `int(11)` da `MariaDB` — la stessa divergenza
-/// che la quinta tranche ha gia registrato su `bigint(20)`. Metterli nel
+/// `INT` esce `int` da `MySQL` e `int(11)` da `MariaDB`. Metterli nel
 /// contratto renderebbe rossa una sonda per una differenza gia misurata e
 /// capita; tenerli fuori dal dettaglio la nasconderebbe.
 ///
@@ -3521,8 +3501,7 @@ async fn drop_create(connection: &mut mysql_async::Conn) {
 
 /// La mode `Create` attraversata con il profilo del prodotto.
 ///
-/// Ottava tranche, seconda write mode. `Create` aggiunge ad `Append` una
-/// superficie sola, e da quella discende tutto il resto: **il DDL**. Su
+/// `Create` aggiunge ad `Append` la superficie DDL. Su
 /// `MySQL` e su `MariaDB` il DDL fa commit implicito, quindi la tabella creata
 /// nella preparazione non appartiene alla transazione che segue e nessun
 /// `ROLLBACK` la annulla.
@@ -3631,10 +3610,8 @@ async fn create_write_probes(
     //    cio che lo verifica: righe zero, tabella presente.
     drop_create(&mut connection).await;
     let question = "un secondo batch rifiutato annulla le righe e lascia la tabella";
-    // `Conflict`, non `DataMapping` — ed e la differenza piu istruttiva fra
-    // questa mode e l'Append, misurata e non prevista: la prima stesura si
-    // aspettava la stessa categoria della settima tranche e la sonda ha detto
-    // di no.
+    // `Conflict`, non `DataMapping`: questa mode attribuisce il rifiuto alla
+    // collisione creata dal DDL, diversamente da Append.
     //
     // La ragione non e del motore ma di questo crate, ed e scritta nel punto
     // in cui si decide: la diagnostica per riga si attiva **solo** per
@@ -3917,8 +3894,7 @@ async fn reset_update(connection: &mut mysql_async::Conn) {
 
 /// La mode `Update` attraversata con il profilo del prodotto.
 ///
-/// Nona tranche, terza write mode. `Update` porta la superficie che nessuna
-/// delle due precedenti aveva: **le keys**. Non scrive righe nuove — le
+/// `Update` introduce la superficie delle keys. Non scrive righe nuove: le
 /// confronta con quelle che ci sono, e da quel confronto discendono due
 /// promesse che ne `Append` ne `Create` fanno.
 ///
@@ -4281,8 +4257,7 @@ const SCRATCH_DELETE_CHILD: &str = "plenora_driver_evidence_delete_child";
 /// devono provocare: un errore di mapping o di preflight non proverebbe
 /// niente, perche non avrebbe mai scritto nulla da annullare.
 ///
-/// `STRICT_TRANS_TABLES` e attivo su tutti e tre i riferimenti — misurato
-/// dalla prima tranche — quindi il troppo-lungo e un errore e non un
+/// `STRICT_TRANS_TABLES` e verificato sui riferimenti, quindi il troppo-lungo e un errore e non un
 /// troncamento silenzioso.
 const TOO_LONG: &str = "fuorimisura-fuorimisura-fuorimisura-fuorimisura";
 
@@ -4408,8 +4383,8 @@ async fn remaining_write_probes(
 /// Il rifiuto di un valore che non entra nella colonna.
 ///
 /// `DataMapping`/`Never`: il dato in ingresso e sbagliato e lo corregge chi
-/// chiama. Fino alla nona tranche questo codice — 1406 — arrivava come guasto
-/// generico `Execution`, che e vero ma non dice cosa fare. Cio che la sonda
+/// chiama. Il codice 1406 non deve diventare un generico `Execution`, che non
+/// indica il rimedio. La sonda
 /// verifica oltre alla categoria e che l'effetto sia `RolledBack`: nessuna di
 /// queste mode esegue DDL, quindi il rollback e pieno e non lascia residui.
 const TOO_LONG_REFUSAL: RefusalContract = RefusalContract {
@@ -4495,8 +4470,7 @@ async fn upsert_probes(
     cancellation: &CancellationToken,
 ) {
     // La tabella non ha altri indici unici oltre alla chiave primaria: il
-    // preflight della sesta tranche rifiuta il caso contrario, e rifiutarlo e
-    // gia una prova sua.
+    // preflight rifiuta il caso contrario, che appartiene a una prova distinta.
     let seed = [(1, "vecchio-1"), (2, "vecchio-2"), (3, "vecchio-3")];
     let initial = "righe=3 contenuto=1:vecchio-1,2:vecchio-2,3:vecchio-3";
 
@@ -5115,7 +5089,7 @@ async fn delete_probes(
 /// Il profilo del prodotto che sta rispondendo, scelto come lo sceglierebbe
 /// un provider: chiedendo al profilo `MySQL` se quel server e suo.
 ///
-/// Non e una comodita dell'harness. Le sonde di questa tranche misurano cio
+/// Non e una comodita dell'harness. Le sonde misurano cio
 /// che **il profilo** emette — l'istruzione di timeout, le query di catalogo —
 /// e sceglierlo con un `if` sulla stringa qui dentro vorrebbe dire misurare
 /// una decisione che l'harness ha preso al posto del codice.
@@ -5640,8 +5614,8 @@ async fn profile_probes(
                 // Descrivere non basta: la regola dell'SRID vive nel
                 // mapping, non nel catalogo, e una sonda che si fermasse alla
                 // descrizione direbbe "accettata" di una tabella che il
-                // provider non sa leggere. La prima stesura si fermava li, e
-                // registrava "colonne=2" su tutti e tre.
+                // provider non sa leggere. La sonda verifica quindi anche il
+                // mapping risultante.
                 Ok(description) => {
                     let mapped = description
                         .columns
@@ -5918,7 +5892,7 @@ async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mys
 /// Se `ST_Buffer` di una geometria 4326 rendesse zero, non ci sarebbe **niente**
 /// da verificare valore per valore: il CRS dichiarato dal chiamante non
 /// potrebbe essere confermato da nulla, e la superficie resterebbe chiusa per
-/// una ragione diversa da quella di oggi.
+/// assenza di una prova del CRS.
 ///
 /// # Cosa questa sonda non ha chiesto
 ///
@@ -5935,9 +5909,8 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
             "CREATE TABLE {table} (id INT NOT NULL PRIMARY KEY, shape GEOMETRY NOT NULL, area GEOMETRY NOT NULL) ENGINE = InnoDB"
         ),
         // Un punto **e** un poligono: `ST_Centroid` di un punto rende `NULL` —
-        // e definito solo su geometrie areali — e la prima stesura di questa
-        // sonda l'ha scoperto andando in panico sulla conversione. Il dato
-        // sbagliato avrebbe misurato una funzione per un'altra.
+        // e definito solo su geometrie areali. Usare entrambi evita che il
+        // dato sbagliato misuri una funzione diversa da quella dichiarata.
         format!(
             "INSERT INTO {table} VALUES (1, ST_GeomFromText('POINT(2 3)', 4326), ST_GeomFromText('POLYGON((0 0, 0 4, 4 4, 4 0, 0 0))', 4326))"
         ),
@@ -6167,8 +6140,8 @@ fn scalar_argument_for(
 ///
 /// Quella riga non c'e piu. Tre sono state aperte con `raw.crs_rule_check`, e
 /// le altre ventotto sono rimaste chiuse per una ragione diversa da prima:
-/// nessuno le aveva chieste. E' la differenza che questo documento insegue da
-/// venti tranche — una capability chiusa perche misurata assente e una promessa
+/// nessuno le aveva chieste. Va distinta una capability chiusa perche misurata
+/// assente — una promessa
 /// che il prodotto non puo mantenere, una chiusa perche nessuno ha guardato e
 /// una promessa che il prodotto forse mantiene gia.
 ///
@@ -6371,9 +6344,8 @@ async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql
 ///
 /// Il nome lo da `plenora_database_sql::spatial_function_name`, cioe **lo
 /// stesso** che il renderer emetterebbe. Ricavarlo dal catalogo o a mano
-/// misurerebbe una funzione che il crate non scrive mai — ed e l'errore che
-/// aveva lasciato `ST_NDims` e `ST_NPoints` fra le verified di `MySQL`: nomi
-/// `PostGIS` dedotti invece che letti dal renderer.
+/// misurerebbe una funzione che il crate non scrive mai. Il renderer è la
+/// fonte dei nomi effettivamente emessi.
 ///
 /// La domanda e posta con zero argomenti. Un `1305` significa che la funzione
 /// non esiste; un `1582` — numero di parametri sbagliato — significa che esiste
@@ -6455,7 +6427,7 @@ async fn scalar_function_probe(recorder: &mut Recorder, connection: &mut mysql_a
 ///
 /// Due forme, e la differenza sta nella colonna. `MySQL` documenta che un
 /// indice spaziale vuole una colonna vincolata a un SRID; `MariaDB` una colonna
-/// vincolata non puo nemmeno averla — la quindicesima tranche lo ha misurato —
+/// vincolata non puo nemmeno averla, come confermano le sonde DDL,
 /// quindi se anche li l'indice pretendesse il vincolo, la superficie sarebbe
 /// chiusa **per costruzione** su quel prodotto, non per mancanza di prove.
 async fn spatial_index_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
@@ -7119,11 +7091,8 @@ const SCRATCH_STRESS: &str = "plenora_driver_evidence_stress";
 
 /// Dodici lettori concorrenti sullo stesso pool, con il profilo del prodotto.
 ///
-/// `PostgreSQL` ha una prova di contesa da tempo; `MySQL` l'ha avuta oggi, e
-/// questa e la sua gemella su questo prodotto. La lacuna non era di contratto
-/// ne spatial: era che nessuno aveva mai chiesto a questo provider di servire
-/// piu lettori insieme, e un pool che sotto contesa mescolasse le righe non
-/// avrebbe fatto fallire nessuna prova di questo documento.
+/// La prova usa lo stesso principio della contesa sugli altri provider: ogni
+/// lettore deve ricevere soltanto la propria partizione.
 ///
 /// # Perche il conteggio totale non basta
 ///
@@ -7516,9 +7485,8 @@ fn spatial_write_schema(srid: u32) -> plenora_database_core::arrow::SchemaRef {
     // La versione del contratto sta sullo **schema**, non sui campi, e diventa
     // obbligatoria appena un campo porta metadati canonici `plenora.*`. Gli
     // altri schemi di queste sonde non ne hanno bisogno perche non ne portano
-    // nessuno; questo si, ed e la campagna ad averlo detto — la prima stesura
-    // costruiva `Schema::new` e le due sonde venivano rifiutate in `validate`
-    // prima di toccare il server.
+    // nessuno; questo si, altrimenti le sonde vengono rifiutate in `validate`
+    // prima di raggiungere il server.
     std::sync::Arc::new(Schema::new_with_metadata(
         vec![
             Field::new("id", DataType::Int32, false),
@@ -8124,8 +8092,7 @@ const SCRATCH_CRS: &str = "plenora_driver_evidence_crs";
 
 /// Il CRS dichiarato dal piano, attraversato dal percorso di lettura.
 ///
-/// La decima tranche aveva chiuso lo spatial di questo prodotto con una ragione
-/// precisa — `GEOMETRY_COLUMNS.SRID` vale sempre zero, perche nessuna DDL puo
+/// `GEOMETRY_COLUMNS.SRID` vale sempre zero, perche nessuna DDL puo
 /// vincolare una geometry a un sistema di riferimento — e aveva detto cosa
 /// servirebbe per riaprirlo: un CRS dichiarato dal chiamante e verificato
 /// valore per valore. Questa sonda misura quella forma.
@@ -8329,11 +8296,8 @@ const SCRATCH_PORTABLE: &str = "plenora_driver_evidence_portable";
 /// esegue, quindi attraversa `compile_returning`, la tabella dialetto-forma e
 /// il decoder delle righe.
 ///
-/// Le due domande sembrano la stessa e non lo sono, e la differenza si vedeva
-/// bene fino a poco fa: il server `MariaDB` accettava `INSERT ... RETURNING`
-/// mentre `compile_portable` rifiutava `ProviderKind::Mariadb` per intero, e
-/// una sonda sul solo server avrebbe detto «disponibile» di una superficie che
-/// nessun chiamante poteva raggiungere.
+/// Le due domande non sono equivalenti: il supporto del server non dimostra che
+/// compilatore e decoder rendano la superficie raggiungibile al chiamante.
 ///
 /// L'esito atteso diverge per prodotto, ed e il punto: su `MySQL` il rifiuto e
 /// la misura giusta, su `MariaDB` lo sono le righe.

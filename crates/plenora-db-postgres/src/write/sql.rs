@@ -9,7 +9,7 @@ use plenora_database_core::{DatabaseError, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 
 // Keeping all statement shapes together makes placeholder ordering and field
-// indexing reviewable across the seven supported write modes.
+// indexing auditable across the supported write modes.
 #[allow(clippy::too_many_lines)]
 pub(super) fn statement(
     operation: &WriteOperation,

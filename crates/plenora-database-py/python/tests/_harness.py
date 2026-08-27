@@ -1,16 +1,10 @@
 """Connessioni condivise per i test funzionali del SDK.
 
-Sedici moduli avevano ciascuno la propria copia di `_dsn_or_skip`, e ciascuno
-apriva la sessione con `p.connect(dsn)`. Dopo ADR-011 quel default significa
-TLS obbligatorio con verifica WebPKI, mentre il riferimento di sviluppo
-`dataflow-postgres` e **plaintext** per costruzione — il riferimento TLS e un
-compose separato, `dataflow-postgres-tls`, con la sua CA privata. Il risultato
-era che con la DSN impostata la suite non saltava piu i test: falliva in
-`connect`, centocinquantatre volte, per una ragione che non riguardava nessuna
-delle proprieta verificate.
+Il riferimento di sviluppo PostgreSQL è plaintext, mentre il default del SDK
+richiede TLS verificato. Gli helper rendono esplicita questa deroga in un solo
+punto.
 
-L'interruttore vive qui, in un punto solo, e ha un nome che dice cosa fa. I
-test che verificano il **default** sicuro non passano da questi helper: usano
+I test che verificano il **default** sicuro non passano da questi helper: usano
 `p.connect` / `p.aconnect` direttamente, perche il loro oggetto e proprio cio
 che gli helper aggirano. Vederli in `test_tls_default.py` accanto a questa
 nota e il modo in cui la deroga resta visibile.

@@ -395,16 +395,6 @@ async fn azure_sql_probe_uses_verified_tls_and_native_spatial_types() {
 
 /// La transazione applicativa esiste, e fa cio che la capability promette.
 ///
-/// # Cosa esisteva prima
-///
-/// Niente. Il provider dichiarava `transactions.scope = Transaction` e non
-/// sovrascriveva `begin_transaction`: il default rispondeva `Unsupported`, e la
-/// capability era una promessa che nessuno poteva mantenere.
-///
-/// Nessun consumatore ci arrivava — il CLI generico non apre transazioni,
-/// queste prove usano le primitive TDS direttamente — quindi il difetto e
-/// rimasto invisibile finche il SDK Python non ha raggiunto questo motore.
-///
 /// # Cosa attraversa
 ///
 /// Le quattro cose che distinguono una transazione da una sequenza di
@@ -844,9 +834,7 @@ async fn live_common_provider_contract_read_and_write() {
     assert!(!capabilities.reads.resumable);
     assert!(!capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
-    // Aperta insieme allo scope transazionale: la ragione per cui era chiusa
-    // — «non espone affatto uno scope, quindi non c'e niente su cui
-    // chiamarli» — e caduta il giorno in cui lo scope e arrivato.
+    // Lo scope transazionale deve pubblicare anche i savepoint che implementa.
     assert!(capabilities.transactions.savepoints);
 
     let bounded_operation = ReadOperation {
@@ -1586,20 +1574,9 @@ async fn live_rich_query_cte_join_aggregate_window_set_offset_and_empty_schema()
 /// Ogni funzione di `VERIFIED_SPATIAL_FUNCTIONS`, attraversata contro il
 /// riferimento.
 ///
-/// La prova qui sopra verifica i **valori** di quindici funzioni scelte a mano,
-/// ed e la piu forte delle due: dice che `STGeometryType` rende `Point` e che
-/// `STIntersects` rende vero, non solo che non hanno dato errore. Ma la lista
-/// pubblicata ne porta ventiquattro, e le nove che restano fuori non sono un
-/// campione: sono esattamente quelle che **restituiscono geometria** —
-/// `StartPoint`, `EndPoint`, `PointN`, `Buffer`, `Intersection`, `Difference`,
-/// `SymDifference`, `Union`, `ConvexHull`.
-///
-/// E' la stessa forma che su `MySQL` aveva lasciato pubblicate undici funzioni
-/// mai utilizzabili: la lista era stata dedotta dal dialetto condiviso, e il
-/// giorno in cui qualcuno l'ha attraversata davvero e scesa da ventisei a
-/// quindici. Qui il percorso di uscita e diverso — il renderer incapsula in
-/// `.AsBinaryZM()`, quindi le geometrie potrebbero uscire — ma «potrebbero» non
-/// e una misura.
+/// La prova sui valori verifica in profondita un campione; questa attraversa
+/// anche le funzioni che restituiscono geometria, il cui output viene
+/// incapsulato dal renderer con `.AsBinaryZM()`.
 ///
 /// I nomi T-SQL che il censimento **ipotizza** per le funzioni che il renderer
 /// non sa scrivere.
@@ -1723,7 +1700,7 @@ const CANDIDATE_SPATIAL_METHODS: &[(SpatialFunction, &str, &str)] = &[
     ),
 ];
 
-/// Cosa il censimento ha trovato per una funzione su una semantica.
+/// Disponibilita osservata per una funzione su una semantica.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MethodPresence {
     /// Il metodo esiste: ha eseguito, oppure ha protestato sugli argomenti —
@@ -1737,10 +1714,8 @@ enum MethodPresence {
 ///
 /// # Le due forme
 ///
-/// Una prima stesura chiedeva soltanto `@g.Nome()` e registrava assente
-/// qualunque «Could not find method». Sbagliava su ogni **proprieta**: `STSrid`
-/// e `Z` non sono chiamate, non vogliono parentesi, e rispondevano con quel
-/// messaggio pur esistendo — `STSrid` la usa il renderer da sempre.
+/// La sonda prova sia `@g.Nome()` sia `@g.Nome`: proprieta come `STSrid` e `Z`
+/// non vogliono parentesi e non devono essere registrate come assenti.
 ///
 /// Un nome e assente solo se **entrambe** le forme dicono di non trovarlo. Un
 /// errore diverso — «requires 1 argument(s)» — dice che il metodo c'e e che la
@@ -1748,12 +1723,8 @@ enum MethodPresence {
 ///
 /// # Perche il valore non torna mai al client
 ///
-/// La prima stesura scriveva `SELECT @g.Metodo()`, e su `STCentroid` faceva
-/// **andare in panico il driver**: il risultato e una geometria, cioe un UDT, e
-/// `tiberius` non lo decodifica. Il `catch_unwind` del provider ha fatto il suo
-/// mestiere — ha messo in quarantena la connessione invece di lasciare
-/// attraversare il panico — ma il difetto era della sonda, che chiedeva un
-/// valore di cui non le importava niente.
+/// Il risultato di alcuni membri e un UDT che il driver non decodifica. La
+/// sonda misura quindi la presenza senza riportare al client quel valore.
 ///
 /// `WHERE @g.Metodo() IS NOT NULL` compila e valuta il membro senza che il suo
 /// valore attraversi il filo: cio che torna e un conteggio. La domanda era «un
@@ -1825,10 +1796,6 @@ async fn probe_tsql_member(
 /// **e** su geography deve stare o nella lista pubblicata o qui: non esiste una
 /// terza casella in cui una superficie usabile possa restare in silenzio.
 const DECLARED_SPATIAL_EXCLUSIONS: &[(SpatialFunction, &str)] = &[
-    // Le due coordinate stavano qui, e ci sono rimaste un pomeriggio: il membro
-    // T-SQL cambia fra le semantiche e quella del ricevitore non arrivava al
-    // renderer. Ora ci arriva, e `X` e `Y` sono pubblicate.
-    //
     // `STRelate` resta, e per una ragione diversa da tutte le altre: non e
     // l'assenza dal prodotto ne un impianto che manca a noi, e l'**arieta**.
     // T-SQL il pattern DE-9IM lo pretende, e il contratto ammette `Relate`
@@ -1959,9 +1926,8 @@ async fn live_geometry_only_functions_run_on_geometry_and_are_refused_on_geograp
 /// `live_every_verified_spatial_function_is_crossed` attraversa la lista
 /// **pubblicata** e non il catalogo: prova che niente e offerto senza essere
 /// stato eseguito, e non dice niente sulle quarantotto che nessuno offre. Su
-/// `MySQL` e `MariaDB` quella domanda ha una sonda da venti tranche; qui non
-/// l'aveva nessuno, e ventiquattro funzioni su settantadue erano pubblicate
-/// senza che il resto fosse mai stato chiesto.
+/// Il censimento pone la stessa domanda all'intero catalogo portabile, non
+/// soltanto alle funzioni gia pubblicate.
 ///
 /// # Le tre caselle
 ///
@@ -2048,11 +2014,8 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
         "il censimento non copre l'intero catalogo"
     );
 
-    // Cio che il provider offre su una semantica: l'intersezione, e le sette
-    // che valgono solo su `geometry`. La domanda che questo test pone e la
-    // stessa di prima — «esiste e non lo offriamo, e nessuno ha scritto
-    // perche?» — ma ora la pone anche per le geometry-only, che fino a ieri
-    // stavano in una casella descrittiva ed erano tutte chiuse.
+    // Su `geometry` il provider offre l'intersezione e l'estensione specifica.
+    // Ogni funzione disponibile ma non offerta deve avere una ragione.
     let offered_on_geometry = |function: &SpatialFunction| {
         crate::query::VERIFIED_SPATIAL_FUNCTIONS.contains(function)
             || crate::query::GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(function)
@@ -2092,10 +2055,8 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
         both.len(),
     );
 
-    // Una esclusione che nel frattempo e stata **aperta** e la ragione scaduta
-    // nella sua forma piu silenziosa: la funzione si offre, e il documento
-    // continua a spiegare perche non si offre. E' successo alle due
-    // coordinate, ed e passato inosservato per un pomeriggio.
+    // Una funzione non puo essere contemporaneamente offerta ed esclusa: in
+    // quel caso la motivazione sarebbe gia scaduta.
     let offered_and_excluded = DECLARED_SPATIAL_EXCLUSIONS
         .iter()
         .filter(|(function, _)| offered_on_geometry(function))
@@ -2138,10 +2099,8 @@ async fn live_the_spatial_census_leaves_no_usable_function_unexplained() {
 /// # Le due semantiche
 ///
 /// Ogni funzione viene provata su `shape` (geometry) e su `position`
-/// (geography), e basta che ne attraversi una: `STEnvelope` su una geography
-/// non esiste, e chiudere la funzione per quello sarebbe una falsa assenza —
-/// l'errore che su `MySQL` `ST_Area` su una `LINESTRING` aveva quasi fatto
-/// registrare.
+/// (geography). Per una lista specifica di semantica basta la prova sul tipo
+/// che la pubblica; l'intersezione deve invece riuscire su entrambi.
 ///
 /// # I rifiuti si raccolgono
 ///
@@ -2174,8 +2133,7 @@ async fn live_every_verified_spatial_function_is_crossed() {
         // L'arieta arriva da `accepts_argument_count`, cioe dal **contratto**,
         // e non dalla classificazione unary/binary interna a questo renderer:
         // interrogare quella significherebbe far coincidere la domanda con la
-        // risposta, ed e l'errore che su MariaDB aveva fatto passare una sonda
-        // che misurava la propria guardia.
+        // risposta e farebbe misurare alla sonda la propria guardia.
         //
         // Cio che resta preteso e la cosa giusta: una funzione pubblicata deve
         // essere attraversabile in **almeno una** delle forme che il piano
@@ -2189,11 +2147,9 @@ async fn live_every_verified_spatial_function_is_crossed() {
                 [13.0_f64, 43.0_f64],
             ),
         ] {
-            // Le arieta si perdonano fra loro, le **semantiche** no, ed e la
-            // correzione che questo ciclo porta. Prima le due stavano appiattite
-            // in un elenco solo e il primo successo chiudeva la funzione: una
-            // che girasse su `geometry` e non su `geography` passava il gate, e
-            // finiva in una lista che il contratto pubblica per **entrambe**.
+            // Le arieta si perdonano fra loro, le **semantiche** no: una
+            // funzione dell'intersezione deve riuscire sia su `geometry` sia
+            // su `geography`.
             let mut unsupported_here: Vec<String> = Vec::new();
             for arity in (1..=4).filter(|count| function.accepts_argument_count(*count)) {
                 let mut parameters = BTreeMap::new();
@@ -2225,10 +2181,8 @@ async fn live_every_verified_spatial_function_is_crossed() {
                             // pretende un `F64` **finito** per la distanza di
                             // `STBuffer` e un `I32` maggiore o uguale a uno per
                             // l'indice di vertice di `STPointN`. Bindare `1` per
-                            // entrambi faceva rifiutare `Buffer` dal prepare, e la
-                            // prima lettura di quel rifiuto era «il riferimento non
-                            // attraversa `Buffer`»: era invece la sonda a chiedergli
-                            // la cosa sbagliata.
+                            // entrambi farebbe rifiutare `Buffer` dal prepare per
+                            // un errore della sonda, non del riferimento.
                             //
                             // Il renderer parametrizza soltanto `Parameter` — un
                             // letterale nell'AST non esiste, e non deve esistere.
@@ -2237,10 +2191,8 @@ async fn live_every_verified_spatial_function_is_crossed() {
                                 // `PointN` e l'unico che vuole un indice: e la
                                 // stessa distinzione che il provider fa fra
                                 // `SpatialArgument::PointIndex` e `Distance`.
-                                // Nominare `Buffer` come il solo che vuole un
-                                // float e stato vero per un pomeriggio, finche
-                                // il censimento non ha aperto `Reduce`, che una
-                                // tolleranza la vuole float quanto una distanza.
+                                // Ogni scalare diverso da un indice e una
+                                // misura o tolleranza in virgola mobile.
                                 if matches!(function, SpatialFunction::PointN) {
                                     ParameterValue::I32(1)
                                 } else {
@@ -4053,12 +4005,8 @@ const CONCURRENCY_PROBE: &str = "[plenora_test].[concurrency_probe]";
 
 /// Dodici lettori sullo stesso pool, e ciascuno vede la propria fetta.
 ///
-/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress_when_dsn_is_available`
-/// da tempo, `MySQL` e `MariaDB` l'hanno avuta di recente, e qui non c'era
-/// niente di equivalente. La lacuna non era spatial ne di contratto: era che
-/// nessuno aveva mai chiesto a questo provider di servire piu lettori insieme,
-/// e un pool che sotto contesa mescolasse le righe non avrebbe fatto fallire
-/// nessuna prova di questo repository.
+/// La prova verifica che il pool serva piu lettori senza mescolare le righe o
+/// condividere una sessione ancora occupata da uno stream.
 ///
 /// # Perche il conteggio totale non basta
 ///
@@ -4150,8 +4098,7 @@ async fn live_concurrent_readers_share_the_pool_without_mixing_rows() {
 /// `live_drop_of_partial_stream_quarantines_connection` misura su una
 /// connessione sola.
 ///
-/// La domanda che nessuno aveva fatto e cosa succede a quella politica sotto
-/// contesa. Sei worker su dodici abbandonano lo stream a meta, con un pool di
+/// La prova applica quella politica sotto contesa. Sei worker su dodici abbandonano lo stream a meta, con un pool di
 /// quattro: se ogni abbandono togliesse una connessione senza rimpiazzarla, i
 /// sei che leggono fino in fondo resterebbero senza. Un pool che si svuota non
 /// perde righe e non le mescola — si **ferma**, ed e un modo di rompersi che
@@ -4316,14 +4263,6 @@ async fn seed_concurrency_probe(
 }
 
 /// Ogni famiglia di tipo che il decoder della transazione dichiara.
-///
-/// # Perche esiste
-///
-/// Il decoder e nato con la transazione applicativa, e copre una ventina di
-/// varianti `ColumnType`. Le ho scritte guardando l'enum di tiberius, non
-/// interrogando un server: e un elenco **immaginato**, ed e la stessa forma
-/// per cui su `MySQL` la lista delle funzioni spatial e rimasta per mesi con
-/// undici voci mai utilizzabili.
 ///
 /// Una tabella sola con una colonna per famiglia, due righe — una piena e una
 /// vuota — e la lettura che passa dal percorso della transazione, cioe
@@ -4558,8 +4497,7 @@ async fn live_transaction_decoder_crosses_every_declared_type_family() {
     // Le due famiglie su cui il **driver** muore, e che devono arrivare al
     // chiamante come rifiuti.
     //
-    // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per `Udt` e
-    // `SSVariant`: una SELECT che rende una geometria o un `sql_variant`
+    // Il decoder del driver non implementa `Udt` e `SSVariant`: una SELECT che rende una geometria o un `sql_variant`
     // faceva panicare la libreria sui **metadati**, prima di ogni riga. Un
     // panico non e un errore — attraversa lo stack e lascia la connessione a
     // meta protocollo — e quella connessione tornava nel pool.
@@ -5796,17 +5734,9 @@ async fn live_spatial_write_round_trips_z_m_and_zm_losslessly() {
 
 /// Punto, linea e poligono nella **stessa** colonna, su entrambe le semantiche.
 ///
-/// `mixed_geometry_types` era pubblicata come `probe.geometry_type_id.is_some()
-/// || probe.geography_type_id.is_some()`: la presenza dei due UDT sul server.
-/// La prova che la sorvegliava rileggeva il flag da `probe_capabilities` e
-/// asserva che fosse vero — cioe confrontava la deduzione con se stessa.
-///
-/// Nessuno aveva mai scritto un `Point` e un `Polygon` nella stessa colonna. Il
-/// ragionamento per cui la cosa dovrebbe funzionare e solido — `geometry` e
-/// `geography` sono UDT non vincolati a un singolo tipo geometrico, a
-/// differenza di una colonna `POINT` di `MySQL` — ma un ragionamento solido e
-/// esattamente cio che su `MySQL` aveva tenuto in piedi per mesi undici funzioni
-/// mai utilizzabili.
+/// `mixed_geometry_types` richiede una prova sui valori, non basta la presenza
+/// degli UDT sul server. La sonda scrive quindi tipi geometrici distinti nella
+/// stessa colonna e li rilegge.
 ///
 /// # Cosa attraversa
 ///

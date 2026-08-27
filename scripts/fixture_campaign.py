@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Il ciclo di vita delle fixture di una campagna live, in un posto solo.
 
-Piu campagne accendono insiemi di riferimenti per misurare cose diverse, e il
-modo di accenderli e lo stesso. Tenerlo qui non e simmetria: le condizioni
-sono decisioni, e ogni
-riga di questo file e stata scritta dopo che una corsa reale e morta senza
-quella riga.
+Piu campagne accendono insiemi di riferimenti diversi con lo stesso ciclo di
+vita. Le condizioni seguenti sono invarianti operative condivise:
 
 * `down -v` **prima** di `up`: il compose genera il materiale TLS con un
-  container one-shot, e un `up` su uno stack gia acceso lo rigenera sotto i
-  server che lo stanno usando. La prima corsa e morta cosi, con un
-  `BadSignature` che somigliava a un problema di rete.
+  container one-shot; rigenerarlo sotto server gia accesi invalida le firme.
 * `--wait`: senza, la prima misura parte contro un server che sta ancora
   inizializzando, e il fallimento somiglia a una divergenza.
 * nessun flag che tocchi container fuori dal proprio progetto: ogni compose

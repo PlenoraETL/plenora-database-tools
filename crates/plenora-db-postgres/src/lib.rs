@@ -29,7 +29,9 @@ pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode}
 pub use metrics::PostgresMetricsSnapshot;
 pub use schema_cache::PostgresSchemaToken;
 
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::SchemaRef;
+#[cfg(test)]
+use arrow_schema::{Field, Schema};
 use catalog::{
     capability_document, describe_object_metadata, list_catalogs, list_objects, list_schemas,
     load_columns_and_token, schema_token,
@@ -47,14 +49,19 @@ use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
     ObjectRef, Operation, ProviderKind, ReadOperation, WriteOperation,
 };
+#[cfg(test)]
 use plenora_database_core::protocol;
+use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
 use plenora_database_core::query::QueryOperation;
-use plenora_database_core::resource::{ResourceBudget, ResourceKind};
+use plenora_database_core::resource::ResourceBudget;
+#[cfg(test)]
+use plenora_database_core::resource::ResourceKind;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_engine::{validate_prepared_budget, ContractLeases};
 use pool::{PooledClient, PostgresPool, PostgresSessionOptions};
 #[cfg(test)]
 use read_stream::batch_memory_bytes;
@@ -62,6 +69,7 @@ use read_stream::BudgetCancellation;
 use schema_cache::{PostgresSchemaCache, SchemaCacheKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(test)]
@@ -74,16 +82,6 @@ use types::ColumnSpec;
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn contract_schema(fields: Vec<Field>) -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(
-        fields,
-        HashMap::from([(
-            protocol::CONTRACT_VERSION_KEY.to_owned(),
-            protocol::CONTRACT_VERSION.to_owned(),
-        )]),
-    ))
 }
 
 #[derive(Debug, Clone)]
@@ -169,7 +167,6 @@ pub enum PostgresSchemaEvolution {
 impl Default for PostgresProvider {
     /// TLS `Require` + trust store `WebPKI` pubblico (secure-by-default).
     ///
-    /// Cambio breaking in `1.2.0` — ADR-011: prima era `Disabled`.
     /// Per test/dev locali senza TLS usare esplicitamente
     /// [`PostgresProvider::insecure_local`].
     ///
@@ -223,9 +220,9 @@ impl PostgresProvider {
     /// non usare questo costruttore: il nome è esplicito per non
     /// nasconderlo dietro un default.
     ///
-    /// ADR-011: introdotto in `1.2.0` insieme al flip di `default()`
-    /// a `Require`. Sostituisce il pattern
-    /// `PostgresProvider::default().with_tls_mode(Disabled)`.
+    /// Scorciatoia esplicita per ambienti locali che non offrono TLS. In ogni
+    /// altro caso il default [`TlsMode::Require`] resta intenzionalmente
+    /// sicuro.
     #[must_use]
     pub fn insecure_local() -> Self {
         // Parte dal baseline secure e disattiva TLS esplicitamente.
@@ -662,20 +659,19 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
-            write::validate_schema(&input_schema, operation)?;
-            let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-            let column_count = u64::try_from(input_schema.fields().len())
-                .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
-            let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+            let driver_state = write::prepare_state(&input_schema, operation)?;
+            let (operation_lease, columns_lease) =
+                ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
             let loss_report = preflight::write(self, secret, operation, &input_schema).await?;
-            Ok(PreparedWrite {
-                operation: operation.clone(),
+            Ok(PreparedWrite::new(
+                operation.clone(),
                 input_schema,
                 loss_report,
-                budget: budget.clone(),
+                budget.clone(),
                 operation_lease,
                 columns_lease,
-            })
+            )
+            .with_driver_state(driver_state))
         })
     }
 
@@ -688,11 +684,7 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
-            if !prepared.budget.is_same_budget(budget) {
-                return Err(DatabaseError::invalid_plan(
-                    "il budget di write non coincide con quello usato in prepare_write",
-                ));
-            }
+            validate_prepared_budget(&prepared.budget, budget)?;
             let control = BudgetCancellation::new(cancellation, budget)?;
             let target = prepared.operation.target.clone();
             let result = write::execute(

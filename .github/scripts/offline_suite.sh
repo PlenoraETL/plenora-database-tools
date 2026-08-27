@@ -3,9 +3,8 @@
 #
 # `verify_wheel.py` prova che il wheel si importi e dichiari la versione
 # giusta. Non prova che faccia qualcosa: parametri tipizzati, normalizzazione
-# Arrow, costruzione dell'AST portable e validazione spatial sono tutte
-# verificabili senza server, e nessun job le eseguiva. Un wheel poteva essere
-# allegato a una release avendo superato solo un import.
+# Arrow, costruzione dell'AST portable e validazione spatial sono verificabili
+# senza server e appartengono a questa suite.
 #
 # I test live si saltano da soli — leggono le variabili d'ambiente dei
 # riferimenti e qui non ci sono — quindi non serve selezionarli a mano. Cio che

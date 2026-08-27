@@ -6,15 +6,15 @@ use crate::types::{spatial_dimensions_from_profile, SqlServerReadPlan};
 use crate::SqlServerPool;
 use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
-use plenora_database_core::ewkb::inspect_ewkb;
 use plenora_database_core::plan::{ObjectRef, ReadOperation};
 use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture};
 use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     interruption_category, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase,
-    ReadDiagnosticsTracker, RemoteEffect, Result, RetryDisposition,
+    ReadDiagnosticsTracker, Result,
 };
+use plenora_database_engine::{inspect_spatial_arrays, DeadlineGuard, ReadBatchReservation};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, Renderer};
 use std::sync::Arc;
 use tiberius::{Query, Row};
@@ -80,7 +80,7 @@ pub async fn read_operation(
     validate_batch_rows(batch_rows)?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
     let schema = operation.source.schema.as_deref().unwrap_or("dbo");
@@ -148,7 +148,7 @@ pub async fn read_query_operation(
     validate_query_sources(operation, database)?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
     let spatial_validation = validate_spatial_inputs(
@@ -258,7 +258,7 @@ fn start_plan_stream(
             }
         }
     });
-    let deadline_task = budget_cancellation.take_task()?;
+    let deadline_task = budget_cancellation.take_deadline_task()?;
     Ok(Box::new(SqlServerBatchStream {
         receiver,
         columns: plan.columns,
@@ -274,48 +274,7 @@ fn start_plan_stream(
     }))
 }
 
-struct BudgetCancellation {
-    token: CancellationToken,
-    deadline_task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl BudgetCancellation {
-    fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
-        let token = parent.child_token_with_deadline(Some(budget.deadline()));
-        let deadline_token = token.clone();
-        let deadline = tokio::time::Instant::from_std(budget.deadline());
-        let deadline_task = tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            deadline_token.cancel_due_to_deadline();
-        });
-        Self {
-            token,
-            deadline_task: Some(deadline_task),
-        }
-    }
-
-    const fn token(&self) -> &CancellationToken {
-        &self.token
-    }
-
-    fn take_task(&mut self) -> Result<tokio::task::JoinHandle<()>> {
-        self.deadline_task.take().ok_or_else(|| {
-            read_error(
-                ErrorCategory::Internal,
-                ErrorPhase::Prepare,
-                "task deadline SQL Server assente",
-            )
-        })
-    }
-}
-
-impl Drop for BudgetCancellation {
-    fn drop(&mut self) {
-        if let Some(task) = self.deadline_task.take() {
-            task.abort();
-        }
-    }
-}
+type BudgetCancellation = DeadlineGuard;
 
 pub struct SqlServerBatchStream {
     receiver: mpsc::Receiver<Result<Row>>,
@@ -417,7 +376,7 @@ impl SqlServerBatchStream {
             self.finished = true;
             return Err(cancelled_read_error(&self.cancellation));
         }
-        let reservation = BatchReservation::new(&self.budget, self.batch_rows, &self.columns)?;
+        let reservation = reserve_batch(&self.budget, self.batch_rows, &self.columns)?;
         let capacity = reservation.row_limit.min(1_024);
         let mut buffers = self
             .columns
@@ -468,7 +427,7 @@ impl SqlServerBatchStream {
     fn finish_batch(
         &mut self,
         batch: RecordBatch,
-        reservation: BatchReservation,
+        reservation: ReadBatchReservation,
     ) -> Result<RecordBatch> {
         match self.validated_batch(&batch, reservation) {
             Ok(()) => Ok(batch),
@@ -483,7 +442,7 @@ impl SqlServerBatchStream {
     fn validated_batch(
         &mut self,
         batch: &RecordBatch,
-        reservation: BatchReservation,
+        reservation: ReadBatchReservation,
     ) -> Result<()> {
         let actual_bytes = batch.columns().iter().try_fold(0_u64, |total, array| {
             let bytes = u64::try_from(array.get_array_memory_size()).map_err(|_| {
@@ -526,75 +485,15 @@ impl Drop for SqlServerBatchStream {
     }
 }
 
-struct BatchReservation {
-    rows_lease: ResourceLease,
-    memory_lease: ResourceLease,
-    output_lease: ResourceLease,
-    geometry_lease: Option<ResourceLease>,
-    row_limit: usize,
-    byte_limit: u64,
-    component_limit: u64,
-}
-
-impl BatchReservation {
-    fn new(
-        budget: &ResourceBudget,
-        batch_rows: usize,
-        columns: &[crate::SqlServerColumnSpec],
-    ) -> Result<Self> {
-        let rows = budget
-            .remaining(ResourceKind::Rows)
-            .min(u64::try_from(batch_rows).unwrap_or(u64::MAX));
-        let bytes = budget
-            .remaining(ResourceKind::MemoryBytes)
-            .min(budget.remaining(ResourceKind::OutputBytes));
-        if rows == 0 || bytes == 0 {
-            return Err(DatabaseError::resource_limit(
-                "budget SQL Server read esaurito",
-            ));
-        }
-        let has_spatial = columns
-            .iter()
-            .any(|column| column.kind.spatial_semantics().is_some());
-        let component_limit = if has_spatial {
-            budget.remaining(ResourceKind::GeometryComponents)
-        } else {
-            0
-        };
-        if has_spatial && component_limit == 0 {
-            return Err(DatabaseError::resource_limit(
-                "budget componenti geometriche esaurito",
-            ));
-        }
-        Ok(Self {
-            rows_lease: budget.try_lease(ResourceKind::Rows, rows)?,
-            memory_lease: budget.try_lease(ResourceKind::MemoryBytes, bytes)?,
-            output_lease: budget.try_lease(ResourceKind::OutputBytes, bytes)?,
-            geometry_lease: has_spatial
-                .then(|| budget.try_lease(ResourceKind::GeometryComponents, component_limit))
-                .transpose()?,
-            row_limit: usize::try_from(rows).unwrap_or(usize::MAX),
-            byte_limit: bytes,
-            component_limit,
-        })
-    }
-
-    fn commit(self, rows: u64, bytes: u64, components: u64) -> Result<()> {
-        if bytes == 0 || bytes > self.byte_limit {
-            return Err(DatabaseError::resource_limit(
-                "batch Arrow oltre il budget memoria/output",
-            ));
-        }
-        self.rows_lease.commit(rows)?;
-        self.memory_lease.commit(bytes)?;
-        self.output_lease.commit(bytes)?;
-        if components > 0 {
-            self.geometry_lease
-                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico assente"))?
-                .commit(components)?;
-        }
-        Ok(())
-    }
+fn reserve_batch(
+    budget: &ResourceBudget,
+    batch_rows: usize,
+    columns: &[crate::SqlServerColumnSpec],
+) -> Result<ReadBatchReservation> {
+    let has_spatial = columns
+        .iter()
+        .any(|column| column.kind.spatial_semantics().is_some());
+    ReadBatchReservation::acquire(budget, batch_rows, None, has_spatial)
 }
 
 /// Attribuisce un difetto di conversione alla riga sorgente e alla colonna del
@@ -625,7 +524,7 @@ fn validate_spatial_batch(
     nesting_depth: u64,
     diagnostics: &ReadDiagnosticsTracker,
 ) -> Result<u64> {
-    let mut components = 0_u64;
+    let mut arrays = Vec::new();
     for (index, column) in columns.iter().enumerate() {
         if column.kind.spatial_semantics().is_none() {
             continue;
@@ -641,35 +540,18 @@ fn validate_spatial_batch(
                     "array spatial SQL Server non binario",
                 )
             })?;
-        for row in 0..array.len() {
-            if array.is_null(row) {
-                continue;
-            }
-            let value = array.value(row);
-            let length = u64::try_from(value.len())
-                .map_err(|_| DatabaseError::resource_limit("WKB non rappresentabile"))?;
-            if length > cell_limit {
-                return Err(DatabaseError::resource_limit(
-                    "WKB SQL Server oltre il limite cella",
-                ));
-            }
-            let remaining = component_limit.checked_sub(components).ok_or_else(|| {
-                DatabaseError::resource_limit("budget componenti geometriche esaurito")
-            })?;
-            if remaining == 0 {
-                return Err(DatabaseError::resource_limit(
-                    "budget componenti geometriche esaurito",
-                ));
-            }
-            let stats = inspect_ewkb(value, remaining, nesting_depth).map_err(|error| {
-                attribute_conversion_defect(diagnostics, columns, error, Some(row), Some(index))
-            })?;
-            components = components
-                .checked_add(stats.components)
-                .ok_or_else(|| DatabaseError::resource_limit("componenti geometriche overflow"))?;
-        }
+        arrays.push((index, array));
     }
-    Ok(components)
+    inspect_spatial_arrays(
+        arrays,
+        component_limit,
+        cell_limit,
+        nesting_depth,
+        |error, row, column| {
+            attribute_conversion_defect(diagnostics, columns, error, Some(row), Some(column))
+        },
+        |_, _, _| Ok(()),
+    )
 }
 
 async fn preflight_spatial(
@@ -840,23 +722,19 @@ fn read_error(
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use plenora_database_core::geometry::Dimensions;
-    use plenora_database_core::ResourceLimits;
+    use plenora_database_core::{RemoteEffect, ResourceLimits, RetryDisposition};
 
     #[test]
     fn batch_row_configuration_is_bounded() {
@@ -869,7 +747,7 @@ mod tests {
     #[test]
     fn reservations_fail_before_zero_or_missing_geometry_budget() {
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-        assert!(BatchReservation::new(&budget, 0, &[]).is_err());
+        assert!(reserve_batch(&budget, 0, &[]).is_err());
     }
 
     fn column(name: &str) -> crate::SqlServerColumnSpec {
@@ -1008,7 +886,7 @@ mod tests {
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         let (sender, receiver) = mpsc::channel(1);
         let cancellation = CancellationToken::new();
-        let reservation = BatchReservation::new(&budget, 8, &columns).expect("reservation");
+        let reservation = reserve_batch(&budget, 8, &columns).expect("reservation");
         let mut stream = SqlServerBatchStream {
             receiver,
             columns,

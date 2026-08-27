@@ -92,8 +92,7 @@ pub(crate) fn print_active(value: &Value) -> CliResult<()> {
     print_result(&cmd, value)
 }
 
-/// Stampa `value` nel formato attivo. Sostituisce `print_json` come punto di
-/// uscita canonico.
+/// Punto di uscita canonico per stampare `value` nel formato attivo.
 pub(crate) fn print_result(command: &str, value: &Value) -> CliResult<()> {
     match OutputFormat::active() {
         OutputFormat::Json => {

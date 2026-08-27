@@ -1,21 +1,18 @@
 name: session-matrix
 
-# Campagna live della semantica di sessione sui tre riferimenti.
+# Campagna live della semantica di sessione sui riferimenti MySQL e MariaDB.
 #
 # La matrice in `docs/mariadb/SESSION-MATRIX.md` giustifica una decisione
 # architetturale: bootstrap, isolamento e `START TRANSACTION` restano codice
-# condiviso perche MySQL 9.7 e le due MariaDB si comportano allo stesso modo.
+# condiviso finché tutti i riferimenti misurati si comportano allo stesso modo.
 # Il self-test statico gira su ogni PR e verifica il **giudizio** del runner;
 # non puo accorgersi che il comportamento e cambiato, perche non tocca un
 # server. Se domani cambiasse `SESSION_BOOTSTRAP_SQL`, il documento resterebbe
 # quello di ieri e la CI resterebbe verde.
 #
-# Questa campagna e cio che chiude quel buco. Non gira su push: accende tre
-# server e ne misura tredici superfici, che e troppo per ogni commit e
-# inutile per la maggior parte. Gira a cadenza fissa — dove scopre una
-# divergenza introdotta da un cambio del codice o da un aggiornamento
-# dell'immagine — e a mano, quando qualcuno tocca la sessione e vuole saperlo
-# prima della review.
+# La campagna live rileva i cambiamenti che il self-test statico non può
+# osservare. Non gira su ogni push perché avvia tutte le fixture; è schedulata
+# e resta disponibile su richiesta.
 #
 # Il ciclo di vita delle fixture non e qui: sta in
 # `scripts/check_session_campaign.py`, che si esegue identico in locale. Uno
@@ -68,7 +65,7 @@ jobs:
       - name: directory di diagnostica
         run: mkdir -p "$RUNNER_TEMP/session-matrix"
 
-      - name: campagna live sui tre riferimenti
+      - name: campagna live sui riferimenti
         run: |
           python3 scripts/check_session_campaign.py \
             --diagnostics "$RUNNER_TEMP/session-matrix" 2>&1 \

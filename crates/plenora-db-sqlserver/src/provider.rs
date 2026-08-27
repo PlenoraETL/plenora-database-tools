@@ -1,8 +1,6 @@
 use crate::read::MAX_CONFIGURED_BATCH_ROWS;
 use crate::read::{read_operation, read_query_operation};
-use crate::write::{
-    prepare_write_with_external_contract_leases, prepare_write_with_options as prepare_driver_write,
-};
+use crate::write::{prepare_write_with_external_contract_leases, PreparedSqlServerWrite};
 use crate::{
     describe_object, list_objects, list_schemas, probe_server, write_prepared, SqlServerConfig,
     SqlServerInsertMode, SqlServerPool, SqlServerSchemaEvolution,
@@ -22,11 +20,12 @@ use plenora_database_core::provider::{
     SecretString,
 };
 use plenora_database_core::query::QueryOperation;
-use plenora_database_core::resource::{ResourceBudget, ResourceKind};
+use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
+use plenora_database_engine::{validate_prepared_budget, ContractLeases};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -36,6 +35,11 @@ use tiberius::Query;
 struct CachedPool {
     secret_fingerprint: [u8; 32],
     pool: Arc<SqlServerPool>,
+}
+
+struct SqlServerPreparedState {
+    driver: PreparedSqlServerWrite,
+    secret_fingerprint: [u8; 32],
 }
 
 /// Adattatore `SQL Server` per il contratto comune Plenora.
@@ -296,12 +300,6 @@ impl Provider for SqlServerProvider {
                 },
                 transactions: TransactionCapabilities {
                     single_transaction: true,
-                    // Aperta insieme allo scope transazionale, e non prima: la
-                    // ragione per cui era chiusa — scritta nel contratto —
-                    // diceva «non espone affatto uno scope transazionale,
-                    // quindi non c'e niente su cui chiamarli», ed era vera
-                    // finche lo scope non c'era.
-                    //
                     // La capability promette `SAVE TRANSACTION` e il
                     // `ROLLBACK` a un punto, e T-SQL ha entrambi. Il rilascio
                     // non e fra le due, e infatti resta rifiutato: T-SQL non
@@ -339,19 +337,7 @@ impl Provider for SqlServerProvider {
 
     /// Apre una transazione applicativa.
     ///
-    /// # Perche esiste, e da quando
-    ///
-    /// Il documento capability di questo provider dichiara
-    /// `transactions.scope = Transaction`, e il contratto dice che devono
-    /// sovrascrivere questo metodo «soltanto i provider che pubblicano scope
-    /// pari a Transaction». Questo provider lo pubblicava e non lo
-    /// sovrascriveva: il default rispondeva `Unsupported`, e la capability era
-    /// una promessa che nessuno poteva mantenere.
-    ///
-    /// Nessun consumatore ci arrivava — il CLI generico non apre transazioni,
-    /// le prove live usano le primitive TDS direttamente — quindi il difetto e
-    /// rimasto invisibile finche il SDK Python non ha raggiunto questo motore.
-    /// L'ha trovato la prima riga di Python che ha provato a usarlo.
+    /// Implementa lo scope dichiarato da `transactions.scope = Transaction`.
     ///
     /// # Errors
     ///
@@ -452,7 +438,7 @@ impl Provider for SqlServerProvider {
             ensure_not_cancelled(cancellation, ErrorPhase::Prepare)?;
             self.validate_source(&operation.target)?;
             let pool = self.pool_for(secret)?;
-            let driver_prepared = prepare_driver_write(
+            let driver_prepared = prepare_write_with_external_contract_leases(
                 &pool,
                 operation,
                 Arc::clone(&input_schema),
@@ -463,40 +449,41 @@ impl Provider for SqlServerProvider {
             )
             .await?;
             let loss_report = driver_prepared.loss_report().clone();
-            drop(driver_prepared);
-
-            let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-            let column_count = u64::try_from(input_schema.fields().len())
-                .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
-            let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-            Ok(PreparedWrite {
-                operation: operation.clone(),
+            let (operation_lease, columns_lease) =
+                ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
+            Ok(PreparedWrite::new(
+                operation.clone(),
                 input_schema,
                 loss_report,
-                budget: budget.clone(),
+                budget.clone(),
                 operation_lease,
                 columns_lease,
-            })
+            )
+            .with_driver_state(SqlServerPreparedState {
+                driver: driver_prepared,
+                secret_fingerprint: Sha256::digest(secret.expose().as_bytes()).into(),
+            }))
         })
     }
 
     fn write<'a>(
         &'a self,
         secret: &'a SecretString,
-        prepared: PreparedWrite,
+        mut prepared: PreparedWrite,
         input: Box<dyn BatchStream>,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
-            if !prepared.budget.is_same_budget(budget) {
-                return Err(DatabaseError::invalid_plan(
-                    "il budget di write non coincide con quello usato in prepare_write",
-                ));
-            }
+            validate_prepared_budget(&prepared.budget, budget)?;
             ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
             self.validate_source(&prepared.operation.target)?;
             let input_schema = input.schema();
+            if input_schema.as_ref() != prepared.input_schema.as_ref() {
+                return Err(DatabaseError::invalid_plan(
+                    "schema stream diverso dallo schema preparato",
+                ));
+            }
             if let Some(input_total) = input.declared_input_rows() {
                 crate::write::validate_diagnostic_request(
                     &prepared.input_schema,
@@ -507,18 +494,20 @@ impl Provider for SqlServerProvider {
                     input.row_diagnostics_policy(),
                 )?;
             }
-            let pool = self.pool_for(secret)?;
-            let driver_prepared = prepare_write_with_external_contract_leases(
-                &pool,
-                &prepared.operation,
-                input_schema,
-                budget,
-                cancellation,
-                self.insert_mode,
-                self.schema_evolution,
-            )
-            .await?;
-            let result = write_prepared(driver_prepared, input, cancellation).await;
+            let driver_state = prepared
+                .take_driver_state::<SqlServerPreparedState>()
+                .ok_or_else(|| {
+                    DatabaseError::invalid_plan(
+                        "stato prepared write SQL Server assente o incompatibile",
+                    )
+                })?;
+            let execution_fingerprint: [u8; 32] = Sha256::digest(secret.expose().as_bytes()).into();
+            if driver_state.secret_fingerprint != execution_fingerprint {
+                return Err(DatabaseError::invalid_plan(
+                    "il secret di write non coincide con quello usato in prepare_write",
+                ));
+            }
+            let result = write_prepared(driver_state.driver, input, cancellation).await;
             drop(prepared);
             result
         })
@@ -585,53 +574,21 @@ fn provider_error(
     phase: ErrorPhase,
     message: &'static str,
 ) -> DatabaseError {
-    DatabaseError {
-        category,
-        phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.to_owned(),
-        diagnostics: None,
-    }
+    DatabaseError::new(category, phase, Some(ProviderKind::Sqlserver), message)
 }
 
-/// Il blocco spatial delle capability, dal solo esito della sonda.
+/// Deriva l'intero blocco spatial dal solo esito della sonda.
 ///
-/// # Perche una funzione e non un letterale in mezzo al documento
-///
-/// Perche cosi si puo interrogare senza un server, ed e cio che ha fatto
-/// emergere l'incoerenza che questa funzione corregge.
-///
-/// `geometry` e `geography` erano sondate — il provider contempla che i due UDT
-/// non ci siano — mentre `read_wkb`, `write_wkb`, `dimensions` e l'elenco delle
-/// funzioni erano costanti. Un server senza tipi spaziali avrebbe percio
-/// pubblicato «non ho geometrie» e insieme «so leggere WKB, conosco quattro
-/// profili dimensionali e ventinove funzioni». Nessuna delle due meta e
-/// sbagliata da sola; insieme non descrivono niente.
-///
-/// E' la stessa classe che `PostgreSQL` aveva gia corretto, e il commento la
-/// nomina per esteso: li `read_wkb` e `write_wkb` sono `geometry &&
-/// callable(...)`, perche la funzione di trasporto puo mancare anche dove il
-/// tipo c'e. Su SQL Server il trasporto non puo mancare — `.AsBinaryZM()` e
-/// `STGeomFromWKB` appartengono al tipo — ma il **tipo** si, e la condizione
-/// che restava da scrivere era quella.
+/// Se nessuno dei due UDT e presente, trasporto WKB, dimensioni e funzioni
+/// devono restare chiusi. Le funzioni vengono poi pubblicate per semantica.
 fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabilities {
     let geometry = probe.geometry_type_id.is_some();
     let geography = probe.geography_type_id.is_some();
     // Senza nessuno dei due UDT non c'e una superficie spatial di cui parlare,
     // e il blocco si chiude per intero invece di restare vero a meta.
     let spatial = geometry || geography;
-    // Una voce per semantica dichiarata, e la voce di `geometry` e piu lunga:
-    // sette funzioni del contratto esistono su quel tipo e non sull'altro —
-    // `STCentroid`, `STEnvelope`, `STBoundary`, `STPointOnSurface`,
-    // `STIsSimple`, `STTouches`, `STCrosses` — e il censimento le
-    // ha misurate una per una.
-    //
-    // Finche il contratto pubblicava una lista sola, quelle sette restavano
-    // chiuse: offrirle accanto a `geography` sarebbe stata una promessa che li
-    // non regge. Ora la semantica ce l'hanno scritta accanto.
+    // `geometry` include funzioni non disponibili su `geography`; tenerle in
+    // mappe distinte evita di prometterle sul ricevitore sbagliato.
     let mut functions_by_semantics = BTreeMap::new();
     if geometry {
         functions_by_semantics.insert(
@@ -667,14 +624,6 @@ fn spatial_capabilities(probe: &crate::catalog::SqlServerProbe) -> SpatialCapabi
         // smettesse di emettere la DDL non renderebbe questo flag falso, ma
         // farebbe cadere quella prova.
         spatial_index: geometry && geography,
-        // Stessa forma, e per un po' e stata una deduzione soltanto: `geometry`
-        // e `geography` sono UDT non vincolati a un singolo tipo geometrico — a
-        // differenza di una colonna `POINT` di MySQL — e da li si concludeva
-        // che i tipi misti reggessero. Il ragionamento e solido, ed e
-        // esattamente cio che su MySQL aveva tenuto in piedi per mesi undici
-        // funzioni mai utilizzabili.
-        //
-        // Ora c'e la misura:
         // `live_mixed_geometry_types_share_one_column_on_both_semantics` scrive
         // `Point`, `LineString` e `Polygon` nella stessa colonna, in un batch
         // solo, e si fa dire dal server il tipo di ogni riga riletta.
@@ -781,15 +730,8 @@ mod tests {
 
     #[test]
     fn without_the_spatial_types_the_whole_spatial_block_closes() {
-        // `geometry` e `geography` erano sondate — il provider contempla che i
-        // due UDT non ci siano — e accanto stavano quattro affermazioni
-        // costanti: so leggere WKB, so scriverlo, conosco quattro profili
-        // dimensionali, offro ventinove funzioni. Su un server senza tipi
-        // spaziali il documento diceva le due meta insieme, e insieme non
-        // descrivono niente.
-        //
-        // E' la classe che PostgreSQL aveva gia corretto, dove `read_wkb` e
-        // `write_wkb` sono `geometry && callable(...)`.
+        // Nessuna capability derivata puo restare aperta senza gli UDT che la
+        // rendono utilizzabile.
         let closed = spatial_capabilities(&probe_with(None, None));
         assert!(!closed.geometry && !closed.geography);
         assert!(!closed.read_wkb, "so leggere WKB di quale geometria?");

@@ -16,8 +16,7 @@ pub async fn list_catalogs(client: &Client) -> Result<Vec<String>> {
 }
 
 pub async fn list_schemas(client: &Client) -> Result<Vec<String>> {
-    // v0.2 (fix H7.1): esclude system schemas (pg_catalog, information_schema,
-    // pg_toast, pg_temp_*, pg_toast_temp_*). Il consumer che ha bisogno anche
+    // Esclude gli schemi di sistema. Il consumer che ha bisogno anche
     // dei system schemas deve interrogare pg_namespace direttamente.
     let rows = client
         .query(

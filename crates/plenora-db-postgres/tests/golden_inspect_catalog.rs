@@ -75,7 +75,7 @@ async fn h7c_list_catalogs_reports_current_database() {
 //  H7c.2 — list_schemas
 // ============================================================================
 
-/// v0.2 (fix H7.1): `Provider::inspect::DatabaseListSchemas` filtra i system
+/// `Provider::inspect::DatabaseListSchemas` filtra i system
 /// schema Postgres (pg_catalog / information_schema / pg_toast / pg_temp_* /
 /// pg_toast_temp_*). Il consumer che ha bisogno anche dei system schema deve
 /// interrogare pg_namespace direttamente.
@@ -111,10 +111,7 @@ async fn h7c_list_schemas_excludes_system_schemas() {
             Some("pg_catalog" | "information_schema" | "pg_toast")
         )
     });
-    assert!(
-        !has_system,
-        "system schema non deve comparire dopo fix H7.1 v0.2: {schemas:?}"
-    );
+    assert!(!has_system, "system schema non deve comparire: {schemas:?}");
 }
 
 // ============================================================================

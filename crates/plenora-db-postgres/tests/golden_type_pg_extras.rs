@@ -1,8 +1,6 @@
-//! Type roundtrip Postgres: famiglie non ancora coperte.
+//! Roundtrip delle famiglie di tipo PostgreSQL estese.
 //!
-//! Chiude il buco identificato in P0.5 pre-Fase 3 sul type coverage. Il
-//! file esistente `golden_type_roundtrip.rs` copre interval / jsonb / bytea
-//! grossi / timetz / null tipizzato. Qui aggiungiamo:
+//! Integra `golden_type_roundtrip.rs` con:
 //!
 //!   1. enum type — pattern PFM (status, priority, ...)
 //!   2. generated column STORED — computed field read-only

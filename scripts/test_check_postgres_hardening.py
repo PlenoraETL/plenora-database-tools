@@ -163,10 +163,8 @@ class PostgresHardeningGateTests(unittest.TestCase):
     def test_no_command_bypasses_the_step_recorder(self) -> None:
         """Un comando eseguito fuori da `step()` non comparirebbe nel verdetto.
 
-        Contato sull'AST dell'**intero modulo**, non sul corpo del `try`: la
-        versione precedente non vedeva le chiamate nascoste in un helper, ed e
-        proprio li che ce n'era una — `run_live_cli_probes` eseguiva per conto
-        proprio e lasciava al chiamante il compito di ricordarsi il passo.
+        Il conteggio usa l'AST dell'intero modulo, non il solo corpo del `try`,
+        così comprende anche le chiamate nascoste in helper.
 
         Le due eccezioni sono le letture di stato dei container, che non sono
         passi ma condizioni: il loro esito diventa `container_health` e
@@ -210,12 +208,8 @@ class PostgresHardeningGateTests(unittest.TestCase):
         processo per conto proprio: contare i wrapper non basta se qualcuno
         salta il wrapper.
 
-        L'unica funzione ammessa e l'esecutore. Una versione precedente di
-        questa guardia ne ammetteva due, e la seconda — `docker_value` — era
-        codice morto: nessun chiamante, e il commento che la giustificava
-        nominava due passi (`immutable_image_digest`, `server_identity`) che in
-        questo gate non esistono. Un'eccezione senza uso e un permesso gia
-        concesso a chi verra dopo, quindi la funzione e stata rimossa.
+        L'unica funzione ammessa è l'esecutore. Un'eccezione senza chiamanti
+        sarebbe un permesso preventivo per bypassare la registrazione.
 
         Sorvegliate tutte le primitive che creano un processo, non la sola
         grafia `subprocess.run`: `Popen`, `check_call` e `check_output` fanno

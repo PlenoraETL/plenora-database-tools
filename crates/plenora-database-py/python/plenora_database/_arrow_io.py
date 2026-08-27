@@ -1,4 +1,4 @@
-"""Helper Arrow IPC per bulk write (P3 v0.1.2).
+"""Helper Arrow IPC per bulk write.
 
 Converte input Python (pyarrow.Table / RecordBatch / list) in bytes
 Arrow IPC stream self-contained per il consumo da parte del binding

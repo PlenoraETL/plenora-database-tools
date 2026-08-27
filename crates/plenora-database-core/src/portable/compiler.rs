@@ -1,5 +1,5 @@
-//! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL`, `MySQL`
-//! e `MariaDB`; gli altri provider (`SQL Server`, `Oracle`) fail-closed.
+//! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL`, `MySQL`,
+//! `MariaDB` e `SQL Server`; gli altri provider fail-closed.
 //!
 //! Design: unico compile pass con `DialectKind` dispatch sui punti dove
 //! il dialect diverge (placeholder `$N` vs `?`, quoting `"` vs `` ` ``,
@@ -7,12 +7,8 @@
 //! **e la forma** lo ammettono, spatial `ST_GeomFromEWKB` vs
 //! `ST_GeomFromWKB`). Le funzioni comuni (`predicate`, `expression`,
 //! `projection`, `order_by`, ecc.) sono uniche.
-//!
-//! `MariaDB` e arrivato dopo, e finche non e arrivato finiva nel ramo di
-//! scarto: l'intero strato facade era irraggiungibile su un provider che
-//! questo repository pubblica. La sua unica divergenza misurata da `MySQL` e
-//! `RETURNING`, che `MySQL` non ha a nessuna versione e `MariaDB` ammette su
-//! ogni forma di scrittura tranne `UPDATE`.
+//! `MariaDB` condivide il dialetto `MySQL` salvo le forme `RETURNING` qualificate;
+//! SQL Server usa placeholder, quoting e forme DML T-SQL dedicate.
 
 use super::{
     DeleteStatement, Direction, Expression, InsertStatement, Nulls, OrderBy, PortableStatement,
@@ -39,20 +35,7 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
     let dialect = match kind {
         ProviderKind::Postgres => DialectKind::Postgres,
         ProviderKind::Mysql => DialectKind::Mysql,
-        // `Mariadb` finiva nel ramo di scarto, quindi l'intero strato facade
-        // era irraggiungibile su un provider che questo repository pubblica:
-        // ogni `execute_portable` e ogni `query_portable` fallivano in prepare
-        // con «compile_portable non supportato per Mariadb». Non era una
-        // decisione, era il default di un `match` scritto quando il provider
-        // non esisteva.
         ProviderKind::Mariadb => DialectKind::Mariadb,
-        // `Sqlserver` finiva nel ramo di scarto, esattamente come `Mariadb`
-        // prima di lui, e con la stessa conseguenza: l'intero strato facade —
-        // `execute_portable`, `execute_portable_returning`, `query_portable` —
-        // era irraggiungibile su un provider che questo repository pubblica,
-        // con un `TransactionScope` funzionante e ventinove funzioni spatial
-        // qualificate. Non era una decisione: era il default di un `match`
-        // scritto quando il provider non c'era.
         ProviderKind::Sqlserver => DialectKind::SqlServer,
         other => {
             return Err(DatabaseError::unsupported(
@@ -89,7 +72,7 @@ enum DialectKind {
     SqlServer,
     /// La sintassi di `MySQL`, tranne dove i due prodotti divergono davvero.
     ///
-    /// Oggi la divergenza e una sola — `RETURNING` — e potrebbe sembrare che
+    /// Anche se la divergenza corrente è `RETURNING`,
     /// una bandiera dentro `DialectKind::Mysql` sarebbe bastata. Sarebbe
     /// bastata a scrivere il codice, non a leggerlo: `MariaDB` e un prodotto
     /// diverso, e la prossima divergenza si presenta come una seconda
@@ -373,16 +356,15 @@ fn compile_spatial_postgres(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
-    // Fix post-review: validazione EWKB obbligatoria PRIMA di
-    // generare SQL. Blocca `SpatialReference` deserializzati da JSON
+    // La validazione EWKB deve precedere la generazione SQL. Blocca
+    // `SpatialReference` deserializzati da JSON
     // o costruiti literal con SRID/dimensioni divergenti dal buffer
     // EWKB reale. Senza questo check, il consumer poteva aggirare la
     // spatial_policy dichiarando `srid: 3857` con EWKB WGS84 →
     // ST_SetSRID sovrascriveva silenziosamente.
     reference.validate()?;
-    // Fase B: validazione + cast delegati a `spatial_policy` (single
-    // source of truth). Prima erano inline duplicati con `spatial.rs`
-    // e `spatial.py`.
+    // Validazione e cast restano delegati a `spatial_policy`, unica fonte
+    // delle regole condivise con le altre superfici.
     spatial_policy::validate_predicate(ProviderKind::Postgres, predicate, reference)?;
     let cast = spatial_policy::postgres_cast_for(reference.semantics);
     let col_cast = if reference.semantics == SpatialSemantics::Geography {
@@ -390,16 +372,16 @@ fn compile_spatial_postgres(
     } else {
         col.to_owned()
     };
-    // Fix review #5 completo: applica il SRID dichiarato via
-    // `ST_SetSRID` per intercettare il caso WKB puro (senza SRID
+    // Applica il SRID dichiarato via `ST_SetSRID` per intercettare il caso
+    // WKB puro (senza SRID
     // embedded), che altrimenti arriverebbe al server come SRID=0
     // producendo silent wrong result. Se l'EWKB ha già un SRID
     // embedded coerente, `ST_SetSRID` è idempotente. La coerenza
     // fra SRID embedded e dichiarato è garantita da
     // `SpatialReference::new_validated` upstream.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    // Fix review: fail-closed su SRID > i32::MAX. Prima
-    // `unwrap_or(i32::MAX)` saturava silenziosamente — un consumer che
+    // La conversione deve fallire oltre `i32::MAX`: saturare
+    // silenziosamente farebbe usare al consumer un SRID
     // passa un SRID sopra 2^31-1 avrebbe ottenuto risultati con SRID
     // sbagliato invece di errore.
     let srid_i32 = i32::try_from(reference.srid).map_err(|_| {
@@ -432,20 +414,20 @@ fn compile_spatial_mysql(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
-    // Fix post-review: validazione EWKB obbligatoria (vedi
-    // `compile_spatial_postgres` per motivazione).
+    // Anche il percorso MySQL valida l'EWKB prima di produrre SQL; la
+    // motivazione è la stessa del percorso PostgreSQL.
     reference.validate()?;
     // MySQL: no distinzione geometry/geography a livello tipo — la semantica
     // deriva dal SRID della colonna. Validazione (DWithin unsupported,
-    // distanza finita) delegata a `spatial_policy` in Fase B.
+    // distanza finita) delegata a `spatial_policy`.
     spatial_policy::validate_predicate(ProviderKind::Mysql, predicate, reference)?;
-    // Fix review #5: MySQL 8.0+ `ST_GeomFromWKB(wkb, srid)` accetta
-    // il SRID come secondo argomento. Passiamo sempre il SRID
+    // `ST_GeomFromWKB(wkb, srid)` accetta il SRID come secondo argomento.
+    // Lo passiamo sempre
     // dichiarato per intercettare il caso WKB puro (senza SRID
     // embedded) che altrimenti arriverebbe come SRID 0.
     let geom_placeholder = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
-    // Fix review: fail-closed su SRID > i32::MAX (vedi
-    // `compile_spatial_postgres`).
+    // La conversione oltre `i32::MAX` segue la stessa policy fail-closed del
+    // percorso PostgreSQL.
     let srid_i32 = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
             "SRID {} eccede il range i32 supportato da MySQL (max {})",

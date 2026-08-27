@@ -5,21 +5,8 @@ Il SDK ha due classi di sessione: `Session`, che serve PostgreSQL, e
 `DatabaseSession`, che serve MySQL, MariaDB e SQL Server tenendo il provider
 dietro `dyn Provider`.
 
-Sono nate in momenti diversi e sono cresciute in parallelo. Undici dei loro
-metodi sono copie l'uno dell'altro — diversi identici carattere per carattere —
-e il rischio di due copie e sempre lo stesso: una correzione applicata a una
-sola, e da quel giorno i due percorsi rispondono in modo diverso alla stessa
-domanda.
-
-# Cosa aveva prodotto prima della guardia
-
-Non un limite di prodotto, ma un'asimmetria che nessuno aveva deciso:
-`execute_ddl` esisteva sulla famiglia e non su PostgreSQL, mentre i quattro
-`inspect_*` esistevano su PostgreSQL e non sulla famiglia. La guardia li ha
-resi comuni e ora impedisce che una delle due copie torni a divergere.
-
-Nessuna delle due mancanze aveva una ragione scritta: erano dove il codice era
-arrivato, non dove qualcuno l'aveva mandato.
+I metodi comuni sono implementati in due classi; la guardia impedisce che una
+modifica venga applicata a un solo percorso senza dichiararne la ragione.
 
 # Perche una guardia e non una fusione
 
@@ -89,13 +76,7 @@ class TheTwoSessionsAgree(unittest.TestCase):
         )
 
     def test_no_declared_difference_has_quietly_been_closed(self) -> None:
-        """Una differenza dichiarata e sparita e una dichiarazione scaduta.
-
-        E' la meta che si dimentica: quando qualcuno colma un buco, la riga che
-        lo spiegava resta, e da quel momento descrive un mondo che non c'e piu.
-        La stessa forma per cui `savepoints: false` su SQL Server e rimasto
-        chiuso dopo che la sua ragione era caduta.
-        """
+        """Una differenza dichiarata ma assente e documentazione scaduta."""
 
         postgres = exposed(SRC / "session.rs")
         family = exposed(SRC / "session_family.rs")

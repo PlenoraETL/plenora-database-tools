@@ -14,10 +14,10 @@ from typing import Any
 from ._arrow_io import _to_ipc_bytes
 from ._native import Session as _NativeSession
 from ._transaction import Transaction
-from .query import Delete, Insert, Select, Update, Upsert
+from .query import _BuilderFactory
 
 
-class Session:
+class Session(_BuilderFactory):
     """Handle alla sessione Postgres. Restituita da
     `plenora_database.connect(dsn)`. Context-manager friendly."""
 
@@ -69,12 +69,7 @@ class Session:
         return self._native.execute_scalar(sql, params)
 
     def execute_ddl(self, sql: str) -> None:
-        """Esegue DDL fuori transazione, in autocommit.
-
-        Esisteva sulla classe nativa e non qui: il metodo era irraggiungibile
-        da Python, e nessuna guardia lo diceva perche il confronto fra le due
-        sessioni guardava i tipi Rust, non i wrapper che li avvolgono.
-        """
+        """Esegue DDL fuori transazione, in autocommit."""
         return self._native.execute_ddl(sql)
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
@@ -119,7 +114,6 @@ class Session:
 
         Nota: per filter WHERE, usa il builder pythonic
         `s.select(table).where_eq(...).all()` (path OLTP portable AST).
-        Lo streaming con filter arriverà come `Select.stream()` in v0.3+.
         """
         return self._native.read(schema, object, projection, order_by, limit)
 
@@ -149,8 +143,8 @@ class Session:
               * `pyarrow.Table` (schema derivato)
               * `pyarrow.RecordBatch`
               * lista di `pyarrow.RecordBatch` (tutti con stesso schema)
-              * `list[dict]` (v0.3.0+, convertito via `pa.Table.from_pylist`)
-              * `pandas.DataFrame` (v0.3.0+, convertito via
+              * `list[dict]` (convertito via `pa.Table.from_pylist`)
+              * `pandas.DataFrame` (convertito via
                 `pa.Table.from_pandas`, richiede pandas installato)
               * `bytes` — buffer Arrow IPC stream self-contained (schema
                 + N batches + EOS). Utile per zero-copy da altri produttori.
@@ -162,11 +156,11 @@ class Session:
             (default "compatible"). "strict" boccia ogni loss anche minore
             (e.g. Arrow nullable verso PG NOT NULL); "compatible" tollera
             loss non-DataLoss; scelta consigliata per input pyarrow tipici.
-          - `keys`: lista di colonne key (v0.3.0+). Obbligatorio per
+          - `keys`: lista di colonne key. Obbligatorio per
             mode "upsert" / "update" / "delete_by_keys". Rifiutato con
             errore per gli altri mode.
           - `update_columns`: lista di colonne da aggiornare per mode
-            "update" (v0.3.0+). Vuoto = tutte le non-key.
+            "update". Vuoto = tutte le non-key.
 
         Ritorna un dict con la struttura `WriteOutcome` del contratto v2,
         serializzata dalla stessa fonte del JSON:
@@ -254,23 +248,6 @@ class Session:
             s.inspect.describe(schema, name) -> dict
         """
         return _Inspector(self._native)
-
-    # -------------------- portable AST builders -------------------------
-
-    def select(self, table: str, schema: str | None = None) -> Select:
-        return Select(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None) -> Insert:
-        return Insert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None) -> Update:
-        return Update(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None) -> Delete:
-        return Delete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None) -> Upsert:
-        return Upsert(self, table, schema)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

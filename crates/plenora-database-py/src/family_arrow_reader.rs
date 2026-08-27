@@ -1,4 +1,4 @@
-//! Streaming Arrow read MySQL (v0.7).
+//! Streaming Arrow per i provider della famiglia MySQL.
 //!
 //! Espone `DatabaseSession.read(schema, table, projection, order_by, limit)`
 //! che ritorna un `BatchReader` (pyclass provider-agnostic, ereditato

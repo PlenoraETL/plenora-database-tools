@@ -1,20 +1,8 @@
 //! Bindings Python (`PyO3`) di `plenora-database-tools`.
 //!
-//! Quattro provider esposti, ciascuno sync e async:
-//!
-//! * `PostgreSQL`/`PostGIS` — `connect` / `aconnect`, con spatial predicates
-//!   e `SpatialReference`;
-//! * `MySQL` — `connect_mysql` / `aconnect_mysql`, senza spatial.
-//! * `MariaDB` — `connect_mariadb` / `aconnect_mariadb`, stessa superficie
-//!   e provider distinto: il prodotto lo dichiara il consumatore, e la
-//!   probe verifica quella scelta invece di compierla (ADR 0014).
-//! * `SQL Server` — `connect_sqlserver` / `aconnect_sqlserver`, via TDS.
-//!
-//! Su tutti: `execute` / `execute_scalar` / `execute_returning_rows` /
-//! `execute_ddl`, `begin` con isolamento, savepoint, `SessionContext` e
-//! `native_query_policy`, lettura Arrow IPC bounded (`read` / `aread`),
-//! bulk write (`copy_from` / `acopy_from`) e builder AST portabili
-//! (`select`/`insert`/`update`/`delete`/`upsert`).
+//! Espone sessioni sync e async sulle famiglie `PostgreSQL`, `MySQL`/`MariaDB` e `SQL`
+//! Server, preservando i contratti comuni su transazioni, Arrow e query
+//! portabili.
 //!
 //! Il modulo nativo e compilato come `plenora_database._native`; i wrapper
 //! Python idiomatici vivono in `python/plenora_database/__init__.py`, che e
@@ -27,6 +15,7 @@ use tokio::runtime::Runtime;
 mod arrow_reader;
 mod async_session;
 mod async_session_family;
+mod async_session_ops;
 mod async_transaction;
 mod budget;
 mod errors;
@@ -37,6 +26,7 @@ mod py_convert;
 mod session;
 mod session_context_py;
 mod session_family;
+mod session_tx;
 mod transaction;
 mod write;
 
@@ -60,11 +50,8 @@ static RT: OnceLock<Runtime> = OnceLock::new();
 /// Idempotente: la seconda chiamata restituisce quello gia costruito.
 ///
 /// `Builder::build()` fa I/O — apre l'event loop e avvia i worker — e puo
-/// fallire per limiti di thread o di descrittori del processo. Prima quel
-/// fallimento passava per un `expect`, cioe un panico durante l'import del
-/// modulo: Python lo vedeva come `pyo3_runtime.PanicException`, senza classe
-/// d'errore stabile su cui un chiamante possa ragionare. Ora l'import
-/// restituisce un `ImportError` con il motivo.
+/// fallire per limiti di thread o descrittori; il binding lo converte in un
+/// `ImportError` stabile invece di propagare un panico.
 fn build_runtime() -> std::result::Result<&'static Runtime, String> {
     if let Some(existing) = RT.get() {
         return Ok(existing);
@@ -109,9 +96,6 @@ pub const fn version() -> &'static str {
 /// `plenora_database_core::spatial_policy::GEOGRAPHIC_SRIDS` e
 /// esposta qui perché `spatial.py` la consulti per fast-fail
 /// client-side su `DWithin + Geometry + SRID geografico`.
-///
-/// Prima di Fase A la lista era duplicata (Rust + Python) con rischio
-/// di divergenza silente.
 #[pyfunction]
 #[must_use]
 pub fn geographic_srids() -> Vec<u32> {
@@ -119,7 +103,7 @@ pub fn geographic_srids() -> Vec<u32> {
 }
 
 /// Valida che `srid` e `dimensions` dichiarati coincidano con quelli
-/// realmente presenti nel buffer EWKB. Fix review #5.
+/// realmente presenti nel buffer EWKB.
 ///
 /// - `dimensions` accetta `"xy"|"xyz"|"xym"|"xyzm"|"unknown"`.
 ///   `"unknown"` bypassa il check dimensioni.

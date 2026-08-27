@@ -1,18 +1,8 @@
 name: postgres-assurance
 
-# Il gate del riferimento PostgreSQL/PostGIS esisteva — `scripts/
-# check_postgres_reference.py`, con la sua rete Compose, il suo inventario di
-# test live e un report che dichiara decine di verifiche — e **nessun workflow
-# lo eseguiva**. Girava a mano, quando qualcuno si ricordava, su una macchina
-# che non e quella del rilascio.
-#
-# La conseguenza non e teorica: PostgreSQL e il provider di default del
-# workspace (`default-members` lo include, MySQL e SQL Server no), quindi era
-# proprio il percorso piu esercitato ad avere la prova meno automatica. Gli
-# altri due provider un workflow di campagna ce l'hanno da tempo.
-#
-# Il gate avvia il proprio fixture e lancia cargo **dentro** un container sulla
-# rete Compose: qui non serve installare Rust, serve Docker e Python.
+# Campagna PostgreSQL/PostGIS del riferimento e dell'hardening TLS. I gate
+# avviano le proprie fixture e lanciano Cargo dentro la rete Compose; il runner
+# richiede Docker e Python, non una toolchain Rust locale.
 
 on:
   push:
@@ -73,8 +63,7 @@ jobs:
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
 
-      # Prima il self-test del gate: una guardia rotta non deve essere scoperta
-      # dopo trenta minuti di container.
+      # Il self-test precede l'avvio delle fixture per fallire rapidamente.
       - name: self-test del gate
         run: python3 scripts/test_check_postgres_reference.py
 
@@ -132,16 +121,8 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.postgres.yml down --volumes || true
 
-  # Il secondo gate PostgreSQL aveva lo stesso difetto del primo, scoperto un
-  # giro dopo: `check_postgres_hardening.py` esisteva, aveva il proprio
-  # self-test in `rust-ci`, e **nessun workflow eseguiva il gate**. E' il solo
-  # che prova TLS privato, mTLS, verifica dell'hostname e recovery sul fixture
-  # cifrato: tutto quel percorso poteva rompersi senza far diventare rosso
-  # niente.
-  #
-  # Job separato dal riferimento: avvia due compose invece di uno, dura di piu,
-  # e un suo rosso deve restare distinguibile da un rosso del gate del
-  # riferimento.
+  # Job separato: prova TLS privato, mTLS, verifica dell'hostname e recovery e
+  # mantiene il proprio verdetto distinto dal gate del riferimento.
   hardening:
     name: gate hardening PostgreSQL (TLS privato + mTLS)
     runs-on: ubuntu-24.04

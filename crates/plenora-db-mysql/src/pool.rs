@@ -3,7 +3,6 @@ use crate::{MysqlConfig, MysqlSession};
 use mysql_async::Pool;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
 };
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -138,16 +137,12 @@ impl MysqlPool {
 }
 
 fn semaphore_closed_error(kind: plenora_database_core::plan::ProviderKind) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::Internal,
-        phase: ErrorPhase::Connect,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(kind),
-        execution_id: None,
-        message: "semaphore pool chiuso".to_owned(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::Internal,
+        ErrorPhase::Connect,
+        Some(kind),
+        "semaphore pool chiuso",
+    )
 }
 
 #[cfg(test)]

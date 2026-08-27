@@ -25,17 +25,11 @@ fra motori, e il posto giusto per spiegarla e il punto in cui si decide. Chi
 legge `staged_swap: false` su MySQL e lo vede `true` su PostgreSQL vuole sapere
 cosa cambia fra i due, e non lo trova nel contratto — li il campo e uno solo.
 
-# Il difetto che l'ha prodotta
+# Cosa viene imposto
 
-`savepoints: false` su SQL Server era chiusa senza una riga accanto. La ragione
-esisteva, ma stava nel contratto: «non espone affatto uno scope transazionale».
-Il giorno in cui quello scope e arrivato la ragione e caduta, e la bandiera e
-rimasta chiusa senza piu niente a sostenerla — invisibile, perche nessuno
-rilegge il contratto quando implementa un provider.
-
-Insieme a quella, la scansione ne ha trovate altre quattro: `transactional_ddl`
-e `staged_swap` su entrambi i profili della famiglia MySQL, e `geography` su
-MySQL. Ragioni vere, tutte, e nessuna scritta dove serviva.
+Ogni capability asimmetrica richiede una motivazione accanto al valore del
+provider. Se l'implementazione cambia, la motivazione e il valore devono
+restare coerenti nello stesso punto di review.
 """
 
 from __future__ import annotations
@@ -55,7 +49,7 @@ class AsymmetricFlagsCarryTheirReason(unittest.TestCase):
         "MySQL/MariaDB": "crates/plenora-db-mysql/src/profile.rs",
     }
 
-    #: Le bandiere che **oggi** valgono diversamente fra i quattro prodotti.
+    #: Le bandiere che valgono diversamente fra i prodotti pubblicati.
     #:
     #: Scritte a mano, e non dedotte: dedurle vorrebbe dire leggere il valore
     #: di ogni campo su ogni prodotto, e i valori non sono tutti letterali —

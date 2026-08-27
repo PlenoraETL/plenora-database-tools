@@ -354,9 +354,8 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
         # davvero: `spatial.read_wkb` e `spatial.functions` hanno la forma di
         # una sonda della superficie `spatial` e non lo sono. La convenzione
         # del documento e scriverli per intero — `SpatialCapabilities::functions`
-        # — e questa guardia e cio che la fa rispettare. Tre tranche di fila ci
-        # sono inciampate: se ci inciampa una quarta, il messaggio qui sotto e
-        # quello che deve dirle cosa fare.
+        # — e questa guardia fa rispettare la convenzione con un messaggio
+        # operativo.
         surfaces = {name.split(".", 1)[0] for name in probes}
         self.assertEqual(
             {name for name in documented if name.split(".", 1)[0] in surfaces}
@@ -567,8 +566,7 @@ class MariadbDriverEvidenceTests(unittest.TestCase):
             probes - documented, set(), "sonde misurate e non registrate"
         )
         # Un nome vecchio e citabile solo se il gate dichiara in cosa si e
-        # trasformato: la tranche che lo eseguì resta leggibile, e un nome
-        # inventato resta un errore.
+        # trasformato: la prova resta risolvibile e un nome inventato resta un errore.
         from scripts.check_mariadb_driver import RENAMED_PROBES
 
         self.assertEqual(
@@ -867,10 +865,8 @@ class MariadbDriverRunnerTests(unittest.TestCase):
         source = self.RUNNER.read_text(encoding="utf-8")
         self.assertIn("def image_identities(", source)
         self.assertIn("def declares_image(", source)
-        # Tutte e tre le risposte del demone, non solo l'ID: quello e il
-        # digest del manifest con containerd e quello della config con il
-        # graph driver, e confrontarlo con il pin passava in locale e falliva
-        # sul runner.
+        # Tutte le identità del demone, non solo l'ID: containerd e graph
+        # driver gli attribuiscono digest di natura diversa.
         self.assertIn('"{{.Config.Image}}"', source)
         self.assertIn('"{{.Image}}"', source)
         self.assertIn("RepoDigests", source)

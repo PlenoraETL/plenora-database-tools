@@ -1,19 +1,7 @@
 //! La compilazione di un piano portabile, che non ha bisogno di un database.
 //!
-//! # Perche un modulo suo
-//!
-//! `portable-compile` stava in `query_cmd`, che e compilato soltanto con la
-//! feature `postgres`. Il comando pero non apre nessuna connessione: legge un
-//! AST da un file, lo compila per il dialetto che gli si chiede, e stampa
-//! l'SQL. E' puro.
-//!
-//! L'effetto era che un binario costruito con `--features mysql` non poteva
-//! compilare un piano portabile **per `MySQL`**, e chi lo cercava trovava
-//! «comando non compilato in questo binario» — una risposta vera e inutile,
-//! perche il comando non aveva niente a che vedere con il provider assente.
-//!
-//! Qui non e gated, e resta puro: se un giorno gli servisse una connessione,
-//! il posto giusto non sarebbe piu questo.
+//! Il comando e puro e non dipende dalle feature dei provider: legge un AST,
+//! lo compila per il dialetto richiesto e stampa l'SQL.
 
 use crate::{ensure_end, print_json, CliResult};
 use plenora_database_core::plan::ProviderKind;
@@ -28,25 +16,12 @@ use std::fs;
 /// ripeterlo a mano, cosi non puo nominare un insieme diverso da quello che il
 /// match accetta.
 ///
-/// Prima ne offriva tre, e sbagliava in **entrambe** le direzioni. `mariadb`
-/// mancava benche il compilatore la conoscesse, quindi un dialetto reale era
-/// irraggiungibile dal CLI. E `sqlserver` c'era benche il compilatore lo
-/// rifiuti, quindi l'aiuto proponeva un nome che rispondeva «non supportato».
-///
 /// Un elenco piu corto del vero nasconde; uno piu lungo promette. La prova qui
 /// sotto chiude tutte e due, perche attraversa ogni nome compilando un piano.
 const DIALECTS: &[(&str, ProviderKind)] = &[
     ("postgres", ProviderKind::Postgres),
     ("mysql", ProviderKind::Mysql),
     ("mariadb", ProviderKind::Mariadb),
-    // `sqlserver` e tornato, ed e la seconda volta che questa riga si muove.
-    // C'era, e il CLI lo offriva mentre `compile_portable` rispondeva «non
-    // supportato»: una promessa che il compilatore non poteva mantenere. E' poi
-    // uscito, e ora rientra perche il dialetto T-SQL esiste.
-    //
-    // La prova qui sotto se ne e accorta da sola in entrambe le direzioni,
-    // perche attraversa ogni nome di questo elenco compilando un piano vero:
-    // un elenco piu corto del vero nasconde, uno piu lungo promette.
     ("sqlserver", ProviderKind::Sqlserver),
 ];
 
@@ -101,10 +76,8 @@ mod tests {
 
     /// Ogni dialetto offerto dal comando viene davvero compilato.
     ///
-    /// Il comando ne offriva quattro e il compilatore ne compila tre: chi
-    /// chiedeva `sqlserver` riceveva «`compile_portable` non supportato», dopo
-    /// che l'aiuto glielo aveva proposto. Un elenco di nomi accettati e una
-    /// promessa, e questa prova la attraversa nome per nome invece di
+    /// Un elenco di nomi accettati e una promessa; questa prova lo attraversa
+    /// nome per nome invece di
     /// confrontarla con un secondo elenco scritto qui — due elenchi
     /// divergono, un elenco attraversato no.
     #[test]

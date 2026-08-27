@@ -1,11 +1,16 @@
 //! Fasi offline `parse -> validate -> fingerprint -> prepare` + helper di
 //! orchestrazione runtime (retry, ...).
 //!
-//! L'esecuzione remota sarà aggiunta dagli adapter provider senza introdurre
-//! `match` sui provider nell'executor.
+//! L'esecuzione remota resta negli adapter provider, senza `match` sui
+//! provider nell'executor.
 
 pub mod retry;
+pub mod runtime;
 pub use retry::{retry_with_policy, RetryPolicy};
+pub use runtime::{
+    inspect_spatial_arrays, validate_prepared_budget, ContractLeases, DeadlineGuard,
+    ReadBatchReservation, WriteResourceReservation,
+};
 
 use plenora_database_core::capabilities::{ProviderCapabilities, TransactionScope};
 use plenora_database_core::plan::{
@@ -234,13 +239,9 @@ pub fn prepare(
             }
         }
         Operation::DatabaseWrite { write } => {
-            // **Prima** le contraddizioni interne, poi le capability. Un piano
-            // che si contraddice e sbagliato in se, e la sua diagnosi non deve
-            // dipendere da cosa il provider pubblichi: con l'ordine invertito
-            // una scrittura `read_only` in Append otteneva `Unsupported`
-            // invece di `InvalidPlan` non appena `writes.append` era false, e
-            // il chiamante ne deduceva "provider incapace" invece di "piano da
-            // correggere" — due strategie di recupero diverse.
+            // Prima le contraddizioni interne, poi le capability: un piano
+            // incoerente deve produrre `InvalidPlan` indipendentemente da cio
+            // che il provider pubblica.
             reject_contradictory_write(write)?;
             validate_write_capability(write.mode, &capabilities)?;
             if write.create_spatial_index {
@@ -306,10 +307,8 @@ pub fn prepare(
 /// introduce un `match` sul provider — cosa che questo crate evita per
 /// costruzione.
 ///
-/// Il confronto con le capability, da solo, le lasciava passare: un piano
-/// `read_only` che scrive, o `chunk_committed` che pretende di non lasciare
-/// righe a meta, otteneva `prepared` e veniva poi rifiutato dal provider, o
-/// peggio eseguito con un lifecycle diverso da quello chiesto.
+/// Il controllo avviene prima delle capability per impedire che un piano
+/// incoerente venga attribuito a un limite del provider.
 ///
 /// # Errors
 ///
@@ -355,9 +354,8 @@ fn reject_contradictory_write(write: &WriteOperation) -> Result<()> {
     // lo qualifica per `Create` e `Replace`, e ha un test live che esegue
     // `Replace + StagedSwap + create_spatial_index`.
     //
-    // Codificarne una versione qui significava scegliere il comportamento di un
-    // provider per tutti: la prima stesura restringeva a `Create` e rifiutava
-    // prima della rete un piano `SQL Server` valido. Il contratto v2 non ha un
+    // Codificarne una versione qui significherebbe scegliere il comportamento di un
+    // provider per tutti. Il contratto v2 non ha un
     // campo che esprima quale mode costruisce il target, quindi la regola resta
     // dove e verificabile — nel preflight di ciascun provider.
 
@@ -400,11 +398,8 @@ fn collect_spatial_functions(filter: &FilterExpression, out: &mut Vec<SpatialFun
 /// Cio che `contracts/v2` dichiara su `connection_ref`: stringa non vuota, al
 /// piu 256 **caratteri**, senza NUL.
 ///
-/// La lunghezza si contava in byte. `maxLength` di JSON Schema conta code
-/// point, quindi un riferimento di duecento caratteri accentati — conforme al
-/// contratto, e prodotto da chiunque nomini una variabile in una lingua che non
-/// sia l'inglese — veniva dichiarato "piano non valido" da questa
-/// implementazione, e da nessun'altra.
+/// `maxLength` di JSON Schema conta code point, quindi la validazione usa
+/// `chars().count()` e non la lunghezza UTF-8 in byte.
 fn validate_connection_ref(connection_ref: &str) -> Result<()> {
     if connection_ref.is_empty() {
         return Err(DatabaseError::invalid_plan("connection_ref vuoto"));
@@ -620,12 +615,8 @@ fn validate_object(
 /// `common.schema.json#/$defs/identifier` dice `maxLength: 256`, e
 /// `maxLength` di JSON Schema conta **code point**.
 ///
-/// Il confronto era su `String::len()`, cioe byte. Un nome di 65 caratteri CJK
-/// pesa 195 byte e sta dentro il contratto; uno di 100 caratteri accentati ne
-/// pesa 200. Sopra i 128 caratteri multibyte il tetto in byte mordeva prima di
-/// quello vero, e mordeva **piu** stretto del limite reale di SQL Server, che
-/// e 128 caratteri Unicode e non byte — tanto che il provider pubblica
-/// `max_identifier_bytes: None` proprio per non promettere un numero in byte.
+/// Il confronto usa code point, non byte UTF-8, e resta quindi compatibile con
+/// identificatori Unicode e con il limite in caratteri di SQL Server.
 ///
 /// `Limits::max_identifier_bytes` non compare in `plan.schema.json`, che ha
 /// `additionalProperties: false`: nessun piano puo dichiararlo, e il suo 256 e
@@ -643,10 +634,8 @@ fn validate_identifier(value: &str, max_characters: usize) -> Result<()> {
 /// I nomi dei parametri passano dalla stessa `$defs/identifier` degli
 /// oggetti, e `maxLength` la conta in code point.
 ///
-/// Era rimasta `value.len()`: la correzione precedente aveva toccato
-/// `validate_identifier` e non questa, che pero governa **tutti** i nomi
-/// referenziati dai filtri. Centoventinove `é` sono 129 code point e 258 byte:
-/// dentro il contratto, fuori da questo controllo.
+/// Il limite usa i code point, non i byte UTF-8. Questo vale anche per i nomi
+/// referenziati dai filtri.
 fn validate_parameter(value: &str) -> Result<()> {
     if value.is_empty() || value.contains('\0') || value.chars().count() > 256 {
         return Err(DatabaseError::invalid_plan("nome parametro non valido"));
@@ -687,7 +676,7 @@ mod tests {
     /// e percio un documento dentro il contratto e fuori da questo lettore.
     ///
     /// Non si chiude allargando Serde — accettarlo vorrebbe dire rimandare a
-    /// runtime un errore che oggi si prende alla lettura — ne stringendo lo
+    /// runtime un errore rilevabile alla lettura — ne stringendo lo
     /// schema, che e pubblicato e la major non si restringe. Il posto dove
     /// separare i quattro sottoschemi e `contracts/v3/`.
     #[test]
@@ -860,11 +849,8 @@ mod tests {
 
     /// Ogni capability che il piano usa deve poterlo fermare da sola.
     ///
-    /// `prepare` confrontava soltanto `reads.streaming` e la write mode:
-    /// projection, filter e ordering erano dichiarabili `false` senza che
-    /// nulla cambiasse, cioe la capability non significava niente. Il test
-    /// disabilita una bandiera per volta, cosi una dimenticanza futura non si
-    /// nasconde dietro le altre.
+    /// Il test disabilita una bandiera per volta, cosi ogni capability usata
+    /// dal piano deve esercitare da sola il proprio veto.
     #[test]
     fn every_read_capability_the_plan_uses_can_veto_it() {
         let vetoes: [Veto; 4] = [
@@ -1047,9 +1033,7 @@ mod tests {
     /// Le contraddizioni interne al piano si chiudono senza capability.
     ///
     /// Nessun documento capability puo renderle vere e nessun provider puo
-    /// eseguirle come scritte: prima ottenevano `prepared` e venivano poi
-    /// rifiutate a valle, o — peggio — eseguite con un lifecycle diverso da
-    /// quello chiesto.
+    /// eseguirle rispettando il lifecycle richiesto.
     #[test]
     fn a_write_that_contradicts_itself_is_rejected() {
         // (profilo, allow_partial, indice spaziale, mode, cosa si contraddice)
@@ -1216,29 +1200,10 @@ mod tests {
 
 /// Ogni bandiera del contratto o governa qualcosa, o dichiara di non farlo.
 ///
-/// # Il difetto che questa guardia esiste per rendere visibile
-///
-/// Sei campi del documento capability non erano consultati da nessuna riga di
-/// questo file, e nessuno lo diceva: `server_cursor`, `pagination`,
-/// `resumable`, `bulk`, `array_binding`, `returning`. Non erano decorativi per
-/// scelta — erano decorativi e basta, senza documentazione, e la loro assenza
-/// di significato aveva gia prodotto tre esiti diversi sullo stesso campo:
-/// `pagination` pubblicato `true` da due provider, `false` da altri due, e
-/// reso identico dallo stesso renderer per tutti e quattro.
-///
-/// Una bandiera che nessuno legge non e neutra. Un consumatore la legge, e ci
-/// costruisce sopra una decisione che nessun controllo verifichera mai.
-///
-/// # Cosa pretende
-///
-/// Che ogni campo delle tre strutture stia in **esattamente uno** dei due
-/// insiemi: quelli che questo file consulta, e quelli dichiarati descrittivi
-/// qui sotto. La terza possibilita — «non e in nessuno dei due» — e quella
-/// che era la norma, ed e indistinguibile da «qualcuno se n'e dimenticato».
-///
-/// La seconda meta e altrettanto importante: un campo dichiarato descrittivo
-/// che poi **viene** consultato e una dichiarazione scaduta, e la guardia la
-/// rifiuta invece di lasciarla invecchiare.
+/// Ogni campo delle strutture capability deve stare in uno solo fra due
+/// insiemi: quelli consultati dall'engine e quelli esplicitamente descrittivi.
+/// Un campo in nessuno dei due insiemi è una promessa senza controllo; uno in
+/// entrambi rende invece obsoleta la classificazione descrittiva.
 #[cfg(test)]
 mod capability_surface {
     /// I campi che questo file non consulta, e perche. Il motivo non e
@@ -1324,11 +1289,8 @@ mod capability_surface {
 #[cfg(test)]",
             )
             .map_or(source, |(head, _)| head);
-        // I commenti non consultano niente, e questa riga esiste perche la
-        // prima stesura della guardia ha detto il contrario: `pagination` e
-        // nominata in un commento che spiega **perche** non viene consultata,
-        // e la guardia l'ha letta come una consultazione. Un campo citato in
-        // prosa resta un campo che nessun controllo fa rispettare.
+        // Le occorrenze nei commenti non costituiscono consultazioni: soltanto
+        // il codice di produzione può applicare una capability.
         let code: String = production
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))

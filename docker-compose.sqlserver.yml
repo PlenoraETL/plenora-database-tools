@@ -64,10 +64,8 @@ services:
     # fallisce prima di arrivare al TLS: il test riceve `Io` — nessuno in
     # ascolto — invece del rifiuto del certificato che deve misurare.
     #
-    # E' successo davvero: legare la porta al solo `127.0.0.1` ha chiuso una
-    # esposizione vera e rotto quella prova nello stesso commit. Restano
-    # entrambi di loopback, quindi `127.0.0.0/8` non lascia la macchina e la
-    # ragione della prima riga vale identica per la seconda.
+    # Entrambi gli indirizzi appartengono al loopback: la seconda pubblicazione
+    # raggiunge il controllo TLS senza esporre il fixture sulla rete locale.
     ports:
       - "127.0.0.1:1433:1433"
       - "127.0.0.2:1433:1433"

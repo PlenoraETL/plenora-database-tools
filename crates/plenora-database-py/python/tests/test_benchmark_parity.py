@@ -15,12 +15,9 @@ Il default `pytest` lo salta per non appesantire CI/dev loop.
 Prerequisiti:
   - env `PLENORA_TEST_POSTGRES_DSN` valorizzato
   - env `PLENORA_BENCH_PARITY=1`
-  - env `PLENORA_CLI_BIN` sul binario CLI compilato: il runner lo passa,
-    perche e lui a sapere dove ha montato il repository. Il default
-    scritto qui era il punto di mount di allora; quando il runner ha
-    cambiato mount, il bench ha smesso di trovare il binario e si e
-    saltato da solo — che e il modo in cui un confronto sparisce senza
-    che nessuno lo veda fallire.
+  - env `PLENORA_CLI_BIN` sul binario CLI compilato: il runner deve passarlo
+    esplicitamente perche e l'unico a conoscere il percorso di mount. Un
+    percorso implicito renderebbe il benchmark dipendente dall'ambiente.
 """
 from __future__ import annotations
 

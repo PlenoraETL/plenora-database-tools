@@ -1,9 +1,7 @@
 //! Row provider-neutral.
 //!
-//! Tuple di valori canonici accompagnata dai nomi delle colonne.
-//! Sostituisce il precedente `Vec<ParameterValue>` grezzo esposto dalle
-//! facade OLTP e dal cursor stream, così il consumer può accedere ai
-//! campi per nome (`row["id"]`) invece che per posizione.
+//! Tuple di valori canonici accompagnata dai nomi delle colonne, così il
+//! consumer può accedere ai campi per nome (`row["id"]`) o per posizione.
 
 use crate::provider::ParameterValue;
 use std::ops::Index;
@@ -26,21 +24,9 @@ pub struct Row {
 impl Row {
     /// Costruisce una `Row` verificando che nomi e valori si corrispondano.
     ///
-    /// Prima la parità era un `debug_assert_eq!`, cioè un controllo che
-    /// spariva in release: una riga malformata prodotta da un driver veniva
-    /// accettata in produzione e falliva più tardi, altrove — su un accesso
-    /// per nome che non trovava il valore, o su un indice fuori dai valori.
-    /// Il posto giusto per accorgersene è qui, dove si sa ancora quale driver
-    /// l'ha costruita.
-    ///
-    /// Sostituisce `Row::new`, che era infallibile e non poteva quindi
-    /// segnalare niente. Non e stata affiancata: un costruttore che accetta
-    /// una riga malformata resta un modo per costruirne una, e i sette
-    /// chiamanti stanno tutti in questo workspace. Il crate e `publish =
-    /// false` e nessun altro repository lo referenzia per path, quindi non
-    /// esistono chiamanti esterni da rompere; e la major di cui parla la
-    /// regola 2 di AGENTS.md e quella del contratto in `contracts/v2/`, che
-    /// questa firma non tocca.
+    /// La parità è verificata anche in release: una riga malformata deve
+    /// fallire nel punto in cui il driver la costruisce, non durante un accesso
+    /// successivo per nome o posizione.
     ///
     /// # Errors
     ///
@@ -112,11 +98,9 @@ impl Row {
 
 /// Accesso per nome, comodo ma panicante.
 ///
-/// Il messaggio non elenca piu le colonne presenti: `Row` trasporta i nomi
-/// dello schema remoto, e un panico finisce nei log come qualsiasi altro
-/// output: quell'elenco era un inventario dello schema su un percorso che
-/// nessuno redige. Chi deve sapere quali colonne ci sono ha [`Row::columns`];
-/// chi non vuole panicare ha [`Row::get`].
+/// Il messaggio non elenca le colonne presenti, perche sono nomi dello schema
+/// remoto e un panic puo finire nei log. Chi deve ispezionarle usa
+/// [`Row::columns`]; chi vuole un accesso fallibile usa [`Row::get`].
 impl Index<&str> for Row {
     type Output = ParameterValue;
 

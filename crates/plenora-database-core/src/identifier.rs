@@ -1,14 +1,7 @@
 //! Quoting e validazione di identificatori SQL — single-source-of-truth.
 //!
-//! Prima di questo modulo la stessa logica era duplicata in:
-//! - `plenora-database-core/src/portable/compiler.rs` (`quote_identifier`,
-//!   `validate_identifier`)
-//! - `plenora-database-sql/src/lib.rs` (`Renderer::quote`,
-//!   `validate_identifier`)
-//!
-//! Con rischio concreto di divergenza tra le regole di validazione
-//! (max length, char control, byte vs char boundary). Ora entrambi
-//! delegano qui.
+//! Il compilatore portable e i renderer delegano qui per condividere limiti,
+//! caratteri vietati e distinzione fra lunghezze in byte e in caratteri.
 //!
 //! Il modulo espone un `IdentifierDialect` locale a `core` per evitare
 //! di importare il `Dialect` più ricco di `plenora-database-sql`
@@ -52,7 +45,8 @@ const MAX_IDENTIFIER_CHARS_SQL_SERVER: usize = 128;
 /// Valida un identificatore SQL secondo le regole comuni:
 /// - non vuoto,
 /// - senza caratteri di controllo (ASCII 0x00-0x1F, 0x7F),
-/// - lunghezza ≤ 63 byte (Postgres/MySQL) o 128 caratteri (SQL Server).
+/// - lunghezza entro il limite del dialetto: 63 byte per `PostgreSQL`,
+///   64 caratteri per MySQL/MariaDB, 128 caratteri per SQL Server.
 ///
 /// Non impone regole di primo carattere alfabetico né disambigua parole
 /// riservate: il consumer è responsabile del quoting per usarle in SQL.
@@ -203,8 +197,8 @@ mod tests {
         // 65 char ASCII → rifiuta.
         let ascii65 = "a".repeat(65);
         assert!(quote_identifier(IdentifierDialect::Mysql, &ascii65).is_err());
-        // 64 char UTF-8 accentate (2 byte cad = 128 byte) → **passa**
-        // (era il bug pre-fix: aggregava byte anche per MySQL).
+        // 64 char UTF-8 accentate (2 byte cad = 128 byte) → **passa**:
+        // il limite MySQL e espresso in caratteri, non in byte.
         let multibyte64 = "à".repeat(64);
         assert_eq!(multibyte64.len(), 128);
         assert!(quote_identifier(IdentifierDialect::Mysql, &multibyte64).is_ok());

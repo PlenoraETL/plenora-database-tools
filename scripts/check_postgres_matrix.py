@@ -21,25 +21,15 @@ CACHE = ROOT.parent / "plenora-cargo-cache"
 PASSWORD = "plenora_matrix_test_2026"
 # I riferimenti della matrice, fissati per **digest**.
 #
-# Erano fissati per tag — `postgis/postgis:14-3.5` — e il gate rileggeva poi
-# dal server la versione che aveva davvero ottenuto, quindi il verdetto non
-# mentiva mai. Cio che mancava non era l'onesta del resoconto: era la
-# **riproducibilita**. Un tag si muove, e la stessa corsa fra un mese avrebbe
-# misurato un'altra patch senza che il comando cambiasse di una lettera.
-#
-# E' anche la sola forma che divergeva dalle altre tre matrici del repository,
-# dove `references.json` porta scritta la ragione: un digest non cambia mai
-# contenuto, quindi la riga e la prova della versione avviata invece di una
-# promessa su quale versione si otterra.
+# Il digest rende la matrice riproducibile: un tag puo muoversi, mentre questa
+# riga identifica esattamente l'immagine misurata.
 #
 # Il tag resta accanto al digest e non e decorativo: e cio che si rilegge per
 # rinnovare la riga quando esce una patch, e senza di esso il digest sarebbe
 # un numero senza provenienza.
 #
-# Risolti il 2026-08-26. Le versioni che ne sono uscite — 14.18, 15.13, 16.9,
-# 17.5, 18.6, con PostGIS 3.5.2 e 3.6.4 — sono nel verdetto della corsa, e il
-# gate continua a pretenderle: un digest che rendesse una major diversa da
-# quella dichiarata viene rifiutato.
+# Il gate verifica che l'immagine renda la major dichiarata; le patch effettive
+# restano nel verdetto della corsa.
 TARGETS = [
     (
         "14",

@@ -9,9 +9,8 @@ use crate::provider::ParameterValue;
 /// Formato: 0x01 (byte order LE) + `type_with_srid_flag` (0x20000001)
 /// + srid (u32 LE) + x (f64 LE) + y (f64 LE).
 ///
-/// Usato dai test golden compiler post-fix EWKB obbligatorio: prima
-/// bastavano dummy `vec![0x01, 0x02, 0x03]`, ora il compiler chiama
-/// `reference.validate()` che richiede EWKB parsabile.
+/// Il compilatore chiama `reference.validate()`, quindi i test devono usare
+/// un EWKB parsabile e coerente con il riferimento dichiarato.
 fn ewkb_point_2d(srid: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(25);
     b.push(0x01);
@@ -459,7 +458,7 @@ fn spatial_predicate_intersects_binds_ewkb() {
         "sql inatteso: {}",
         compiled.sql
     );
-    // Post fix review: 2 params — [0]=ewkb, [1]=srid.
+    // Il costruttore spaziale occupa due bind: EWKB e SRID.
     assert_eq!(compiled.params.len(), 2);
     assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &ewkb_point_2d(4326)));
     assert!(matches!(&compiled.params[1], ParameterValue::I32(v) if *v == 4326));
@@ -487,7 +486,7 @@ fn spatial_predicate_dwithin_binds_distance() {
     assert!(compiled
         .sql
         .contains(r#"ST_DWithin("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry, $3)"#));
-    // Post fix review: 3 params ora — [0]=ewkb, [1]=srid, [2]=distance.
+    // Il terzo bind è la distanza, dopo EWKB e SRID.
     assert_eq!(compiled.params.len(), 3);
     assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 250.0));
 }
@@ -557,12 +556,12 @@ fn spatial_composes_with_scalar_predicates() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled.sql.contains("ST_Intersects"));
-    // Post fix review: 3 params ora — [0]=ewkb, [1]=srid, [2]=status.
+    // Il predicato scalare segue i due bind del riferimento spaziale.
     assert!(compiled.sql.contains(r#""status" = $3"#));
     assert_eq!(compiled.params.len(), 3);
 }
 
-// ---- Review #4 + #5: SpatialSemantics + DWithin unit safety ----------------
+// Semantica spaziale e unità di misura di DWithin.
 
 #[test]
 fn spatial_geography_uses_geography_cast_postgres() {
@@ -719,7 +718,7 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
     // Nessun cast, solo ST_GeomFromWKB.
-    // Post fix review #5 completo: MySQL usa ST_GeomFromWKB(wkb, srid).
+    // MySQL costruisce la geometria passando WKB e SRID separatamente.
     assert!(compiled
         .sql
         .contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
@@ -750,14 +749,8 @@ fn mariadb_insert(returning: Vec<String>) -> PortableStatement {
     })
 }
 
-/// Il compilatore accetta `MariaDB`, che prima finiva nel ramo di scarto.
-///
-/// Non e un dettaglio di copertura: `compile_portable` e cio che sta sotto
-/// `execute_portable` e `query_portable`, quindi finche `Mariadb` cadeva nel
-/// `other` l'intero strato facade era irraggiungibile su un provider che
-/// questo repository pubblica — e falliva in prepare, con un messaggio che
-/// diceva «non supportato» di una cosa che nessuno aveva deciso di non
-/// supportare.
+/// `MariaDB` usa la sintassi `MySQL` anche nello strato portabile condiviso da
+/// `execute_portable` e `query_portable`.
 #[test]
 fn mariadb_compiles_with_the_mysql_syntax() {
     let compiled = compile_portable(ProviderKind::Mariadb, &mariadb_insert(Vec::new()))

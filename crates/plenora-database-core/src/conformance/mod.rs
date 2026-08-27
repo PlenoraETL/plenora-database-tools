@@ -103,7 +103,7 @@ pub const APPLICATION_OLTP_V1: ConformanceProfile = ConformanceProfile {
 ///
 /// Application plane + roundtrip tipi + error mapping + isolamento del
 /// session context nel pool. Estende `APPLICATION_OLTP_V1` con verifiche
-/// più stringenti richieste dal PFM (roadmap §4.1). NON include
+/// più stringenti richieste dal PFM. NON include
 /// DDL/migration (B2 fuori scope, il PFM usa un migration tool esterno).
 pub const PFM_CORE_V1: ConformanceProfile = ConformanceProfile {
     name: "PFM_CORE_V1",
@@ -137,7 +137,7 @@ pub const PFM_CORE_V1: ConformanceProfile = ConformanceProfile {
     ],
 };
 
-/// Profilo spatial richiesto dal PFM per il read GIS operativo (roadmap §4.2).
+/// Profilo spatial richiesto dal PFM per il read GIS operativo.
 pub const PFM_GIS_V1: ConformanceProfile = ConformanceProfile {
     name: "PFM_GIS_V1",
     required: &[

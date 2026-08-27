@@ -11,10 +11,8 @@ use plenora_database_core::provider::{
 use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::resource::ResourceKind;
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_engine::{validate_prepared_budget, ContractLeases};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -401,14 +399,13 @@ impl Provider for MysqlProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
-        let product = self.profile.product();
         Box::pin(async move {
             // Bordo: da qui in poi l'attribuzione e quella del
             // profilo, non il segnaposto con cui l'errore e nato.
             let outcome = async move {
                 budget.ensure_active()?;
                 let effective_cancellation =
-                    crate::read::BudgetCancellation::new(cancellation, budget);
+                    crate::read::BudgetCancellation::new(cancellation, budget)?;
                 let token = effective_cancellation.token();
                 let plan = crate::write::MysqlWritePlan::compile_with_profile(
                     &input_schema,
@@ -416,15 +413,8 @@ impl Provider for MysqlProvider {
                     self.config.database(),
                     self.profile,
                 )?;
-                let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-                let column_count = u64::try_from(input_schema.fields().len()).map_err(|_| {
-                    provider_error(
-                        ErrorCategory::ResourceLimit,
-                        ErrorPhase::Prepare,
-                        format!("numero colonne {product} non rappresentabile"),
-                    )
-                })?;
-                let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
+                let (operation_lease, columns_lease) =
+                    ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
                 let loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
@@ -461,14 +451,15 @@ impl Provider for MysqlProvider {
                     drop(session);
                     report
                 };
-                Ok(PreparedWrite {
-                    operation: operation.clone(),
+                Ok(PreparedWrite::new(
+                    operation.clone(),
                     input_schema,
                     loss_report,
-                    budget: budget.clone(),
+                    budget.clone(),
                     operation_lease,
                     columns_lease,
-                })
+                )
+                .with_driver_state(plan))
             }
             .await;
             crate::profile::attributed(self.profile, outcome)
@@ -565,42 +556,28 @@ impl Provider for MysqlProvider {
 async fn execute_mysql_write(
     provider: &MysqlProvider,
     secret: &SecretString,
-    prepared: PreparedWrite,
+    mut prepared: PreparedWrite,
     input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
-    if !prepared.budget.is_same_budget(budget) {
-        return Err(provider_error(
-            ErrorCategory::InvalidPlan,
-            ErrorPhase::Write,
-            "budget sostituito fra prepare e write",
-        ));
-    }
+    validate_prepared_budget(&prepared.budget, budget)?;
     budget.ensure_active()?;
-    let PreparedWrite {
-        operation,
-        input_schema: prepared_schema,
-        loss_report: prepared_loss,
-        budget: _prepared_budget,
-        operation_lease: _operation_lease,
-        columns_lease: _columns_lease,
-    } = prepared;
     let schema = input.schema();
-    if schema.as_ref() != prepared_schema.as_ref() {
+    if schema.as_ref() != prepared.input_schema.as_ref() {
         return Err(provider_error(
             ErrorCategory::InvalidPlan,
             ErrorPhase::Write,
             "schema stream diverso dallo schema preparato",
         ));
     }
-    let plan = crate::write::MysqlWritePlan::compile_with_profile(
-        &schema,
-        &operation,
-        provider.config.database(),
-        provider.profile,
-    )?;
-    let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget);
+    let plan = prepared
+        .take_driver_state::<crate::write::MysqlWritePlan>()
+        .ok_or_else(|| {
+            DatabaseError::invalid_plan("stato prepared write MySQL assente o incompatibile")
+        })?;
+    let operation = &prepared.operation;
+    let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget)?;
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;
     let mut session = pool.checkout(token).await?;
@@ -635,7 +612,7 @@ async fn execute_mysql_write(
         }
         let ddl = crate::write::build_create_table_sql(
             &schema,
-            &operation,
+            operation,
             provider.config.database(),
             provider.profile,
         )?;
@@ -657,10 +634,10 @@ async fn execute_mysql_write(
         provider,
         &mut session,
         input,
-        &operation,
+        operation,
         &schema,
         &plan,
-        prepared_loss,
+        prepared.loss_report.clone(),
         target_schema,
         budget,
         token,
@@ -715,8 +692,8 @@ async fn execute_mysql_write_after_ddl(
         ));
     }
 
-    // v1.2 — Update: crea staging TEMPORARY TABLE. Il bulk INSERT
-    // sotto scriverà in staging invece del target; dopo, UPDATE JOIN.
+    // Update scrive il bulk nella tabella temporanea e applica poi UPDATE JOIN
+    // al target.
     let update_staging_quoted: Option<String> = if operation.mode
         == plenora_database_core::plan::WriteMode::Update
     {
@@ -758,7 +735,7 @@ async fn execute_mysql_write_after_ddl(
     // allora il percorso diagnostico riga per riga ha un input_total da
     // pubblicare, e il costo di uno statement per riga è giustificato.
     //
-    // v1.2: Row-scoped diagnostics ha semantica valida SOLO per Append —
+    // La diagnostica per riga ha semantica valida solo per Append:
     // Upsert MySQL ritorna affected_rows=2 per UPDATE, che il validatore
     // per-row rifiuta ("conteggio incoerente"). Per Create/TruncateInsert
     // il diagnostic path è tecnicamente supportabile ma bulk INSERT è
@@ -823,7 +800,7 @@ async fn execute_mysql_write_after_ddl(
         }
     };
 
-    // v1.2 — Update: dopo aver riempito staging, esegui UPDATE JOIN.
+    // Dopo il caricamento dello staging, Update esegue UPDATE JOIN.
     // Il numero di righe aggiornate rimpiazza `progress.inserted` per il
     // RowCounts finale (il committed_outcome_for_mode Update usa
     // affected = updated_target_rows).
@@ -1139,16 +1116,12 @@ fn provider_error(
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1157,12 +1130,10 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Il provider pubblico di `MariaDB`.
 ///
-/// ADR 0014 aveva deciso la forma quando l'evidenza era due tranche: **un
-/// crate solo**, con un'implementazione interna condivisa e due provider
-/// pubblici distinti. Questo e il secondo, e arriva ora perche prima non
-/// avrebbe avuto niente da offrire: fino alla nona tranche il profilo
-/// `MariaDB` pubblicava una lettura e due write mode, e un provider che
-/// esponesse meta contratto sarebbe stato una promessa da ritirare. Oggi
+/// Condivide l'implementazione interna con `MysqlProvider`, ma usa un profilo
+/// di prodotto distinto per identificazione, SQL, errori e capability. In tal
+/// modo le differenze misurate non si disperdono in rami nel codice comune e
+/// ciascun provider pubblica soltanto il proprio contratto verificato.
 /// dichiara le stesse sei write mode di `MySQL`, e ciascuna ha le proprie tre
 /// sonde su tre riferimenti fissati per digest.
 ///
@@ -1819,25 +1790,25 @@ mod tests {
     }
 
     fn prepared_write_for_test(budget: &ResourceBudget, input_schema: SchemaRef) -> PreparedWrite {
-        PreparedWrite {
-            operation: append_write_operation(),
+        PreparedWrite::new(
+            append_write_operation(),
             input_schema,
-            loss_report: plenora_database_core::loss::LossReport {
+            plenora_database_core::loss::LossReport {
                 schema_version: 2,
                 policy: plenora_database_core::loss::MappingPolicy::Strict,
                 losses: Vec::new(),
             },
-            budget: budget.clone(),
-            operation_lease: budget
+            budget.clone(),
+            budget
                 .try_lease(
                     plenora_database_core::resource::ResourceKind::ConcurrentOperations,
                     1,
                 )
                 .expect("lease operazione"),
-            columns_lease: budget
+            budget
                 .try_lease(plenora_database_core::resource::ResourceKind::Columns, 1)
                 .expect("lease colonne"),
-        }
+        )
     }
 
     /// Il piano di scrittura e compilato prima di aprire la connessione: una
@@ -1853,8 +1824,8 @@ mod tests {
         let provider = MysqlProvider::new(config, 1).expect("provider");
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
         let mut operation = append_write_operation();
-        // v1.2: 7/7 modes ora qualificati. Uso mapping_policy=Lossy che
-        // resta Unsupported (finché il loss preflight non è qualificato).
+        // `Lossy` resta Unsupported anche quando la modalita di scrittura e
+        // qualificata, finche il relativo preflight non viene dimostrato.
         operation.mapping_policy = plenora_database_core::loss::MappingPolicy::Lossy;
         let outcome = provider
             .prepare_write(
@@ -1999,10 +1970,8 @@ mod tests {
         // per intero comparirebbero in questo stesso file, e la guardia si
         // troverebbe da sola.
         //
-        // Due forme, perche un literal si scrive in due modi, e presidiarne
-        // uno solo e stato l'errore della prima stesura: una costruzione
-        // dentro un `Ok` con turbofish passava indisturbata sotto un ago che
-        // cercava la sola forma senza.
+        // Due forme, perche un literal puo comparire direttamente o dentro un
+        // `Ok` con turbofish; la guardia deve presidiare entrambe.
         let source = include_str!("provider.rs");
         let brace = " {";
         let by_self = format!("Self{brace}");

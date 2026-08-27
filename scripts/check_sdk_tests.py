@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Suite del SDK Python, sempre sul wheel appena costruito.
 
-Il modulo nativo `plenora_database/_native.abi3.so` e gitignorato: non e un
-artefatto del repository, e nessuno lo rigenera automaticamente. Chi cambia
-il Rust e poi lancia `pytest` a mano esegue il binario precedente, e ottiene
-un risultato che non riguarda il codice che ha scritto — rosso su codice
-corretto, o verde su codice rotto. E successo due volte in una sola
-sessione: la correzione sul `SessionContext` e quella sul limite di 52
-caratteri sono state entrambe "smentite" da un `.so` vecchio.
+Il modulo nativo `plenora_database/_native.abi3.so` e gitignorato e non viene
+rigenerato da `pytest`. Eseguire direttamente la suite puo quindi usare un
+binario non corrispondente ai sorgenti e produrre un verdetto inattendibile.
 
 Questo runner toglie il caso dalla mano di chi esegue:
 
@@ -30,12 +26,9 @@ Questo runner toglie il caso dalla mano di chi esegue:
 6. verifica che ne' la build ne' i test abbiano cambiato l'albero, e
    registra nel verdetto di cosa sono fatti gli artefatti che hanno girato.
 
-Il CLI e nel giro perche il bench di parita lo esegue in subprocess e ne
-confronta i tempi con il SDK. Finche il binario arrivava da `target/release`
-del repository, quel confronto metteva insieme un wheel appena costruito e un
-eseguibile di provenienza ignota — nel caso osservato, di tre giorni prima e
-di un commit che nessuno sapeva dire. Un rapporto fra due codici diversi non
-e un rapporto.
+Il CLI fa parte della stessa build perche il benchmark di parita lo esegue in
+subprocess e ne confronta i tempi con il SDK. I due lati del rapporto devono
+provenire dagli stessi sorgenti e dalla stessa toolchain.
 
 Uso:
 
@@ -444,10 +437,8 @@ def validate_declared_versions(
     `pyproject.toml` compone il nome del wheel, `Cargo.toml` del crate decide
     cosa risponde `p.version()`, `Cargo.lock` e cio che le build `--locked`
     pretendono di ritrovare, e il CHANGELOG e quello che legge chi aggiorna.
-    Due che divergono producono un artefatto che mente su se stesso — un
-    wheel `0.10.0` che dichiara `0.9.2` a chi lo interroga — ed e gia
-    successo: il commento accanto alla versione del crate ricorda il bug
-    della v0.1.0.
+    Due che divergono producono un artefatto che mente su se stesso, per
+    esempio un nome wheel diverso dalla versione restituita dal modulo.
 
     # Returns
 

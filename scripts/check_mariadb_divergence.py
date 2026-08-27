@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """Matrice delle divergenze MariaDB, misurata invece che ricordata.
 
-Il messaggio di fail-close del provider MySQL nomina cinque divergenze —
-sequenze, `ON DUPLICATE KEY`, spatial `GEOMETRYCOLLECTION`, cache dei
-prepared statement, semantica di isolamento. Le ha scritte una review, non le
-ha misurate nessuno: alcune potrebbero non toccare le superfici che il
-provider usa, altre potrebbero essere piu profonde di come suonano. ADR 0014
-chiede evidenza prima della scelta fra provider dedicato e qualificazione, e
-questo script la produce.
+La matrice verifica le divergenze sulle sole superfici attraversate dal
+provider, senza dedurle dalla documentazione generale dei motori.
 
 **Cosa misura.** Non le differenze fra i due motori in generale — sarebbe un
 elenco infinito e inutile — ma le superfici che il provider `mysql`

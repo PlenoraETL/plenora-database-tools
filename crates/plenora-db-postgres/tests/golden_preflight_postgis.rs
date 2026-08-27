@@ -1,7 +1,6 @@
 //! Preflight / capability probing: comportamento con e senza estensione PostGIS.
 //!
-//! Chiude il buco identificato in P0.5 pre-Fase 3. Il consumer (Python SDK del
-//! PFM) deve poter interrogare `probe_capabilities` per sapere se il target
+//! Il consumer deve poter interrogare `probe_capabilities` per sapere se il target
 //! offre supporto spaziale prima di tentare query. Verifica:
 //!
 //!   1. Positive path — `dataflow-postgres` (con PostGIS): capability doc
@@ -118,8 +117,7 @@ async fn preflight_pf1_capability_positive_reports_postgis_present() {
     // funzioni del catalogo contro 71 — quindi il documento pubblica
     // l'intersezione, non l'unione.
     //
-    // Pretendere qui l'intero catalogo, come faceva la prima stesura,
-    // significherebbe pretendere che il provider prometta su una colonna
+    // Pretendere qui l'intero catalogo significherebbe promettere su una colonna
     // geography funzioni che li non esistono.
     let published: std::collections::BTreeSet<String> = caps
         .spatial

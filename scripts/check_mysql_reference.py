@@ -226,6 +226,7 @@ EXPECTED_UNIT_TESTS = {
     "transaction::tests::an_ascii_blob_stays_binary",
     "transaction::tests::an_empty_context_is_valid",
     "transaction::tests::an_unqualified_wire_type_fails_closed",
+    "transaction::tests::public_driver_decode_error_contains_only_the_column_position",
     "transaction::tests::the_longest_writable_key_is_fifty_two_characters",
     "types::tests::a_catalog_srid_needs_no_verification",
     "types::tests::a_declaration_that_does_not_apply_is_refused_by_its_own_reason",

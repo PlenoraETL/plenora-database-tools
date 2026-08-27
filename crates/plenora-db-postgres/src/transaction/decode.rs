@@ -56,7 +56,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for EnumLabel {
 /// il data plane Arrow.
 struct PostgresTextRepr(String);
 
-/// Wrapper `FromSql` per `Type::NUMERIC` (v0.3, P0.8). Il wire format
+/// Wrapper `FromSql` per `Type::NUMERIC`. Il wire format
 /// binary Postgres NUMERIC è:
 ///
 ///   * `ndigits: i16` — numero di digit "chunks" (ogni chunk = 4 cifre

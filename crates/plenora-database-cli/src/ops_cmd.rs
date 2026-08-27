@@ -7,7 +7,7 @@
 //! `pool-status`, `explain`.
 
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
-use crate::{ensure_end, print_json, secret_from_env, CliError, CliResult};
+use crate::{ensure_end, print_json, secret_from_env, CliResult};
 use plenora_database_core::facade::{
     execute_scalar_bool, execute_scalar_bytes, execute_scalar_date, execute_scalar_f64,
     execute_scalar_i32, execute_scalar_i64, execute_scalar_json, execute_scalar_string,
@@ -172,8 +172,7 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         "expected_affected": expected,
         "commit": commit,
     }))?;
-    // Fix review #10: exit code non-zero se update non-ok (concurrent /
-    // not_found / error) — permette a CI di gestire concorrenza.
+    // Ogni esito update non-ok produce un exit code non-zero.
     if status == "ok" {
         Ok(())
     } else {
@@ -193,9 +192,8 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
     let connection = ctx.provider.test_connection(&ctx.secret, &ctx.cancel).await;
     let elapsed_ms = start.elapsed().as_millis();
 
-    // Nota: il pool interno non espone metriche pubbliche granulari
-    // (deadpool-postgres::Status non è re-esportato dalla nostra API).
-    // Aggiungeremo un getter con metrics_recorder in una futura milestone.
+    // Questa superficie misura la connessione; lo stato granulare del pool non
+    // è esposto dall'API del provider.
     let ok = connection.is_ok();
     let payload = match connection {
         Ok(info) => json!({
@@ -204,7 +202,7 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
             "provider": info.provider,
             "server_version": info.server_version,
             "connection_identity": info.connection_identity,
-            "note": "metrics granulari pool (idle/busy/waiting) esposte in una futura milestone",
+            "note": "metriche granulari del pool non disponibili su questa superficie",
         }),
         Err(e) => json!({
             "status": "fail",
@@ -213,7 +211,7 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
         }),
     };
     print_json(&payload)?;
-    // Fix review #10: exit code non-zero se pool acquire fallisce.
+    // Un acquire fallito produce un exit code non-zero.
     if ok {
         Ok(())
     } else {
@@ -314,7 +312,3 @@ pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResul
         output_key: if lines.len() == 1 { lines.remove(0) } else { Value::Array(lines) },
     }))
 }
-
-// Placeholder for future ensure_end wiring
-#[allow(dead_code)]
-fn __ensure(_: CliError) {}

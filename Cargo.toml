@@ -12,20 +12,10 @@ members = [
     "crates/plenora-database-py",
 ]
 
-# I default-members escludono i provider driver non-Postgres e i bindings
-# Python. `cargo build`, `cargo test`, `cargo clippy` senza `-p` operano
-# solo su core + Postgres + CLI. MySQL, SQL Server e i bindings Python
-# (che richiedono maturin per il wheel) restano compilabili on-demand con
-# `-p plenora-db-mysql` / `-p plenora-database-py`, ma non entrano nel
-# path di default.
-#
-# Nessun effetto lato supply-chain: `default-members` governa cosa viene
-# *costruito*, non cosa viene *risolto*. Il workspace ha un solo Cargo.lock, e
-# contiene tiberius, mysql_async e pyo3 anche quando il default build non li
-# tocca; `cargo audit` e `cargo deny` leggono quel lockfile, quindi le loro
-# advisory compaiono comunque. E' esattamente il motivo per cui deny.toml
-# elenca le ignore della catena tiberius -> rustls-webpki: se il lockfile non
-# le contenesse, non ci sarebbe niente da ignorare.
+# `default-members` mantiene leggero il percorso ordinario; adapter opzionali e
+# binding restano selezionabili esplicitamente. La scelta governa la build, non
+# la risoluzione: i controlli supply-chain leggono comunque il lockfile unico
+# dell'intero workspace.
 default-members = [
     "crates/plenora-database-core",
     "crates/plenora-database-sql",
@@ -36,7 +26,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.92"
 publish = false

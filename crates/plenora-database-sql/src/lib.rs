@@ -19,6 +19,9 @@ use std::collections::BTreeMap;
 const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
 
+mod filter;
+pub use filter::{lower_filter, select_columns_by_name, FilterLowering};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier(String);
 
@@ -29,11 +32,8 @@ impl Identifier {
     ///
     /// Restituisce `InvalidPlan` per stringa vuota, NUL o oltre 256 caratteri.
     ///
-    /// Erano 256 **byte**, misurati con `String::len()`, mentre il contratto
-    /// dichiara `maxLength: 256` — code point. Il renderer rifiutava percio
-    /// nomi che il contratto ammette e che i motori accettano: SQL Server ne
-    /// prende 128 di Unicode, `MySQL` 64 di caratteri, e nessuno dei due
-    /// ragiona in byte.
+    /// Il limite conta code point come `maxLength` di JSON Schema, non byte
+    /// UTF-8. I renderer applicano poi il limite piu stretto del dialetto.
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         if value.is_empty() || value.contains('\0') {
@@ -1174,9 +1174,7 @@ impl Renderer {
             let argument = renderer.render_query_expression(argument, binds)?;
             Ok(format!("{receiver}.{method}({argument})"))
         };
-        // Nome e forma vengono dalla stessa tabella, e da nessun'altra parte:
-        // era l'unico dialetto in cui la sonda e il renderer potevano divergere
-        // senza che nessuno lo vedesse.
+        // Nome e forma vengono dalla stessa tabella usata dalle capability.
         // La semantica del **ricevitore**, quando il piano la porta: e cio che
         // permette di scrivere le due coordinate, che i due tipi chiamano in
         // modo diverso.
@@ -1418,8 +1416,8 @@ impl Renderer {
                 "AST spatial non abilitato per il dialect",
             ));
         }
-        // MySQL v1.2: predicati spatial dichiarati verified (subset — vedi
-        // `plenora_db_mysql::query::VERIFIED_SPATIAL_FUNCTIONS`).
+        // Il profilo MySQL abilita soltanto il sottoinsieme verificato in
+        // `plenora_db_mysql::query::VERIFIED_SPATIAL_FUNCTIONS`.
         // DWithin non è nativo MySQL (no ST_DWithin diretto); resta unsupported
         // finché non emergono profili che ne giustifichino l'emulazione via
         // ST_Distance + confronto scalare.
@@ -1507,15 +1505,9 @@ impl Renderer {
     }
 
     fn quote(&self, identifier: &Identifier) -> Result<String> {
-        // Fase A2 + fix post-review: delega a
-        // `plenora-database-core::identifier` e **propaga** l'errore
-        // invece di applicare un fallback silente.
-        //
-        // Prima il fallback su `unwrap_or_else` scartava l'errore e
-        // produceva SQL con:
-        // - identificatori oltre il limite del dialetto (ora fail-closed)
-        // - identificatori con caratteri di controllo (idem)
-        // - quoting sbagliato per MySQL/SQL Server (usava " Postgres)
+        // Il quoting delega alla fonte comune e propaga ogni rifiuto. Un
+        // fallback produrrebbe SQL anche per identificatori oltre il limite,
+        // caratteri di controllo o regole di quoting del dialetto sbagliato.
         plenora_database_core::identifier::quote_identifier(
             self.dialect.to_identifier_dialect(),
             identifier.as_str(),
@@ -2430,17 +2422,9 @@ mod tests {
             assert_eq!(rendered_sql.binds[0].name, parameter);
         }
 
-        // L'esempio ha cambiato funzione due volte, e la storia dice qualcosa.
-        // Era `MakeValid`, che il censimento ha trovato su entrambe le
-        // semantiche. E' diventato `Centroid`, che esiste su `geometry` e non
-        // su `geography`, e si e aperta il giorno in cui il contratto ha
-        // imparato a dire su quale semantica vale una funzione.
-        //
-        // Ora e `Reverse`, e questa e piu solida delle altre due: SQL Server
-        // non ce l'ha, su nessuna delle due semantiche, e prende un argomento
-        // solo — quindi il rifiuto arriva da dove deve, e non da un piano
-        // malformato. E' un fatto sul prodotto, e nessun cambiamento di questo
-        // repository lo apre.
+        // `Reverse` è assente su entrambe le semantiche SQL Server e accetta
+        // un solo argomento: il rifiuto misura quindi il catalogo, non un piano
+        // malformato o una divergenza geometry/geography.
         let mut unsupported = simple_query();
         unsupported.projection[0] = QueryProjection {
             expression: QueryExpression::Spatial {

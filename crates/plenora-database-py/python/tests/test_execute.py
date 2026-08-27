@@ -143,16 +143,9 @@ def test_execute_error_maps_to_runtime_error_with_categorized_message(session) -
 def test_execute_unsupported_param_type_raises_type_error(session) -> None:
     """Il rifiuto dice **dove**, e non dice cosa ha letto.
 
-    Il messaggio era `parametro #0: <errore interno>`, e l'errore interno
-    portava il tipo — e altrove il valore, come il float non finito che
-    veniva ristampato per intero. Un parametro **e** un payload: e il dato
-    che sta per essere bindato, e chi cattura l'eccezione lo scrive nei log.
-
-    Il test asserisce percio due cose, non una: che la posizione ci sia,
-    perche e cio che serve a chi corregge la chiamata, e che il tipo e il
-    `repr` non compaiano. La versione precedente cercava il testo
-    dell'errore interno, quindi rimuoverlo la faceva fallire — ed e cosi che
-    questo caso e stato trovato, alla prima corsa live della suite.
+    Un parametro è payload: tipo e `repr` non devono raggiungere l'eccezione
+    pubblica. La posizione resta invece contesto operativo utile a correggere
+    la chiamata.
     """
 
     class CustomSentinelType:

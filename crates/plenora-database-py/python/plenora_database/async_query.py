@@ -41,89 +41,71 @@ class AsyncSelect(Select):
         return next(iter(row.values()))
 
 
-class AsyncInsert(Insert):
+class _AsyncReturningMutation:
+    """Terminali coroutine comuni alle mutazioni con `RETURNING`."""
+
+    _returning: list[str]
+    _session: Any
+    _execute_hint = ".all() / .one()"
+
+    async def execute(self) -> int:  # type: ignore[override]
+        name = type(self).__name__
+        if self._returning:
+            raise RuntimeError(
+                f"{name}.execute() non usa RETURNING; usa {self._execute_hint} "
+                "se lo hai chiamato"
+            )
+        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
+
+    async def all(self) -> list[dict]:  # type: ignore[override]
+        name = type(self).__name__
+        if not self._returning:
+            raise RuntimeError(f"{name}.all() richiede prima .returning(...)")
+        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
+
+    async def one(self) -> dict:  # type: ignore[override]
+        rows = await self.all()
+        if len(rows) != 1:
+            raise RuntimeError(
+                f"{type(self).__name__}.one() atteso 1 riga, trovate {len(rows)}"
+            )
+        return rows[0]
+
+
+class AsyncInsert(_AsyncReturningMutation, Insert):
     """INSERT builder async."""
 
-    async def execute(self) -> int:  # type: ignore[override]
-        if self._returning:
-            raise RuntimeError(
-                "AsyncInsert.execute() non usa RETURNING; usa .all() o .one() se lo hai chiamato"
-            )
-        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
-
-    async def all(self) -> list[dict]:  # type: ignore[override]
-        if not self._returning:
-            raise RuntimeError("AsyncInsert.all() richiede prima .returning(...)")
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    async def one(self) -> dict:  # type: ignore[override]
-        rows = await self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"AsyncInsert.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
+    _execute_hint = ".all() o .one()"
 
 
-class AsyncUpdate(Update):
+class AsyncUpdate(_AsyncReturningMutation, Update):
     """UPDATE builder async."""
 
-    async def execute(self) -> int:  # type: ignore[override]
-        if self._returning:
-            raise RuntimeError(
-                "AsyncUpdate.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
 
-    async def all(self) -> list[dict]:  # type: ignore[override]
-        if not self._returning:
-            raise RuntimeError("AsyncUpdate.all() richiede prima .returning(...)")
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    async def one(self) -> dict:  # type: ignore[override]
-        rows = await self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"AsyncUpdate.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
-
-
-class AsyncDelete(Delete):
+class AsyncDelete(_AsyncReturningMutation, Delete):
     """DELETE builder async."""
 
-    async def execute(self) -> int:  # type: ignore[override]
-        if self._returning:
-            raise RuntimeError(
-                "AsyncDelete.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
 
-    async def all(self) -> list[dict]:  # type: ignore[override]
-        if not self._returning:
-            raise RuntimeError("AsyncDelete.all() richiede prima .returning(...)")
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    async def one(self) -> dict:  # type: ignore[override]
-        rows = await self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"AsyncDelete.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
-
-
-class AsyncUpsert(Upsert):
+class AsyncUpsert(_AsyncReturningMutation, Upsert):
     """UPSERT builder async."""
 
-    async def execute(self) -> int:  # type: ignore[override]
-        if self._returning:
-            raise RuntimeError(
-                "AsyncUpsert.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
 
-    async def all(self) -> list[dict]:  # type: ignore[override]
-        if not self._returning:
-            raise RuntimeError("AsyncUpsert.all() richiede prima .returning(...)")
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
+class _AsyncBuilderFactory:
+    """Factory async riusate da sessioni e transazioni."""
 
-    async def one(self) -> dict:  # type: ignore[override]
-        rows = await self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"AsyncUpsert.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
+    __slots__ = ()
+
+    def select(self, table: str, schema: str | None = None) -> AsyncSelect:
+        return AsyncSelect(self, table, schema)
+
+    def insert(self, table: str, schema: str | None = None) -> AsyncInsert:
+        return AsyncInsert(self, table, schema)
+
+    def update(self, table: str, schema: str | None = None) -> AsyncUpdate:
+        return AsyncUpdate(self, table, schema)
+
+    def delete(self, table: str, schema: str | None = None) -> AsyncDelete:
+        return AsyncDelete(self, table, schema)
+
+    def upsert(self, table: str, schema: str | None = None) -> AsyncUpsert:
+        return AsyncUpsert(self, table, schema)

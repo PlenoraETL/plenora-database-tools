@@ -3,17 +3,9 @@ name: postgres-matrix
 # Matrice delle major PostgreSQL supportate, da 14 a 18, ciascuna con la
 # propria immagine PostGIS fissata per digest.
 #
-# Vive in un file suo, e non dentro `postgres-assurance.yml`, per una ragione
-# che sta nel trigger: quel workflow gira a ogni push su main e su ogni PR che
-# tocchi il provider, e cinque riferimenti avviati uno dopo l'altro non stanno
-# in quel budget. Separare i file mette il vincolo nel trigger invece che in
-# una condizione dentro un job, che e il posto in cui si sbaglia.
-#
-# Che la matrice non girasse **affatto** era pero un'altra cosa. L'esclusione
-# era dichiarata — «dura oltre il budget di una CI a ogni push» — e la ragione
-# regge; giustifica pero «non a ogni push», non «mai». Lanciata a mano la prima
-# volta, la matrice ha trovato subito un registro scaduto: un gate che nessuno
-# esegue non e un gate, ed e la prima regola di questo repository.
+# Vive separata da `postgres-assurance.yml`: avviare sequenzialmente l'intera
+# matrice supera il budget del gate eseguito sui cambi del provider. I trigger
+# rendono esplicita la frequenza della prova completa.
 #
 # Questo file non contiene logica di qualifica: una invocazione, niente altro.
 # Digest, versioni attese e pulizia delle risorse vivono nello script, che e

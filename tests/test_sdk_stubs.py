@@ -1,27 +1,10 @@
 """Gli stub del SDK Python dicono cosa il SDK fa davvero.
 
-`__init__.pyi` dichiarava `connect_mysql(...) -> DatabaseSession` e
-`aconnect_mysql(...) -> AsyncDatabaseSession`, cioe i tipi nativi. Le due factory
-restituiscono invece i wrapper Python che gli stanno davanti, e le superfici
-divergono proprio dove conta: `copy_from` nativo vuole i byte Arrow IPC in
-posizione, il wrapper accetta `pyarrow`/`pandas`/`list[dict]` e argomenti per
-nome. Un type checker approvava la chiamata che a runtime fallisce e rifiutava
-quella che funziona.
-
-La prima versione di questi controlli confrontava **solo i nomi** dei metodi, e
-per questo non vedeva che `Session.begin` e `AsyncSession.begin` dichiaravano
-quattro parametri mentre il runtime ne accetta sei — `context` e
-`native_query_policy` non erano scrivibili da codice tipizzato — ne che
-`__exit__` era dichiarato `(*args)` dove il runtime vuole tre argomenti
-distinti. Un confronto di soli nomi trova la classe assente, non la firma
-sbagliata, che e il modo piu comune in cui uno stub invecchia.
-
-La seconda versione confrontava le firme ma **saltava in silenzio** ogni classe
-presente da un lato solo: la regola scritta qui sopra e quella applicata erano
-due cose diverse, e un intero modulo poteva sparire da uno stub senza che
-nulla diventasse rosso. Ora ogni asimmetria e un errore, tranne quelle
-elencate in `TYPING_ONLY` e `WITHOUT_RUNTIME_MODULE` — dove l'eccezione si
-legge, e si legge anche perche.
+Le factory restituiscono wrapper Python, non i tipi nativi sottostanti: anche
+le firme, i parametri nominabili e i re-export devono quindi coincidere con il
+runtime osservabile. Il confronto copre moduli, classi, metodi e funzioni
+libere; ogni asimmetria richiede un'eccezione esplicita in `TYPING_ONLY` o
+`WITHOUT_RUNTIME_MODULE`.
 
 La regola e asimmetrica, ed e quella giusta per uno stub:
 
@@ -53,9 +36,8 @@ PACKAGE = (
 FACTORIES = ("connect_mysql", "aconnect_mysql")
 #: I due wrapper Python della sessione di famiglia.
 #:
-#: Si chiamavano `_MysqlSessionWrapper` e `_AsyncMysqlSessionWrapper` da quando
-#: la famiglia era un prodotto solo. Oggi ne serve quattro, e il nome del
-#: prodotto piu vecchio non e piu una descrizione.
+#: Il nome resta indipendente dal prodotto perché gli stessi wrapper servono
+#: più factory.
 WRAPPERS = ("_DatabaseSessionWrapper", "_AsyncDatabaseSessionWrapper")
 
 #: Stub senza modulo Python affiancato, con la ragione per cui non ce l'hanno.
@@ -100,6 +82,70 @@ def imported(tree: ast.Module) -> set[str]:
             for alias in node.names:
                 names.add(alias.asname or alias.name.split(".", 1)[0])
     return names
+
+
+def assigned_aliases(tree: ast.Module) -> dict[str, str]:
+    """Alias semplici esportati dal modulo, per esempio ``Public = _Shared``."""
+    aliases = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Name):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = node.value.id
+    return aliases
+
+
+def relative_imports(tree: ast.Module, path: Path) -> dict[str, tuple[Path, str]]:
+    """Origine dei simboli importati da moduli Python affiancati."""
+    origins = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level != 1 or not node.module:
+            continue
+        source = path.parent / (node.module.replace(".", "/") + ".py")
+        if not source.is_file():
+            continue
+        for alias in node.names:
+            origins[alias.asname or alias.name] = (source, alias.name)
+    return origins
+
+
+def resolved_methods(
+    path: Path,
+    name: str,
+    trail: frozenset[tuple[Path, str]] = frozenset(),
+) -> dict[str, tuple] | None:
+    """Superficie statica di una classe, inclusi basi locali/importate e alias.
+
+    Il gate resta offline: segue solo file ``.py`` del pacchetto e non importa
+    l'estensione nativa. Le definizioni dirette prevalgono sulle basi secondo
+    l'ordine MRO rilevante per i mixin usati dal SDK.
+    """
+    key = (path, name)
+    if key in trail:
+        return None
+    trail = trail | {key}
+    tree = parse(path)
+
+    aliases = assigned_aliases(tree)
+    if name in aliases:
+        return resolved_methods(path, aliases[name], trail)
+
+    origins = relative_imports(tree, path)
+    if name in origins:
+        source, original = origins[name]
+        return resolved_methods(source, original, trail)
+
+    node = classes(tree).get(name)
+    if node is None:
+        return None
+
+    methods = {}
+    for base in reversed(node.bases):
+        if isinstance(base, ast.Name):
+            methods.update(resolved_methods(path, base.id, trail) or {})
+    methods.update(declared(node))
+    return methods
 
 
 def signature(node: ast.AST) -> tuple:
@@ -194,7 +240,11 @@ class SdkStubsTest(unittest.TestCase):
         """Nessuna classe promessa dallo stub manca dal modulo che descrive."""
         for stub_path, runtime_path in stub_pairs():
             runtime_tree = parse(runtime_path)
-            present = set(classes(runtime_tree)) | imported(runtime_tree)
+            present = (
+                set(classes(runtime_tree))
+                | imported(runtime_tree)
+                | set(assigned_aliases(runtime_tree))
+            )
             for name in classes(parse(stub_path)):
                 if (stub_path.name, name) in TYPING_ONLY:
                     continue
@@ -217,9 +267,8 @@ class SdkStubsTest(unittest.TestCase):
     def test_le_funzioni_di_modulo_hanno_la_stessa_firma(self) -> None:
         """Anche le funzioni libere, non solo i metodi.
 
-        Il confronto precedente guardava solo il tipo di ritorno delle due
-        factory MySQL: `connect`, `aconnect` e `version` non erano coperte da
-        nulla.
+        La parità riguarda anche `connect`, `aconnect`, `version` e ogni altra
+        funzione pubblica del modulo.
         """
         for stub_path, runtime_path in stub_pairs():
             runtime_tree = parse(runtime_path)
@@ -239,11 +288,10 @@ class SdkStubsTest(unittest.TestCase):
 
     def test_nessuno_stub_promette_una_firma_che_il_runtime_non_ha(self) -> None:
         for stub_path, runtime_path in stub_pairs():
-            runtime_classes = classes(parse(runtime_path))
             for name, node in classes(parse(stub_path)).items():
-                if name not in runtime_classes:
+                real = resolved_methods(runtime_path, name)
+                if real is None:
                     continue
-                real = declared(runtime_classes[name])
                 for method, promised in declared(node).items():
                     with self.subTest(stub=stub_path.name, cls=name, method=method):
                         self.assertIn(
@@ -252,6 +300,14 @@ class SdkStubsTest(unittest.TestCase):
                             "dichiarato nello stub e assente dal runtime",
                         )
                         self.assertEqual(promised, real[method])
+
+    def test_il_risolutore_statico_copre_mixin_import_e_alias(self) -> None:
+        """Una estrazione leggibile non deve sembrare una API rimossa."""
+        query = PACKAGE / "query.py"
+        init = PACKAGE / "__init__.py"
+        self.assertIn("returning", resolved_methods(query, "Insert") or {})
+        self.assertIn("select", resolved_methods(init, "_DatabaseSessionWrapper") or {})
+        self.assertIn("catalogs", resolved_methods(init, "_DatabaseInspector") or {})
 
     def test_ogni_metodo_pubblico_e_dichiarato(self) -> None:
         for stub_path, runtime_path in stub_pairs():

@@ -1,10 +1,7 @@
-"""Le capability MySQL che la documentazione dichiara, provate live.
+"""Prove live della superficie MySQL dichiarata dal binding Python.
 
-I documenti affermano che il SDK MySQL ha la stessa superficie di Postgres
-meno spatial: `begin` con savepoint e `SessionContext`, `read` streaming
-Arrow IPC, `copy_from` bulk e i builder AST portabili, sia sync sia async.
-Finche nessun test le esercitava, quelle righe erano una promessa — e per una
-tranche intera hanno descritto uno scaffold che non le aveva.
+Coprono transazioni, session context, Arrow, bulk write e builder portabili
+sui percorsi sync e async.
 
 Il contratto Replace/TruncateInsert di `copy_from` sta in
 `test_mysql_copy_from.py`; qui si verifica che la capability **esista** su

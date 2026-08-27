@@ -3,9 +3,7 @@
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use plenora_database_core::plan::ProviderKind;
-// `Operation` e `ObjectRef` non stanno piu dietro `postgres`: la famiglia
-// `database-*` di introspezione li costruisce per qualunque provider compilato,
-// ed e sempre presente come `database-probe`.
+// La famiglia `database-*` costruisce piani per qualunque provider compilato.
 use plenora_database_core::plan::{ObjectRef, Operation, ReadOperation, WriteOperation};
 #[cfg(feature = "postgres")]
 use plenora_database_core::plan::{OrderBy, SortDirection};
@@ -16,15 +14,11 @@ use plenora_database_core::provider::{Inspection, Provider, SecretString};
 // Lo streaming a batch esce solo dal percorso IPC.
 use plenora_database_core::provider::BatchStream;
 use plenora_database_core::provider::ParameterBag;
-// Il budget non appartiene al percorso IPC: anche i comandi `database-*`
-// comuni aprono transazioni per qualunque provider compilato. Tenerlo dietro
-// `postgres` rendeva percio non compilabili i binari mysql-only e
-// sqlserver-only, proprio nelle superfici che quei comandi avevano aperto.
+// Anche i comandi `database-*` comuni applicano budget ai provider compilati.
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
-// Non piu dietro `postgres`: il giudizio sul commit incerto e comune a tutti i
-// provider, e vive negli helper qui sotto.
+// Il giudizio sul commit incerto e comune a tutti i provider.
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
 use plenora_database_engine::parse_and_validate;
 #[cfg(feature = "mysql")]
@@ -53,9 +47,8 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Silent) => {
-            // Fix review #10: comandi ops/doctor/pool-status hanno già
-            // stampato il JSON con `status: unhealthy | fail | ...`
-            // sopra. Qui serve solo trasmettere l'exit code non-zero
+            // Il sottocomando ha gia stampato il JSON con lo stato logico;
+            // qui si trasmette soltanto l'exit code non-zero
             // per rendere affidabile l'uso in CI, senza duplicare il
             // JSON con un secondo blocco `status: error`.
             ExitCode::FAILURE
@@ -84,7 +77,7 @@ pub(crate) enum CliError {
     Fatal(DatabaseError),
     /// Fallimento logico già stampato dal sottocomando (es. doctor →
     /// `status: unhealthy`). Main emette solo exit=1 senza duplicare
-    /// output. Fix review #10.
+    /// output.
     // Costruita da `diagnose`, che vive dietro la feature `postgres`. La
     // variante resta nell'enum perche i suoi rami di `match` sono neutri:
     // spostarla dietro la feature significherebbe cfg-are anche quelli.
@@ -94,24 +87,14 @@ pub(crate) enum CliError {
 
 /// Cosa la CLI dice di un `commit()`, e con quale codice di uscita.
 ///
-/// `CommitOutcome::OutcomeUnknown` e un `Ok`: il commit e stato **emesso** e
-/// l'esito remoto non e verificabile. Chi scriveva `tx.commit(...).await?` lo
-/// riceveva come successo, e i comandi stampavano `"status": "ok"` con uscita
-/// 0 — cioe dicevano a un'automazione che la mutazione era andata a buon fine
-/// mentre il contratto chiedeva quarantena e verifica fuori banda. Un retry su
-/// quella base puo raddoppiare una scrittura gia applicata.
+/// `CommitOutcome::OutcomeUnknown` indica che il commit e stato **emesso** ma
+/// l'esito remoto non e verificabile. Trattarlo come successo o ritentare alla
+/// cieca puo duplicare una scrittura gia applicata.
 ///
 /// Qui l'incertezza ha un nome suo — `outcome_unknown` — e non e mai `ok`.
 ///
-/// Non sta dietro una feature, e l'attributo qui sotto non e un ripensamento:
-/// il giudizio sul commit incerto e comune a tutti i provider, ed e per questo
-/// che vive nel modulo radice invece che dentro quello di uno solo. Che con la
-/// sola feature `sqlserver` non lo chiami nessuno non dice niente sul
-/// giudizio — dice che quel provider non espone ancora un sottocomando che
-/// apra una transazione, perche `database-probe` non ne apre. `cfg`-are la
-/// funzione affermerebbe che l'incertezza del commit riguarda due provider su
-/// tre, che e falso; l'attributo dichiara invece che oggi non c'e un
-/// chiamante, e sparisce quando ce ne sara uno.
+/// La funzione resta indipendente dalle feature perche la semantica del commit
+/// non cambia con il provider compilato.
 #[cfg_attr(
     not(any(feature = "postgres", feature = "mysql")),
     allow(
@@ -206,7 +189,7 @@ struct IpcOptions {
 
 impl CliError {
     /// Accesso al `DatabaseError` sottostante per test / mutazioni
-    /// diagnostiche. Panica per `Silent` (uso post-review #10).
+    /// diagnostiche. Panica per `Silent`.
     #[cfg(test)]
     fn database_error(&self) -> &DatabaseError {
         match self {
@@ -356,7 +339,7 @@ async fn run() -> CliResult<()> {
         "benchmark-write" => benchmark::benchmark_write(&mut args).await,
         #[cfg(feature = "postgres")]
         "benchmark-spatial" => benchmark_spatial(&mut args).await,
-        // MySQL v1.2 subset — parity iniziale col path Postgres.
+        // Comandi della famiglia MySQL.
         #[cfg(feature = "mysql")]
         "mysql-probe" => mysql_cmd::mysql_probe(&mut args).await,
         #[cfg(feature = "mysql")]
@@ -391,11 +374,8 @@ fn inspect_dataset(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
 /// forma, i limiti, i riferimenti. Con, esegue anche la **preparazione**, cioe
 /// il confronto fra cio che il piano chiede e cio che un provider pubblicizza.
 ///
-/// La seconda meta esisteva gia in `plenora_database_engine::prepare`, e non
-/// aveva chiamanti: nessuna superficie la raggiungeva, quindi la matrice
-/// piano-capability non veniva mai eseguita e nessun test poteva accorgersi
-/// che fosse incompleta. Il documento capability e un file, non una
-/// connessione, quindi la verifica resta offline.
+/// Il documento capability e un file, non una connessione, quindi anche la
+/// preparazione resta interamente offline.
 fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let path = args
         .next()
@@ -467,13 +447,8 @@ fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
     // `feature_is_compiled`: `cfg!` va valutato per **ogni** riga, altrimenti
     // quella della feature assente sparisce insieme al ramo.
     //
-    // Prima l'elenco era fisso, e diceva «disponibile» di un adapter che
-    // questo binario poteva non aver compilato: il rifiuto arrivava piu
-    // avanti, dopo aver letto il nome della variabile secret, e a chi lo
-    // dimenticava rispondeva «manca il secret» invece di «adapter non
-    // compilato». Sono due rimedi diversi — scrivere un argomento, o
-    // ricostruire il binario — e la risposta sbagliata manda a cercare dalla
-    // parte sbagliata.
+    // L'elenco riflette le feature compilate, cosi un adapter assente viene
+    // diagnosticato prima di leggere secret o argomenti di connessione.
     let compiled = [
         (ProviderKind::Postgres, cfg!(feature = "postgres")),
         // `MariaDB` arriva con lo stesso crate di `MySQL`: chi ha compilato
@@ -511,17 +486,45 @@ fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
     )))
 }
 
+/// Destinazione comune dei comandi `database-*`.
+///
+/// Separa il prefisso stabile della riga di comando dagli argomenti specifici
+/// dell'operazione. L'apertura resta intenzionalmente successiva al loro parse:
+/// gli argomenti del provider hanno lunghezza variabile e consumano tutto cio
+/// che rimane.
+struct ProviderTarget {
+    kind: ProviderKind,
+    secret_environment: String,
+}
+
+impl ProviderTarget {
+    fn parse(args: &mut impl Iterator<Item = String>) -> CliResult<Self> {
+        let provider = args.next().ok_or_else(|| "manca il provider".to_owned())?;
+        let kind = parse_provider_kind(&provider)?;
+        ensure_adapter_available(kind)?;
+        let secret_environment = args
+            .next()
+            .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+        Ok(Self {
+            kind,
+            secret_environment,
+        })
+    }
+
+    fn open(
+        &self,
+        args: &mut impl Iterator<Item = String>,
+    ) -> CliResult<(SecretString, Box<dyn Provider>)> {
+        let arguments = prepare_provider_arguments(parse_provider_arguments(self.kind, args)?)?;
+        let secret = secret_from_env(&self.secret_environment)?;
+        let provider = build_provider_from_prepared_arguments(arguments, &secret)?;
+        Ok((secret, provider))
+    }
+}
+
 async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
-    let provider_arguments = parse_provider_arguments(kind, args)?;
-    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let target = ProviderTarget::parse(args)?;
+    let (secret, provider) = target.open(args)?;
     let cancellation = CancellationToken::new();
     let connection = provider.test_connection(&secret, &cancellation).await?;
     let capabilities = provider.probe_capabilities(&secret, &cancellation).await?;
@@ -536,18 +539,10 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
 ///
 /// Esegue uno statement dentro una transazione e ne stampa le righe toccate.
 ///
-/// # Perche generica, e perche solo adesso
+/// # Perche e generica
 ///
-/// La stessa ragione di `database-inspect-*`: gli adapter implementano lo
-/// stesso contratto, e una copia per prodotto diverge alla prima correzione
-/// applicata a una sola. Le superfici che c'erano non lo riflettevano —
-/// `PostgreSQL` aveva `execute-sql`, `MySQL` aveva `mysql-execute-sql`,
-/// `MariaDB` e SQL Server niente.
-///
-/// «Solo adesso» perche fino a ieri non si poteva: il contratto che serve e
-/// `TransactionScope`, e SQL Server pubblicava `scope: Transaction` senza
-/// implementarlo. Un comando generico avrebbe risposto `Unsupported` su un
-/// quarto dei provider che accetta.
+/// Gli adapter implementano tutti `TransactionScope`, quindi una superficie
+/// condivisa evita rami e copie specifici del prodotto.
 ///
 /// # `--allow-raw`
 ///
@@ -562,12 +557,8 @@ async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()
 /// il secret non c'e, se la connessione fallisce, o se lo statement viene
 /// rifiutato dalla policy o dal server.
 async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let sql = args
         .next()
         .ok_or_else(|| "manca lo statement SQL".to_owned())?;
@@ -575,10 +566,7 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
     // cio che resta: dopo di loro non arriverebbe mai.
     let mut peekable = args.peekable();
     let allow_raw = peekable.next_if(|value| value == "--allow-raw").is_some();
-    let provider_arguments = parse_provider_arguments(kind, &mut peekable)?;
-    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(&mut peekable)?;
 
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
@@ -612,10 +600,8 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
 ///
 /// # Perche generico
 ///
-/// `portable-execute` esiste da tempo ed e legato a `PostgreSQL`. Non era una
-/// scelta: il compilatore parlava un dialetto solo. Ne parla quattro, e un
-/// comando per provider sarebbe stato quattro copie della stessa funzione —
-/// mentre la facade dispatcha gia da se su `tx.provider_kind()`.
+/// Il compilatore supporta quattro dialetti e la facade dispatcha su
+/// `tx.provider_kind()`, quindi non servono comandi duplicati per provider.
 ///
 /// # Le due forme
 ///
@@ -631,19 +617,12 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
 /// il file non e leggibile o non e un AST valido, se il compilatore rifiuta il
 /// piano per quel dialetto, o se il server lo rifiuta.
 async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let path = args
         .next()
         .ok_or_else(|| "manca il percorso di PORTABLE.json".to_owned())?;
-    let provider_arguments = parse_provider_arguments(kind, args)?;
-    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
 
     let source = std::fs::read_to_string(&path).map_err(|error| {
         format!(
@@ -730,19 +709,12 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
 ///
 /// Come `database-execute-sql`, piu il rifiuto se il result set non e scalare.
 async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let sql = args
         .next()
         .ok_or_else(|| "manca lo statement SQL".to_owned())?;
-    let provider_arguments = parse_provider_arguments(kind, args)?;
-    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
 
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
@@ -793,18 +765,12 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
 
 /// Esegue DDL attraverso il bordo comune del provider, fuori transazione.
 async fn database_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let sql = args
         .next()
         .ok_or_else(|| "manca lo statement DDL".to_owned())?;
-    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
     provider
         .execute_ddl(&secret, &sql, &CancellationToken::new())
         .await?;
@@ -873,12 +839,8 @@ async fn consume_summary(
 
 /// Esegue un `QueryOperation` serializzato e rende uno summary bounded.
 async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let query_path = args
         .next()
         .ok_or_else(|| "manca il percorso QUERY.json".to_owned())?;
@@ -894,9 +856,7 @@ async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliR
         )
     })?;
     let parameters = read_parameters(&parameters_path)?;
-    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
     let budget = ResourceBudget::new(ResourceLimits::default())?;
     let cancellation = CancellationToken::new();
     let mut stream = provider
@@ -909,12 +869,8 @@ async fn database_read(
     args: &mut impl Iterator<Item = String>,
     output: Option<String>,
 ) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
+    let kind = target.kind;
     let read_path = args
         .next()
         .ok_or_else(|| "manca il percorso READ.json".to_owned())?;
@@ -930,9 +886,7 @@ async fn database_read(
         )
     })?;
     let parameters = read_parameters(&parameters_path)?;
-    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
     let budget = ResourceBudget::new(ResourceLimits {
         rows: IPC_DEFAULT_MAX_ROWS,
         output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
@@ -981,12 +935,7 @@ async fn database_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
 
 /// Scrive un file Arrow IPC tramite il contratto `prepare_write` + `write`.
 async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
     let operation_path = args
         .next()
         .ok_or_else(|| "manca il percorso WRITE.json".to_owned())?;
@@ -1001,9 +950,7 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             error.column()
         )
     })?;
-    let provider_arguments = prepare_provider_arguments(parse_provider_arguments(kind, args)?)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
     let stream = ipc_input::IpcFileBatchStream::open(&input_path)?;
     let input_schema = stream.schema();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
@@ -1021,13 +968,8 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
 ///
 /// # Perche generica invece di una famiglia per prodotto
 ///
-/// `Provider::inspect` e implementato da tutti e tre gli adapter, e tutti e tre
-/// rispondono alle stesse quattro operazioni del contratto. Le superfici che
-/// esistevano non lo riflettevano: `PostgreSQL` aveva cinque comandi di
-/// introspezione, `MySQL` tre, SQL Server **nessuno** — arrivava solo a
-/// `database-probe`, cioe un provider qualificato per scrivere che dal CLI non
-/// si poteva nemmeno interrogare. Una quarta copia degli stessi comandi
-/// avrebbe chiuso il buco moltiplicando il codice che lo aveva prodotto.
+/// `Provider::inspect` offre le stesse operazioni su ogni adapter compilato;
+/// una sola superficie evita che le varianti per prodotto divergano.
 ///
 /// # L'ordine degli argomenti
 ///
@@ -1041,17 +983,9 @@ async fn database_inspect(
     args: &mut impl Iterator<Item = String>,
     source: fn(&mut dyn Iterator<Item = String>) -> CliResult<Operation>,
 ) -> CliResult<()> {
-    let provider_name = args.next().ok_or_else(|| "manca il provider".to_owned())?;
-    let kind = parse_provider_kind(&provider_name)?;
-    ensure_adapter_available(kind)?;
-    let env_name = args
-        .next()
-        .ok_or_else(|| "manca il nome della variabile secret".to_owned())?;
+    let target = ProviderTarget::parse(args)?;
     let operation = source(args)?;
-    let provider_arguments = parse_provider_arguments(kind, args)?;
-    let provider_arguments = prepare_provider_arguments(provider_arguments)?;
-    let secret = secret_from_env(&env_name)?;
-    let provider = build_provider_from_prepared_arguments(provider_arguments, &secret)?;
+    let (secret, provider) = target.open(args)?;
     let kind = provider.kind();
     let inspection = provider
         .inspect(&secret, &operation, &CancellationToken::new())
@@ -2274,10 +2208,8 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 /// E la sola fonte di cosa il binario sa fare. `usage` mostra le sezioni delle
 /// feature compilate, l'errore da comando sconosciuto distingue "non esiste"
 /// da "non compilato qui", e un test lo confronta con i rami del dispatch.
-/// Senza, le tre cose derivano — ed erano gia derivate: l'aiuto elencava i
-/// comandi `PostgreSQL` anche in un binario che non li aveva compilati, e
-/// dichiarava che `MySQL` richiedesse `--features full` quando
-/// `--features mysql` basta.
+/// Il catalogo impedisce che dispatch, aiuto ed errori dichiarino insiemi
+/// diversi di comandi.
 const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     ("database-describe", None),
     ("database-execute-ddl", None),
@@ -2311,9 +2243,7 @@ const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
     ("inspect-schemas", Some("postgres")),
     ("inspect-tables", Some("postgres")),
     ("pool-status", Some("postgres")),
-    // Puro: legge un AST e stampa SQL, senza aprire niente. Stava dietro
-    // `postgres` perche viveva in un modulo gated, e un binario
-    // `--features mysql` non poteva compilare un piano **per MySQL**.
+    // Puro: legge un AST e stampa SQL senza dipendere da un adapter compilato.
     ("portable-compile", None),
     ("portable-execute", Some("postgres")),
     ("database-portable-execute", None),
@@ -2374,8 +2304,7 @@ fn compiled_commands() -> Vec<&'static str> {
 ///
 /// Un comando che esiste nel progetto ma non e in questo binario merita una
 /// risposta diversa da uno che non esiste: la prima si risolve ricostruendo,
-/// la seconda no. Prima erano la stessa cosa — l'intero testo di aiuto — e
-/// quel testo elencava comandi che il binario non aveva.
+/// la seconda no.
 fn unknown_command(command: &str) -> CliError {
     if let Some((_, Some(feature))) = COMMAND_CATALOGUE.iter().find(|(name, _)| *name == command) {
         return CliError::from(format!(
@@ -2545,7 +2474,7 @@ fn postgres_usage() -> String {
 fn mysql_usage() -> String {
     [
         "",
-        "== MySQL (v1.2, subset iniziale) ==",
+        "== MySQL / MariaDB ==",
         "  args comuni: <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]",
         "  mysql-probe <args...>              — test_connection + probe_capabilities",
         "  mysql-describe <args...> <schema> <object>  — describe target (colonne, tipi, keys)",
@@ -2749,8 +2678,8 @@ mod usage_surface_tests {
 }
 
 // ============================================================================
-//  PFM subcommands: espongono le API application plane / conformance / DDL
-//  di Fase A/B/C/F1/P1/P2 come tool CLI. Tutti prendono il DSN Postgres via
+//  I sottocomandi PFM espongono application plane, conformance e DDL.
+//  Tutti prendono il DSN Postgres via
 //  variabile ambiente (mai in CLI argument per non finire in shell history).
 // ============================================================================
 
@@ -2783,9 +2712,7 @@ mod session_ctx;
 #[cfg(feature = "postgres")]
 mod testing;
 // Provider-neutral: legge `NAME=VALUE:TYPE` e produce `ParameterValue` del
-// core. Non conosce nessun provider, e infatti `postgres-read-ipc` non era
-// l'unico a usarlo — dietro la feature `postgres` rendeva il binario
-// MySQL-only non compilabile.
+// core senza dipendere da feature di adapter.
 mod typed_params;
 #[cfg(feature = "postgres")]
 mod write_cmd;
@@ -3262,15 +3189,9 @@ mod tests {
         let secret = SecretString::new("test-only-secret");
         #[allow(clippy::vec_init_then_push)] // le push sono cfg-gated
         let matrix: Vec<(ProviderKind, Vec<&str>)> = {
-            // `Postgres` era l'unica riga incondizionata, e questo test era
-            // rosso nelle due configurazioni che non lo compilano: li
-            // `build_provider` non arriva al TLS, risponde «adapter non
-            // disponibile» — `Unsupported` invece di `InvalidPlan` — e
-            // l'asserzione cadeva su una premessa mancante invece che sul
-            // fail-close che sorveglia. Non se n'era accorto nessuno perche
-            // la matrice delle feature esegue i test di ciascuna
-            // configurazione, e fino a poco fa ne eseguiva un sottoinsieme
-            // scelto per nome.
+            // Ogni riga esiste soltanto quando l'adapter corrispondente è
+            // compilato; altrimenti il test misurerebbe "adapter assente"
+            // invece del fail-close TLS.
             #[allow(unused_mut)]
             let mut m: Vec<(ProviderKind, Vec<&str>)> = Vec::new();
             #[cfg(feature = "postgres")]

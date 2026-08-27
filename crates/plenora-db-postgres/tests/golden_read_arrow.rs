@@ -364,27 +364,9 @@ async fn h7b_read_handles_null_values_across_columns() {
     drop_fixture(table).await;
 }
 
-// ============================================================================
-//  H7b.6 — Stream + cancellation: il contratto, dopo che la limitazione e
-//  caduta.
-//
-//  Il finding H7b (2026-08-12) diceva che `BatchStream::next_batch` non era
-//  cancel-aware: la cancellazione passata a `Provider::read` non interrompeva
-//  ne il batch in volo ne quelli successivi, e il consumer Arrow continuava a
-//  ricevere righe da una lettura che aveva chiesto di fermare.
-//
-//  Il test che lo documentava si chiudeva con una previsione — «se dovesse
-//  cambiare, il test fallirebbe e andra aggiornato con la nuova asserzione» —
-//  ed e andata cosi: la passata sullo scheduler delle deadline ha reso la
-//  cancellazione osservabile lungo tutto il percorso, e la prima corsa del
-//  gate live dopo quella passata ha fatto rosso qui.
-//
-//  Cio che il test asserisce ora e il contratto nuovo, e non «non e piu come
-//  prima»: dopo la cancellazione il batch successivo e un rifiuto, con la
-//  quaterna che il chiamante usa per decidere cosa fare. `RemoteEffect::None`
-//  e la meta che conta — una lettura interrotta non lascia niente da ripulire,
-//  ed e la differenza fra questo caso e una scrittura cancellata.
-// ============================================================================
+// Dopo la cancellazione il batch successivo deve fallire con l'envelope
+// operativo completo. `RemoteEffect::None` distingue una lettura interrotta
+// da una scrittura il cui effetto remoto potrebbe essere ignoto.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[tokio::test]

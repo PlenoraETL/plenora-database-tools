@@ -41,18 +41,15 @@
 use crate::arrow_reader::BatchReader;
 use crate::errors::to_py_err;
 use crate::family_arrow_reader::open_family_reader;
-use crate::py_convert::{param_to_python, params_from_python};
-use crate::runtime;
-use crate::transaction::{parse_isolation, Transaction};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
-use plenora_database_core::plan::{ObjectRef, Operation};
-use plenora_database_core::portable::PortableStatement;
-use plenora_database_core::provider::{Provider, SecretString};
-use plenora_database_core::Row;
-// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
-use plenora_database_core::transaction::{
-    AccessMode, Statement, TransactionOptions, TransactionScope,
+use crate::py_convert::{
+    portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
 };
+use crate::runtime;
+use crate::transaction::Transaction;
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::plan::{ObjectRef, Operation};
+use plenora_database_core::provider::{Provider, SecretString};
+use plenora_database_core::transaction::TransactionScope;
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
 use plenora_db_sqlserver::{
@@ -63,7 +60,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::Arc;
 
-// Fase E: consolidato in `crate::budget::session_budget`.
 use crate::budget::session_budget as default_budget;
 
 /// Sessione della famiglia `MySQL`: `MySQL` o `MariaDB`.
@@ -96,11 +92,8 @@ pub struct DatabaseSession {
 impl DatabaseSession {
     /// Esegue una `Operation` di ispezione e rende il documento JSON.
     ///
-    /// Passa da `Provider::inspect`, che sta nel **trait**: e la ragione per
-    /// cui questi metodi arrivano a tutti e quattro i prodotti e non a uno
-    /// solo. Il CLI li offre gia da tempo alla famiglia `database-*`, e il SDK
-    /// li aveva soltanto su PostgreSQL — la stessa cosa raggiungibile da una
-    /// parte e no dall'altra, senza che nessuna ragione lo dicesse.
+    /// Passa da `Provider::inspect`, cosi tutti i prodotti seguono lo stesso
+    /// contratto e la stessa forma del documento.
     fn run_inspect(&self, py: Python<'_>, op: Operation) -> PyResult<serde_json::Value> {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
@@ -137,35 +130,7 @@ impl DatabaseSession {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         py.allow_threads(|| {
-            runtime().block_on(async move {
-                let cancel = CancellationToken::new();
-                let mut tx = provider
-                    .begin_transaction(
-                        &secret,
-                        &TransactionOptions::default(),
-                        &default_budget(),
-                        &cancel,
-                    )
-                    .await?;
-                let result = work(tx.as_mut(), &cancel).await;
-                match result {
-                    Ok(value) => {
-                        let provider_kind = tx.provider_kind();
-                        let outcome = Box::new(tx).commit(&cancel).await?;
-                        if !outcome.is_committed() {
-                            // Fix review #9: helper unico.
-                            return Err(crate::errors_commit::commit_outcome_unknown(
-                                provider_kind,
-                            ));
-                        }
-                        Ok(value)
-                    }
-                    Err(e) => {
-                        let _ = Box::new(tx).rollback(&cancel).await;
-                        Err(e)
-                    }
-                }
-            })
+            runtime().block_on(crate::session_tx::run_transaction(provider, secret, work))
         })
         .map_err(to_py_err)
     }
@@ -226,23 +191,17 @@ impl DatabaseSession {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<u64> {
         self.ensure_open()?;
-        let params = params_from_python(params.as_ref())?;
-        let sql = sql.to_owned();
+        let statement = statement_from_python(sql, params.as_ref())?;
         self.run_tx(py, move |tx, cancel| {
-            Box::pin(async move {
-                let stmt = Statement { sql, params };
-                tx.execute(&stmt, cancel).await
-            })
+            Box::pin(async move { tx.execute(&statement, cancel).await })
         })
     }
 
     /// SELECT scalare: **al piu una riga, esattamente una colonna**.
     ///
     /// `None` quando la query non restituisce righe. Piu di una riga, o piu di
-    /// una colonna, sono un errore — non una selezione arbitraria del primo
-    /// valore, come faceva la versione 0.10: quella scartava in silenzio il
-    /// resto del result set, e una query sbagliata restituiva un risultato
-    /// plausibile invece di dire che era sbagliata.
+    /// una colonna, sono un errore: selezionare un valore arbitrario
+    /// scarterebbe in silenzio il resto del result set.
     ///
     /// E' la stessa cardinalita dei costruttori scalar del core. Chi vuole la
     /// prima riga di un result set piu ampio usa `execute_returning_rows`.
@@ -254,22 +213,15 @@ impl DatabaseSession {
         params: Option<Bound<'py, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let params = params_from_python(params.as_ref())?;
-        let sql = sql.to_owned();
+        let statement = statement_from_python(sql, params.as_ref())?;
         let rows = self.run_tx(py, move |tx, cancel| {
-            Box::pin(async move {
-                let stmt = Statement { sql, params };
-                tx.query(&stmt, cancel).await
-            })
+            Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
         // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di una
         // riga o piu di una colonna invece di prendere la prima e buttare via
-        // il resto. E' la stessa regola dei costruttori scalar tipizzati del
-        // core, e quella che questa firma dichiarava gia a parole.
-        let value = scalar_opt(rows).map_err(to_py_err)?;
-        value
-            .as_ref()
-            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
+        // il resto. È la stessa regola dei costruttori scalar tipizzati del
+        // core e della firma pubblica.
+        scalar_to_python(py, rows)
     }
 
     /// SELECT con rows → list[dict] (nome colonna → valore Python).
@@ -281,15 +233,11 @@ impl DatabaseSession {
         params: Option<Bound<'py, PyList>>,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
-        let params = params_from_python(params.as_ref())?;
-        let sql = sql.to_owned();
+        let statement = statement_from_python(sql, params.as_ref())?;
         let rows = self.run_tx(py, move |tx, cancel| {
-            Box::pin(async move {
-                let stmt = Statement { sql, params };
-                tx.query(&stmt, cancel).await
-            })
+            Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
-        crate::transaction::rows_to_pylist(py, rows)
+        rows_to_pylist(py, rows)
     }
 
     /// Apre una nuova transazione user-managed su MySQL.
@@ -323,30 +271,14 @@ impl DatabaseSession {
         native_query_policy: Option<&str>,
     ) -> PyResult<Transaction> {
         self.ensure_open()?;
-        let mut opts = TransactionOptions::default();
-        if let Some(iso) = isolation {
-            opts.isolation = Some(parse_isolation(iso)?);
-        }
-        if let Some(ro) = read_only {
-            opts.access_mode = Some(if ro {
-                AccessMode::ReadOnly
-            } else {
-                AccessMode::ReadWrite
-            });
-        }
-        if let Some(ms) = statement_timeout_ms {
-            opts.statement_timeout_ms = Some(ms);
-        }
-        // Fix P1 review MySQL 2026-08-15 — parity con Session (Postgres):
-        // - `context`: SessionContext applicato via `SET
-        //   @plenora_ctx_*` (session-scoped MySQL).
-        // - `native_query_policy`: "allow" (default) | "deny".
-        if let Some(ctx) = context {
-            opts.context = ctx.inner;
-        }
-        if let Some(policy) = native_query_policy {
-            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
-        }
+        let opts = crate::session_tx::transaction_options(
+            isolation,
+            read_only,
+            None,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
+        )?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let scope = py
@@ -370,38 +302,18 @@ impl DatabaseSession {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
-        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+        let ast = portable_from_json(ast_json)?;
+        let rows = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
         })?;
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            for (col, val) in row.columns().iter().zip(row.values().iter()) {
-                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out)
+        rows_to_pylist(py, rows)
     }
 
     /// Esegue un PortableStatement (JSON) senza RETURNING e ritorna
     /// affected_rows. Per Insert/Update/Delete/Upsert MySQL (no RETURNING).
     fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable(tx, &ast, cancel).await })
         })
@@ -699,10 +611,8 @@ pub(crate) fn sqlserver_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provide
 ///   `insecure_trust_server` la disattiva ed e opt-in esplicito per
 ///   test e sviluppo locale
 ///
-/// Il default **verifica**. Questa doc diceva il contrario — "se `None`,
-/// usa `TrustServerCertificate`" — descrivendo il comportamento
-/// precedente al fix di parita con il SDK Postgres, mentre il commento
-/// dieci righe piu sotto raccontava gia la versione giusta.
+/// Il default verifica il certificato; la disattivazione richiede un valore
+/// esplicito di `tls_mode`.
 ///
 /// # Errors
 ///
@@ -735,9 +645,8 @@ pub fn connect_mysql(
 /// La configurazione comune ai due prodotti, TLS compreso.
 ///
 /// Sta in un posto solo perche il fail-close TLS non puo permettersi due
-/// copie. Il difetto che questo blocco ha gia avuto una volta era proprio li:
-/// il default accettava `TrustServerCertificate` quando la CA non era data,
-/// cioe TLS senza verifica del certificato del server. Ora il default
+/// copie. Il default non accetta `TrustServerCertificate` quando la CA manca:
+/// TLS deve verificare il certificato del server. Il default
 /// **verifica**, e `insecure_trust_server` e un opt-in esplicito per test e
 /// sviluppo locale. Duplicarlo per `MariaDB` avrebbe rimesso in gioco quel
 /// difetto sul secondo prodotto.

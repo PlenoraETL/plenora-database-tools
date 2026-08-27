@@ -1,9 +1,8 @@
-# Riferimento baseline della matrice MySQL: MySQL 9.7.2, fissato per digest
-# immutabile. Versione e digest sono dichiarati in docker/mysql/references.json
-# ed e quel documento a comandare: `scripts/mysql_references.py` verifica che i
-# due servizi qui sotto fissino esattamente l'immagine della baseline e nessun
-# digest di compatibilita. I riferimenti 8.4 LTS e 8.0 non si avviano da qui ma
-# da `scripts/check_mysql_matrix.py`, con la stessa fixture TLS e init.
+# Fixture baseline della matrice MySQL, fissata per digest immutabile. Versione,
+# ruolo e digest sono definiti in docker/mysql/references.json; lo script
+# `mysql_references.py` verifica che questo Compose usi solo la baseline. Gli
+# altri riferimenti sono avviati da `check_mysql_matrix.py` con le stesse
+# fixture TLS e di inizializzazione.
 # Progetto Compose esplicito. Senza questa riga Compose deriva il nome
 # dalla directory, quindi tutti i compose del repository finirebbero nello
 # stesso progetto e `down --remove-orphans` su uno cancellerebbe i

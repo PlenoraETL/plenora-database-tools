@@ -2,7 +2,7 @@
 //! `ToSql` per `tokio_postgres`. Sottoinsieme sufficiente per i tipi scalari
 //! canonici; geometrie/composite passano dal codec del piano dati (`parameter_codec`).
 //!
-//! v0.3 (P0.7): UUID e Decimal dispatchano in `to_sql` sul target type:
+//! UUID e Decimal scelgono la rappresentazione in `to_sql` dal tipo target:
 //! per target `UUID`/`NUMERIC` inviano il payload binario (16 byte /
 //! Postgres NUMERIC wire format), altrimenti fallback al text encoding
 //! del testo originale (utile per `SELECT $1::text::uuid` pattern).
@@ -293,7 +293,6 @@ mod tests {
 
     #[test]
     fn decimal_is_encoded_with_dual_representation() {
-        // v0.3 (P0.7): Decimal ora è supportato nel path OLTP.
         let encoded = encode(&ParameterValue::Decimal("1234.56".into())).unwrap();
         match encoded {
             SqlParam::Decimal { text, .. } => assert_eq!(text, "1234.56"),
@@ -309,7 +308,6 @@ mod tests {
 
     #[test]
     fn uuid_is_encoded_with_dual_representation() {
-        // v0.3 (P0.7): UUID ora invia binary sui target Type::UUID.
         let encoded = encode(&ParameterValue::Uuid(
             "550e8400-e29b-41d4-a716-446655440000".into(),
         ))

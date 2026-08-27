@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """Campagna live della matrice di sessione: fixture, misura, verdetto.
 
-La matrice e una prova permanente solo se qualcuno la riesegue. Il self-test
-statico verifica il **giudizio** del runner su documenti costruiti a mano, e
-questo e cio che serve su una pull request; ma se domani cambiasse
-`SESSION_BOOTSTRAP_SQL` o `START TRANSACTION`, il documento resterebbe quello
-di ieri e nessun controllo se ne accorgerebbe. Solo una corsa contro i tre
-server reali lo scopre.
+Il self-test statico verifica il giudizio del runner su documenti costruiti a
+mano; la campagna live rileva invece variazioni di `SESSION_BOOTSTRAP_SQL`,
+`START TRANSACTION` o dei server dichiarati.
 
 Il ciclo di vita non sta qui ma in `scripts/fixture_campaign.py`, che due
-campagne condividono: le condizioni — quali fixture, in quale ordine, cosa
-aspettare — sono decisioni scritte una volta sola, e ognuna di quelle righe e
-stata aggiunta dopo che una corsa reale e morta senza. Cio che resta qui e
-solo cio che riguarda **questa** misura.
+campagne condividono: fixture, ordine e condizioni di attesa sono definiti una
+volta sola. Qui resta soltanto ciò che riguarda questa misura.
 """
 
 from __future__ import annotations
@@ -33,10 +28,8 @@ from scripts.check_session_matrix import (  # noqa: E402
 )
 from scripts.fixture_campaign import campaign  # noqa: E402
 
-# I due compose che accendono i tre riferimenti della matrice. L'ordine non
-# conta — sono reti separate — ma l'elenco si: una campagna che ne avviasse
-# uno solo misurerebbe due server su tre e il runner fallirebbe sul digest,
-# che e il modo giusto di accorgersene ma non il piu chiaro.
+# I Compose che accendono tutti i riferimenti della matrice. Le reti sono
+# separate, ma l'elenco è parte della copertura della campagna.
 COMPOSE_FILES = ("docker-compose.mysql.yml", "docker-compose.mariadb.yml")
 
 

@@ -5,7 +5,7 @@
 //! `MySQL` non ha un equivalente di `sys.dm_exec_describe_first_result_set`,
 //! quindi la descrizione del prepared statement e l'unica fonte autoritativa.
 //!
-//! Questa tranche qualifica proiezioni scalari, DISTINCT, aggregazione
+//! Il sottoinsieme qualificato comprende proiezioni scalari, DISTINCT, aggregazione
 //! (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX` con GROUP BY e HAVING), i join
 //! fisici INNER, LEFT, RIGHT e CROSS fra tabelle del solo database
 //! configurato e, nella sola lista di selezione di una query non raggruppata,
@@ -16,12 +16,10 @@
 //! chiave d'ordine dimostrata univoca, proprieta che l'AST portabile non
 //! esprime. CTE, set operation, window spatial, derived source (di base o di
 //! join), LATERAL, subquery e locking restano fail-closed per lo stesso
-//! motivo di fondo: sono sottoinsiemi dell'AST non ancora dimostrati su
-//! `MySQL`, non costrutti necessariamente assenti dal motore. Lo spatial no:
-//! era in quell'elenco e non c'e piu, perche le funzioni di
-//! `VERIFIED_SPATIAL_FUNCTIONS` si renderizzano e si eseguono — cio che resta
-//! chiuso e la *window* spatial, non lo spatial. FULL JOIN e
-//! invece un'assenza reale: `MySQL` 8.4 non ha una forma nativa equivalente,
+//! motivo di fondo: sono sottoinsiemi dell'AST non dimostrati su
+//! `MySQL`, non costrutti necessariamente assenti dal motore. Le funzioni di
+//! `VERIFIED_SPATIAL_FUNCTIONS` si renderizzano e si eseguono; resta chiusa la
+//! *window* spatial. FULL JOIN e invece un'assenza reale: `MySQL` non ha una forma nativa equivalente,
 //! cosi come non ha la clausola di frame GROUPS.
 //!
 //! Il `sql_mode` deterministico applicato dal bootstrap di sessione non
@@ -35,12 +33,11 @@ use crate::{MysqlColumnSpec, MAX_IDENTIFIER_CHARACTERS};
 use mysql_async::Column;
 use plenora_database_core::limits::Limits;
 use plenora_database_core::query::{
-    validate_query_operation, JoinKind, QueryExpression, QueryOperation, QueryOrdering,
-    QuerySource, ScalarFunction, SpatialFunction, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    validate_query_operation, walk_query_expression, JoinKind, QueryExpression, QueryOperation,
+    QueryOrdering, QuerySource, QueryWalkControl, QueryWalkNode, ScalarFunction, SpatialFunction,
+    WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::RenderedSql;
 use std::collections::BTreeSet;
 
@@ -49,63 +46,11 @@ use std::collections::BTreeSet;
 /// `Provider::query` sia come proiezioni scalari sia (per i predicati) come
 /// filtri WHERE.
 ///
-/// Fonte: rendering dialect condiviso in `plenora-database-sql` (unificato
-/// col dialect `Postgres` per il subset `ST_*`). Le funzioni escluse
-/// (`X`/`Y`/`Z`/`M`, `AsGeoJson`, `DWithin`, `Transform`, ecc.) restano
-/// `Unsupported` finché non hanno una prova live su `MySQL`.
-///
-/// # Cosa prova questa lista, e da quando
-///
-/// Per un po' ha promesso piu di quanto avesse. Il nome diceva "verified" e le
-/// prove live ne attraversavano **due** — `Area` e `Intersects`; il test di
-/// capability contava la lista e ci cercava dentro cinque nomi, che e una
-/// verifica sulla costante, non sul motore. Le altre ventiquattro erano una
-/// deduzione dal dialect condiviso con `PostgreSQL`, cioe esattamente il tipo
-/// di affermazione che la regola 1 vieta.
-///
-/// La lista non e descrittiva: `render_query` **rifiuta** ogni funzione che
-/// non vi compare. Pubblicarne una che poi fallisce non e un'imprecisione in
-/// un documento, e una promessa che il provider fa al chiamante e non
-/// mantiene.
-///
-/// Ora la sonda `live_v12_every_verified_spatial_function_executes` le
-/// attraversa **tutte**, una per una, contro il riferimento. Interrogata sulle
-/// ventisei di allora ne ha bocciate dodici in un colpo solo, e la lista si e
-/// accorciata con la misura in mano.
-///
-/// # Le undici che sono uscite, e perche
-///
-/// Non undici ragioni: **una**. `StartPoint`, `EndPoint`, `PointN`, `Buffer`,
-/// `Envelope`, `Intersection`, `Union`, `Difference`, `SymDifference`,
-/// `ConvexHull` e `Centroid` restituiscono una geometria, e il mapper del
-/// result set di questo provider rifiuta `MYSQL_TYPE_GEOMETRY`: una geometria
-/// in uscita da una query non porta SRID ne profilo dimensionale dimostrati, e
-/// il renderer non incapsula la colonna in `ST_AsBinary`. Sono bloccate sul
-/// preflight SRID, non sul nome: il giorno che quel preflight esiste tornano
-/// tutte insieme, e la sonda lo dira.
-///
-/// Due cose misurate lungo la strada, che vale la pena non riscoprire:
-/// `ST_NDims` e `ST_NPoints` non esistono su `MySQL` — li rende
-/// `dialect_spatial_name` come `ST_Dimension` e `ST_NumPoints` — e `ST_Union`
-/// su `MySQL` e **binario soltanto**, mentre il contratto ne ammette da uno a
-/// tre argomenti. Quando `Union` rientrera, la forma unaria restera comunque
-/// senza controparte.
-///
-/// # Cosa dimostra, e cosa no
-///
-/// La sonda gira su due geometrie — una lineare e una areale — e chiede a
-/// ciascuna funzione di eseguire su almeno una delle due: `ST_Area` su una
-/// `LINESTRING` risponde `3516`, e sarebbe stata una falsa assenza. Quello che
-/// dimostra e che il renderer produce SQL che `MySQL` esegue su un SRID
-/// cartesiano, non che ogni funzione valga su ogni sistema di riferimento —
-/// che e una domanda diversa, e non e questa lista a rispondervi.
-///
-/// **15 funzioni**:
-/// - metadata (7): `GeometryType`, `Srid`, `Dimensions`, `NPoints`,
-///   `IsEmpty`, `IsValid`, `IsClosed`
-/// - predicate binary (5): `Intersects`, `Contains`, `Within`, `Disjoint`,
-///   `Equals`
-/// - metriche (3): `Distance`, `Area`, `Length`
+/// La lista e il cancello condiviso da capability e renderer: ogni voce e
+/// attraversata da `live_v12_every_verified_spatial_function_executes`, mentre
+/// le funzioni assenti restano `Unsupported`. La sonda prova almeno una forma
+/// di argomento valida; le funzioni che restituiscono geometrie richiedono
+/// anche l'evidenza CRS di `raw.crs_rule_check`.
 pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::GeometryType,
     SpatialFunction::Srid,
@@ -122,16 +67,8 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
-    // Le nove che `raw.scalar_function_forms` — allora
-    // `raw.spatial_candidate_functions` — ha trovato presenti fra le
-    // ventisei mai chieste. Presenti non vuol dire qualificate: la sonda
-    // `live_v12_every_verified_spatial_function_executes` le attraversa una per
-    // una, e cio che non esegue esce da questa lista con la misura in mano —
-    // come ne sono uscite undici quando scese da ventisei a quindici.
-    //
-    // `Relate` e `CoveredBy` non ci sono, e su `MariaDB` si: le due liste non
-    // sono piu una il sottoinsieme dell'altra, e non c'e ragione perche lo
-    // siano.
+    // Funzioni scalari qualificate sia dalla sonda delle forme sia dalla sonda
+    // end-to-end. Le liste MySQL e MariaDB restano indipendenti per prodotto.
     SpatialFunction::X,
     SpatialFunction::Y,
     SpatialFunction::IsSimple,
@@ -141,71 +78,29 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::HausdorffDistance,
     SpatialFunction::FrechetDistance,
     SpatialFunction::AsGeoJson,
-    // Le prime tre che **rendono geometria**, e le tre che
-    // `raw.crs_rule_check` ha attraversato.
-    //
-    // La misura precedente le dava assenti su questo prodotto: `ST_Envelope`,
-    // `ST_Centroid` e `ST_Buffer` rispondevano 3618 su una colonna 4326. Il
-    // campione conteneva due sistemi di riferimento — geografico e
-    // l'indefinito OGC — e non conteneva quello in cui esistono: in 3857 e in
-    // 3003, che sono **proiettati**, tutte e tre girano e conservano l'SRID.
-    // Il 3618 e una condizione sul sistema di riferimento, non una assenza dal
-    // prodotto, ed e una distinzione che cambia la decisione.
-    //
-    // Sono qui e non fra le scalari perche il piano deve dichiarare il CRS
-    // della colonna d'ingresso: il provider lo pretende, lo propaga secondo la
-    // regola della funzione e lo conferma riga per riga. Una colonna in un
-    // sistema geografico fallira sul server con 3618, ed e il limite del
-    // prodotto — non c'e lista che lo possa nascondere, e la ragione ora e
-    // scritta dove qualcuno la trova.
+    // Queste funzioni geometriche sono qualificate sui CRS proiettati; MySQL
+    // risponde 3618 su 4326. Il piano dichiara il CRS d'ingresso e il provider
+    // ne applica e verifica la regola di propagazione.
     SpatialFunction::Envelope,
     SpatialFunction::Centroid,
     SpatialFunction::Buffer,
-    // Le cinque che `raw.geometry_function_forms` ha trovato presenti fra le
-    // ventotto mai chieste, e la cui regola il provider sa propagare.
-    //
-    // La sonda ha attraversato tutte e trentuno le funzioni che rendono
-    // geometria, su tre sistemi di riferimento e tre forme. Diciotto non
-    // esistono su questo prodotto — `1305` — e non e una scelta di prudenza:
-    // `ST_MakeValid`, `ST_Boundary`, `ST_Reverse`, `ST_SnapToGrid` e le altre
-    // sono assenti dal motore. `ST_Union` esiste e risponde `1582` all'arieta
-    // unaria che il contratto ammette, ed e la stessa regola che gia lo teneva
-    // fuori: una funzione e qualificata quando lo e a **ogni** arieta ammessa.
-    //
-    // Delle tredici presenti, cinque restano fuori per una ragione che non e
-    // del prodotto: `Transform` porta l'SRID in un argomento, `Intersection`,
-    // `Difference` e `SymDifference` prendono due geometrie — regole che
-    // questo provider non sa ancora propagare — e `Collect` e un **aggregato**,
-    // che la macchina dei gruppi di questo crate non modella.
+    // Funzioni geometriche di cui il provider sa propagare il CRS. Restano
+    // escluse le forme con regole non rappresentabili e gli aggregati.
     SpatialFunction::StartPoint,
     SpatialFunction::EndPoint,
     SpatialFunction::PointN,
     SpatialFunction::ConvexHull,
-    // `ST_Simplify` c'e su `MySQL` e non su `MariaDB`, dove le tre major
-    // rispondono `1305` o `4212`. E' la terza divergenza misurata fra i due
-    // prodotti, dopo `IsValid` e `HausdorffDistance`.
+    // MariaDB non qualifica `ST_Simplify`: i riferimenti rispondono 1305 o
+    // 4212, quindi la differenza e intenzionale.
     SpatialFunction::Simplify,
 ];
 
 /// Le funzioni spatial qualificate su `MariaDB`.
 ///
-/// **Quattordici**, e la differenza con le quindici di `MySQL` e una sola:
-/// `IsValid`. Non e una scelta di prudenza — e la prima divergenza misurata
-/// **fra le due major di `MariaDB`** in tutto il documento di evidenza, e vale
-/// pena dire come si presenta:
-///
-/// * `MariaDB 12.3` esegue tutte e quindici;
-/// * `MariaDB 11.8 LTS` risponde `1305` a `ST_IsValid` — la funzione non
-///   esiste.
-///
-/// Pubblicarne quindici funzionerebbe sulla 12.3 e romperebbe sulla LTS, che e
-/// la versione con piu installazioni. La lista e percio l'**intersezione** delle
-/// major supportate, che e la sola forma onesta quando il profilo e uno solo
-/// per il prodotto: una capability e una promessa a chi non sa su quale minor
-/// atterrera.
-///
-/// Il giorno in cui il profilo si sdoppiasse per major, `IsValid` tornerebbe
-/// sulla 12 — e allora questa lista sarebbe il posto in cui dirlo.
+/// E l'intersezione delle versioni qualificate: il profilo non conosce in
+/// anticipo la minor del server e puo promettere soltanto le forme provate su
+/// tutti i riferimenti. `live_v12_every_verified_spatial_function_executes`
+/// attraversa ogni voce con il profilo `MariaDB`.
 pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::GeometryType,
     SpatialFunction::Srid,
@@ -221,26 +116,9 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Distance,
     SpatialFunction::Area,
     SpatialFunction::Length,
-    // Le otto presenti su **entrambe** le major, dalle ventisei mai chieste.
-    //
-    // `CoveredBy` resta fuori, ed e la seconda divergenza fra le due major di
-    // questo prodotto: la 12.3 ce l'ha, la 11.8 LTS no. Stessa regola di
-    // `IsValid` — la lista e l'intersezione, perche una capability e una
-    // promessa a chi non sa su quale minor atterrera.
-    //
-    // `HausdorffDistance` e `FrechetDistance` sono su `MySQL` e non qui.
-    //
-    // `Relate` ha fatto il percorso inverso e vale la pena raccontarlo: la
-    // sonda delle candidate lo aveva trovato **presente** — il server ha la
-    // funzione — ed e entrato in questa lista. Poi il gate lo ha bocciato con
-    // 1582, numero di parametri sbagliato: `MariaDB` lo vuole a tre argomenti
-    // — le due geometrie e il pattern DE-9IM — e il contratto ne ammette anche
-    // due, che e l'arieta con cui un chiamante puo scriverlo.
-    //
-    // Esiste, quindi, e non e utilizzabile nella forma che il contratto
-    // permette. E' la stessa regola che tolse `Union` dalla lista di `MySQL`:
-    // una funzione e qualificata quando lo e a **ogni** arieta che il piano
-    // ammette, non quando ne esiste una che funziona.
+    // `CoveredBy` e `IsValid` non appartengono all'intersezione delle versioni.
+    // `Relate` richiede tre argomenti su MariaDB, mentre il contratto ne
+    // ammette anche due, quindi non e qualificabile sull'intera arieta.
     SpatialFunction::X,
     SpatialFunction::Y,
     SpatialFunction::IsSimple,
@@ -248,7 +126,7 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Crosses,
     SpatialFunction::Overlaps,
     SpatialFunction::AsGeoJson,
-    // Le tre che rendono geometria, e qui la misura e piu larga che su `MySQL`:
+    // Funzioni geometriche provate da `raw.crs_rule_check`:
     // `raw.crs_rule_check` le ha attraversate su tutti e tre i sistemi di
     // riferimento — geografico, e i due proiettati — e su tutte e tre le major.
     // Nessun 3618: questo prodotto le implementa ovunque.
@@ -262,23 +140,9 @@ pub const MARIADB_VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::Envelope,
     SpatialFunction::Centroid,
     SpatialFunction::Buffer,
-    // Le sei che `raw.geometry_function_forms` ha trovato presenti su **tutte
-    // e tre** le major fra le ventotto mai chieste.
-    //
-    // Diciotto sono assenti anche qui, e in gran parte le stesse di `MySQL`:
-    // `ST_MakeValid`, `ST_Reverse`, `ST_SnapToGrid`, `ST_LineMerge`,
-    // `ST_OrientedEnvelope`, i quattro `ST_Force*`, `ST_Subdivide`,
-    // `ST_OffsetCurve`, `ST_UnaryUnion`. Due divergono da `MySQL` e vale la
-    // pena dirlo, perche vanno nelle due direzioni opposte: `ST_Transform` e
-    // `ST_SetSrid` non ci sono su questo prodotto e su `MySQL` si, mentre
-    // `ST_Boundary` e `ST_PointOnSurface` ci sono qui e su `MySQL` no.
-    //
-    // `Simplify` e escluso dalla regola dell'intersezione, e la sua misura e
-    // istruttiva: `MariaDB 12.3` risponde `4212`, le due LTS `1305`. Nemmeno
-    // sulla 12 e utilizzabile, e sulle altre non c'e affatto.
-    //
-    // `Collect` e escluso due volte: esiste solo sulla 12.3 — le due LTS
-    // rispondono `1305` — ed e comunque un aggregato.
+    // Funzioni presenti su tutti i riferimenti e con una regola CRS
+    // rappresentabile. `Simplify` e `Collect` non appartengono
+    // all'intersezione; gli aggregati restano inoltre fuori dall'AST.
     SpatialFunction::StartPoint,
     SpatialFunction::EndPoint,
     SpatialFunction::PointN,
@@ -305,12 +169,8 @@ pub fn render_query(operation: &QueryOperation, database: &str) -> Result<Render
 /// La resa di una query, con il profilo che dice quali funzioni spatial sono
 /// qualificate su **questo** prodotto.
 ///
-/// La lista era una sola per entrambi, e la conseguenza era che il renderer
-/// ammetteva cio che `MySQL` aveva verificato anche dove non valeva: su
-/// `MariaDB 11.8` un piano con `ST_IsValid` sarebbe passato di qui e sarebbe
-/// morto sul server con 1305, mentre la capability pubblicata diceva —
-/// giustamente — che quella funzione non c'e. Il cancello e la promessa devono
-/// leggere la stessa lista, altrimenti una delle due mente.
+/// Il cancello del renderer e la capability pubblicata leggono la stessa
+/// lista per evitare che un piano ammesso contraddica il profilo del prodotto.
 ///
 /// # Errors
 ///
@@ -642,7 +502,7 @@ pub(crate) fn query_result_columns_with_profile(
 /// `MySQL` ammette un aggregato soltanto nella lista di selezione, in HAVING e
 /// in ORDER BY. Altrove il motore lo rifiuta, e dentro un altro aggregato la
 /// forma non ha alcuna semantica definita. Una window function e ammessa
-/// dallo stesso motore anche in ORDER BY, ma questa tranche la qualifica solo
+/// dallo stesso motore anche in ORDER BY, ma il provider la qualifica solo
 /// nella lista di selezione.
 #[derive(Clone, Copy)]
 enum Scope {
@@ -664,7 +524,7 @@ enum Scope {
 /// alcun insieme su cui essere valutati.
 const WINDOW_OPERAND: Scope = Scope::RowOnly("dentro una window function");
 
-/// Sottoinsiemi dell'AST che questa tranche non tocca affatto, riconoscibili
+/// Sottoinsiemi non qualificati dell'AST, riconoscibili
 /// dalla sola struttura della `QueryOperation`.
 fn ensure_qualified_subset(query: &QueryOperation) -> Result<()> {
     if !query.common_table_expressions.is_empty() {
@@ -698,7 +558,7 @@ fn ensure_qualified_subset(query: &QueryOperation) -> Result<()> {
 /// Una window e valutata dopo il raggruppamento e prima di DISTINCT.
 ///
 /// Entrambe le combinazioni hanno in `MySQL` una semantica precisa, ma
-/// dimostrarla richiede prove che questa tranche non porta: restano chiuse
+/// dimostrarla richiede prove non ancora disponibili: restano chiuse
 /// invece di essere renderizzate su una semantica assunta.
 fn ensure_window_interactions(query: &QueryOperation, grouped: bool) -> Result<()> {
     if !query
@@ -845,8 +705,8 @@ fn ensure_relations<'a>(
         }
         match join.kind {
             JoinKind::Inner | JoinKind::Left | JoinKind::Right | JoinKind::Cross => {}
-            // Il renderer condiviso emetterebbe `FULL JOIN`, che MySQL 8.4
-            // rifiuta: qui il limite e del motore, non della tranche.
+            // Il renderer condiviso emetterebbe `FULL JOIN`, che MySQL
+            // rifiuta: qui il limite e del motore, non della qualificazione.
             JoinKind::Full => {
                 return Err(unsupported(
                     "FULL JOIN non esiste in questo dialetto: la forma equivalente e l'unione \
@@ -1008,9 +868,8 @@ fn ensure_expression(
                 function,
                 arguments,
             } => {
-                // v1.2: accetta funzioni ∈ VERIFIED_SPATIAL_FUNCTIONS.
-                // Le altre restano Unsupported finché non hanno un test
-                // live dedicato su MySQL 8.4.
+                // Accetta soltanto le funzioni in VERIFIED_SPATIAL_FUNCTIONS.
+                // Le altre restano Unsupported senza una prova live dedicata.
                 if !profile.verified_spatial_functions().contains(function) {
                     return Err(unsupported(format!(
                         "funzione spatial '{function:?}' non qualificata su {}",
@@ -1215,39 +1074,23 @@ const fn is_aggregate(function: ScalarFunction) -> bool {
 }
 
 fn contains_aggregate(expression: &QueryExpression) -> bool {
-    let mut stack = vec![expression];
-    while let Some(item) = stack.pop() {
-        match item {
-            QueryExpression::Scalar {
-                function,
-                arguments,
-            } => {
-                if is_aggregate(*function) {
-                    return true;
-                }
-                stack.extend(arguments);
-            }
-            QueryExpression::Compare { left, right, .. } => {
-                stack.push(left);
-                stack.push(right);
-            }
-            QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
-                stack.extend(arguments);
-            }
-            QueryExpression::IsNull { expression, .. } => stack.push(expression),
-            QueryExpression::Wildcard { .. }
-            | QueryExpression::Column { .. }
-            | QueryExpression::Parameter { .. }
-            | QueryExpression::Spatial { .. }
-            | QueryExpression::SpatialOperator { .. }
-            | QueryExpression::Window { .. }
-            | QueryExpression::SpatialWindow { .. }
-            | QueryExpression::ScalarSubquery { .. }
-            | QueryExpression::Exists { .. }
-            | QueryExpression::InSubquery { .. } => {}
+    !walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Expression(QueryExpression::Scalar { function, .. })
+            if is_aggregate(*function) =>
+        {
+            QueryWalkControl::Break
         }
-    }
-    false
+        QueryWalkNode::Expression(
+            QueryExpression::Scalar { .. }
+            | QueryExpression::Compare { .. }
+            | QueryExpression::And { .. }
+            | QueryExpression::Or { .. }
+            | QueryExpression::IsNull { .. },
+        ) => QueryWalkControl::Continue,
+        QueryWalkNode::Operation(_) | QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => {
+            QueryWalkControl::Skip
+        }
+    })
 }
 
 /// Segnala una window scalare ovunque compaia nell'espressione.
@@ -1255,30 +1098,19 @@ fn contains_aggregate(expression: &QueryExpression) -> bool {
 /// La ricerca non entra nella finestra: argomenti, PARTITION BY e ORDER BY
 /// sono gia vincolati a restare per riga da `ensure_window`.
 fn contains_window(expression: &QueryExpression) -> bool {
-    let mut stack = vec![expression];
-    while let Some(item) = stack.pop() {
-        match item {
-            QueryExpression::Window { .. } => return true,
-            QueryExpression::Scalar { arguments, .. }
-            | QueryExpression::And { arguments }
-            | QueryExpression::Or { arguments } => stack.extend(arguments),
-            QueryExpression::Compare { left, right, .. } => {
-                stack.push(left);
-                stack.push(right);
-            }
-            QueryExpression::IsNull { expression, .. } => stack.push(expression),
-            QueryExpression::Wildcard { .. }
-            | QueryExpression::Column { .. }
-            | QueryExpression::Parameter { .. }
-            | QueryExpression::Spatial { .. }
-            | QueryExpression::SpatialOperator { .. }
-            | QueryExpression::SpatialWindow { .. }
-            | QueryExpression::ScalarSubquery { .. }
-            | QueryExpression::Exists { .. }
-            | QueryExpression::InSubquery { .. } => {}
+    !walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Expression(QueryExpression::Window { .. }) => QueryWalkControl::Break,
+        QueryWalkNode::Expression(
+            QueryExpression::Scalar { .. }
+            | QueryExpression::Compare { .. }
+            | QueryExpression::And { .. }
+            | QueryExpression::Or { .. }
+            | QueryExpression::IsNull { .. },
+        ) => QueryWalkControl::Continue,
+        QueryWalkNode::Operation(_) | QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => {
+            QueryWalkControl::Skip
         }
-    }
-    false
+    })
 }
 
 /// Verifica che ogni espressione pubblicata da una query aggregata sia
@@ -1440,16 +1272,12 @@ pub(crate) fn unsupported(message: impl Into<String>) -> DatabaseError {
 
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]
@@ -1554,11 +1382,8 @@ mod tests {
 
     #[test]
     fn a_scalar_argument_is_not_a_place_a_frame_could_come_from() {
-        // `ST_Buffer` prende una geometria **e** una distanza. La prima stesura
-        // pretendeva un argomento solo, e lo rifiutava dicendo «l'argomento non
-        // e una colonna»: guardava l'arieta invece del ruolo, e la distanza con
-        // il sistema di riferimento non c'entra niente. Il gate live l'ha
-        // trovato, e non avrebbe dovuto: si vede qui, senza un server.
+        // `ST_Buffer` prende una geometria e una distanza: soltanto l'argomento
+        // geometrico partecipa alla verifica del sistema di riferimento.
         let query = geometry_query(
             SpatialFunction::Buffer,
             vec![
@@ -1745,7 +1570,7 @@ mod tests {
         }];
         cases.push(("set operation", union));
 
-        // Anche la sorgente di base derivata resta fuori: la tranche qualifica
+        // Anche la sorgente di base derivata resta fuori: il provider qualifica
         // solo relazioni fisiche, in FROM come in ogni join.
         let mut derived_base = base_query();
         derived_base.source = None;
@@ -1755,7 +1580,7 @@ mod tests {
         });
         cases.push(("derived source di base", derived_base));
 
-        // La window scalare e qualificata da questa tranche; la window
+        // La window scalare e qualificata; la window
         // spatial resta fuori. Non insieme al resto dell'AST spatial — le
         // funzioni di `VERIFIED_SPATIAL_FUNCTIONS` sono accettate, e poche
         // righe piu in basso questo stesso test lo mostra — ma per la sola
@@ -1781,9 +1606,8 @@ mod tests {
         }];
         cases.push(("spatial window", spatial_window));
 
-        // v1.2: SpatialFunction verified ora accettato (vedi
-        // VERIFIED_SPATIAL_FUNCTIONS). Il test di fail-closed usa una
-        // funzione NON verified (AsGeoJson) per verificare che il subset
+        // Le funzioni in VERIFIED_SPATIAL_FUNCTIONS sono accettate. Il test
+        // fail-closed usa una funzione non verificata (AsGeoJson) perche il subset
         // resti conservativo.
         let mut spatial = base_query();
         spatial.projection = vec![QueryProjection {
@@ -1818,9 +1642,7 @@ mod tests {
             assert_eq!(error.category, ErrorCategory::Unsupported, "{label}");
             assert_eq!(error.phase, ErrorPhase::Prepare, "{label}");
             // «non ancora qualificat…» oppure «non qualificata su <prodotto>»:
-            // il secondo e il messaggio del cancello spatial, che da quando
-            // legge la lista del profilo nomina il prodotto invece di rinviare
-            // a una costante — su due prodotti quella costante non e piu una.
+            // il cancello spatial legge il profilo e nomina il prodotto.
             assert!(
                 error.message.contains("non ancora qualificat")
                     || error.message.contains("non qualificata su"),
@@ -2007,7 +1829,7 @@ mod tests {
     }
 
     /// `MySQL` non ha FULL JOIN nativo: il rifiuto descrive un'assenza del
-    /// motore, non una qualificazione mancante di questa tranche.
+    /// motore, non una qualificazione mancante.
     #[test]
     fn right_join_renders_while_full_join_is_reported_as_absent_from_mysql() {
         let mut right = joined_query();
@@ -2161,8 +1983,8 @@ mod tests {
         ));
         cases.push(("window in ON", window_on, ErrorCategory::InvalidPlan));
 
-        // v1.2: Centroid è ora verified. Il test JOIN spatial usa una
-        // funzione non-verified per verificare che JOIN-on-spatial resti
+        // Il test JOIN spatial usa una funzione non verificata per controllare
+        // che JOIN-on-spatial resti
         // conservativo — ma qualsiasi spatial in ON è già rifiutato dalle
         // regole di join (spatial expression non ammessa come predicato di JOIN).
         let mut spatial_on = joined_query();
@@ -2218,10 +2040,8 @@ mod tests {
         ));
 
         // Alcuni casi non sono limiti di `MySQL`: sono SQL invalido per
-        // qualunque motore, e da quando `validate_query_operation` conosce la
-        // clausola di provenienza di una window li rifiuta prima del
-        // renderer. Rispondono percio in fase `Validate` e senza provider —
-        // il confine giusto, e va misurato dove cade davvero.
+        // qualunque motore e `validate_query_operation` li rifiuta prima del
+        // renderer. Rispondono percio in fase `Validate` e senza provider.
         for (label, query, category) in cases {
             let error = match render_query(&query, "warehouse") {
                 Ok(rendered) => panic!("{label} deve restare fail-closed, reso: {}", rendered.sql),
@@ -2707,7 +2527,7 @@ mod tests {
     }
 
     /// `MySQL` non ha DISTINCT ON: il rifiuto descrive un'assenza del motore,
-    /// non una qualificazione mancante di questa tranche.
+    /// non una qualificazione mancante.
     #[test]
     fn distinct_on_is_reported_as_absent_from_mysql() {
         let mut query = base_query();
@@ -2764,8 +2584,8 @@ mod tests {
         );
     }
 
-    /// `MySQL` 8.0.14 supporta LATERAL: il rifiuto e una mancata
-    /// qualificazione di questa tranche, non un'assenza del motore.
+    /// `MySQL` supporta LATERAL: il rifiuto indica una qualificazione
+    /// mancante, non un'assenza del motore.
     #[test]
     fn lateral_is_reported_as_not_yet_qualified_instead_of_absent() {
         let mut lateral = base_query();
@@ -2959,7 +2779,7 @@ mod tests {
             },
             // Il bind della proiezione non appartiene piu a una window: la
             // prova sull'ordine posizionale resta, senza dipendere da una
-            // funzione che questa tranche non pubblica.
+            // funzione che il provider non pubblica.
             QueryProjection {
                 expression: QueryExpression::Scalar {
                     function: ScalarFunction::Coalesce,
@@ -3118,8 +2938,8 @@ mod tests {
             "{}",
             positional.message
         );
-        // ROWS esiste nel parser di MySQL 8.4: il rifiuto e una qualificazione
-        // mancante di questa tranche, non un'assenza del motore.
+        // ROWS esiste nel parser di MySQL: il rifiuto indica una qualificazione
+        // mancante, non un'assenza del motore.
         assert!(
             !positional.message.contains("non esiste in questo dialetto"),
             "{}",
@@ -3275,8 +3095,8 @@ mod tests {
                 "{call}: {}",
                 error.message
             );
-            // MySQL 8.4 ha ROW_NUMBER, LAG e LEAD: il rifiuto e una
-            // qualificazione mancante di questa tranche, non un'assenza.
+            // MySQL ha ROW_NUMBER, LAG e LEAD: il rifiuto indica una
+            // qualificazione mancante, non un'assenza.
             assert!(
                 !error.message.contains("non esiste in questo dialetto"),
                 "{call}: {}",
@@ -3351,8 +3171,8 @@ mod tests {
             ErrorCategory::InvalidPlan,
         ));
 
-        // v1.2: SpatialFunction::Area è ora verified — deve essere accettata
-        // anche dentro una window. Uso funzione non-verified per il fail-closed test.
+        // SpatialFunction::Area e verificata anche dentro una window. Il caso
+        // fail-closed usa invece una funzione non verificata.
         cases.push((
             "spatial non-verified dentro una window",
             windowed_query(scalar_window(
@@ -3566,8 +3386,8 @@ mod tests {
     }
 
     /// Una window e valutata dopo il raggruppamento e prima di DISTINCT: le
-    /// due combinazioni hanno semantiche precise che questa tranche non
-    /// dimostra, quindi restano chiuse invece di essere renderizzate.
+    /// due combinazioni hanno semantiche precise non ancora dimostrate, quindi
+    /// restano chiuse invece di essere renderizzate.
     #[test]
     fn windows_combined_with_grouping_or_distinct_stay_closed() {
         let position = || {
@@ -3795,24 +3615,10 @@ mod tests {
 
     /// Una funzione verified che rende geometria porta una regola usabile.
     ///
-    /// # Cosa diceva prima, e perche non lo dice piu
-    ///
-    /// Questa guardia pretendeva che **nessuna** funzione verified rendesse
-    /// geometria, e aveva ragione: il mapper del result set rifiutava
-    /// `MYSQL_TYPE_GEOMETRY`, quindi una funzione che ne restituisce una non
-    /// arrivava mai a consegnare una riga. Undici funzioni erano state bocciate
-    /// da due gate live per una cosa che qui si vedeva in trenta millisecondi.
-    ///
-    /// Quel rifiuto non c'e piu — il renderer incapsula, il piano dichiara il
-    /// CRS dell'ingresso e la regola della funzione dice se il risultato lo
-    /// eredita — e la guardia sarebbe scaduta se fosse rimasta com'era. La
-    /// forma che resta vera e piu stretta: il provider sa propagare **una**
-    /// regola, `preserves`, e una funzione pubblicata con un'altra passerebbe
-    /// il cancello del renderer per morire nel risolutore del CRS.
-    ///
-    /// Come prima, non e la lista riscritta in un'altra forma: la lista dice
-    /// quali funzioni, il catalogo dice dove cade il loro risultato, e le due
-    /// cose possono contraddirsi senza che nessuno se ne accorga.
+    /// Il provider sa propagare la regola `preserves`; una funzione pubblicata
+    /// con una regola diversa supererebbe il renderer ma fallirebbe nel
+    /// risolutore del CRS. La guardia verifica la coerenza fra lista delle
+    /// funzioni e catalogo delle regole.
     #[test]
     fn a_verified_geometry_function_carries_a_rule_the_provider_can_use() {
         for (product, functions) in [

@@ -1,23 +1,9 @@
 #!/usr/bin/env python3
 """Genera `docs/STATO.md` leggendo il codice, e verifica che sia aggiornato.
 
-Perche esiste
--------------
-
-I documenti di questo repository ripetevano fatti che vivono nel codice: i
-conteggi dei test, i sub-comandi del CLI, quali capability un provider
-pubblica, quali write mode sono aperte. Un fatto scritto due volte diverge, e
-diverge in silenzio — chi legge non ha modo di sapere quale delle due copie e
-quella vera.
-
-La difesa era diciotto guardie che rileggevano il Markdown cercando frasi e
-numeri: `assertIn("staging + publish", row)`, `re.finditer(r"(\\d+) test
-live")`. Funzionavano, ma presidiavano la **prosa**, e quindi presidiavano
-anche la sua forma: riscrivere una frase in modo equivalente faceva rosso, e
-aggiungere un documento nuovo apriva un buco che nessuno vedeva.
-
-Qui il fatto si scrive una volta sola, nel codice, e il documento si genera.
-La guardia diventa una: rigenerare non deve produrre differenze.
+Conteggi dei test, comandi e capability vivono nel codice. Questo generatore
+li rende senza duplicarli nel Markdown; in modalita `--check` pretende che una
+rigenerazione non produca differenze.
 
 Uso
 ---

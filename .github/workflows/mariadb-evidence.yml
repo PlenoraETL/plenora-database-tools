@@ -2,27 +2,17 @@ name: mariadb-evidence
 
 # Campagna live dell'evidenza MariaDB sui tre riferimenti.
 #
-# Settantasei sonde, e i contratti che le rendono prove: quali codici arrivano
-# dalle superfici che la classificazione traduce, cosa il catalogo pubblica
-# quando lo si legge con il profilo del prodotto, quali forme di filtro
-# decidono davvero quali righe escono, e quali rifiuti sono la prova che una
-# capability resta chiusa. Il runner sa gia giudicare — esce diverso da zero
-# se una prova necessaria manca — ma pretende tre server accesi, e finche
-# quello e stato l'unico modo di lanciarlo, quelle prove erano presidiate solo
-# da chi si ricordava di farlo.
+# Le sonde verificano classificazione degli errori, catalogo, filtri e rifiuti
+# che mantengono chiuse le capability non provate. Il runner fallisce se manca
+# una prova necessaria e richiede tutti i riferimenti dichiarati.
 #
 # Il self-test statico gira su ogni PR e verifica il **giudizio** su documenti
 # costruiti a mano; non puo accorgersi che il comportamento e cambiato, perche
-# non tocca un server. Questa campagna e cio che chiude quel buco, e arriva
-# adesso e non piu tardi: il punto 3 della fase 3 comincia ad aprire capability
-# di scrittura, ed e meglio che ogni prova nuova entri subito in una corsa su
-# runner puliti invece di recuperare la garanzia poco prima del provider
-# pubblico.
+# non tocca un server. La campagna live collega invece ogni capability
+# pubblicata a una corsa riproducibile su runner puliti.
 #
-# Non gira su push: accende tre server e ne misura settantasei superfici, che
-# e troppo per ogni commit. Gira a cadenza fissa — dove scopre una regressione
-# introdotta dal codice o da un aggiornamento dell'immagine — e a mano, quando
-# qualcuno tocca il profilo e vuole saperlo prima della review.
+# Non gira su ogni push perché accende tutti i riferimenti. È schedulata e
+# resta disponibile su richiesta.
 #
 # Il ciclo di vita delle fixture non e qui: sta in
 # `scripts/fixture_campaign.py`, condiviso con la campagna di sessione e
@@ -81,12 +71,8 @@ jobs:
       # sporcherebbe l'albero, e il preflight della campagna — che pretende un
       # albero pulito — rifiuterebbe proprio quel file: un gate che non puo
       # passare per costruzione.
-      # La directory di diagnostica e preparazione, non misura: sta in un
-      # passo suo perche un gate qualificante deve essere il **primo**
-      # comando del proprio `run`. E la convenzione che rende verificabile
-      # "questo workflow esegue quel gate" senza dover interpretare una
-      # shell — e interpretarla era il difetto che questa guardia si
-      # portava dietro.
+      # La directory è preparazione, non misura: resta in un passo separato
+      # perché il gate qualificante deve essere il primo comando del suo `run`.
       - name: directory di diagnostica
         run: mkdir -p "$RUNNER_TEMP/mariadb-evidence"
 

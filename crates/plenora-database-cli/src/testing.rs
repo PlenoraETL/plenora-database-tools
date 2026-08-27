@@ -82,7 +82,7 @@ pub(crate) async fn test_cancellation(args: &mut impl Iterator<Item = String>) -
         "error_category": category,
         "message": message,
     }))?;
-    // Fix review #10: exit code non-zero se status != "ok".
+    // Uno stato diverso da `ok` produce un exit code non-zero.
     if status == "ok" {
         Ok(())
     } else {
@@ -137,7 +137,7 @@ pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> C
         "batch_size": batch_size,
         "elapsed_ms": elapsed_ms,
     }))?;
-    // Fix review #10 residuo: exit=1 su row_count_mismatch.
+    // Un conteggio inatteso produce exit=1.
     if is_ok {
         Ok(())
     } else {
@@ -297,7 +297,7 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
         "loser_error_category": category,
         "loser_message": message,
     }))?;
-    // Fix review #10.
+    // Il contendente perdente deve produrre un exit code non-zero.
     if status == "ok" {
         Ok(())
     } else {

@@ -29,7 +29,6 @@ use crate::runtime;
 use arrow_ipc::writer::StreamWriter;
 use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::provider::{BatchStream, ParameterBag, Provider, SecretString};
-// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration};
@@ -39,8 +38,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// Fase E: consolidato in `crate::budget::session_budget`. Re-export
-// pub(crate) perché `family_arrow_reader` continua ad accedere via
+// Re-export interno perche `family_arrow_reader` continua ad accedere via
 // `crate::arrow_reader::default_budget`.
 pub(crate) use crate::budget::session_budget as default_budget;
 

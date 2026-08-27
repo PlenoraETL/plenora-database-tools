@@ -42,8 +42,6 @@ pub struct GoldenCase {
 
 /// Carica e verifica il catalogo golden incorporato nel binario di test.
 ///
-/// E l'unica suite nel worktree: le precedenti stanno in Git.
-///
 /// # Errors
 ///
 /// Restituisce `InvalidPlan` se il JSON è invalido, vuoto o contiene ID

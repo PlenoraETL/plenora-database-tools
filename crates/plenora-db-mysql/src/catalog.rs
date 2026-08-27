@@ -1,10 +1,7 @@
 use crate::MysqlSession;
 use mysql_async::prelude::FromValue;
 use mysql_async::{Params, Row, Value};
-use plenora_database_core::{
-    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
-};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
@@ -93,9 +90,7 @@ pub struct MysqlObjectDescription {
 /// Il provider `MySQL` non e qualificato per `MariaDB`, e lo dichiara alla
 /// probe.
 /// Quel rifiuto e cio che ADR 0014 chiede di misurare *attraverso*: senza
-/// attraversarlo non si puo sapere quali superfici del provider divergano
-/// davvero, e la lista delle divergenze resterebbe quella di una review —
-/// che, misurata, e risultata sbagliata su tre punti su cinque.
+/// attraversarlo non si possono misurare le superfici che divergono davvero.
 ///
 /// Tre proprieta lo rendono un bypass e non un supporto:
 ///
@@ -103,8 +98,8 @@ pub struct MysqlObjectDescription {
 ///   feature, non e una variabile d'ambiente, non e un parametro: non c'e
 ///   modo di attivarlo da fuori il crate;
 /// * salta **solo** il rifiuto. Non tocca SQL, mapping, timeout, transazioni
-///   ne classificazione degli errori: cio che succede dopo e esattamente cio
-///   che il provider fa oggi, ed e il punto della misura;
+///   ne classificazione degli errori: cio che succede dopo e il comportamento
+///   effettivo del provider;
 /// * fuori dai test la funzione e `false` costante, quindi la condizione
 ///   resta quella di prima e il codice generato non cambia.
 #[cfg(test)]
@@ -274,19 +269,15 @@ pub(crate) async fn probe_server_with_profile(
         .transpose()?
         .unwrap_or_default();
     if tls_cipher.is_empty() {
-        return Err(DatabaseError {
-            category: ErrorCategory::Authentication,
-            phase: ErrorPhase::Probe,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(crate::profile::PROVISIONAL_KIND),
-            execution_id: None,
-            message: format!(
+        return Err(DatabaseError::new(
+            ErrorCategory::Authentication,
+            ErrorPhase::Probe,
+            Some(crate::profile::PROVISIONAL_KIND),
+            format!(
                 "connessione {} priva di cifratura TLS negoziata",
                 profile.product()
             ),
-            diagnostics: None,
-        });
+        ));
     }
     Ok(MysqlProbe {
         product_version,
@@ -319,9 +310,8 @@ pub(crate) async fn list_schemas_with_profile(
     profile: &dyn crate::profile::ProductProfile,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>> {
-    // v0.2 (fix H7.1): esclude system schemas MySQL (information_schema, mysql,
-    // performance_schema, sys). Il consumer che ha bisogno anche dei system
-    // schemas deve interrogare information_schema.schemata direttamente.
+    // Il catalogo pubblico esclude gli schemi di sistema. Un consumer che ne
+    // ha bisogno deve interrogare `information_schema.schemata` direttamente.
     session
         .query_rows(profile.schemas_query(), ErrorPhase::Probe, cancellation)
         .await?
@@ -596,29 +586,21 @@ where
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Probe,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Probe,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 fn not_found(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::NotFound,
-        phase: ErrorPhase::Probe,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::NotFound,
+        ErrorPhase::Probe,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]

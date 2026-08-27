@@ -203,7 +203,7 @@ def test_spatial_dwithin_geography_uses_meters(session) -> None:
         )
         # REF = Duomo.
         ref_ewkb = _get_ref_ewkb(session, "POINT(9.190 45.464)", 4326)
-        # semantics=geography → cast `::geography` server-side (fix v0.2).
+        # semantics=geography produce il cast `::geography` server-side.
         ref = p.spatial.geography(ewkb=ref_ewkb, srid=4326)
 
         # DWithin 1 km: solo Duomo (~0 m).

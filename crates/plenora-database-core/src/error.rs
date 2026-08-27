@@ -1,3 +1,8 @@
+//! Envelope di errore pubblico, classificazione del retry e redazione.
+//!
+//! I messaggi contengono solo contesto operativo: payload, DSN, bind e valori
+//! di riga non attraversano questo confine.
+
 use crate::plan::ProviderKind;
 use crate::row_diagnostics::RowDiagnostics;
 use serde::{Deserialize, Serialize};
@@ -123,8 +128,8 @@ pub struct DatabaseError {
 /// La categoria pubblica di un'interruzione, secondo la causa che l'ha
 /// prodotta.
 ///
-/// Sta qui, e non nei provider, perche i provider ne avevano tre copie e ogni
-/// copia copriva superfici diverse.
+/// Sta nel core perche provider e retry engine classifichino la stessa causa
+/// nello stesso modo.
 #[must_use]
 pub fn interruption_category(cancellation: &crate::CancellationToken) -> ErrorCategory {
     if cancellation.reason() == Some(crate::CancellationReason::Deadline) {
@@ -135,18 +140,38 @@ pub fn interruption_category(cancellation: &crate::CancellationToken) -> ErrorCa
 }
 
 impl DatabaseError {
+    /// Costruisce un errore locale non ritentabile e senza effetto remoto.
+    ///
+    /// `message` deve essere gia redatto secondo il contratto di
+    /// [`DatabaseError`]: il costruttore centralizza l'inviluppo sicuro, non
+    /// rende pubblicabile un dettaglio del driver o un payload.
     #[must_use]
-    pub fn invalid_plan(message: impl Into<String>) -> Self {
+    pub fn new(
+        category: ErrorCategory,
+        phase: ErrorPhase,
+        provider: Option<ProviderKind>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
-            category: ErrorCategory::InvalidPlan,
-            phase: ErrorPhase::Validate,
+            category,
+            phase,
             remote_effect: RemoteEffect::None,
             retry: RetryDisposition::Never,
-            provider: None,
+            provider,
             execution_id: None,
             message: message.into(),
             diagnostics: None,
         }
+    }
+
+    #[must_use]
+    pub fn invalid_plan(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Validate,
+            None,
+            message,
+        )
     }
 
     #[must_use]
@@ -155,16 +180,7 @@ impl DatabaseError {
         phase: ErrorPhase,
         message: impl Into<String>,
     ) -> Self {
-        Self {
-            category: ErrorCategory::Unsupported,
-            phase,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(provider),
-            execution_id: None,
-            message: message.into(),
-            diagnostics: None,
-        }
+        Self::new(ErrorCategory::Unsupported, phase, Some(provider), message)
     }
 
     #[must_use]
@@ -172,15 +188,8 @@ impl DatabaseError {
     /// interrotta.
     ///
     /// Una deadline scaduta e un `Timeout`, tutto il resto una `Cancelled`.
-    /// La distinzione vive nel token dall'inizio, ma ogni provider se l'e
-    /// ricostruita per conto proprio e sempre in modo incompleto:
-    /// `PostgreSQL` la leggeva in due file su sette, `SQL Server` in nessuno
-    /// dei due davanti all'I/O, e il retry engine — che sta sopra tutti e tre — la
-    /// perdeva per ogni provider insieme. Il risultato era che lo stesso
-    /// token produceva due errori pubblici diversi a seconda di quale strato
-    /// lo osservava per primo, e un chiamante che decide se allungare il
-    /// budget o smettere riceveva risposte contraddittorie dallo stesso
-    /// evento.
+    /// La classificazione centralizzata impedisce che provider e retry engine
+    /// attribuiscano categorie diverse allo stesso token.
     pub fn interrupted(
         cancellation: &crate::CancellationToken,
         provider: Option<ProviderKind>,
@@ -198,30 +207,17 @@ impl DatabaseError {
         phase: ErrorPhase,
         message: impl Into<String>,
     ) -> Self {
-        Self {
-            category: ErrorCategory::Cancelled,
-            phase,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider,
-            execution_id: None,
-            message: message.into(),
-            diagnostics: None,
-        }
+        Self::new(ErrorCategory::Cancelled, phase, provider, message)
     }
 
     #[must_use]
     pub fn resource_limit(message: impl Into<String>) -> Self {
-        Self {
-            category: ErrorCategory::ResourceLimit,
-            phase: ErrorPhase::Validate,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: None,
-            execution_id: None,
-            message: message.into(),
-            diagnostics: None,
-        }
+        Self::new(
+            ErrorCategory::ResourceLimit,
+            ErrorPhase::Validate,
+            None,
+            message,
+        )
     }
 
     /// Un retry **automatico** e autorizzato, senza intervento fuori banda.
@@ -276,16 +272,12 @@ impl DatabaseError {
 
 impl From<arrow_schema::ArrowError> for DatabaseError {
     fn from(_: arrow_schema::ArrowError) -> Self {
-        Self {
-            category: ErrorCategory::DataMapping,
-            phase: ErrorPhase::Read,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: None,
-            execution_id: None,
-            message: "schema Arrow non valido".to_owned(),
-            diagnostics: None,
-        }
+        Self::new(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            None,
+            "schema Arrow non valido",
+        )
     }
 }
 
@@ -418,5 +410,20 @@ mod tests {
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(error.retry, RetryDisposition::Never);
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn new_builds_the_safe_local_envelope() {
+        let error = DatabaseError::new(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            Some(ProviderKind::Sqlserver),
+            "conversione redatta",
+        );
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        assert_eq!(error.provider, Some(ProviderKind::Sqlserver));
+        assert!(error.execution_id.is_none());
+        assert!(error.diagnostics.is_none());
     }
 }

@@ -1,3 +1,5 @@
+//! Interfacce asincrone comuni implementate dai provider database.
+
 use crate::arrow::{RecordBatch, SchemaRef};
 use crate::capabilities::ProviderCapabilities;
 use crate::loss::LossReport;
@@ -10,6 +12,7 @@ use crate::CancellationToken;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -46,8 +49,8 @@ pub trait BatchStream: Send {
 
     /// Produce il prossimo batch, rispettando il `CancellationToken`.
     ///
-    /// v0.2 (fix H7.2): il token è obbligatorio nella firma del trait. Le
-    /// implementazioni devono consultarlo prima e durante l'attesa di dati
+    /// Il token e obbligatorio nella firma del trait. Le implementazioni
+    /// devono consultarlo prima e durante l'attesa di dati
     /// dal server (tipicamente via `tokio::select!` fra la fetch e
     /// `cancellation.cancelled()`), in modo che un consumer possa
     /// interrompere read lunghi in flight.
@@ -161,6 +164,51 @@ pub struct PreparedWrite {
     pub budget: ResourceBudget,
     pub operation_lease: ResourceLease,
     pub columns_lease: ResourceLease,
+    driver_state: Option<Box<dyn Any + Send>>,
+}
+
+impl PreparedWrite {
+    #[must_use]
+    pub fn new(
+        operation: WriteOperation,
+        input_schema: SchemaRef,
+        loss_report: LossReport,
+        budget: ResourceBudget,
+        operation_lease: ResourceLease,
+        columns_lease: ResourceLease,
+    ) -> Self {
+        Self {
+            operation,
+            input_schema,
+            loss_report,
+            budget,
+            operation_lease,
+            columns_lease,
+            driver_state: None,
+        }
+    }
+
+    /// Associa al contratto pubblico il piano preparato opaco del driver.
+    ///
+    /// Lo stato non attraversa serializzazione o binding: vive esclusivamente
+    /// tra `Provider::prepare_write` e `Provider::write`.
+    #[must_use]
+    pub fn with_driver_state<T: Any + Send>(mut self, state: T) -> Self {
+        self.driver_state = Some(Box::new(state));
+        self
+    }
+
+    /// Consuma lo stato preparato se appartiene al driver atteso.
+    pub fn take_driver_state<T: Any + Send>(&mut self) -> Option<T> {
+        let state = self.driver_state.take()?;
+        match state.downcast::<T>() {
+            Ok(state) => Some(*state),
+            Err(state) => {
+                self.driver_state = Some(state);
+                None
+            }
+        }
+    }
 }
 
 pub trait Provider: Send + Sync {
@@ -220,7 +268,7 @@ pub trait Provider: Send + Sync {
     /// Caso d'uso: import massivo, ETL, materializzazione MV — quando il
     /// dato è già in `RecordBatch` Arrow e serve throughput. Per DML riga
     /// per riga (INSERT/UPDATE/DELETE con RETURNING, UPSERT) usa il path
-    /// OLTP: [`TransactionScope`](crate::transaction::TransactionScope) +
+    /// OLTP: [`TransactionScope`] +
     /// [`portable`](crate::portable) + [`facade`](crate::facade).
     fn prepare_write<'a>(
         &'a self,
@@ -302,5 +350,56 @@ pub trait Provider: Send + Sync {
                 "execute_ddl non supportato dal provider",
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod prepared_write_tests {
+    use super::*;
+    use crate::arrow::{DataType, Field};
+    use crate::loss::{LossReport, MappingPolicy};
+    use crate::plan::{ObjectRef, TransactionProfile, WriteMode};
+    use crate::resource::{ResourceKind, ResourceLimits};
+
+    #[test]
+    fn driver_state_is_opaque_typed_and_single_use() {
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let schema =
+            crate::protocol::contract_schema(vec![Field::new("id", DataType::Int64, false)]);
+        let mut prepared = PreparedWrite::new(
+            WriteOperation {
+                target: ObjectRef {
+                    catalog: None,
+                    schema: Some("public".to_owned()),
+                    object: "target".to_owned(),
+                },
+                mode: WriteMode::Append,
+                mapping_policy: MappingPolicy::Strict,
+                transaction_profile: TransactionProfile::SingleTransaction,
+                keys: Vec::new(),
+                update_columns: Vec::new(),
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            },
+            schema,
+            LossReport {
+                schema_version: 2,
+                policy: MappingPolicy::Strict,
+                losses: Vec::new(),
+            },
+            budget.clone(),
+            budget
+                .try_lease(ResourceKind::ConcurrentOperations, 1)
+                .expect("operation lease"),
+            budget
+                .try_lease(ResourceKind::Columns, 1)
+                .expect("column lease"),
+        )
+        .with_driver_state(17_u32);
+
+        assert_eq!(prepared.take_driver_state::<String>(), None);
+        assert_eq!(prepared.take_driver_state::<u32>(), Some(17));
+        assert_eq!(prepared.take_driver_state::<u32>(), None);
     }
 }

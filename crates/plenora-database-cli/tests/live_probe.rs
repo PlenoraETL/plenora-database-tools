@@ -124,27 +124,10 @@ fn live_database_probe_sqlserver_private_ca() {
     assert_successful_probe(&output, "sqlserver", &[&password, &ca]);
 }
 
-/// I due comandi generici di esecuzione, su un motore che prima non ne aveva
-/// nessuno.
+/// I comandi generici di esecuzione sul provider SQL Server.
 ///
-/// # Cosa cambia
-///
-/// `PostgreSQL` aveva `execute-sql` ed `execute-scalar`, `MySQL` aveva i propri
-/// con il prefisso, `MariaDB` e SQL Server **niente**: dal CLI erano provider
-/// che si potevano interrogare e non usare.
-///
-/// La famiglia generica esisteva gia per la probe e l'introspezione, e la
-/// ragione scritta allora vale identica qui: gli adapter implementano lo stesso
-/// contratto, e una quarta copia degli stessi comandi diverge alla prima
-/// correzione applicata a una sola.
-///
-/// # Perche non prima
-///
-/// Il contratto che serve e `TransactionScope`, e SQL Server pubblicava
-/// `scope: Transaction` senza implementarlo: un comando generico avrebbe
-/// risposto `Unsupported` su un quarto dei provider che accetta. Quello scope
-/// e arrivato con la transazione applicativa, e questa prova e la ragione per
-/// cui si vede.
+/// Attraversano `TransactionScope` e la superficie comune, evitando copie
+/// specifiche per prodotto della stessa semantica CLI.
 ///
 /// # Cosa attraversa
 ///

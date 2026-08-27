@@ -1,28 +1,8 @@
 //! `PostgresCommandContext` — factory unica per l'ambiente d'esecuzione
 //! di un sottocomando Postgres (secret, provider, budget, cancel).
 //!
-//! Prima di Fase C, ~30 call sites nel CLI ripetevano la sequenza:
-//!
-//! ```ignore
-//! let secret = secret_from_env(&dsn_env)?;
-//! let provider = postgres_provider_for_pfm();
-//! let budget = pfm_budget()?;
-//! let cancel = CancellationToken::new();
-//! ```
-//!
-//! Rischi della duplicazione:
-//! - default TLS `Disabled` sparso invece che centralizzato — se
-//!   cambia default (review #1) va toccato in molti punti;
-//! - budget e cancel scelti indipendentemente — un comando può usare
-//!   limiti diversi senza motivo apparente;
-//! - factory provider ripetuta con lievi variazioni (`PostgresProvider::default()`
-//!   vs `postgres_provider_for_pfm()` vs `secure_pfm_probe_provider()`);
-//! - test coverage si moltiplica invece che essere concentrata.
-//!
-//! Ora un tipo unico con costruttori nominali per modalità supportate.
-//! **La migrazione è graduale**: le vecchie helper (`secret_from_env`,
-//! `postgres_provider_for_pfm`, `pfm_budget`) restano come thin wrapper
-//! e vengono progressivamente sostituite.
+//! Centralizza secret, provider, budget e cancellazione perche ogni comando
+//! applichi gli stessi default e le stesse policy operative.
 
 use crate::{secret_from_env, CliError, CliResult};
 use plenora_database_core::provider::SecretString;
@@ -90,10 +70,8 @@ impl PostgresCommandContext {
     /// da qui. Aggiungere `.native_query_policy = Allow` esplicitamente
     /// solo per `execute-sql` con `--allow-raw` (opt-in dichiarato).
     #[must_use]
-    #[allow(dead_code, clippy::unused_self)] // adottato incrementalmente
+    #[allow(clippy::unused_self)] // mantiene la costruzione legata al contesto del comando
     pub(crate) fn pfm_transaction_options(&self) -> TransactionOptions {
-        // `&self` lo teniamo per API estendibile futura (context, override
-        // isolation, ecc.); attualmente le opzioni sono globali stateless.
         TransactionOptions {
             context: crate::session_ctx::active(),
             ..TransactionOptions::pfm_defaults()

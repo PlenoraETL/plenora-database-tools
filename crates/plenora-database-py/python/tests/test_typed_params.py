@@ -21,7 +21,7 @@ def _session():
 
 
 # ------------------------------ UUID ------------------------------
-# v0.3 (P0.7): il driver ora supporta bind UUID sia come text (per cast
+# Il driver supporta bind UUID sia come text (per cast
 # via `$1::uuid`) sia come binary (per colonne UUID native).
 
 
@@ -82,7 +82,7 @@ def test_timestamptz_typed_roundtrip(session) -> None:
 
 
 # ------------------------------ Decimal ------------------------------
-# v0.3 (P0.7): il driver ora supporta bind Decimal sia come text (per
+# Il driver supporta bind Decimal sia come text (per
 # cast `$1::text::numeric`) sia come binary (per colonne NUMERIC native).
 
 
@@ -110,7 +110,7 @@ def test_decimal_typed_accepts_precision_4(session) -> None:
 
 
 def test_decimal_in_numeric_column_roundtrip(session) -> None:
-    # v0.3 (P0.7 + P0.8): bind Decimal su NUMERIC + read NUMERIC via
+    # Bind Decimal su NUMERIC e read NUMERIC via
     # decoder OLTP entrambi funzionano nativamente. Nessun cast text
     # richiesto.
     session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
@@ -178,7 +178,7 @@ def test_untyped_int_still_works(session) -> None:
 
 def test_full_typed_returning_via_builder(session) -> None:
     # Insert UUID + Date + Timestamp + Decimal typed → RETURNING via builder.
-    # v0.3 (P0.7 + P0.8): tutti i tipi supportati nativamente sia in bind
+    # Tutti i tipi sono supportati nativamente sia in bind
     # sia in read del decoder OLTP.
     session.execute("DROP TABLE IF EXISTS _pyf6b_types")
     session.execute(

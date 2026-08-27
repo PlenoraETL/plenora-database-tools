@@ -270,9 +270,8 @@ async fn probe_decimal_roundtrip(
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
         .await
         .map_err(|e| format!("begin: {}", e.message))?;
-    // v0.3 (P0.8): il decoder OLTP ora supporta NUMERIC. Verifichiamo il
-    // roundtrip completo: il valore letterale "123.456" deve tornare
-    // preserved come Decimal(String).
+    // Round-trip completo: il letterale "123.456" deve tornare senza perdita
+    // come `Decimal(String)`.
     let row = crate::facade::query_one(
         tx.as_mut(),
         &Statement::new("SELECT 123.456::NUMERIC(10,3)"),

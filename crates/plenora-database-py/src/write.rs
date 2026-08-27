@@ -1,4 +1,4 @@
-//! Bulk write via `Provider::prepare_write` + `Provider::write` (P3 v0.1.2).
+//! Bulk write via `Provider::prepare_write` e `Provider::write`.
 //!
 //! Espone `Session.copy_from(schema, table, ipc_bytes, mode, transaction_profile)`
 //! e la sua variante async. Internamente il consumer Python passa un
@@ -29,10 +29,9 @@ use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
-use pyo3::exceptions::PyRuntimeError;
-// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
 use plenora_database_core::{CancellationToken, DatabaseError};
 use plenora_db_postgres::PostgresProvider;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::VecDeque;
@@ -141,18 +140,8 @@ pub(crate) fn decode_ipc_stream(
 
 /// L'esito di una scrittura come dizionario Python, **serializzato da Serde**.
 ///
-/// La versione precedente lo costruiva a mano, campo per campo, e sbagliava in
-/// due modi che nessun test copriva. Gli stati venivano resi con
-/// `format!("{:?}").to_lowercase()`, che appiattisce il `CamelCase`: il
-/// contratto dice `partially_committed`, `outcome_unknown` e
-/// `commit_requested`, e Python riceveva `partiallycommitted`,
-/// `outcomeunknown` e `commitrequested`. E `recovery` veniva sempre scritto,
-/// anche `null`, mentre le varianti `committed` e `rolled_back` dello schema
-/// hanno `unevaluatedProperties: false` e non dichiarano quel campo: **ogni**
-/// esito prodotto violava il contratto in almeno una variante.
-///
-/// Passare da Serde non e una scorciatoia: e l'unico modo perche il dizionario
-/// Python e il JSON del contratto restino la stessa cosa. `rename_all =
+/// Serde mantiene il dizionario Python identico al JSON del contratto.
+/// `rename_all =
 /// "snake_case"` e `skip_serializing_if` sono dichiarati una volta sul tipo, e
 /// da li valgono per tutte le superfici.
 fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<Bound<'py, PyDict>> {
@@ -229,9 +218,6 @@ pub(crate) fn make_operation(
     })
 }
 
-// Fase E: consolidato in `crate::budget::write_bulk_budget`. Il preset
-// resta identico (rows 10M, mem 128 MiB, cell 4 MiB) — la ridefinizione
-// per-modulo era il rischio, non il valore.
 pub(crate) use crate::budget::write_bulk_budget as default_budget;
 
 async fn do_copy_from_async(

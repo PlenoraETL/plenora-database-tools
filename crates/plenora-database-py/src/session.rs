@@ -35,25 +35,21 @@
 
 use crate::arrow_reader::{open_reader, BatchReader};
 use crate::errors::to_py_err;
-use crate::py_convert::{param_to_python, params_from_python};
+use crate::py_convert::{
+    portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
+};
 use crate::runtime;
-use crate::transaction::{parse_isolation, Transaction};
-use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
+use crate::transaction::Transaction;
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::plan::{ObjectRef, Operation};
-use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
-// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
-use plenora_database_core::transaction::{AccessMode, Statement, TransactionOptions};
-use plenora_database_core::{CancellationToken, DatabaseError, Row};
+use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::Arc;
 
-// Fase E: `default_budget()` è stato consolidato in
-// `crate::budget::session_budget()`. Prima era duplicato identico in
-// 5 moduli SDK.
 use crate::budget::session_budget as default_budget;
 
 /// Mappa `tls_mode` (parametro Python) a `PostgresProvider` configurato.
@@ -121,37 +117,11 @@ impl Session {
             + 'static,
         R: Send + 'static,
     {
-        let provider = Arc::clone(&self.provider);
+        let provider: Arc<dyn plenora_database_core::provider::Provider> =
+            Arc::clone(&self.provider) as Arc<dyn plenora_database_core::provider::Provider>;
         let secret = self.secret.clone();
         py.allow_threads(|| {
-            runtime().block_on(async move {
-                let cancel = CancellationToken::new();
-                let mut tx = provider
-                    .begin_transaction(
-                        &secret,
-                        &TransactionOptions::default(),
-                        &default_budget(),
-                        &cancel,
-                    )
-                    .await?;
-                let result = work(tx.as_mut(), &cancel).await;
-                match result {
-                    Ok(value) => {
-                        let outcome = Box::new(tx).commit(&cancel).await?;
-                        if !outcome.is_committed() {
-                            // Fix review #9: helper unico, Phase::Commit + provider valorizzato.
-                            return Err(crate::errors_commit::commit_outcome_unknown(
-                                plenora_database_core::plan::ProviderKind::Postgres,
-                            ));
-                        }
-                        Ok(value)
-                    }
-                    Err(e) => {
-                        let _ = Box::new(tx).rollback(&cancel).await;
-                        Err(e)
-                    }
-                }
-            })
+            runtime().block_on(crate::session_tx::run_transaction(provider, secret, work))
         })
         .map_err(to_py_err)
     }
@@ -205,8 +175,7 @@ impl Session {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<u64> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.execute(&statement, cancel).await })
         })
@@ -215,10 +184,8 @@ impl Session {
     /// SELECT scalare: **al piu una riga, esattamente una colonna**.
     ///
     /// `None` quando la query non restituisce righe. Piu di una riga, o piu di
-    /// una colonna, sono un errore — non una selezione arbitraria del primo
-    /// valore, come faceva la versione 0.10: quella scartava in silenzio il
-    /// resto del result set, e una query sbagliata restituiva un risultato
-    /// plausibile invece di dire che era sbagliata.
+    /// una colonna, sono un errore: selezionare un valore arbitrario
+    /// scarterebbe in silenzio il resto del result set.
     ///
     /// E' la stessa cardinalita dei costruttori scalar del core. Chi vuole la
     /// prima riga di un result set piu ampio usa `execute_returning_rows`.
@@ -230,19 +197,15 @@ impl Session {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+        let statement = statement_from_python(sql, params.as_ref())?;
+        let rows = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
         // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di una
         // riga o piu di una colonna invece di prendere la prima e buttare via
-        // il resto. E' la stessa regola dei costruttori scalar tipizzati del
-        // core, e quella che questa firma dichiarava gia a parole.
-        let value = scalar_opt(rows).map_err(to_py_err)?;
-        value
-            .as_ref()
-            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
+        // il resto. È la stessa regola dei costruttori scalar tipizzati del
+        // core e della firma pubblica.
+        scalar_to_python(py, rows)
     }
 
     /// Esegue una query e ritorna tutte le righe come lista di dict
@@ -255,20 +218,11 @@ impl Session {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+        let statement = statement_from_python(sql, params.as_ref())?;
+        let rows = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            for (col, val) in row.columns().iter().zip(row.values().iter()) {
-                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out)
+        rows_to_pylist(py, rows)
     }
 
     /// Esegue un `PortableStatement` (serializzato come JSON) e ritorna
@@ -285,25 +239,11 @@ impl Session {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
-        let rows: Vec<Row> = self.run_tx(py, move |tx, cancel| {
+        let ast = portable_from_json(ast_json)?;
+        let rows = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
         })?;
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            for (col, val) in row.columns().iter().zip(row.values().iter()) {
-                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out)
+        rows_to_pylist(py, rows)
     }
 
     /// Esegue un `PortableStatement` (serializzato come JSON) senza
@@ -315,13 +255,7 @@ impl Session {
     /// Come `execute_portable_rows`.
     fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { execute_portable(tx, &ast, cancel).await })
         })
@@ -350,9 +284,8 @@ impl Session {
     /// Esegue DDL **fuori transazione**, in autocommit.
     ///
     /// Escape hatch per gli statement che il motore non ammette dentro una
-    /// transazione. Su PostgreSQL la DDL e transazionale, quindi qui serve di
-    /// rado — ma esisteva sulla sessione di famiglia e non su questa, ed era
-    /// un'asimmetria senza ragione: il provider lo implementa.
+    /// transazione. Su PostgreSQL la DDL e transazionale, quindi questa
+    /// superficie serve di rado ma resta coerente con le sessioni di famiglia.
     fn execute_ddl(&self, py: Python<'_>, sql: &str) -> PyResult<()> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -542,29 +475,14 @@ impl Session {
         native_query_policy: Option<&str>,
     ) -> PyResult<Transaction> {
         self.ensure_open()?;
-        let mut opts = TransactionOptions::default();
-        if let Some(iso) = isolation {
-            opts.isolation = Some(parse_isolation(iso)?);
-        }
-        if let Some(ro) = read_only {
-            opts.access_mode = Some(if ro {
-                AccessMode::ReadOnly
-            } else {
-                AccessMode::ReadWrite
-            });
-        }
-        opts.deferrable = deferrable;
-        opts.statement_timeout_ms = statement_timeout_ms;
-        // PFM CHG-002: applica il session context passato dal consumer.
-        // I valori diventano transaction-local `SET LOCAL` e vengono
-        // resettati automaticamente al commit/rollback.
-        if let Some(ctx) = context {
-            opts.context = ctx.inner;
-        }
-        // PFM CHG-003: policy esplicita "allow" | "deny".
-        if let Some(policy) = native_query_policy {
-            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
-        }
+        let opts = crate::session_tx::transaction_options(
+            isolation,
+            read_only,
+            deferrable,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
+        )?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let tx = py
@@ -667,7 +585,7 @@ pub fn json_value_to_pydict<'py>(
 /// Apre una nuova sessione Postgres. La DSN è nel formato libpq
 /// (`host=... user=... password=... dbname=...`).
 ///
-/// # TLS (ADR-011, py-v0.9.0)
+/// # TLS
 ///
 /// Default: `tls_mode="require"` + WebPKI trust store pubblico.
 /// Per test/dev locali senza TLS passare `tls_mode="insecure_local"`.

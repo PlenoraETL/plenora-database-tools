@@ -8,9 +8,7 @@ use plenora_database_core::arrow::array::builder::{
 };
 use plenora_database_core::arrow::array::ArrayRef;
 use plenora_database_core::arrow::schema::DataType;
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use tiberius::{FromSql, Row};
@@ -420,16 +418,12 @@ fn rescale_numeric(value: tiberius::numeric::Numeric, scale: i8) -> Result<i128>
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Read,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]

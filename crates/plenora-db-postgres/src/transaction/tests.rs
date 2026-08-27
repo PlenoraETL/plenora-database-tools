@@ -4,8 +4,7 @@
 //! `dataflow-postgres` (compose network `plenora-postgres_default`).
 #![allow(clippy::float_cmp)] // matches!() con parametri f64 letterali
 
-// Import "wide" — replica ciò che era `use super::*;` quando i test erano
-// inline in `transaction.rs`. I sub-mod live/facade li usano tutti.
+// Import condivisi dai sottomoduli live e facade.
 #[allow(unused_imports)]
 use super::sql::{build_begin_sql, phase_of, quote_identifier};
 #[allow(unused_imports)]
@@ -117,12 +116,8 @@ mod live {
     /// Provider dei test live: TLS disattivato, come ogni altra fixture live
     /// del repository.
     ///
-    /// `PostgresProvider::new` e secure-by-default da ADR-011 (`1.2.0`) e
-    /// pretende TLS, mentre `docker-compose.postgres.yml` serve plaintext:
-    /// il flip ha rotto tutti i 71 test di questo modulo, che fallivano al
-    /// `begin` con `Protocol`/`Connect`. Gli helper out-of-band dello stesso
-    /// file gia si connettono con `NoTls` allo stesso DSN — la fixture era
-    /// incoerente con se stessa.
+    /// Il provider ordinario richiede TLS, mentre il Compose usato da questi
+    /// test serve plaintext; la scelta insicura deve quindi restare esplicita.
     ///
     /// Nessuno di questi test riguarda TLS: provano transazioni, savepoint,
     /// facade e policy. La superficie TLS ha il proprio compose
@@ -682,8 +677,7 @@ mod live {
 
     /// Helper per test `DWithin`: SRID 4326 + `Geography`.
     ///
-    /// Post fix review: `DWithin` + `Geometry` + SRID geografico è fail-closed
-    /// (silent wrong result risk). Test live che vuole esercitare
+    /// `DWithin` con `Geometry` e SRID geografico è fail-closed. Un test che vuole esercitare
     /// `DWithin` su WGS84 deve usare `Geography` per distanze in metri.
     fn reference_geography(ewkb: Vec<u8>) -> SpatialReference {
         SpatialReference {
@@ -744,8 +738,8 @@ mod live {
         let provider = provider();
         let cancel = CancellationToken::new();
 
-        // Post fix review: uso Geography per DWithin su SRID 4326. In
-        // Geography la distanza è in metri veri (calcolo geodetico
+        // Geography rende DWithin su SRID 4326 una distanza in metri
+        // (calcolo geodetico
         // WGS84). 100m a Milano → DWithin(150) matcha il punto vicino,
         // DWithin(50) no.
         let filter = SpatialFilter {
@@ -1203,16 +1197,7 @@ mod live {
 
     /// Le quattro forme di `RETURNING` del piano portabile, attraversate.
     ///
-    /// # Cosa non c'era
-    ///
-    /// Niente. Il compilatore ha le sue prove unitarie — l'SQL che emette e
-    /// verificato — ma **nessuno aveva mai eseguito** un `INSERT ... RETURNING`
-    /// contro un server, ne da Rust ne dal SDK Python. E' la stessa forma per
-    /// cui su `MySQL` undici funzioni spatial sono rimaste pubblicate per mesi
-    /// senza essere utilizzabili: compilate, mai attraversate.
-    ///
-    /// Pesa piu del solito perche quell'espressione e l'esempio in vetrina del
-    /// SDK, scritto in testa al modulo:
+    /// Attraversa sul server l'espressione mostrata anche dall'esempio SDK:
     ///
     /// ```text
     /// new = s.insert("users").values(name="Ada").returning("id").one()
@@ -1448,7 +1433,7 @@ mod live {
             .await
             .expect("begin");
 
-        // Post fix review: Geography obbligatorio per DWithin su SRID 4326.
+        // Geography è obbligatorio per DWithin su SRID 4326.
         // Distanza in metri veri (150m > 100m di offset → matcha Milano).
         let stmt = p_select("f1e_dwithin", vec!["id"])
             .where_(p_spatial(
@@ -1857,8 +1842,7 @@ mod live {
 
     #[tokio::test]
     async fn live_facade_scalar_decimal_returns_string() {
-        // v0.3 (P0.8): decimal via facade OLTP funziona. Il roundtrip
-        // preserva la rappresentazione testuale precisa.
+        // Il roundtrip decimal preserva la rappresentazione testuale precisa.
         let provider = provider();
         let cancel = CancellationToken::new();
         let budget = budget();
@@ -1997,8 +1981,7 @@ mod live {
 
     #[tokio::test]
     async fn live_native_allow_permits_ddl_with_escape_hatch() {
-        // Modalità Allow (default) consente DDL — resta l'escape autorizzato
-        // per migrazioni/diagnostica, come previsto dalla roadmap PFM.
+        // `Allow` consente esplicitamente DDL per migrazioni e diagnostica.
         let provider = provider();
         let cancel = CancellationToken::new();
         let mut tx = provider

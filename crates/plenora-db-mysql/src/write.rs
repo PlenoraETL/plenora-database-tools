@@ -1,6 +1,7 @@
-//! Path write `MySQL`. v1.2 estende Append (unica mode originale) con
-//! Create (Blocco A). Upsert/Update/Replace/DeleteByKeys
-//! pianificati per tranches future.
+//! Preparazione ed esecuzione delle modalita di scrittura `MySQL`.
+//!
+//! Il percorso valida il piano prima di costruire DDL, staging e statement
+//! DML specifici della modalita richiesta.
 
 #![allow(
     clippy::doc_markdown,
@@ -92,8 +93,8 @@ fn compile_write_column(
                 "write spatial {product} richiede geometry GeoArrow WKB Binary"
             )));
         }
-        // XY e l'unico profilo dimensionale che questi motori hanno, e da oggi
-        // e misurato invece che atteso: `raw.geometry_dimensions` ha chiesto al
+        // XY è l'unico profilo dimensionale misurato per questi motori:
+        // `raw.geometry_dimensions` ha chiesto al
         // **parser** `POINT Z(1 2 3)` nelle due sintassi WKT, e `MySQL` risponde
         // 3037 — WKT non valido — mentre `MariaDB` lo parsa a `NULL`. Anche
         // `ST_Z` e `ST_M` sono assenti da entrambi.
@@ -556,10 +557,8 @@ impl MysqlWritePlan {
             sql.push_str(&row_placeholders);
             sql.push(')');
         }
-        // Upsert v1.2: ON DUPLICATE KEY UPDATE (corpo precalcolato da
-        // `upsert_on_duplicate_clause`). Uso `VALUES(col)` (deprecato in
-        // 8.0.20+ ma ancora funzionante in 8.4 LTS). Migrare a alias
-        // `AS new / new.col` in un giro futuro.
+        // Il corpo di ON DUPLICATE KEY UPDATE e gia validato e costruito da
+        // `upsert_on_duplicate_clause`.
         if let Some(updates) = on_duplicate {
             sql.push_str(" ON DUPLICATE KEY UPDATE ");
             sql.push_str(updates);
@@ -873,11 +872,9 @@ impl MysqlWritePlan {
                 // La compatibilita la decide il profilo, e non e la stessa
                 // domanda sui due prodotti: dove la colonna e vincolata il
                 // catalogo deve portare **quell'**SRID, dove non puo esserlo il
-                // catalogo tace e non c'e niente da confrontare. Il confronto
-                // secco che stava qui falliva sempre sul secondo — `None` non
-                // e mai uguale a `Some(4326)` — e teneva chiusa la scrittura
-                // spatial con una riga di codice, prima ancora che con una
-                // bandiera.
+                // catalogo tace e non c'e niente da confrontare. La
+                // compatibilità non può quindi essere un semplice confronto
+                // tra `Option`.
                 let declared = column.spatial_srid.ok_or_else(|| {
                     crs_error(format!("write spatial {product} senza SRID dichiarato"))
                 })?;
@@ -1420,7 +1417,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
                 format!("mode '{:?}' richiede almeno una key column", operation.mode),
             ));
         }
-        // Upsert/DeleteByKeys: update_columns esplicite non permesse (v1.2).
+        // Upsert/DeleteByKeys non ammettono `update_columns` esplicite.
         // Update: update_columns esplicite opzionali (default = tutte non-key).
         if matches!(operation.mode, WriteMode::Upsert | WriteMode::DeleteByKeys)
             && !operation.update_columns.is_empty()
@@ -1548,7 +1545,7 @@ fn validate_primary_key_parts(keys: &[String]) -> Result<()> {
 ///
 /// Sono provider-specifici: dipendono da come `mysql_column_ddl` traduce il
 /// tipo Arrow e da cosa il motore accetta come colonna di chiave. Ogni caso e
-/// stato verificato contro il riferimento, e ciascuno oggi fallirebbe **al
+/// stato verificato contro il riferimento, e ciascuno fallirebbe al
 /// server**, dopo che la scrittura e partita:
 ///
 /// * `Utf8` -> `TEXT` e `Binary` -> `BLOB`: errore 1170, "BLOB/TEXT column
@@ -1599,7 +1596,7 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
     prepare_error(ErrorCategory::Unsupported, message)
 }
 
-// ============================ v1.2 — DDL support (Create/TruncateInsert) =======
+// ============================ DDL per Create/TruncateInsert ===================
 
 /// Genera la dichiarazione MySQL per un tipo di colonna.
 ///
@@ -1850,16 +1847,12 @@ pub(crate) fn build_delete_all_sql(operation: &WriteOperation, database: &str) -
 }
 
 fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]

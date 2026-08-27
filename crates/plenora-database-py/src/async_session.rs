@@ -3,9 +3,8 @@
 //! Bridge asyncio ↔ tokio via `pyo3-async-runtimes`. Le API espongono
 //! metodi che ritornano awaitable Python: `await s.execute_scalar(...)`.
 //!
-//! Ogni metodo apre una transazione auto-commit dedicata (come la
-//! Session sync in F3-3). Per transazioni user-managed → F3-7b
-//! AsyncTransaction.
+//! Ogni metodo apre una transazione auto-commit dedicata. Le transazioni
+//! gestite dal chiamante usano `AsyncTransaction`.
 
 #![allow(
     clippy::doc_markdown,
@@ -15,28 +14,17 @@
 )]
 
 use crate::arrow_reader::open_reader_async;
-use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
-use crate::py_convert::{param_to_python, params_from_python};
-use crate::transaction::parse_isolation;
-use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
-use plenora_database_core::plan::{ObjectRef, Operation};
-use plenora_database_core::portable::PortableStatement;
+use crate::py_convert::{portable_from_json, statement_from_python};
+use plenora_database_core::plan::Operation;
 use plenora_database_core::provider::{Provider, SecretString};
-// Fase E: ResourceBudget/ResourceLimits ora consumati solo via `budget` module
-use plenora_database_core::transaction::{
-    AccessMode, Statement, TransactionOptions, TransactionScope,
-};
-use plenora_database_core::{CancellationToken, DatabaseError, Row};
+use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
-
-// Fase E: consolidato in `crate::budget::session_budget`.
-use crate::budget::session_budget as default_budget;
 
 /// Sessione Postgres asincrona. Ottenuta da `await aconnect(dsn)`.
 ///
@@ -64,66 +52,8 @@ impl AsyncSession {
         Ok(())
     }
 
-    fn inspect_strings<'py>(
-        &self,
-        py: Python<'py>,
-        operation: Operation,
-        key: &'static str,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        self.ensure_open()?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            let cancel = CancellationToken::new();
-            let inspection = provider
-                .inspect(&secret, &operation, &cancel)
-                .await
-                .map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                crate::session::json_to_pylist_of_strings(py, &inspection.document, key)
-                    .map(|value| value.into_any().unbind())
-            })
-        })
-    }
-
-    /// Esegue una closure async in una transazione auto-commit dedicata.
-    ///
-    /// Il pattern è identico a Session::run_tx ma la closure ritorna un
-    /// future generico che poi entra nell'awaitable Python.
-    async fn run_tx<R>(
-        provider: Arc<PostgresProvider>,
-        secret: SecretString,
-        work: impl for<'a> FnOnce(
-            &'a mut dyn TransactionScope,
-            &'a CancellationToken,
-        ) -> plenora_database_core::provider::ProviderFuture<'a, R>,
-    ) -> plenora_database_core::Result<R> {
-        let cancel = CancellationToken::new();
-        let mut tx = provider
-            .begin_transaction(
-                &secret,
-                &TransactionOptions::default(),
-                &default_budget(),
-                &cancel,
-            )
-            .await?;
-        let result = work(tx.as_mut(), &cancel).await;
-        match result {
-            Ok(value) => {
-                let outcome = Box::new(tx).commit(&cancel).await?;
-                if !outcome.is_committed() {
-                    // Fix review #9: helper unico.
-                    return Err(crate::errors_commit::commit_outcome_unknown(
-                        plenora_database_core::plan::ProviderKind::Postgres,
-                    ));
-                }
-                Ok(value)
-            }
-            Err(e) => {
-                let _ = Box::new(tx).rollback(&cancel).await;
-                Err(e)
-            }
-        }
+    fn provider(&self) -> Arc<dyn Provider> {
+        Arc::clone(&self.provider) as Arc<dyn Provider>
     }
 }
 
@@ -187,17 +117,8 @@ impl AsyncSession {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            Self::run_tx(provider, secret, move |tx, cancel| {
-                Box::pin(async move { tx.execute(&statement, cancel).await })
-            })
-            .await
-            .map_err(to_py_err)
-        })
+        let statement = statement_from_python(sql, params.as_ref())?;
+        crate::async_session_ops::execute(py, self.provider(), self.secret.clone(), statement)
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -208,28 +129,13 @@ impl AsyncSession {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            let rows: Vec<Row> = Self::run_tx(provider, secret, move |tx, cancel| {
-                Box::pin(async move { tx.query(&statement, cancel).await })
-            })
-            .await
-            .map_err(to_py_err)?;
-            // Cardinalita imposta, non dedotta: `scalar_opt` rifiuta piu di
-            // una riga o piu di una colonna invece di prendere la prima e
-            // buttare via il resto. E' la stessa regola dei costruttori
-            // scalar tipizzati del core.
-            let value = scalar_opt(rows).map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                value.as_ref().map_or_else(
-                    || Ok(py.None()),
-                    |v| param_to_python(py, v).map(Bound::unbind),
-                )
-            })
-        })
+        let statement = statement_from_python(sql, params.as_ref())?;
+        crate::async_session_ops::execute_scalar(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            statement,
+        )
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -240,41 +146,37 @@ impl AsyncSession {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            let rows: Vec<Row> = Self::run_tx(provider, secret, move |tx, cancel| {
-                Box::pin(async move { tx.query(&statement, cancel).await })
-            })
-            .await
-            .map_err(to_py_err)?;
-            rows_to_pyobject(rows)
-        })
+        let statement = statement_from_python(sql, params.as_ref())?;
+        crate::async_session_ops::execute_rows(py, self.provider(), self.secret.clone(), statement)
     }
 
     fn execute_ddl<'py>(&self, py: Python<'py>, sql: &str) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        let sql = sql.to_owned();
-        future_into_py(py, async move {
-            let cancel = CancellationToken::new();
-            provider
-                .execute_ddl(&secret, &sql, &cancel)
-                .await
-                .map_err(to_py_err)
-        })
+        crate::async_session_ops::execute_ddl(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            sql.to_owned(),
+        )
     }
 
     fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.inspect_strings(py, Operation::DatabaseListCatalogs, "catalogs")
+        self.ensure_open()?;
+        crate::async_session_ops::inspect_strings(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            Operation::DatabaseListCatalogs,
+            "catalogs",
+        )
     }
 
     fn inspect_schemas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.inspect_strings(
+        self.ensure_open()?;
+        crate::async_session_ops::inspect_strings(
             py,
+            self.provider(),
+            self.secret.clone(),
             Operation::DatabaseListSchemas { source: None },
             "schemas",
         )
@@ -282,26 +184,12 @@ impl AsyncSession {
 
     fn inspect_tables<'py>(&self, py: Python<'py>, schema: &str) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        let operation = Operation::DatabaseListObjects {
-            source: Some(ObjectRef {
-                catalog: None,
-                schema: Some(schema.to_owned()),
-                object: String::new(),
-            }),
-        };
-        future_into_py(py, async move {
-            let cancel = CancellationToken::new();
-            let inspection = provider
-                .inspect(&secret, &operation, &cancel)
-                .await
-                .map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                crate::session::json_to_pylist_of_dicts(py, &inspection.document, "objects")
-                    .map(|value| value.into_any().unbind())
-            })
-        })
+        crate::async_session_ops::inspect_objects(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            schema.to_owned(),
+        )
     }
 
     fn inspect_describe<'py>(
@@ -311,26 +199,13 @@ impl AsyncSession {
         object: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        let operation = Operation::DatabaseDescribeObject {
-            source: ObjectRef {
-                catalog: None,
-                schema: Some(schema.to_owned()),
-                object: object.to_owned(),
-            },
-        };
-        future_into_py(py, async move {
-            let cancel = CancellationToken::new();
-            let inspection = provider
-                .inspect(&secret, &operation, &cancel)
-                .await
-                .map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                crate::session::json_value_to_pydict(py, &inspection.document)
-                    .map(|value| value.into_any().unbind())
-            })
-        })
+        crate::async_session_ops::inspect_describe(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            schema.to_owned(),
+            object.to_owned(),
+        )
     }
 
     fn execute_portable_rows<'py>(
@@ -339,23 +214,13 @@ impl AsyncSession {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            let rows: Vec<Row> = Self::run_tx(provider, secret, move |tx, cancel| {
-                Box::pin(async move { execute_portable_returning(tx, &ast, cancel).await })
-            })
-            .await
-            .map_err(to_py_err)?;
-            rows_to_pyobject(rows)
-        })
+        let ast = portable_from_json(ast_json)?;
+        crate::async_session_ops::execute_portable_rows(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            ast,
+        )
     }
 
     /// Apre uno stream async di record batch Arrow. Ritorna un
@@ -485,41 +350,15 @@ impl AsyncSession {
         native_query_policy: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let mut opts = TransactionOptions::default();
-        if let Some(iso) = isolation {
-            opts.isolation = Some(parse_isolation(iso)?);
-        }
-        if let Some(ro) = read_only {
-            opts.access_mode = Some(if ro {
-                AccessMode::ReadOnly
-            } else {
-                AccessMode::ReadWrite
-            });
-        }
-        opts.deferrable = deferrable;
-        opts.statement_timeout_ms = statement_timeout_ms;
-        // PFM CHG-002: SessionContext transaction-local.
-        if let Some(ctx) = context {
-            opts.context = ctx.inner;
-        }
-        // PFM CHG-003: policy Allow|Deny come parametro esplicito.
-        if let Some(policy) = native_query_policy {
-            opts.native_query_policy = crate::transaction::parse_native_query_policy(policy)?;
-        }
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            let cancel = CancellationToken::new();
-            let tx = provider
-                .begin_transaction(&secret, &opts, &default_budget(), &cancel)
-                .await
-                .map_err(to_py_err)?;
-            Python::with_gil(|py| {
-                let atx = AsyncTransaction::new(tx);
-                let obj = Py::new(py, atx)?;
-                Ok(obj.into_pyobject(py)?.into_any().unbind())
-            })
-        })
+        let opts = crate::session_tx::transaction_options(
+            isolation,
+            read_only,
+            deferrable,
+            statement_timeout_ms,
+            context,
+            native_query_policy,
+        )?;
+        crate::async_session_ops::begin(py, self.provider(), self.secret.clone(), opts)
     }
 
     fn execute_portable_count<'py>(
@@ -528,22 +367,13 @@ impl AsyncSession {
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        future_into_py(py, async move {
-            Self::run_tx(provider, secret, move |tx, cancel| {
-                Box::pin(async move { execute_portable(tx, &ast, cancel).await })
-            })
-            .await
-            .map_err(to_py_err)
-        })
+        let ast = portable_from_json(ast_json)?;
+        crate::async_session_ops::execute_portable_count(
+            py,
+            self.provider(),
+            self.secret.clone(),
+            ast,
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -554,22 +384,6 @@ impl AsyncSession {
     }
 }
 
-/// Costruisce una list[dict] Python dalle Row (chiamato dentro
-/// `Python::with_gil`).
-fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<PyObject> {
-    Python::with_gil(|py| {
-        let out = PyList::empty(py);
-        for row in rows {
-            let dict = PyDict::new(py);
-            for (col, val) in row.columns().iter().zip(row.values().iter()) {
-                dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-            }
-            out.append(dict)?;
-        }
-        Ok(out.into_any().unbind())
-    })
-}
-
 /// Apre una sessione Postgres asincrona. La DSN è nel formato libpq.
 /// Ritorna un awaitable che si risolve in `AsyncSession`.
 ///
@@ -578,7 +392,7 @@ fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<PyObject> {
 /// L'awaitable rifiuta con `PlenoraError` (categoria mappata) se il
 /// probe iniziale fallisce.
 ///
-/// # TLS (ADR-011, py-v0.9.0)
+/// # TLS
 ///
 /// Come `connect()` sync: default `tls_mode="require"`; per dev/test
 /// senza TLS passare `tls_mode="insecure_local"`.
@@ -622,10 +436,8 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
 /// # Errors
 ///
 /// Restituisce il motivo se il runtime non e avviabile (limiti di thread o di
-/// descrittori) o se un altro runtime globale risulta gia registrato. Prima
-/// entrambi i casi erano un `expect`, cioe un panico dentro l'import del
-/// modulo: il chiamante Python riceveva una `PanicException` invece di un
-/// errore classificato.
+/// descrittori) o se un altro runtime globale risulta gia registrato, senza
+/// propagare un panic attraverso l'import Python.
 pub fn init_async_runtime() -> std::result::Result<(), String> {
     let rt = crate::build_runtime()?;
     pyo3_async_runtimes::tokio::init_with_runtime(rt)

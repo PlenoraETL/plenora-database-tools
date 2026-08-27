@@ -42,24 +42,10 @@ LIVE_TEST_SOURCE = ROOT / "crates" / "plenora-db-sqlserver" / "src" / "live_test
 def expected_live_tests() -> set[str]:
     """I test live che ogni riferimento della matrice deve attraversare.
 
-    # Perche non e un numero
-
-    Qui c'era `EXPECTED_TESTS`, mantenuto a mano, e il commento che lo
-    accompagnava raccontava gia il proprio difetto: portato da 43 a 44 il
-    2026-08-06 perche una prova aggiunta due giorni prima non aveva aggiornato
-    il registro, e da allora la matrice falliva con «matrice live inattesa»
-    **dopo** che tutti i test erano passati.
-
-    E' successo di nuovo. Il numero e rimasto 44 mentre la sorgente arrivava a
-    quarantotto, e nessuno se n'e accorto per la ragione peggiore: questa
-    matrice non la esegue nessun workflow. Un registro mantenuto a mano dentro
-    un gate che nessuno lancia non e un registro, e' una data di scadenza.
-
-    La pretesa resta la stessa e diventa piu forte: non «quanti sono passati»
-    ma **quali**. Un conteggio giusto per caso — una prova aggiunta e una
-    rimossa nello stesso giro — passerebbe; un confronto di insiemi no. Ed e la
-    stessa forma che `check_sqlserver_reference.py` usa gia, invece di una
-    seconda che le diverga accanto.
+    La copertura si confronta per nome, non per totale: aggiungere e rimuovere
+    una prova nello stesso cambiamento non deve lasciare il gate verde per
+    coincidenza. L'inventario deriva dalla sorgente con la stessa logica del
+    gate del riferimento.
     """
 
     declared = {

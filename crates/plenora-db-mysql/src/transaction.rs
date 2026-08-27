@@ -38,7 +38,7 @@ use plenora_database_core::transaction::{
 };
 use plenora_database_core::{
     plan::ProviderKind, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
-    Result, RetryDisposition,
+    Result,
 };
 use std::sync::Arc;
 
@@ -46,8 +46,8 @@ pub struct MysqlTransaction {
     session: MysqlSession,
     open: bool,
     /// Policy di ammissione statement (Allow default, Deny per PFM).
-    /// Persistito da `TransactionOptions::native_query_policy`; parity
-    /// con `PostgresTransaction`. Fix P1 review `MySQL` 2026-08-15.
+    /// Persistita da `TransactionOptions::native_query_policy` per tutta la
+    /// durata della transazione.
     native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
@@ -130,12 +130,12 @@ impl MysqlTransaction {
         //    vuoto. A sbloccarlo e stata la delega al core, non il quoting.
         //
         //    I backtick restano perche un nome di variabile utente accetta
-        //    piu caratteri di quanti il core ne ammetta oggi (`$`, per dire).
+        //    piu caratteri della grammatica del core (`$`, per dire).
         //    Ma non rendono la resa indipendente da quella regola, ed e
         //    l'affermazione da correggere: qui il backtick nel nome non
         //    viene raddoppiato, quindi una chiave che ne contenesse uno
         //    chiuderebbe la quotatura invece di finirci dentro. A impedirlo
-        //    e `validate_context_keys`, che delega al core: oggi il core
+        //    e `validate_context_keys`, che delega al core: la grammatica
         //    ammette `namespace.name` con soli `[a-z0-9_]`, e nessuna chiave
         //    valida contiene un backtick. La sicurezza di questa `format!`
         //    dipende da quella validazione: se il core allargasse la regola,
@@ -268,27 +268,12 @@ async fn raw_exec(
 /// transazione mentre lo stream vive: il compilatore lo impone da se, e non
 /// serve altro.
 ///
-/// # Cio che non e vero, benche suoni giusto
-///
-/// La prima stesura aggiungeva una seconda differenza: che uno stream lasciato
-/// a meta rendesse la connessione inutilizzabile, perche i pacchetti non letti
-/// restano in coda. C'era una bandiera per dirlo, la transazione la raccoglieva
-/// all'inizio di ogni operazione e rifiutava tutto con `RequiresRecovery`.
-///
-/// Il riferimento ha detto di no. Una transazione che abbandona uno stream
+/// Una transazione che abbandona uno stream
 /// dopo un batch su cinquanta scrive, committa, e la riga si rilegge da
 /// un'altra connessione: `mysql_async` drena il result set pendente prima
 /// dello statement successivo, e la connessione non e mai stata fuori
-/// sincrono. La bandiera difendeva da un pericolo che questo driver gestisce
-/// gia, e il prezzo era una transazione buttata via ogni volta che un
-/// chiamante usciva da un ciclo con un `break`.
-///
-/// Il ragionamento era plausibile — e cosi che il protocollo funziona sul filo
-/// — ma la regola 1 non distingue fra il dedurre una capability e il dedurre
-/// un guasto: nessuna delle due si dichiara senza misura. La bandiera e stata
-/// tolta, e due sonde live tengono il posto: `live_query_stream_*_is_reusable`
-/// e la sua gemella cancellata provano che la transazione resta usabile,
-/// rileggendo l'effetto da fuori.
+/// sincrono. Le sonde `live_query_stream_*_is_reusable` e la gemella cancellata
+/// verificano che la transazione resti usabile, rileggendo l'effetto da fuori.
 ///
 /// `reads.server_cursor` resta comunque `false` su questo prodotto: questo e
 /// uno stream, non un cursore che qualcuno possa nominare e riprendere.
@@ -321,10 +306,8 @@ impl RowStream for MysqlRowStream<'_> {
                         // chiamante ha gia dichiarato di non volere.
                         //
                         // La **transazione**, invece, resta usabile:
-                        // `RemoteEffect::None` non e una formalita, e cio che
-                        // il riferimento ha mostrato. Vedi la nota su
-                        // `MysqlRowStream` per la bandiera che qui c'era e non
-                        // c'e piu.
+                        // `RemoteEffect::None` è sostenuto dalla prova che la
+                        // transazione resta usabile dopo la cancellazione.
                         self.exhausted = true;
                         return Err(interruption_error(
                             self.profile,
@@ -393,19 +376,19 @@ fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Re
         let Some(value) = row.take_opt::<Value, _>(idx) else {
             return Err(protocol_mismatch(kind, idx, "cella assente nel result set"));
         };
-        let raw = value.map_err(|error| DatabaseError {
-            category: ErrorCategory::DataMapping,
-            phase: ErrorPhase::Read,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(kind),
-            execution_id: None,
-            diagnostics: None,
-            message: format!("decode colonna idx={idx}: {error}"),
-        })?;
+        let raw = value.map_err(|_| row_decode_error(kind, idx))?;
         values.push(convert_value(raw, idx, kind, spec)?);
     }
     Row::try_new(Arc::clone(columns), values)
+}
+
+fn row_decode_error(kind: ProviderKind, index: usize) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Read,
+        Some(kind),
+        format!("decode colonna idx={index} fallito"),
+    )
 }
 
 /// Byte di una colonna testuale, o l'errore che dice che non lo sono.
@@ -426,16 +409,12 @@ fn text_or_error(
 /// server introduce in una versione successiva — deve essere qualificata
 /// deliberatamente, non ereditare per caso il tipo pubblico di un'altra.
 fn unqualified_wire_type(kind: ProviderKind, idx: usize, column_type: ColumnType) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::Unsupported,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(kind),
-        execution_id: None,
-        diagnostics: None,
-        message: format!("colonna idx={idx} di tipo wire non qualificato: {column_type:?}"),
-    }
+    DatabaseError::new(
+        ErrorCategory::Unsupported,
+        ErrorPhase::Read,
+        Some(kind),
+        format!("colonna idx={idx} di tipo wire non qualificato: {column_type:?}"),
+    )
 }
 
 /// Una colonna dichiarata testuale porta byte che testo non sono.
@@ -443,16 +422,12 @@ fn unqualified_wire_type(kind: ProviderKind, idx: usize, column_type: ColumnType
 /// Tipicamente una collation che il client non si aspetta. Il messaggio porta
 /// posizione e character set — contesto operativo — e non i byte.
 fn non_utf8_text(kind: ProviderKind, idx: usize, character_set: u16) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::DataMapping,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(kind),
-        execution_id: None,
-        diagnostics: None,
-        message: format!("colonna idx={idx} testuale (charset {character_set}) non e UTF-8"),
-    }
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Read,
+        Some(kind),
+        format!("colonna idx={idx} testuale (charset {character_set}) non e UTF-8"),
+    )
 }
 
 /// Il result set non ha la forma che dichiara.
@@ -461,16 +436,12 @@ fn non_utf8_text(kind: ProviderKind, idx: usize, character_set: u16) -> Database
 /// la conversazione col server che non torna. Il messaggio porta la posizione,
 /// mai il contenuto.
 fn protocol_mismatch(kind: ProviderKind, idx: usize, what: &str) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::Protocol,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(kind),
-        execution_id: None,
-        diagnostics: None,
-        message: format!("{what} (colonna idx={idx})"),
-    }
+    DatabaseError::new(
+        ErrorCategory::Protocol,
+        ErrorPhase::Read,
+        Some(kind),
+        format!("{what} (colonna idx={idx})"),
+    )
 }
 
 fn convert_value(
@@ -487,18 +458,14 @@ fn convert_value(
         Value::UInt(v) => {
             // MySQL UInt64 può eccedere I64 (>2^63); il decoder canonico non
             // ha un tipo unsigned. Falliamo esplicito piuttosto che overflow.
-            i64::try_from(v)
-                .map(ParameterValue::I64)
-                .map_err(|_| DatabaseError {
-                    category: ErrorCategory::DataMapping,
-                    phase: ErrorPhase::Read,
-                    remote_effect: RemoteEffect::None,
-                    retry: RetryDisposition::Never,
-                    provider: Some(kind),
-                    execution_id: None,
-                    diagnostics: None,
-                    message: format!("colonna idx={idx} UInt eccede i64"),
-                })?
+            i64::try_from(v).map(ParameterValue::I64).map_err(|_| {
+                DatabaseError::new(
+                    ErrorCategory::DataMapping,
+                    ErrorPhase::Read,
+                    Some(kind),
+                    format!("colonna idx={idx} UInt eccede i64"),
+                )
+            })?
         }
         Value::Float(v) => ParameterValue::F64(f64::from(v)),
         Value::Double(v) => ParameterValue::F64(v),
@@ -596,10 +563,8 @@ impl TransactionScope for MysqlTransaction {
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
-                // Fix P1 review MySQL: enforcement condiviso del core
-                // (parity con `PostgresTransaction::execute`). Se
-                // `native_query_policy = Deny`, blocca DDL/session/multi-
-                // statement prima del round-trip al server.
+                // La policy condivisa blocca DDL, comandi di sessione e
+                // multi-statement prima del round-trip al server.
                 plenora_database_core::native_query_policy::enforce_policy(
                     self.native_query_policy,
                     &statement.sql,
@@ -609,12 +574,9 @@ impl TransactionScope for MysqlTransaction {
                     .session
                     .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
                     .await;
-                // Fix P0 review MySQL 2026-08-15: quando MySQL rifiuta lo
-                // statement con `RolledBack` (deadlock 1213, ambiguous
-                // timeout, ecc.), il server auto-annulla la transazione
-                // vittima. Prima `self.open` restava `true` e le scritture
-                // successive andavano in **autocommit** (silent write fuori
-                // dalla tx supposta). Ora chiudo la tx dopo qualsiasi
+                // Quando il server restituisce `RolledBack` (per esempio per
+                // deadlock o timeout ambiguo), la transazione vittima non e
+                // piu attiva. Il client deve quindi chiuderla dopo qualsiasi
                 // errore che modifica lo stato server-side.
                 if let Err(ref error) = result {
                     if matches!(
@@ -651,7 +613,7 @@ impl TransactionScope for MysqlTransaction {
                 // sessione e prestata in modo esclusivo e non e piu leggibile.
                 let kind = self.session.kind();
                 let profile = self.session.profile();
-                // Fix P1 review MySQL: enforcement condiviso (parity Postgres).
+                // Applica la stessa policy usata dal percorso `execute`.
                 plenora_database_core::native_query_policy::enforce_policy(
                     self.native_query_policy,
                     &statement.sql,
@@ -988,8 +950,7 @@ impl TransactionScope for MysqlTransaction {
                 if !self.open {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
-                // Fix P1 review MySQL: enforcement condiviso su UPDATE
-                // (+ probe se presente). Parity con `PostgresTransaction`.
+                // La policy copre UPDATE e l'eventuale probe associato.
                 plenora_database_core::native_query_policy::enforce_policy(
                     self.native_query_policy,
                     &request.update.sql,
@@ -1031,21 +992,15 @@ impl TransactionScope for MysqlTransaction {
 
 /// Il timeout di una query dentro una transazione.
 ///
-/// Estratto perche un messaggio che non si puo costruire in un test e un
-/// messaggio che nessuno verifica: era rimasto cablato su `MySQL` per due
-/// review mentre il ramo accanto era gia parametrizzato.
+/// Costruisce l'errore di timeout con il nome del prodotto della sessione.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn query_timeout_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::Timeout,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(profile.kind()),
-        execution_id: None,
-        diagnostics: None,
-        message: format!("query {} timeout", profile.product()),
-    }
+    DatabaseError::new(
+        ErrorCategory::Timeout,
+        ErrorPhase::Read,
+        Some(profile.kind()),
+        format!("query {} timeout", profile.product()),
+    )
 }
 
 /// Il mismatch di righe di un update condizionale.
@@ -1064,16 +1019,12 @@ pub(crate) fn conditional_update_mismatch(
 }
 
 fn closed_error(phase: ErrorPhase, kind: ProviderKind) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidPlan,
+    DatabaseError::new(
+        ErrorCategory::InvalidPlan,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(kind),
-        execution_id: None,
-        diagnostics: None,
-        message: "MysqlTransaction già chiusa".to_owned(),
-    }
+        Some(kind),
+        "MysqlTransaction già chiusa",
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -1135,7 +1086,7 @@ mod tests {
     //  decode_row: i metadati di colonna, non l'aspetto dei byte
     // ------------------------------------------------------------------
 
-    use super::{decode_row, BINARY_CHARACTER_SET};
+    use super::{decode_row, row_decode_error, BINARY_CHARACTER_SET};
     use mysql_async::consts::ColumnType;
     use mysql_async::Value;
     use plenora_database_core::plan::ProviderKind;
@@ -1295,6 +1246,12 @@ mod tests {
         )
         .expect_err("byte non UTF-8 su colonna testuale");
         assert_eq!(error.category, ErrorCategory::DataMapping);
+    }
+
+    #[test]
+    fn public_driver_decode_error_contains_only_the_column_position() {
+        let error = row_decode_error(ProviderKind::Mysql, 7);
+        assert_eq!(error.message, "decode colonna idx=7 fallito");
     }
 
     /// Una cella che il protocollo non ha consegnato non e un NULL.

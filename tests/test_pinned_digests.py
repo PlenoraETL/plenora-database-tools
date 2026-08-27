@@ -12,17 +12,6 @@ cambia — una patch nuova, una CVE — la copia resta indietro, e il gate che l
 usa continua a misurare l'immagine vecchia dicendo di misurare quella
 dichiarata.
 
-# Il difetto che l'ha prodotta
-
-`check_mysql_performance.py` portava scritto per esteso il digest di MySQL 8.4
-LTS, che `docker/mysql/references.json` gia dichiara. I due coincidevano — la
-copia era corretta — e questo e il punto: una copia sbagliata la si vede, una
-copia giusta no, finche una delle due non si muove.
-
-E' la stessa forma del registro dei test della matrice SQL Server, rimasto a
-quarantaquattro mentre la sorgente arrivava a quarantotto, e la si e vista solo
-il giorno in cui qualcuno ha eseguito quel gate.
-
 # Cosa pretende
 
 Che nessun digest compaia due volte. Se un file ne ha bisogno, lo legge dal

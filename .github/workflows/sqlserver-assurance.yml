@@ -1,20 +1,14 @@
 name: sqlserver-assurance
 
 # Campagna SQL Server: gate del riferimento 2022 e budget di performance.
-# Il workflow esisteva ed e stato rimosso insieme a tutti gli altri
-# (`dc0f402 chore: remove all CI workflows`), lasciando appeso il self-test
-# che ne presidia la superficie: `test_workflow_watches_the_public_cli_surface`
-# apriva un file inesistente e falliva a ogni esecuzione, cioe il gate
-# SQL Server segnalava rosso per una ragione che non riguardava SQL Server.
 #
 # Questo file non contiene logica di qualifica. Versioni, digest, inventario
 # dei test live, materiale TLS e verdetto vivono negli script, che sono anche
 # il modo in cui la campagna si riproduce in locale con lo stesso comando.
 #
-# Rispetto alla versione rimossa manca `--remove-orphans` nella pulizia: i
-# quattro compose dichiarano ciascuno il proprio progetto, e su una macchina
-# con piu riferimenti attivi quel flag cancellava i container degli altri
-# provider. In CI sarebbe innocuo, ma il comando viene copiato in locale.
+# La pulizia non usa `--remove-orphans`: ogni Compose ha un progetto proprio e
+# il comando deve restare sicuro anche quando viene riprodotto in locale con
+# altri riferimenti attivi.
 
 on:
   push:
@@ -38,11 +32,7 @@ on:
       - "scripts/check_sqlserver_reference.py"
       - "scripts/test_check_sqlserver_reference.py"
       - "scripts/check_sqlserver_performance.py"
-      # Dipendenze che questo workflow **esegue** e che i trigger non
-      # nominavano: l'inventario condiviso, importato dal gate di
-      # riferimento, e il self-test prestazionale, che il job lancia da
-      # se. Una PR che toccava solo quelli non avviava la campagna, e il
-      # difetto si scopriva dopo il merge.
+      # Dipendenze eseguite o importate direttamente dal gate.
       - "scripts/live_inventory.py"
       - "tests/test_sqlserver_performance.py"
       - "scripts/compose_network.py"
@@ -119,13 +109,8 @@ jobs:
             --output assurance-results/sqlserver-performance.json 2>&1 \
             | tee assurance-results/sqlserver-performance.log
 
-      # `git diff` vede solo i file gia tracciati: un file *nuovo* lasciato nel
-      # worktree da un gate passava inosservato, e "il candidato non e
-      # cambiato" risultava vero anche quando non lo era. `git status
-      # --porcelain=v1 -uall` elenca anche gli untracked, uno per riga.
-      #
-      # Gli artefatti in `assurance-results/` restano invisibili a entrambi
-      # perche `.gitignore` li esclude: e voluto, sono l'output del gate.
+      # `git status --porcelain=v1 -uall` copre modifiche tracciate e file
+      # nuovi. Gli artefatti del gate sono esclusi tramite `.gitignore`.
       - name: il candidato non e cambiato
         run: |
           residuo="$(git status --porcelain=v1 -uall)"

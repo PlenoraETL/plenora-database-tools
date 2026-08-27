@@ -97,8 +97,8 @@ pub async fn list_schemas(
     session: &mut SqlServerSession,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>> {
-    // v0.2 (fix H7.1): esclude system schemas SQL Server (sys, INFORMATION_SCHEMA,
-    // guest, db_*). Il consumer che ha bisogno anche dei system schemas deve
+    // Il catalogo pubblico esclude gli schemi di sistema. Un consumer che ne
+    // ha bisogno deve
     // interrogare sys.schemas direttamente.
     let rows = one_result(
         session

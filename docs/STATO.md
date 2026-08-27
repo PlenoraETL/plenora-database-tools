@@ -14,15 +14,15 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 1.2.0 |
-| `plenora-database-core` | 1.2.0 |
-| `plenora-database-engine` | 1.2.0 |
+| `plenora-database-cli` | 2.0.0 |
+| `plenora-database-core` | 2.0.0 |
+| `plenora-database-engine` | 2.0.0 |
 | `plenora-database-py` | 0.11.0 |
-| `plenora-database-sql` | 1.2.0 |
-| `plenora-database-testkit` | 1.2.0 |
-| `plenora-db-mysql` | 1.2.0 |
-| `plenora-db-postgres` | 1.2.0 |
-| `plenora-db-sqlserver` | 1.2.0 |
+| `plenora-database-sql` | 2.0.0 |
+| `plenora-database-testkit` | 2.0.0 |
+| `plenora-db-mysql` | 2.0.0 |
+| `plenora-db-postgres` | 2.0.0 |
+| `plenora-db-sqlserver` | 2.0.0 |
 
 ## Contratto attivo
 
@@ -160,4 +160,4 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | --- | --- |
 | `live_default` | 39 |
 | `live_reference` | 33 |
-| `unit` | 221 |
+| `unit` | 222 |

@@ -11,9 +11,7 @@ use plenora_database_core::loss::{
 };
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::collections::{HashMap, HashSet};
 
@@ -1060,16 +1058,12 @@ pub(super) fn sql_identifier(value: &str) -> Result<Identifier> {
 }
 
 pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]

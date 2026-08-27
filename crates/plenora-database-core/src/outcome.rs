@@ -1,3 +1,5 @@
+//! Esiti portabili delle scritture e informazioni necessarie al recupero.
+
 use crate::plan::ProviderKind;
 use crate::RemoteEffect;
 use serde::{Deserialize, Serialize};

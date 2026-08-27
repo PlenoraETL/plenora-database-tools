@@ -146,9 +146,8 @@ def current_surfaces() -> list[Path]:
     documents += sorted(python.rglob("*.py"))
     documents += sorted(python.rglob("*.pyi"))
     # Le doc Rust sono documentazione a tutti gli effetti: `cargo doc` le
-    # pubblica e chi legge il crate le trova per prime. Tenerle fuori ha
-    # lasciato tre moduli a descrivere uno scaffold "v0.4-alpha" per una
-    # tranche intera, mentre i Markdown erano gia stati corretti.
+    # pubblica e chi legge il crate le trova per prime, quindi appartengono
+    # alla stessa guardia dei documenti Markdown.
     documents += sorted((ROOT / "crates").rglob("src/**/*.rs"))
     return [
         document
@@ -364,8 +363,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_gate_pins_the_v12_and_policy_live_default_tests(self) -> None:
         """I test live non `#[ignore]` hanno un runner e un inventario propri.
 
-        Prima erano invisibili: nessun runner li nominava e la loro comparsa
-        nella `cargo test` nuda veniva letta come rumore.
+        Devono coincidere con la raccolta reale della `cargo test` non filtrata.
         """
 
         self.assertEqual(
@@ -398,9 +396,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_v12_write_create_failure_leaves_the_table_and_reports_partial",
         ):
             self.assertIn(name, gate.EXPECTED_LIVE_DEFAULT_TESTS)
-        # I nomi del vecchio contratto — Replace rifiutata, TruncateInsert
-        # rifiutata senza prova di assenza di effetti — non devono
-        # sopravvivere all'inventario.
+        # Le prove fail-closed generiche non sostituiscono i contratti più
+        # specifici elencati sopra.
         for gone in (
             "live_tests::live_v12_write_replace_rejected_fail_closed",
             "live_tests::live_v12_write_truncate_insert_rejected_fail_closed",
@@ -831,15 +828,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         MySQL e MariaDB hanno host diversi, e un default silenzioso emetterebbe
         per un riferimento un certificato valido per l'altro.
 
-        `check_mysql_matrix.py` era rimasto a tre. La matrice delle versioni non
-        riusciva ad **avviarsi** — falliva sul certgen, prima di toccare un
-        server — e nessuno se n'era accorto per una settimana: il workflow che
-        la esegue era rotto per un'altra ragione ancora, le dipendenze Python
-        non installate.
-
-        Due gate rotti in punti diversi si sono nascosti a vicenda, ed e la
-        ragione per cui questa guardia guarda l'**invocazione** invece di
-        aspettare che qualcuno la esegua.
+        La guardia verifica staticamente ogni invocazione, così un argomento
+        mancante fallisce prima di avviare le fixture.
         """
 
         generator = (ROOT / "docker" / "mysql" / "tls" / "generate.sh").read_text(
@@ -984,21 +974,16 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             ],
         )
 
-    # I conteggi non compaiono come letterali in questo file: ogni test
-    # aggiunto ne avrebbe richiesti quattro aggiornamenti, e il valore che
-    # portavano era gia coperto dal confronto per nome con la sorgente. Dove
-    # serve un numero, lo si chiede all'inventario — e dove un documento deve
-    # mostrarlo, il documento e generato da quell'inventario.
+    # I conteggi non compaiono come letterali: il confronto per nome con la
+    # sorgente e piu forte e non richiede costanti duplicate. Dove serve un
+    # numero lo si chiede all'inventario; i documenti lo generano da li.
 
     def test_no_surface_names_a_subcommand_the_cli_does_not_have(self) -> None:
         """Un comando citato deve esistere nel dispatch.
 
-        La deriva andava in due direzioni. Una — un comando aggiunto e mai
-        documentato, come `mysql-conditional-update` — non esiste piu:
-        `docs/STATO.md` elenca il dispatch per costruzione, quindi un comando
-        nuovo ci compare da solo. L'altra resta, e questa la presidia: un
-        comando citato ma inesistente manda il lettore contro un `usage()`, e
-        nessun documento generato puo impedirlo.
+        `docs/STATO.md` genera dal codice l'elenco dei comandi esistenti, ma
+        non puo impedire alle altre superfici di citarne uno inesistente. In
+        quel caso il lettore arriverebbe soltanto a `usage()`.
 
         L'autorita e `COMMAND_CATALOGUE`, non una frase e nemmeno i rami del
         match: fra quelli ci sono anche gli arm che traducono il nome di un
@@ -1026,10 +1011,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_every_documented_docker_volume_exists_in_a_compose(self) -> None:
         """Un volume citato nei documenti deve essere quello vero.
 
-        I volumi sono prefissati dal progetto Compose: rinominato il
-        progetto, il vecchio nome resta scritto nei documenti e chi lo cerca
-        non lo trova — `plenora-database-tools_postgres_tls_certs` era
-        sopravvissuto cosi in un documento di hardening, per mesi.
+        I volumi sono prefissati dal progetto Compose: dopo una rinomina, ogni
+        nome documentato deve continuare a risolversi in un file Compose.
         """
 
         legitimate = set()
@@ -1233,21 +1216,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         le note: se promette un motore che non c'e, qualcuno installa e scopre
         il vuoto; se ne tace uno che c'e, qualcuno non prova nemmeno.
 
-        # Perche nei due versi
-
-        Questa guardia ne controllava uno solo, e con una costante: pretendeva
-        che `def connect_sqlserver(` **non** esistesse, perche all'epoca il
-        binding non c'era e la descrizione lo prometteva lo stesso. Ha fatto il
-        suo lavoro fino in fondo — il giorno in cui quel binding e arrivato ha
-        detto «esiste un binding SQL Server: aggiornare questa guardia».
-
-        Girare l'asserzione avrebbe ricostruito la stessa trappola al
-        contrario. Cio che va preteso e la **corrispondenza**, e la
-        corrispondenza si guarda da entrambi i lati: nessun motore promesso
-        senza factory, nessuna factory taciuta dalla promessa.
-
-        E' cosi che si e visto che `MariaDB` mancava dalla descrizione da
-        quando la sua factory esiste.
+        La corrispondenza è bidirezionale: nessun motore promesso senza factory
+        e nessuna factory pubblica taciuta dalla descrizione.
         """
 
         native = (
@@ -1294,10 +1264,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_the_mysql_tls_default_is_documented_as_verifying(self) -> None:
         """Nessuna doc puo dire che il default MySQL non verifica.
 
-        La doc Rust di `connect_mysql` diceva "se `None`, usa
-        `TrustServerCertificate`", cioe il comportamento precedente al fix di
-        parita: dieci righe piu sotto il commento raccontava gia il
-        contrario. Chi legge la firma legge la prima.
+        Firma e documentazione devono entrambe descrivere il default `require`;
+        nessuna nota può suggerire `TrustServerCertificate` in sua assenza.
         """
 
         source = (
@@ -1402,9 +1370,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_the_hardening_gate_reaches_both_postgres_references(self) -> None:
         """Il gate hardening interroga due riferimenti in progetti distinti.
 
-        Prima pretendeva che condividessero il progetto Compose, e la
-        separazione dei progetti lo ha rotto: ora si attacca a entrambe le
-        reti tramite l'helper condiviso.
+        Il gate usa l'helper condiviso per collegarsi a entrambe le reti.
         """
 
         source = (ROOT / "scripts" / "check_postgres_hardening.py").read_text(
@@ -1475,8 +1441,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             # Solo le righe eseguibili. Un commento che spiega **perche** il
             # flag non c'e e la documentazione della regola, non una sua
             # violazione: vietare anche quello obbligherebbe a togliere la
-            # spiegazione insieme al flag, che e il modo in cui una regola
-            # viene reintrodotta da qualcuno che non sa perche esisteva.
+            # spiegazione insieme al flag e renderebbe invisibile il motivo
+            # della regola.
             executable = "\n".join(
                 line
                 for line in source.read_text(encoding="utf-8").splitlines()
@@ -2012,13 +1978,10 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
 
     def test_the_runner_installs_nothing_into_the_source_tree(self) -> None:
-        """Il modulo nativo non torna piu accanto ai sorgenti.
+        """Il modulo nativo non viene copiato accanto ai sorgenti.
 
-        Copiarlo li rendeva possibile un `pytest` a mano che sembrava
-        funzionare, ed era la copia di una corsa precedente. Ora la build
-        esporta il wheel in una directory temporanea e il source tree resta
-        senza `.so`: chi salta il runner ottiene un errore di import, non un
-        risultato sbagliato.
+        La build esporta il wheel in una directory temporanea: una corsa fuori
+        dal runner non può importare per errore un artefatto residuo.
         """
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
@@ -2227,10 +2190,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
 
         Il riferimento di sviluppo e plaintext per costruzione: il lato SDK
         passa da `_harness` con `insecure_local`, e il CLI ha il proprio
-        interruttore. Senza, dopo ADR-011 fallisce in `connect` — ed e cosi
-        che si e scoperto che il binario misurato fino a ieri era
-        **precedente** al default fail-closed. Due lati che parlano trasporti
-        diversi non sono un confronto.
+        interruttore. Due lati che parlano trasporti diversi non costituiscono
+        un confronto valido.
         """
 
         tests = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
@@ -2315,9 +2276,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         decide cosa risponde `p.version()`, `Cargo.lock` e cio che le build
         `--locked` pretendono di ritrovare, e il CHANGELOG e quello che legge
         chi aggiorna. Due che divergono producono un artefatto che mente su se
-        stesso: un wheel `0.10.0` che dichiara `0.9.2` a chi lo interroga. E
-        gia successo — il commento accanto alla versione del crate ricorda il
-        bug della v0.1.0 — e fino a ora a impedirlo c'era solo quel commento.
+        stesso: per esempio un nome wheel diverso dalla versione restituita dal
+        modulo.
         """
 
         self.assertEqual(sdk.declared_version(), SDK_VERSION)
@@ -2470,8 +2430,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         non si sa niente, e salta per motivi che somigliano a un errore di
         configurazione — un binario spostato, una variabile che nessuno passa
         piu — cioe resta verde proprio quando il gate ha smesso di misurare.
-        Il bench di parita l'ha fatto: 218 passed, 1 skipped, un confronto
-        sparito. Una deselezione fa lo stesso da un'altra porta: un `-k` che
+        Una deselezione fa lo stesso da un'altra porta: un `-k` che
         non seleziona piu niente non e un errore per pytest.
         """
 

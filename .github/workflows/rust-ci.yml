@@ -1,10 +1,7 @@
 name: rust-ci
 
-# CI di base: verifica che il workspace sia formattato, compili e che clippy
-# pedantic non emetta warning. Test live che richiedono Postgres NON vengono
-# eseguiti qui (usano #[ignore] o env-guard, richiedono docker compose
-# aggiuntivo — vedi gate script `scripts/check_postgres_reference.py`
-# per il gate live-full).
+# CI offline: formattazione, compilazione, lint, test statici e test che non
+# richiedono fixture. Le campagne live appartengono ai workflow dei provider.
 
 on:
   push:
@@ -27,12 +24,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Self-test statici: solo Python, nessuna toolchain, nessuna cache, nessun
-  # container, nessun server. Stanno qui perche `rust-ci` e l'unico workflow
-  # che gira su ogni push e su ogni PR, ed e la ragione per cui il file che
-  # la prima di queste suite sostituisce e rimasto rosso per mesi senza che
-  # nessuno lo vedesse: nessun job lo eseguiva. Una suite nuova si aggiunge
-  # a questo elenco, non a un file che nessuno esegue.
+  # Self-test statici: solo Python, nessuna toolchain, cache, container o
+  # server. Una nuova guardia offline entra in questo job, che gira su ogni
+  # push e pull request.
   static-self-tests:
     name: self-test statici
     runs-on: ubuntu-latest
@@ -41,23 +35,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      # I self-test statici hanno dipendenze dichiarate e pinnate: senza
-      # questo passo il gate offline della Fase 0 non puo nemmeno importare
-      # `jsonschema`, ed era un gate che in CI non poteva passare.
+      # Le dipendenze dei self-test sono dichiarate e pinnate separatamente.
       - name: dipendenze dei self-test
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: scripts/test_ci_workflows.py
         run: python3 scripts/test_ci_workflows.py
       - name: scripts/test_check_mariadb_reference.py
         run: python3 scripts/test_check_mariadb_reference.py
-      # Novantaquattro test che nessun workflow eseguiva. Il gate MySQL gira
-      # in `mysql-static-gate`, il suo self-test no: e la stessa distinzione
-      # che aveva lasciato scoperto il gate PostgreSQL, e qui si vedeva anche
-      # meno — c'e un workflow con «mysql» nel nome, e sembra coprirlo.
-      #
-      # Non e teorico: due di quei test erano rossi quando li ho eseguiti la
-      # prima volta, uno per una rifattorizzazione del runner SDK di questa
-      # stessa sessione.
       - name: scripts/test_check_mysql_reference.py
         run: python3 scripts/test_check_mysql_reference.py
       - name: scripts/test_live_inventory.py
@@ -68,26 +52,25 @@ jobs:
         run: python3 scripts/test_check_postgres_hardening.py
       - name: scripts/test_check_session_matrix.py
         run: python3 scripts/test_check_session_matrix.py
-      # Il gate offline non era eseguito da nessun workflow: le sue guardie
-      # sui contratti — inclusa quella che tiene la major attiva dentro il
-      # proprio dominio — vivevano senza che niente le facesse fallire.
       - name: scripts/phase0_validate.py
         run: python3 scripts/phase0_validate.py
-      # Non solo `tests/phase0`: la discovery completa include anche i
-      # self-test delle matrici e delle campagne prestazionali, che nessun
-      # workflow eseguiva. Sono statici — leggono sorgenti e workflow, non
-      # aprono connessioni — quindi stanno in questo job leggero.
+      - name: scripts/check_comments.py
+        run: python3 scripts/check_comments.py
+      # Il refactor misura solo il codice di prodotto: cancellare evidence o
+      # spostare test non puo far apparire una riduzione che non esiste. Il
+      # budget e una guardia, quindi vive nel workflow che esegue gli altri
+      # gate offline e non in una convenzione locale.
+      - name: scripts/code_size.py --check
+        run: python3 scripts/code_size.py --check
+      # La discovery completa include i self-test statici delle matrici e
+      # delle campagne prestazionali.
       - name: tests/
         run: python3 -m unittest discover -s tests -t .
       # `docs/STATO.md` e generato: se resta indietro rispetto al codice, e un
       # documento che ha l'aria di essere sempre vero.
       - name: scripts/render_state.py --check
         run: python3 scripts/render_state.py --check
-      # Duplicazione dichiarata: `sqlserver-assurance` esegue gia questo
-      # self-test su push. Qui gira anche sulle PR, dove quel workflow parte
-      # solo se il diff tocca i path del provider — e un self-test che si
-      # accorge di una superficie rotta vale di piu prima del merge che dopo.
-      # Il costo e qualche secondo; il beneficio e il fail-fast.
+      # Anche il workflow SQL Server lo esegue, ma qui copre tutte le PR.
       - name: scripts/test_check_sqlserver_reference.py
         run: python3 scripts/test_check_sqlserver_reference.py
 
@@ -125,19 +108,8 @@ jobs:
       - name: cargo clippy (pedantic + nursery)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  # Ogni adapter deve costruirsi da solo. La combinazione mysql-only non
-  # compilava affatto — `typed_params` e le funzioni dello schema effimero
-  # stavano dietro la feature `postgres` pur non avendone bisogno — e nessun
-  # job se ne accorgeva: la CI costruiva solo i default e `--all-features`,
-  # cioe le due configurazioni in cui PostgreSQL c'e sempre.
-  #
-  # Le quattro combinazioni girano in **un** job, non in una matrice di
-  # quattro. La prima stesura usava `strategy.matrix` e ha fatto fallire la
-  # CI a valle di se stessa: sei job in parallelo scaricavano la stessa
-  # action di cache nello stesso istante, e `codeload.github.com` ne ha
-  # rifiutato uno con 429. Un job solo scarica l'action una volta, riusa la
-  # stessa cache per tutte e quattro le configurazioni, e non moltiplica una
-  # dipendenza di rete per il numero di cose che vuole verificare.
+  # Ogni adapter deve compilare e superare i test anche isolato. Un solo job
+  # riusa toolchain e cache, limitando le richieste concorrenti alle action.
   cli-feature-matrix:
     name: CLI feature matrix
     runs-on: ubuntu-latest
@@ -150,23 +122,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
-      # `--all-targets` include i test: senza, un modulo di test che assume
-      # PostgreSQL resterebbe rotto in tre combinazioni su quattro senza che
-      # nulla lo dica. Il ciclo le prova tutte prima di fallire, cosi una
-      # combinazione rotta non nasconde la successiva.
-      #
-      # I test vengono anche **eseguiti**, non solo compilati: il loro valore
-      # sta tutto nelle configurazioni non di default, dove `cargo test` del
-      # job `test-unit` non arriva — ed e infatti li che l'aiuto mentiva.
-      #
-      # Girava un sottoinsieme scelto per nome, quelli che filtrano su
-      # `usage`, e il sottoinsieme era il difetto: due test delle factory di
-      # provider erano rossi con `--features mysql` e con `--features
-      # sqlserver` — pretendevano `Postgres` in un binario che non lo
-      # compila — e nessuno li eseguiva. Un filtro per nome sceglie cosa
-      # guardare in base a come si chiama, che e la stessa cosa che aveva
-      # lasciato rossa una suite per mesi. Ora gira tutto cio che non e
-      # `live_`, che qui non ha fixture da interrogare.
+      # `--all-targets` compila anche i test. Il ciclo raccoglie tutte le
+      # configurazioni fallite ed esegue l'intera suite non-live per ognuna.
       - name: cargo clippy su ogni adapter isolato
         run: |
           status=0
@@ -183,16 +140,9 @@ jobs:
           done
           exit $status
 
-  # La suite SDK offline girava **solo** in `python-wheel`, che si attiva a
-  # mano o su una release. Una PR che rompeva i parametri tipizzati, la
-  # normalizzazione Arrow o l'AST portable passava tutti i controlli e si
-  # scopriva il giorno della pubblicazione, quando l'unica cosa da fare e
-  # ritirare un wheel. Sta qui perche `rust-ci` e il workflow che vede ogni
-  # push e ogni PR.
-  #
-  # Il wheel si costruisce in debug: serve un modulo nativo importabile, non un
-  # artefatto distribuibile — quello resta compito di `python-wheel`, che lo
-  # costruisce in release, con `--locked` e manylinux.
+  # La suite SDK offline protegge ogni push e PR. Il wheel di debug serve solo
+  # come modulo nativo importabile; gli artefatti distribuibili sono costruiti
+  # dal workflow `python-wheel`.
   sdk-offline:
     name: suite SDK offline
     runs-on: ubuntu-latest
@@ -226,11 +176,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
-      # Runna solo i test non-live. Nel workspace ci sono ~88 test
-      # nominati `live_*` (in src/**/tests/) che sono `#[tokio::test]`
-      # (non `#[ignore]`) e hardcodano `host=dataflow-postgres` in
-      # secret(): senza il container Postgres locale falliscono. Sono
-      # coperti dal gate live `scripts/check_postgres_reference.py`
-      # invocato out-of-CI. Qui li filtriamo per nome.
+      # I test `live_*` richiedono le fixture e sono coperti dalle campagne dei
+      # provider; questo job esegue il resto del workspace.
       - name: cargo test --workspace (senza live_*)
         run: cargo test --workspace -- --skip live_

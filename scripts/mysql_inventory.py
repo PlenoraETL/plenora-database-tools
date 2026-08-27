@@ -45,8 +45,7 @@ TEST_ATTRIBUTE = re.compile(
     r"^\s*#\[\s*(?:\w+\s*::\s*)*test\s*(?:\([^)]*\))?\]\s*$"
 )
 IGNORE_ATTRIBUTE = re.compile(r"^\s*#\[ignore\b")
-# `pub(crate)` e `pub(super)` sono visibilita valide: la forma precedente
-# accettava solo `pub` nudo e avrebbe perso il test in silenzio.
+# `pub(crate)` e `pub(super)` sono visibilità valide e vanno inventariate.
 # `r#` e il prefisso degli identificatori raw e **non** fa parte del nome:
 # `fn r#type()` si chiama `type`. Non accettarlo faceva sparire il test senza
 # dire niente, ed e la stessa correzione gia fatta nell'inventario condiviso.
@@ -150,7 +149,7 @@ def _scan(source: Path) -> list[MysqlTest]:
     attributes: list[str] = []
     # La discovery e ricorsiva (`rglob`), ma il percorso si costruisce dal solo
     # `stem`: un file in una sottodirectory avrebbe un modulo intermedio che
-    # nessuno rappresenta. Oggi non ce ne sono, e se ne comparisse uno questo
+    # nessuno rappresenta. Se ne comparisse uno, questo
     # controllo lo direbbe invece di lasciare che il gate chieda a cargo un
     # nome inesistente.
     if source.parent != SOURCE_DIR:
@@ -238,7 +237,7 @@ def _scan(source: Path) -> list[MysqlTest]:
 # sostenere quell'affermazione, e il gate finirebbe per pretenderne
 # l'esecuzione contro il riferimento sbagliato.
 #
-# `session_evidence.rs` misura la semantica di sessione sui tre riferimenti,
+# `session_evidence.rs` misura la semantica di sessione sui riferimenti,
 # con lo stesso runner parametrizzato (`scripts/check_session_matrix.py`).
 # Vale la stessa ragione: due terzi delle sue corse avvengono su un motore che
 # il gate non qualifica.

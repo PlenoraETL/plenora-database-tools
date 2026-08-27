@@ -11,9 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// Predicato spaziale canonico.
 ///
-/// Non è un catalogo esaustivo dei predicati OGC: sono i predicati che la
-/// roadmap PFM richiede come minimo (`DBT-PFM-006`) — coprono il read GIS
-/// operativo tipico (mappa + filtri applicativi).
+/// Non è un catalogo esaustivo OGC: delimita la semantica portabile supportata
+/// dal read GIS operativo.
 #[allow(clippy::derive_partial_eq_without_eq)] // DWithin contiene f64
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -87,13 +86,11 @@ pub struct SpatialReference {
 impl SpatialReference {
     /// Costruisce un `SpatialReference` validando che i metadati
     /// dichiarati (`srid`, `dimensions`) coincidano con quelli reali
-    /// dell'EWKB. Fix review #5.
+    /// dell'EWKB.
     ///
-    /// Prima di questo costruttore era possibile dichiarare
-    /// `srid: 3857` e passare un EWKB con SRID embedded 4326: il
-    /// compiler bindava l'EWKB come `bytea` e `PostGIS` usava il SRID
-    /// embedded, aggirando `spatial_policy::validate_predicate` e
-    /// producendo silent wrong result.
+    /// Il controllo impedisce che un EWKB con SRID embedded contraddica il
+    /// riferimento usato da `spatial_policy::validate_predicate`, evitando
+    /// risultati calcolati nel sistema di riferimento sbagliato.
     ///
     /// # Errors
     ///
@@ -212,7 +209,7 @@ mod tests {
         assert!(json.contains("distance_meters"));
     }
 
-    // ---- Fix review #5: SpatialReference::new_validated -------------
+    // Fixture EWKB per la validazione dei riferimenti spaziali.
 
     /// Costruisce un EWKB Point 2D con SRID prefixed. Little-endian.
     /// Formato: byte order + `type_with_srid_flag` + srid + x + y.

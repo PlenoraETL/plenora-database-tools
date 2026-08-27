@@ -1,3 +1,5 @@
+//! Tipi canonici per geometrie, CRS e metadati Arrow spaziali.
+
 use serde::{Deserialize, Serialize};
 
 pub const GEOARROW_WKB_EXTENSION_NAME: &str = "geoarrow.wkb";
@@ -143,14 +145,9 @@ pub enum CrsResolution {
 /// Il contratto di una colonna geometrica, **in memoria**.
 ///
 /// Non e la forma di un documento JSON: il contratto di colonna viaggia come
-/// metadata di campo Arrow, con le chiavi `plenora.geometry.*` dichiarate in
-/// [`crate::protocol`] e lette da [`crate::field_contract`]. Fino a poco fa
-/// `contracts/v2/common.schema.json` conteneva anche un `$defs`
-/// `geometry_contract` che descriveva un JSON con altri campi
-/// (`geometry_type` al singolare, `srid`, `crs` come stringa): nessuno lo
-/// riferiva, nessun produttore lo emetteva, e diceva una cosa diversa da
-/// questo tipo. E stato tolto, e `phase0_validate.py` ora rifiuta le
-/// definizioni senza riferimenti perche non ne ricompaiano.
+/// metadata Arrow, con le chiavi `plenora.geometry.*` dichiarate in
+/// [`crate::protocol`] e lette da [`crate::field_contract`]. Il gate offline
+/// rifiuta definizioni JSON non referenziate che fingano una seconda forma.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeometryContract {

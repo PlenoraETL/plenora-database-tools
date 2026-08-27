@@ -5,14 +5,13 @@ Ogni builder si accumula in un dict AST via chain-methods (`.where_eq(...)`,
 `.scalar()` / `.execute()`. La serializzazione JSON avviene solo nei
 metodi terminali; il dict AST è ispezionabile via `.to_ast()`.
 
-Nota: le classi qui non sanno del provider — parlano il linguaggio
-canonico del core Rust (`PortableStatement`). Il driver Postgres o
-un futuro driver MySQL/SQL Server lo compilano nel dialetto opportuno.
+Le classi non conoscono il provider: parlano il linguaggio canonico del core
+Rust (`PortableStatement`), che ogni adapter compila nel proprio dialetto.
 """
 from __future__ import annotations
 
 import json
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypeVar
 
 from ._ast import and_predicates, column_expr, literal_expr, table_ref
 from .spatial import (
@@ -108,7 +107,7 @@ class _WhereMixin:
 
         Il core Rust compila in `ST_<Predicate>(column, ST_GeomFromEWKB($n)::<cast>)`
         con `<cast>` = `geometry` o `geography` in base a
-        `reference.semantics` (fix driver v0.2, ora esteso review #4).
+        `reference.semantics`.
 
         Raises:
             ValueError: se predicate/semantics/srid producono un silent
@@ -125,6 +124,79 @@ class _WhereMixin:
 
     def _add(self, pred: dict) -> None:
         self._filter = and_predicates(self._filter, pred)
+
+
+_ReturningBuilder = TypeVar("_ReturningBuilder", bound="_ReturningMutation")
+
+
+class _ReturningMutation:
+    """Terminali comuni alle mutazioni con `RETURNING`."""
+
+    _returning: list[str]
+    _session: Any
+    _execute_hint = ".all() / .one()"
+
+    def returning(
+        self: _ReturningBuilder, *cols: str
+    ) -> _ReturningBuilder:
+        self._returning = list(cols)
+        return self
+
+    def execute(self) -> int:
+        name = type(self).__name__
+        if self._returning:
+            raise RuntimeError(
+                f"{name}.execute() non usa RETURNING; usa {self._execute_hint} "
+                "se lo hai chiamato"
+            )
+        return self._session._execute_portable_count(json.dumps(self.to_ast()))
+
+    def all(self) -> list[dict]:
+        name = type(self).__name__
+        if not self._returning:
+            raise RuntimeError(f"{name}.all() richiede prima .returning(...)")
+        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
+
+    def one(self) -> dict:
+        rows = self.all()
+        if len(rows) != 1:
+            raise RuntimeError(
+                f"{type(self).__name__}.one() atteso 1 riga, trovate {len(rows)}"
+            )
+        return rows[0]
+
+    def to_ast(self) -> dict:
+        raise NotImplementedError
+
+
+def _append_values(builder: Any, values: dict[str, Any]) -> None:
+    if not builder._columns:
+        builder._columns = list(values)
+    builder._values.append([literal_expr(values[column]) for column in builder._columns])
+
+
+def _append_rows(builder: Any, rows: list[dict]) -> None:
+    if not rows:
+        return
+    if not builder._columns:
+        builder._columns = list(rows[0])
+    expected = set(builder._columns)
+    for index, row in enumerate(rows):
+        actual = set(row)
+        if actual != expected:
+            details = []
+            if missing := expected - actual:
+                details.append(f"colonne mancanti: {sorted(missing)}")
+            if extra := actual - expected:
+                details.append(f"chiavi extra ignorate: {sorted(extra)}")
+            name = type(builder).__name__
+            raise ValueError(
+                f"{name}.rows() riga {index} ha chiavi diverse dalla prima: "
+                f"{'; '.join(details)}. Attesi esattamente {sorted(expected)}."
+            )
+        builder._values.append(
+            [literal_expr(row[column]) for column in builder._columns]
+        )
 
 
 class Select(_WhereMixin):
@@ -187,10 +259,12 @@ class Select(_WhereMixin):
         return next(iter(row.values()))
 
 
-class Insert:
+class Insert(_ReturningMutation):
     """INSERT builder. Multi-row via `.rows([{...}, {...}])`, single-row
     via `.values(**kwargs)`. Terminali: `.execute()` (no returning),
     `.all()` / `.one()` (con returning)."""
+
+    _execute_hint = ".all() o .one()"
 
     def __init__(self, session: "Session", table: str, schema: str | None = None) -> None:
         self._session = session
@@ -202,44 +276,16 @@ class Insert:
     def values(self, **kwargs: Any) -> "Insert":
         """Singola riga da kwargs. Se non hai ancora chiamato .columns(),
         i keys diventano le colonne."""
-        if not self._columns:
-            self._columns = list(kwargs.keys())
-        row = [literal_expr(kwargs[col]) for col in self._columns]
-        self._values.append(row)
+        _append_values(self, kwargs)
         return self
 
     def rows(self, rows: list[dict]) -> "Insert":
         """Multi-row: ogni dict deve avere ESATTAMENTE le stesse chiavi.
 
-        Fix review #13: prima le chiavi extra rispetto alla prima riga
-        venivano silently ignorate (perdita di dati). Ora fail-closed
-        se le chiavi non combaciano — meglio errore esplicito che
-        INSERT con colonne dimenticate.
+        Le chiavi devono coincidere: ignorare quelle extra causerebbe perdita
+        silenziosa di dati, quindi il builder fallisce in modo esplicito.
         """
-        if not rows:
-            return self
-        if not self._columns:
-            self._columns = list(rows[0].keys())
-        expected = set(self._columns)
-        for i, r in enumerate(rows):
-            actual = set(r.keys())
-            if actual != expected:
-                missing = expected - actual
-                extra = actual - expected
-                parts = []
-                if missing:
-                    parts.append(f"colonne mancanti: {sorted(missing)}")
-                if extra:
-                    parts.append(f"chiavi extra ignorate: {sorted(extra)}")
-                raise ValueError(
-                    f"Insert.rows() riga {i} ha chiavi diverse dalla prima: "
-                    f"{'; '.join(parts)}. Attesi esattamente {sorted(expected)}."
-                )
-            self._values.append([literal_expr(r[col]) for col in self._columns])
-        return self
-
-    def returning(self, *cols: str) -> "Insert":
-        self._returning = list(cols)
+        _append_rows(self, rows)
         return self
 
     def to_ast(self) -> dict:
@@ -253,28 +299,9 @@ class Insert:
             ast["returning"] = self._returning
         return ast
 
-    def execute(self) -> int:
-        if self._returning:
-            raise RuntimeError(
-                "Insert.execute() non usa RETURNING; usa .all() o .one() se lo hai chiamato"
-            )
-        return self._session._execute_portable_count(json.dumps(self.to_ast()))
-
-    def all(self) -> list[dict]:
-        if not self._returning:
-            raise RuntimeError(
-                "Insert.all() richiede prima .returning(...)"
-            )
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    def one(self) -> dict:
-        rows = self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"Insert.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
 
 
-class Update(_WhereMixin):
+class Update(_ReturningMutation, _WhereMixin):
     """UPDATE builder. `.set(**kwargs)` per gli assignments."""
 
     def __init__(self, session: "Session", table: str, schema: str | None = None) -> None:
@@ -289,10 +316,6 @@ class Update(_WhereMixin):
             self._assignments.append([col, literal_expr(val)])
         return self
 
-    def returning(self, *cols: str) -> "Update":
-        self._returning = list(cols)
-        return self
-
     def to_ast(self) -> dict:
         ast: dict = {
             "type": "update",
@@ -305,26 +328,9 @@ class Update(_WhereMixin):
             ast["returning"] = self._returning
         return ast
 
-    def execute(self) -> int:
-        if self._returning:
-            raise RuntimeError(
-                "Update.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return self._session._execute_portable_count(json.dumps(self.to_ast()))
-
-    def all(self) -> list[dict]:
-        if not self._returning:
-            raise RuntimeError("Update.all() richiede prima .returning(...)")
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    def one(self) -> dict:
-        rows = self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"Update.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
 
 
-class Delete(_WhereMixin):
+class Delete(_ReturningMutation, _WhereMixin):
     """DELETE builder."""
 
     def __init__(self, session: "Session", table: str, schema: str | None = None) -> None:
@@ -332,10 +338,6 @@ class Delete(_WhereMixin):
         self._session = session
         self._table = table_ref(table, schema)
         self._returning: list[str] = []
-
-    def returning(self, *cols: str) -> "Delete":
-        self._returning = list(cols)
-        return self
 
     def to_ast(self) -> dict:
         ast: dict = {
@@ -348,26 +350,9 @@ class Delete(_WhereMixin):
             ast["returning"] = self._returning
         return ast
 
-    def execute(self) -> int:
-        if self._returning:
-            raise RuntimeError(
-                "Delete.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return self._session._execute_portable_count(json.dumps(self.to_ast()))
-
-    def all(self) -> list[dict]:
-        if not self._returning:
-            raise RuntimeError("Delete.all() richiede prima .returning(...)")
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
-
-    def one(self) -> dict:
-        rows = self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"Delete.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
 
 
-class Upsert:
+class Upsert(_ReturningMutation):
     """UPSERT (INSERT ... ON CONFLICT) builder."""
 
     def __init__(self, session: "Session", table: str, schema: str | None = None) -> None:
@@ -380,34 +365,12 @@ class Upsert:
         self._returning: list[str] = []
 
     def values(self, **kwargs: Any) -> "Upsert":
-        if not self._columns:
-            self._columns = list(kwargs.keys())
-        row = [literal_expr(kwargs[col]) for col in self._columns]
-        self._values.append(row)
+        _append_values(self, kwargs)
         return self
 
     def rows(self, rows: list[dict]) -> "Upsert":
-        """Multi-row: fail-closed su chiavi non uniformi (fix review #13)."""
-        if not rows:
-            return self
-        if not self._columns:
-            self._columns = list(rows[0].keys())
-        expected = set(self._columns)
-        for i, r in enumerate(rows):
-            actual = set(r.keys())
-            if actual != expected:
-                missing = expected - actual
-                extra = actual - expected
-                parts = []
-                if missing:
-                    parts.append(f"colonne mancanti: {sorted(missing)}")
-                if extra:
-                    parts.append(f"chiavi extra ignorate: {sorted(extra)}")
-                raise ValueError(
-                    f"Upsert.rows() riga {i} ha chiavi diverse dalla prima: "
-                    f"{'; '.join(parts)}. Attesi esattamente {sorted(expected)}."
-                )
-            self._values.append([literal_expr(r[col]) for col in self._columns])
+        """Multi-row: fail-closed su chiavi non uniformi."""
+        _append_rows(self, rows)
         return self
 
     def conflict_target(self, *cols: str) -> "Upsert":
@@ -417,10 +380,6 @@ class Upsert:
     def update_on_conflict(self, **kwargs: Any) -> "Upsert":
         for col, val in kwargs.items():
             self._update_on_conflict.append([col, literal_expr(val)])
-        return self
-
-    def returning(self, *cols: str) -> "Upsert":
-        self._returning = list(cols)
         return self
 
     def to_ast(self) -> dict:
@@ -437,20 +396,23 @@ class Upsert:
             ast["returning"] = self._returning
         return ast
 
-    def execute(self) -> int:
-        if self._returning:
-            raise RuntimeError(
-                "Upsert.execute() non usa RETURNING; usa .all() / .one() se lo hai chiamato"
-            )
-        return self._session._execute_portable_count(json.dumps(self.to_ast()))
 
-    def all(self) -> list[dict]:
-        if not self._returning:
-            raise RuntimeError("Upsert.all() richiede prima .returning(...)")
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
+class _BuilderFactory:
+    """Factory sync riusate da sessioni e transazioni."""
 
-    def one(self) -> dict:
-        rows = self.all()
-        if len(rows) != 1:
-            raise RuntimeError(f"Upsert.one() atteso 1 riga, trovate {len(rows)}")
-        return rows[0]
+    __slots__ = ()
+
+    def select(self, table: str, schema: str | None = None) -> Select:
+        return Select(self, table, schema)
+
+    def insert(self, table: str, schema: str | None = None) -> Insert:
+        return Insert(self, table, schema)
+
+    def update(self, table: str, schema: str | None = None) -> Update:
+        return Update(self, table, schema)
+
+    def delete(self, table: str, schema: str | None = None) -> Delete:
+        return Delete(self, table, schema)
+
+    def upsert(self, table: str, schema: str | None = None) -> Upsert:
+        return Upsert(self, table, schema)

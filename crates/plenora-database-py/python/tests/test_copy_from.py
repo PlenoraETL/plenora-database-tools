@@ -1,4 +1,4 @@
-"""P3 v0.1.2 — Test live per bulk write via copy_from (sync + async).
+"""Test live per bulk write via copy_from, sync e async.
 
 Richiede pyarrow installato per costruire l'input.
 """
@@ -100,7 +100,7 @@ def test_copy_from_ipc_bytes_pass_through(session) -> None:
 
 
 def test_copy_from_mode_create_builds_table_from_arrow_schema(session) -> None:
-    """v0.2.0 — mode='create' crea la tabella target dallo schema Arrow.
+    """La mode `create` crea la tabella target dallo schema Arrow.
 
     Il provider Postgres genera CREATE TABLE dallo schema Arrow. Il target
     NON deve esistere già (o Conflict); il preflight `Create + !exists`

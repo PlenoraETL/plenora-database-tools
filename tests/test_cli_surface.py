@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Ogni comando del CLI dice a quale delle tre famiglie appartiene.
 
-Il CLI ha trentatre comandi dietro la feature `postgres`, nove dietro `mysql`,
-e sette sempre presenti. Letto cosi sembra un'asimmetria fra prodotti, e in
-parte lo e — ma solo in parte, e la differenza non era scritta da nessuna
-parte.
+Le differenze tra superfici generiche, strumenti di prova e comandi specifici
+di un prodotto devono essere dichiarate, non dedotte da un conteggio.
 
 # Le tre famiglie
 
@@ -19,17 +17,13 @@ a una sola».
 con cui questo repository misura se stesso. Che vivano su PostgreSQL soltanto
 non e un'asimmetria da colmare — e dove il banco e stato costruito.
 
-**Specifica di prodotto.** Cio che resta: comandi con il prefisso di un motore,
-nati prima che la famiglia generica esistesse. Ognuno va dichiarato qui con la
-ragione per cui non e ancora generico, cosi la lista si accorcia quando
-qualcuno la accorcia, e non si allunga per distrazione.
+**Specifica di prodotto.** Comandi con il prefisso di un motore. Ognuno va
+dichiarato qui con la ragione per cui non è generico.
 
 # Perche una guardia
 
-Perche senza, la terza famiglia cresce. Ogni volta che un motore nuovo ha
-bisogno di qualcosa, la strada piu corta e aggiungere `<motore>-comando`, e
-nessuno se ne accorge finche non si contano — che e come e stata scoperta
-questa asimmetria.
+La guardia impedisce che un nuovo `<motore>-comando` allarghi per distrazione
+la superficie specifica invece di riusare quella generica.
 """
 
 from __future__ import annotations
@@ -156,10 +150,8 @@ class EveryCommandDeclaresItsFamily(unittest.TestCase):
     def test_the_generic_family_is_reachable_by_every_provider(self) -> None:
         """Un comando generico non puo essere dietro la feature di un motore.
 
-        `portable-compile` lo era: viveva in un modulo compilato solo con
-        `postgres`, e un binario `--features mysql` non poteva compilare un
-        piano **per MySQL**. La feature `None` e cio che rende vera la parola
-        «generico», e questa prova la pretende.
+        La feature `None` rende il comando raggiungibile in ogni build e rende
+        verificabile la parola «generico».
         """
 
         entries = self.catalogue()

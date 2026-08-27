@@ -30,10 +30,8 @@ use std::sync::Arc;
 
 /// Bulk write della famiglia: decodifica l'IPC, costruisce il piano, scrive.
 ///
-/// `pub(crate)` perche la usano entrambi i binding — il sync tramite
-/// `copy_from_sync_family`, l'async direttamente da `acopy_from`. Finche non
-/// lo era, il percorso async ne teneva una copia riga per riga, e le due
-/// sarebbero divergute alla prima modifica di una sola.
+/// `pub(crate)` perche e l'implementazione condivisa dai binding sync, tramite
+/// `copy_from_sync_family`, e async, tramite `acopy_from`.
 ///
 /// # Errors
 ///

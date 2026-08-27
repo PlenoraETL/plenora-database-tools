@@ -31,7 +31,12 @@
 
 #![allow(clippy::doc_markdown)]
 
+use crate::errors::to_py_err;
+use plenora_database_core::facade::scalar_opt;
+use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::ParameterValue;
+use plenora_database_core::transaction::Statement;
+use plenora_database_core::{DatabaseError, Row};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyFloat, PyList, PyString};
@@ -179,9 +184,8 @@ fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     }
     if value.is_instance_of::<PyFloat>() {
         let f: f64 = value.extract()?;
-        // Fix review (JSON silent coercion): JSON standard non ammette
-        // NaN/±Infinity. Prima: silent conversion a `null` (perdita
-        // di informazione + fuorviante). Ora: fail-closed con errore
+        // JSON non ammette NaN o infinito: convertirli in `null` perderebbe
+        // informazione, quindi il binding fallisce in modo esplicito.
         // esplicito che dice al consumer di gestire il caso.
         if !f.is_finite() {
             // Il valore *e* il dato: NaN o infinito arrivano da una colonna
@@ -240,14 +244,10 @@ pub enum NumberKind {
     Opaque,
 }
 
-/// L'ordine conta, e prima era sbagliato.
-///
 /// `as_u64()` va provato **prima** di `as_f64()`: un conteggio oltre
 /// `i64::MAX` — e i conteggi di `RowCounts` sono tutti `u64` — passava per
-/// `as_f64()`, che riesce, e arrivava in Python come float approssimato. Il
-/// ramo a stringa, che il commento dava per il caso "u64 fuori da i64", non
-/// era raggiungibile. Python ha interi di precisione arbitraria: non c'e
-/// alcuna ragione di perdere cifre nel passaggio.
+/// `as_f64()` ma perderebbe precisione. Python ha interi di precisione
+/// arbitraria, quindi il ramo unsigned deve precedere quello float.
 pub fn classify_number(n: &serde_json::Number) -> NumberKind {
     n.as_i64().map_or_else(
         || {
@@ -290,6 +290,44 @@ pub fn json_to_python<'py>(
         }
     }
 }
+
+/// Costruisce uno statement canonico da SQL e parametri Python.
+pub fn statement_from_python(sql: &str, params: Option<&Bound<'_, PyList>>) -> PyResult<Statement> {
+    Ok(Statement::new(sql.to_owned()).with_params(params_from_python(params)?))
+}
+
+/// Deserializza l'AST portabile senza esporre nel messaggio il payload JSON.
+pub fn portable_from_json(value: &str) -> PyResult<PortableStatement> {
+    serde_json::from_str(value).map_err(|error| {
+        to_py_err(DatabaseError::invalid_plan(format!(
+            "AST portable non valida a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        )))
+    })
+}
+
+/// Applica la cardinalita scalare comune e converte il valore in Python.
+pub fn scalar_to_python(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyAny>> {
+    scalar_opt(rows).map_err(to_py_err)?.as_ref().map_or_else(
+        || Ok(py.None().into_bound(py)),
+        |value| param_to_python(py, value),
+    )
+}
+
+/// Converte righe canoniche in `list[dict]` senza indicizzazione posizionale.
+pub fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyList>> {
+    let out = PyList::empty(py);
+    for row in rows {
+        let dict = PyDict::new(py);
+        for (column, value) in row.columns().iter().zip(row.values()) {
+            dict.set_item(column.as_str(), param_to_python(py, value)?)?;
+        }
+        out.append(dict)?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod number_tests {
     use super::{classify_number, NumberKind};

@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Misura di evidenza MariaDB al livello del driver e del provider.
 
-La prima tranche ha misurato dal **client**: SQL eseguito da `mariadb` e
-`mysql`, che ha smentito tre delle cinque divergenze dichiarate e ne ha
-trovate due che nessuno aveva nominato. Il client pero non vede il
-protocollo — i metadata di `COM_STMT_PREPARE`, i tipi wire, il modo in cui il
+Le sonde client misurano la semantica SQL; questo runner copre anche il
+protocollo, i metadata di `COM_STMT_PREPARE`, i tipi wire e il modo in cui il
 provider classifica un esito — e quelle sono le superfici su cui si decide se
 MariaDB possa condividere un profilo o serva un provider dedicato.
 
-Questo runner esegue la misura **dentro il crate**, dove vive il bypass di
-solo test sul rifiuto iniziale, e la ripete identica sui tre server: MySQL
-9.7.2, MariaDB 12.3.2 e MariaDB 11.8.8. Stesse sonde, stesso schema, stesso
-JSON.
+Esegue la misura **dentro il crate**, dove vive il bypass di solo test sul
+rifiuto iniziale, e la ripete identica sui riferimenti dichiarati: stesse
+sonde, stesso schema e stesso JSON.
 
 Il verdetto separa due famiglie, perche rispondono a due domande diverse:
 
@@ -19,10 +16,8 @@ Il verdetto separa due famiglie, perche rispondono a due domande diverse:
 * `provider` — cosa succede a **questo** provider quando attraversa quelle
   stesse superfici.
 
-Una superficie che il protocollo offre e che il provider non raggiunge — per
-`MAX_EXECUTION_TIME`, o per `information_schema.statistics.EXPRESSION` — non
-e un difetto del motore: e codice che oggi non esiste, ed e esattamente cio
-che la decisione deve pesare.
+Una superficie offerta dal protocollo ma non raggiunta dal provider non è un
+difetto del motore: identifica codice mancante nel percorso del prodotto.
 
 **Cosa non fa.** Non decide, non corregge e non aggira: una sonda rifiutata e
 il risultato. Esce diverso da zero solo se la misura non e riuscita — un
@@ -86,10 +81,7 @@ OUTCOME_ONLY = frozenset({"raw.tls_cipher", "provider.test_connection"})
 # poggia su queste corse: se una smette di passare, la promessa resta
 # pubblicata e la prova non c'e piu.
 #
-# Il runner esce percio diverso da zero, e la perturbazione che rende rossa
-# una sonda rende rosso anche il gate — che e cio che la review ha chiesto,
-# e che prima non succedeva: due rifiuti identici sui tre server erano `same`,
-# e `same` usciva con zero.
+# Una sonda richiesta che diventa rejected rende non-zero anche il gate.
 REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_probe": "riconoscimento del prodotto e qualifica della versione",
     # Il commit ambiguo: la sonda lo provoca in modo deterministico e verifica
@@ -115,14 +107,12 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     # codice» non e un argomento che questo documento accetta per nessun'altra
     # bandiera.
     "provider.transaction_row_stream": "reads.streaming, dentro la transazione",
-    # La sonda che tiene onesta una smentita. La prima stesura di
-    # `query_stream` dichiarava che abbandonare un result set a meta rende la
-    # connessione inservibile; il riferimento MySQL ha risposto `Committed`,
-    # perche il driver drena i pacchetti pendenti. Se MariaDB divergesse, si
+    # Il driver drena i pacchetti pendenti dopo l'abbandono di uno stream. Se
+    # MariaDB divergesse, si
     # scoprirebbe altrimenti solo quando un chiamante esce da un ciclo con un
     # `break` in produzione.
     "provider.transaction_row_stream_abandoned": "reads.streaming, stream lasciato a meta",
-    # Punto 2 della fase 3: il contratto dell'indice. La descrizione deve
+    # La descrizione dell'indice deve
     # riuscire, e cio che ne esce deve corrispondere all'esito della DDL —
     # dove l'indice su espressione si crea deve risultare non confrontabile,
     # dove non si crea non deve comparire.
@@ -150,13 +140,8 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
 # inventario" e indistinguibile da "qualcuno si e dimenticato di
 # classificarla".
 #
-# Oggi e vuoto, ed e un buon segno: il punto 2 ha dato un contratto anche
-# all'ultima sonda che ne era priva. Resta perche la prossima sonda senza
-# contratto abbia dove stare **dichiarata**, invece di non stare da nessuna
-# parte.
 OBSERVATION_ONLY_PROBES: dict[str, str] = {
-    # La prima sonda a starci davvero, ed e per questo che l'elenco esisteva
-    # vuoto. `RETURNING` non sostiene oggi nessuna bandiera: il compilatore
+    # `RETURNING` non sostiene nessuna bandiera: il compilatore
     # portable lo rifiuta su tutto il dialetto `Mysql`, e `writes.returning`
     # parla di un'altra superficie ancora — l'esito di scrittura del percorso
     # di piano, che conta righe e non le trasporta.
@@ -172,7 +157,7 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # `ST_GeomFromWKB(?, srid)` e cio che emette l'INSERT; e l'SRID
     # memorizzato dice se il CRS sopravvive al viaggio. Su un prodotto dove
     # nessuna DDL puo vincolare la colonna, l'SRID puo vivere solo dentro i
-    # valori — e la lettura, da oggi, li verifica uno per uno.
+    # valori, che la lettura verifica uno per uno.
     "raw.spatial_write_forms": "cosa il server accetta scrivendo una geometria, e quale SRID conserva",
     # La stessa domanda, posta al **percorso** invece che al server:
     # `execute_portable_returning` compila per `tx.provider_kind()` e esegue,
@@ -206,10 +191,6 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # sostiene una capability e la lista che ne esce, e quella si legge nel
     # documento. Chiedere `accepted` direbbe soltanto che la sonda ha girato.
     #
-    # La lista di MySQL e scesa da ventisei a quindici il giorno in cui
-    # qualcuno l'ha attraversata davvero, e undici delle bocciate erano li per
-    # analogia con PostgreSQL. Ereditarla su un secondo prodotto sarebbe lo
-    # stesso errore, un prodotto piu in la.
     "provider.profile_concurrent_readers": "dodici lettori concorrenti non si mescolano le righe",
     # La contesa in **scrittura**, che sbaglia in modo diverso: fra due
     # letture una connessione condivisa mescola righe e si vede, fra due
@@ -225,12 +206,6 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # esattamente nel caso che la sonda cerca.
     "provider.profile_pool_endurance": "molti cicli non lasciano connessioni dietro",
     "provider.profile_mixed_load": "letture e scritture insieme sullo stesso pool",
-    # Dodici lettori sullo stesso pool, che ne ha quattro di connessioni.
-    # PostgreSQL ha una prova di contesa da tempo e MySQL l'ha avuta oggi;
-    # questa e la sua gemella. La lacuna non era di contratto ne spatial: era
-    # che nessuno aveva mai chiesto a questo provider di servire piu lettori
-    # insieme, e un pool che sotto contesa mescolasse le righe non avrebbe
-    # fatto fallire nessuna prova di questo documento.
     "provider.profile_spatial_functions": "quali funzioni verified il prodotto esegue",
     # `SpatialCapabilities::spatial_index` e chiusa su entrambi i profili e il
     # piano rifiuta `create_spatial_index` in prepare. Non e una divergenza: e
@@ -244,14 +219,8 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # assente e una promessa che il prodotto non puo mantenere; una chiusa
     # perche nessuno ha guardato e una promessa che il prodotto forse mantiene
     # gia, e che il consumatore non puo usare.
-    # Chiedeva le "mai provate", cioe cio che non era in nessuna delle due liste
-    # pubblicate, e quel filtro l'ha resa una misura che scadeva: una funzione
-    # aperta su MySQL smetteva di essere chiesta a MariaDB, dove non era aperta.
-    # HausdorffDistance e FrechetDistance sono state misurate assenti da MariaDB
-    # una volta sola, nella diciannovesima tranche, e da allora il documento
-    # ripeteva quel fatto senza riverificarlo.
-    #
-    # Ora chiede tutte e quarantuno le scalari a ogni server. Costa una SELECT
+    # Chiede l'intero insieme scalare a ogni server, anche quando una funzione
+    # e gia aperta altrove. Costa una SELECT
     # per funzione e rende la misura ripetibile proprio dove i due prodotti
     # divergono.
     "raw.scalar_function_forms": "quali delle quarantuno scalari il server possiede",
@@ -349,21 +318,16 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
 # L'ordine e parte del contratto perche e cio che rende leggibile il documento
 # — le famiglie stanno insieme — e perche una sonda spostata e quasi sempre una
 # sonda riscritta.
-#: I nomi che una sonda ha portato prima di oggi.
+#: Alias precedenti delle sonde citati dai documenti di evidenza.
 #:
-#: Il documento e un verbale, e una tranche che dice «misurato con X» non si
-#: riscrive quando X cambia nome: direbbe che allora si chiamava come si chiama
-#: adesso, e chi legge non saprebbe piu cosa fu eseguito.
-#:
-#: Ma la guardia pretende che ogni sonda citata esista, ed e giusto — un
+#: La guardia pretende che ogni sonda citata esista: un
 #: documento che nomina una sonda che nessuno esegue e la stessa bugia di una
 #: capability senza prova. Questa tabella e il ponte fra le due esigenze: un
 #: nome vecchio resta citabile **se e dichiarato qui**, cioe se qualcuno ha
 #: detto in cosa si e trasformato. Un nome vecchio e basta resta un errore.
 RENAMED_PROBES: dict[str, str] = {
-    # Chiedeva le funzioni «mai provate», e il filtro sulle liste pubblicate
-    # faceva scadere la misura dove i due prodotti divergono. Ora chiede tutte
-    # e quarantuno le scalari, e il nome «candidate» non descriveva piu niente.
+    # Il nome attuale chiarisce che la sonda attraversa tutte le forme scalari,
+    # non soltanto candidate selezionate altrove.
     "raw.spatial_candidate_functions": "raw.scalar_function_forms",
 }
 
@@ -529,23 +493,8 @@ def duplicate_probes(names: Iterable[str]) -> list[str]:
 # La `chiave` e la superficie qualificata; il valore dice cosa la sonda deve
 # rendere.
 QUALIFICATION_PROBES: dict[str, tuple[str, str]] = {
-    # Vuoto, e dichiarato: e la stessa forma di `OBSERVATION_ONLY_PROBES`.
-    #
-    # Ci sono state venti sonde, e per un po' la distinzione era vera: le write
-    # mode di MariaDB erano chiuse, e una sonda che le attraversava qualificava
-    # una superficie che il contratto non prometteva ancora. Poi le sei mode si
-    # sono aperte una tranche alla volta, e i savepoint con la quattordicesima
-    # — ma le sonde sono rimaste qui, e il commento continuava a spiegare la
-    # distinzione con l'esempio di `writes.append`, «che e chiusa». Non lo era
-    # piu da sei tranche.
-    #
-    # Il verdetto ne usciva **piu debole del vero**: diceva «perde la sua
-    # qualifica» di prove che sostengono capability pubblicate, cioe promesse
-    # che il contratto fa a un consumatore.
-    #
-    # L'elenco resta perche la prossima superficie qualificata prima di essere
-    # aperta — la scrittura spatial, per dire — abbia dove stare **dichiarata**,
-    # invece di non stare da nessuna parte.
+    # Riservato alle sonde che qualificano una superficie prima della sua
+    # pubblicazione; al momento non ce ne sono.
 }
 
 
@@ -648,12 +597,10 @@ def image_identities(container: str) -> tuple[str, ...]:
     12.3.2 una corsa fatta su un'immagine sostituita sotto lo stesso nome — ed
     e esattamente il caso che il pin per digest esiste per escludere.
 
-    Non basta pero `{{.Image}}`: quello e l'**ID** dell'immagine, e cosa
+    Non basta `{{.Image}}`: è l'ID dell'immagine, e cosa
     contenga dipende dallo store del demone. Con containerd coincide con il
     digest del manifest; con il graph driver classico e il digest della
-    *config*, un valore diverso. Confrontarlo con il pin passava in locale e
-    falliva sul runner — verde dove non serviva, rossa dove serviva, che e il
-    modo peggiore in cui una verifica puo sbagliare.
+    config, un valore diverso dal digest del manifest.
     #
     Si guardano quindi tutte e tre le risposte: il riferimento con cui il
     container e stato creato, l'ID dell'immagine, e i digest di manifest per

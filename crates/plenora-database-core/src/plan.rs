@@ -1,3 +1,5 @@
+//! Piano provider-neutral per letture, scritture e ispezioni.
+
 use crate::limits::Limits;
 use crate::loss::MappingPolicy;
 use serde::{Deserialize, Serialize};
@@ -113,6 +115,33 @@ pub enum FilterExpression {
         geometry_parameter: Option<String>,
         distance_parameter: Option<String>,
     },
+}
+
+impl FilterExpression {
+    /// Verifica una proprieta su ogni campo referenziato dal filtro.
+    ///
+    /// La visita vive accanto all'AST: i provider non devono replicare un
+    /// match esaustivo ogni volta che una nuova forma di filtro viene
+    /// aggiunta al contratto.
+    pub fn all_fields(&self, predicate: &impl Fn(&str) -> bool) -> bool {
+        match self {
+            Self::And { args } | Self::Or { args } => {
+                args.iter().all(|argument| argument.all_fields(predicate))
+            }
+            Self::Eq { field, .. }
+            | Self::Ne { field, .. }
+            | Self::Lt { field, .. }
+            | Self::Lte { field, .. }
+            | Self::Gt { field, .. }
+            | Self::Gte { field, .. }
+            | Self::IsNull { field }
+            | Self::IsNotNull { field }
+            | Self::In { field, .. }
+            | Self::Between { field, .. }
+            | Self::Like { field, .. }
+            | Self::Spatial { field, .. } => predicate(field),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,11 +307,8 @@ pub struct Plan {
 mod like_default_tests {
     use super::FilterExpression;
 
-    /// `$defs` del filtro `like` non elenca `case_insensitive` fra i
-    /// `required`: un documento che lo omette e valido, e prima del
-    /// `#[serde(default)]` non si deserializzava affatto — il piano falliva
-    /// alla lettura, prima di qualunque validatore, e l'errore parlava di un
-    /// campo mancante come se il contratto lo pretendesse.
+    /// `$defs` del filtro `like` non richiede `case_insensitive`; Serde deve
+    /// quindi applicare lo stesso default ammesso dal contratto.
     #[test]
     fn a_like_filter_without_case_insensitive_is_read_as_case_sensitive() {
         let filter: FilterExpression =

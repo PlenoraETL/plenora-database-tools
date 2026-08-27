@@ -15,10 +15,6 @@ use plenora_database_core::CancellationToken;
 use plenora_db_postgres::PostgresProvider;
 use serde_json::json;
 
-/// Helper storico per test / call sites legacy non ancora migrati
-/// al `PostgresCommandContext`. Post ADR-011, riflette il nuovo
-/// default `Require`. Per test/dev locali usare `insecure_local()`
-/// esplicitamente.
 /// Variabili che indicano i *percorsi* del materiale TLS con cui il provider
 /// verifica il server — e, quando il server lo esige, si identifica.
 ///
@@ -150,9 +146,7 @@ pub(crate) async fn profile_check(args: &mut impl Iterator<Item = String>) -> Cl
     print_json(
         &serde_json::to_value(&report).map_err(|_| "report non serializzabile".to_owned())?,
     )?;
-    // Fix review #10 residuo: profile-check ritornava sempre Ok, anche
-    // per report Fail. Ora exit=1 se profilo non è Pass, così CI può
-    // gate su risultato conformance.
+    // Un report non Pass produce exit=1 ed e quindi utilizzabile come gate CI.
     if is_pass {
         Ok(())
     } else {
@@ -205,8 +199,7 @@ pub(crate) async fn doctor(args: &mut impl Iterator<Item = String>) -> CliResult
             "PFM_GIS_V1": pfm_gis_report,
         }
     }))?;
-    // Fix review #10: exit code non-zero se logicamente unhealthy,
-    // così `doctor` è affidabile in CI (`sh -c 'plenora-db-cli doctor ... || fail'`).
+    // Uno stato logico unhealthy produce un exit code non-zero.
     if overall_pass {
         Ok(())
     } else {
@@ -219,8 +212,7 @@ pub(crate) async fn execute_ddl_cmd(args: &mut impl Iterator<Item = String>) -> 
     let sql = args.next().ok_or("manca lo statement SQL")?;
     ensure_end(args)?;
 
-    // Fase C: PostgresCommandContext racchiude secret + provider +
-    // cancel + budget con un unico costruttore nominato.
+    // Il contesto racchiude secret, provider, cancellazione e budget.
     let ctx = crate::context::PostgresCommandContext::for_pfm(&dsn_env)?;
     Provider::execute_ddl(&ctx.provider, &ctx.secret, &sql, &ctx.cancel).await?;
     print_json(&json!({
@@ -266,10 +258,7 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     // Euristica: se lo statement inizia con SELECT/WITH/VALUES/TABLE → query,
     // altrimenti execute (rows affected).
     //
-    // Fix review: strip commenti prima di estrarre il keyword. Prima
-    // uno statement come `-- audit\nSELECT ...` finiva nel ramo
-    // `affected_rows` perché il classifier vedeva `--` (non alfabetico
-    // → head vuoto → default match). Ora usa lo stesso comment-stripper
+    // I commenti iniziali non partecipano alla classificazione; usa lo stesso lexer
     // di `native_query_policy` per coerenza.
     let head = extract_statement_head(&sql);
     let stmt = Statement::new(sql.clone()).with_params(params.into_inner());
@@ -347,9 +336,7 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
             },
         ),
     ];
-    // Fix review #10 residuo: prima "status: ok" era hardcoded anche
-    // se savepoint o release_savepoint fallivano. Ora status derivato
-    // dagli step reali; exit=1 se qualche step ha fallito.
+    // Lo stato deriva dagli step reali; ogni fallimento produce exit=1.
     let all_steps_ok = savepoint_result.is_ok() && release_result.is_ok();
     let commit = tx.commit(&ctx.cancel).await?;
     let status = if all_steps_ok {
@@ -422,7 +409,7 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
         "context_after_commit": after,
         "leak_free": leak_free,
     }))?;
-    // Fix review #10: exit code non-zero se leak rilevato.
+    // Un leak rilevato produce un exit code non-zero.
     if leak_free {
         Ok(())
     } else {
@@ -433,12 +420,11 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
 /// Estrae il primo keyword SQL (uppercase ASCII).
 ///
 /// Delega a `plenora_database_core::native_query_policy::statement_head`
-/// per non duplicare il lexer di commenti che era già presente lì.
-/// Fix review post-review (dedup #96).
+/// per non duplicare il lexer dei commenti.
 fn extract_statement_head(sql: &str) -> String {
     plenora_database_core::native_query_policy::statement_head(sql)
 }
 
 // ============================================================================
-//  Fase 4: CLI arricchita — profile catalog, test avanzati, benchmark.
+//  Profile catalog, test avanzati e benchmark.
 // ============================================================================

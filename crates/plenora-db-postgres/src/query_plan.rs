@@ -1,14 +1,13 @@
 use crate::error::public_error;
 use crate::types::{ColumnKind, ColumnSpec};
-use plenora_database_core::plan::{
-    ComparisonOperator, FilterExpression, ReadOperation, SortDirection,
-};
+use plenora_database_core::plan::{FilterExpression, ReadOperation, SortDirection};
 use plenora_database_core::query::{QueryExpression, QueryOperation};
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
-    Dialect, DialectCapabilities, Expression, Identifier, ObjectName, RenderedSql, Renderer,
+    lower_filter, select_columns_by_name, Dialect, DialectCapabilities, Expression, FilterLowering,
+    Identifier, ObjectName, RenderedSql, Renderer,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 pub struct PostgresReadPlan {
     pub sql: String,
@@ -47,29 +46,19 @@ pub fn mark_query_spatial_columns(operation: &QueryOperation, columns: &mut [Col
 }
 
 fn select_columns(available: &[ColumnSpec], projection: &[String]) -> Result<Vec<ColumnSpec>> {
-    if projection.is_empty() {
-        return Ok(available.to_vec());
-    }
-    let by_name = available
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<HashMap<_, _>>();
-    projection
-        .iter()
-        .map(|name| {
-            by_name
-                .get(name.as_str())
-                .map(|column| (*column).clone())
-                .ok_or_else(|| {
-                    public_error(
-                        ErrorCategory::NotFound,
-                        ErrorPhase::Prepare,
-                        false,
-                        "colonna PostgreSQL richiesta non trovata",
-                    )
-                })
-        })
-        .collect()
+    select_columns_by_name(
+        available,
+        projection,
+        |column| column.name.as_str(),
+        || {
+            public_error(
+                ErrorCategory::NotFound,
+                ErrorPhase::Prepare,
+                false,
+                "colonna PostgreSQL richiesta non trovata",
+            )
+        },
+    )
 }
 
 fn build_read_sql(
@@ -155,110 +144,23 @@ const fn postgres_renderer() -> Renderer {
 }
 
 fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
-    match expression {
-        FilterExpression::And { args } => Ok(Expression::And(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Or { args } => Ok(Expression::Or(
-            args.iter()
-                .map(convert_filter)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        FilterExpression::Eq { field, parameter } => {
-            comparison(field, ComparisonOperator::Eq, parameter)
-        }
-        FilterExpression::Ne { field, parameter } => {
-            comparison(field, ComparisonOperator::Ne, parameter)
-        }
-        FilterExpression::Lt { field, parameter } => {
-            comparison(field, ComparisonOperator::Lt, parameter)
-        }
-        FilterExpression::Lte { field, parameter } => {
-            comparison(field, ComparisonOperator::Lte, parameter)
-        }
-        FilterExpression::Gt { field, parameter } => {
-            comparison(field, ComparisonOperator::Gt, parameter)
-        }
-        FilterExpression::Gte { field, parameter } => {
-            comparison(field, ComparisonOperator::Gte, parameter)
-        }
-        FilterExpression::IsNull { field } => {
-            Ok(Expression::IsNull(Identifier::new(field.clone())?))
-        }
-        FilterExpression::IsNotNull { field } => {
-            Ok(Expression::IsNotNull(Identifier::new(field.clone())?))
-        }
-        FilterExpression::In { field, parameters } => Ok(Expression::In {
-            field: Identifier::new(field.clone())?,
-            parameters: parameters.clone(),
-        }),
-        FilterExpression::Between {
-            field,
-            lower_parameter,
-            upper_parameter,
-        } => Ok(Expression::Between {
-            field: Identifier::new(field.clone())?,
-            lower_parameter: lower_parameter.clone(),
-            upper_parameter: upper_parameter.clone(),
-        }),
-        FilterExpression::Like {
-            field,
-            parameter,
-            case_insensitive,
-        } => Ok(Expression::Like {
-            field: Identifier::new(field.clone())?,
-            parameter: parameter.clone(),
-            case_insensitive: *case_insensitive,
-        }),
-        FilterExpression::Spatial {
-            function,
-            field,
-            geometry_parameter,
-            distance_parameter,
-        } => Ok(Expression::SpatialPredicate {
-            function: *function,
-            field: Identifier::new(field.clone())?,
-            geometry_parameter: geometry_parameter.clone(),
-            distance_parameter: distance_parameter.clone(),
-        }),
-    }
-}
-
-fn comparison(field: &str, operator: ComparisonOperator, parameter: &str) -> Result<Expression> {
-    Ok(Expression::Compare {
-        field: Identifier::new(field.to_owned())?,
-        operator,
-        parameter: parameter.to_owned(),
-    })
+    lower_filter(
+        expression,
+        FilterLowering {
+            provider: plenora_database_core::plan::ProviderKind::Postgres,
+            case_insensitive_like: true,
+            spatial: true,
+        },
+        |field| Identifier::new(field.to_owned()),
+    )
 }
 
 fn ensure_filter_columns(expression: &FilterExpression, columns: &[ColumnSpec]) -> Result<()> {
-    fn visit(expression: &FilterExpression, available: &BTreeSet<&str>) -> bool {
-        match expression {
-            FilterExpression::And { args } | FilterExpression::Or { args } => {
-                args.iter().all(|arg| visit(arg, available))
-            }
-            FilterExpression::Eq { field, .. }
-            | FilterExpression::Ne { field, .. }
-            | FilterExpression::Lt { field, .. }
-            | FilterExpression::Lte { field, .. }
-            | FilterExpression::Gt { field, .. }
-            | FilterExpression::Gte { field, .. }
-            | FilterExpression::IsNull { field }
-            | FilterExpression::IsNotNull { field }
-            | FilterExpression::In { field, .. }
-            | FilterExpression::Between { field, .. }
-            | FilterExpression::Like { field, .. }
-            | FilterExpression::Spatial { field, .. } => available.contains(field.as_str()),
-        }
-    }
     let available = columns
         .iter()
         .map(|column| column.name.as_str())
         .collect::<BTreeSet<_>>();
-    if visit(expression, &available) {
+    if expression.all_fields(&|field| available.contains(field)) {
         Ok(())
     } else {
         Err(public_error(

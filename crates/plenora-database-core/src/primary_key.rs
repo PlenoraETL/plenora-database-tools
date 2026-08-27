@@ -3,11 +3,8 @@
 //! Tre regole non dipendono dal motore: una chiave deve esistere nello schema
 //! dichiarato, non puo ripetersi, e non puo essere nullable. Valgono ovunque
 //! perche derivano da cosa significa una chiave primaria, non da come un
-//! server la implementa — e i due provider che costruiscono tabelle le
-//! avevano scritte due volte, con esiti diversi sul caso nullable: `MySQL` la
-//! rifiutava, `PostgreSQL` l'avrebbe accettata coercendo la colonna a NOT
-//! NULL, cioe creando una tabella che diverge in silenzio dallo schema
-//! dichiarato.
+//! server la implementa. La validazione condivisa impedisce che un provider
+//! trasformi implicitamente uno schema nullable in `NOT NULL`.
 //!
 //! Restano ai provider i vincoli che il **loro** motore impone: quali tipi
 //! possono stare in una chiave, quante colonne, con quali limiti di

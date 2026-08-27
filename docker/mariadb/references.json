@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "comment": "Fonte di verita unica dei riferimenti MariaDB del ciclo di evidenza: versione esatta, digest immutabile, container e porta di ognuno. Consumata da scripts/mariadb_references.py e, tramite la sua validazione, da docker-compose.mariadb.yml. Un digest e il manifest index OCI risolto da docker.io/library/mariadb:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata. Nessuno di questi e un riferimento qualificato — il provider MySQL fa fail-close alla probe — e i ruoli lo dicono: `evidence` e la riga principale del ciclo, `compatibility` la LTS precedente, che resta perche l'evidenza gia raccolta su di essa non va buttata.",
+  "comment": "Fonte di verita unica dei riferimenti MariaDB del ciclo di evidenza: versione esatta, digest immutabile, container e porta di ognuno. Consumata da scripts/mariadb_references.py e, tramite la sua validazione, da docker-compose.mariadb.yml. Un digest e il manifest index OCI risolto da docker.io/library/mariadb:<exact_version>: non cambia mai contenuto, quindi la riga qui e la prova della versione avviata. Nessuno di questi e un riferimento qualificato: il provider MySQL fa fail-close alla probe. Il ruolo `evidence` identifica la riga principale; le righe `compatibility` mantengono la copertura delle versioni piu anziane.",
   "references": [
     {
       "role": "evidence",

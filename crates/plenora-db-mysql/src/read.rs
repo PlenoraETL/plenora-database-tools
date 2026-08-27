@@ -10,8 +10,9 @@ use plenora_database_core::query::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ReadDiagnosticsPolicy,
-    ReadDiagnosticsTracker, RemoteEffect, Result, RetryDisposition,
+    ReadDiagnosticsTracker, RemoteEffect, Result,
 };
+use plenora_database_engine::{inspect_spatial_arrays, DeadlineGuard, ReadBatchReservation};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -62,7 +63,7 @@ pub(crate) async fn read_operation_with_profile(
     validate_batch_rows(batch_rows)?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut session = pool.checkout(&internal).await?;
     let schema = operation.source.schema.as_deref().ok_or_else(|| {
@@ -191,7 +192,7 @@ pub(crate) async fn query_operation_with_profile(
     let bound = bind_parameters(&bind_names, parameters)?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
-    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget);
+    let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut session = pool.checkout(&internal).await?;
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
@@ -266,7 +267,7 @@ where
             let _ = error_sender.send(Err(error)).await;
         }
     });
-    let deadline_task = budget_cancellation.take_task()?;
+    let deadline_task = budget_cancellation.take_deadline_task()?;
     Ok(Box::new(MysqlBatchStream {
         receiver,
         profile,
@@ -551,7 +552,7 @@ impl MysqlBatchStream {
     /// budget è un errore dichiarato e non un batch vuoto.
     async fn fill_batch(
         &mut self,
-        reservation: &BatchReservation,
+        reservation: &ReadBatchReservation,
         carried: Option<MeasuredRow>,
     ) -> Result<BatchFill> {
         let product = self.profile.product();
@@ -649,7 +650,7 @@ impl MysqlBatchStream {
         // riserva prenota tutto il residuo, quindi la stessa riga risulterebbe
         // altrimenti contabilizzata due volte.
         let carried = self.pending.take().map(PendingRow::release).transpose()?;
-        let reservation = BatchReservation::new(&self.budget, self.batch_rows, &self.columns)?;
+        let reservation = reserve_batch(&self.budget, self.batch_rows, &self.columns)?;
         let mut fill = self.fill_batch(&reservation, carried).await?;
         if fill.rows == 0 {
             return Ok(None);
@@ -779,74 +780,15 @@ impl Drop for MysqlBatchStream {
     }
 }
 
-#[derive(Debug)]
-struct BatchReservation {
-    rows_lease: ResourceLease,
-    memory_lease: ResourceLease,
-    output_lease: ResourceLease,
-    geometry_lease: Option<ResourceLease>,
-    row_limit: usize,
-    byte_limit: u64,
-    component_limit: u64,
-}
-
-impl BatchReservation {
-    fn new(
-        budget: &ResourceBudget,
-        batch_rows: usize,
-        columns: &[crate::MysqlColumnSpec],
-    ) -> Result<Self> {
-        let rows = budget
-            .remaining(ResourceKind::Rows)
-            .min(u64::try_from(batch_rows).unwrap_or(u64::MAX));
-        let bytes = budget
-            .remaining(ResourceKind::MemoryBytes)
-            .min(budget.remaining(ResourceKind::OutputBytes));
-        if rows == 0 || bytes == 0 {
-            return Err(DatabaseError::resource_limit("budget read esaurito"));
-        }
-        let has_spatial = columns
-            .iter()
-            .any(|column| column.kind == MysqlColumnKind::Geometry);
-        let component_limit = if has_spatial {
-            budget.remaining(ResourceKind::GeometryComponents)
-        } else {
-            0
-        };
-        if has_spatial && component_limit == 0 {
-            return Err(DatabaseError::resource_limit(
-                "budget componenti geometriche esaurito",
-            ));
-        }
-        Ok(Self {
-            rows_lease: budget.try_lease(ResourceKind::Rows, rows)?,
-            memory_lease: budget.try_lease(ResourceKind::MemoryBytes, bytes)?,
-            output_lease: budget.try_lease(ResourceKind::OutputBytes, bytes)?,
-            geometry_lease: has_spatial
-                .then(|| budget.try_lease(ResourceKind::GeometryComponents, component_limit))
-                .transpose()?,
-            row_limit: usize::try_from(rows).unwrap_or(usize::MAX),
-            byte_limit: bytes,
-            component_limit,
-        })
-    }
-
-    fn commit(self, rows: u64, bytes: u64, components: u64) -> Result<()> {
-        if bytes == 0 || bytes > self.byte_limit {
-            return Err(DatabaseError::resource_limit(
-                "batch Arrow oltre il budget memoria/output",
-            ));
-        }
-        self.rows_lease.commit(rows)?;
-        self.memory_lease.commit(bytes)?;
-        self.output_lease.commit(bytes)?;
-        if components > 0 {
-            self.geometry_lease
-                .ok_or_else(|| DatabaseError::resource_limit("budget geometrico assente"))?
-                .commit(components)?;
-        }
-        Ok(())
-    }
+fn reserve_batch(
+    budget: &ResourceBudget,
+    batch_rows: usize,
+    columns: &[crate::MysqlColumnSpec],
+) -> Result<ReadBatchReservation> {
+    let has_spatial = columns
+        .iter()
+        .any(|column| column.kind == MysqlColumnKind::Geometry);
+    ReadBatchReservation::acquire(budget, batch_rows, None, has_spatial)
 }
 
 /// Attribuisce un difetto di conversione alla riga sorgente e alla colonna del
@@ -880,7 +822,7 @@ fn validate_spatial_batch(
     diagnostics: &ReadDiagnosticsTracker,
 ) -> Result<u64> {
     let product = profile.product();
-    let mut components = 0_u64;
+    let mut arrays = Vec::new();
     for (index, column) in columns.iter().enumerate() {
         if column.kind != MysqlColumnKind::Geometry {
             continue;
@@ -896,38 +838,17 @@ fn validate_spatial_batch(
                     format!("array spatial {product} non binario"),
                 )
             })?;
-        for row in 0..array.len() {
-            if array.is_null(row) {
-                continue;
-            }
-            let value = array.value(row);
-            let length = u64::try_from(value.len()).map_err(|_| {
-                DatabaseError::resource_limit(format!("WKB {product} non rappresentabile"))
-            })?;
-            if length > cell_limit {
-                return Err(DatabaseError::resource_limit(format!(
-                    "WKB {product} oltre il limite cella"
-                )));
-            }
-            let remaining = component_limit.checked_sub(components).ok_or_else(|| {
-                DatabaseError::resource_limit(format!("componenti geometriche {product} esaurite"))
-            })?;
-            if remaining == 0 {
-                return Err(DatabaseError::resource_limit(format!(
-                    "componenti geometriche {product} esaurite"
-                )));
-            }
-            let inspection =
-                plenora_database_core::ewkb::inspect_ewkb_detailed(value, remaining, nesting_depth)
-                    .map_err(|error| {
-                        attribute_conversion_defect(
-                            diagnostics,
-                            columns,
-                            error,
-                            Some(row),
-                            Some(index),
-                        )
-                    })?;
+        arrays.push((index, array));
+    }
+    inspect_spatial_arrays(
+        arrays,
+        component_limit,
+        cell_limit,
+        nesting_depth,
+        |error, row, column| {
+            attribute_conversion_defect(diagnostics, columns, error, Some(row), Some(column))
+        },
+        |inspection, row, column| {
             if profile.geometry_output_is_unexpected(
                 inspection.root.srid,
                 inspection.root.dimensions_label(),
@@ -941,19 +862,12 @@ fn validate_spatial_batch(
                         format!("ST_AsBinary {product} ha prodotto WKB non XY o con SRID embedded"),
                     ),
                     Some(row),
-                    Some(index),
+                    Some(column),
                 ));
             }
-            components = components
-                .checked_add(inspection.stats.components)
-                .ok_or_else(|| {
-                    DatabaseError::resource_limit(format!(
-                        "componenti geometriche {product} in overflow"
-                    ))
-                })?;
-        }
-    }
-    Ok(components)
+            Ok(())
+        },
+    )
 }
 
 fn validate_batch_rows(batch_rows: usize) -> Result<()> {
@@ -984,64 +898,19 @@ fn ensure_active_read_budget(
 ///
 /// Il `Drop` annulla il task: nessun percorso lascia un timer vivo dopo la
 /// fine dell'operazione che lo ha creato.
-pub struct BudgetCancellation {
-    token: CancellationToken,
-    deadline_task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl BudgetCancellation {
-    pub fn new(parent: &CancellationToken, budget: &ResourceBudget) -> Self {
-        let token = parent.child_token_with_deadline(Some(budget.deadline()));
-        let deadline_token = token.clone();
-        let deadline = tokio::time::Instant::from_std(budget.deadline());
-        let deadline_task = tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            deadline_token.cancel_due_to_deadline();
-        });
-        Self {
-            token,
-            deadline_task: Some(deadline_task),
-        }
-    }
-
-    pub const fn token(&self) -> &CancellationToken {
-        &self.token
-    }
-
-    fn take_task(&mut self) -> Result<tokio::task::JoinHandle<()>> {
-        self.deadline_task.take().ok_or_else(|| {
-            read_error(
-                ErrorCategory::Internal,
-                ErrorPhase::Prepare,
-                "task deadline assente",
-            )
-        })
-    }
-}
-
-impl Drop for BudgetCancellation {
-    fn drop(&mut self) {
-        if let Some(task) = self.deadline_task.take() {
-            task.abort();
-        }
-    }
-}
+pub type BudgetCancellation = DeadlineGuard;
 
 fn read_error(
     category: ErrorCategory,
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]
@@ -1051,6 +920,7 @@ mod tests {
     use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::arrow::Schema;
     use plenora_database_core::resource::ResourceLimits;
+    use plenora_database_core::RetryDisposition;
 
     /// Stima conservativa di una riga di sole colonne intere: per ciascuna
     /// `CONSERVATIVE_CELL_BYTES` piu i 32 byte di payload numerico.
@@ -1360,7 +1230,7 @@ mod tests {
         let consumed = budget.try_lease(ResourceKind::Rows, 1).expect("row lease");
         consumed.commit(1).expect("commit row");
         assert_eq!(
-            BatchReservation::new(&budget, 1, &[])
+            reserve_batch(&budget, 1, &[])
                 .expect_err("exhausted")
                 .category,
             ErrorCategory::ResourceLimit

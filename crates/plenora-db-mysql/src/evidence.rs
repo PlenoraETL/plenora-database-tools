@@ -123,7 +123,7 @@ impl Recorder {
         });
     }
 
-    /// Una superficie che questa tranche non misura, e perche.
+    /// Una superficie non misurata e il motivo dell'esclusione.
     ///
     /// Dichiararlo e piu onesto che dedurlo: un esito assente non e un esito
     /// negativo, e un verdetto che li confondesse porterebbe a decidere su
@@ -280,8 +280,7 @@ pub(crate) struct FilterCase {
 ///
 /// E ogni riga porta i **propri** parametri. Non e una comodita: il provider
 /// rifiuta un `ParameterBag` che contenga voci che il piano non lega, e ha
-/// ragione — un parametro non usato e quasi sempre un filtro scritto male. La
-/// prima stesura ne passava dieci a ogni forma, e le ha viste rifiutare tutte.
+/// ragione: un parametro non usato e quasi sempre un filtro scritto male.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn qualified_filter_forms() -> Vec<FilterCase> {
     let bag = |pairs: Vec<(&str, ParameterValue)>| {
@@ -457,8 +456,8 @@ pub(crate) fn qualified_filter_forms() -> Vec<FilterCase> {
 
 /// L'esito che la DDL dell'indice su espressione **deve** avere, per prodotto.
 ///
-/// Non e una previsione: e cio che la quarta tranche ha misurato — `MySQL` la
-/// accetta, `MariaDB` la rifiuta con 1064, la sintassi non esiste. Pinnarlo
+/// La prova live stabilisce che `MySQL` la accetta e `MariaDB` la rifiuta con
+/// 1064 per sintassi non supportata. Fissarne l'esito
 /// serve perche l'esito della DDL decide cosa il catalogo debba mostrare
 /// dopo: senza, un errore qualunque — un privilegio mancante, un timeout —
 /// diventerebbe "l'indice non c'e", e un catalogo senza indice passerebbe per

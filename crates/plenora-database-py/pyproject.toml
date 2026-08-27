@@ -5,8 +5,6 @@ build-backend = "maturin"
 [project]
 name = "plenora-database"
 version = "0.11.0"
-# SQL Server non compare: il binding non esiste, e la descrizione di un
-# pacchetto pubblicato e una promessa, non una roadmap.
 description = "Python SDK per plenora-database-tools (Postgres/PostGIS, MySQL, MariaDB, SQL Server)"
 readme = "README.md"
 requires-python = ">=3.10"

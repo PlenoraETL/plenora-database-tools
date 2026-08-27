@@ -93,7 +93,7 @@ def test_context_manager_closes_session() -> None:
 
 
 def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
-    """v0.8+ — typed params helpers funzionano su MySQL identici a Postgres.
+    """I typed params funzionano su MySQL come su Postgres.
     Il decorator TypedValue è provider-agnostic; parameter.rs MySQL mappa
     Uuid/Decimal/Date/Timestamp come text strings native MySQL."""
     session.execute_ddl("DROP TABLE IF EXISTS _v04_typed")

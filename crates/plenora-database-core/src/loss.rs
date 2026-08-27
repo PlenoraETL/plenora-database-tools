@@ -1,3 +1,5 @@
+//! Policy di mapping e rapporto strutturato delle conversioni con perdita.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

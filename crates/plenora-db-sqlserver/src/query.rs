@@ -1,3 +1,9 @@
+//! Validazione, rendering e descrizione delle `QueryOperation` SQL Server.
+//!
+//! Le funzioni spatial sono pubblicate per semantica; il preflight legge dal
+//! catalogo il tipo della colonna e impedisce di renderizzare membri T-SQL sul
+//! ricevitore sbagliato.
+
 use crate::error::driver_error;
 use crate::parameter::{bind_parameters, parameter_declarations};
 use crate::types::{SqlServerColumnSpec, SqlServerReadPlan};
@@ -6,12 +12,12 @@ use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::query::{
-    ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource, SpatialFunction,
+    walk_query, walk_query_expression, ColumnRef, QueryExpression, QueryOperation, QueryProjection,
+    QuerySource, QueryWalkControl, QueryWalkNode, SpatialFunction,
 };
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
 };
 use plenora_database_sql::{
     Dialect, DialectCapabilities, RenderedSql, Renderer, SqlServerSpatialParameter,
@@ -40,10 +46,8 @@ ORDER BY column_ordinal;
 
 /// Se il provider offre questa funzione su **qualche** semantica.
 ///
-/// Da quando il contratto sa dire su quale semantica vale una funzione, «cio
-/// che il provider offre» sono due liste. I controlli di politica pongono
-/// questa domanda; a restringere sul tipo giusto e il preflight, che la
-/// semantica della colonna la legge dal catalogo.
+/// I controlli di politica usano l'unione delle liste; il preflight restringe
+/// poi l'operazione alla semantica letta dal catalogo.
 fn sql_server_offers(function: SpatialFunction) -> bool {
     VERIFIED_SPATIAL_FUNCTIONS.contains(&function)
         || GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(&function)
@@ -51,18 +55,8 @@ fn sql_server_offers(function: SpatialFunction) -> bool {
 
 /// Le funzioni che SQL Server offre su `geometry` e **non** su `geography`.
 ///
-/// # Perche una seconda lista
-///
-/// Perche il contratto ha imparato a dirlo. `SpatialCapabilities::functions`
-/// resta l'intersezione — cio che vale su qualunque colonna spatial del
-/// prodotto — e `functions_by_semantics` porta la lista completa di ciascuna
-/// semantica. Queste sette stanno nella voce di `geometry` e in nessun'altra.
-///
-/// Fino a ieri erano chiuse, e la ragione era buona: una lista sola per due
-/// semantiche non puo contenerle senza promettere a chi usa `geography`
-/// funzioni che li non esistono. Il censimento le aveva misurate una per una e
-/// lasciate nella casella «esiste su una semantica sola», che era una
-/// descrizione esatta e una porta chiusa.
+/// `SpatialCapabilities::functions` resta l'intersezione fra le semantiche,
+/// mentre `functions_by_semantics` pubblica anche questa estensione.
 ///
 /// # Chi impedisce di chiamarle sul tipo sbagliato
 ///
@@ -82,32 +76,14 @@ pub const GEOMETRY_ONLY_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
 ///
 /// # Cosa la delimita
 ///
-/// Il catalogo ne dichiara settantadue e questa lista ne porta ventinove. La
-/// differenza non e una scelta di prudenza, ed e stata **misurata**:
-/// `live_the_spatial_census_leaves_no_usable_function_unexplained` attraversa
-/// tutte e settantadue su entrambe le semantiche e le divide in quattro
-/// caselle.
-///
-/// * **trentatre non esistono** su nessuna delle due — clustering, MVT,
-///   geobuf, azimuth, distanze 3D, i quattro `Force*`, `Transform`,
-///   `SetSrid`, `Reverse`, `SnapToGrid`, `Subdivide`. Sono un fatto su SQL
-///   Server, non lavoro rimasto;
-/// * **otto esistono soltanto su `geometry`** — `IsSimple`, `Touches`,
-///   `Crosses`, `Relate`, `Centroid`, `PointOnSurface`, `Envelope`,
-///   `Boundary`. Restano fuori per la regola dell'intersezione, non per
-///   assenza: vedi sotto;
-/// * **nessuna** esiste soltanto su `geography`;
-/// * **trentuno esistono su entrambe**, e sono queste ventinove piu `X` e `Y`,
-///   che `DECLARED_SPATIAL_EXCLUSIONS` tiene fuori con la sua ragione.
+/// Il censimento live attraversa l'intero catalogo portabile su entrambe le
+/// semantiche e richiede una ragione esplicita per ogni esclusione.
 ///
 /// # Perche l'intersezione
 ///
-/// `ProviderCapabilities` pubblica **una lista sola** per tutte le semantiche
-/// dichiarate, e SQL Server dichiara sia `geometry` sia `geography`. Offrire
-/// l'unione prometterebbe a chi usa una colonna `geography` funzioni che li non
-/// esistono — ed e il difetto gia corretto su `PostgreSQL`, dove pubblicare
-/// l'unione faceva promettere settantadue funzioni là dove undici valevano per
-/// entrambe le semantiche.
+/// `ProviderCapabilities::functions` e l'intersezione fra le semantiche
+/// dichiarate. Offrire l'unione prometterebbe funzioni non disponibili su una
+/// delle due famiglie di colonne.
 ///
 /// Il gate lo pretende: `live_every_verified_spatial_function_is_crossed`
 /// attraversa ogni funzione su **entrambe** le semantiche, e una che regga solo
@@ -119,8 +95,6 @@ pub const GEOMETRY_ONLY_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
 ///
 /// Nome e forma di ogni membro T-SQL stanno in
 /// `plenora_database_sql::sql_server_spatial_method`, e in nessun altro posto.
-/// Erano quattro — i letterali del renderer e tre elenchi di firme in questo
-/// modulo — e aprire una funzione voleva dire ricordarsene in tutti e quattro.
 /// `what_the_provider_offers_and_what_the_renderer_can_write_are_the_same_list`
 /// tiene questa lista e quella tabella allineate.
 pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
@@ -148,20 +122,14 @@ pub const VERIFIED_SPATIAL_FUNCTIONS: &[SpatialFunction] = &[
     SpatialFunction::SymDifference,
     SpatialFunction::Union,
     SpatialFunction::ConvexHull,
-    // Le cinque aperte dal censimento: presenti su geometry **e** su
-    // geography, e fino a ieri chiuse perche nessuno le aveva chieste.
+    // Presenti e verificate su entrambe le semantiche.
     SpatialFunction::Z,
     SpatialFunction::M,
     SpatialFunction::Overlaps,
     SpatialFunction::Simplify,
     SpatialFunction::MakeValid,
-    // Le due che il censimento aveva trovato e che sono rimaste chiuse per un
-    // pomeriggio, con la ragione scritta: il membro T-SQL cambia fra le
-    // semantiche — `STX`/`STY` contro `Long`/`Lat` — e quella del ricevitore
-    // non arrivava al renderer.
-    //
-    // Ora ci arriva: il preflight la legge dal catalogo, come gia leggeva
-    // l'SRID, e la porta al renderer con la stessa mappa che portava la
+    // Il membro T-SQL cambia fra le semantiche (`STX`/`STY` contro
+    // `Long`/`Lat`). Il preflight legge la semantica dal catalogo e la porta al renderer insieme alla
     // semantica dei parametri. Una colonna di cui il piano non dice la
     // semantica resta rifiutata, ed e la sola risposta onesta — indovinare
     // renderebbe SQL valido su meta delle tabelle.
@@ -912,7 +880,7 @@ fn validate_nested_spatial_operation<'a>(
             )
             .await?;
         }
-        for expression in operation_expressions(operation) {
+        for expression in operation.clause_expressions() {
             validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
                 .await?;
         }
@@ -1107,111 +1075,26 @@ fn validate_local_spatial_relation(
     Ok(())
 }
 
-fn operation_expressions(operation: &QueryOperation) -> Vec<&QueryExpression> {
-    let mut expressions = operation
-        .projection
-        .iter()
-        .map(|projection| &projection.expression)
-        .collect::<Vec<_>>();
-    expressions.extend(operation.filter.iter());
-    expressions.extend(operation.group_by.iter());
-    expressions.extend(operation.having.iter());
-    expressions.extend(
-        operation
-            .order_by
-            .iter()
-            .map(|ordering| &ordering.expression),
-    );
-    expressions.extend(operation.distinct_on.iter());
-    expressions
-}
-
-fn validate_spatial_subqueries<'a>(
-    session: &'a mut SqlServerSession,
-    expression: &'a QueryExpression,
-    parameters: &'a ParameterBag,
-    budget: &'a ResourceBudget,
-    cancellation: &'a CancellationToken,
-) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(async move {
-        match expression {
-            QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-                validate_nested_spatial_operation(session, query, parameters, budget, cancellation)
-                    .await?;
-            }
-            QueryExpression::InSubquery {
-                expression, query, ..
-            } => {
-                validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
-                    .await?;
-                validate_nested_spatial_operation(session, query, parameters, budget, cancellation)
-                    .await?;
-            }
-            QueryExpression::Scalar { arguments, .. }
-            | QueryExpression::Spatial { arguments, .. }
-            | QueryExpression::And { arguments }
-            | QueryExpression::Or { arguments } => {
-                for argument in arguments {
-                    validate_spatial_subqueries(
-                        session,
-                        argument,
-                        parameters,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                }
-            }
-            QueryExpression::Compare { left, right, .. }
-            | QueryExpression::SpatialOperator { left, right, .. } => {
-                validate_spatial_subqueries(session, left, parameters, budget, cancellation)
-                    .await?;
-                validate_spatial_subqueries(session, right, parameters, budget, cancellation)
-                    .await?;
-            }
-            QueryExpression::IsNull { expression, .. } => {
-                validate_spatial_subqueries(session, expression, parameters, budget, cancellation)
-                    .await?;
-            }
-            QueryExpression::Window {
-                arguments,
-                partition_by,
-                order_by,
-                ..
-            }
-            | QueryExpression::SpatialWindow {
-                arguments,
-                partition_by,
-                order_by,
-                ..
-            } => {
-                for argument in arguments.iter().chain(partition_by) {
-                    validate_spatial_subqueries(
-                        session,
-                        argument,
-                        parameters,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                for ordering in order_by {
-                    validate_spatial_subqueries(
-                        session,
-                        &ordering.expression,
-                        parameters,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                }
-            }
-            QueryExpression::Wildcard { .. }
-            | QueryExpression::Column { .. }
-            | QueryExpression::Parameter { .. } => {}
+async fn validate_spatial_subqueries(
+    session: &mut SqlServerSession,
+    expression: &QueryExpression,
+    parameters: &ParameterBag,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let mut nested = Vec::new();
+    walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Operation(operation) => {
+            nested.push(operation);
+            QueryWalkControl::Skip
         }
-        Ok(())
-    })
+        QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+    });
+    for operation in nested {
+        validate_nested_spatial_operation(session, operation, parameters, budget, cancellation)
+            .await?;
+    }
+    Ok(())
 }
 
 fn collect_physical_spatial_sources(
@@ -1246,7 +1129,7 @@ fn collect_physical_spatial_sources(
             collect_expression_physical_sources(on, &visible_ctes, objects)?;
         }
     }
-    for expression in operation_expressions(operation) {
+    for expression in operation.clause_expressions() {
         collect_expression_physical_sources(expression, &visible_ctes, objects)?;
     }
     for set in &operation.set_operations {
@@ -1273,54 +1156,16 @@ fn collect_expression_physical_sources(
     visible_ctes: &BTreeSet<String>,
     objects: &mut Vec<ObjectRef>,
 ) -> Result<()> {
-    match expression {
-        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-            collect_physical_spatial_sources(query, visible_ctes, objects)?;
+    let mut nested = Vec::new();
+    walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Operation(operation) => {
+            nested.push(operation);
+            QueryWalkControl::Skip
         }
-        QueryExpression::InSubquery {
-            expression, query, ..
-        } => {
-            collect_expression_physical_sources(expression, visible_ctes, objects)?;
-            collect_physical_spatial_sources(query, visible_ctes, objects)?;
-        }
-        QueryExpression::Scalar { arguments, .. }
-        | QueryExpression::Spatial { arguments, .. }
-        | QueryExpression::And { arguments }
-        | QueryExpression::Or { arguments } => {
-            for argument in arguments {
-                collect_expression_physical_sources(argument, visible_ctes, objects)?;
-            }
-        }
-        QueryExpression::Compare { left, right, .. }
-        | QueryExpression::SpatialOperator { left, right, .. } => {
-            collect_expression_physical_sources(left, visible_ctes, objects)?;
-            collect_expression_physical_sources(right, visible_ctes, objects)?;
-        }
-        QueryExpression::IsNull { expression, .. } => {
-            collect_expression_physical_sources(expression, visible_ctes, objects)?;
-        }
-        QueryExpression::Window {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        }
-        | QueryExpression::SpatialWindow {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            for argument in arguments.iter().chain(partition_by) {
-                collect_expression_physical_sources(argument, visible_ctes, objects)?;
-            }
-            for ordering in order_by {
-                collect_expression_physical_sources(&ordering.expression, visible_ctes, objects)?;
-            }
-        }
-        QueryExpression::Wildcard { .. }
-        | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => {}
+        QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+    });
+    for operation in nested {
+        collect_physical_spatial_sources(operation, visible_ctes, objects)?;
     }
     Ok(())
 }
@@ -1432,15 +1277,8 @@ async fn profile_spatial_outputs(
         if !function.returns_geometry() {
             continue;
         }
-        // Era un **terzo** elenco scritto a mano — dopo la lista pubblicata e
-        // la tabella dei nomi T-SQL — e conteneva esattamente le geometriche
-        // fra le pubblicate. Tre elenchi che devono coincidere sono due di
-        // troppo: qui la domanda e gia dentro un `returns_geometry`, quindi cio
-        // che restava da chiedere era solo se la funzione fosse offerta.
-        //
-        // Aggiungerne una alla lista e dimenticarla qui la faceva morire nel
-        // preflight con «fuori dal sottoinsieme verificato», che e un messaggio
-        // vero e che indicava il posto sbagliato.
+        // `returns_geometry` identifica gia la forma; qui resta da verificare
+        // soltanto che la tabella autorevole del provider offra la funzione.
         if !sql_server_offers(*function) {
             return Err(query_error(
                 ErrorCategory::Unsupported,
@@ -1637,10 +1475,8 @@ struct SpatialUse {
     argument: SpatialArgument,
     /// Quale funzione ha usato quella colonna.
     ///
-    /// Serviva gia implicitamente — la forma dell'argomento viene da lei — e
-    /// ora serve esplicitamente: sette funzioni valgono su `geometry` e non su
-    /// `geography`, e per rifiutarle sul tipo sbagliato bisogna sapere quale
-    /// funzione era.
+    /// Serve per applicare le capability per semantica: alcune funzioni sono
+    /// qualificate su `geometry` ma non su `geography`.
     function: SpatialFunction,
 }
 
@@ -1648,191 +1484,132 @@ fn collect_operation_spatial_uses(
     operation: &QueryOperation,
     uses: &mut Vec<SpatialUse>,
 ) -> Result<()> {
-    for projection in &operation.projection {
-        collect_expression_spatial_uses(&projection.expression, uses)?;
+    for expression in operation.clause_expressions() {
+        collect_expression_spatial_uses(expression, uses)?;
     }
     for join in &operation.joins {
         if let Some(on) = &join.on {
             collect_expression_spatial_uses(on, uses)?;
         }
     }
-    if let Some(filter) = &operation.filter {
-        collect_expression_spatial_uses(filter, uses)?;
-    }
-    for expression in &operation.group_by {
-        collect_expression_spatial_uses(expression, uses)?;
-    }
-    if let Some(having) = &operation.having {
-        collect_expression_spatial_uses(having, uses)?;
-    }
-    for ordering in &operation.order_by {
-        collect_expression_spatial_uses(&ordering.expression, uses)?;
-    }
-    for expression in &operation.distinct_on {
-        collect_expression_spatial_uses(expression, uses)?;
-    }
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn collect_expression_spatial_uses(
     expression: &QueryExpression,
     uses: &mut Vec<SpatialUse>,
 ) -> Result<()> {
-    match expression {
-        QueryExpression::Spatial {
+    let mut failure = None;
+    walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Expression(QueryExpression::Spatial {
             function,
             arguments,
-        } => {
-            let QueryExpression::Column { column } = arguments.first().ok_or_else(|| {
-                query_error(
-                    ErrorCategory::InvalidPlan,
-                    "AST spatial SQL Server senza ricevitore",
-                )
-            })?
-            else {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "AST spatial SQL Server richiede una colonna come ricevitore",
-                ));
-            };
-            // La **politica**, esplicita, prima della forma. Stava nascosta
-            // dentro i tre elenchi di firme: erano scritti a mano e contenevano
-            // solo funzioni pubblicate, quindi una funzione fuori lista cadeva
-            // nel ramo finale per un accidente della loro compilazione. Derivare
-            // le firme dal contratto ha tolto quell'accidente, e la domanda che
-            // restava senza casa e questa.
-            if !sql_server_offers(*function) {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "funzione spatial fuori dal sottoinsieme SQL Server verificato",
-                ));
+        }) => match collect_spatial_use(*function, arguments, uses) {
+            Ok(()) => QueryWalkControl::Skip,
+            Err(error) => {
+                failure = Some(error);
+                QueryWalkControl::Break
             }
-            if sql_server_unary_spatial_function(*function) {
-                if arguments.len() != 1 {
-                    return Err(query_error(
-                        ErrorCategory::Unsupported,
-                        "overload unary spatial SQL Server fuori dal sottoinsieme verificato",
-                    ));
-                }
-                uses.push(SpatialUse {
-                    column: column.clone(),
-                    function: *function,
-                    argument: SpatialArgument::None,
-                });
-            } else if sql_server_binary_spatial_function(*function) {
-                if arguments.len() != 2 {
-                    return Err(query_error(
-                        ErrorCategory::Unsupported,
-                        "overload binary spatial SQL Server fuori dal sottoinsieme verificato",
-                    ));
-                }
-                let argument = match &arguments[1] {
-                    QueryExpression::Parameter { name } => SpatialArgument::Geometry(name.clone()),
-                    QueryExpression::Column { column } => {
-                        SpatialArgument::GeometryColumn(SpatialColumnRef {
-                            relation: column.relation.clone(),
-                            field: column.field.clone(),
-                        })
-                    }
-                    _ => {
-                        return Err(query_error(
-                            ErrorCategory::Unsupported,
-                            "AST spatial SQL Server richiede WKB bindato o una colonna",
-                        ));
-                    }
-                };
-                uses.push(SpatialUse {
-                    column: column.clone(),
-                    function: *function,
-                    argument,
-                });
-            } else if sql_server_numeric_spatial_function(*function) {
-                if arguments.len() != 2 {
-                    return Err(query_error(
-                        ErrorCategory::Unsupported,
-                        "overload numerico spatial SQL Server fuori dal sottoinsieme verificato",
-                    ));
-                }
-                let QueryExpression::Parameter { name } = &arguments[1] else {
-                    return Err(query_error(
-                        ErrorCategory::Unsupported,
-                        "AST spatial SQL Server richiede argomento numerico bindato",
-                    ));
-                };
-                uses.push(SpatialUse {
-                    column: column.clone(),
-                    function: *function,
-                    argument: if *function == SpatialFunction::PointN {
-                        SpatialArgument::PointIndex(name.clone())
-                    } else {
-                        SpatialArgument::Distance(name.clone())
-                    },
-                });
-            } else {
-                return Err(query_error(
-                    ErrorCategory::Unsupported,
-                    "funzione spatial fuori dal sottoinsieme SQL Server verificato",
-                ));
-            }
-        }
-        QueryExpression::Scalar { arguments, .. }
-        | QueryExpression::And { arguments }
-        | QueryExpression::Or { arguments } => {
-            for argument in arguments {
-                collect_expression_spatial_uses(argument, uses)?;
-            }
-        }
-        QueryExpression::Compare { left, right, .. }
-        | QueryExpression::SpatialOperator { left, right, .. } => {
-            collect_expression_spatial_uses(left, uses)?;
-            collect_expression_spatial_uses(right, uses)?;
-        }
-        QueryExpression::IsNull { expression, .. }
-        | QueryExpression::InSubquery { expression, .. } => {
-            collect_expression_spatial_uses(expression, uses)?;
-        }
-        QueryExpression::Window {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        }
-        | QueryExpression::SpatialWindow {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            for argument in arguments.iter().chain(partition_by) {
-                collect_expression_spatial_uses(argument, uses)?;
-            }
-            for ordering in order_by {
-                collect_expression_spatial_uses(&ordering.expression, uses)?;
-            }
-        }
-        QueryExpression::ScalarSubquery { .. }
-        | QueryExpression::Exists { .. }
-        | QueryExpression::Wildcard { .. }
-        | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => {}
+        },
+        QueryWalkNode::Operation(_) => QueryWalkControl::Skip,
+        QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+#[allow(clippy::too_many_lines)]
+fn collect_spatial_use(
+    function: SpatialFunction,
+    arguments: &[QueryExpression],
+    uses: &mut Vec<SpatialUse>,
+) -> Result<()> {
+    let QueryExpression::Column { column } = arguments.first().ok_or_else(|| {
+        query_error(
+            ErrorCategory::InvalidPlan,
+            "AST spatial SQL Server senza ricevitore",
+        )
+    })?
+    else {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "AST spatial SQL Server richiede una colonna come ricevitore",
+        ));
+    };
+    // La politica viene verificata prima della forma: la firma del metodo e
+    // un fatto del prodotto, distinto dall'arita ammessa dal contratto.
+    if !sql_server_offers(function) {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "funzione spatial fuori dal sottoinsieme SQL Server verificato",
+        ));
     }
+    let argument = if sql_server_unary_spatial_function(function) {
+        if arguments.len() != 1 {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "overload unary spatial SQL Server fuori dal sottoinsieme verificato",
+            ));
+        }
+        SpatialArgument::None
+    } else if sql_server_binary_spatial_function(function) {
+        if arguments.len() != 2 {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "overload binary spatial SQL Server fuori dal sottoinsieme verificato",
+            ));
+        }
+        match &arguments[1] {
+            QueryExpression::Parameter { name } => SpatialArgument::Geometry(name.clone()),
+            QueryExpression::Column { column } => {
+                SpatialArgument::GeometryColumn(SpatialColumnRef {
+                    relation: column.relation.clone(),
+                    field: column.field.clone(),
+                })
+            }
+            _ => {
+                return Err(query_error(
+                    ErrorCategory::Unsupported,
+                    "AST spatial SQL Server richiede WKB bindato o una colonna",
+                ));
+            }
+        }
+    } else if sql_server_numeric_spatial_function(function) {
+        if arguments.len() != 2 {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "overload numerico spatial SQL Server fuori dal sottoinsieme verificato",
+            ));
+        }
+        let QueryExpression::Parameter { name } = &arguments[1] else {
+            return Err(query_error(
+                ErrorCategory::Unsupported,
+                "AST spatial SQL Server richiede argomento numerico bindato",
+            ));
+        };
+        if function == SpatialFunction::PointN {
+            SpatialArgument::PointIndex(name.clone())
+        } else {
+            SpatialArgument::Distance(name.clone())
+        }
+    } else {
+        return Err(query_error(
+            ErrorCategory::Unsupported,
+            "funzione spatial fuori dal sottoinsieme SQL Server verificato",
+        ));
+    };
+    uses.push(SpatialUse {
+        column: column.clone(),
+        argument,
+        function,
+    });
     Ok(())
 }
 
 /// La forma T-SQL di una funzione, chiesta a chi la scrive.
 ///
-/// Erano tre elenchi scritti a mano qui dentro — unarie, binarie, numeriche —
-/// e dicevano la stessa cosa che il renderer diceva con i suoi letterali:
-/// quattro copie della stessa firma. Aprire `Overlaps` voleva dire ricordarsene
-/// in tutte e quattro, e il giorno in cui non ce se ne ricordava la funzione
-/// moriva in prepare mentre la capability la offriva.
-///
-/// Un tentativo di **derivarle dal contratto** e fallito, e vale la pena
-/// ricordarlo perche era convincente: due argomenti di cui il secondo non
-/// geometrico sembrava voler dire «numerico», finche `ST_IsValid` non l'ha
-/// smentito — il contratto ne ammette due, `STIsValid()` di T-SQL nessuno. La
-/// firma di un metodo appartiene al prodotto, non al piano.
+/// La firma appartiene al prodotto e non puo essere dedotta dall'arieta del
+/// contratto: per esempio `ST_IsValid` ammette due argomenti nel contratto, ma
+/// `STIsValid()` di T-SQL non ne accetta nessuno.
 fn sql_server_spatial_shape(function: SpatialFunction) -> Option<SqlServerSpatialShape> {
     // La **forma** non dipende dalla semantica: `STX` e `Long` si scrivono
     // entrambe senza parentesi, e cosi ogni altra coppia. Il nome si, ed e per
@@ -1869,47 +1646,21 @@ fn sql_server_numeric_spatial_function(function: SpatialFunction) -> bool {
 }
 
 fn operation_has_spatial(operation: &QueryOperation) -> bool {
-    operation
-        .projection
-        .iter()
-        .any(|projection| expression_has_spatial(&projection.expression))
-        || operation
-            .filter
-            .as_ref()
-            .is_some_and(expression_has_spatial)
-        || operation.group_by.iter().any(expression_has_spatial)
-        || operation
-            .having
-            .as_ref()
-            .is_some_and(expression_has_spatial)
-        || operation
-            .order_by
-            .iter()
-            .any(|ordering| expression_has_spatial(&ordering.expression))
-        || operation
-            .common_table_expressions
-            .iter()
-            .any(|cte| operation_has_spatial(&cte.query))
-        || operation
-            .derived_source
-            .as_ref()
-            .is_some_and(|derived| operation_has_spatial(&derived.query))
-        || operation.joins.iter().any(|join| {
-            join.on.as_ref().is_some_and(expression_has_spatial)
-                || join
-                    .derived_source
-                    .as_ref()
-                    .is_some_and(|derived| operation_has_spatial(&derived.query))
-        })
-        || operation
-            .set_operations
-            .iter()
-            .any(|set| operation_has_spatial(&set.query))
+    !walk_query(operation, |node| match node {
+        QueryWalkNode::Expression(
+            QueryExpression::Spatial { .. }
+            | QueryExpression::SpatialOperator { .. }
+            | QueryExpression::SpatialWindow { .. },
+        ) => QueryWalkControl::Break,
+        QueryWalkNode::Operation(_) | QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => {
+            QueryWalkControl::Continue
+        }
+    })
 }
 
 fn operation_contains_spatial_subquery(operation: &QueryOperation) -> bool {
-    operation_expressions(operation)
-        .into_iter()
+    operation
+        .clause_expressions()
         .any(expression_contains_spatial_subquery)
         || operation.joins.iter().any(|join| {
             join.on
@@ -1919,194 +1670,31 @@ fn operation_contains_spatial_subquery(operation: &QueryOperation) -> bool {
 }
 
 fn expression_contains_spatial_subquery(expression: &QueryExpression) -> bool {
-    match expression {
-        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-            operation_has_spatial(query)
+    !walk_query_expression(expression, |node| match node {
+        QueryWalkNode::Operation(operation) if operation_has_spatial(operation) => {
+            QueryWalkControl::Break
         }
-        QueryExpression::InSubquery {
-            expression, query, ..
-        } => expression_contains_spatial_subquery(expression) || operation_has_spatial(query),
-        QueryExpression::Scalar { arguments, .. }
-        | QueryExpression::Spatial { arguments, .. }
-        | QueryExpression::And { arguments }
-        | QueryExpression::Or { arguments } => {
-            arguments.iter().any(expression_contains_spatial_subquery)
-        }
-        QueryExpression::Compare { left, right, .. }
-        | QueryExpression::SpatialOperator { left, right, .. } => {
-            expression_contains_spatial_subquery(left)
-                || expression_contains_spatial_subquery(right)
-        }
-        QueryExpression::IsNull { expression, .. } => {
-            expression_contains_spatial_subquery(expression)
-        }
-        QueryExpression::Window {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        }
-        | QueryExpression::SpatialWindow {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            arguments.iter().any(expression_contains_spatial_subquery)
-                || partition_by
-                    .iter()
-                    .any(expression_contains_spatial_subquery)
-                || order_by
-                    .iter()
-                    .any(|ordering| expression_contains_spatial_subquery(&ordering.expression))
-        }
-        QueryExpression::Wildcard { .. }
-        | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => false,
-    }
-}
-
-fn expression_has_spatial(expression: &QueryExpression) -> bool {
-    match expression {
-        QueryExpression::Spatial { .. }
-        | QueryExpression::SpatialOperator { .. }
-        | QueryExpression::SpatialWindow { .. } => true,
-        QueryExpression::Scalar { arguments, .. }
-        | QueryExpression::And { arguments }
-        | QueryExpression::Or { arguments } => arguments.iter().any(expression_has_spatial),
-        QueryExpression::Compare { left, right, .. } => {
-            expression_has_spatial(left) || expression_has_spatial(right)
-        }
-        QueryExpression::Window {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            arguments.iter().any(expression_has_spatial)
-                || partition_by.iter().any(expression_has_spatial)
-                || order_by
-                    .iter()
-                    .any(|ordering| expression_has_spatial(&ordering.expression))
-        }
-        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-            operation_has_spatial(query)
-        }
-        QueryExpression::InSubquery {
-            expression, query, ..
-        } => expression_has_spatial(expression) || operation_has_spatial(query),
-        QueryExpression::IsNull { expression, .. } => expression_has_spatial(expression),
-        QueryExpression::Wildcard { .. }
-        | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => false,
-    }
+        QueryWalkNode::Operation(_) => QueryWalkControl::Skip,
+        QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+    })
 }
 
 /// Verifica le sorgenti a ogni profondità dopo che il renderer ha già
 /// applicato i limiti strutturali comuni.
 pub fn validate_query_sources(operation: &QueryOperation, database: &str) -> Result<()> {
-    validate_operation_sources(operation, database)
-}
-
-fn validate_operation_sources(operation: &QueryOperation, database: &str) -> Result<()> {
-    if let Some(source) = &operation.source {
-        validate_source(&source.object, database)?;
-    }
-    if let Some(derived) = &operation.derived_source {
-        validate_operation_sources(&derived.query, database)?;
-    }
-    for cte in &operation.common_table_expressions {
-        validate_operation_sources(&cte.query, database)?;
-    }
-    for join in &operation.joins {
-        if let Some(source) = &join.source {
-            validate_source(&source.object, database)?;
+    let mut failure = None;
+    walk_query(operation, |node| {
+        let QueryWalkNode::Source(source) = node else {
+            return QueryWalkControl::Continue;
+        };
+        if let Err(error) = validate_source(&source.object, database) {
+            failure = Some(error);
+            QueryWalkControl::Break
+        } else {
+            QueryWalkControl::Continue
         }
-        if let Some(derived) = &join.derived_source {
-            validate_operation_sources(&derived.query, database)?;
-        }
-        if let Some(on) = &join.on {
-            validate_expression_sources(on, database)?;
-        }
-    }
-    for projection in &operation.projection {
-        validate_expression_sources(&projection.expression, database)?;
-    }
-    if let Some(filter) = &operation.filter {
-        validate_expression_sources(filter, database)?;
-    }
-    for expression in &operation.group_by {
-        validate_expression_sources(expression, database)?;
-    }
-    if let Some(having) = &operation.having {
-        validate_expression_sources(having, database)?;
-    }
-    for ordering in &operation.order_by {
-        validate_expression_sources(&ordering.expression, database)?;
-    }
-    for expression in &operation.distinct_on {
-        validate_expression_sources(expression, database)?;
-    }
-    for set in &operation.set_operations {
-        validate_operation_sources(&set.query, database)?;
-    }
-    Ok(())
-}
-
-fn validate_expression_sources(expression: &QueryExpression, database: &str) -> Result<()> {
-    match expression {
-        QueryExpression::Scalar { arguments, .. }
-        | QueryExpression::Spatial { arguments, .. }
-        | QueryExpression::And { arguments }
-        | QueryExpression::Or { arguments } => {
-            for argument in arguments {
-                validate_expression_sources(argument, database)?;
-            }
-        }
-        QueryExpression::SpatialOperator { left, right, .. }
-        | QueryExpression::Compare { left, right, .. } => {
-            validate_expression_sources(left, database)?;
-            validate_expression_sources(right, database)?;
-        }
-        QueryExpression::Window {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        }
-        | QueryExpression::SpatialWindow {
-            arguments,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            for argument in arguments {
-                validate_expression_sources(argument, database)?;
-            }
-            for partition in partition_by {
-                validate_expression_sources(partition, database)?;
-            }
-            for ordering in order_by {
-                validate_expression_sources(&ordering.expression, database)?;
-            }
-        }
-        QueryExpression::ScalarSubquery { query } | QueryExpression::Exists { query, .. } => {
-            validate_operation_sources(query, database)?;
-        }
-        QueryExpression::InSubquery {
-            expression, query, ..
-        } => {
-            validate_expression_sources(expression, database)?;
-            validate_operation_sources(query, database)?;
-        }
-        QueryExpression::IsNull { expression, .. } => {
-            validate_expression_sources(expression, database)?;
-        }
-        QueryExpression::Wildcard { .. }
-        | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => {}
-    }
-    Ok(())
+    });
+    failure.map_or(Ok(()), Err)
 }
 
 fn validate_source(source: &ObjectRef, database: &str) -> Result<()> {
@@ -2230,16 +1818,12 @@ const fn sql_server_renderer() -> Renderer {
 }
 
 fn query_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
+    DatabaseError::new(
         category,
-        phase: ErrorPhase::Prepare,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+        ErrorPhase::Prepare,
+        Some(ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 #[cfg(test)]
@@ -2371,14 +1955,9 @@ mod tests {
 
     #[test]
     fn the_tsql_shape_does_not_depend_on_the_semantics() {
-        // `sql_server_spatial_shape` chiede il nome con una semantica sola e
-        // tiene la forma, e vale finche le due semantiche non divergono sulla
-        // **forma** di qualche membro. Oggi divergono solo sul nome — `STX`
-        // contro `Long` — e sono entrambe proprieta.
-        //
-        // Il giorno in cui una funzione fosse un metodo su un tipo e una
-        // proprieta sull'altro, quella scorciatoia scriverebbe SQL sbagliato
-        // per meta delle colonne senza che nessuno lo veda.
+        // `sql_server_spatial_shape` conserva soltanto la forma ricavata da una
+        // semantica. Questo test impedisce di usare la scorciatoia se un membro
+        // diventasse metodo su un tipo e proprieta sull'altro.
         for function in SpatialFunction::ALL {
             let geometry = plenora_database_sql::sql_server_spatial_method(
                 *function,
@@ -2408,9 +1987,8 @@ mod tests {
         // `SpatialFunction` non e `Ord` — non ha un ordine naturale, e imporgliene
         // uno per una guardia sarebbe una modifica al core per comodita di un
         // test. Si confrontano gli elenchi nell'ordine canonico di `ALL`.
-        // Cio che il provider offre sono **due** liste da quando il contratto
-        // sa dire su quale semantica vale una funzione: l'intersezione, e le
-        // sette che valgono solo su `geometry`.
+        // Il provider offre l'intersezione e l'estensione valida soltanto su
+        // `geometry`.
         let offered = |function: &SpatialFunction| {
             VERIFIED_SPATIAL_FUNCTIONS.contains(function)
                 || GEOMETRY_ONLY_SPATIAL_FUNCTIONS.contains(function)

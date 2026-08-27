@@ -20,15 +20,16 @@
 )]
 
 use crate::errors::to_py_err;
-use crate::py_convert::{param_to_python, params_from_python};
+use crate::py_convert::{
+    portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
+};
 use crate::runtime;
-use plenora_database_core::facade::{execute_portable, execute_portable_returning, scalar_opt};
-use plenora_database_core::portable::PortableStatement;
-use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionScope};
-use plenora_database_core::{CancellationToken, DatabaseError, Row};
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::transaction::{ConditionalUpdate, TransactionScope};
+use plenora_database_core::{CancellationToken, Row};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 
 fn tx_closed_error() -> PyErr {
     PyRuntimeError::new_err(
@@ -66,8 +67,7 @@ impl Transaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Vec<Row>> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         let tx = self.tx_mut()?;
         py.allow_threads(|| {
             runtime().block_on(async move {
@@ -95,8 +95,7 @@ impl Transaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<u64> {
-        let param_values = params_from_python(params.as_ref())?;
-        let statement = Statement::new(sql.to_owned()).with_params(param_values);
+        let statement = statement_from_python(sql, params.as_ref())?;
         let tx = self.tx_mut()?;
         py.allow_threads(|| {
             runtime().block_on(async move {
@@ -111,9 +110,7 @@ impl Transaction {
     /// se non ci sono righe.
     ///
     /// La cardinalita e imposta: piu di una riga o piu di una colonna sono un
-    /// errore, non una selezione arbitraria. Prima passava per la `list[dict]`
-    /// e prendeva il primo valore del primo dict — la prima colonna della
-    /// prima riga — scartando in silenzio tutto il resto.
+    /// errore, per evitare selezioni arbitrarie e perdita silenziosa di dati.
     #[pyo3(signature = (sql, params=None))]
     fn execute_scalar<'py>(
         &mut self,
@@ -122,10 +119,7 @@ impl Transaction {
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let rows = self.query_rows(py, sql, params)?;
-        let value = scalar_opt(rows).map_err(to_py_err)?;
-        value
-            .as_ref()
-            .map_or_else(|| Ok(py.None().into_bound(py)), |v| param_to_python(py, v))
+        scalar_to_python(py, rows)
     }
 
     /// Esegue una query nella transazione e ritorna tutte le righe come
@@ -147,13 +141,7 @@ impl Transaction {
         py: Python<'py>,
         ast_json: &str,
     ) -> PyResult<Bound<'py, PyList>> {
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         let tx = self.tx_mut()?;
         let rows: Vec<Row> = py
             .allow_threads(|| {
@@ -168,13 +156,7 @@ impl Transaction {
 
     /// Esegue un `PortableStatement` (senza RETURNING) nella transazione.
     fn execute_portable_count(&mut self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
-        let ast: PortableStatement = serde_json::from_str(ast_json).map_err(|e| {
-            to_py_err(DatabaseError::invalid_plan(format!(
-                "AST portable non valida a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )))
-        })?;
+        let ast = portable_from_json(ast_json)?;
         let tx = self.tx_mut()?;
         py.allow_threads(|| {
             runtime().block_on(async move {
@@ -219,11 +201,9 @@ impl Transaction {
         key_probe_sql: Option<&str>,
         key_probe_params: Option<Bound<'_, PyList>>,
     ) -> PyResult<()> {
-        let update_values = params_from_python(update_params.as_ref())?;
-        let update_stmt = Statement::new(update_sql.to_owned()).with_params(update_values);
+        let update_stmt = statement_from_python(update_sql, update_params.as_ref())?;
         let probe_stmt = if let Some(sql) = key_probe_sql {
-            let probe_values = params_from_python(key_probe_params.as_ref())?;
-            Some(Statement::new(sql.to_owned()).with_params(probe_values))
+            Some(statement_from_python(sql, key_probe_params.as_ref())?)
         } else {
             None
         };
@@ -288,9 +268,7 @@ impl Transaction {
     /// che segnala l'ambiguità — la sessione va verificata out-of-band.
     fn commit(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
-        // Fix review: leggo provider_kind PRIMA di consumare `tx` in
-        // commit — prima era hardcoded a Postgres, sbagliato per
-        // Transaction che è provider-agnostica (Postgres o MySQL).
+        // Il provider va letto prima che `commit` consumi la transazione.
         let provider = tx.provider_kind();
         py.allow_threads(|| {
             runtime().block_on(async move {
@@ -349,25 +327,6 @@ impl Transaction {
     fn __repr__(&self) -> String {
         format!("<Transaction active={}>", self.inner.is_some())
     }
-}
-
-/// Righe canoniche -> `list[dict]`.
-///
-/// Lo `zip` non e una scorciatoia: e l'invariante di `Row::try_new`, che
-/// garantisce tanti valori quanti nomi. Le superfici `MySQL` ne tenevano una
-/// copia che indicizzava i valori per posizione e riempiva un eventuale buco
-/// con un `NULL` inventato — cioe presentavano come dato assente cio che
-/// sarebbe stato un guasto di decodifica.
-pub fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyList>> {
-    let out = PyList::empty(py);
-    for row in rows {
-        let dict = PyDict::new(py);
-        for (col, val) in row.columns().iter().zip(row.values().iter()) {
-            dict.set_item(col.as_str(), param_to_python(py, val)?)?;
-        }
-        out.append(dict)?;
-    }
-    Ok(out)
 }
 
 /// Traduce una stringa `isolation` all'enum core.

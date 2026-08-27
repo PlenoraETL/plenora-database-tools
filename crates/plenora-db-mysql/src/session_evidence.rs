@@ -1,9 +1,7 @@
-//! Misura della semantica di sessione sui tre riferimenti accesi.
+//! Misura della semantica di sessione sui riferimenti accesi.
 //!
-//! La fase 1 ha lasciato fuori dal profilo il bootstrap di sessione, i livelli
-//! di isolamento e `START TRANSACTION`, dichiarandoli residui. Un residuo non
-//! e una decisione: prima di aggiungere un secondo profilo bisogna sapere se
-//! quelle superfici **coincidono** sui tre server, perche la regola dipende
+//! Bootstrap, isolamento e `START TRANSACTION` restano condivisi soltanto se
+//! quelle superfici coincidono su tutti i server, perche la regola dipende
 //! dalla risposta — cio che coincide resta codice condiviso presidiato da una
 //! prova, cio che diverge entra nel profilo, e nient'altro vi entra per
 //! simmetria.
@@ -18,7 +16,7 @@
 //!
 //! **`accepted` significa contratto soddisfatto, non misura riuscita.** E la
 //! differenza che rende utile la matrice: una sonda che registrasse "ho
-//! ottenuto una risposta" farebbe passare per accordo tre server che sbagliano
+//! ottenuto una risposta" farebbe passare per accordo server che sbagliano
 //! allo stesso modo — un READ ONLY che accetta scritture ovunque, quattro
 //! livelli che riportano tutti lo stesso valore, un rollback che non annulla.
 //! Ogni sonda dichiara cosa si aspetta, e cio che ha osservato viene
@@ -238,7 +236,7 @@ async fn bootstrap_through_pool() -> Probe {
 /// registrando l'identita di entrambe.
 ///
 /// L'identita e osservata, non pretesa: `mysql_async` non ha riconsegnato la
-/// stessa connessione in nessuno dei tre riferimenti — ne apre una nuova — e
+/// stessa connessione in nessun riferimento — ne apre una nuova — e
 /// pretendere il riuso avrebbe fatto fallire una sonda su cio che il driver
 /// non fa. Il dettaglio lo dice, perche la conseguenza va letta: cio che
 /// resta provato e che **ogni sessione consegnata dal pool e bootstrappata**,
@@ -393,7 +391,7 @@ async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
 ///
 /// Il solo codice non basta: una regressione che classificasse 1792 come
 /// `Authentication`, o ne dichiarasse l'effetto `Unknown`, o lo rendesse
-/// ritentabile, resterebbe `accepted` su tutti e tre — e sono proprio le tre
+/// ritentabile, resterebbe `accepted` su tutti — e sono proprio le
 /// cose che decidono cosa il chiamante fa dopo. Il contratto e la quaterna.
 struct ReadOnlyRefusal;
 
@@ -590,7 +588,7 @@ async fn durability_round(id: u8, durable: bool) -> Probe {
     ))
 }
 
-/// La misura della semantica di sessione sui tre riferimenti.
+/// La misura della semantica di sessione sui riferimenti.
 ///
 /// `#[ignore]` come per ADR 0014: pretende un server live esplicito, e il nome
 /// non porta il prefisso `live_` che i runner del gate filtrano.

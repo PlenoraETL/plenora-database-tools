@@ -1,8 +1,8 @@
 name: mysql-assurance
 
-# Campagna MySQL completa: gate del riferimento baseline e matrice delle tre
-# versioni qualificate. Non gira su PR — richiede Docker, avvia server reali e
-# dura decine di minuti — ma su schedule settimanale e su richiesta esplicita.
+# Campagna MySQL completa: gate del riferimento baseline e matrice dichiarata
+# in `docker/mysql/references.json`. Richiede Docker e server reali, quindi
+# gira a calendario e su richiesta.
 # Il gate veloce che presidia le PR e `mysql-static-gate.yml`.
 #
 # Questo file non contiene logica di qualifica: due invocazioni, niente altro.

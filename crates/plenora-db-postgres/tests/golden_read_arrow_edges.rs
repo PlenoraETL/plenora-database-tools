@@ -1,8 +1,6 @@
 //! Edge case del read stream Arrow: single-huge-row e mix small+huge.
 //!
-//! Chiude il buco identificato in P0.5 pre-Fase 3 sul read stream. Il file
-//! `golden_read_arrow.rs` copre già i casi normali (batching, projection,
-//! null, jsonb+bytea 4 MiB via OLTP). Qui verifichiamo cosa succede quando
+//! `golden_read_arrow.rs` copre i casi normali; qui si verifica cosa succede quando
 //! una singola riga eccede il budget di batching, e quando small e huge
 //! sono intercalati.
 //!

@@ -71,7 +71,7 @@ def test_inspect_schemas_excludes_system_schemas(session) -> None:
     schemas = session.inspect.schemas()
     assert isinstance(schemas, list)
     assert all(isinstance(s, str) for s in schemas)
-    # `public` deve esserci; system schemas NO (v0.2 fix H7.1).
+    # `public` deve esserci; gli schemi di sistema no.
     assert "public" in schemas
     for banned in ("pg_catalog", "information_schema", "pg_toast"):
         assert banned not in schemas, f"system schema '{banned}' non deve comparire"

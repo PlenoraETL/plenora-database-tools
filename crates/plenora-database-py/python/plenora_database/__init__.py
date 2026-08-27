@@ -18,15 +18,14 @@ Uso base:
         new = s.insert("users").values(name="Ada").returning("id").one()
         n = s.update("users").set(name="Alan").where_eq("id", 1).execute()
 
-Le API di spatial, transaction e async **ci sono**: `spatial`, `Transaction` /
-`AsyncTransaction`, e le factory `aconnect*`. Questa riga diceva che sarebbero
-arrivate in una milestone futura, ed e rimasta invariata mentre arrivavano.
+Le API spatial, transazionali e asincrone sono esposte da `spatial`,
+`Transaction` / `AsyncTransaction` e dalle factory `aconnect*`.
 """
 
 from ._native import version
-from ._session import Session
+from ._session import Session, _Inspector
 from ._transaction import Transaction
-from ._async_session import AsyncSession
+from ._async_session import AsyncSession, _AsyncInspector
 from ._async_transaction import AsyncTransaction
 from .async_query import (
     AsyncDelete,
@@ -34,6 +33,7 @@ from .async_query import (
     AsyncSelect,
     AsyncUpdate,
     AsyncUpsert,
+    _AsyncBuilderFactory,
 )
 from . import spatial
 from .spatial import SpatialReference
@@ -69,8 +69,7 @@ from .errors import (
     PlenoraTransientError,
     PlenoraUnsupportedError,
 )
-from .async_query import AsyncDelete, AsyncInsert, AsyncSelect, AsyncUpdate, AsyncUpsert  # noqa: F401
-from .query import Delete, Insert, Select, Update, Upsert
+from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
 from ._native import SessionContext  # PFM CHG-002
 from ._native import aconnect as _native_aconnect
 from ._native import connect as _native_connect
@@ -84,6 +83,10 @@ from ._native import (
     connect_mysql as _native_connect_mysql,
     connect_sqlserver as _native_connect_sqlserver,
 )
+
+# Compatibilita con i nomi privati pubblicati dagli stub della famiglia.
+_DatabaseInspector = _Inspector
+_AsyncDatabaseInspector = _AsyncInspector
 
 
 def connect(dsn: str, tls_mode: str = "require") -> Session:
@@ -270,7 +273,7 @@ def connect_sqlserver(
     return _DatabaseSessionWrapper(native)
 
 
-class _DatabaseSessionWrapper:
+class _DatabaseSessionWrapper(_BuilderFactory):
     """Wrapper Python-side che aggiunge `copy_from` con conversione
     automatica dell'input (pyarrow.Table / RecordBatch / list[dict] /
     pandas.DataFrame / bytes IPC) verso Arrow IPC bytes."""
@@ -321,8 +324,8 @@ class _DatabaseSessionWrapper:
         return self._native.execute_ddl(sql)
 
     @property
-    def inspect(self) -> "_DatabaseInspector":
-        return _DatabaseInspector(self._native)
+    def inspect(self) -> "_Inspector":
+        return _Inspector(self._native)
 
     def begin(
         self,
@@ -379,23 +382,6 @@ class _DatabaseSessionWrapper:
         """
         return self._native.read(schema, object, projection, order_by, limit)
 
-    # -------------------- portable AST builders (v0.9+) -----------------
-
-    def select(self, table: str, schema: str | None = None) -> "Select":
-        return Select(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None) -> "Insert":
-        return Insert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None) -> "Update":
-        return Update(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None) -> "Delete":
-        return Delete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None) -> "Upsert":
-        return Upsert(self, table, schema)
-
     def _execute_portable_rows(self, ast_json: str) -> list[dict]:
         return self._native.execute_portable_rows(ast_json)
 
@@ -437,11 +423,8 @@ class _DatabaseSessionWrapper:
           semantica diversa (AUTO_INCREMENT non azzerato, trigger e log
           riga per riga attivi). Usare `replace`.
 
-        `mapping_policy` **deve essere** `"strict"` su MySQL (default
-        post py-v0.9.2; prima era `"compatible"` che il provider
-        rifiutava con `PlenoraUnsupportedError` "richiede
-        MappingPolicy::Strict"). Loss preflight non ancora
-        qualificato per MySQL.
+        `mapping_policy` **deve essere** `"strict"` su MySQL. Il loss
+        preflight non e qualificato e resta fail-closed.
 
         `source` accetta:
           - `pyarrow.Table` / `RecordBatch` / list[RecordBatch]
@@ -461,25 +444,6 @@ class _DatabaseSessionWrapper:
             schema, table, ipc_bytes, mode, transaction_profile,
             mapping_policy, keys, update_columns,
         )
-
-
-class _DatabaseInspector:
-    __slots__ = ("_native",)
-
-    def __init__(self, native: DatabaseSession) -> None:
-        self._native = native
-
-    def catalogs(self) -> list[str]:
-        return self._native.inspect_catalogs()
-
-    def schemas(self) -> list[str]:
-        return self._native.inspect_schemas()
-
-    def tables(self, schema: str) -> list[dict]:
-        return self._native.inspect_tables(schema)
-
-    def describe(self, schema: str, table: str) -> dict:
-        return self._native.inspect_describe(schema, table)
 
 
 async def aconnect_mysql(
@@ -558,7 +522,7 @@ async def aconnect_sqlserver(
     return _AsyncDatabaseSessionWrapper(native)
 
 
-class _AsyncDatabaseSessionWrapper:
+class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
     """Wrapper Python-side per AsyncDatabaseSession: aggiunge ergonomia
     `acopy_from` con auto-conversion source + portable AST builders
     async (`await s.select(t).where_eq(...).all()`)."""
@@ -610,8 +574,8 @@ class _AsyncDatabaseSessionWrapper:
         return await self._native.execute_ddl(sql)
 
     @property
-    def inspect(self) -> "_AsyncDatabaseInspector":
-        return _AsyncDatabaseInspector(self._native)
+    def inspect(self) -> "_AsyncInspector":
+        return _AsyncInspector(self._native)
 
     async def begin(
         self,
@@ -670,52 +634,11 @@ class _AsyncDatabaseSessionWrapper:
             mapping_policy, keys, update_columns,
         )
 
-    # -------------------- portable AST builders async (v0.9+) -----------
-
-    def select(self, table: str, schema: str | None = None):
-        from .async_query import AsyncSelect
-        return AsyncSelect(self, table, schema)
-
-    def insert(self, table: str, schema: str | None = None):
-        from .async_query import AsyncInsert
-        return AsyncInsert(self, table, schema)
-
-    def update(self, table: str, schema: str | None = None):
-        from .async_query import AsyncUpdate
-        return AsyncUpdate(self, table, schema)
-
-    def delete(self, table: str, schema: str | None = None):
-        from .async_query import AsyncDelete
-        return AsyncDelete(self, table, schema)
-
-    def upsert(self, table: str, schema: str | None = None):
-        from .async_query import AsyncUpsert
-        return AsyncUpsert(self, table, schema)
-
     async def _execute_portable_rows(self, ast_json: str) -> list[dict]:
         return await self._native.execute_portable_rows(ast_json)
 
     async def _execute_portable_count(self, ast_json: str) -> int:
         return await self._native.execute_portable_count(ast_json)
-
-
-class _AsyncDatabaseInspector:
-    __slots__ = ("_native",)
-
-    def __init__(self, native: AsyncDatabaseSession) -> None:
-        self._native = native
-
-    async def catalogs(self) -> list[str]:
-        return await self._native.inspect_catalogs()
-
-    async def schemas(self) -> list[str]:
-        return await self._native.inspect_schemas()
-
-    async def tables(self, schema: str) -> list[dict]:
-        return await self._native.inspect_tables(schema)
-
-    async def describe(self, schema: str, table: str) -> dict:
-        return await self._native.inspect_describe(schema, table)
 
 
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
@@ -736,11 +659,8 @@ async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
 
 #: I nomi storici delle due sessioni di famiglia.
 #:
-#: Si chiamavano `MysqlSession` e `AsyncMysqlSession` da quando servivano un
-#: prodotto solo. Oggi ne servono quattro — MySQL, MariaDB, SQL Server, e la
-#: differenza fra loro sta nel provider che tengono dietro `dyn Provider`, non
-#: nella superficie — e un utente SQL Server che riceve una `MysqlSession` legge
-#: una cosa che non e vera.
+#: La superficie è indipendente dal prodotto; il nome storico resta solo come
+#: alias compatibile per i client pubblicati.
 #:
 #: Gli alias restano perche il pacchetto e pubblicato: rimuoverli romperebbe un
 #: `isinstance` o un\'annotazione di tipo scritti prima di questo cambiamento,

@@ -92,26 +92,9 @@ mod tests {
 
     /// La DSN della misura, oppure il permesso di non misurare nulla.
     ///
-    /// Quindici prove live cominciavano con un `let Ok(dsn) = env::var(..)
-    /// else { return; }`: senza DSN si concludevano subito, e `cargo test` le
-    /// contava fra quelle passate. Una prova che non ha toccato nessun server
-    /// e indistinguibile, nel resoconto, da una che lo ha attraversato.
-    ///
-    /// # Perche non basta che i gate impostino la variabile
-    ///
-    /// La impostano, tutti e tre — riferimento, hardening e matrice — quindi
-    /// oggi quelle prove girano davvero. Il difetto non e attivo: e silenzioso.
-    /// Il giorno in cui il nome della variabile cambiasse, o la risoluzione del
-    /// nome del container saltasse, la matrice delle versioni direbbe «cinque
-    /// major su cinque, tutto passato» avendo misurato soltanto i test unitari,
-    /// che non aprono una connessione.
-    ///
-    /// E' la stessa forma del difetto corretto oggi sul gate di riferimento di
-    /// questo crate, dove una prova passata veniva dichiarata «non eseguita»:
-    /// li il gate almeno **leggeva** quali prove avessero girato, e qui non
-    /// puo, perche una prova che rientra subito stampa `... ok` come le altre.
-    /// Il runner non ha modo di vedere la differenza, quindi la differenza va
-    /// dichiarata da dentro.
+    /// Una prova che ritorna senza DSN appare passata come una che ha davvero
+    /// interrogato il server. Il runner non può distinguere i due casi, quindi
+    /// il test deve renderli espliciti dall'interno.
     ///
     /// # La forma
     ///
@@ -127,13 +110,7 @@ mod tests {
     ///
     /// # Perche non basta il salto silenzioso
     ///
-    /// Questa prova cominciava con un `let (Ok(..), Ok(..), Ok(..), Ok(..)) =
-    /// (..) else { return; }`: senza le quattro variabili si concludeva
-    /// subito, e `cargo test` la contava fra quelle passate.
-    ///
-    /// E' la stessa forma dei quindici salti sulla DSN, resi rumorosi oggi, e
-    /// questa era sfuggita perche guarda variabili diverse. Con una
-    /// differenza a suo favore: il gate di riferimento la **dichiara** fra le
+    /// Il gate di riferimento la dichiara fra le
     /// prove che non qualificano, con la sua ragione — il suo compose e
     /// plaintext, e la CA privata non c'e.
     ///
@@ -406,8 +383,8 @@ mod tests {
             DataType::Int64,
             false,
         )]));
-        let prepared = PreparedWrite {
-            operation: WriteOperation {
+        let prepared = PreparedWrite::new(
+            WriteOperation {
                 target: ObjectRef {
                     catalog: None,
                     schema: Some("public".to_owned()),
@@ -422,20 +399,20 @@ mod tests {
                 create_spatial_index: false,
                 allow_partial: false,
             },
-            input_schema: Arc::clone(&schema),
-            loss_report: plenora_database_core::loss::LossReport {
+            Arc::clone(&schema),
+            plenora_database_core::loss::LossReport {
                 schema_version: 2,
                 policy: MappingPolicy::Strict,
                 losses: Vec::new(),
             },
-            budget: prepared_budget.clone(),
-            operation_lease: prepared_budget
+            prepared_budget.clone(),
+            prepared_budget
                 .try_lease(ResourceKind::ConcurrentOperations, 1)
                 .expect("operation lease"),
-            columns_lease: prepared_budget
+            prepared_budget
                 .try_lease(ResourceKind::Columns, 1)
                 .expect("columns lease"),
-        };
+        );
         let error = Provider::write(
             &PostgresProvider::insecure_local(),
             &SecretString::new("host=must-not-connect.invalid"),
@@ -2459,8 +2436,7 @@ mod tests {
             // Le chiavi appartengono alle mode che ne hanno una semantica:
             // `Create` le rende PRIMARY KEY, `Update`/`Upsert`/`DeleteByKeys`
             // le usano per il match. Append, Replace e TruncateInsert le
-            // rifiutano — la fixture le dichiarava per tutte, e il preflight
-            // si limitava a ignorarle.
+            // rifiutano, quindi restano assenti dal piano.
             keys: if matches!(
                 mode,
                 WriteMode::Create | WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys

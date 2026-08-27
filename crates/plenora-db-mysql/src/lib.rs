@@ -2,8 +2,6 @@
 //!
 //! Il riferimento non e scritto qui: lo fissa `docker/mysql/references.json`
 //! per digest, ed e il gate a verificare che il server misurato sia quello.
-//! Al momento e `MySQL` 9.7 — la 8.4 LTS lo e stata fino al 2026-08 — e una
-//! versione scritta nel sorgente invecchia senza che nulla fallisca.
 //!
 //! Le capability restano fail-closed fino alla rispettiva prova live; in
 //! particolare il DDL atomico di `MySQL` non viene dichiarato come DDL
@@ -30,8 +28,8 @@ mod write;
 #[cfg(test)]
 mod live_tests;
 
-// Misura di evidenza MariaDB (ADR 0014): esiste solo nei test, e con essa il
-// bypass sul rifiuto iniziale. Il binario pubblico non la contiene.
+// Le misure comparative MariaDB esistono solo nei test; il binario pubblico
+// non contiene l'harness ne i relativi bypass di identificazione.
 #[cfg(test)]
 mod evidence;
 

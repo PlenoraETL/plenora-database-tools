@@ -1,25 +1,14 @@
 //! Costruttore unico dell'errore "commit outcome unknown".
 //!
-//! Prima di questo modulo, la stessa `DatabaseError` era ricostruita in
-//! 7 punti (`session`, `async_session`, `transaction`,
-//! `async_transaction`, `session_family`, `async_session_family` —
-//! quest'ultimo 2×). Rischio: metadati divergenti (`ErrorPhase`,
-//! provider, message) → consumer riceveva codici incoerenti a seconda
-//! del path che aveva chiamato.
-//!
-//! Fix review #9:
-//! - `ErrorPhase::Commit` (non `Write` come alcuni path facevano).
-//! - `RemoteEffect::Unknown` (già consolidato prima, ma qui garantito).
+//! Il fallimento appartiene a `ErrorPhase::Commit` e conserva
+//! `RemoteEffect::Unknown`, perche l'esito remoto non e osservabile.
 //! - `provider` sempre valorizzato quando noto (`Postgres`/`Mysql`).
 //!
 //! La disposizione e `RequiresRecovery`, non `Never`. Le due dicono cose
 //! diverse: `Never` significa che l'operazione non e riprendibile, mentre qui
 //! l'operazione **puo** essere ripresa dopo una verifica fuori banda — che e
 //! esattamente cio che il messaggio chiede all'operatore. Con `Never` le due
-//! superfici si contraddicevano: l'attributo `retry` dei binding Python diceva
-//! `"never"` mentre il testo diceva di verificare e riprendere, e
-//! `requires_manual_recovery()` del core — vero solo per `RequiresRecovery` e
-//! `RequiresIdempotencyKey` — rispondeva di no.
+//! `requires_manual_recovery()` deve quindi restituire vero.
 
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{
@@ -47,8 +36,7 @@ pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
     };
     DatabaseError {
         category: ErrorCategory::Internal,
-        // Fix review #9: `ErrorPhase::Commit`, non `Write` — la fase
-        // "Write" è per lo statement DML; l'ambiguità è sul COMMIT.
+        // `Write` appartiene allo statement DML; qui l'ambiguita e sul COMMIT.
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,

@@ -2,18 +2,9 @@
 //!
 //! # La deadline sveglia, non aspetta di essere guardata
 //!
-//! `reason()` ha sempre saputo confrontare la deadline con l'orologio, ma solo
-//! *quando qualcuno chiedeva*. Un task fermo su `cancelled()` non chiede: si
-//! registra e resta sospeso finche qualcuno non chiama `cancel()`. Una
-//! deadline futura non risvegliava nessuno, quindi non scadeva mai per chi la
-//! stava aspettando — e chi la aspetta e esattamente chi ne ha bisogno.
-//!
-//! Le conseguenze erano diffuse, non locali: `retry_with_policy` mette in
-//! `select!` lo sleep di backoff e `cancelled()`, quindi un backoff piu lungo
-//! della deadline arrivava in fondo; e `select_with_cancellation` del provider
-//! `PostgreSQL`, usata in decine di punti, aveva lo stesso buco.
-//!
-//! Il rimedio e uno scheduler di deadline interno a questo modulo, costruito
+//! Uno scheduler interno risveglia i task registrati su `cancelled()` quando
+//! scade la deadline, senza attendere una successiva chiamata a `reason()`.
+//! Lo scheduler e costruito
 //! sulla sola `std`. Il crate non dipende da un runtime async — i suoi future
 //! sono `Pin<Box<dyn Future>>` e girano su qualunque executor — e legarlo a
 //! Tokio per un timer avrebbe deciso il runtime di tutti i consumatori. Un
@@ -51,8 +42,7 @@
 //! processo non riesce a crearlo. Chi ha bisogno di un limite temporale
 //! *garantito* — un timeout di protocollo, non una cortesia verso il server —
 //! deve comporre la propria attesa con il timer del proprio runtime, non
-//! affidarsi a questo. La deadline resta comunque un miglioramento stretto
-//! rispetto a prima, quando nessuno la faceva scattare mai.
+//! affidarsi a questo.
 
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::BinaryHeap;
@@ -194,10 +184,8 @@ impl DeadlineScheduler {
     /// Avvia il worker se non c'e.
     ///
     /// Idempotente e riprovabile: `Builder::spawn` fa I/O e puo fallire per
-    /// limiti di thread del processo. La prima stesura ignorava l'esito e
-    /// fissava comunque lo scheduler, quindi un fallimento all'avvio lasciava
-    /// **tutte** le deadline successive senza nessuno che le facesse scattare,
-    /// per sempre. Ora ogni nuova registrazione e una nuova occasione.
+    /// limiti di thread del processo. Un fallimento non fissa lo scheduler,
+    /// cosi ogni nuova registrazione puo tentare nuovamente l'avvio.
     /// Restituisce `true` se il worker e vivo dopo la chiamata.
     ///
     /// L'esito **e osservabile** perche il chiamante possa reagire: chi si sta
@@ -648,11 +636,7 @@ mod tests {
         assert_eq!(token.reason(), Some(CancellationReason::Deadline));
     }
 
-    /// Il caso che il modulo non copriva: una deadline **futura**.
-    ///
-    /// Il test esistente usava `Instant::now()`, cioe una scadenza gia
-    /// passata, che `reason()` vede al primo sguardo. Il difetto stava
-    /// nell'altro caso: nessuno guardava piu, perche il waiter era sospeso.
+    /// Una deadline futura deve risvegliare un waiter già sospeso.
     #[test]
     fn a_future_deadline_wakes_a_pending_waiter() {
         let token =
@@ -703,12 +687,8 @@ mod tests {
 
     /// Un waker difettoso costa il proprio risveglio, non la cancellazione.
     ///
-    /// La prima stesura conteneva il panic **attorno all'intera**
-    /// `cancel_tree`: il token restava marcato, ma i waiter successivi non
-    /// venivano svegliati e i figli non venivano propagati — e la CAS
-    /// impediva a chiunque di riprovare. Il test mette un waiter sano e un
-    /// child token dopo quello difettoso, che e esattamente cio che prima
-    /// spariva.
+    /// Il panico di un waker deve essere isolato: i waiter successivi vengono
+    /// comunque svegliati e la cancellazione continua a propagarsi ai figli.
     #[test]
     fn a_panicking_waker_does_not_swallow_the_rest_of_the_cancellation() {
         let token = CancellationToken::new();

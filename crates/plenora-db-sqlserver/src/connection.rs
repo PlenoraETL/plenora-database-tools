@@ -7,7 +7,6 @@ use futures_util::future::FutureExt;
 use futures_util::TryStreamExt;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
 };
 use tiberius::{Client, TokenRow};
 use tokio::net::TcpStream;
@@ -332,8 +331,8 @@ impl SqlServerSession {
                 // prestito successivo la troverebbe con i pacchetti di
                 // qualcun altro in coda.
                 //
-                // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per
-                // `Udt` e `SSVariant`: basta che una SELECT renda una colonna
+                // Il decoder del driver non implementa `Udt` e `SSVariant`:
+                // basta che una SELECT renda una colonna
                 // `geometry`, `geography` o `sql_variant`, e succede sui
                 // **metadati**, prima di ogni riga — quindi nessun controllo
                 // sul valore potrebbe prevenirlo.
@@ -406,8 +405,8 @@ impl SqlServerSession {
                 // prestito successivo la troverebbe con i pacchetti di
                 // qualcun altro in coda.
                 //
-                // `tiberius` 0.12.3 ha un `todo!()` in `TypeInfo::decode` per
-                // `Udt` e `SSVariant`: basta che una SELECT renda una colonna
+                // Il decoder del driver non implementa `Udt` e `SSVariant`:
+                // basta che una SELECT renda una colonna
                 // `geometry`, `geography` o `sql_variant`, e succede sui
                 // **metadati**, prima di ogni riga — quindi nessun controllo
                 // sul valore potrebbe prevenirlo.
@@ -627,7 +626,7 @@ enum QueryOutcome {
     Cancelled,
     Timeout,
     Driver(tiberius::error::Error),
-    /// Il driver e morto in un `todo!()` invece di rendere un errore.
+    /// Il driver ha incontrato un ramo di decodifica non implementato.
     ///
     /// Non e una condizione del server: e una famiglia di tipo che tiberius
     /// 0.12.3 non sa decodificare, e la scopre sui metadati. La connessione
@@ -761,27 +760,19 @@ fn validate_result_metadata(
 }
 
 fn read_protocol_error(message: &'static str) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::Protocol,
-        phase: ErrorPhase::Read,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: message.to_owned(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::Protocol,
+        ErrorPhase::Read,
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        message,
+    )
 }
 
 fn state_error(phase: ErrorPhase) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidPlan,
+    DatabaseError::new(
+        ErrorCategory::InvalidPlan,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        execution_id: None,
-        message: "stato sessione SQL Server incompatibile con l'operazione".to_owned(),
-        diagnostics: None,
-    }
+        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+        "stato sessione SQL Server incompatibile con l'operazione",
+    )
 }

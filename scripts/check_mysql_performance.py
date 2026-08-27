@@ -43,14 +43,8 @@ DEFAULT_BUDGET = ROOT / "benchmarks/baseline/mysql-performance-budget.json"
 #: confrontano fra corse, quindi devono cadere sempre sullo stesso motore — ma
 #: la LTS, che e la riga che resta ferma piu a lungo.
 #:
-#: Il **nome** e qui, il digest no. Prima c'erano entrambi, e il digest era una
-#: copia di quello che `references.json` gia porta: due fonti per lo stesso
-#: fatto, e il giorno in cui la riga 8.4.11 diventasse 8.4.12 questa campagna
-#: avrebbe continuato a pretendere l'immagine vecchia — o sarebbe fallita con
-#: un messaggio che non nomina la ragione vera.
-#:
-#: E' la stessa forma del registro dei test della matrice SQL Server, rimasto a
-#: quarantaquattro mentre la sorgente arrivava a quarantotto.
+#: Il nome seleziona la riga autorevole di `references.json`; il digest non
+#: viene duplicato qui.
 PERFORMANCE_REFERENCE_LABEL = "MySQL 8.4 LTS"
 
 

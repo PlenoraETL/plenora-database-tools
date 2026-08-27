@@ -1,8 +1,6 @@
 use mysql_async::{Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts};
 use plenora_database_core::provider::SecretString;
-use plenora_database_core::{
-    DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
-};
+use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -339,16 +337,12 @@ impl MysqlConfig {
 }
 
 fn invalid_configuration(message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidConfiguration,
-        phase: ErrorPhase::Validate,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(crate::profile::PROVISIONAL_KIND),
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(
+        ErrorCategory::InvalidConfiguration,
+        ErrorPhase::Validate,
+        Some(crate::profile::PROVISIONAL_KIND),
+        message,
+    )
 }
 
 #[cfg(test)]

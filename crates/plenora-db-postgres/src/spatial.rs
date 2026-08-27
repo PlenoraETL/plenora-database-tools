@@ -13,9 +13,7 @@ use plenora_database_core::spatial_policy;
 use plenora_database_core::transaction::Statement;
 use plenora_database_core::{DatabaseError, SpatialFilter, SpatialPredicate, SpatialReference};
 
-/// Delega a `plenora-database-core::identifier` (Fase A2). Prima
-/// duplicava le stesse regole di validazione + quoting di
-/// `compiler.rs` e `sql::Renderer`.
+/// Delega validazione e quoting all'implementazione condivisa del core.
 fn quote_identifier(name: &str) -> Result<String, DatabaseError> {
     core_quote(IdentifierDialect::Postgres, name)
 }
@@ -32,8 +30,7 @@ fn qualify_table(schema: Option<&str>, table: &str) -> Result<String, DatabaseEr
 }
 
 fn ref_expr(index: usize, semantics: SpatialSemantics) -> String {
-    // Fase B: cast delegato a `spatial_policy::postgres_cast_for`.
-    // Prima era inline replicando le regole di `compiler.rs`.
+    // Il cast usa la stessa policy spatial del compilatore portabile.
     format!(
         "ST_GeomFromEWKB(${index}){}",
         spatial_policy::postgres_cast_for(semantics)
@@ -62,18 +59,15 @@ pub fn build_spatial_select(
         ));
     }
 
-    // Fase B: validazione predicato/reference centralizzata in
-    // `spatial_policy`. Copre distanza finita+positiva, DWithin+
-    // Geometry+SRID_geografico fail-closed, BoundingBox+Geography
-    // Unsupported. Prima erano inline duplicati con `compiler.rs`.
+    // La policy condivisa copre distanza finita e positiva, DWithin geometry
+    // con SRID geografico fail-closed e BoundingBox geography non supportato.
     spatial_policy::validate_predicate(
         ProviderKind::Postgres,
         &filter.predicate,
         &filter.reference,
     )?;
 
-    // Fase A2: quote_identifier centralizzato — valida + quota in
-    // un'unica funzione, ritorna errore uniforme.
+    // Validazione e quoting passano da un'unica funzione condivisa.
     let projection_sql = projection
         .iter()
         .map(|c| quote_identifier(c))
@@ -182,8 +176,8 @@ mod tests {
 
     #[test]
     fn dwithin_binds_distance_parameter() {
-        // Post-Fase B: DWithin + Geometry + SRID geografico è fail-closed.
-        // Uso SRID 3857 (web mercator, unità metri) per esercitare il
+        // DWithin geometry con SRID geografico è fail-closed. Uso SRID 3857
+        // (web mercator, unità metri) per esercitare il
         // path DWithin senza il check spatial_policy.
         let reference = SpatialReference {
             ewkb: dummy_ewkb(),
@@ -280,8 +274,8 @@ mod tests {
 
     #[test]
     fn geography_semantics_casts_reference_to_geography() {
-        // v0.2 (fix P0.5 finding): con semantics=Geography il ref è castato
-        // a ::geography invece che ::geometry — necessario per query verso
+        // Con semantics=Geography il riferimento è castato a ::geography,
+        // necessario per query verso
         // colonne geography (PostGIS non fa cast implicito cross-type).
         let filter = SpatialFilter {
             geometry_column: "g".into(),

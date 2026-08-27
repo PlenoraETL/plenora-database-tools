@@ -1,7 +1,7 @@
 //! Percorso SQL Server row-scoped qualificato per `Prepared` append atomico.
 
 use super::plan::WritePlan;
-use super::resources::WriteRowResources;
+use super::resources::reserve_write_row;
 use super::{row_mutation, MutationCounts, SqlServerInsertMode, WriteFaultPoint};
 use crate::connection::RowQueryResult;
 use crate::PooledSqlServerSession;
@@ -171,7 +171,7 @@ impl RowScopedWriter for SqlServerRowWriter<'_> {
                 })?;
                 (
                     super::codec::bind_row(self.plan, batch, offset)?,
-                    WriteRowResources::reserve(batch, offset, self.plan, self.budget)?,
+                    reserve_write_row(batch, offset, self.plan, self.budget)?,
                 )
             };
             match self
@@ -301,7 +301,7 @@ fn batch_rows(batch: &RecordBatch) -> Result<u64> {
 }
 
 fn checked_batch_end(batch_start: u64, rows: u64) -> Result<u64> {
-    batch_start.checked_add(rows).ok_or_else(|| {
+    plenora_database_core::checked_source_row_end(batch_start, rows).ok_or_else(|| {
         diagnostic_error(
             ErrorCategory::ResourceLimit,
             "overflow nell'offset sorgente SQL Server",

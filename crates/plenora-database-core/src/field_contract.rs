@@ -6,7 +6,7 @@
 use crate::arrow::schema::{DataType, Field, Schema};
 use crate::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use crate::protocol;
-use crate::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition};
+use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::HashMap;
 
 const LEGACY_DIMENSIONS: &str = "plenora.dimensions";
@@ -446,16 +446,7 @@ fn coherent_value<'a>(
 }
 
 fn contract_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {
-    DatabaseError {
-        category,
-        phase: ErrorPhase::Validate,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: None,
-        execution_id: None,
-        message: message.into(),
-        diagnostics: None,
-    }
+    DatabaseError::new(category, ErrorPhase::Validate, None, message)
 }
 
 #[cfg(test)]

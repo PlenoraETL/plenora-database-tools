@@ -1,5 +1,24 @@
+//! Chiavi e helper che applicano il contratto Arrow sul bordo pubblico.
+
 pub const CONTRACT_VERSION: &str = "1";
+use crate::arrow::{Field, Schema, SchemaRef};
+use std::collections::HashMap;
+use std::sync::Arc;
+
 pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
+
+/// Costruisce lo schema Arrow sul bordo pubblico applicando sempre la
+/// versione del contratto corrente.
+///
+/// Tenerlo nel core evita che i provider possano divergere silenziosamente
+/// sulla metadata obbligatoria dello schema.
+#[must_use]
+pub fn contract_schema(fields: Vec<Field>) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        HashMap::from([(CONTRACT_VERSION_KEY.to_owned(), CONTRACT_VERSION.to_owned())]),
+    ))
+}
 
 pub const GEOMETRY_ENCODING: &str = "plenora.geometry.encoding";
 pub const GEOMETRY_DIMENSIONS: &str = "plenora.geometry.dimensions";

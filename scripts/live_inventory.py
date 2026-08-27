@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """Inventario dei test live, derivato dal codice e dalla suite compilata.
 
-Due gate — PostgreSQL e SQL Server — hanno avuto lo stesso difetto: dichiarare
-nel verdetto una copertura che nessun passo verificava. Il PostgreSQL contava
-un inventario di nomi raccolti con una regex sul prefisso, che includeva anche
-gli helper; il SQL Server contava solo **quanti** test erano passati, quindi
-sostituire un test con un altro lasciava il totale intatto e il gate verde.
-
-Il rimedio e lo stesso per entrambi, e sta qui una volta sola: raccogliere i
-test dai sorgenti (una funzione annotata come test, non un nome che comincia
-per `live_`), chiedere a `cargo test -- --list` cosa contiene la suite
-compilata, e confrontare le due con l'esecuzione usando i **nomi completi**.
+La logica è condivisa tra i provider: raccoglie i test dai sorgenti (una
+funzione annotata come test, non un nome che comincia per `live_`), chiede a
+`cargo test -- --list` cosa contiene la suite compilata e confronta le due con
+l'esecuzione usando i nomi completi.
 """
 
 from __future__ import annotations
@@ -21,8 +15,7 @@ from pathlib import Path
 
 # Una definizione di funzione con il blocco di attributi che la precede.
 #
-# Ogni dettaglio di questa espressione e una forma Rust valida che una versione
-# precedente perdeva o inventava, e vale la pena tenerle elencate:
+# L'espressione copre esplicitamente queste forme Rust valide:
 #
 # * il blocco puo essere **vuoto** e gli attributi possono stare sulla stessa
 #   riga della firma (`#[test] fn x() {}`);
@@ -58,9 +51,8 @@ TEST_ATTRIBUTE = re.compile(
 
 # Un singolo attributo emesso da `cfg_attr`, riconosciuto **dal suo inizio**:
 # il path deve essere tutto l'attributo, non una parola dentro i suoi
-# argomenti. La forma precedente cercava ovunque nel testo emesso, quindi
-# `#[cfg_attr(any(), allow(dead_code, test, unused))]` la soddisfaceva e ne
-# faceva un test che nessuna corsa avrebbe potuto eseguire.
+# argomenti. `allow(dead_code, test, unused)` non è quindi scambiato per un
+# attributo di test emesso.
 EMITTED_TEST = re.compile(r"^(?:[A-Za-z0-9_]+\s*::\s*)*test\s*(?:\(|$)")
 
 

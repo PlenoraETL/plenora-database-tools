@@ -92,8 +92,17 @@ pub struct WriteRuntime {
     pub pool_acquire_timeout_ms: u64,
 }
 
-pub fn validate_schema(schema: &SchemaRef, operation: &WriteOperation) -> Result<()> {
-    compile_schema_plan(schema, operation).map(drop)
+pub struct PreparedPostgresWrite {
+    column_plans: Vec<WriteColumnPlan>,
+}
+
+pub fn prepare_state(
+    schema: &SchemaRef,
+    operation: &WriteOperation,
+) -> Result<PreparedPostgresWrite> {
+    Ok(PreparedPostgresWrite {
+        column_plans: compile_schema_plan(schema, operation)?,
+    })
 }
 
 fn compile_schema_plan(
@@ -128,7 +137,7 @@ fn compile_schema_plan(
 #[allow(clippy::too_many_lines)]
 pub async fn execute(
     secret: &SecretString,
-    prepared: PreparedWrite,
+    mut prepared: PreparedWrite,
     mut input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
@@ -144,7 +153,17 @@ pub async fn execute(
         ));
     }
     let schema = input.schema();
-    let column_plans = compile_schema_plan(&schema, &prepared.operation)?;
+    if schema.as_ref() != prepared.input_schema.as_ref() {
+        return Err(DatabaseError::invalid_plan(
+            "schema stream diverso dallo schema preparato",
+        ));
+    }
+    let prepared_state = prepared
+        .take_driver_state::<PreparedPostgresWrite>()
+        .ok_or_else(|| {
+            DatabaseError::invalid_plan("stato prepared write PostgreSQL assente o incompatibile")
+        })?;
+    let column_plans = prepared_state.column_plans;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
     // già e si stanno aggiungendo N righe di cui alcune possono fallire).
@@ -706,11 +725,9 @@ async fn write_batch(
         }
     }
     let (sql, indexes) = statement(operation, target, batch.schema_ref(), plans)?;
-    // Fix review #8: usa classify_error per preservare SQLSTATE
-    // (Conflict, InvalidPlan, NotFound, Authorization, ecc.) invece
-    // di collassare tutto a Protocol. Prima consumer non riusciva a
-    // distinguere unique violation (retryable=Never, ma Conflict) da
-    // errori di protocollo (Fatal).
+    // La classificazione conserva SQLSTATE e permette al chiamante di
+    // distinguere, per esempio, una unique violation da un errore di
+    // protocollo.
     let statement = transaction
         .prepare(&sql)
         .await
@@ -848,16 +865,9 @@ async fn create_spatial_indexes(
         }
         let field_name = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
         let index_raw = format!("{}_{}_gix", target.object, field.name());
-        // Fix review #12: il limite Postgres NAMEDATALEN è 63 **byte**,
-        // non caratteri Unicode. `chars().take(63)` era doppiamente
-        // buggato:
-        // 1. multibyte (es. accentate) potevano superare 63 byte
-        // 2. troncamento greedy: due nomi lunghi differenti sulla stessa
-        //    tabella potevano collidere sullo stesso prefisso, causando
-        //    "relation already exists" o silent overwrite di indice
-        //    diverso.
-        // Ora: byte-safe truncation + suffix hash-8 basato sul nome
-        // originale intero per garantire unicità.
+        // NAMEDATALEN limita byte, non caratteri Unicode. Il troncamento deve
+        // quindi rispettare i confini UTF-8 e aggiungere un hash del nome
+        // completo per non far collidere prefissi uguali.
         let index_name_str = truncate_index_name_63_bytes(&index_raw);
         let index_name = renderer.quote_identifier(&Identifier::new(index_name_str)?)?;
         execute_sql(
@@ -875,7 +885,7 @@ async fn create_spatial_indexes(
 
 /// Tronca un nome di indice a max 63 byte (limite Postgres NAMEDATALEN
 /// default) preservando unicità tramite suffix hash-8 in base16 derivato
-/// dal nome completo. Fix review #12 + fix stabilità hash.
+/// dal nome completo.
 ///
 /// Contratto:
 /// - Se input ≤ 63 byte → ritornato invariato.
@@ -1002,9 +1012,8 @@ async fn execute_sql(
     sql: &str,
     params: &[&(dyn ToSql + Sync)],
 ) -> Result<u64> {
-    // Fix review #8: preserva SQLSTATE per DDL / staging swaps /
-    // spatial index creation. Prima "CREATE INDEX gix esistente"
-    // veniva mappato a Protocol invece di Conflict (42P07).
+    // Anche DDL, swap di staging e indici spaziali conservano SQLSTATE per
+    // distinguere i conflitti dagli errori di protocollo.
     transaction
         .execute(sql, params)
         .await

@@ -1,3 +1,5 @@
+//! Verifiche provider-neutral riutilizzate dalle suite di conformità.
+
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::plan::{Operation, ProviderKind};
 use plenora_database_core::provider::{ConnectionInfo, Inspection, Provider, SecretString};
@@ -125,11 +127,8 @@ pub fn validate_connection(
 /// coerente.
 ///
 /// Le invarianti provider-independent — major, lunghezze, duplicati, limiti a
-/// zero e combinazioni contraddittorie — vivono ora in
-/// [`ProviderCapabilities::validate`], nel core. Qui restava l'unica copia, e
-/// il consumatore vero (`plenora_database_engine::prepare`) non la
-/// attraversava: due strade per la stessa domanda, e quella percorsa era la
-/// piu povera.
+/// zero e combinazioni contraddittorie — sono delegate a
+/// [`ProviderCapabilities::validate`], nel core.
 ///
 /// # Errors
 ///
@@ -144,11 +143,9 @@ pub fn validate_capabilities(
             "documento capability attribuito a un provider differente",
         ));
     }
-    // Qui si **pubblica**, non si consuma: un provider di questo workspace
-    // non deve poter emettere un documento incoerente, anche quando la
-    // coerenza non e scritta nel contratto. Il percorso di consumo
-    // (`prepare`) si ferma invece a `validate()`, perche rifiutare la
-    // coerenza li restringerebbe la major v2.
+    // Questo percorso qualifica ciò che un provider pubblica e applica anche
+    // la coerenza interna. Il consumo tollerante usa invece `validate()` per
+    // non restringere il contratto v2.
     capabilities.validate()?;
     capabilities.validate_coherence()
 }

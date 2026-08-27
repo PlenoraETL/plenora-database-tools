@@ -92,7 +92,7 @@ class RequiredLiveTests(unittest.TestCase):
         self.assertIn(LIVE_ROW_DIAGNOSTICS, str(raised.exception))
 
     def test_a_substituted_test_fails_the_gate(self) -> None:
-        """Il difetto che il conteggio non vedeva: uno tolto, uno aggiunto."""
+        """Il confronto per nome rileva sostituzioni a conteggio invariato."""
 
         names = executable()[:-1] + ["live_test_inventato_che_non_esiste"]
         with self.assertRaises(RuntimeError) as raised:
@@ -221,11 +221,8 @@ class ComposeNetworkDiscovery(unittest.TestCase):
     def test_cargo_runs_on_the_discovered_network(self) -> None:
         """Il ramo container: la rete si chiede, non si scrive.
 
-        `PLENORA_SQLSERVER_GATE_HOST_CARGO` va fissata, non ereditata. Senza,
-        il test descriveva l'ambiente di chi lo eseguiva invece del ramo che
-        voleva verificare: verde su qualunque macchina che non la esporta,
-        rosso dentro il proprio workflow, che la mette a `1` — cioe rosso
-        nell'unico posto dove nessuno puo correggerlo eseguendolo di nuovo.
+        `PLENORA_SQLSERVER_GATE_HOST_CARGO` va fissata, non ereditata, perché il
+        test deve descrivere il ramo scelto e non l'ambiente dell'esecutore.
         """
 
         with (
@@ -297,12 +294,6 @@ class ComposeNetworkDiscovery(unittest.TestCase):
         dell'hostname. Se li non risponde nessuno, la connessione muore prima,
         al TCP, e il test riceve `Io` invece di `Authentication` — fallisce
         dicendo la cosa giusta per la ragione sbagliata.
-
-        Non e teorico: legare la porta al solo `127.0.0.1` — per chiudere una
-        esposizione vera, l'`sa` di questo fixture ha una password versionata —
-        ha rotto quella prova nello stesso commit, e il gate e rimasto rosso
-        finche non si e risalito dal sintomo (`Io`) alla causa (nessuno in
-        ascolto su `127.0.0.2`).
 
         Le due dichiarazioni vivono in file diversi e devono concordare: qui
         l'una interroga l'altra.

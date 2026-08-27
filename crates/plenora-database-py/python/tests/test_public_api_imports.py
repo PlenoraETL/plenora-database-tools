@@ -1,10 +1,4 @@
-"""Smoke test import top-level SDK.
-
-Regression guard sul bug P0 fixato dopo la review 2026-08-15:
-`__init__.py` importava `PlenoraCommitOutcomeUnknownError` da `errors.py`
-ma `errors.py` non la ri-esportava da `_native` → `import
-plenora_database` falliva con `ImportError` all'installazione della
-wheel.
+"""Smoke test dell'import top-level e dei simboli pubblici dello SDK.
 
 Il test è tollerante quando il modulo nativo non è compilato
 (sviluppo puro-Python senza `maturin develop`): in quel caso
@@ -143,12 +137,7 @@ def _native_importable() -> bool:
     reason="modulo nativo non compilato per questa piattaforma (esegui `maturin develop`)",
 )
 def test_top_level_import_works() -> None:
-    """`import plenora_database` deve funzionare senza ImportError.
-
-    Regression guard sul bug P0: dopo aver aggiunto una nuova classe
-    di errore nel modulo nativo, dimenticare il re-export in
-    errors.py rompeva l'import top-level.
-    """
+    """Il modulo top-level importa e ri-esporta le eccezioni pubbliche."""
     mod = importlib.import_module("plenora_database")
     assert hasattr(mod, "PlenoraError")
     assert hasattr(mod, "PlenoraCommitOutcomeUnknownError")

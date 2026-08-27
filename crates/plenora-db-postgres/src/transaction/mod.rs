@@ -5,7 +5,7 @@
 //! best-effort e disambiguazione dei commit (`OutcomeUnknown` in caso di
 //! canale compromesso in fase `Commit`).
 //!
-//! # Cancellation semantics (post-review 2026-08-15)
+//! # Semantica di cancellazione
 //!
 //! Ogni metodo state-mutating (`execute`, `query`, `savepoint`,
 //! `rollback_to_savepoint`, `release_savepoint`, `query_stream`,
@@ -131,9 +131,8 @@ impl Drop for PostgresTransaction {
 
 impl PostgresTransaction {
     /// Fail-fast se la transazione è stata già chiusa (commit, rollback,
-    /// o cancel in-flight che ha invalidato la sessione). Prima del fix
-    /// review era possibile chiamare `execute`/`commit` dopo una cancel
-    /// mid-flight, con esito ambiguo.
+    /// o cancellazione in-flight che ha invalidato la sessione). Dopo una
+    /// cancellazione ambigua `execute` e `commit` restano vietati.
     fn ensure_open(&self, phase: ErrorPhase) -> Result<()> {
         if self.open {
             Ok(())
@@ -152,11 +151,8 @@ impl PostgresTransaction {
     /// stata già applicata server-side. Le fasi Read/Prepare/Rollback
     /// restano con `None` (nessun effetto).
     ///
-    /// La categoria viene dalla **causa**: una deadline scaduta e un
-    /// `Timeout`. Prima era sempre `Cancelled`, e queste otto superfici —
-    /// execute, savepoint, rollback e release del savepoint, query, stream e i
-    /// due rami dell'update condizionale — perdevano l'unica informazione che
-    /// distingue un limite di tempo da una decisione del chiamante.
+    /// La categoria viene dalla causa: una deadline scaduta è `Timeout`, una
+    /// decisione del chiamante è `Cancelled`.
     fn interruption_error(
         cancellation: &CancellationToken,
         phase: ErrorPhase,
@@ -200,11 +196,8 @@ impl TransactionScope for PostgresTransaction {
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
             let client = self.client.client()?;
-            // Fix review #7: la execute era `client.execute().await`
-            // senza race col cancellation token — un cancel durante
-            // pg_sleep/lock wait/query lunga non veniva onorato.
-            // Ora `select_with_cancellation` mette in race la query
-            // con `cancellation.cancelled()`. Su cancel il client
+            // `select_with_cancellation` mette in race la query con il token.
+            // Su cancellazione il client
             // resta in stato ambiguo (query può essere già
             // completata server-side) → invalida per sicurezza.
             //
@@ -220,9 +213,8 @@ impl TransactionScope for PostgresTransaction {
             else {
                 self.client.invalidate();
                 self.open = false;
-                // Fix review: cancel in Write phase → RemoteEffect::Unknown
-                // (la query può essere applicata server-side prima del
-                // taglio del canale).
+                // Una cancellazione in fase Write lascia effetto remoto
+                // ignoto: la query può precedere il taglio del canale.
                 return Err(Self::interruption_error(
                     cancellation,
                     phase,
@@ -339,8 +331,7 @@ impl TransactionScope for PostgresTransaction {
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
             let client = self.client.client()?;
-            // Fix review #7: cancellation con race in-flight (vedi
-            // note in `execute`).
+            // Anche la lettura osserva la cancellazione mentre è in flight.
             let Some(query_result) = select_with_cancellation(
                 client.query(statement.sql.as_str(), &param_refs),
                 cancellation,

@@ -3,25 +3,9 @@
 
 # Perche esiste
 
-Una spazzata fatta a memoria e un sottoinsieme scelto per comodita, e il
-sottoinsieme si accorge di meno cose ogni volta che qualcuno aggiunge un
-controllo alla CI senza aggiungerlo all'abitudine.
-
-E' successo due volte nello stesso giorno.
-
-La prima: la spazzata eseguiva `clippy` e non `cargo fmt --all -- --check`. Due
-domande diverse, e il gate di indurimento chiede la seconda. Il codice e
-arrivato sul ramo non formattato.
-
-La seconda, poche ore dopo: la spazzata non eseguiva `cargo test`. Una prova
-rimasta indietro rispetto a una capability aperta e passata inosservata fino al
-primo gate di riferimento lanciato a mano.
-
-La prima spiegazione che mi ero dato era che nemmeno la CI lo eseguisse. Era
-falsa: `rust-ci.yml` esegue `cargo test --workspace -- --skip live_` in un job
-suo. Il difetto sarebbe arrivato rosso al push, non sfuggito — il che rende la
-lacuna della spazzata piu chiara, non meno grave: era **la spazzata** a essere
-un sottoinsieme, e nient'altro.
+La spazzata deve restare equivalente ai gate offline della CI. Un sottoinsieme
+scelto a memoria nasconderebbe proprio i controlli omessi; per questo un
+self-test confronta i due elenchi.
 
 # Cosa esegue
 
@@ -105,6 +89,8 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_sqlserver_reference.py"],
     ),
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
+    ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
+    ("code_size.py --check", [sys.executable, "scripts/code_size.py", "--check"]),
     ("tests/", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
     ("render_state.py --check", [sys.executable, "scripts/render_state.py", "--check"]),
 )

@@ -736,16 +736,12 @@ pub(crate) fn state_error(
     phase: ErrorPhase,
     profile: &dyn crate::profile::ProductProfile,
 ) -> DatabaseError {
-    DatabaseError {
-        category: ErrorCategory::InvalidPlan,
+    DatabaseError::new(
+        ErrorCategory::InvalidPlan,
         phase,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(profile.kind()),
-        execution_id: None,
-        message: format!("sessione {} non riusabile", profile.product()),
-        diagnostics: None,
-    }
+        Some(profile.kind()),
+        format!("sessione {} non riusabile", profile.product()),
+    )
 }
 
 #[cfg(test)]

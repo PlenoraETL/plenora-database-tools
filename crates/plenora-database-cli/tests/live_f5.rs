@@ -1,6 +1,6 @@
-//! Live test end-to-end dei nuovi sottocomandi Fase 5, invocati come binario.
+//! Live test end-to-end dei sottocomandi avanzati invocati come binario.
 //!
-//! Coprono: bind parameters (F5.1), session-context globale (F5.2),
+//! Coprono bind parameters, session-context globale,
 //! inspect-catalogs/objects (F5.3), postgres-read-ipc projection/filter/limit
 //! (F5.4), postgres-query (F5.5), portable-compile/execute (F5.6),
 //! bulk-write + postgres-write-ipc (F5.7/8), execute-scalar (F5.9),
@@ -42,9 +42,8 @@ fn dsn() -> String {
 /// Il processo figlio eredita l'ambiente del runner. Se chi esegue i test ha
 /// una di queste esportata — cosa normale per chi lavora sul riferimento TLS —
 /// la CLI la usa e il test misura una configurazione che non ha dichiarato.
-/// Con la regola di coerenza introdotta insieme a mTLS il danno e immediato:
-/// una CA ereditata insieme all'interruttore insicuro e un errore, e l'intera
-/// suite fallisce.
+/// Una CA ereditata insieme all'interruttore insicuro viola la coerenza della
+/// configurazione TLS e fa fallire l'intera suite.
 const TLS_ENVIRONMENT: [&str; 4] = [
     "PLENORA_PG_CA_PATH",
     "PLENORA_PG_CLIENT_CERT_PATH",

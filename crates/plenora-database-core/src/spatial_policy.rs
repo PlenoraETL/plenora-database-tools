@@ -1,17 +1,8 @@
 //! Policy spaziale unificata: SRID geografici, semantica di `DWithin`,
 //! validazione predicati portable.
 //!
-//! Prima di questo modulo la stessa lista di SRID e la stessa
-//! validazione erano duplicate in:
-//! - `plenora-database-core/src/portable/compiler.rs` (`GEOGRAPHIC_SRIDS`,
-//!   `DWithin`+Geometry+geog check, `BoundingBox`+Geography check)
-//! - `plenora-database-py/python/plenora_database/spatial.py`
-//!   (`_GEOGRAPHIC_SRIDS`, `_validate_predicate_reference_combo`)
-//! - `plenora-db-postgres/src/spatial.rs` (cast condizionale)
-//!
-//! Ora single-source-of-truth. Il crate `plenora-database-py` espone
-//! la lista via pyfunction `geographic_srids()` così `spatial.py` legge
-//! dal Rust invece di replicare.
+//! E la fonte unica per compilatore portable, provider e binding Python. Il
+//! binding espone la lista tramite `geographic_srids()` senza replicarla.
 
 use crate::geometry::SpatialSemantics;
 use crate::plan::ProviderKind;
@@ -61,7 +52,7 @@ pub const fn postgres_cast_for(semantics: SpatialSemantics) -> &'static str {
 /// Restituisce `InvalidPlan` per combinazioni che produrrebbero silent
 /// wrong result e `Unsupported` per predicati non implementati sul provider.
 ///
-/// Casi coperti (fix review #4/#5):
+/// Casi coperti:
 /// - `DWithin` + `Geometry` + SRID geografico → `InvalidPlan`
 ///   (silent wrong result: distanza in gradi rispetto al nome
 ///   `distance_meters`).
@@ -91,12 +82,8 @@ pub fn validate_predicate(
         ProviderKind::Postgres => validate_postgres(predicate, reference),
         ProviderKind::Mysql => validate_mysql(predicate),
         ProviderKind::Sqlserver => validate_sqlserver(predicate),
-        // Altri provider: la validazione portable non li supporta —
-        // il compilatore fallisce Unsupported prima di arrivare qui. La riga
-        // era vera per tre provider su quattro e ha smesso di esserlo il
-        // giorno in cui il dialetto T-SQL e entrato nel compilatore: senza il
-        // ramo qui sopra, SQL Server sarebbe passato **senza validazione**,
-        // che e peggio di non essere supportato.
+        // Gli altri provider sono rifiutati dal compilatore portable prima di
+        // raggiungere questa validazione.
         _ => Ok(()),
     }
 }
@@ -137,8 +124,8 @@ fn validate_postgres(predicate: &SpatialPredicate, reference: &SpatialReference)
                  (operator && è solo geometry). Usa Intersects.",
             ))
         }
-        // Fix review: PostGIS ST_Contains e ST_Within sono definite
-        // SOLO per geometry, NON per geography. Chiamare
+        // PostGIS definisce ST_Contains e ST_Within solo per geometry.
+        // Chiamare
         // ST_Contains(geography, geography) causa "function does not
         // exist" a runtime.
         // Ref: https://postgis.net/docs/manual-dev/ST_Contains.html
@@ -281,7 +268,7 @@ mod tests {
 
     #[test]
     fn contains_and_within_with_geography_are_rejected_for_postgres() {
-        // Fix review: PostGIS non ha ST_Contains/ST_Within per geography.
+        // PostGIS non espone ST_Contains/ST_Within per geography.
         for predicate in [SpatialPredicate::Contains, SpatialPredicate::Within] {
             let err = validate_predicate(
                 ProviderKind::Postgres,

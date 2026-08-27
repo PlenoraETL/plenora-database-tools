@@ -61,9 +61,10 @@ pub use portable::{
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};
 pub use row::Row;
 pub use row_diagnostics::{
-    diagnose_row_scoped_write, into_read_rejection, ReadDiagnosticsPolicy, ReadDiagnosticsTracker,
-    RejectedRow, RollbackEvidence, RowApplication, RowDiagnostics, RowDiagnosticsPolicy,
-    RowRejection, RowRejectionOutcome, RowScopedWriter, WriteDiagnosticsTracker,
+    checked_source_row_end, diagnose_row_scoped_write, into_read_rejection, ReadDiagnosticsPolicy,
+    ReadDiagnosticsTracker, RejectedRow, RollbackEvidence, RowApplication, RowDiagnostics,
+    RowDiagnosticsPolicy, RowRejection, RowRejectionOutcome, RowScopedWriter,
+    WriteDiagnosticsTracker,
 };
 pub use session_context::{
     validate_context_key, validate_context_value, SessionClassification, SessionContext,

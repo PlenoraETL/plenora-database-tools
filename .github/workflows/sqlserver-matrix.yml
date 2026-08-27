@@ -4,17 +4,9 @@ name: sqlserver-matrix
 # riferimento copre 2022, quindi insieme attraversano tre livelli di
 # compatibilita consecutivi — 150, 160, 170.
 #
-# Vive in un file suo, e non dentro `sqlserver-assurance.yml`, per la stessa
-# ragione della matrice PostgreSQL: quel workflow gira a ogni push su main e
-# su ogni PR che tocchi il provider, e due server SQL Server avviati uno dopo
-# l'altro non stanno in quel budget. Il vincolo sta nel trigger invece che in
-# una condizione dentro un job, che e il posto in cui si sbaglia.
-#
-# Che la matrice non girasse **affatto** era un'altra cosa, e si e vista alla
-# prima esecuzione manuale: falliva su un registro di test mantenuto a mano e
-# rimasto indietro di quattro prove, dopo che tutte erano passate. Il commento
-# accanto a quel registro raccontava gia la stessa caduta di tre settimane
-# prima. Accorgersene richiedeva eseguirlo, e non lo eseguiva nessuno.
+# Vive separata da `sqlserver-assurance.yml`: due server sequenziali superano
+# il budget del gate eseguito sui cambi del provider. I trigger rendono
+# esplicita la frequenza della prova completa.
 #
 # Questo file non contiene logica di qualifica: una invocazione, niente altro.
 # Digest, livelli di compatibilita attesi e inventario dei test vivono nello

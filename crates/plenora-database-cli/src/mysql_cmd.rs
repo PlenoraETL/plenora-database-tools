@@ -1,4 +1,4 @@
-//! Sub-comandi `MySQL` v1.2 — parity iniziale col path Postgres.
+//! Sottocomandi per i provider della famiglia `MySQL`.
 //!
 //! Sette comandi essenziali:
 //! - `mysql-probe`: test connessione + capabilities
@@ -36,11 +36,8 @@ use crate::print_json;
 
 /// Rende un valore canonico come JSON tipizzato.
 ///
-/// Serve perche i due punti che stampavano un valore usavano
-/// `format!("{v:?}")`, cioe il `Debug` di `ParameterValue`: il campo `value` di
-/// un `mysql-execute-scalar` conteneva `"I64(1)"` invece di `1`, e
-/// `actual_rows` di un COUNT(*) la stessa cosa. Un consumatore che leggeva
-/// quel JSON non trovava un numero, trovava il nome di una variante Rust.
+/// Non usa `Debug`: il protocollo JSON deve contenere il valore, non il nome
+/// della variante Rust che lo trasporta.
 ///
 /// Le forme non scalari restano oggetti espliciti invece di stringhe opache:
 /// i byte non hanno una rappresentazione JSON naturale, e fingerla sarebbe lo
@@ -462,23 +459,6 @@ pub async fn mysql_conditional_update(args: &mut impl Iterator<Item = String>) -
         }
     }
 }
-
-// `mysql-portable-execute` non esiste, e non e piu una cosa da fare.
-//
-// C'era una funzione qui, `#[allow(dead_code)]`, con scritto accanto che il
-// facade del core «supporta il compile-portable solo per Postgres» e che
-// estenderlo avrebbe richiesto «un dispatcher
-// `compile_portable_for_provider(provider_kind)` non ancora implementato».
-//
-// Quel dispatcher esiste, ed e la riga che il facade scrive da tempo:
-// `compile_portable(tx.provider_kind(), statement)`. La ragione era scaduta e
-// teneva ferma una superficie intera — la funzione era scritta, compilata e
-// mai raggiungibile.
-//
-// Cio che l'ha sostituita non e un comando per prodotto ma uno solo,
-// `database-portable-execute`, che serve tutti e quattro: quattro copie della
-// stessa funzione sarebbero state quattro posti in cui correggere lo stesso
-// difetto.
 
 /// `mysql-transaction-test <PWD_ENV> <host> <database> <user> [port] [--tls-ca-path-env <name>]`
 ///

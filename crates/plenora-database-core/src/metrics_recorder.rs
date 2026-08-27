@@ -1,6 +1,6 @@
 //! Observability standard `db.*`.
 //!
-//! Il PFM (roadmap §9) richiede che la libreria emetta un set canonico di
+//! Il PFM richiede che la libreria emetta un set canonico di
 //! segnali via un `sink` generico, senza imporre uno specifico backend
 //! (tracing, prometheus, statsd, ecc.). Questo modulo definisce:
 //!
@@ -9,7 +9,7 @@
 //! - il tipo `MetricEvent` con valore + tags,
 //! - un `NoopRecorder` usato quando nessun sink è configurato.
 //!
-//! **Policy di redazione (§9)**: nessuna implementazione della libreria deve
+//! **Policy di redazione**: nessuna implementazione della libreria deve
 //! passare al recorder: password, token, connection string complete, SQL
 //! interpolato con dati, geometrie massive, valori classificati non
 //! necessari. Solo `execution_id`, `correlation_id`, `provider_family`,

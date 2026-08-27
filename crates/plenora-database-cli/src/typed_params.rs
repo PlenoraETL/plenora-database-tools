@@ -4,8 +4,8 @@
     clippy::match_same_arms
 )]
 // Il modulo e provider-neutral e non conosce nessun adapter: legge
-// `NAME=VALUE:TYPE` e produce `ParameterValue` del core. Oggi lo chiamano
-// solo i comandi PostgreSQL, quindi senza quella feature il compilatore lo
+// `NAME=VALUE:TYPE` e produce `ParameterValue` del core. I chiamanti attuali
+// sono nei comandi PostgreSQL, quindi senza quella feature il compilatore lo
 // vede inutilizzato. La risposta **non** e metterlo dietro `postgres`: e
 // esattamente l'accoppiamento che rendeva impossibile costruire il binario
 // con il solo adapter MySQL. Il giorno che un comando MySQL bindera
@@ -27,7 +27,7 @@
 //! `plenora_database_core::DatabaseError` dichiara sul proprio `message`:
 //! contesto operativo, mai payload.
 //!
-//! Ora un errore dice **dove** e **cosa si aspettava**, mai **cosa ha letto**.
+//! Un errore dice **dove** e **cosa si aspettava**, mai **cosa ha letto**.
 //! Chi deve vedere il valore ce l'ha gia: l'ha scritto lui sulla riga di
 //! comando.
 
@@ -76,9 +76,7 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
     let (raw_value, ty) = spec
         .rsplit_once(':')
         .ok_or("param senza separatore ':' (atteso VALUE:TYPE)")?;
-    // Fix review #15: prima usavamo `trim_matches('"' | '\'')` che
-    // eliminava quote iniziali/finali indiscriminatamente,
-    // corrompendo:
+    // Rimuove soltanto una coppia di quote corrispondenti, senza corrompere:
     // 1. Stringhe che contengono realmente virgolette (es. testo
     //    citato `"he said \"hi\""` → perdeva le virgolette esterne).
     // 2. Valori JSON stringa top-level `"foo"` → parsed come `foo`
@@ -167,7 +165,7 @@ pub(crate) fn parse_named_value_type(spec: &str) -> CliResult<(String, Parameter
 
 /// Rimuove al massimo una coppia matched di quote esterne
 /// (`"..."` o `'...'`) da un valore CLI, senza corrompere valori
-/// che contengono realmente virgolette. Fix review #15.
+/// che contengono realmente virgolette.
 ///
 /// Politica per tipo:
 /// - `json`, `bytes-hex`, `bytea`: **mai** strip — il parser JSON
@@ -354,7 +352,7 @@ mod tests {
         assert!(matches!(params.0[1], ParameterValue::String(ref s) if s == "hello"));
     }
 
-    // ---- Fix review #15: strip_matching_outer_quotes -----------------------
+    // ---- strip_matching_outer_quotes ---------------------------------------
 
     #[test]
     fn matched_outer_double_quotes_are_stripped() {
@@ -371,8 +369,7 @@ mod tests {
 
     #[test]
     fn asymmetric_quotes_are_preserved() {
-        // Pre-fix rimuoveva sia `"` iniziale che `'` finale — corrompendo
-        // il valore. Ora solo coppie matched sono strippate.
+        // Soltanto coppie di quote corrispondenti vengono rimosse.
         let v = parse_value_type(r#""hello':string"#).unwrap();
         assert!(matches!(v, ParameterValue::String(s) if s == r#""hello'"#));
     }
@@ -386,8 +383,7 @@ mod tests {
 
     #[test]
     fn json_string_top_level_is_not_stripped() {
-        // JSON top-level: `"foo"` è una JSON string valida. Pre-fix
-        // veniva strippato a `foo` che non è JSON valido.
+        // Una stringa JSON top-level conserva le quote necessarie alla sintassi.
         let v = parse_value_type(r#""foo":json"#).unwrap();
         assert!(matches!(v, ParameterValue::Json(ref j) if j == &json!("foo")));
     }
@@ -446,9 +442,8 @@ mod tests {
 
     /// Un hex dispari o con caratteri non validi non ristampa i caratteri.
     ///
-    /// I marcatori sono maiuscoli e improbabili di proposito: la prima
-    /// stesura cercava `"zz"`, che compare dentro «lunghe**zz**a» del
-    /// messaggio, e il test falliva su se stesso invece che sul difetto.
+    /// I marcatori sono maiuscoli e improbabili per non coincidere con parole
+    /// legittime del messaggio.
     #[test]
     fn hex_errors_report_shape_not_content() {
         for (spec, marker) in [

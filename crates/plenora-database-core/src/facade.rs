@@ -146,7 +146,7 @@ pub async fn query_one(
 ///
 /// # Errors
 ///
-/// - `Conflict` se >1 righe (non era "opzionale" ma multipla)
+/// - `Conflict` se ritorna piu di una riga
 /// - errori tecnici propagati dal driver
 pub async fn query_optional(
     tx: &mut dyn TransactionScope,
@@ -248,22 +248,10 @@ pub async fn execute_portable(
 ///
 /// # Note su portabilità
 ///
-/// Il compiler `PostgreSQL` produce `RETURNING`. Su `SQL Server` verrà
-/// compilato in `OUTPUT` (F2).
-///
-/// Su `MySQL` non c'e strategia da aprire: `RETURNING` non esiste, a nessuna
-/// versione e in nessuna forma. Questo paragrafo diceva «`MySQL 8.0.31+`
-/// supporta `INSERT ... RETURNING` per singola riga», e il compilatore ne
-/// diceva un'altra ancora — «solo 8.0.20+ per `INSERT`». Due numeri di
-/// versione diversi per la stessa funzionalita inesistente: e il segno che
-/// nessuno dei due veniva da una misura. Interrogato con cinque forme,
-/// `MySQL 9.7` risponde `1064` a tutte. Chi ha bisogno della chiave generata
-/// usa `LAST_INSERT_ID()` e una `SELECT` di seguito.
-///
-/// Su `MariaDB` esiste, ed e per questo che i due prodotti hanno smesso di
-/// condividere un dialetto: `INSERT`, `DELETE` e l'upsert rendono le righe,
-/// `UPDATE` no. Vedi `compile_returning` per la tabella e per come e stata
-/// ottenuta.
+/// `PostgreSQL` produce `RETURNING`; `SQL Server` produce `OUTPUT` per insert,
+/// update e delete. `MySQL` non qualifica nessuna forma. `MariaDB` qualifica
+/// insert, delete e upsert, ma non update. La matrice autorevole e
+/// `compile_returning`.
 pub async fn execute_portable_returning(
     tx: &mut dyn TransactionScope,
     statement: &PortableStatement,
@@ -331,16 +319,14 @@ pub async fn execute_scalar_enum(
 
 /// Legge un valore `Decimal` canonico (rappresentazione stringa).
 ///
-/// **Nota**: al momento il driver `PostgreSQL` non decodifica `NUMERIC`
-/// nella facade OLTP — questa funzione ritorna `Unsupported` finché non
-/// verrà introdotta la dipendenza `rust_decimal` (Fase 3, Python SDK).
-/// Per leggere `NUMERIC` grandi usa il data plane Arrow (`Provider::read`)
-/// che li mappa a `Decimal128`/`Decimal256`.
+/// Il valore resta una stringa canonica per non introdurre arrotondamenti. Il
+/// data plane Arrow rappresenta invece i decimali come `Decimal128` o
+/// `Decimal256`.
 ///
 /// # Errors
 ///
-/// - `Unsupported` sempre, finché il decoder NUMERIC non è implementato
-/// - eventuali errori tecnici propagati dal driver
+/// `DataMapping` se cardinalità o tipo non corrispondono; propaga inoltre gli
+/// errori tecnici della query.
 pub async fn execute_scalar_decimal(
     tx: &mut dyn TransactionScope,
     statement: &Statement,

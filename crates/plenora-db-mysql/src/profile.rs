@@ -7,10 +7,8 @@
 //!
 //! Il profilo raccoglie le decisioni che l'evidenza (`docs/mariadb/EVIDENCE.md`)
 //! ha misurato come divergenti fra i due prodotti — riconoscimento, timeout,
-//! catalogo, metadata nativi, spatial. Finche esiste una sola
-//! implementazione il trait sembra sovradimensionato; e proprio quello il
-//! punto dell'estrazione: rendere visibili, in un posto solo, le scelte che
-//! oggi sono sparse e implicite, prima che un secondo prodotto le duplichi.
+//! catalogo, metadata nativi e spatial. Il trait mantiene queste scelte
+//! visibili in un solo punto per entrambi i prodotti.
 //!
 //! Due vincoli di forma, entrambi deliberati:
 //!
@@ -55,17 +53,9 @@ use std::collections::BTreeMap;
 /// E' l'unico segnale che distingue `BLOB` da `TEXT` e `VARBINARY` da
 /// `VARCHAR`: sul filo entrambi arrivano come `Value::Bytes`, e il tipo di
 /// colonna e lo stesso. Visibile al crate perche anche il decoder delle
-/// transazioni deve poterlo chiedere — prima tirava a indovinare provando a
-/// interpretare i byte come UTF-8.
+/// transazioni deve poterlo consultare senza tentare una decodifica UTF-8.
 pub(crate) const BINARY_CHARACTER_SET: u16 = 63;
 
-/// Cosa un codice di errore del server significa, per intero.
-///
-/// L'effetto remoto sta qui e non nel chiamante perche e parte del
-/// significato: "deadlock, transazione vittima annullata" e un'affermazione
-/// sullo stato del server, e chi conosce i codici e il profilo. Lasciarla
-/// fuori voleva dire che un profilo poteva ridefinire la categoria di un
-/// codice ma non se quel codice avesse gia rollbackato — e la seconda decide
 /// Le tre chiavi con cui il prodotto annota una colonna nello schema Arrow.
 ///
 /// Stanno insieme perche sono un namespace solo: pubblicarne due di un
@@ -80,7 +70,10 @@ pub(crate) struct MetadataKeys {
     pub(crate) collation: &'static str,
 }
 
-/// se il chiamante debba ripulire.
+/// Classificazione completa di un codice di errore del server.
+///
+/// L'effetto remoto fa parte del verdetto perche determina anche se il
+/// chiamante debba ripulire o riconciliare lo stato.
 pub(crate) struct ServerCodeVerdict {
     pub(crate) category: ErrorCategory,
     pub(crate) retry: RetryDisposition,
@@ -116,14 +109,12 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Le versioni del prodotto su cui il profilo e qualificato, se il profilo
     /// dichiara un limite.
     ///
-    /// Sono due domande diverse, e tenerle in due metodi e la ragione per cui
-    /// esiste questo. `foreign_product_rejection` chiede **quale prodotto** sta
-    /// rispondendo; questo chiede **se quella versione** e stata misurata. Un
-    /// riconoscimento che rispondesse a entrambe accetterebbe qualunque server che
-    /// si chiama `MariaDB`, comprese major che nessuno ha mai acceso.
+    /// `foreign_product_rejection` identifica il prodotto; questo metodo
+    /// stabilisce separatamente se la versione e stata misurata. Un solo
+    /// riconoscimento accetterebbe qualunque server con lo stesso nome.
     ///
-    /// `None` significa "nessun limite dichiarato", e non "tutte qualificate": e
-    /// lo stato in cui il profilo `MySQL` si trova oggi, e cambiarlo
+    /// `None` significa "nessun limite dichiarato", e non "tutte qualificate": è
+    /// la policy del profilo `MySQL`, e cambiarla
     /// rifiuterebbe server che il provider serve da sempre. Dichiararlo qui,
     /// invece di lasciarlo implicito, e cio che rende visibile l'asimmetria.
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]>;
@@ -138,12 +129,8 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// dentro `MariaDB` ce n'e uno solo che vada bene per tutte le versioni
     /// misurate.
     ///
-    /// Il metodo esiste perche il difetto che lo ha prodotto era invisibile:
-    /// la probe chiedeva `@@transaction_isolation` insieme a `VERSION()`, e su
-    /// 10.11 moriva con 1193 prima di poter dire che quella versione non era
-    /// qualificata. Il nome della variabile appartiene al prodotto esattamente
-    /// come vi appartiene quello del timeout, ed e la stessa ragione: una
-    /// costante condivisa e vera per uno solo dei due.
+    /// Il nome appartiene quindi al profilo, come quello del timeout: una
+    /// costante condivisa sarebbe valida per un solo prodotto.
     fn session_isolation_variable(&self) -> &'static str;
 
     /// Lo statement che impone il timeout di statement sulla sessione.
@@ -154,10 +141,9 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// variabile: separarli e il modo in cui un timeout di cinque secondi
     /// diventa uno di cinque millisecondi senza che nulla fallisca.
     ///
-    /// ADR 0014 ha misurato che `MAX_EXECUTION_TIME` non esiste su `MariaDB`
-    /// (errore 1193), dove la variabile analoga si chiama diversamente **e**
-    /// si misura in secondi. Un secondo profilo cambiera entrambe le cose
-    /// insieme, in questo metodo, o non le cambiera in modo coerente.
+    /// ADR 0014 misura che `MAX_EXECUTION_TIME` non esiste su `MariaDB`
+    /// (errore 1193), dove la variabile analoga ha un nome e un'unita diversi.
+    /// Il profilo deve cambiare insieme entrambi gli aspetti.
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String;
 
     /// Le interrogazioni del catalogo.
@@ -235,11 +221,8 @@ pub(crate) trait ProductProfile: Send + Sync {
 
     /// Le funzioni spatial che **questo** prodotto ha attraversato.
     ///
-    /// Non e una comodita per la tabella delle capability: e il cancello che il
-    /// renderer consulta. Le due cose erano separate — una lista sola per
-    /// entrambi i prodotti, e una capability che ne pubblicava un'altra — e la
-    /// conseguenza era che un piano poteva superare il cancello e morire sul
-    /// server, con la capability che diceva giustamente di no.
+    /// Non e una comodita per la tabella delle capability: e il cancello
+    /// condiviso con il renderer, cosi promessa e piano ammesso coincidono.
     fn verified_spatial_functions(
         &self,
     ) -> &'static [plenora_database_core::query::SpatialFunction];
@@ -261,17 +244,13 @@ pub(crate) trait ProductProfile: Send + Sync {
 
     /// Se l'SRID che il catalogo descrive e compatibile con quello dichiarato.
     ///
-    /// Sono due domande diverse a seconda del prodotto, e tenerle in una sola
-    /// riga di confronto le confondeva. Dove la colonna e vincolata — `MySQL` —
+    /// Sono due domande diverse a seconda del prodotto. Dove la colonna e vincolata — `MySQL` —
     /// il catalogo porta l'SRID e deve essere **quello**: scrivere geometrie
     /// 3003 in una colonna dichiarata 4326 e un errore che il server
     /// rifiuterebbe comunque, ed e meglio dirlo in preflight.
     ///
     /// Dove la colonna non puo essere vincolata — `MariaDB` — il catalogo tace
-    /// per costruzione, e non c'e niente con cui confrontare. Il confronto
-    /// secco `catalogo == dichiarato` falliva **sempre**, quindi la scrittura
-    /// spatial era chiusa da una riga di codice prima ancora che dalla
-    /// bandiera: `None != Some(4326)`.
+    /// per costruzione e `None` significa "non confrontabile", non "diverso".
     fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, declared: u32) -> bool;
 
     /// La proiezione che rende l'SRID di **ogni valore** geometrico.
@@ -293,11 +272,9 @@ pub(crate) trait ProductProfile: Send + Sync {
 
     /// Le capability e i limiti che il prodotto pubblica.
     ///
-    /// Non e una tabella di comodo: e il contratto su cui il consumatore
-    /// decide cosa puo chiedere. Cablata nel provider, un secondo prodotto la
-    /// ereditava intera — dichiarando qualificate spatial e write mode che
-    /// nessuna evidenza aveva provato su di lui. ADR 0010 e 0014 dicono il
-    /// contrario: una capability si dichiara dopo la prova, per prodotto.
+    /// E il contratto su cui il consumatore decide cosa puo chiedere. ADR 0010
+    /// e 0014 richiedono evidenza distinta per prodotto prima di aprire una
+    /// capability.
     ///
     /// `provider_version` arriva dalla probe: e l'unica parte che il profilo
     /// non decide, perche la dice il server.
@@ -321,8 +298,8 @@ pub(crate) trait ProductProfile: Send + Sync {
 
     /// Cosa significa un codice di errore del server.
     ///
-    /// I codici sono superficie di prodotto: ADR 0014 ne ha misurati due che
-    /// divergono gia oggi (1193 e 1054 su `MariaDB`). Ereditare questa tabella
+    /// I codici sono superficie di prodotto: ADR 0014 misura divergenze come
+    /// 1193 e 1054 su `MariaDB`. Ereditare questa tabella
     /// significherebbe classificare come "colonna non valida" un errore che
     /// sull'altro prodotto vuol dire altro — e la classificazione decide se
     /// il chiamante puo ritentare.
@@ -337,7 +314,7 @@ pub(crate) trait ProductProfile: Send + Sync {
     fn row_rejection_cause(&self, code: u16) -> Option<&'static str>;
 }
 
-/// Il profilo di `MySQL`, l'unico prodotto che il crate serve oggi.
+/// Il profilo del prodotto `MySQL`.
 ///
 /// La versione di riferimento non e scritta qui: la fissa
 /// `docker/mysql/references.json`, per digest, ed e il gate a verificarla.
@@ -461,11 +438,9 @@ impl ProductProfile for MysqlProfile {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError> {
-        // Fail-closed su MariaDB, dal fix P1 del 2026-08-15. La lista di
-        // divergenze che accompagnava quel fix era una review, non una
-        // misura, e ADR 0014 l'ha smentita su piu punti di quanti ne abbia
-        // confermati. Non la si ripete qui: le divergenze misurate stanno in
-        // `docs/mariadb/EVIDENCE.md`, con il server e il digest su cui sono
+        // MariaDB resta fail-closed quando il server non corrisponde al
+        // profilo. Le divergenze misurate stanno in `docs/mariadb/EVIDENCE.md`,
+        // con il server e il digest su cui sono
         // state osservate.
         //
         // Cio che regge il rifiuto non e la lista: e che il provider non e
@@ -480,29 +455,25 @@ impl ProductProfile for MysqlProfile {
         if !looks_like_mariadb(product_version, version_comment) {
             return None;
         }
-        Some(DatabaseError {
-            category: ErrorCategory::Unsupported,
-            phase: ErrorPhase::Probe,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(self.kind()),
-            execution_id: None,
-            message: format!(
+        Some(DatabaseError::new(
+            ErrorCategory::Unsupported,
+            ErrorPhase::Probe,
+            Some(self.kind()),
+            format!(
                 "MariaDB rilevato (product_version={product_version:?}, \
                  version_comment={version_comment:?}) — provider `{}` non \
-                 qualificato per MariaDB. Un provider dedicato è in roadmap.",
+                 qualificato per MariaDB. Usare il provider `mariadb`.",
                 self.product().to_ascii_lowercase()
             ),
-            diagnostics: None,
-        })
+        ))
     }
 
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
-        // Nessun limite, ed e lo stato di oggi scritto invece che sottinteso.
+        // Nessun limite dichiarato: la compatibilità MySQL non è una allowlist.
         // La matrice qualifica 9.7, 8.4 e 8.0, ma il provider non ha mai
         // rifiutato una versione diversa: trasformare quella matrice in un
         // rifiuto cambierebbe il comportamento di un provider qualificato —
-        // un 9.8 che oggi funziona smetterebbe di connettersi — e non e una
+        // una versione già accettata smetterebbe di connettersi — e non e una
         // decisione che si prende di passaggio mentre si aggiunge un secondo
         // profilo. Resta aperta, e visibile perche dichiarata.
         None
@@ -567,7 +538,7 @@ impl ProductProfile for MysqlProfile {
             reads: ReadCapabilities {
                 streaming: true,
                 server_cursor: false,
-                // La finestra si rende, e da oggi la bandiera la governa:
+                // La finestra è governata dalla capability:
                 // l'engine rifiuta un `row_offset` a un provider che non la
                 // pubblica. Il piano di lettura la compila come `LIMIT ...
                 // OFFSET n`, con il tetto del tipo quando il chiamante non ne
@@ -772,20 +743,13 @@ impl ProductProfile for MysqlProfile {
 /// nome del timeout, due colonne di catalogo che non esistono, e le
 /// conseguenze fail-closed che ne discendono. Tutto il resto — bootstrap,
 /// isolamento, `START TRANSACTION`, mapper wire, proiezione geometrica,
-/// tabella dei codici — e stato misurato **uguale** sui tre riferimenti e
+/// tabella dei codici — e stato misurato uguale sui riferimenti e
 /// resta codice condiviso. Spostarlo qui per simmetria darebbe due copie che
 /// nessuna prova tiene allineate.
-// Non raggiungibile dal codice di produzione: nessun provider lo seleziona,
-// ed e la fase in cui il profilo doveva restare. L'`allow` e percio il segno
-// di uno stato dichiarato, non di una svista — e sparisce insieme a esso, nel
-// momento in cui `MariadbProvider` lo costruira. I test differenziali lo
-// esercitano gia oggi.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MariadbProfile;
 
 /// L'unica istanza: come [`MYSQL_PROFILE`], il profilo e senza stato.
-#[allow(dead_code)]
 pub(crate) static MARIADB_PROFILE: MariadbProfile = MariadbProfile;
 
 impl ProductProfile for MariadbProfile {
@@ -815,21 +779,17 @@ impl ProductProfile for MariadbProfile {
         if looks_like_mariadb(product_version, version_comment) {
             return None;
         }
-        Some(DatabaseError {
-            category: ErrorCategory::Unsupported,
-            phase: ErrorPhase::Probe,
-            remote_effect: RemoteEffect::None,
-            retry: RetryDisposition::Never,
-            provider: Some(self.kind()),
-            execution_id: None,
-            message: format!(
+        Some(DatabaseError::new(
+            ErrorCategory::Unsupported,
+            ErrorPhase::Probe,
+            Some(self.kind()),
+            format!(
                 "server non MariaDB rilevato (product_version={product_version:?}, \
                  version_comment={version_comment:?}) — profilo `{}` qualificato \
                  soltanto su MariaDB.",
                 self.product().to_ascii_lowercase()
             ),
-            diagnostics: None,
-        })
+        ))
     }
 
     fn session_isolation_variable(&self) -> &'static str {
@@ -843,24 +803,9 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
-        // Le tre che ADR 0014 ha misurato, e nessun'altra. Non e prudenza
-        // eccessiva: cio che il profilo afferma — quali colonne di catalogo
-        // esistono, quale variabile regge il timeout, con quale codice arriva
-        // — e stato osservato su queste tre, e una major che non c'era ancora
-        // quando la misura e stata fatta non e coperta da quella misura.
-        //
-        // 10.11 e entrata per ultima, ed e la piu vecchia: due cicli di
-        // sviluppo indietro rispetto alla riga di evidenza, e la LTS che piu
-        // gente ha davvero in produzione. Le cento sonde della campagna danno
-        // su di lei lo stesso esito che danno sulle altre due — l'unica cosa
-        // che la fermava era una variabile di sessione che il profilo ora
-        // possiede.
-        //
-        // La riga che rende il rifiuto onesto e il messaggio: dice che la
-        // versione non e stata misurata, non che non funzioni. Perche quel
-        // messaggio arrivi davvero, la qualifica va decisa **prima** di
-        // interrogare qualunque variabile di sessione: era dentro la stessa
-        // query, e su 10.11 moriva prima di poter parlare.
+        // Solo le versioni sostenute dall'evidenza di ADR 0014. Il rifiuto dice
+        // "non misurata", non "incompatibile", e deve avvenire prima di
+        // interrogare variabili di sessione che possono divergere per major.
         Some(&[(10, 11), (11, 8), (12, 3)])
     }
 
@@ -1007,8 +952,7 @@ impl ProductProfile for MariadbProfile {
     fn geometry_column_ddl(&self, _srid: u32) -> String {
         // Senza vincolo, e non per prudenza: `raw.spatial_write_forms` ha
         // misurato 1064 su entrambe le major per `GEOMETRY SRID 4326`, e la
-        // prima tranche aveva gia misurato lo stesso rifiuto per
-        // `REF_SYSTEM_ID`. Non esiste una DDL che vincoli una colonna
+        // stessa prova rifiuta anche `REF_SYSTEM_ID`. Non esiste una DDL che vincoli una colonna
         // geometrica a un sistema di riferimento su questo prodotto.
         //
         // L'SRID dichiarato non viene perso: lo porta ogni valore, perche
@@ -1044,32 +988,8 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities {
-        // Le bandiere si aprono una alla volta, ciascuna con la sua misura.
-        // Ereditare la tabella di MySQL era il difetto originale che ADR 0010
-        // e 0014 hanno nominato: dichiarava qualificate sei write mode e
-        // l'intera lista spatial di `MySQL` su un prodotto su cui nessuno le
-        // aveva provate — e quella lista, misurata, era sbagliata pure su
-        // `MySQL`.
-        //
-        // La lettura e la prima ad aprirsi, ed e la quinta tranche a
-        // sostenerla, con sonde che verificano un contratto invece di
-        // limitarsi a non fallire: `provider.profile_read_values` ha
-        // decodificato le quattordici famiglie di tipo con lo stesso digest
-        // sui tre riferimenti, `provider.profile_read_streaming` ha consegnato
-        // due batch su 8193 righe — il taglio del lettore, non un caso — e
-        // `provider.profile_read_filter_forms` ha verificato **tutte e
-        // tredici** le forme che il renderer qualifica, ciascuna con il
-        // proprio conteggio e la propria prima riga.
-        //
-        // `filter` significa quelle tredici, non "qualunque filtro": le due
-        // che il renderer rifiuta — `LIKE` case-insensitive e il filtro
-        // spatial — hanno una sonda che verifica che restino rifiutate.
-        //
-        // Le scritture sono arrivate dopo, una tranche per volta, e ciascuna
-        // ha la propria nota accanto alla propria bandiera. Questa frase
-        // diceva che erano chiuse per intero, ed e rimasta a dirlo mentre sei
-        // mode si aprivano una sotto l'altra: un cappello che riassume un
-        // elenco invecchia sempre prima dell'elenco.
+        // Ogni bandiera deriva dalle sonde del profilo MariaDB e non viene
+        // ereditata dal profilo MySQL. Le superfici non misurate restano false.
         ProviderCapabilities {
             schema_version: 2,
             provider: self.kind(),
@@ -1077,11 +997,8 @@ impl ProductProfile for MariadbProfile {
             extension_versions: BTreeMap::new(),
             reads: ReadCapabilities {
                 // `server_cursor` e `resumable` restano false perche il crate
-                // non li offre a nessuno dei due prodotti: sono chiusi anche
-                // per MySQL, e qui non c'e niente da qualificare. Fra i due
-                // c'era anche `pagination`, che nel frattempo si e aperta tre
-                // righe piu sotto — con la sua misura — senza che questo
-                // elenco se ne accorgesse.
+                // non li offre a nessuno dei due prodotti. Le altre bandiere
+                // mantengono una decisione indipendente e la propria evidenza.
                 //
                 // `streaming` significa che le righe arrivano a blocchi, non
                 // che esista un cursore: `query_stream` fa scorrere il result
@@ -1089,7 +1006,7 @@ impl ProductProfile for MariadbProfile {
                 // `false`.
                 streaming: true,
                 server_cursor: false,
-                // La finestra si rende, e da oggi la bandiera la governa:
+                // La finestra è governata dalla capability:
                 // l'engine rifiuta un `row_offset` a un provider che non la
                 // pubblica. Il piano di lettura la compila come `LIMIT ...
                 // OFFSET n`, con il tetto del tipo quando il chiamante non ne
@@ -1101,32 +1018,8 @@ impl ProductProfile for MariadbProfile {
                 ordering: true,
                 resumable: false,
             },
-            // `append` e la prima write mode aperta, e ora la bandiera e sua
-            // soltanto: `truncate_insert` ha la propria, e resta chiusa. Le
-            // tre sonde della settima tranche la sostengono, verdi su
-            // entrambi i riferimenti e bloccanti nella campagna — le righe
-            // arrivano e si rileggono da un'altra sessione, un secondo batch
-            // rifiutato dal server annulla anche il primo, una cancellazione
-            // a meta scrittura non lascia righe e il provider resta usabile.
-            //
-            // `rollback_on_failure` e aperta, e l'argomento con cui era
-            // rimasta chiusa non reggeva. Il flag parla delle righe di
-            // qualunque scrittura *che questo profilo ammette*, e ne ammette
-            // una: `Append`. Le tre sonde della settima tranche girano con
-            // `allow_partial: false` — proprio il piano che la bandiera
-            // governa — e misurano l'esito che promette: un secondo batch
-            // rifiutato annulla anche il primo, `RemoteEffect::RolledBack`
-            // dichiarato e la rilettura da un'altra sessione a confermarlo.
-            //
-            // L'obiezione della cancellazione era fuori bersaglio: `Unknown`
-            // e l'effetto di una **cancellazione**, non di un fallimento, e su
-            // quel percorso nessun provider promette nulla — PostgreSQL
-            // pubblica `true` e ha lo stesso esito ignoto a commit interrotto.
-            // Tenendola chiusa, MariaDB rifiutava in `prepare` esattamente il
-            // piano su cui la campagna aveva raccolto le prove.
-            // `create` si apre con l'ottava tranche, e le tre sonde che la
-            // sostengono verificano una cosa che quelle dell'Append non
-            // potevano: cosa resta sul server. Su questi due motori
+            // Le prove live verificano righe, rollback e cancellazione da una
+            // seconda sessione. Su questi due motori
             // `CREATE TABLE` fa commit implicito, quindi la tabella non
             // appartiene alla transazione che segue — un batch rifiutato
             // annulla le righe e lascia lo schema, e cio che il chiamante
@@ -1139,9 +1032,7 @@ impl ProductProfile for MariadbProfile {
                 // Chiusa per la stessa ragione di MySQL — `TRUNCATE` con
                 // commit implicito — e non solo perche non misurata.
                 truncate_insert: false,
-                // Le ultime quattro, aperte dalla nona tranche con tre sonde
-                // ciascuna. Cio che distingue queste mode dalle due
-                // precedenti sono le keys — una chiave che non trova
+                // Queste modalita sono governate dalle keys: una chiave che non trova
                 // riscontro e saltata, non fallita — e cosa il rollback
                 // rimette: `Update` i valori di prima, `Replace` le righe che
                 // il proprio `DELETE` aveva tolto. Quest'ultima e la prova
@@ -1153,30 +1044,14 @@ impl ProductProfile for MariadbProfile {
                 delete_by_keys: true,
                 // `bulk` dice che le righe raggiungono il server a blocchi,
                 // e su questo profilo e la stessa cosa che dice `MySQL`:
-                // l'implementazione e condivisa, e le dodici sonde della nona
-                // tranche l'hanno attraversata con due batch ciascuna.
-                //
-                // La prima stesura la lasciava chiusa con l'argomento che
-                // nessun codice la consulta. L'argomento e vero — e il campo e
-                // ora dichiarato descrittivo, con la sua guardia — ma non
-                // riguarda questo profilo: da «nessuno la fa rispettare» non
-                // segue «questo prodotto fa una cosa diversa dal gemello con
-                // cui condivide il codice». Sarebbe stata una divergenza
-                // inventata.
+                // l'implementazione e condivisa e viene attraversata con piu batch.
                 bulk: true,
                 array_binding: false,
                 returning: false,
                 rollback_on_failure: true,
             },
-            // La terza tranche ha misurato commit, rollback e isolamento:
-            // tredici sonde di sessione su tredici, stesso esito sui tre
-            // riferimenti.
-            //
-            // `savepoints` si apre con la quattordicesima, e restava chiusa per
-            // una ragione che non era «il prodotto non li ha»: nessuna sonda li
-            // aveva toccati, e un savepoint dichiarato e non provato e proprio
-            // il genere di promessa che si scopre rotta durante un rollback
-            // parziale. Ora due sonde lo attraversano — il rollback parziale
+            // Le sonde verificano commit, rollback, isolamento e savepoint.
+            // Il rollback parziale
             // lascia la sola riga scritta prima del savepoint, riletta da
             // un'altra connessione, e un nome mai creato viene rifiutato. La
             // seconda e cio che rende vera la prima: senza, un motore che
@@ -1209,10 +1084,8 @@ impl ProductProfile for MariadbProfile {
                 staged_swap: false,
                 scope: TransactionScope::Transaction,
             },
-            // La lettura geometrica si apre con la dodicesima tranche, e non
-            // da sola: si apre **insieme** alla condizione che la rende vera.
-            //
-            // Le tre sonde del CRS dichiarato girano su una colonna `GEOMETRY`
+            // La lettura geometrica richiede un CRS dichiarato. Le sonde
+            // girano su una colonna `GEOMETRY`
             // che nessuna DDL vincola — l'unica forma che MariaDB ammette — e
             // misurano tre esiti diversi: senza dichiarazione la colonna resta
             // rifiutata, con la dichiarazione giusta le righe arrivano, con
@@ -1237,19 +1110,11 @@ impl ProductProfile for MariadbProfile {
                 // `geography` non esiste su questo prodotto, e non e una
                 // lacuna di misura.
                 geography: false,
-                // Aperta dalla diciottesima tranche. Il fatto del server lo
-                // aveva misurato la diciassettesima — `SPATIAL INDEX` su una
-                // colonna non vincolata, l'unica forma che questo prodotto
-                // ammette — e mancava il percorso: il piano rifiutava
-                // `create_spatial_index` in prepare, e una capability descrive
-                // cio che il provider sa fare.
+                // MariaDB ammette lo SPATIAL INDEX sulla colonna non vincolata
+                // prodotta da questo profilo.
                 spatial_index: true,
-                // Aperta dalla diciassettesima tranche: un punto e un poligono
-                // scritti nella stessa colonna e riletti per tipo, identici sui
-                // tre riferimenti. Le sonde di scrittura precedenti portavano
-                // soltanto punti, quindi `mixed` era una dichiarazione che
-                // nessuna misura attraversava — la colonna avrebbe retto anche
-                // se il prodotto avesse ammesso un tipo solo.
+                // Le sonde scrivono un punto e un poligono nella stessa colonna
+                // e li rileggono verificandone il tipo.
                 mixed_geometry_types: true,
                 // Solo XY, e non perche le altre non siano state provate:
                 // `raw.geometry_dimensions` ha chiesto al parser `POINT Z` nelle
@@ -1260,15 +1125,8 @@ impl ProductProfile for MariadbProfile {
                 // Il catalogo **di questo prodotto**, misurato da
                 // `provider.profile_spatial_functions` attraversando il
                 // percorso di query su ogni riferimento della matrice. Non
-                // coincide con quello di `MySQL`, e la sonda deve camminare su
-                // questa lista e non sull'altra: il giorno in cui ha camminato
-                // sull'altra misurava la propria guardia.
-                //
-                // Qui c'era scritto «quattordici», ed era il numero giusto
-                // quando la riga e stata scritta. La lista e poi cresciuta e il
-                // commento no: un conteggio in un commento e una data di
-                // scadenza, quindi ora la riga nomina la fonte invece di
-                // ripeterne la lunghezza.
+                // coincide con quello di `MySQL`: la sonda deve attraversare
+                // questa lista, che è la fonte, senza duplicarne il conteggio.
                 //
                 // `IsValid` resta fuori, e quello e un fatto e non un numero:
                 // la 12.3 ce l'ha, la 11.8 LTS risponde 1305, e una capability
@@ -1291,15 +1149,8 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn write_spatial_is_qualified(&self) -> bool {
-        // Aperta dalla quindicesima tranche, e questa bandiera e sia la
-        // capability pubblicata sia il cancello che il piano consulta — una
-        // sola origine, per scelta dichiarata. Le due cose insieme hanno un
-        // effetto che va detto: finche era `false`, nessuna sonda poteva
-        // attraversare il percorso di scrittura, perche `compile_write_column`
-        // si fermava prima. Le prove e l'apertura sono quindi arrivate nello
-        // stesso commit, e la campagna e stata cio che le ha rese vere.
-        //
-        // Cosa sostiene l'apertura, in ordine. `raw.spatial_write_forms` ha
+        // La stessa bandiera governa capability pubblicata e ammissione del
+        // piano. `raw.spatial_write_forms` ha
         // misurato i tre fatti del server: la DDL vincolata e rifiutata con
         // 1064, `ST_GeomFromWKB(?, <n>)` e accettato, e l'SRID **resta
         // memorizzato** — 4326 su entrambe le major. Quest'ultimo e cio che
@@ -1336,11 +1187,8 @@ impl ProductProfile for MariadbProfile {
         // arriva il timeout che **questo** profilo applica, misurato su
         // entrambi i riferimenti dopo `SET SESSION max_statement_time`.
         //
-        // Senza questa riga il profilo emetteva l'istruzione giusta e poi
-        // classificava il suo esito nel ramo generico: il chiamante leggeva
-        // "errore server MariaDB redatto (codice 1969)" invece di un timeout,
-        // cioe non poteva distinguere un limite che ha fatto il suo lavoro da
-        // un guasto. Era il difetto che l'istruzione corretta nascondeva.
+        // La classificazione deve concordare con lo statement di timeout del
+        // profilo, cosi il chiamante distingue un limite atteso da un guasto.
         if code == MARIADB_STATEMENT_TIMEOUT {
             return ServerCodeVerdict {
                 category: ErrorCategory::Timeout,
@@ -1433,20 +1281,16 @@ pub(crate) fn unqualified_version_rejection(
         .map(|(major, minor)| format!("{major}.{minor}"))
         .collect::<Vec<_>>()
         .join(", ");
-    Some(DatabaseError {
-        category: ErrorCategory::Unsupported,
-        phase: ErrorPhase::Probe,
-        remote_effect: RemoteEffect::None,
-        retry: RetryDisposition::Never,
-        provider: Some(profile.kind()),
-        execution_id: None,
-        message: format!(
+    Some(DatabaseError::new(
+        ErrorCategory::Unsupported,
+        ErrorPhase::Probe,
+        Some(profile.kind()),
+        format!(
             "versione {product} {product_version:?} non misurata: il profilo e \
              qualificato su {declared}. Non e un difetto del server — e \
              una versione su cui nessuna prova e stata fatta."
         ),
-        diagnostics: None,
-    })
+    ))
 }
 
 /// Se le stringhe che il server espone dicono `MariaDB`.
@@ -1468,8 +1312,8 @@ fn looks_like_mariadb(product_version: &str, version_comment: &str) -> bool {
 /// La tabella dei codici che i due prodotti condividono, attribuita a chi
 /// li ha emessi.
 ///
-/// I numeri vengono dal protocollo `MySQL`, che `MariaDB` parla, e la quarta
-/// tranche di ADR 0014 li ha osservati uno per uno: 1045, 1048, 1054, 1062,
+/// I numeri vengono dal protocollo `MySQL`, che `MariaDB` parla, e le sonde
+/// comparative li osservano uno per uno: 1045, 1048, 1054, 1062,
 /// 1146, 1205, 1213 e 1452 sono arrivati **dagli stessi tentativi** su tutti
 /// e tre i riferimenti. Duplicare la tabella per quelli avrebbe dato due copie
 /// da tenere allineate senza una divergenza che le giustifichi.
@@ -1493,15 +1337,11 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
             remote_effect: None,
         },
         // 1044 e il permesso negato su un database, 1142 su un comando o una
-        // tabella. Sono la stessa risposta a due domande vicine, e finivano in
-        // due posti diversi: 1142 non era in tabella, quindi un errore di
-        // privilegio si classificava come esecuzione generica — cioe come un
-        // guasto, invece che come "questo utente non puo".
+        // tabella. Entrambi sono rifiuti di autorizzazione, non guasti di
+        // esecuzione.
         //
-        // La quarta tranche l'ha visto arrivare identico dai tre riferimenti,
-        // ed e per questo che la riga si allarga adesso: la classificazione di
-        // un provider qualificato si cambia con una misura sotto, non con una
-        // lettura della documentazione.
+        // Le sonde lo ricevono identico dai riferimenti qualificati: una
+        // classificazione si estende soltanto con una misura riproducibile.
         1_044 | 1_142 => ServerCodeVerdict {
             category: ErrorCategory::Authorization,
             retry: RetryDisposition::Never,
@@ -1526,8 +1366,7 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
             message: format!("vincolo univoco {product} violato (codice 1062)"),
             remote_effect: None,
         },
-        // I tre codici che dicono «questa riga non va bene», e che fino alla
-        // nona tranche arrivavano come guasto generico fuori dall'`Append`.
+        // I codici che indicano un dato di riga non valido.
         //
         // La diagnostica per riga si attiva **solo** per `Append`: li 1048 e
         // 1406 diventano un rifiuto di riga con la sua causa. Per ogni altra
@@ -1535,12 +1374,10 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
         // usciva `Execution`/`Never` — «l'operazione e fallita sul server e
         // ritentarla non ha ragione di riuscire». Vero, e inutile: un dato
         // troppo lungo lo corregge chi chiama, un guasto no, e sono due
-        // rimedi diversi. E' la stessa lacuna che la quarta tranche ha chiuso
-        // su 1142, dove un permesso mancante si presentava come guasto.
+        // rimedi diversi; analogamente 1142 identifica un permesso mancante.
         //
-        // Tutti e tre arrivano identici dai tre riferimenti: 1048 e 1452 dalla
-        // quarta tranche, 1406 dalle sonde di rollback di Upsert e Replace,
-        // 1451 da quella di DeleteByKeys.
+        // Le campagne comparative verificano questi codici su tutti i
+        // riferimenti supportati e nei relativi percorsi di rollback.
         1_048 => ServerCodeVerdict {
             category: ErrorCategory::DataMapping,
             retry: RetryDisposition::Never,
@@ -1613,21 +1450,10 @@ pub(crate) const MARIADB_STATEMENT_TIMEOUT: u16 = 1_969;
 /// `docs/mariadb/EVIDENCE.md`, e cio che non c'e non e negato: e non misurato,
 /// e finisce nel verdetto generico.
 ///
-/// Dalla **quarta** tranche: una password sbagliata, una colonna che non
-/// esiste, una chiave duplicata, una tabella assente, un'attesa di lock
-/// scaduta, un deadlock con la vittima annullata, un permesso mancante, una
-/// colonna non nullable senza valore, un vincolo referenziale violato in
-/// inserimento.
+/// Codici coperti direttamente dalla campagna live degli errori.
 ///
-/// Dalla **nona**: un valore piu lungo della colonna, e una cancellazione
-/// trattenuta da una figlia.
-///
-/// Quattro di questi — 1048, 1406, 1451, 1452 — sono entrati qui insieme alla
-/// classificazione condivisa che li riguarda, e la campagna ha mostrato perche
-/// serve entrambe le cose: aggiungerli **solo** alla tabella li lasciava
-/// generici su `MariaDB`, dove passano da questo filtro. Due dei quattro erano
-/// misurati da mesi e non erano in elenco, perche fino ad allora non c'era
-/// niente da ereditare.
+/// La lista limita quali classificazioni `MySQL` possano essere ereditate dal
+/// profilo `MariaDB`: una voce non misurata resta nel ramo generico.
 pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[
     1_045, 1_048, 1_054, 1_062, 1_142, 1_146, 1_205, 1_213, 1_406, 1_451, 1_452,
 ];
@@ -1721,23 +1547,13 @@ fn wire_column_spec_for(product: &str, column: &Column) -> Result<MysqlColumnSpe
         ColumnType::MYSQL_TYPE_MEDIUM_BLOB => text_kind(binary, flags, "mediumtext", "mediumblob"),
         ColumnType::MYSQL_TYPE_LONG_BLOB => text_kind(binary, flags, "longtext", "longblob"),
         ColumnType::MYSQL_TYPE_BLOB => text_kind(binary, flags, "text", "blob"),
-        // Una geometria che arriva **nel suo tipo wire** resta chiusa, e vale
-        // la pena dire con precisione cosa questo copre e cosa no, perche la
-        // ragione che stava qui e cambiata.
-        //
-        // Prima diceva che una geometria calcolata non ha un CRS dimostrabile,
-        // e concludeva che servirebbe una regola per funzione. Quella regola
-        // ora esiste — `SpatialFunction::crs_rule`, dichiarata nel catalogo — e
-        // il path query la usa: una geometria calcolata viene incapsulata dal
-        // renderer, arriva come BLOB, e il piano dice dove cade. Quel percorso
-        // non passa piu di qui.
-        //
-        // Qui passa cio che resta: una geometria **non incapsulata**, cioe una
+        // Qui passa una geometria **non incapsulata**, cioe una
         // colonna proiettata tale e quale nel path query. Non ha involucro, e
         // il suo valore arriva nel formato interno del prodotto invece che in
         // WKB; e nessuna posizione nel piano la descrive, perche non e il
         // risultato di una funzione. Il contratto `GeoArrow` pubblica un CRS, e
-        // qui non c'e niente da cui dedurlo.
+        // qui non c'e niente da cui dedurlo. Le geometrie calcolate seguono
+        // invece `SpatialFunction::crs_rule` e arrivano incapsulate come BLOB.
         ColumnType::MYSQL_TYPE_GEOMETRY => {
             return Err(unsupported(format!(
                 "colonna geometrica {product} non incapsulata nel path query: nessun CRS \
@@ -1860,10 +1676,8 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
         // Le funzioni spatial pubblicate sono quelle di
         // `crate::query::VERIFIED_SPATIAL_FUNCTIONS`, e cio che le qualifica
         // non e il dialect condiviso ma la sonda live che le attraversa una
-        // per una. Qui non c'e il numero: e cambiato due volte — venti,
-        // ventisei, quindici — e ogni volta questo commento era l'ultimo a
-        // saperlo. Il numero sta nella costante, che e anche l'unico posto
-        // dove qualcuno lo puo cambiare con una misura in mano.
+        // per una. Il numero non e duplicato qui: la costante e l'unica fonte
+        // e cambia soltanto con una misura live.
         functions: crate::query::VERIFIED_SPATIAL_FUNCTIONS.to_vec(),
         // `true`, e non era la risposta attesa.
         //
@@ -2230,8 +2044,7 @@ mod tests {
 
     #[test]
     fn the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column() {
-        // Da quando il path query apre le geometrie calcolate, la forma
-        // dell'involucro e scritta in **due** posti: qui per una colonna, e nel
+        // La forma dell'involucro e scritta in **due** posti: qui per una colonna, e nel
         // renderer condiviso per un'espressione. Devono restare la stessa
         // funzione, perche il controllo per valore in lettura e uno solo — e
         // `geometry_output_is_unexpected` valida cio che *quella* funzione
@@ -2296,9 +2109,8 @@ mod tests {
         // La sonda delle scalari filtrava sulle due liste pubblicate, e cio la
         // rendeva una misura che **scadeva**: una funzione aperta su `MySQL`
         // smetteva di essere chiesta a `MariaDB`, dove non era aperta.
-        // `HausdorffDistance` e `FrechetDistance` sono state misurate assenti da
-        // `MariaDB` una volta sola, e per venti tranche il documento ha ripetuto
-        // quel fatto senza riverificarlo.
+        // `HausdorffDistance` e `FrechetDistance` devono essere riverificate
+        // sui riferimenti MariaDB, non semplicemente escluse da una lista.
         //
         // Il filtro sarebbe naturale da riscrivere — chiedere cio che si sa gia
         // sembra spreco — e costa una SELECT per funzione. E' il prezzo di una
@@ -2413,9 +2225,8 @@ mod tests {
         let mut presidiati = 0;
         for (module, source) in GUARDED_MODULES {
             let mut inspected = 0;
-            // Ogni `impl` dei due trait, non solo quello di oggi: quando
-            // nascera un secondo provider dovra essere presidiato senza che
-            // nessuno si ricordi di aggiungerlo qui.
+            // Ogni `impl` dei due trait viene scoperto automaticamente, senza
+            // un inventario parallelo da aggiornare.
             // Gli intestatori si compongono a runtime: scritti per intero
             // comparirebbero in questo file, e la guardia ispezionerebbe se
             // stessa trovando zero metodi.
@@ -2536,10 +2347,8 @@ mod tests {
 
     #[test]
     fn the_capability_table_is_built_only_by_the_profile() {
-        // Cablata nel provider, la tabella veniva ereditata intera da
-        // qualunque profilo: un secondo prodotto avrebbe dichiarato
-        // qualificate spatial e write mode che nessuna evidenza aveva provato
-        // su di lui. Qui il provider puo solo chiederla.
+        // Il provider delega la tabella al profilo, cosi ogni prodotto
+        // pubblica soltanto capability sostenute dalla propria evidenza.
         let source = include_str!("provider.rs");
         let production = source
             .split_once(format!("{}mod tests {{", '\n').as_str())
@@ -2556,9 +2365,7 @@ mod tests {
                 "provider.rs costruisce {built} invece di chiederla al profilo"
             );
         }
-        // E cio che il profilo pubblica: sei mode su sette, `TruncateInsert`
-        // fail-closed, e lo spatial completo — l'indice compreso, da quando la
-        // clausola entra nella `CREATE TABLE` della mode `Create`.
+        // Anche i valori pubblicati devono provenire dalla tabella del profilo.
         let published = MYSQL_PROFILE.capabilities("9.7.2".to_owned());
         assert_eq!(published.provider_version, "9.7.2");
         assert_eq!(published.provider, MYSQL_PROFILE.kind());
@@ -2572,7 +2379,7 @@ mod tests {
 
     #[test]
     fn every_catalog_query_exposes_the_aliases_its_reader_requires() {
-        // Per **ogni** profilo, non solo per quello che oggi ha un provider:
+        // Per ogni profilo:
         // il contratto degli alias esiste proprio perche un prodotto a cui
         // manca una colonna la dichiari nulla invece di ometterla, e con un
         // profilo solo nell'elenco quella regola non sarebbe mai verificata
@@ -2718,7 +2525,7 @@ mod tests {
 
     /// Il messaggio non deve limitarsi a non contraddire l'attribuzione:
     /// deve nominare il prodotto servito. Asserire il solo `provider` e cio
-    /// che ha lasciato passare il residuo del pool per una review intera.
+    /// che lascerebbe passare un residuo del pool attribuito al prodotto errato.
     fn assert_names_the_second_product(error: &plenora_database_core::DatabaseError, what: &str) {
         assert_eq!(error.provider, Some(ProviderKind::Mariadb), "{what}");
         assert!(
@@ -2873,7 +2680,7 @@ mod tests {
             SECOND_PRODUCT_PROFILE.classify_server_code(1_054).category,
             ErrorCategory::Unsupported
         );
-        // E l'effetto remoto, che prima il chiamante decideva da solo.
+        // Anche l'effetto remoto appartiene alla classificazione del profilo.
         assert_eq!(
             MYSQL_PROFILE.classify_server_code(1_213).remote_effect,
             Some(RemoteEffect::RolledBack)
@@ -2901,11 +2708,8 @@ mod tests {
 
     /// Ogni modulo di produzione del crate, con il proprio sorgente.
     ///
-    /// Le guardie strutturali non nominano piu i moduli che ispezionano: un
-    /// `mariadb_provider.rs` nato domani sarebbe rimasto fuori da una lista
-    /// scritta a mano, e le guardie avrebbero continuato a passare dicendo
-    /// una cosa che non era piu vera. La lista qui e presidiata a sua volta
-    /// contro le dichiarazioni `mod` di `lib.rs`.
+    /// La lista e confrontata con le dichiarazioni `mod` di `lib.rs`, quindi
+    /// le guardie strutturali non possono omettere nuovi moduli in silenzio.
     const GUARDED_MODULES: &[(&str, &str)] = &[
         ("arrow.rs", include_str!("arrow.rs")),
         ("catalog.rs", include_str!("catalog.rs")),
@@ -2937,8 +2741,7 @@ mod tests {
         // legge alle tre di notte, e una riga sfondata da venti spazi lo
         // rende illeggibile proprio dove serve. Il compilatore non se ne
         // accorge, i test sul contenuto nemmeno — cercano sottostringhe corte
-        // — e la review l'ha trovato a occhio: e il genere di cosa che va
-        // presa da una guardia.
+        // — quindi questa forma viene presidiata da una guardia automatica.
         //
         // Un `\n` esplicito seguito da indentazione e un'altra cosa: e SQL
         // scritto su piu righe, dove l'a capo appartiene alla stringa. Quello
@@ -2988,17 +2791,9 @@ mod tests {
 
     #[test]
     fn only_the_mariadb_provider_selects_the_mariadb_profile() {
-        // Questa guardia diceva un'altra cosa, ed e stata riscritta il giorno
-        // in cui ha smesso di essere vera — che era il suo scopo. Diceva:
-        // «il profilo esiste, nessun provider lo sceglie», perche allora
-        // `MariadbProfile` dichiarava chiuse quasi tutte le capability e un
-        // percorso che ci fosse arrivato non avrebbe aperto MariaDB, l'avrebbe
-        // fatta fallire in posti scelti a caso.
-        //
-        // Ora il provider c'e e le capability sono misurate, quindi la
-        // proprieta da presidiare cambia ma non sparisce: la selezione deve
-        // restare **una sola**, e dichiarata. Un secondo punto che scegliesse
-        // quel profilo sarebbe una selezione che nessuno ha deciso, ed e
+        // La selezione del profilo deve restare una sola e dichiarata. Un
+        // secondo punto che lo scegliesse sarebbe una selezione che nessuno
+        // ha deciso, ed e
         // esattamente cio che ADR 0014 esclude quando dice «nessuna selezione
         // automatica».
         let marker = format!("{}mod tests {{", '\n');
@@ -3061,9 +2856,8 @@ mod tests {
         // consumatore riceve, ed e quello che le guardie presidiano.
         //
         // Il riconoscimento accetta qualunque visibilita — `mod x;`,
-        // `pub(crate) mod x;`, `pub mod x;` — perche la prima stesura
-        // riconosceva solo la forma nuda, e un modulo dichiarato altrimenti
-        // sarebbe rimasto fuori senza che nulla fallisse.
+        // `pub(crate) mod x;`, `pub mod x;` — cosi nessuna forma di visibilita
+        // resta esclusa dalla guardia.
         let source = include_str!("lib.rs");
         let lines: Vec<&str> = source.lines().collect();
         let mut declared = Vec::new();
@@ -3110,10 +2904,7 @@ mod tests {
                 .split_once(format!("{}mod tests {{", '\n').as_str())
                 .map_or(*source, |(head, _)| head);
             // Qualunque dichiarazione `mod`, non solo la forma nuda seguita
-            // da graffa: la prima stesura cercava un a capo seguito da
-            // `mod ` e rifiutava solo le righe che finivano con `{`, quindi
-            // `mod mariadb;` passava e `pub mod mariadb` non veniva
-            // nemmeno vista. Le guardie leggono file: un modulo che non ha
+            // da graffa. Le guardie leggono file: un modulo che non ha
             // un file proprio, o che non e dichiarato in `lib.rs`, resta
             // fuori da ogni ispezione senza che nulla lo segnali.
             for (at, line) in production.lines().enumerate() {
@@ -3169,11 +2960,8 @@ mod tests {
 
     #[test]
     fn the_shared_paths_name_the_product_in_their_messages() {
-        // I tre testi che la review precedente ha lasciato non verificati.
-        // Sono costruibili perche i loro costruttori sono stati estratti: un
-        // messaggio che non si puo costruire in un test e un messaggio che
-        // nessuno verifica, ed e cosi che il timeout della query e rimasto
-        // cablato su MySQL mentre il ramo accanto era gia parametrizzato.
+        // I testi passano da costruttori verificabili, cosi la personalizzazione
+        // per prodotto non dipende da rami non raggiungibili nei test.
         assert_names_the_second_product(
             &crate::transaction::query_timeout_error(&SECOND_PRODUCT_PROFILE),
             "timeout della query",
@@ -3209,8 +2997,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_pure_paths_no_longer_contradict_the_attribution() {
-        // I tre percorsi che la review indica come il confine fra un refactor
-        // MySQL corretto e una base riusabile: il binding dei parametri,
+        // I percorsi senza un profilo in portata sono il binding dei parametri,
         // l'AST non qualificato e il piano di scrittura invalido. Nessuno dei
         // tre ha un profilo in portata, e il bordo puo ristampare
         // l'attribuzione ma non riscrivere una frase — quindi la frase non
@@ -3261,9 +3048,8 @@ mod tests {
 
         // 3. Piano di scrittura. Lo schema vuoto non basta: quell'errore
         //    nasce nel ramo che il profilo ce l'ha, e non attraversa le
-        //    validazioni neutralizzate — e infatti non avrebbe intercettato
-        //    le frasi che lo sweep ha rotto. Servono errori che nascono
-        //    **dentro** quelle validazioni.
+        //    validazioni neutralizzate. Servono errori che nascono dentro
+        //    quelle validazioni.
         let error = crate::write::MysqlWritePlan::compile_with_profile(
             &std::sync::Arc::new(Schema::empty()),
             &append_to_warehouse(),
@@ -3396,11 +3182,8 @@ mod tests {
         // repository dichiara i riferimenti: `10.11` LTS, `11.8` LTS e `12.3`,
         // fissate per digest e aggiornate di patch in patch.
         //
-        // `10.11` e entrata dopo che questa prova era scritta, e stava
-        // nell'elenco di sotto — quello delle versioni **non** misurate. Era
-        // giusto finche la matrice ne aveva due, e sbagliato dall'istante in
-        // cui ne ha avute tre: una capability e la sua prova si muovono
-        // insieme, o una delle due mente.
+        // L'elenco qualificato deriva dallo stesso catalogo dei riferimenti:
+        // capability e prova devono muoversi insieme.
         for qualified in [
             "10.11.19-MariaDB-ubu2204",
             "11.8.8-MariaDB-ubu2404",
@@ -3566,10 +3349,8 @@ mod tests {
         // pretende una stringa, e "nessuna espressione" e la stringa vuota su
         // entrambi: la differenza e nella rappresentazione, non nel fatto.
         //
-        // Non e una deduzione: la prima corsa di `provider.profile_describe_object`
-        // sui due riferimenti falliva qui, con "campo catalogo
-        // generation_expression non convertibile". Nessun test offline poteva
-        // vederlo, perche la query compilava.
+        // La sonda `provider.profile_describe_object` verifica questa
+        // normalizzazione sui riferimenti live; la compilazione non basta.
         (
             "GENERATION_EXPRESSION AS generation_expression",
             "COALESCE(GENERATION_EXPRESSION, '') AS generation_expression",
@@ -3698,8 +3479,8 @@ mod tests {
         );
         assert!(by_mariadb.metadata().get(mysql.native_type).is_none());
         assert!(by_mysql.metadata().get(mariadb.native_type).is_none());
-        // L'API pubblica resta quella di MySQL, che e il prodotto che il crate
-        // serve: cambiarla sarebbe una rottura per chi la legge oggi.
+        // L'API `arrow_field` conserva i metadata MySQL per compatibilità; i
+        // percorsi di prodotto usano la variante che riceve il profilo.
         assert_eq!(
             spec.arrow_field().metadata().get(mysql.native_type),
             by_mysql.metadata().get(mysql.native_type)
@@ -3838,10 +3619,8 @@ mod tests {
         // fallite.
         let reads = &published.reads;
         assert!(reads.streaming && reads.projection && reads.filter && reads.ordering);
-        // `pagination` si e aperta insieme al campo che la rende riscuotibile:
-        // `ReadOperation` ha ora `row_offset`, il piano di lettura lo compila
-        // e l'engine lega la bandiera al campo. Prima era `false` su questo
-        // profilo e `true` su PostgreSQL, con lo stesso nulla sotto.
+        // `pagination` è sostenuta da `ReadOperation::row_offset`, compilato
+        // dal piano di lettura e verificato dall'engine.
         assert!(reads.pagination);
         assert!(!reads.server_cursor);
         assert!(!reads.resumable);
@@ -3854,9 +3633,8 @@ mod tests {
 
         // La scrittura procede una mode alla volta, ed e la differenza che
         // rende leggibile la tabella: non "tutto chiuso", ma "chiuso cio che
-        // non e stato attraversato". `append` dalla settima tranche, `create`
-        // dall'ottava, ciascuna con le proprie tre sonde. Le altre restano
-        // chiuse: nessun piano le ha eseguite.
+        // non e stato attraversato". Ogni modalita aperta ha sonde dedicate;
+        // le altre restano chiuse.
         let writes = &published.writes;
         assert!(writes.append && writes.create);
         assert!(writes.update && writes.upsert);
@@ -3887,8 +3665,7 @@ mod tests {
         // false` e lo misurano rileggendo da un'altra sessione.
         assert!(writes.rollback_on_failure);
         // Che il rollback non riporti indietro anche lo **schema** non lo
-        // dice quel flag: lo dice `transactional_ddl`, chiuso, e l'ottava
-        // tranche e la misura che lo sostiene — la tabella creata da `Create`
+        // dice quel flag: lo dice `transactional_ddl`, chiuso. La tabella creata da `Create`
         // sopravvive al rollback su tutti e tre i riferimenti. Le due
         // bandiere parlano di due cose, e questa riga esiste perche restino
         // distinte.
@@ -3927,8 +3704,7 @@ mod tests {
         );
         assert!(writes.upsert && writes.replace && writes.delete_by_keys);
 
-        // Spatial: la lettura si e aperta con la dodicesima tranche, e con la
-        // condizione accanto. Le due bandiere vanno lette insieme —
+        // Le due bandiere della lettura spatial vanno lette insieme:
         // `geometry: true, requires_declared_crs: true` — perche la prima da
         // sola prometterebbe che una lettura semplice basti.
         let spatial = &published.spatial;
@@ -3953,8 +3729,8 @@ mod tests {
         // Cio che resta chiuso, resta chiuso: `geography` non esiste su questo
         // prodotto, e i tipi misti non sono mai stati letti.
         assert!(!spatial.geography);
-        // L'indice si apre con la diciottesima, su entrambi: il fatto del
-        // server era misurato dalla diciassettesima, e mancava il percorso.
+        // Il profilo pubblica l'indice solo quando la stessa evidenza e
+        // raggiungibile dal percorso di capability.
         assert!(spatial.spatial_index);
         assert_eq!(
             spatial.spatial_index,
@@ -3963,8 +3739,7 @@ mod tests {
                 .spatial
                 .spatial_index
         );
-        // I tipi misti si aprono con la diciassettesima tranche, e coincidono
-        // con MySQL: e la stessa colonna `GEOMETRY` che regge tipi diversi, e
+        // I tipi misti coincidono con MySQL: e la stessa colonna `GEOMETRY` che regge tipi diversi, e
         // le sonde lo misurano con lo stesso punto e lo stesso poligono.
         assert!(spatial.mixed_geometry_types);
         assert_eq!(
@@ -3975,14 +3750,11 @@ mod tests {
                 .mixed_geometry_types
         );
 
-        // Le funzioni si aprono con la sedicesima tranche, e **non** sono
-        // quelle di MySQL: quattordici invece di quindici. La differenza e
+        // Le funzioni verificate **non** coincidono con quelle di MySQL. La differenza e
         // `IsValid`, che la 12.3 esegue e la 11.8 LTS no — la prima divergenza
         // misurata fra le due major di questo prodotto.
         //
-        // La lista pubblicata e la stessa che il renderer consulta: le due
-        // erano separate, e un piano poteva superare il cancello di MySQL e
-        // morire sul server mentre la capability diceva giustamente di no.
+        // La lista pubblicata e la stessa consultata dal renderer.
         assert_eq!(
             spatial.functions,
             MARIADB_PROFILE.verified_spatial_functions().to_vec()
@@ -4018,15 +3790,10 @@ mod tests {
             ],
             "cio che MySQL ha e MariaDB no"
         );
-        // Non piu vuoto, e vale la pena dire che ci e voluto tempo. Per una
-        // campagna la lista di `MariaDB` fu un sottoinsieme di quella di
-        // `MySQL`, poi `Relate` la ruppe e torno indietro: il server ce l'ha,
-        // ma il gate lo boccio con 1582 — lo vuole a tre argomenti e il
-        // contratto ne ammette anche due — cioe esiste e non e utilizzabile
-        // nella forma che il piano permette.
-        //
-        // Le due che restano vengono dalla misura delle ventotto mai chieste, e
-        // sono assenze reali dall'altro prodotto: `ST_Boundary` e
+        // `Relate` esiste sul server ma richiede tre argomenti, mentre il
+        // contratto ne ammette anche due: non e quindi qualificabile per tutta
+        // l'arieta. Le due differenze positive di MariaDB sono assenze reali
+        // dall'altro prodotto: `ST_Boundary` e
         // `ST_PointOnSurface` rispondono `1305` su `MySQL` 9.7. Nella direzione
         // opposta viaggiano `ST_Transform` e `ST_SetSrid`, che su `MySQL` ci
         // sono e qui no — e non compaiono in nessuna delle due liste perche la
@@ -4045,13 +3812,11 @@ mod tests {
             "la capability spatial e la decisione del piano devono avere una sola sorgente"
         );
 
-        // L'unica famiglia con dei `true`, e sono quelli che la terza tranche
-        // ha misurato: commit, rollback e isolamento coincidono sui tre
+        // Commit, rollback e isolamento coincidono sui
         // riferimenti. I savepoint no, e restano chiusi.
         let transactions = &published.transactions;
         assert!(transactions.single_transaction);
-        // Aperta dalla quattordicesima tranche, e insieme a MySQL: il crate li
-        // implementa una volta sola per i due prodotti, e le due sonde danno lo
+        // I savepoint sono implementati una volta sola per i due prodotti, e le sonde danno lo
         // stesso esito sui tre riferimenti. Il confronto sta qui perche una
         // divergenza inventata su una superficie condivisa e il difetto che
         // ADR 0010 ha nominato.
@@ -4105,8 +3870,8 @@ mod tests {
         }
 
         // Dove non lo e, MariaDB non eredita. 1044 e 1049 non sono mai
-        // arrivati dai due riferimenti — la quarta tranche ci ha provato, e ha
-        // ricevuto 1142 al loro posto — e 3024 e il timeout dell'altro motore.
+        // arrivati dai riferimenti MariaDB, che restituiscono 1142 al loro
+        // posto; 3024 e invece il timeout MySQL.
         //
         // La differenza non e cosmetica: su 1213 la tabella condivisa dichiara
         // `retry: Safe` e `remote_effect: RolledBack`. Un codice ereditato con
@@ -4133,8 +3898,7 @@ mod tests {
     #[test]
     fn a_privilege_error_is_authorization_on_both_products() {
         // 1142 arriva ogni volta che il permesso manca su un comando o una
-        // tabella, ed e il codice che la quarta tranche ha ricevuto **al
-        // posto** di 1044 e 1049: e la risposta piu comune del motore a una
+        // tabella, ed e il codice ricevuto **al posto** di 1044 e 1049: e la risposta piu comune del motore a una
         // richiesta che l'utente non puo fare.
         //
         // Restava fuori dalla tabella, quindi si classificava come esecuzione
@@ -4173,11 +3937,8 @@ mod tests {
 
     #[test]
     fn the_statement_timeout_is_classified_as_a_timeout_on_both_products() {
-        // Le due meta della stessa divergenza. L'istruzione giusta senza la
-        // classificazione giusta era il difetto peggiore dei due, perche
-        // invisibile: il limite scattava davvero, e il chiamante leggeva
-        // "errore server redatto" invece di "timeout" — cioe non poteva
-        // distinguere un limite che aveva fatto il suo lavoro da un guasto.
+        // Statement e classificazione devono concordare: il chiamante deve
+        // distinguere un limite atteso da un guasto del server.
         let mysql = MYSQL_PROFILE.classify_server_code(3_024);
         let mariadb = MARIADB_PROFILE.classify_server_code(MARIADB_STATEMENT_TIMEOUT);
         for (product, verdict) in [("MySQL", &mysql), ("MariaDB", &mariadb)] {
@@ -4218,7 +3979,7 @@ mod tests {
             );
             assert!(MARIADB_PROFILE.row_rejection_cause(shared).is_some());
         }
-        // Il CHECK diverge, e la quarta tranche l'ha visto: lo stesso INSERT
+        // Il CHECK diverge: lo stesso INSERT
         // che viola lo stesso vincolo arriva come 3819 da MySQL e come 4025 da
         // MariaDB. Ciascun profilo attribuisce il codice che ha ricevuto.
         assert!(MARIADB_PROFILE.row_rejection_cause(4_025).is_some());
@@ -4260,8 +4021,8 @@ mod tests {
             .object_columns_query()
             .contains("NULL AS srs_id"));
 
-        // Scrittura: aperta su entrambi dalla quindicesima tranche, e i tipi
-        // scrivibili coincidono — sono nomi OGC, non una tabella di prodotto.
+        // I tipi spatial scrivibili coincidono: sono nomi OGC, non una tabella
+        // specifica di prodotto.
         assert!(MYSQL_PROFILE.write_spatial_is_qualified());
         assert!(MARIADB_PROFILE.write_spatial_is_qualified());
         for geometry in ["point", "linestring", "polygon", "multipoint"] {
@@ -4282,11 +4043,8 @@ mod tests {
         );
         assert_eq!(MARIADB_PROFILE.geometry_column_ddl(4_326), "GEOMETRY");
 
-        // Conseguenza diretta, e la riga che teneva chiusa la scrittura prima
-        // ancora della bandiera: dove la colonna e vincolata il catalogo porta
-        // l'SRID e deve essere quello, dove non puo esserlo il catalogo tace e
-        // non c'e niente da confrontare. Il confronto secco falliva sempre sul
-        // secondo, perche `None` non e mai uguale a `Some(4326)`.
+        // Dove la colonna è vincolata il catalogo porta l'SRID; dove non può
+        // esserlo, `None` indica l'assenza legittima del vincolo.
         assert!(MYSQL_PROFILE.geometry_target_srid_is_compatible(Some(4_326), 4_326));
         assert!(!MYSQL_PROFILE.geometry_target_srid_is_compatible(None, 4_326));
         assert!(MARIADB_PROFILE.geometry_target_srid_is_compatible(None, 4_326));

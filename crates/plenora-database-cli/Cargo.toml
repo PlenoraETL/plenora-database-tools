@@ -12,10 +12,8 @@ name = "plenora-database"
 path = "src/main.rs"
 
 [features]
-# Il default include solo Postgres: qualificato in produzione, senza CVE
-# transitive. MySQL e SQL Server restano opt-in in attesa di Fase 2
-# (provider parity) e del fix upstream delle vulnerabilità in
-# tiberius (rustls-webpki 0.101.7) e mysql_async (lru 0.18.1).
+# Il default resta minimale; gli altri provider sono feature esplicite per non
+# imporre dipendenze e superfici non richieste al binario Postgres.
 default = ["postgres"]
 postgres = ["dep:plenora-db-postgres"]
 mysql = ["dep:plenora-db-mysql"]
