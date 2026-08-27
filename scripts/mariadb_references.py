@@ -7,12 +7,10 @@ Questo modulo lo carica e ne deriva il resto, cosi che ne il compose ne uno
 script possano affermare una versione diversa da quella effettivamente
 avviata.
 
-I ruoli si chiamano `evidence` e `compatibility`, mai `baseline`: MariaDB
-**non** e un riferimento qualificato. Il provider `mysql` fa fail-close alla
-probe quando la riconosce, e questa fixture esiste per produrre l'evidenza
-che ADR 0014 chiede prima di decidere se qualificarla. Chiamarla baseline la
-farebbe leggere come una piattaforma supportata, che e proprio l'equivoco che
-il fail-close esiste per impedire.
+I ruoli si chiamano `evidence` e `compatibility`, mai `baseline`: queste righe
+caratterizzano il prodotto e le versioni coperte, non una baseline numerica o
+prestazionale. Il provider `mysql` continua a rifiutare MariaDB; il prodotto
+qualificato si raggiunge soltanto con `MariadbProvider`.
 
 Una riga porta il ruolo `evidence`; le righe `compatibility` conservano la
 copertura delle versioni più anziane. Il confronto distingue così le
@@ -101,9 +99,8 @@ def _load() -> tuple[MariadbReference, ...]:
             raise RuntimeError(f"versione non esatta per {entry.label}")
         if entry.role not in {EVIDENCE_ROLE, COMPATIBILITY_ROLE}:
             raise RuntimeError(
-                f"ruolo '{entry.role}' per {entry.label}: MariaDB non e "
-                "qualificata, e i soli ruoli ammessi sono 'evidence' e "
-                "'compatibility'"
+                f"ruolo '{entry.role}' per {entry.label}: i soli ruoli "
+                "ammessi sono 'evidence' e 'compatibility'"
             )
     evidence = [entry for entry in entries if entry.role == EVIDENCE_ROLE]
     if len(evidence) != 1:

@@ -5,8 +5,9 @@ oggi invocato via `subprocess` al chiamante Python nativo equivalente.
 
 ## TL;DR
 
-- **Vantaggio**: ~13× più veloce per operazione (bench live: CLI
-  8.40 ms/call vs SDK 0.62 ms/call). Vedi `README.md#performance`.
+- **Vantaggio atteso**: una sessione riusata evita startup del processo e
+  riconnessione a ogni operazione. Il benchmark opt-in misura il rapporto
+  sulla macchina e sul commit della singola corsa; vedi `README.md#performance`.
 - **Cambio operativo**: pattern `subprocess.run([...], check=True) + json.loads(stdout)` diventa una chiamata diretta di metodo che ritorna già l'oggetto Python tipizzato.
 - **Retro-compat**: nessuna. Da fare endpoint-by-endpoint (runbook sotto).
 - **Rollout consigliato**: hot path per primo (endpoint OLTP con QPS alto). Cold path (job batch giornalieri) può restare CLI se non c'è urgenza.
@@ -97,8 +98,8 @@ plenora-database portable-execute PFM_DSN '{"type":"select",...}'
 # Preferisci il builder (produce l'AST per te):
 rows = s.select("users").columns("id","email").where_eq("id", 1).all()
 
-# Oppure raw AST se vuoi controllo totale:
-rows = s._native.execute_portable_rows(json_ast_string)
+# Per forme non esposte dal builder, mantenere temporaneamente il comando CLI:
+# il wrapper non pubblica il proprio oggetto `_native` come API stabile.
 ```
 
 ### `postgres-read-summary` / `postgres-read-ipc`
@@ -111,14 +112,14 @@ plenora-database postgres-read-ipc PFM_DSN public large_table out.arrow
 # → scrive Arrow IPC file
 ```
 
-**Sync (F4-3)**:
+**Sync**:
 ```python
 import io, pyarrow.ipc as ipc
 
 # In-memory (dataset piccolo, ≤ 100k righe)
 rows = s.execute_returning_rows("SELECT * FROM public.users")
 
-# Streaming Arrow (qualsiasi dimensione — non carica tutto in memoria)
+# Streaming Arrow incrementale
 for chunk in s.read("public", "large_table"):
     batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
     process(batch)     # pyarrow.Table con 1 record batch
@@ -135,15 +136,16 @@ with pa.OSFile("out.arrow", "wb") as sink:
                 writer.write(b)
 ```
 
-**Async (F4-3)**:
+**Async**:
 ```python
 reader = await s.aread("public", "large_table")
 async for chunk in reader:
     ...
 ```
 
-Il reader legge batch-by-batch dal cursor server-side — nessun limit
-di memoria del client.
+Il reader legge batch-by-batch con backpressure e non materializza l'intero
+risultato nel client. Questo non implica un cursore riapribile: la capability
+`server_cursor` resta `false` per tutti i provider.
 
 ### `bulk-write`
 
@@ -151,16 +153,16 @@ di memoria del client.
 plenora-database bulk-write PFM_DSN append public.events data.arrow ...
 ```
 
-**Non c'è equivalente SDK diretto** per bulk COPY Arrow (roadmap).
-Per bulk insert modesti (≤10k righe), usa il builder multi-row:
+L'equivalente SDK e `copy_from` (`acopy_from` nella sessione async):
 
 ```python
-s.insert("events").rows([
-    {"ts": ts, "kind": k, "payload": p} for (ts,k,p) in batch
-]).execute()
+outcome = s.copy_from("public", "events", arrow_table, mode="append")
+# async: outcome = await s.acopy_from("public", "events", arrow_table)
 ```
 
-Per bulk grossi (>10k righe), resta col CLI.
+Accetta `pyarrow.Table`, `RecordBatch`, iterable di batch, `list[dict]`,
+`pandas.DataFrame` e stream Arrow IPC in `bytes`. Modalita, chiavi e policy di
+mapping sono documentate nel README del package.
 
 ### `inspect-database` / `inspect-schemas` / `inspect-tables`
 
@@ -170,7 +172,7 @@ plenora-database inspect-schemas PFM_DSN
 ```
 
 ```python
-# Namespace nativo (F4-1):
+# Namespace nativo:
 schemas = s.inspect.schemas()          # ['public', ...]  (system esclusi)
 catalogs = s.inspect.catalogs()        # ['app_prod', ...]
 tables = s.inspect.tables("public")    # [{'name': 't1', 'kind': 'table', 'is_partition': False}, ...]
@@ -254,8 +256,8 @@ grep -rn "subprocess.*plenora-database" src/pfm/
 
 Categorizzali per hot-path vs cold-path:
 
-- **Hot path** (per-request): candidati per switch immediato.
-  Beneficio: latency HTTP -40..-80%, throughput +5..10×.
+- **Hot path** (per-request): candidati per switch immediato; il beneficio va
+  misurato nel consumer con il benchmark e la telemetria applicativa.
 - **Cold path** (job cron, migrations, one-off): switch opzionale.
   Beneficio marginale.
 
@@ -345,7 +347,7 @@ except p.PlenoraError as e:
 
 ### Passo 5 — Osservabilità
 
-Il SDK espone i contatori interni del provider (F4-1):
+Il SDK espone i contatori interni del provider:
 
 ```python
 snap = s.metrics()

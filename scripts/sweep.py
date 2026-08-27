@@ -89,6 +89,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_sqlserver_reference.py"],
     ),
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
+    ("check_docs.py", [sys.executable, "scripts/check_docs.py"]),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
     ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),
     ("code_size.py --check", [sys.executable, "scripts/code_size.py", "--check"]),

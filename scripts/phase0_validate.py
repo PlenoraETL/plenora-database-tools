@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import re
+import sys
 import tempfile
 from importlib.metadata import version
 from datetime import datetime, timezone
@@ -30,6 +31,10 @@ except ImportError as exc:  # pragma: no cover - dipendenza del tooling
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    # L'esecuzione diretta mette `scripts/`, non la radice del repository,
+    # in testa al path. I generatori sono importati come namespace `scripts`.
+    sys.path.insert(0, str(REPO_ROOT))
 # Una sola major di contratto vive nel worktree ed è quella emessa dal codice;
 # la storia appartiene al controllo versione, non a copie ancora validabili.
 ACTIVE_MAJOR = "v2"
@@ -544,11 +549,39 @@ def validate_generated_documents() -> int:
     """
     try:
         from scripts.render_state import TARGET, render
+        from scripts.render_mariadb_evidence import (
+            TARGET as MARIADB_EVIDENCE_TARGET,
+            render as render_mariadb_evidence,
+        )
+        from scripts.render_offline_microbench import (
+            TARGET as MICROBENCH_TARGET,
+            render as render_microbench,
+        )
     except ModuleNotFoundError:  # esecuzione diretta
         from render_state import TARGET, render
+        from render_mariadb_evidence import (
+            TARGET as MARIADB_EVIDENCE_TARGET,
+            render as render_mariadb_evidence,
+        )
+        from render_offline_microbench import (
+            TARGET as MICROBENCH_TARGET,
+            render as render_microbench,
+        )
 
-    generated = ((TARGET, render),)
-    for path, renderer in generated:
+    generated = (
+        (TARGET, render, "python scripts/render_state.py"),
+        (
+            MARIADB_EVIDENCE_TARGET,
+            render_mariadb_evidence,
+            "python scripts/render_mariadb_evidence.py",
+        ),
+        (
+            MICROBENCH_TARGET,
+            render_microbench,
+            "python scripts/render_offline_microbench.py",
+        ),
+    )
+    for path, renderer, command in generated:
         if not path.is_file():
             raise ValidationError(
                 f"documento generato assente: {path.relative_to(REPO_ROOT)}"
@@ -557,7 +590,7 @@ def validate_generated_documents() -> int:
             raise ValidationError(
                 f"documento generato disallineato: "
                 f"{path.relative_to(REPO_ROOT).as_posix()}; rigeneralo con "
-                f"python scripts/render_state.py"
+                f"{command}"
             )
     return len(generated)
 

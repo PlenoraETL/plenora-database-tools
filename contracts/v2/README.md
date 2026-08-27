@@ -60,12 +60,10 @@ Per un documento capability:
 
 Il valore di `truncate_insert` **non** e sempre quello di `append`. Prima
 `append` autorizzava entrambe le mode, quindi un documento che diceva
-`append: true` prometteva anche `TruncateInsert`; la traduzione fedele di quel
-documento e `truncate_insert: true`. Ma se il provider che lo ha prodotto
-rifiuta `TruncateInsert` — come fanno `MySQL` e `MariaDB` — la traduzione
-fedele e `false`, e questa major e il momento in cui quella differenza smette
-di essere invisibile. Nel repository: PostgreSQL e SQL Server dichiarano
-`true`, MySQL e MariaDB `false`.
+`append: true` prometteva anche `TruncateInsert`; la traduzione fedele dipende
+pero dal comportamento realmente sostenuto dal provider. Le dichiarazioni
+correnti non vengono duplicate qui: sono generate in
+[`docs/STATO.md`](../../docs/STATO.md).
 
 Per un piano e per un write outcome: `schema_version` passa a `2`, e cade
 quanto elencato sopra. Un piano la cui operazione non e `database.*` non e

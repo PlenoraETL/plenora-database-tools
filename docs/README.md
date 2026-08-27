@@ -1,12 +1,14 @@
 # docs
 
-Tre cose, e nient'altro.
+Pochi documenti, ciascuno con un ruolo esplicito.
 
 | documento | cos'e |
 | --- | --- |
 | [`STATO.md`](STATO.md) | generato dal codice: crate, capability, sub-comandi, inventario dei test |
 | [`operativo.md`](operativo.md) | cio che i file Compose non dicono da soli |
-| [`mariadb/`](mariadb/EVIDENCE.md) | la qualifica MariaDB, misurata, in corso |
+| [`mariadb/EVIDENCE.md`](mariadb/EVIDENCE.md) | inventario generato delle prove che sostengono MariaDB |
+| [`mariadb/SESSION-MATRIX.md`](mariadb/SESSION-MATRIX.md) | esito live generato della semantica di sessione |
+| [`mariadb/ADR-0014-evidence-first.md`](mariadb/ADR-0014-evidence-first.md) | decisione ancora citata dal codice, ridotta al suo vincolo attuale |
 
 ## Perche cosi poco
 
@@ -32,11 +34,10 @@ una tantum dai vecchi container. I nomi che cita sono presidiati dai Compose.
 
 In Git. Non qui.
 
-Non c'e un archivio: i documenti che descrivevano lo stato di fasi passate, le
-decisioni architetturali, i readiness dei rilasci e le review sono stati
-cancellati dal worktree, non spostati in una sottocartella. Un archivio dentro
-l'albero di lavoro e una seconda copia che si legge come se fosse ancora
-valida, e nessuno la aggiorna perche nessuno deve.
+Non c'e un archivio: i documenti che descrivevano lo stato di fasi passate, i
+readiness dei rilasci e le review non restano nel worktree. Anche l'evidenza
+MariaDB espone l'inventario corrente delle prove, non il diario delle campagne
+che lo hanno prodotto.
 
 Chi cerca il perche di una decisione lo trova nel commit che l'ha presa:
 `git log`, `git show`, e i messaggi di commit che quelle decisioni le

@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Guardie della fixture di evidenza MariaDB.
+"""Guardie statiche dei riferimenti e della qualifica MariaDB.
 
-Il ciclo MariaDB apre con una fixture che **non** e un riferimento
-qualificato: il provider `mysql` fa fail-close alla probe quando la
-riconosce, e questa fixture serve a produrre l'evidenza che ADR 0014 chiede
-prima di decidere se qualificarla. Le guardie qui sotto tengono ferme le due
-cose che quella distinzione richiede — l'immagine e fissata per digest, e
-niente in giro dichiara MariaDB supportata.
-
-Nessun server: si legge cio che i documenti e i compose affermano. La fixture
-viva la esercita il ciclo, non questa suite.
+Il provider MySQL deve continuare a rifiutare MariaDB, mentre MariadbProvider
+la raggiunge soltanto sulle versioni misurate. Le guardie tengono fissi digest,
+inventari e confine fra i due prodotti senza aprire connessioni.
 """
 
 from __future__ import annotations
@@ -35,9 +29,8 @@ from scripts.mariadb_references import (  # noqa: E402
     validate_compose_pins_the_references,
 )
 
-# La decisione che governa questa campagna sta con la campagna, non
-# nell'archivio: le altre ADR registrano scelte concluse, questa e
-# ancora in corso di esecuzione.
+# La decisione corrente resta leggibile finche il codice la cita per nome; la
+# cronologia delle campagne, invece, vive in Git.
 ADR = ROOT / "docs" / "mariadb" / "ADR-0014-evidence-first.md"
 CATALOG = ROOT / "crates" / "plenora-db-mysql" / "src" / "catalog.rs"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
@@ -114,16 +107,8 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
             self.assertNotIn(previous.tls_volume, volumes)
             volumes.add(previous.tls_volume)
 
-    def test_the_fixture_declares_itself_evidence_and_not_a_baseline(self) -> None:
-        """Il ruolo e `evidence`, e non e una sfumatura lessicale.
-
-        `baseline` in questo repository significa "riferimento qualificato":
-        e la riga di testa di una matrice che i gate eseguono e che i
-        documenti dichiarano supportata. MariaDB non lo e — il provider la
-        rifiuta alla probe — e un ruolo che suggerisce il contrario
-        rimetterebbe in circolo proprio l'equivoco che il fail-close esiste
-        per impedire.
-        """
+    def test_the_fixture_declares_evidence_and_compatibility_roles(self) -> None:
+        """I riferimenti di qualifica non si fingono baseline prestazionali."""
 
         self.assertEqual(EVIDENCE.role, EVIDENCE_ROLE)
         self.assertEqual(EVIDENCE_ROLE, "evidence")
@@ -131,13 +116,8 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
             '"role": "baseline"', REFERENCES_FILE.read_text(encoding="utf-8")
         )
 
-    def test_the_provider_still_fails_closed_on_mariadb(self) -> None:
-        """Il fail-close resta finche una capability non ha una prova.
-
-        E la decisione di ADR 0014, e questa guardia e cio che impedisce di
-        allentarla per comodita mentre si raccoglie l'evidenza: un provider
-        che accetta e poi diverge in silenzio e peggio di uno che rifiuta.
-        """
+    def test_mysql_provider_rejects_mariadb_instead_of_switching_product(self) -> None:
+        """La selezione esplicita impedisce adattamenti silenziosi."""
 
         # Il riconoscimento e la sua motivazione vivono ora nel profilo; il
         # punto in cui il rifiuto scatta, e con esso il bypass, e rimasto nel
@@ -161,51 +141,18 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
 
         adr = ADR.read_text(encoding="utf-8")
         self.assertIn("Il **fail-close resta**", adr)
-        for reference in REFERENCES:
-            self.assertIn(reference.exact_version, adr)
-            self.assertIn(reference.digest, adr)
+        self.assertIn("`MysqlProvider` rifiuta MariaDB", adr)
+        self.assertIn("`MariadbProvider` rifiuta MySQL", adr)
 
-    def test_the_decision_does_not_promise_what_was_not_measured(self) -> None:
-        """La scelta del crate non e una qualifica, e l'ADR deve dirlo.
-
-        E il passo dove la confusione costa di piu: "un provider MariaDB
-        pubblico" e "MariaDB supportata" si somigliano abbastanza da essere
-        letti come la stessa cosa, e non lo sono. La decisione riguarda dove
-        vivra il codice; cosa e stato dimostrato lo dice l'evidenza, e tre
-        superfici non lo sono ancora.
-        """
+    def test_the_decision_records_the_current_product_boundary(self) -> None:
+        """L'ADR descrive l'invariante attuale, non gli stati intermedi."""
 
         adr = ADR.read_text(encoding="utf-8")
         self.assertIn("Decisione architetturale", adr)
-        self.assertIn("MariaDB **non e qualificata** da questa decisione", adr)
-        self.assertIn("Cosa resta fail-closed", adr)
-        # In grassetto e come voce di elenco: e la forma con cui la sezione
-        # dichiara una superficie ancora chiusa. Cercare la sola frase
-        # lascerebbe passare "commit ambiguo, risolto", che dice il contrario.
-        closed = ADR.read_text(encoding="utf-8").split("Cosa resta fail-closed", 1)[1]
-        for surface in ("**spatial su MariaDB**", "**commit ambiguo**"):
-            self.assertIn(
-                f"* {surface} —",
-                closed,
-                f"superficie non piu dichiarata fail-closed: {surface}",
-            )
-
-        # La lettura via catalogo era la terza, ed e stata misurata: l'elenco
-        # non puo continuare a dichiararla chiusa, e l'ADR non puo tacerlo.
-        # La guardia pretende entrambe le cose, perche togliere la voce senza
-        # spiegare dove sia finita e il modo in cui un documento smette di
-        # essere leggibile.
-        self.assertNotIn("**lettura via catalogo** —", closed)
-        self.assertIn("la lettura via catalogo e stata misurata", adr)
-        self.assertIn("nessun provider seleziona quel profilo", adr)
-
-        # Nessuna selezione automatica: e la proprieta che impedisce a un
-        # consumer di finire sull'altro motore senza accorgersene.
         self.assertIn("Nessuna selezione automatica", adr)
         self.assertIn("`MariadbProvider` rifiuta MySQL", adr)
+        self.assertNotIn("MariaDB **non e qualificata**", adr)
 
-        # E ogni riga del profilo deve poggiare su una misura, non su una
-        # previsione: i codici osservati sono la prova che c'e stata.
         for evidence in ("1193", "1054", "native_type=json", "SRS_ID"):
             self.assertIn(evidence, adr, f"riga del profilo senza misura: {evidence}")
 
@@ -375,19 +322,12 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
         self.assertIn("docker-compose.mariadb.yml", document)
         self.assertIn("docker-compose.mysql.yml", document)
 
-    def test_the_document_does_not_turn_evidence_into_a_decision(self) -> None:
-        """Misurare non e decidere, e il documento deve dirlo.
-
-        E la riga che impedisce alla matrice di essere letta come un via
-        libera: tre divergenze dichiarate si sono rivelate false, e da li a
-        concludere "allora si puo qualificare" il passo e corto — mentre due
-        divergenze nuove, che nessuno aveva nominato, romperebbero il provider
-        in produzione.
-        """
+    def test_the_document_does_not_claim_a_live_result(self) -> None:
+        """Un inventario generato non e il verdetto di una corsa live."""
 
         document = self.DOCUMENT.read_text(encoding="utf-8")
-        self.assertIn("Non e una decisione", document)
-        self.assertIn("il fail-close resta", document.lower())
+        self.assertIn("non equivale a un gate live passato", document)
+        self.assertIn("Se il gate non e stato eseguito, non e passato", document)
         self.assertIn("Cosa resta aperto", document)
 
     def test_the_harness_measures_the_surfaces_the_provider_uses(self) -> None:

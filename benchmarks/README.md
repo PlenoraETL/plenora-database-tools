@@ -2,12 +2,14 @@
 
 ## Indice
 
-Questa cartella contiene due famiglie di misure, con regole diverse.
+Questa cartella contiene tre famiglie di misure, con regole diverse.
 
 1. **Campagne su provider reali** (il resto di questo documento): richiedono
    PostgreSQL, MySQL o SQL Server, sono guidate da manifest in `manifests/`,
-   producono report in `results/` e hanno budget e baseline congelate in
-   `baseline/`. Queste sono gate: se superano il budget, falliscono.
+   producono report in `results/` e hanno budget in `baseline/`. PostgreSQL e
+   SQL Server hanno anche baseline congelate; MySQL confronta una baseline
+   soltanto quando viene fornita e l'ambiente coincide. Queste sono gate: se
+   superano il budget applicabile, falliscono.
 2. **Microbenchmark Rust offline**: girano senza database, misurano le
    superfici CPU-bound del workspace (rendering SQL, compilazione dei read
    plan, ispezione EWKB, contratto Arrow, pipeline dei piani). Documento e
@@ -17,11 +19,11 @@ Questa cartella contiene due famiglie di misure, con regole diverse.
    `.github/workflows/rust-microbench.yml` si limita a misurare e pubblicare.
 3. **Python SDK vs subprocess CLI**: parity bench live sul driver Postgres,
    in `crates/plenora-database-py/python/tests/bench_*.py`. Misura latenza
-   per-chiamata dal Python (in-process PyO3 vs subprocess CLI). Numeri di
-   riferimento e note in
+   per-chiamata dal Python (in-process PyO3 vs subprocess CLI). Procedura e
+   criteri di confronto in
    [`crates/plenora-database-py/README.md`](../crates/plenora-database-py/README.md#performance)
-   (~13× più veloce del CLI, 0.62 ms/call vs 8.40 ms/call sul workload di
-   riferimento). Opt-in, non gate.
+   I numeri appartengono al report della singola corsa: non vengono copiati in
+   un documento destinato a durare. Opt-in, non gate.
 
 ## Harness
 
@@ -136,3 +138,17 @@ python scripts\check_sqlserver_performance.py `
 Read, prepared, TDS bulk, create e replace vengono misurati sul provider reale;
 ogni scrittura deve confermare tutte le righe e il differenziale SQL deve
 restare a zero. La soglia e in `scripts/check_sqlserver_performance.py`.
+
+## MySQL
+
+La campagna MySQL copre le superfici live gia qualificate: lettura Arrow e
+scrittura `Append` in `SingleTransaction`. Manifest e budget sono
+rispettivamente `manifests/mysql-performance-reference.json` e
+`baseline/mysql-performance-budget.json`.
+
+```powershell
+python scripts\check_mysql_performance.py
+```
+
+Senza `--baseline` il gate applica i limiti assoluti e dichiara il confronto
+storico `not_requested`; non inventa una baseline da una singola corsa.

@@ -22,6 +22,26 @@ fn policy_closes_unqualified_filter_forms() {
     )
     .expect_err("forma non qualificata");
     assert_eq!(error.provider, Some(ProviderKind::Mysql));
+    assert_eq!(error.message, CASE_INSENSITIVE_LIKE_REFUSAL);
+
+    let spatial = FilterExpression::Spatial {
+        function: plenora_database_core::query::SpatialFunction::Intersects,
+        field: "shape".to_owned(),
+        geometry_parameter: Some("geometry".to_owned()),
+        distance_parameter: None,
+    };
+    let error = lower_filter(
+        &spatial,
+        FilterLowering {
+            provider: ProviderKind::Mysql,
+            case_insensitive_like: false,
+            spatial: false,
+        },
+        identifier,
+    )
+    .expect_err("filtro spatial non qualificato");
+    assert_eq!(error.provider, Some(ProviderKind::Mysql));
+    assert_eq!(error.message, SPATIAL_FILTER_REFUSAL);
 }
 
 #[test]

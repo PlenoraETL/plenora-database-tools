@@ -4,6 +4,15 @@ use super::{Expression, Identifier};
 use plenora_database_core::plan::{ComparisonOperator, FilterExpression, ProviderKind};
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 
+/// Motivo stabile del rifiuto del LIKE case-insensitive non qualificato.
+#[doc(hidden)]
+pub const CASE_INSENSITIVE_LIKE_REFUSAL: &str =
+    "LIKE case-insensitive richiede una collation esplicita";
+
+/// Motivo stabile del rifiuto del filtro spatial non qualificato.
+#[doc(hidden)]
+pub const SPATIAL_FILTER_REFUSAL: &str = "filtro spatial richiede tipo, WKB e SRID risolti";
+
 /// Superficie `FilterExpression` ammessa dal dialetto corrente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FilterLowering {
@@ -96,7 +105,7 @@ where
                 return Err(DatabaseError::unsupported(
                     policy.provider,
                     ErrorPhase::Prepare,
-                    "LIKE case-insensitive richiede una collation esplicita",
+                    CASE_INSENSITIVE_LIKE_REFUSAL,
                 ));
             }
             Ok(Expression::Like {
@@ -115,7 +124,7 @@ where
                 return Err(DatabaseError::unsupported(
                     policy.provider,
                     ErrorPhase::Prepare,
-                    "filtro spatial richiede tipo, WKB e SRID risolti",
+                    SPATIAL_FILTER_REFUSAL,
                 ));
             }
             Ok(Expression::SpatialPredicate {

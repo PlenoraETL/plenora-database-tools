@@ -2109,7 +2109,7 @@ async fn streaming_read_probes(
                 phase: ErrorPhase::Prepare,
                 remote_effect: RemoteEffect::None,
                 retry: RetryDisposition::Never,
-                message_contains: "LIKE case-insensitive richiede collation esplicita",
+                message_contains: plenora_database_sql::CASE_INSENSITIVE_LIKE_REFUSAL,
             },
         ),
         (
@@ -2143,7 +2143,7 @@ async fn streaming_read_probes(
                 phase: ErrorPhase::Prepare,
                 remote_effect: RemoteEffect::None,
                 retry: RetryDisposition::Never,
-                message_contains: "filtro spatial richiede validazione WKB e SRID",
+                message_contains: plenora_database_sql::SPATIAL_FILTER_REFUSAL,
             },
         ),
     ] {

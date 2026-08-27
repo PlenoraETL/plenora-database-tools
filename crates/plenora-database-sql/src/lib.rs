@@ -20,7 +20,10 @@ const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
 
 mod filter;
-pub use filter::{lower_filter, select_columns_by_name, FilterLowering};
+pub use filter::{
+    lower_filter, select_columns_by_name, FilterLowering, CASE_INSENSITIVE_LIKE_REFUSAL,
+    SPATIAL_FILTER_REFUSAL,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier(String);

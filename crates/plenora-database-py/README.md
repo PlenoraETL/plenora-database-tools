@@ -5,16 +5,17 @@ Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB e SQL Server con AP
 Pythonic, portable AST builder, error hierarchy tipizzata, spatial
 predicates e context manager per transazioni.
 
-- **Status**: Fase 3 completata (F3-1 → F3-8 + P0.7 + P0.8)
 - **Postgres**: OLTP + PostGIS coperti
 - **MySQL e MariaDB**: esposti sync e async con factory distinte
+  (`connect_mysql` / `aconnect_mysql`, `connect_mariadb` /
+  `aconnect_mariadb`)
   con la stessa superficie di Postgres — execute*, `begin` con
   `SessionContext`, `read`/`aread` streaming Arrow, `copy_from`/`acopy_from`
   bulk e builder AST portabili. `TruncateInsert` resta fail-closed
 - **SQL Server**: esposto sync e async (`connect_sqlserver` /
   `aconnect_sqlserver`)
 - **Async**: `asyncio` bridge sopra al runtime tokio condiviso
-- **Performance**: ~13× più veloce del subprocess CLI (vedi bench)
+- **Performance**: benchmark di parita SDK/CLI disponibile come test opt-in
 
 ## Install
 
@@ -165,10 +166,10 @@ near = (
 
 Predicati: `intersects` / `contains` / `within` / `bounding_box` / `d_within`.
 
-## Bulk write (COPY)
+## Bulk write Arrow
 
-Per import massivo Postgres usa COPY internamente (via `prepare_write` +
-`write` del provider). Il consumer Python passa dati Arrow:
+Il consumer Python passa dati Arrow a `prepare_write` + `write`; ogni provider
+sceglie il proprio data path bulk. PostgreSQL usa COPY internamente:
 
 ```python
 import pyarrow as pa
@@ -213,14 +214,13 @@ rows.confirmed / .inserted / .failed / .skipped, recovery).
 
 ## Observability
 
-`Session.metrics()` restituisce uno snapshot dict compatibile con export
-Prometheus / OpenTelemetry:
+`Session.metrics()` restituisce un dizionario piatto di contatori interi,
+compatibile con export Prometheus / OpenTelemetry:
 
 ```python
 snap = s.metrics()
-# {"database": {"queries_total": N, "queries_failed": N,
-#               "write_committed_total": N, ...},
-#  "connection_pool": {"in_use": N, "available": N, ...}}
+# {"pool_checkouts": N, "pool_reuses": N,
+#  "schema_cache_hits": N, "writes_committed": N, ...}
 
 # Esempio integrazione OpenTelemetry (structured log)
 import logging
@@ -228,8 +228,8 @@ logger = logging.getLogger("plenora.db")
 logger.info(
     "db.snapshot",
     extra={
-        "db.queries_total": snap["database"]["queries_total"],
-        "db.pool_in_use": snap["connection_pool"]["in_use"],
+        "db.pool_checkouts": snap["pool_checkouts"],
+        "db.schema_cache_hits": snap["schema_cache_hits"],
         "service.version": p.version(),
     },
 )
@@ -313,37 +313,28 @@ if n == 0:
 
 ## Performance
 
-Bench live PG 16 + PostGIS 3.4 su docker (`test_benchmark_parity.py`,
-opt-in con `PLENORA_BENCH_PARITY=1`):
-
-| Modalità | ms/call | Speedup |
-|---|---|---|
-| Subprocess `plenora-database` CLI | 8.40 | 1× |
-| **SDK in-process (Session riusata)** | **0.62** | **13.5×** |
-| SDK new-Session per call | 5.62 | 1.5× |
-
-Il vantaggio deriva da:
-1. Connection pooling (~5 ms/call risparmiati)
-2. No fork+exec+startup (~2 ms/call risparmiati)
-3. No serialize JSON stdin/stdout (~0.5 ms/call risparmiati)
-
-Per endpoint FastAPI con 3-5 query/richiesta, il PFM passa da **~40 ms** a **~3 ms** di tempo DB.
+`test_benchmark_parity.py` confronta live, sullo stesso commit e nello stesso
+runner, una sessione SDK riusata con il subprocess CLI. E opt-in con
+`PLENORA_BENCH_PARITY=1`: il risultato appartiene alla singola corsa e viene
+registrato dal runner, non copiato qui come se valesse per ogni macchina.
 
 ## Compatibility
 
-| | Python | Rust | Postgres | PostGIS |
-|---|---|---|---|---|
-| Min supportato | 3.10 | 1.92 | 12+ | 3.0+ |
-| Testato in CI | 3.10, 3.11, 3.12, 3.13 | 1.92 | 16.4 | 3.4.3 |
+| superficie | dichiarata | verificata dai workflow |
+|---|---|---|
+| Python ABI | 3.10+ | import e suite wheel su Python 3.12; assurance SDK su 3.13 |
+| Rust | 1.92 | 1.92 |
+| piattaforme wheel | Linux x86_64, macOS arm64, Windows x86_64 | una suite offline per ciascun artefatto |
 
 Wheel: `abi3-py310` → un solo wheel per platform copre tutte le
 versioni Python ≥ 3.10.
 
-## Limitations (v0.1)
+## Limitazioni
 
-- **SQL Server** — raggiungibile solo tramite il driver Rust del
-  workspace, non ancora esposto al SDK Python. Postgres e MySQL sono
-  entrambi esposti.
+- **Selezione del prodotto** — PostgreSQL, MySQL, MariaDB e SQL Server hanno
+  factory distinte; non esiste selezione automatica dal server raggiunto.
+- **Ripresa dello stream** — la lettura e incrementale, ma nessun provider
+  pubblica un cursore riapribile da una seconda sessione.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
@@ -353,7 +344,7 @@ versioni Python ≥ 3.10.
 ### Test
 
 ```bash
-python scripts/check_sdk_tests.py                  # Postgres + MySQL live
+python scripts/check_sdk_tests.py                  # tutti e quattro i provider live
 python scripts/check_sdk_tests.py --offline        # solo i test senza server
 python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
 python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
@@ -485,4 +476,4 @@ crates/plenora-database-py/
 
 ## License
 
-Proprietary. Vedi `Cargo.toml` workspace.
+Software proprietario. Vedi il file `LICENSE` alla radice del workspace.

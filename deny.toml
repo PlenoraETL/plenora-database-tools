@@ -118,6 +118,12 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 },
 ]
 
+# I crate del workspace sono proprietari, ereditano `publish = false` e non
+# sono dipendenze di terze parti. Questa esclusione non modifica la allowlist:
+# cargo-deny continua a verificare le licenze di ogni dipendenza esterna.
+[licenses.private]
+ignore = true
+
 # ============================================================================
 #  bans (duplicati e crate proibiti)
 # ============================================================================

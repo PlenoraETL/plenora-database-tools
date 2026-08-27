@@ -25,9 +25,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
+    from scripts.live_inventory import annotated_tests
     from scripts.mysql_inventory import collect
     from scripts.phase0_validate import ACTIVE_MAJOR
 except ModuleNotFoundError:  # esecuzione diretta: python scripts/...
+    from live_inventory import annotated_tests
     from mysql_inventory import collect
     from phase0_validate import ACTIVE_MAJOR
 
@@ -42,11 +44,6 @@ TARGET = ROOT / "docs" / "STATO.md"
 # provider che dovrebbe pubblicarla, e il profilo che quel tipo deve
 # dichiarare — `None` per i crate che non hanno profili.
 #
-# `MariadbProvider` non esiste ancora, ed e scritto lo stesso: e cio che rende
-# la riga una domanda invece che un'affermazione. Finche quel tipo non esiste,
-# non e esportato e non dichiara niente, il prodotto risulta non pubblicato; il
-# giorno che esiste, con il suo `impl PublishedProfile`, la risposta cambia da
-# sola.
 CAPABILITY_SOURCES = (
     (
         "PostgreSQL",
@@ -103,6 +100,11 @@ DECLARATION_TAIL = (
 )
 # Una voce del catalogo: nome, e la feature che lo compila se ce n'e una.
 COMMAND_ENTRY = r'\("([a-z][a-z0-9-]+)", (?:Some\("([a-z]+)"\)|None)\)'
+PROVIDER_TEST_CRATES = (
+    ("PostgreSQL", "plenora-db-postgres"),
+    ("MySQL + MariaDB", "plenora-db-mysql"),
+    ("SQL Server", "plenora-db-sqlserver"),
+)
 
 
 class RenderError(RuntimeError):
@@ -336,6 +338,25 @@ def test_inventory() -> list[tuple[str, int]]:
     return [(family, len(observed[family])) for family in sorted(observed)]
 
 
+def provider_test_inventory() -> list[tuple[str, int]]:
+    """Test Rust annotati nei crate che implementano i quattro prodotti.
+
+    MySQL e MariaDB condividono intenzionalmente lo stesso crate e molte suite:
+    separarli contando i nomi sarebbe un fatto inventato, quindi restano una
+    riga sola. Il conteggio segue gli attributi Rust, non convenzioni sui nomi.
+    """
+
+    inventory: list[tuple[str, int]] = []
+    for label, crate in PROVIDER_TEST_CRATES:
+        root = ROOT / "crates" / crate
+        count = sum(
+            len(annotated_tests(path.read_text(encoding="utf-8")))
+            for path in sorted(root.rglob("*.rs"))
+        )
+        inventory.append((label, count))
+    return inventory
+
+
 def table(header: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(header) + " |"]
     lines.append("|" + "|".join(" --- " for _ in header) + "|")
@@ -440,7 +461,19 @@ def render() -> str:
     )
     lines += [
         "",
-        "## Inventario dei test MySQL",
+        "## Inventario dei test dei provider",
+        "",
+        "Conteggio delle funzioni Rust annotate come test nei crate provider.",
+        "MySQL e MariaDB condividono un crate e restano quindi una riga sola.",
+        "",
+    ]
+    lines += table(
+        ["provider", "test Rust"],
+        [[label, str(count)] for label, count in provider_test_inventory()],
+    )
+    lines += [
+        "",
+        "### Famiglie del gate MySQL",
         "",
         "Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.",
         "",

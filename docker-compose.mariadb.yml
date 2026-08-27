@@ -1,18 +1,18 @@
-# Fixture di **evidenza** MariaDB. Versioni, ruoli, digest, container e porte
+# Fixture di qualifica MariaDB. Versioni, ruoli, digest, container e porte
 # sono dichiarati in docker/mariadb/references.json; lo script
 # `mariadb_references.py` verifica che i servizi qui sotto coincidano con
 # quella fonte.
 #
-# Non sono riferimenti qualificati. Il provider `mysql` fa fail-close alla
-# probe quando riconosce MariaDB, e questa fixture serve a produrre l'evidenza
-# che ADR 0014 chiede prima di decidere se qualificarla — non a farla passare.
+# Il provider `mysql` continua a fare fail-close quando riconosce MariaDB; la
+# fixture sostiene il prodotto esplicito `MariadbProvider` e soltanto le
+# versioni elencate.
 #
 # I server salgono insieme per confrontare le versioni MariaDB e la fixture
 # MySQL, che resta su un progetto e una porta propri.
 #
 # Progetto Compose esplicito. Senza questa riga Compose deriva il nome dalla
 # directory, quindi tutti i compose del repository finirebbero nello stesso
-# progetto e `down --remove-orphans` su uno cancellerebbe i container degli
+# progetto e le operazioni Compose non resterebbero isolate dai container degli
 # altri provider.
 name: plenora-mariadb
 

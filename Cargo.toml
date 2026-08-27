@@ -30,10 +30,10 @@ version = "2.0.0"
 edition = "2021"
 rust-version = "1.92"
 publish = false
-# License interna: i crate del workspace non sono pubblicati su crates.io
-# (publish = false), ma la dichiarazione serve a cargo-deny + tooling
-# supply-chain per validare la license clause.
-license = "Apache-2.0"
+# I crate non sono pubblicati e usano la licenza proprietaria del repository.
+# `license-file` e il campo Cargo previsto quando non esiste un identificatore
+# SPDX applicabile; i manifest figli lo ereditano dal workspace.
+license-file = "LICENSE"
 
 [workspace.dependencies]
 arrow-array = "=59.1.0"

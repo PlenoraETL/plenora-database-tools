@@ -635,6 +635,7 @@ class CiWorkflowTests(unittest.TestCase):
             "scripts/test_check_session_matrix.py",
             "scripts/test_check_sqlserver_reference.py",
             "scripts/phase0_validate.py",
+            "scripts/check_docs.py",
             "scripts/check_comments.py",
             "scripts/render_state.py --check",
         ):

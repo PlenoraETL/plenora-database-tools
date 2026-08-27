@@ -29,22 +29,17 @@ concurrency:
 
 jobs:
   cargo-deny:
-    name: cargo deny (${{ matrix.check }})
+    name: cargo deny (Docker)
     runs-on: ubuntu-latest
-    strategy:
-      # Nessun fail-fast: se le advisory sono rosse si vuole sapere lo stesso
-      # se anche le licenze lo sono, senza due giri.
-      fail-fast: false
-      matrix:
-        check:
-          - advisories
-          - bans licenses sources
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          command: check ${{ matrix.check }}
-          # `advisories` dipende dal database RustSec, che cambia sotto i
-          # piedi: un rosso li e una notizia, non una regressione del commit.
-          # Gli altri check dipendono solo dal lockfile e da deny.toml.
-          command-arguments: --hide-inclusion-graph
+          python-version: '3.12'
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      # Stesso tool, versione e comando usati in locale. `advisories` dipende
+      # dal database RustSec e puo diventare rosso senza modifiche al commit;
+      # licenses, bans e sources dipendono invece dal lockfile e da deny.toml.
+      - name: Check advisories, licenses, bans and sources
+        run: python scripts/check_cargo_deny.py

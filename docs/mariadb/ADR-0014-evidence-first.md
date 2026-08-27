@@ -1,292 +1,66 @@
-# ADR 0014 - MariaDB: evidenza prima del provider
+# ADR 0014 - Confine MySQL/MariaDB basato su evidenza
 
 ## Stato
 
-Accettata (2026-08-17), **decisa (2026-08-18)**: il metodo di questa ADR ha
-prodotto la sua evidenza, e la scelta architetturale che rimandava e ora presa
-— si veda "Decisione architetturale" in fondo. Apre il ciclo MariaDB che ADR
-0012 aveva rimandato
-("MariaDB non viene dedotta come compatibile e richiedera una campagna
-separata"). Alla stesura (2026-08-17) questa ADR **non decideva** se MariaDB
-avrebbe avuto un provider dedicato o sarebbe stata qualificata sotto quello
-MySQL: decideva **come** si sarebbe arrivati a quella scelta. L'evidenza che
-quel metodo ha prodotto ha poi permesso di deciderla, il 2026-08-18, in questo
-stesso documento.
+Accettata e implementata.
+
+Questa ADR conserva soltanto la decisione ancora referenziata dal codice. La
+sequenza delle campagne, le ipotesi scartate e gli stati intermedi restano in
+Git; l'inventario corrente delle prove e generato in `EVIDENCE.md`.
 
 ## Contesto
 
-Oggi MariaDB e nel repository in tre forme, e nessuna e un supporto:
+MySQL e MariaDB parlano lo stesso protocollo e condividono gran parte del data
+path, ma non sono lo stesso prodotto. Le campagne hanno misurato differenze
+sulle superfici realmente attraversate dal provider:
 
-* `ProviderKind::Mariadb` esiste nel core, il CLI lo accetta come nome di
-  provider, e compariva nei contratti e nella suite golden di allora — cioe
-  dove un valore enumerato non
-  implica un'implementazione;
-* nessun crate lo implementa;
-* il provider `mysql` fa **fail-close alla probe**: riconosce MariaDB da
-  `product_version` / `version_comment` e ritorna `Unsupported` prima di
-  qualunque scrittura, nominando le divergenze note — sequenze,
-  `INSERT ... ON DUPLICATE KEY`, spatial `GEOMETRYCOLLECTION`, cache dei
-  prepared statement, semantica di isolamento.
+- `MAX_EXECUTION_TIME` e rifiutato da MariaDB con codice 1193; il profilo usa
+  `max_statement_time` e converte i millisecondi in secondi;
+- `information_schema.statistics.EXPRESSION` manca su MariaDB con codice 1054;
+- dalla stessa DDL JSON i metadata possono pubblicare `native_type=json` su
+  MySQL e un tipo testuale su MariaDB;
+- MySQL espone `SRS_ID` nel proprio catalogo, mentre MariaDB richiede una
+  strategia diversa e la verifica del CRS sui valori.
 
-La domanda aperta e quale delle due strade prendere:
+Duplicare l'intero crate per isolare queste differenze avrebbe duplicato
+protocollo, pool, transazioni, mapping Arrow e lifecycle di scrittura.
+Nasconderle dietro il riconoscimento automatico del server avrebbe invece
+trasformato un errore di configurazione in una scelta silenziosa.
 
-1. **provider dedicato** `plenora-db-mariadb`, sul modello di
-   `plenora-db-mysql`;
-2. **qualificazione** di MariaDB come riga della matrice del provider MySQL,
-   con rimozione del fail-close dove l'evidenza la sostiene.
+## Decisione architetturale
 
-Sono lavori di taglia diversa, e la differenza fra i due dipende da quanto
-MariaDB diverge davvero — non da quanto si presume che diverga. Le cinque
-divergenze citate nel messaggio di fail-close sono state scritte da una
-review, non misurate: alcune potrebbero non riguardare le superfici che il
-provider usa, altre potrebbero essere piu profonde di come suonano.
+1. Esiste **un solo crate**, `plenora-db-mysql`, con implementazione condivisa.
+2. Esistono **due provider pubblici distinti**, `MysqlProvider` e
+   `MariadbProvider`.
+3. Ogni provider seleziona un profilo di prodotto esplicito. Il profilo
+   possiede riconoscimento e versioni ammesse, SQL del timeout, query di
+   catalogo, metadata nativi, comportamento spatial e classificazione degli
+   errori che divergono.
+4. **Nessuna selezione automatica.** `MysqlProvider` rifiuta MariaDB e
+   `MariadbProvider` rifiuta MySQL. CLI e SDK espongono nomi e factory distinti.
+5. Il **fail-close resta** per ogni capability non sostenuta da una prova
+   riproducibile. Un esito `not_measured` non apre una bandiera.
 
-## Decisione
+La configurazione di trasporto resta condivisa: i due prodotti usano lo stesso
+protocollo e duplicare tipi TLS equivalenti moltiplicherebbe i punti in cui un
+default di sicurezza potrebbe divergere.
 
-**L'evidenza viene prima della scelta**, con lo stesso metodo che ADR 0010
-fissa per SQL Server: capability atomiche dopo evidenza riproducibile.
+## Evidenza e riproduzione
 
-1. Il ciclo apre con una **fixture di evidenza**, non con un riferimento
-   qualificato: `docker-compose.mariadb.yml`, con le versioni fissate per
-   digest immutabile in `docker/mariadb/references.json` e la stessa fixture
-   TLS a CA privata del riferimento MySQL. I ruoli dichiarati sono `evidence`
-   e `compatibility`, mai `baseline`: `baseline` la farebbe leggere come
-   piattaforma supportata, che e l'equivoco che il fail-close esiste per
-   impedire.
-2. Il **fail-close resta**. Non viene rimosso, allentato o reso opzionale
-   finche una capability non ha una prova che la sostiene. Un provider che
-   accetta e poi diverge in silenzio e peggio di uno che rifiuta.
-3. Le fixture devono poter **stare su tutte insieme** — progetti Compose
-   distinti, container e porte distinti — perche l'evidenza e un confronto:
-   fra le due versioni di MariaDB, e fra MariaDB e MySQL. Una descrizione di
-   una sola non dice se una divergenza dipende dal fork o dalla versione.
-4. Il generatore TLS e **condiviso**, parametrizzato per nome host. Due copie
-   della stessa fixture divergono alla prima correzione applicata a una sola.
-5. La scelta fra provider dedicato e qualificazione si registra **qui**,
-   quando l'evidenza c'e, con i risultati allegati: e la sezione "Decisione
-   architetturale". Una ADR che rimanda la propria conclusione a un documento
-   futuro lascia scoperto l'intervallo, e in quell'intervallo la scelta la fa
-   il primo che scrive codice.
+Le versioni e i digest dei riferimenti vivono esclusivamente in
+`docker/mariadb/references.json`. L'inventario generato delle sonde e i comandi
+sono in [`EVIDENCE.md`](EVIDENCE.md); gli esiti appartengono al verdetto JSON
+della singola corsa live.
 
-## Riferimenti
-
-| ruolo | versione | digest |
-|---|---|---|
-| `evidence` | MariaDB 12.3.2 | `sha256:759869cb6f003234a95c6384cdee245b4bce7de26913fe607a8110362c0c007d` |
-| `compatibility` | MariaDB 11.8.8 LTS | `sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf` |
-| `compatibility` | MariaDB 10.11.19 LTS | `sha256:ce66c7be32a03aabe7241d0a10993a2db827ef652a35d25727d92a832ac8ef73` |
-
-**Aggiunta (2026-08-25): 10.11 LTS.** Le due righe precedenti rispondono a una
-domanda sola — se una divergenza appartiene al fork o a una sua release — e la
-rispondono confrontando due versioni vicine, separate da un ciclo di sviluppo.
-
-10.11 ne pone un'altra. E' la LTS supportata fino al 2028, ed e quella che piu
-gente ha davvero in produzione oggi: cio che le altre due misurano vale per il
-server piu recente, non per quello che il lettore di questo documento ha sotto
-le mani. La distanza e il punto — piu vecchia di 11.8 di un intero ciclo — ed
-e la ragione per cui la riga vale piu di una terza osservazione ravvicinata.
-
-L'ADR prevedeva il caso: «se il ciclo mostrera che servono altre righe, si
-aggiungono al documento, che e gia la sola fonte letta da compose e script».
-Questa e la prima volta che succede.
-
-**Correzione (2026-08-17).** La prima stesura di questa ADR dichiarava 11.8.8
-"l'ultima LTS". Non lo e: il tag `lts` di Docker Hub risolve 12.3.2, cioe lo
-stesso digest della riga `evidence`. La riga principale del ciclo e ora
-12.3.2, e 11.8.8 resta come `compatibility`.
-
-Resta perche l'evidenza gia raccolta su una versione non si butta quando ne
-esce un'altra — anzi, per un fork il confronto fra due versioni e esso stesso
-evidenza: dice se una divergenza dal comportamento MySQL appartiene a MariaDB
-o a una sua release. Se il ciclo mostrera che servono altre righe, si
-aggiungono al documento, che e gia la sola fonte letta da compose e script.
+La decisione non trasforma l'inventario in un risultato: una corsa saltata non
+e una corsa passata, e una versione non elencata non viene dedotta compatibile.
 
 ## Conseguenze
 
-* Il repository guadagna due fixture MariaDB avviabili e fissate, e un
-  documento che dice cosa sono: evidenza, non supporto.
-* Nessuna promessa cambia. La matrice di maturita e il README MySQL di allora
-  — entrambi cancellati da allora, e reperibili in Git — e il messaggio di
-  fail-close continuano a dire che
-  MariaDB non e qualificata, e restano veri.
-* Il costo dell'evidenza e reale: ogni divergenza va osservata su una fixture
-  viva e registrata. E il prezzo per non scoprire in produzione che il fork
-  differiva su una superficie che nessuno aveva provato.
-
-## Decisione architetturale (2026-08-18)
-
-L'evidenza e raccolta — `docs/mariadb/EVIDENCE.md`, due tranche, **41 sonde
-registrate su tre server fissati per digest: 38 misurate e 3
-`not_measured`** — e risponde alla domanda che questa ADR aveva
-lasciato aperta. La scelta e **un crate solo**.
-
-### Cosa dice la misura
-
-Le cinque divergenze che il messaggio di fail-close dichiarava erano tre false
-e una rovesciata. Cio che divide davvero i due motori non e il driver:
-protocollo, TLS, tipi wire (dodici colonne su quattordici identiche), valori
-decodificati (stesso digest sulle quattordici), macchina a stati della
-sessione — cancellazione in volo, quarantena, riuso — sono gli stessi. Le due
-versioni di MariaDB non divergono fra loro su nessuna sonda.
-
-Cio che diverge sta in quattro punti, e sono decisioni di **prodotto** dentro
-codice che per il resto e comune. Un crate separato duplicherebbe tutto il
-resto per isolarle.
-
-### La forma
-
-* **Un crate**, `plenora-db-mysql`, con una implementazione interna condivisa.
-* **Due provider pubblici distinti**, `MysqlProvider` e `MariadbProvider`.
-* **Un profilo esplicito per prodotto**, interno, che possiede cio che
-  diverge.
-* **Nessuna selezione automatica.** `MysqlProvider` continua a rifiutare
-  MariaDB alla probe, e `MariadbProvider` rifiuta MySQL con la stessa
-  simmetria. Un provider che si adatta al server che trova sceglie per il
-  consumer, e lo fa nel punto in cui il consumer non sta guardando: chi
-  dichiara `mysql` e finisce su MariaDB ha un problema di configurazione, non
-  una comodita da assecondare.
-* **CLI e SDK avranno superfici esplicite** — `mariadb` fra i provider di
-  `database-probe`, `connect_mariadb` nel SDK — non un flag su quelle
-  esistenti.
-
-### Cosa possiede il profilo
-
-Ogni riga e una divergenza misurata, non una previsione:
-
-| il profilo possiede | perche |
-|---|---|
-| `ProviderKind` | i due provider dichiarano identita diverse nei verdetti e negli errori |
-| riconoscimento e versioni ammesse | oggi la detection e un `contains("mariadb")` su due stringhe; diventa il modo in cui ogni profilo riconosce **il proprio** motore e rifiuta l'altro |
-| SQL del timeout e conversione dell'unita | `MAX_EXECUTION_TIME` (ms) non esiste su MariaDB, che usa `max_statement_time` (s): errore 1193 misurato |
-| query di catalogo e indici funzionali | `information_schema.statistics.EXPRESSION` non esiste su MariaDB: errore 1054 misurato, e blocca ogni lettura che passa dal catalogo |
-| semantica e produzione dei metadata nativi | dalla stessa DDL `document JSON` escono `native_type=json` e `native_type=text`: divergenza misurata nello schema Arrow pubblicato |
-| strategia SRID e capability spatial | l'attributo `SRID` di colonna e `information_schema.columns.SRS_ID` non esistono su MariaDB |
-
-Sui metadata nativi il profilo possiede due cose insieme, e sono distinte: la
-**semantica** — cosa `MYSQL_NATIVE_TYPE` afferma, il tipo del wire o quello
-della DDL, che oggi il contratto non dice — e la **produzione**, cioe da dove
-ogni prodotto ricava il valore che pubblica. Chiamarla "normalizzazione"
-presupporrebbe la prima risposta: che esista una forma giusta verso cui
-convergere. Se il campo annota il wire, `json` e `text` sono entrambi corretti
-e non c'e niente da normalizzare — c'e da documentare. La semantica va
-registrata dove il campo e definito, non dedotta dal comportamento.
-
-### Cosa resta fail-closed
-
-MariaDB **non e qualificata** da questa decisione: la decisione riguarda dove
-vivra il codice, non cosa e stato dimostrato. Restano fail-closed, e ci
-restano finche non c'e una misura che le sostenga:
-
-* **spatial su MariaDB** — la decodifica di una geometry attraverso il
-  provider non e mai stata osservata: su MySQL la regola sull'SRID dichiarato
-  la rifiuta, e su MariaDB `SRS_ID` non esiste, quindi ogni colonna
-  geometrica viene rifiutata alla descrizione;
-* **commit ambiguo** — `not_measured` su tutti e tre i server, perche
-  osservarlo richiede fault injection deterministica sul `COMMIT`.
-
-Nessuna delle due blocca la scelta del crate condiviso, e nessuna delle due
-puo essere pubblicata come capability prima di essere misurata.
-
-### Aggiornamento del 2026-08-20: la lettura via catalogo e stata misurata
-
-Questa ADR elencava fra le superfici fail-closed anche la **lettura via
-catalogo**, `not_measured` su MariaDB perche l'errore 1054 su
-`information_schema.columns.SRS_ID` fermava `describe_object` prima del
-mapping. Quella frase descriveva il provider `MySQL` puntato su MariaDB, ed e
-rimasta vera per quel percorso: e il percorso che l'ADR aveva davanti.
-
-La quinta tranche di `docs/mariadb/EVIDENCE.md` ha misurato l'altro. Con
-`MariadbProfile` — che dichiara `NULL AS srs_id` e `NULL AS expression` — il
-catalogo risponde, e la lettura arriva in fondo: quattordici colonne, stesso
-digest dei valori sui tre riferimenti, ottomilacentonovantatre righe in due
-batch, tredici forme di filtro con conteggi e prima riga attesi. Le quattro
-bandiere di lettura del profilo MariaDB sono aperte, ciascuna con la propria
-sonda.
-
-Cosa **non** cambia: nessun provider seleziona quel profilo, quindi nessun
-consumatore puo raggiungere quella lettura. La decisione di questa ADR —
-MariaDB non e qualificata, e non c'e selezione automatica — resta intera. Ed
-e cambiata la ragione per cui lo spatial resta chiuso: non piu "il catalogo
-non risponde", ma "risponde, e dice che l'SRID non si puo sapere".
-
-### Conseguenza sul bypass
-
-Il bypass di solo test resta cio che e — `#[cfg(test)]`, scoped, senza
-superficie pubblica — finche `MariadbProvider` non esiste. Quando esistera,
-sara quel provider a raggiungere le stesse superfici alla luce del sole, e il
-bypass avra esaurito il suo compito.
-
-## Realizzazione (2026-08-25): `MariadbProvider` esiste
-
-La decisione del 2026-08-18 diceva la forma; questa sezione registra quando e
-diventata codice, e cosa e cambiato rispetto a cio che prevedeva.
-
-**Cos'e stato fatto.** `plenora-db-mysql` esporta ora `MariadbProvider`
-accanto a `MysqlProvider`: un newtype che inoltra ogni operazione
-all'implementazione condivisa, costruito con `MARIADB_PROFILE` invece che con
-quello di `MySQL`. La configurazione resta `MysqlConfig` — i due prodotti
-parlano lo stesso protocollo, e un tipo gemello che differisse solo nel nome
-divergerebbe alla prima correzione applicata a uno solo. Il CLI accetta
-`mariadb` in tutta la famiglia generica `database-*`.
-
-**Perche ora e non prima.** Il provider non e arrivato con la decisione ma
-sette tranche dopo, e la ragione e la regola 1: fino alla nona tranche il
-profilo `MariaDB` pubblicava una lettura e due write mode, e un provider che
-esponesse meta contratto sarebbe stato una promessa da ritirare. Oggi dichiara
-le stesse sei write mode di `MySQL`, e ciascuna ha le proprie tre sonde sui
-tre riferimenti.
-
-**Cosa la realizzazione ha corretto.** Il CLI dichiarava disponibile un
-adapter che il binario poteva non aver compilato: il rifiuto arrivava piu
-avanti, dopo la lettura del nome della variabile secret, e a chi lo
-dimenticava rispondeva «manca il secret» invece di «adapter non compilato».
-Erano due rimedi diversi — scrivere un argomento, o ricostruire il binario — e
-la risposta sbagliata mandava a cercare dalla parte sbagliata. Non riguardava
-solo `MariaDB`: valeva per `mysql` e `sqlserver` in un binario di solo
-PostgreSQL, e c'era da prima. La disponibilita e ora legata alle feature
-compilate, e un test la verifica per tutti e quattro i provider.
-
-**Cosa non e cambiato.** Nessuna selezione automatica: `MysqlProvider`
-continua a rifiutare `MariaDB` alla probe e `MariadbProvider` rifiuta `MySQL`
-con la stessa simmetria, verificata da un test che esercita entrambi i
-riconoscimenti. La guardia che diceva «nessun modulo di produzione seleziona
-il profilo MariaDB» e stata riscritta invece che cancellata: ora pretende che
-la selezione sia **una sola** e dentro la dichiarazione che la pubblica,
-perche un secondo punto che scegliesse quel profilo sarebbe una selezione che
-nessuno ha deciso.
-
-**Cosa resta del bypass.** Il bypass `#[cfg(test)]` non e stato rimosso, e la
-previsione va corretta. Serviva a raggiungere `MariaDB` attraverso il provider
-`MySQL`, e quelle sonde — `provider.describe_object`, `provider.read`,
-`provider.transaction` — misurano cosa fa il provider **non qualificato**
-puntato sul motore sbagliato: sono la misura del fail-close, non del prodotto,
-e restano valide come tali. Cio che il bypass ha smesso di essere e l'unica
-via a `MariaDB`: le sonde `provider.profile_*` passano dal profilo, e il
-provider pubblico le rende raggiungibili anche fuori dai test.
-
-**Il SDK.** `connect_mariadb` e `aconnect_mariadb` esistono, e con loro si
-chiude l'elenco delle superfici esplicite che questa ADR nominava. La sessione
-non e stata duplicata — la sua superficie e identica, e due copie
-divergerebbero alla prima correzione applicata a una sola — ma tiene il
-provider dietro `dyn Provider` e sa quale prodotto serve: il `repr` lo
-dichiara, e il messaggio della sessione chiusa cita la factory giusta invece
-di rimandare sempre a `connect_mysql`. Anche la costruzione della
-configurazione TLS e una sola per i quattro percorsi: quel blocco ha gia avuto
-il suo difetto — un default che accettava il certificato senza verificarlo — e
-quattro copie lo avrebbero rimesso in gioco tre volte.
-
-**Cosa resta aperto.** Lo spatial e il commit ambiguo.
-
-Sullo spatial la decima tranche ha corretto la ragione, e la correzione conta:
-non e che il catalogo di `MariaDB` non risponda. Il registro OGC
-`information_schema.GEOMETRY_COLUMNS` esiste e porta una colonna `SRID` — un
-registro **diverso** da quello di `MySQL`, che usa `ST_GEOMETRY_COLUMNS` —
-ma vale sempre zero, perche nessuna DDL puo vincolare una colonna a un SRID:
-rifiutate entrambe le sintassi, quella di `MySQL` e `REF_SYSTEM_ID`, che e
-l'attributo documentato da `MariaDB` stessa.
-
-Ne segue che «una strategia SRID per prodotto», che questa ADR aveva
-assegnato al profilo, non e una query di catalogo diversa: e un CRS dichiarato
-dal chiamante e verificato valore per valore, nella forma che il path di
-scrittura ha gia con `srid_policy`. Finche quella strategia non esiste, la
-chiusura resta.
+- Le correzioni al data path comune si applicano a entrambi i prodotti.
+- Le differenze hanno un proprietario leggibile nel profilo invece di bandiere
+  sparse nel provider.
+- Il consumer sceglie il prodotto prima della connessione e riceve un rifiuto
+  se il server non corrisponde.
+- Nuove capability o nuove versioni entrano soltanto insieme alla prova live e
+  al gate che la esegue.

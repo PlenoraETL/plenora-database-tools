@@ -54,6 +54,8 @@ jobs:
         run: python3 scripts/test_check_session_matrix.py
       - name: scripts/phase0_validate.py
         run: python3 scripts/phase0_validate.py
+      - name: scripts/check_docs.py
+        run: python3 scripts/check_docs.py
       - name: scripts/check_comments.py
         run: python3 scripts/check_comments.py
       # I test unitari restano moduli figli del codice che verificano, ma il

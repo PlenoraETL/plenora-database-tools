@@ -7,9 +7,10 @@ questo documento non li ricopia.
 ## Progetti Compose
 
 Ogni provider ha il proprio progetto, dichiarato dalla riga `name:` del suo
-Compose. I volumi sono prefissati dal progetto, quindi provider diversi non si
-toccano. **Non** va passato `--remove-orphans`: con progetti distinti che
-condividono un demone, quell'opzione rimuove i container degli altri.
+Compose. Compose usa il nome del progetto per isolare container, reti e volumi;
+provider diversi non si toccano. `--remove-orphans` riguarda i servizi del
+progetto corrente che non sono piu dichiarati nel file Compose: non serve nei
+comandi ordinari di queste fixture.
 
 ## Migrazione (una tantum)
 

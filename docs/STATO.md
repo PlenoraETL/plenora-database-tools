@@ -152,7 +152,18 @@ l'aiuto.
 | `transaction-test` | `postgres` |
 | `validate-plan` | `sempre` |
 
-## Inventario dei test MySQL
+## Inventario dei test dei provider
+
+Conteggio delle funzioni Rust annotate come test nei crate provider.
+MySQL e MariaDB condividono un crate e restano quindi una riga sola.
+
+| provider | test Rust |
+| --- | --- |
+| PostgreSQL | 290 |
+| MySQL + MariaDB | 296 |
+| SQL Server | 148 |
+
+### Famiglie del gate MySQL
 
 Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 
