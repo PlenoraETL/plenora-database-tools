@@ -90,6 +90,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
     ),
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
+    ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),
     ("code_size.py --check", [sys.executable, "scripts/code_size.py", "--check"]),
     ("tests/", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
     ("render_state.py --check", [sys.executable, "scripts/render_state.py", "--check"]),

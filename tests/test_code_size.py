@@ -31,6 +31,19 @@ class CodeSizeTest(unittest.TestCase):
             evidence.write_text("fn only_for_tests() {}\n", encoding="utf-8")
             self.assertEqual(rust_test_only_files([library, evidence]), {evidence})
 
+    def test_path_attribute_identifies_the_physical_test_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / "lib.rs"
+            checks = root / "lib_checks.rs"
+            library.write_text(
+                '#[cfg(test)]\n#[path = "lib_checks.rs"]\nmod checks;\n',
+                encoding="utf-8",
+            )
+            checks.write_text("fn only_for_tests() {}\n", encoding="utf-8")
+            self.assertEqual(rust_test_only_files([library, checks]), {checks})
+            self.assertEqual(count_rust(library.read_text(encoding="utf-8")).code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

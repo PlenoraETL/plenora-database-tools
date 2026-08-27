@@ -27,6 +27,7 @@ e sbagliato li, e sbagliato nel codice.
 ```powershell
 python scripts\phase0_validate.py          # contratti, esempi, golden, domini
 python scripts\check_comments.py           # standard dei commenti
+python scripts\check_test_layout.py        # test Rust separati dal prodotto
 python scripts\check_mysql_reference.py    # gate MySQL: statico + live
 python scripts\check_postgres_reference.py # gate PostgreSQL
 python scripts\check_sqlserver_reference.py

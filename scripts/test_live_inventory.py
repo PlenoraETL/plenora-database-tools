@@ -326,6 +326,38 @@ class MysqlScanner(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), "type")
 
+    def test_external_file_keeps_the_declared_rust_module_path(self) -> None:
+        from scripts import mysql_inventory
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            library = source_dir / "lib.rs"
+            checks = source_dir / "query_checks.rs"
+            library.write_text(
+                '#[cfg(test)]\n#[path = "query_checks.rs"]\nmod checks;\n',
+                encoding="utf-8",
+            )
+            checks.write_text("#[test]\nfn accepts_external_layout() {}\n", encoding="utf-8")
+
+            modules = mysql_inventory.external_test_modules(source_dir)
+            scanned = mysql_inventory._scan(checks, modules[checks])
+
+            self.assertEqual(modules, {checks: "checks"})
+            self.assertEqual(
+                [test.path for test in scanned],
+                ["checks::accepts_external_layout"],
+            )
+
+    def test_unit_test_in_an_undeclared_file_is_rejected(self) -> None:
+        from scripts import mysql_inventory
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "orphan.rs"
+            source.write_text("#[test]\nfn orphan() {}\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "non appartiene"):
+                mysql_inventory._scan(source)
+
 
 class StripNonCode(unittest.TestCase):
     def test_the_length_is_preserved(self) -> None:

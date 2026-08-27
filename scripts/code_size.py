@@ -29,6 +29,7 @@ CFG_TEST_MODULE = re.compile(
     r"(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*([;{])",
     re.MULTILINE,
 )
+PATH_ATTRIBUTE = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,16 @@ def rust_test_only_files(files: Sequence[Path]) -> set[Path]:
     }
     for path in files:
         source = path.read_text(encoding="utf-8")
-        external, _ = cfg_test_items(source)
-        for name in external:
+        code = strip_noncode(source)
+        for match in CFG_TEST_MODULE.finditer(code):
+            if match.group(2) != ";":
+                continue
+            declaration = source[match.start() : match.end()]
+            explicit = PATH_ATTRIBUTE.search(declaration)
+            if explicit is not None:
+                excluded.add(path.parent / explicit.group(1))
+                continue
+            name = match.group(1)
             sibling = path.with_name(f"{name}.rs")
             nested = path.parent / name / "mod.rs"
             if sibling.exists():
@@ -94,6 +103,13 @@ def rust_test_only_files(files: Sequence[Path]) -> set[Path]:
 
 def count_rust(source: str) -> Count:
     _, spans = cfg_test_items(source)
+    code = strip_noncode(source)
+    spans.extend(
+        (match.start(), match.end())
+        for match in CFG_TEST_MODULE.finditer(code)
+        if match.group(2) == ";"
+    )
+    spans.sort()
     product = without_spans(source, spans)
     physical = len(product.splitlines())
     code = sum(bool(line.strip()) for line in strip_noncode(product).splitlines())

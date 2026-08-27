@@ -56,6 +56,10 @@ jobs:
         run: python3 scripts/phase0_validate.py
       - name: scripts/check_comments.py
         run: python3 scripts/check_comments.py
+      # I test unitari restano moduli figli del codice che verificano, ma il
+      # loro corpo vive in file dedicati per tenere leggibile il prodotto.
+      - name: scripts/check_test_layout.py
+        run: python3 scripts/check_test_layout.py
       # Il refactor misura solo il codice di prodotto: cancellare evidence o
       # spostare test non puo far apparire una riduzione che non esiste. Il
       # budget e una guardia, quindi vive nel workflow che esegue gli altri

@@ -147,9 +147,12 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         profile = (
             ROOT / "crates" / "plenora-db-mysql" / "src" / "profile.rs"
         ).read_text(encoding="utf-8")
+        profile_tests = (
+            ROOT / "crates" / "plenora-db-mysql" / "src" / "profile_tests.rs"
+        ).read_text(encoding="utf-8")
         self.assertIn("looks_like_mariadb", profile)
         self.assertIn("ErrorCategory::Unsupported", profile)
-        self.assertIn("RemoteEffect::None", profile)
+        self.assertIn("RemoteEffect::None", profile_tests)
         # Riconosciuta da entrambe le stringhe che il server pubblica: una
         # sola basterebbe a farla passare se il fork cambiasse l'altra.
         self.assertIn("product_version.to_ascii_lowercase().contains(\"mariadb\")", profile)

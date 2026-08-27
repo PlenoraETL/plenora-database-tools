@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import live_inventory  # noqa: E402
+from code_size import CFG_TEST_MODULE, PATH_ATTRIBUTE  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,13 +53,6 @@ IGNORE_ATTRIBUTE = re.compile(r"^\s*#\[ignore\b")
 FUNCTION = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(?:r\#)?([^\s(),;:]+)\s*\("
 )
-
-# Un `mod` annidato dentro `mod tests`. Il percorso che questo modulo
-# costruisce ha due soli segmenti — `file::tests::nome` — quindi un livello in
-# piu non e rappresentabile: meglio fallire che inventare un nome che cargo
-# non stampera mai.
-TEST_MODULE = re.compile(r"^[ 	]*mod[ 	]+tests[ 	]*\{[ 	]*$")
-
 
 def nested_module_name(line: str) -> str | None:
     """Il nome del `mod` dichiarato su questa riga, se ce n'e uno.
@@ -91,6 +85,51 @@ def nested_module_name(line: str) -> str | None:
     return name if name.isidentifier() else None
 
 
+def _module_path(source: Path, source_dir: Path = SOURCE_DIR) -> tuple[str, ...]:
+    """Percorso Rust del file che dichiara un sottomodulo."""
+
+    relative = source.relative_to(source_dir)
+    parents = relative.parts[:-1]
+    if source.name in {"lib.rs", "mod.rs"}:
+        return parents
+    return (*parents, source.stem)
+
+
+def external_test_modules(source_dir: Path = SOURCE_DIR) -> dict[Path, str]:
+    """Associa ogni file ``cfg(test)`` al percorso logico stampato da cargo."""
+
+    modules: dict[Path, str] = {}
+    for owner in sorted(source_dir.rglob("*.rs")):
+        source = owner.read_text(encoding="utf-8")
+        code = live_inventory.strip_noncode(source)
+        for match in CFG_TEST_MODULE.finditer(code):
+            if match.group(2) != ";":
+                continue
+            declaration = source[match.start() : match.end()]
+            explicit = PATH_ATTRIBUTE.search(declaration)
+            if explicit is not None:
+                target = owner.parent / explicit.group(1)
+            else:
+                sibling = owner.with_name(f"{match.group(1)}.rs")
+                nested = owner.parent / match.group(1) / "mod.rs"
+                candidates = [path for path in (sibling, nested) if path.exists()]
+                if len(candidates) != 1:
+                    raise RuntimeError(
+                        f"{owner.name}: il modulo test {match.group(1)} "
+                        "non identifica un solo file"
+                    )
+                target = candidates[0]
+            if not target.exists():
+                raise RuntimeError(f"modulo test dichiarato ma assente: {target}")
+            logical = "::".join((*_module_path(owner, source_dir), match.group(1)))
+            previous = modules.setdefault(target, logical)
+            if previous != logical:
+                raise RuntimeError(
+                    f"{target.name}: dichiarato sia come {previous} sia come {logical}"
+                )
+    return modules
+
+
 @dataclass(frozen=True)
 class MysqlTest:
     """Un test del provider, con il percorso che `cargo test` stampa."""
@@ -106,21 +145,19 @@ class MysqlTest:
         return "live_reference" if self.ignored else "live_default"
 
 
-def _scan(source: Path) -> list[MysqlTest]:
+def _scan(source: Path, module_path: str | None = None) -> list[MysqlTest]:
     """Estrae i test di un singolo file sorgente.
 
-    Il repository segue una convenzione stretta: i test live stanno al primo
-    livello di `live_tests.rs`, tutti gli altri dentro `mod tests` in fondo al
-    file del modulo. La convenzione viene verificata qui, non assunta: un test
-    fuori posto e un errore, non un test perso.
+    I test live stanno al primo livello di ``live_tests.rs``; gli unitari
+    stanno nel file esterno dichiarato ``cfg(test)`` dal proprio modulo di
+    prodotto. ``module_path`` viene dalla dichiarazione, non dal nome fisico.
 
     # Raises
 
-    `RuntimeError` quando un test unitario compare prima di `mod tests` o
-    quando un test live non rispetta il prefisso di nome del suo runner.
+    `RuntimeError` quando un test compare in un file non dichiarato o quando
+    un test live non rispetta il prefisso di nome del proprio runner.
     """
 
-    stem = source.stem
     # Commenti e stringhe vengono svuotati prima di guardare le righe: un test
     # dentro `/* ... */` o dentro una fixture testuale non e un test, e una
     # scansione per righe non ha modo di accorgersene da sola. Lo svuotamento
@@ -131,34 +168,18 @@ def _scan(source: Path) -> list[MysqlTest]:
     lines = live_inventory.flatten_attributes(
         live_inventory.strip_noncode(source.read_text(encoding="utf-8"))
     ).splitlines()
-    module_line = next(
-        (index for index, line in enumerate(lines) if TEST_MODULE.match(line)), None
-    )
-    # Dove il modulo **finisce**: un test scritto dopo la sua parentesi chiusa
-    # non sta in `mod tests`, e attribuirgli quel percorso avrebbe fatto
-    # pretendere a cargo un nome che non esiste.
-    module_end = len(lines)
-    if module_line is not None:
-        depth = 0
-        for index in range(module_line, len(lines)):
-            depth += lines[index].count("{") - lines[index].count("}")
-            if depth == 0 and index > module_line:
-                module_end = index
-                break
     found: list[MysqlTest] = []
     attributes: list[str] = []
-    # La discovery e ricorsiva (`rglob`), ma il percorso si costruisce dal solo
-    # `stem`: un file in una sottodirectory avrebbe un modulo intermedio che
-    # nessuno rappresenta. Se ne comparisse uno, questo
-    # controllo lo direbbe invece di lasciare che il gate chieda a cargo un
-    # nome inesistente.
-    if source.parent != SOURCE_DIR:
+    nested = next(
+        (name for line in lines if (name := nested_module_name(line)) is not None),
+        None,
+    )
+    if module_path is not None and nested is not None:
         raise RuntimeError(
-            f"{source.relative_to(SOURCE_DIR)}: un sorgente in una "
-            "sottodirectory ha un percorso di modulo che questo inventario non "
-            "sa costruire"
+            f"{source.name}: `mod {nested}` annidato nel file di test: "
+            "il percorso stampato da cargo avrebbe un segmento non inventariato"
         )
-    for index, line in enumerate(lines):
+    for line in lines:
         # Un attributo puo stare sulla stessa riga della firma: si stacca il
         # prefisso e si guarda cio che resta, invece di scartare la riga.
         while (inline := INLINE_ATTRIBUTE.match(line)) is not None:
@@ -191,7 +212,7 @@ def _scan(source: Path) -> list[MysqlTest]:
             # identificatori validi — e li perdeva **solo qui**, quindi il
             # confronto con cargo divergeva invece di restare coerente.
             continue
-        if stem == LIVE_MODULE:
+        if module_path == LIVE_MODULE:
             if not name.startswith("live_"):
                 raise RuntimeError(
                     f"{source.name}: il test {name} non ha il prefisso live_ "
@@ -204,27 +225,12 @@ def _scan(source: Path) -> list[MysqlTest]:
                 f"{source.name}: il test {name} usa il prefisso live_ fuori da "
                 f"{LIVE_MODULE}.rs e verrebbe escluso dai runner offline"
             )
-        nested = next(
-            (
-                nested_module_name(lines[position])
-                for position in range(module_line + 1, module_end)
-                if module_line is not None
-                and nested_module_name(lines[position]) is not None
-            ),
-            None,
-        )
-        if nested is not None:
+        if module_path is None:
             raise RuntimeError(
-                f"{source.name}: `mod {nested}` annidato dentro "
-                "`mod tests`: il percorso stampato da cargo avrebbe un segmento "
-                "in piu di quelli che questo inventario sa costruire"
+                f"{source.name}: il test {name} non appartiene a un modulo "
+                "esterno dichiarato cfg(test)"
             )
-        if module_line is None or not module_line < index < module_end:
-            raise RuntimeError(
-                f"{source.name}: il test {name} non e dentro `mod tests`, "
-                "il percorso stampato da cargo non sarebbe derivabile"
-            )
-        found.append(MysqlTest(f"{stem}::tests::{name}", ignored, live=False))
+        found.append(MysqlTest(f"{module_path}::{name}", ignored, live=False))
     return found
 
 
@@ -258,13 +264,14 @@ def collect() -> dict[str, frozenset[str]]:
         "live_default": set(),
         "live_reference": set(),
     }
+    test_modules = external_test_modules()
     # `rglob`: il docstring dice `src/**.rs` e la glob piatta si fermava al
     # primo livello. Un test in un sottomodulo sarebbe rimasto fuori
     # dall'inventario senza che niente lo dicesse.
     for source in sorted(SOURCE_DIR.rglob("*.rs")):
         if source.name in EXCLUDED_SOURCES:
             continue
-        for test in _scan(source):
+        for test in _scan(source, test_modules.get(source)):
             if test.path in families[test.family]:
                 raise RuntimeError(f"test duplicato nell'inventario: {test.path}")
             families[test.family].add(test.path)
