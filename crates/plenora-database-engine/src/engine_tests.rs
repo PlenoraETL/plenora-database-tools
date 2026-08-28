@@ -9,7 +9,7 @@ use plenora_database_core::provider::{
 use plenora_database_core::resource::ResourceLimits;
 use plenora_database_core::{CollectRecorder, ErrorPhase};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Default)]
 struct ProviderState {
@@ -24,12 +24,25 @@ struct ProviderState {
 struct TestProvider {
     state: Mutex<ProviderState>,
     executions: Arc<AtomicU64>,
+    pool: Option<Arc<Semaphore>>,
+    active_transactions: Arc<AtomicU64>,
+    peak_transactions: Arc<AtomicU64>,
+    fail_next_execution: Arc<AtomicBool>,
+    transaction_delay: Duration,
     block_next_probe: AtomicBool,
     probe_started: Notify,
     probe_release: Notify,
 }
 
 impl TestProvider {
+    fn with_pool_limit(limit: usize, transaction_delay: Duration) -> Self {
+        Self {
+            pool: Some(Arc::new(Semaphore::new(limit))),
+            transaction_delay,
+            ..Self::default()
+        }
+    }
+
     fn observe(&self, secret: &SecretString, probe: bool) {
         let mut state = mutex(&self.state);
         state.observed_secrets.push(secret.expose().to_owned());
@@ -201,6 +214,9 @@ impl Provider for TestProvider {
         })
     }
 
+    // Il permit viene deliberatamente spostato nella transazione: anticiparne
+    // il Drop, come suggerisce il lint, falserebbe la saturazione del pool.
+    #[allow(clippy::significant_drop_tightening)]
     fn begin_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
@@ -209,15 +225,59 @@ impl Provider for TestProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
         let executions = Arc::clone(&self.executions);
+        let pool = self.pool.clone();
+        let active_transactions = Arc::clone(&self.active_transactions);
+        let peak_transactions = Arc::clone(&self.peak_transactions);
+        let fail_next_execution = Arc::clone(&self.fail_next_execution);
+        let transaction_delay = self.transaction_delay;
         Box::pin(async move {
             interrupted(cancellation, ErrorPhase::Connect)?;
-            Ok(Box::new(TestTransaction { executions }) as Box<dyn TransactionScope>)
+            let permit = if let Some(pool) = pool {
+                Some(tokio::select! {
+                    acquired = pool.acquire_owned() => acquired.map_err(|_| {
+                        DatabaseError::resource_limit("pool sintetico chiuso")
+                    })?,
+                    _reason = cancellation.cancelled() => {
+                        return Err(DatabaseError::interrupted(
+                            cancellation,
+                            Some(ProviderKind::Postgres),
+                            ErrorPhase::Connect,
+                            "checkout del pool interrotto",
+                        ));
+                    }
+                })
+            } else {
+                None
+            };
+            if permit.is_some() {
+                let active = active_transactions.fetch_add(1, Ordering::AcqRel) + 1;
+                peak_transactions.fetch_max(active, Ordering::AcqRel);
+            }
+            Ok(Box::new(TestTransaction {
+                executions,
+                active_transactions,
+                fail_next_execution,
+                transaction_delay,
+                permit,
+            }) as Box<dyn TransactionScope>)
         })
     }
 }
 
 struct TestTransaction {
     executions: Arc<AtomicU64>,
+    active_transactions: Arc<AtomicU64>,
+    fail_next_execution: Arc<AtomicBool>,
+    transaction_delay: Duration,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+impl Drop for TestTransaction {
+    fn drop(&mut self) {
+        if self.permit.is_some() {
+            self.active_transactions.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl TransactionScope for TestTransaction {
@@ -232,6 +292,17 @@ impl TransactionScope for TestTransaction {
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
             interrupted(cancellation, ErrorPhase::Write)?;
+            if self.fail_next_execution.swap(false, Ordering::AcqRel) {
+                return Err(DatabaseError::new(
+                    ErrorCategory::Transient,
+                    ErrorPhase::Write,
+                    Some(ProviderKind::Postgres),
+                    "fault sintetico durante l'esecuzione",
+                ));
+            }
+            if !self.transaction_delay.is_zero() {
+                tokio::time::sleep(self.transaction_delay).await;
+            }
             self.executions.fetch_add(1, Ordering::Relaxed);
             Ok(1)
         })
@@ -596,3 +667,7 @@ async fn transaction_forwards_query_stream_savepoints_and_rollback() {
         .expect("release savepoint");
     transaction.rollback().await.expect("rollback");
 }
+
+#[cfg(test)]
+#[path = "engine_application_tests.rs"]
+mod application;

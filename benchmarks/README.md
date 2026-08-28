@@ -12,7 +12,8 @@ Questa cartella contiene tre famiglie di misure, con regole diverse.
    superano il budget applicabile, falliscono.
 2. **Microbenchmark Rust offline**: girano senza database, misurano le
    superfici CPU-bound del workspace (rendering SQL, compilazione dei read
-   plan, ispezione EWKB, contratto Arrow, pipeline dei piani). Documento e
+   plan, ispezione EWKB, contratto Arrow, pipeline dei piani e primitive
+   applicative Core v3). Documento e
    numeri misurati in [`offline-rust-microbench.md`](offline-rust-microbench.md),
    raw in `raw/offline-rust-microbench.jsonl`. **Non sono un gate**: i budget
    prestazionali di quelle superfici non sono stati fissati e il workflow
