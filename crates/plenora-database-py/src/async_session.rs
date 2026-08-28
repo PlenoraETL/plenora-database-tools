@@ -85,6 +85,12 @@ impl AsyncSession {
         self.closed = true;
     }
 
+    /// Snapshot locale dei contatori del provider. Non e una coroutine:
+    /// leggere contatori atomici non effettua I/O e non blocca l'event loop.
+    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::session::postgres_metrics_to_pydict(py, &self.provider)
+    }
+
     /// Async context manager entry (Python `__aenter__`). Ritorna un
     /// awaitable che si risolve in `self`.
     fn __aenter__<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

@@ -51,6 +51,15 @@ pub struct MysqlTransaction {
     native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
+impl Drop for MysqlTransaction {
+    fn drop(&mut self) {
+        if self.open {
+            self.session.quarantine_on_drop();
+            self.open = false;
+        }
+    }
+}
+
 impl MysqlTransaction {
     /// Apre la transazione emettendo `START TRANSACTION` con opzioni.
     ///

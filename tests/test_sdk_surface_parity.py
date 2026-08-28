@@ -22,12 +22,93 @@ superfici coincidono, tranne cio che e elencato qui sotto con la sua ragione.
 
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "crates" / "plenora-database-py" / "src"
+PACKAGE = ROOT / "crates" / "plenora-database-py" / "python" / "plenora_database"
+
+# Il bordo async cambia solo il protocollo di attesa o il nome esplicito delle
+# operazioni Arrow. Questa e la specifica minima della superficie, usata sia
+# sui wrapper sia sullo stub del modulo nativo.
+ASYNC_ALIASES = {
+    "__aenter__": "__enter__",
+    "__aexit__": "__exit__",
+    "aread": "read",
+    "acopy_from": "copy_from",
+}
+
+
+def class_methods(path: Path, class_name: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Legge metodi e firme senza importare il wheel nativo."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for item in tree.body:
+        if isinstance(item, ast.ClassDef) and item.name == class_name:
+            return {
+                method.name: method
+                for method in item.body
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+    raise AssertionError(f"classe {class_name} assente in {path.relative_to(ROOT)}")
+
+
+def public_name(name: str) -> str:
+    """Normalizza soltanto le differenze di nome deliberate del bordo async."""
+
+    return ASYNC_ALIASES.get(name, name)
+
+
+def signature(method: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[object, ...]:
+    """Firma chiamabile: nomi, categorie e default; annotazioni escluse."""
+
+    args = method.args
+    positional = [*args.posonlyargs, *args.args]
+    if positional and positional[0].arg in {"self", "slf"}:
+        positional = positional[1:]
+    positional_names = tuple(argument.arg.lstrip("_") for argument in positional)
+    keyword_names = tuple(argument.arg.lstrip("_") for argument in args.kwonlyargs)
+    positional_defaults = tuple(ast.dump(value) for value in args.defaults)
+    keyword_defaults = tuple(
+        None if value is None else ast.dump(value) for value in args.kw_defaults
+    )
+    return (
+        len(args.posonlyargs),
+        positional_names,
+        positional_defaults,
+        args.vararg is not None,
+        keyword_names,
+        keyword_defaults,
+        args.kwarg is not None,
+    )
+
+
+def assert_pair(
+    case: unittest.TestCase,
+    sync_path: Path,
+    sync_class: str,
+    async_path: Path,
+    async_class: str,
+) -> None:
+    """Pretende stessi metodi e parametri dopo la sola normalizzazione ammessa."""
+
+    sync = class_methods(sync_path, sync_class)
+    async_raw = class_methods(async_path, async_class)
+    asynchronous = {public_name(name): method for name, method in async_raw.items()}
+    case.assertEqual(
+        set(sync),
+        set(asynchronous),
+        f"superficie {sync_class}/{async_class} divergente",
+    )
+    for name, sync_method in sync.items():
+        case.assertEqual(
+            signature(sync_method),
+            signature(asynchronous[name]),
+            f"firma {sync_class}.{name}/{async_class} divergente",
+        )
 
 
 def exposed(path: Path) -> set[str]:
@@ -86,6 +167,95 @@ class TheTwoSessionsAgree(unittest.TestCase):
             scadute,
             [],
             f"queste differenze sono dichiarate ma non esistono piu: {scadute}",
+        )
+
+
+class SyncAndAsyncAreOneSurface(unittest.TestCase):
+    """La specifica Core v3 copre wrapper, transazioni e modulo nativo."""
+
+    def test_native_implementations_have_the_same_surface(self) -> None:
+        for sync_file, async_file in (
+            ("session.rs", "async_session.rs"),
+            ("session_family.rs", "async_session_family.rs"),
+            ("transaction.rs", "async_transaction.rs"),
+        ):
+            synchronous = exposed(SRC / sync_file)
+            asynchronous = {public_name(name) for name in exposed(SRC / async_file)}
+            with self.subTest(synchronous=sync_file, asynchronous=async_file):
+                self.assertEqual(synchronous, asynchronous)
+
+    def test_python_implementations_have_the_same_surface(self) -> None:
+        for sync_file, sync_class, async_file, async_class in (
+            ("_session.py", "Session", "_async_session.py", "AsyncSession"),
+            ("_transaction.py", "Transaction", "_async_transaction.py", "AsyncTransaction"),
+            ("_session.py", "_Inspector", "_async_session.py", "_AsyncInspector"),
+        ):
+            with self.subTest(sync=sync_class, asynchronous=async_class):
+                assert_pair(
+                    self,
+                    PACKAGE / sync_file,
+                    sync_class,
+                    PACKAGE / async_file,
+                    async_class,
+                )
+
+    def test_public_stubs_have_the_same_surface(self) -> None:
+        for sync_file, sync_class, async_file, async_class in (
+            ("_session.pyi", "Session", "_async_session.pyi", "AsyncSession"),
+            ("_transaction.pyi", "Transaction", "_async_transaction.pyi", "AsyncTransaction"),
+            ("_session.pyi", "_Inspector", "_async_session.pyi", "_AsyncInspector"),
+        ):
+            with self.subTest(sync=sync_class, asynchronous=async_class):
+                assert_pair(
+                    self,
+                    PACKAGE / sync_file,
+                    sync_class,
+                    PACKAGE / async_file,
+                    async_class,
+                )
+
+    def test_native_stub_has_the_same_surface_for_both_families(self) -> None:
+        native = PACKAGE / "_native.pyi"
+        for sync_class, async_class in (
+            ("Session", "AsyncSession"),
+            ("DatabaseSession", "AsyncDatabaseSession"),
+            ("Transaction", "AsyncTransaction"),
+        ):
+            with self.subTest(sync=sync_class, asynchronous=async_class):
+                assert_pair(self, native, sync_class, native, async_class)
+
+    def test_native_stub_describes_every_implemented_method(self) -> None:
+        native = PACKAGE / "_native.pyi"
+        for rust_file, class_name in (
+            ("session.rs", "Session"),
+            ("async_session.rs", "AsyncSession"),
+            ("session_family.rs", "DatabaseSession"),
+            ("async_session_family.rs", "AsyncDatabaseSession"),
+            ("transaction.rs", "Transaction"),
+            ("async_transaction.rs", "AsyncTransaction"),
+        ):
+            with self.subTest(implementation=rust_file, stub=class_name):
+                self.assertEqual(
+                    exposed(SRC / rust_file),
+                    set(class_methods(native, class_name)),
+                )
+
+    def test_async_query_contains_no_duplicate_validation_rules(self) -> None:
+        path = PACKAGE / "async_query.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        self.assertFalse(
+            [node for node in ast.walk(tree) if isinstance(node, ast.Raise)],
+            "le regole dei terminali devono vivere in query.py e non essere duplicate",
+        )
+        imported = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "query"
+            for alias in node.names
+        }
+        self.assertTrue(
+            {"_validate_returning", "_one_or_none", "_exactly_one"} <= imported,
+            "i terminali async devono delegare alle regole condivise",
         )
 
 

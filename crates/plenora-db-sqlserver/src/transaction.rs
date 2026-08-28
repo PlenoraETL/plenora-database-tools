@@ -27,6 +27,15 @@ pub struct SqlServerTransaction {
     native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
 }
 
+impl Drop for SqlServerTransaction {
+    fn drop(&mut self) {
+        if self.open {
+            self.session.quarantine();
+            self.open = false;
+        }
+    }
+}
+
 impl SqlServerTransaction {
     /// Apre la transazione, con il livello di isolamento che le opzioni
     /// chiedono.

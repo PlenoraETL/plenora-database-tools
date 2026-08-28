@@ -60,6 +60,10 @@ class AsyncSession(_AsyncBuilderFactory):
     def close(self) -> None:
         self._native.close()
 
+    def metrics(self) -> dict:
+        """Snapshot locale dei contatori, senza I/O e senza `await`."""
+        return self._native.metrics()
+
     async def __aenter__(self) -> "AsyncSession":
         return self
 

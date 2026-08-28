@@ -213,6 +213,7 @@ EXPECTED_UNIT_TESTS = {
     "row_diagnostics::tests::row_rejection_causes_come_from_server_codes_only",
     "row_diagnostics::tests::source_offsets_advance_absolutely_across_batch_boundaries",
     "session::tests::bootstrap_is_explicit_and_deterministic",
+    "session::tests::an_abandoned_transaction_marks_its_session_quarantined",
     "session::tests::exactly_one_affected_row_is_required_for_row_scoped_success",
     "transaction::tests::a_bit_column_stays_binary_whatever_the_bytes_look_like",
     "transaction::tests::a_decimal_stays_a_string_despite_the_binary_charset",

@@ -129,6 +129,39 @@ class _WhereMixin:
 _ReturningBuilder = TypeVar("_ReturningBuilder", bound="_ReturningMutation")
 
 
+def _statement_json(builder: Any) -> str:
+    """Serializza una volta sola la forma canonica usata dai due bordi."""
+    return json.dumps(builder.to_ast())
+
+
+def _validate_returning(builder: Any, *, required: bool) -> None:
+    """Regola comune dei terminali mutation sync e async."""
+    name = type(builder).__name__
+    if required and not builder._returning:
+        raise RuntimeError(f"{name}.all() richiede prima .returning(...)")
+    if not required and builder._returning:
+        raise RuntimeError(
+            f"{name}.execute() non usa RETURNING; usa {builder._execute_hint} "
+            "se lo hai chiamato"
+        )
+
+
+def _one_or_none(rows: list[dict], name: str) -> dict | None:
+    """Applica la cardinalita 0..1 senza dipendere dal bordo di esecuzione."""
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise RuntimeError(f"{name}.one() atteso 0 o 1 riga, trovate {len(rows)}")
+    return rows[0]
+
+
+def _exactly_one(rows: list[dict], name: str) -> dict:
+    """Applica la cardinalita esatta condivisa dai terminali mutation."""
+    if len(rows) != 1:
+        raise RuntimeError(f"{name}.one() atteso 1 riga, trovate {len(rows)}")
+    return rows[0]
+
+
 class _ReturningMutation:
     """Terminali comuni alle mutazioni con `RETURNING`."""
 
@@ -143,27 +176,15 @@ class _ReturningMutation:
         return self
 
     def execute(self) -> int:
-        name = type(self).__name__
-        if self._returning:
-            raise RuntimeError(
-                f"{name}.execute() non usa RETURNING; usa {self._execute_hint} "
-                "se lo hai chiamato"
-            )
-        return self._session._execute_portable_count(json.dumps(self.to_ast()))
+        _validate_returning(self, required=False)
+        return self._session._execute_portable_count(_statement_json(self))
 
     def all(self) -> list[dict]:
-        name = type(self).__name__
-        if not self._returning:
-            raise RuntimeError(f"{name}.all() richiede prima .returning(...)")
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
+        _validate_returning(self, required=True)
+        return self._session._execute_portable_rows(_statement_json(self))
 
     def one(self) -> dict:
-        rows = self.all()
-        if len(rows) != 1:
-            raise RuntimeError(
-                f"{type(self).__name__}.one() atteso 1 riga, trovate {len(rows)}"
-            )
-        return rows[0]
+        return _exactly_one(self.all(), type(self).__name__)
 
     def to_ast(self) -> dict:
         raise NotImplementedError
@@ -240,15 +261,10 @@ class Select(_WhereMixin):
         return ast
 
     def all(self) -> list[dict]:
-        return self._session._execute_portable_rows(json.dumps(self.to_ast()))
+        return self._session._execute_portable_rows(_statement_json(self))
 
     def one(self) -> dict | None:
-        rows = self.limit(2).all()
-        if not rows:
-            return None
-        if len(rows) > 1:
-            raise RuntimeError("Select.one() atteso 0 o 1 riga, trovate {}".format(len(rows)))
-        return rows[0]
+        return _one_or_none(self.limit(2).all(), type(self).__name__)
 
     def scalar(self) -> Any:
         row = self.one()

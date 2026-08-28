@@ -177,7 +177,7 @@ class AsyncDatabaseSession:
         ipc_bytes: bytes,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
+        mapping_policy: str = "strict",
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> Any: ...  # awaitable → dict
@@ -279,6 +279,7 @@ class AsyncSession:
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
+    def metrics(self) -> dict: ...
     def __aenter__(self) -> Any: ...  # awaitable → AsyncSession
     def __aexit__(
         self, exc_type: object, exc_value: object, traceback: object

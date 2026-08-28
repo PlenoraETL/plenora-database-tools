@@ -3,6 +3,53 @@
 //!
 //! L'esecuzione remota resta negli adapter provider, senza `match` sui
 //! provider nell'executor.
+//!
+//! # Migrazione additiva verso `Engine`
+//!
+//! `Engine` sostituisce l'orchestrazione manuale di provider, secret e
+//! transaction scope nel codice Rust applicativo. Va condiviso fra task;
+//! [`Session`] va invece creata per ogni request o unita di lavoro e il
+//! prestito mutabile impedisce due transazioni concorrenti sulla stessa
+//! sessione.
+//!
+//! La migrazione puo essere incrementale:
+//!
+//! 1. conservare il provider attuale e consegnarlo a [`Engine::new`];
+//! 2. sostituire ogni sequenza applicativa con `engine.session()` e
+//!    [`Session::begin_transaction`];
+//! 3. separare template e valori con [`NativeStatement::bind`];
+//! 4. consumare le query tramite [`QueryResult`] o, per dataset grandi,
+//!    [`SessionRowStream::next_result`];
+//! 5. sostituire i documenti JSON di introspezione con
+//!    [`Engine::reflect_table`].
+//!
+//! ```no_run
+//! use plenora_database_core::provider::{Provider, SecretString};
+//! use plenora_database_core::transaction::TransactionOptions;
+//! use plenora_database_core::{CancellationToken, ResourceBudget, ResourceLimits};
+//! use plenora_database_engine::{Engine, NativeStatement};
+//! use std::sync::Arc;
+//!
+//! async fn serve_request(provider: Arc<dyn Provider>) -> plenora_database_core::Result<()> {
+//!     let engine = Engine::new(provider, SecretString::new("secret indiretto"));
+//!     let cancellation = CancellationToken::new();
+//!     let budget = ResourceBudget::new(ResourceLimits::default())?;
+//!     let mut session = engine.session()?;
+//!     let mut transaction = session
+//!         .begin_transaction(&TransactionOptions::pfm_defaults(), &budget, &cancellation)
+//!         .await?;
+//!     let statement = NativeStatement::new("SELECT 1", 0)?.bind(Vec::new())?;
+//!     let rows = transaction.query_result_bound(&statement).await?.into_mappings();
+//!     transaction.rollback().await?;
+//!     assert!(rows.len() <= 1);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! Il core Rust non crea un runtime sincrono annidato: chi chiama possiede il
+//! runtime async. I binding Python `Session`/`AsyncSession` restano compatibili
+//! durante la transizione, ma non vanno descritti come wrapper di `Engine`
+//! finche il binding dedicato non esiste e non supera la propria campagna.
 
 pub mod engine;
 pub mod metadata;

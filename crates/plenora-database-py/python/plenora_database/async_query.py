@@ -12,27 +12,29 @@ async: la catena resta AsyncSelect/AsyncInsert/etc.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from .query import Delete, Insert, Select, Update, Upsert
+from .query import (
+    Delete,
+    Insert,
+    Select,
+    Update,
+    Upsert,
+    _exactly_one,
+    _one_or_none,
+    _statement_json,
+    _validate_returning,
+)
 
 
 class AsyncSelect(Select):
     """SELECT builder async. Terminali coroutines."""
 
     async def all(self) -> list[dict]:  # type: ignore[override]
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
+        return await self._session._execute_portable_rows(_statement_json(self))
 
     async def one(self) -> dict | None:  # type: ignore[override]
-        rows = await self.limit(2).all()
-        if not rows:
-            return None
-        if len(rows) > 1:
-            raise RuntimeError(
-                f"AsyncSelect.one() atteso 0 o 1 riga, trovate {len(rows)}"
-            )
-        return rows[0]
+        return _one_or_none(await self.limit(2).all(), type(self).__name__)
 
     async def scalar(self) -> Any:  # type: ignore[override]
         row = await self.one()
@@ -49,27 +51,15 @@ class _AsyncReturningMutation:
     _execute_hint = ".all() / .one()"
 
     async def execute(self) -> int:  # type: ignore[override]
-        name = type(self).__name__
-        if self._returning:
-            raise RuntimeError(
-                f"{name}.execute() non usa RETURNING; usa {self._execute_hint} "
-                "se lo hai chiamato"
-            )
-        return await self._session._execute_portable_count(json.dumps(self.to_ast()))
+        _validate_returning(self, required=False)
+        return await self._session._execute_portable_count(_statement_json(self))
 
     async def all(self) -> list[dict]:  # type: ignore[override]
-        name = type(self).__name__
-        if not self._returning:
-            raise RuntimeError(f"{name}.all() richiede prima .returning(...)")
-        return await self._session._execute_portable_rows(json.dumps(self.to_ast()))
+        _validate_returning(self, required=True)
+        return await self._session._execute_portable_rows(_statement_json(self))
 
     async def one(self) -> dict:  # type: ignore[override]
-        rows = await self.all()
-        if len(rows) != 1:
-            raise RuntimeError(
-                f"{type(self).__name__}.one() atteso 1 riga, trovate {len(rows)}"
-            )
-        return rows[0]
+        return _exactly_one(await self.all(), type(self).__name__)
 
 
 class AsyncInsert(_AsyncReturningMutation, Insert):

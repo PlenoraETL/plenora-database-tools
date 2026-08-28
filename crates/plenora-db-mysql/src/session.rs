@@ -531,6 +531,25 @@ impl MysqlSession {
         self.quarantine().await;
     }
 
+    /// Impedisce il riciclo quando una transazione viene abbandonata.
+    /// Il task possiede la connessione e non puo quindi rientrare nel pool.
+    pub(crate) fn quarantine_on_drop(&mut self) {
+        self.state = MysqlSessionState::Quarantined;
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = connection.disconnect().await;
+            });
+        } else {
+            // Senza executor non esiste una chiusura async possibile. Perdere
+            // il lease e preferibile a restituire al pool una transazione
+            // aperta: il processo rilascera il socket alla propria uscita.
+            std::mem::forget(connection);
+        }
+    }
+
     /// Prepara lo statement e restituisce i metadati di colonna del server.
     ///
     /// `MySQL` non descrive un result set senza preparare: i metadati di

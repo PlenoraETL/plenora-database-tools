@@ -20,3 +20,16 @@ fn exactly_one_affected_row_is_required_for_row_scoped_success() {
         assert!(error.diagnostics.is_none());
     }
 }
+
+#[test]
+fn an_abandoned_transaction_marks_its_session_quarantined() {
+    let mut session = MysqlSession {
+        profile: &crate::profile::MYSQL_PROFILE,
+        connection: None,
+        state: MysqlSessionState::Ready,
+        operation_timeout: std::time::Duration::from_secs(1),
+        pool_permit: None,
+    };
+    session.quarantine_on_drop();
+    assert_eq!(session.state(), MysqlSessionState::Quarantined);
+}

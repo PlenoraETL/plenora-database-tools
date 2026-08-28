@@ -266,17 +266,7 @@ impl Session {
     ///
     /// Ritorna un dict con ~25 chiavi u64.
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let snap = self.provider.metrics_snapshot();
-        let value = serde_json::to_value(snap).map_err(|error| {
-            PyRuntimeError::new_err(format!(
-                "metriche non serializzabili: {}",
-                error.classify() as u8
-            ))
-        })?;
-        let json_str = value.to_string();
-        let json_mod = py.import("json")?;
-        let obj = json_mod.getattr("loads")?.call1((json_str,))?;
-        Ok(obj.cast_into::<PyDict>()?)
+        postgres_metrics_to_pydict(py, &self.provider)
     }
 
     /// Esegue DDL **fuori transazione**, in autocommit.
@@ -578,6 +568,18 @@ pub fn json_value_to_pydict<'py>(
         dict.set_item(k, py_v)?;
     }
     Ok(dict)
+}
+
+/// Converte lo snapshot locale nella forma condivisa dai bordi sync e async.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn postgres_metrics_to_pydict<'py>(
+    py: Python<'py>,
+    provider: &PostgresProvider,
+) -> PyResult<Bound<'py, PyDict>> {
+    let serialized = serde_json::to_string(&provider.metrics_snapshot())
+        .map_err(|_| PyRuntimeError::new_err("metriche non serializzabili"))?;
+    let value = py.import("json")?.getattr("loads")?.call1((serialized,))?;
+    Ok(value.cast_into::<PyDict>()?)
 }
 
 /// Apre una nuova sessione Postgres. La DSN è nel formato libpq
