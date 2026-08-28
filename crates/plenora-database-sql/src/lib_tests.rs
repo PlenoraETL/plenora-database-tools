@@ -62,6 +62,40 @@ fn simple_query() -> QueryOperation {
 }
 
 #[test]
+fn source_free_parameter_query_uses_each_dialect_bind() {
+    let mut query = simple_query();
+    query.source = None;
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::Parameter {
+            name: "answer".to_owned(),
+        },
+        alias: Some("answer".to_owned()),
+    }];
+    for (dialect, placeholder, source) in [
+        (Dialect::Postgres, "$1", None),
+        (Dialect::Mysql, "?", None),
+        (Dialect::SqlServer, "@p1", None),
+        (Dialect::Db2, "?", Some("SYSIBM.SYSDUMMY1")),
+    ] {
+        let rendered = Renderer::new(
+            dialect,
+            DialectCapabilities {
+                spatial_intersects: false,
+            },
+        )
+        .render_query(&query)
+        .expect("source-free parameter query");
+        assert!(rendered.sql.starts_with("SELECT "), "{dialect:?}");
+        match source {
+            Some(source) => assert!(rendered.sql.ends_with(source), "{dialect:?}"),
+            None => assert!(!rendered.sql.contains(" FROM "), "{dialect:?}"),
+        }
+        assert!(rendered.sql.contains(placeholder), "{dialect:?}");
+        assert_eq!(rendered.binds[0].name, "answer");
+    }
+}
+
+#[test]
 fn postgres_uses_quoted_identifiers_and_binds() {
     let select = Select {
         source: source(),

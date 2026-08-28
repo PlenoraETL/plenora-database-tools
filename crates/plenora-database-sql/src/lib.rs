@@ -643,14 +643,26 @@ impl Renderer {
             })
             .collect::<Result<Vec<_>>>()?;
         sql.push_str(&projection.join(", "));
-        sql.push_str(" FROM ");
-        sql.push_str(&self.render_query_relation(
-            query.source.as_ref(),
-            query.derived_source.as_ref(),
-            false,
-            query.locking.as_ref(),
-            binds,
-        )?);
+        if query.source.is_some() || query.derived_source.is_some() {
+            sql.push_str(" FROM ");
+            sql.push_str(&self.render_query_relation(
+                query.source.as_ref(),
+                query.derived_source.as_ref(),
+                false,
+                query.locking.as_ref(),
+                binds,
+            )?);
+        } else {
+            match self.dialect {
+                Dialect::Oracle => sql.push_str(" FROM DUAL"),
+                Dialect::Db2 => sql.push_str(" FROM SYSIBM.SYSDUMMY1"),
+                Dialect::Postgres
+                | Dialect::Mysql
+                | Dialect::SqlServer
+                | Dialect::Sqlite
+                | Dialect::Duckdb => {}
+            }
+        }
         for join in &query.joins {
             let sql_server_apply = self.dialect == Dialect::SqlServer && join.lateral;
             let keyword = match (&join.kind, sql_server_apply) {

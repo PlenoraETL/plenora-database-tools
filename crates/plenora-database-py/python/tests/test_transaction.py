@@ -104,6 +104,12 @@ def test_builders_work_inside_transaction(session) -> None:
         new = tx.insert("_pyf5_tx").values(id=10, val="ten").returning("id").one()
         assert new["id"] == 10
 
+        table = plenora_database.table("_pyf5_tx", "id")
+        statement = plenora_database.select(table.c.id).where(
+            table.c.id == plenora_database.bind("identity")
+        )
+        assert tx.execute(statement, {"identity": 10}).scalar_one() == 10
+
         row = tx.select("_pyf5_tx").columns("val").where_eq("id", 10).one()
         assert row == {"val": "ten"}
 

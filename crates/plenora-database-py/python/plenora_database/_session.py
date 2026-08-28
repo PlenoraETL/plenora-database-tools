@@ -9,12 +9,14 @@ di basso livello. Questo wrapper:
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, overload
 
 from ._arrow_io import _to_ipc_bytes
 from ._native import Session as _NativeSession
 from ._transaction import Transaction
+from .expression import SelectStatement, _execute_statement
 from .query import _BuilderFactory
+from .result import Result
 
 
 class Session(_BuilderFactory):
@@ -62,7 +64,24 @@ class Session(_BuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    def execute(self, sql: str, params: list | None = None) -> int:
+    @overload
+    def execute(self, sql: str, params: list | None = None) -> int: ...
+
+    @overload
+    def execute(
+        self,
+        sql: SelectStatement,
+        params: Mapping[str, Any] | None = None,
+    ) -> Result: ...
+
+    def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            return _execute_statement(
+                self._native,
+                sql,
+                params,
+                self.capabilities["provider"],
+            )
         return self._native.execute(sql, params)
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
@@ -223,7 +242,7 @@ class Session(_BuilderFactory):
             context,
             native_query_policy,
         )
-        return Transaction(native_tx)
+        return Transaction(native_tx, self.capabilities["provider"])
 
     # --------------------- observability + inspect ----------------------
 

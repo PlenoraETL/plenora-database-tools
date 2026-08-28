@@ -29,6 +29,22 @@ from ._transaction import Transaction
 from ._async_session import AsyncSession, _AsyncInspector
 from ._async_transaction import AsyncTransaction
 from ._engine import AsyncEngine, Engine
+from .expression import (
+    BindParameter,
+    Column,
+    Expression,
+    Ordering,
+    Predicate,
+    SelectStatement,
+    Table,
+    and_,
+    bind,
+    column,
+    or_,
+    select,
+    table,
+)
+from .result import MultipleResultsFound, NoResultFound, Result
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -365,6 +381,15 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         return repr(self._native)
 
     def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            from .expression import _execute_statement
+
+            return _execute_statement(
+                self._native,
+                sql,
+                params,
+                self.capabilities["provider"],
+            )
         return self._native.execute(sql, params)
 
     def execute_scalar(self, sql, params=None):
@@ -396,13 +421,14 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         - `native_query_policy` (CHG-003): "allow" (default) o "deny"
           — restringe agli statement CRUD OLTP.
         """
-        return self._native.begin(
+        native = self._native.begin(
             isolation,
             read_only,
             statement_timeout_ms,
             context,
             native_query_policy,
         )
+        return Transaction(native, self.capabilities["provider"])
 
     def read(
         self,
@@ -635,6 +661,15 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
 
     # --- delegazione async coroutines ---
     async def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            from .expression import _execute_statement_async
+
+            return await _execute_statement_async(
+                self._native,
+                sql,
+                params,
+                self.capabilities["provider"],
+            )
         return await self._native.execute(sql, params)
 
     async def execute_scalar(self, sql, params=None):
@@ -660,13 +695,14 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
     ):
         """Come `_DatabaseSessionWrapper.begin` sync — vedi docstring per
         `context` / `native_query_policy`."""
-        return await self._native.begin(
+        native = await self._native.begin(
             isolation,
             read_only,
             statement_timeout_ms,
             context,
             native_query_policy,
         )
+        return AsyncTransaction(native, self.capabilities["provider"])
 
     async def aread(
         self,
@@ -882,6 +918,22 @@ __all__ = [
     "create_async_db2_engine",
     "Engine",
     "AsyncEngine",
+    "table",
+    "column",
+    "bind",
+    "select",
+    "and_",
+    "or_",
+    "Table",
+    "Column",
+    "Expression",
+    "Predicate",
+    "Ordering",
+    "BindParameter",
+    "SelectStatement",
+    "Result",
+    "NoResultFound",
+    "MultipleResultsFound",
     "connect",
     "aconnect",
     "connect_mysql",

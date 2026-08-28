@@ -6,9 +6,11 @@ i builder Async, e async context manager.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .async_query import _AsyncBuilderFactory
+from .expression import SelectStatement, _execute_statement_async
+from .result import Result
 
 if TYPE_CHECKING:
     from ._native import AsyncTransaction as _NativeAsyncTransaction
@@ -25,10 +27,15 @@ class AsyncTransaction(_AsyncBuilderFactory):
             row = await tx.select("t").where_eq("id", 1).one()
     """
 
-    __slots__ = ("_native",)
+    __slots__ = ("_native", "_provider")
 
-    def __init__(self, native: "_NativeAsyncTransaction") -> None:
+    def __init__(
+        self,
+        native: "_NativeAsyncTransaction",
+        provider: str = "postgres",
+    ) -> None:
         self._native = native
+        self._provider = provider
 
     # ---------------------------- attributi ----------------------------
 
@@ -82,7 +89,24 @@ class AsyncTransaction(_AsyncBuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    async def execute(self, sql: str, params: list | None = None) -> int:
+    @overload
+    async def execute(self, sql: str, params: list | None = None) -> int: ...
+
+    @overload
+    async def execute(
+        self,
+        sql: SelectStatement,
+        params: Mapping[str, Any] | None = None,
+    ) -> Result: ...
+
+    async def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            return await _execute_statement_async(
+                self._native,
+                sql,
+                params,
+                self._provider,
+            )
         return await self._native.execute(sql, params)
 
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any:

@@ -95,6 +95,10 @@ async def test_builders_work_inside_async_transaction(session) -> None:
         new = await tx.insert("_pyf7tx").values(id=10, val="ten").returning("id").one()
         assert new["id"] == 10
 
+        table = p.table("_pyf7tx", "id")
+        statement = p.select(table.c.id).where(table.c.id == p.bind("identity"))
+        assert (await tx.execute(statement, {"identity": 10})).scalar_one() == 10
+
         row = await tx.select("_pyf7tx").columns("val").where_eq("id", 10).one()
         assert row == {"val": "ten"}
 

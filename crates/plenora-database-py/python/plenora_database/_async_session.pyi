@@ -1,5 +1,5 @@
 """Type stubs per il wrapper AsyncSession Python."""
-from typing import Any
+from typing import Any, Mapping, overload
 
 from ._async_transaction import AsyncTransaction
 from ._native import AsyncSession as _NativeAsyncSession, SessionContext
@@ -10,6 +10,8 @@ from .async_query import (
     AsyncUpdate,
     AsyncUpsert,
 )
+from .expression import SelectStatement
+from .result import Result
 
 
 class AsyncSession:
@@ -27,7 +29,12 @@ class AsyncSession:
     async def __aenter__(self) -> AsyncSession: ...
     async def __aexit__(self, *args: Any) -> bool: ...
     def __repr__(self) -> str: ...
+    @overload
     async def execute(self, sql: str, params: list | None = None) -> int: ...
+    @overload
+    async def execute(
+        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
+    ) -> Result: ...
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     async def execute_returning_rows(
         self, sql: str, params: list | None = None

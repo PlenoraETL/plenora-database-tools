@@ -1204,6 +1204,16 @@ pub fn validate_query_operation(
         })
     }
 
+    fn contains_direct_source_reference(expression: &QueryExpression) -> bool {
+        !walk_query_expression(expression, |node| match node {
+            QueryWalkNode::Expression(
+                QueryExpression::Column { .. } | QueryExpression::Wildcard { .. },
+            ) => QueryWalkControl::Break,
+            QueryWalkNode::Operation(_) => QueryWalkControl::Skip,
+            QueryWalkNode::Expression(_) | QueryWalkNode::Source(_) => QueryWalkControl::Continue,
+        })
+    }
+
     let mut stack = vec![Node::Operation(query, 1)];
     let mut nodes = 0_usize;
     while let Some(node) = stack.pop() {
@@ -1276,9 +1286,16 @@ pub fn validate_query_operation(
                         identifier(&value.alias, limits.max_identifier_bytes)?;
                         stack.push(Node::Operation(&value.query, depth.saturating_add(1)));
                     }
+                    (None, None)
+                        if operation.joins.is_empty()
+                            && operation.locking.is_none()
+                            && operation.declared_crs.is_empty()
+                            && !operation
+                                .clause_expressions()
+                                .any(contains_direct_source_reference) => {}
                     _ => {
                         return Err(crate::DatabaseError::invalid_plan(
-                            "query richiede una sola source, tabella o subquery",
+                            "query con riferimenti relazionali richiede una sola source",
                         ));
                     }
                 }

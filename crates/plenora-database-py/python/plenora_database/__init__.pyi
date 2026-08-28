@@ -1,5 +1,5 @@
 """Type stubs top-level per plenora_database."""
-from typing import Any
+from typing import Any, Mapping, overload
 
 from . import spatial as spatial
 from ._async_session import AsyncSession
@@ -33,6 +33,21 @@ from ._native import (
 )
 from ._session import Session
 from ._transaction import Transaction
+from .expression import (
+    BindParameter,
+    Column,
+    Expression,
+    Ordering,
+    Predicate,
+    SelectStatement,
+    Table,
+    and_,
+    bind,
+    column,
+    or_,
+    select,
+    table,
+)
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -41,6 +56,7 @@ from .async_query import (
     AsyncUpsert,
 )
 from .query import Delete, Insert, Select, Update, Upsert
+from .result import MultipleResultsFound, NoResultFound, Result
 from .spatial import SpatialReference
 from .types import (
     TypedValue,
@@ -78,7 +94,12 @@ class _DatabaseSessionWrapper:
         self, exc_type: Any, exc_value: Any, traceback: Any
     ) -> bool: ...
     def __repr__(self) -> str: ...
+    @overload
     def execute(self, sql: str, params: list | None = None) -> int: ...
+    @overload
+    def execute(
+        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
+    ) -> Result: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_returning_rows(
         self, sql: str, params: list | None = None
@@ -143,7 +164,12 @@ class _AsyncDatabaseSessionWrapper:
         self, exc_type: Any, exc_value: Any, traceback: Any
     ) -> bool: ...
     def __repr__(self) -> str: ...
+    @overload
     async def execute(self, sql: str, params: list | None = None) -> int: ...
+    @overload
+    async def execute(
+        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
+    ) -> Result: ...
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     async def execute_returning_rows(
         self, sql: str, params: list | None = None

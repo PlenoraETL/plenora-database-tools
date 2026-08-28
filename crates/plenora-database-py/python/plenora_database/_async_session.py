@@ -19,9 +19,11 @@ Uso:
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .async_query import _AsyncBuilderFactory
+from .expression import SelectStatement, _execute_statement_async
+from .result import Result
 
 if TYPE_CHECKING:
     from ._native import AsyncSession as _NativeAsyncSession
@@ -76,7 +78,24 @@ class AsyncSession(_AsyncBuilderFactory):
 
     # ---------------------------- SQL raw -------------------------------
 
-    async def execute(self, sql: str, params: list | None = None) -> int:
+    @overload
+    async def execute(self, sql: str, params: list | None = None) -> int: ...
+
+    @overload
+    async def execute(
+        self,
+        sql: SelectStatement,
+        params: Mapping[str, Any] | None = None,
+    ) -> Result: ...
+
+    async def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            return await _execute_statement_async(
+                self._native,
+                sql,
+                params,
+                self.capabilities["provider"],
+            )
         return await self._native.execute(sql, params)
 
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any:
@@ -173,7 +192,7 @@ class AsyncSession(_AsyncBuilderFactory):
             context,
             native_query_policy,
         )
-        return AsyncTransaction(native_tx)
+        return AsyncTransaction(native_tx, self.capabilities["provider"])
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

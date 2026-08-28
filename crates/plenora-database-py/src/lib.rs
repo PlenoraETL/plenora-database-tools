@@ -24,6 +24,7 @@ mod errors_commit;
 mod family_arrow_reader;
 mod family_write;
 mod py_convert;
+mod relational_query;
 mod session;
 mod session_context_py;
 mod session_family;
@@ -163,6 +164,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
     m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        relational_query::compile_relational_query,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(create_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_async_engine, m)?)?;

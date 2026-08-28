@@ -90,6 +90,8 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
             assert session.execute_scalar(
                 "SELECT CAST(7 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
             ) == 7
+            statement = p.select(p.bind("answer").label("answer"))
+            assert session.execute(statement, {"answer": 17}).scalar_one() == 17
         assert engine.statistics()["active_sessions"] == 0
 
 
@@ -102,4 +104,6 @@ async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
             assert await session.execute_scalar(
                 "SELECT CAST(8 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
             ) == 8
+            statement = p.select(p.bind("answer").label("answer"))
+            assert (await session.execute(statement, {"answer": 18})).scalar_one() == 18
         assert engine.statistics()["active_sessions"] == 0

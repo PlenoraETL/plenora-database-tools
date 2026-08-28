@@ -11,9 +11,11 @@ Aggiunge sopra al `_native.Transaction`:
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping, overload
 
+from .expression import SelectStatement, _execute_statement
 from .query import _BuilderFactory
+from .result import Result
 
 if TYPE_CHECKING:
     from ._native import Transaction as _NativeTransaction
@@ -40,10 +42,11 @@ class Transaction(_BuilderFactory):
             raise
     """
 
-    __slots__ = ("_native",)
+    __slots__ = ("_native", "_provider")
 
-    def __init__(self, native: "_NativeTransaction") -> None:
+    def __init__(self, native: "_NativeTransaction", provider: str = "postgres") -> None:
         self._native = native
+        self._provider = provider
 
     # ---------------------------- attributi ----------------------------
 
@@ -119,7 +122,19 @@ class Transaction(_BuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    def execute(self, sql: str, params: list | None = None) -> int:
+    @overload
+    def execute(self, sql: str, params: list | None = None) -> int: ...
+
+    @overload
+    def execute(
+        self,
+        sql: SelectStatement,
+        params: Mapping[str, Any] | None = None,
+    ) -> Result: ...
+
+    def execute(self, sql, params=None):
+        if isinstance(sql, SelectStatement):
+            return _execute_statement(self._native, sql, params, self._provider)
         return self._native.execute(sql, params)
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:

@@ -69,6 +69,40 @@ Gli altri provider usano factory esplicite, per esempio
 `await p.create_async_sqlserver_engine(...)`: la classe restituita resta
 `Engine`/`AsyncEngine`, mentre la factory dichiara senza ambiguita il prodotto.
 
+### Expression language Core v3
+
+Per query componibili, l'API nuova costruisce oggetti immutabili direttamente
+sull'IR relazionale canonico. Lo stesso statement viene compilato dal renderer
+Rust nel dialetto della sessione; i valori dei bind viaggiano separati e
+`execute` restituisce un `Result` uniforme.
+
+```python
+import plenora_database as p
+
+users = p.table("users", "id", "team_id", "name", schema="app").alias("u")
+teams = p.table("teams", "id", "name", schema="app").alias("t")
+
+statement = (
+    p.select(users.c.id, users.c.name, teams.c.name.label("team"))
+    .select_from(users)
+    .join(teams, users.c.team_id == teams.c.id)
+    .where(users.c.id >= p.bind("minimum_id"))
+    .order_by(users.c.id)
+    .limit(50)
+)
+
+with engine.session() as session:
+    result = session.execute(statement, {"minimum_id": 100})
+    rows = result.all()
+
+engine.dispose()
+```
+
+`Result` offre `all()`, `first()`, `one()`, `one_or_none()`, `scalar()` e le
+varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. Il path
+SQL raw resta invariato: `session.execute(sql, valori_posizionali)` continua a
+restituire il numero di righe interessate.
+
 ### Sync
 
 ```python

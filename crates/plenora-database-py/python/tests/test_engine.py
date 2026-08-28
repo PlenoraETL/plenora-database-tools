@@ -37,11 +37,23 @@ def _family_engine(factory, config):
     return factory(host, database, user, password, tls_ca_pem=ca_pem)
 
 
+def _postgres_expression_statement():
+    tables = p.table("tables", "table_name", schema="information_schema")
+    return (
+        p.select(tables.c.table_name)
+        .where(tables.c.table_name >= p.bind("minimum"))
+        .order_by(tables.c.table_name)
+        .limit(1)
+    )
+
+
 def test_engine_reuses_one_pool_across_request_sessions() -> None:
     engine = p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE)
     assert engine.provider_kind == "postgres"
     with engine.session() as session:
         assert session.execute_scalar("SELECT 1::BIGINT") == 1
+        result = session.execute(_postgres_expression_statement(), {"minimum": "a"})
+        assert isinstance(result.scalar_one(), str)
     statistics = engine.statistics()
     assert statistics["sessions_opened"] == 1
     assert statistics["active_sessions"] == 0
@@ -77,6 +89,8 @@ async def test_async_engine_reuses_one_pool_across_request_sessions() -> None:
     assert engine.provider_kind == "postgres"
     async with engine.session() as session:
         assert await session.execute_scalar("SELECT 3::BIGINT") == 3
+        result = await session.execute(_postgres_expression_statement(), {"minimum": "a"})
+        assert isinstance(result.scalar_one(), str)
     statistics = engine.statistics()
     assert statistics["sessions_opened"] == 1
     assert statistics["active_sessions"] == 0
@@ -126,6 +140,8 @@ def test_family_engine_uses_the_core_lifecycle(
     assert engine.provider_kind == provider_kind
     with engine.session() as session:
         assert session.execute_scalar("SELECT 5") == 5
+        statement = p.select(p.bind("answer").label("answer"))
+        assert session.execute(statement, {"answer": 15}).scalar_one() == 15
     assert engine.statistics() == {
         "sessions_opened": 1,
         "active_sessions": 0,
@@ -147,5 +163,7 @@ async def test_async_family_engine_uses_the_core_lifecycle(
     assert engine.provider_kind == provider_kind
     async with engine.session() as session:
         assert await session.execute_scalar("SELECT 6") == 6
+        statement = p.select(p.bind("answer").label("answer"))
+        assert (await session.execute(statement, {"answer": 16})).scalar_one() == 16
     assert engine.statistics()["active_sessions"] == 0
     engine.dispose()

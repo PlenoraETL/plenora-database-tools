@@ -16,6 +16,9 @@ incompatibili, sempre indicate come **breaking**.
 - `connect_sqlserver` e `aconnect_sqlserver` nella superficie comune del SDK.
 - `capabilities`, `inspect`, `execute_ddl`, lettura Arrow e scrittura Arrow
   sulle sessioni dei quattro provider, nelle rispettive forme sync e async.
+- Expression language immutabile (`table`, `select`, `bind`, predicati, join,
+  ordinamento e paginazione) compilata dall'IR relazionale canonico per tutti i
+  provider pubblici, con `Result` uniforme su sessioni e transazioni sync/async.
 
 ### Breaking
 

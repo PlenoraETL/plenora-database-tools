@@ -39,6 +39,34 @@ fn query_with_filter(filter: QueryExpression) -> QueryOperation {
 }
 
 #[test]
+fn source_free_query_accepts_parameters_but_not_relation_references() {
+    let mut query = query_with_filter(QueryExpression::Compare {
+        left: Box::new(QueryExpression::Parameter {
+            name: "left".to_owned(),
+        }),
+        operator: ComparisonOperator::Eq,
+        right: Box::new(QueryExpression::Parameter {
+            name: "right".to_owned(),
+        }),
+    });
+    query.source = None;
+    query.projection[0].expression = QueryExpression::Parameter {
+        name: "projected".to_owned(),
+    };
+    validate_query_operation(&query, &Limits::default()).expect("source-free parameters");
+
+    query.projection[0].expression = QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: "orphan".to_owned(),
+        },
+    };
+    let error = validate_query_operation(&query, &Limits::default())
+        .expect_err("source-free column must fail");
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+}
+
+#[test]
 fn query_walker_reaches_sources_inside_subqueries() {
     let nested = query_with_filter(QueryExpression::IsNull {
         expression: Box::new(QueryExpression::Parameter {

@@ -106,6 +106,10 @@ def validate_generated(root: Path) -> list[Violation]:
         TARGET as MICROBENCH_TARGET,
         render as render_microbench,
     )
+    from scripts.generate_capabilities_docx import (
+        TARGET as CAPABILITIES_TARGET,
+        render_document as render_capabilities,
+    )
 
     violations: list[Violation] = []
     for target, renderer in (
@@ -116,6 +120,9 @@ def validate_generated(root: Path) -> list[Violation]:
         current = target.read_text(encoding="utf-8") if target.is_file() else ""
         if current != renderer():
             violations.append(Violation(target, "documento generato non aggiornato"))
+    current_docx = CAPABILITIES_TARGET.read_bytes() if CAPABILITIES_TARGET.is_file() else b""
+    if current_docx != render_capabilities():
+        violations.append(Violation(CAPABILITIES_TARGET, "documento generato non aggiornato"))
     return violations
 
 

@@ -1216,6 +1216,7 @@ dependencies = [
  "arrow-schema",
  "plenora-database-core",
  "plenora-database-engine",
+ "plenora-database-sql",
  "plenora-db-db2",
  "plenora-db-mysql",
  "plenora-db-postgres",
