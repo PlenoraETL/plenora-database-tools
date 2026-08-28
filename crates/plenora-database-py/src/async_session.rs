@@ -26,6 +26,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Sessione Postgres asincrona. Ottenuta da `await aconnect(dsn)`.
@@ -41,8 +42,10 @@ pub struct AsyncSession {
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
+    engine: Engine,
     engine_handle: Option<SharedEngineSession>,
     operation_cancellation: CancellationToken,
+    transaction_active: Arc<AtomicBool>,
     closed: bool,
 }
 
@@ -63,8 +66,10 @@ impl AsyncSession {
             capabilities,
             server_version,
             postgis_version,
+            engine: engine.clone(),
             engine_handle: Some(Arc::new(tokio::sync::Mutex::new(Some(session)))),
             operation_cancellation,
+            transaction_active: Arc::new(AtomicBool::new(false)),
             closed: false,
         })
     }
@@ -73,6 +78,11 @@ impl AsyncSession {
         if self.closed {
             return Err(PyRuntimeError::new_err(
                 "sessione chiusa: aprine una nuova con plenora_database.aconnect(...)",
+            ));
+        }
+        if self.transaction_active.load(Ordering::Acquire) {
+            return Err(PyRuntimeError::new_err(
+                "sessione occupata da una transazione esplicita",
             ));
         }
         Ok(())
@@ -415,18 +425,36 @@ impl AsyncSession {
             context,
             native_query_policy,
         )?;
+        if self
+            .transaction_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(PyRuntimeError::new_err(
+                "sessione occupata da una transazione esplicita",
+            ));
+        }
+        let session = match self.engine.session() {
+            Ok(session) => session,
+            Err(error) => {
+                self.transaction_active.store(false, Ordering::Release);
+                return Err(to_py_err(error));
+            }
+        };
         let awaitable = crate::async_session_ops::begin_engine(
             py,
-            Arc::clone(
-                self.engine_handle
-                    .as_ref()
-                    .expect("ensure_open garantisce la sessione Engine"),
-            ),
+            Arc::new(tokio::sync::Mutex::new(Some(session))),
             opts,
             self.cancellation(),
-        )?;
-        self.closed = true;
-        Ok(awaitable)
+            Arc::clone(&self.transaction_active),
+        );
+        match awaitable {
+            Ok(awaitable) => Ok(awaitable),
+            Err(error) => {
+                self.transaction_active.store(false, Ordering::Release);
+                Err(error)
+            }
+        }
     }
 
     fn execute_portable_count<'py>(

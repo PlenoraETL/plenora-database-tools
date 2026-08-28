@@ -61,6 +61,16 @@ def test_engine_owned_transaction_closes_its_request_session() -> None:
         assert engine.statistics()["active_sessions"] == 0
 
 
+def test_engine_session_is_exclusive_during_transaction_and_reusable_after() -> None:
+    with p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE) as engine:
+        with engine.session() as session:
+            transaction = session.begin(native_query_policy="allow")
+            with pytest.raises(RuntimeError, match="transazione esplicita"):
+                session.execute_scalar("SELECT 1::BIGINT")
+            transaction.rollback()
+            assert session.execute_scalar("SELECT 2::BIGINT") == 2
+
+
 @pytest.mark.asyncio
 async def test_async_engine_reuses_one_pool_across_request_sessions() -> None:
     engine = await p.create_async_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE)
@@ -89,6 +99,19 @@ async def test_async_engine_owned_transaction_closes_its_request_session() -> No
             ) as transaction:
                 assert await transaction.execute_scalar("SELECT 4::BIGINT") == 4
         assert engine.statistics()["active_sessions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_async_engine_session_is_exclusive_and_reusable() -> None:
+    async with await p.create_async_engine(
+        postgres_dsn_or_skip(), LOCAL_TLS_MODE
+    ) as engine:
+        async with engine.session() as session:
+            transaction = await session.begin(native_query_policy="allow")
+            with pytest.raises(RuntimeError, match="transazione esplicita"):
+                await session.execute_scalar("SELECT 1::BIGINT")
+            await transaction.rollback()
+            assert await session.execute_scalar("SELECT 2::BIGINT") == 2
 
 
 @pytest.mark.parametrize(

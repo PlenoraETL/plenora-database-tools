@@ -15,6 +15,7 @@ use plenora_database_engine::Session as EngineSession;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -124,17 +125,31 @@ pub(crate) fn begin_engine(
     session: SharedEngineSession,
     options: TransactionOptions,
     cancellation: CancellationToken,
+    session_transaction_active: Arc<AtomicBool>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
-        let current = session.lock().await.take().ok_or_else(|| {
-            PyRuntimeError::new_err("sessione Engine chiusa o gia trasferita a una transazione")
-        })?;
-        let scope = current
+        let current = {
+            let mut guard = session.lock().await;
+            guard.take()
+        };
+        let Some(current) = current else {
+            session_transaction_active.store(false, Ordering::Release);
+            return Err(PyRuntimeError::new_err(
+                "sessione transazionale non disponibile",
+            ));
+        };
+        let scope = match current
             .begin_owned_transaction(&options, &crate::budget::session_budget(), &cancellation)
             .await
-            .map_err(to_py_err)?;
+        {
+            Ok(scope) => scope,
+            Err(error) => {
+                session_transaction_active.store(false, Ordering::Release);
+                return Err(to_py_err(error));
+            }
+        };
         Python::attach(|py| {
-            let transaction = AsyncTransaction::new(Box::new(scope));
+            let transaction = AsyncTransaction::new(Box::new(scope), session_transaction_active);
             Ok(Py::new(py, transaction)?
                 .into_pyobject(py)?
                 .into_any()

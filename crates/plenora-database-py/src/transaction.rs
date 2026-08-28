@@ -30,6 +30,8 @@ use plenora_database_core::{CancellationToken, Row};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn tx_closed_error() -> PyErr {
     PyRuntimeError::new_err(
@@ -46,11 +48,23 @@ fn tx_closed_error() -> PyErr {
 #[pyclass(module = "plenora_database._native", unsendable)]
 pub struct Transaction {
     inner: Option<Box<dyn TransactionScope>>,
+    session_transaction_active: Arc<AtomicBool>,
 }
 
 impl Transaction {
-    pub(crate) fn new(inner: Box<dyn TransactionScope>) -> Self {
-        Self { inner: Some(inner) }
+    pub(crate) fn new(
+        inner: Box<dyn TransactionScope>,
+        session_transaction_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            session_transaction_active,
+        }
+    }
+
+    fn release_session(&self) {
+        self.session_transaction_active
+            .store(false, Ordering::Release);
     }
 
     fn tx_mut(&mut self) -> PyResult<&mut Box<dyn TransactionScope>> {
@@ -270,7 +284,7 @@ impl Transaction {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
         // Il provider va letto prima che `commit` consumi la transazione.
         let provider = tx.provider_kind();
-        py.detach(|| {
+        let result = py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 let outcome = tx.commit(&cancel).await?;
@@ -279,20 +293,22 @@ impl Transaction {
                 }
                 Ok(())
             })
-        })
-        .map_err(to_py_err)
+        });
+        self.release_session();
+        result.map_err(to_py_err)
     }
 
     /// Rollback della transazione. La consuma.
     fn rollback(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
-        py.detach(|| {
+        let result = py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.rollback(&cancel).await
             })
-        })
-        .map_err(to_py_err)
+        });
+        self.release_session();
+        result.map_err(to_py_err)
     }
 
     /// Context manager: entry restituisce self.
@@ -326,6 +342,13 @@ impl Transaction {
 
     fn __repr__(&self) -> String {
         format!("<Transaction active={}>", self.inner.is_some())
+    }
+}
+
+impl Drop for Transaction {
+    fn drop(&mut self) {
+        drop(self.inner.take());
+        self.release_session();
     }
 }
 

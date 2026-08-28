@@ -49,6 +49,7 @@ use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::budget::session_budget as default_budget;
@@ -80,8 +81,10 @@ pub struct Session {
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
+    engine: Engine,
     engine_handle: Mutex<Option<EngineSession>>,
     operation_cancellation: CancellationToken,
+    transaction_active: Arc<AtomicBool>,
     closed: bool,
 }
 
@@ -102,8 +105,10 @@ impl Session {
             capabilities,
             server_version,
             postgis_version,
+            engine: engine.clone(),
             engine_handle: Mutex::new(Some(session)),
             operation_cancellation,
+            transaction_active: Arc::new(AtomicBool::new(false)),
             closed: false,
         })
     }
@@ -126,6 +131,11 @@ impl Session {
         if self.closed {
             return Err(PyRuntimeError::new_err(
                 "sessione chiusa: aprine una nuova con plenora_database.connect(...)",
+            ));
+        }
+        if self.transaction_active.load(Ordering::Acquire) {
+            return Err(PyRuntimeError::new_err(
+                "sessione occupata da una transazione esplicita",
             ));
         }
         Ok(())
@@ -509,12 +519,22 @@ impl Session {
             native_query_policy,
         )?;
         let operation_cancellation = self.cancellation();
-        let session = self
-            .engine_handle
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("sessione consumata da una transazione"))?;
+        if self
+            .transaction_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(PyRuntimeError::new_err(
+                "sessione occupata da una transazione esplicita",
+            ));
+        }
+        let session = match self.engine.session() {
+            Ok(session) => session,
+            Err(error) => {
+                self.transaction_active.store(false, Ordering::Release);
+                return Err(to_py_err(error));
+            }
+        };
         let transaction = py
             .detach(|| {
                 runtime().block_on(async move {
@@ -523,9 +543,17 @@ impl Session {
                         .await
                 })
             })
-            .map_err(to_py_err)?;
-        self.closed = true;
-        Ok(Transaction::new(Box::new(transaction)))
+            .map_err(to_py_err);
+        match transaction {
+            Ok(transaction) => Ok(Transaction::new(
+                Box::new(transaction),
+                Arc::clone(&self.transaction_active),
+            )),
+            Err(error) => {
+                self.transaction_active.store(false, Ordering::Release);
+                Err(error)
+            }
+        }
     }
 
     /// Context manager: entrata restituisce self.

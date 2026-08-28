@@ -192,12 +192,12 @@ SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
     # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
     # devono restare skip espliciti, non essere assorbiti dal totale.
-    "live": ScopeContract(passed=238, deselected=0, skips={DB2_SKIP: 5}),
+    "live": ScopeContract(passed=240, deselected=0, skips={DB2_SKIP: 5}),
     "offline": ScopeContract(
         passed=25,
         deselected=0,
         skips={
-            POSTGRES_SKIP: 169,
+            POSTGRES_SKIP: 171,
             MYSQL_SKIP: 32,
             MARIADB_SKIP: 5,
             SQLSERVER_SKIP: 5,
@@ -205,7 +205,7 @@ SCOPE_CONTRACTS = {
             BENCH_SKIP: 2,
         },
     ),
-    "benchmark": ScopeContract(passed=2, deselected=241, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=243, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende

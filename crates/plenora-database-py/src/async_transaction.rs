@@ -29,6 +29,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -42,6 +43,14 @@ pub(crate) type SharedTx = Arc<Mutex<Option<Box<dyn TransactionScope>>>>;
 
 pub(crate) fn wrap(tx: Box<dyn TransactionScope>) -> SharedTx {
     Arc::new(Mutex::new(Some(tx)))
+}
+
+struct SessionActivity(Arc<AtomicBool>);
+
+impl Drop for SessionActivity {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Trasforma il tokio::sync::MutexGuard in `&mut dyn TransactionScope`
@@ -62,11 +71,18 @@ async fn locked_tx(
 #[pyclass(module = "plenora_database._native")]
 pub struct AsyncTransaction {
     inner: SharedTx,
+    session_transaction_active: Arc<AtomicBool>,
 }
 
 impl AsyncTransaction {
-    pub(crate) fn new(tx: Box<dyn TransactionScope>) -> Self {
-        Self { inner: wrap(tx) }
+    pub(crate) fn new(
+        tx: Box<dyn TransactionScope>,
+        session_transaction_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            inner: wrap(tx),
+            session_transaction_active,
+        }
     }
 }
 
@@ -259,7 +275,9 @@ impl AsyncTransaction {
 
     fn commit<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let activity = SessionActivity(Arc::clone(&self.session_transaction_active));
         future_into_py(py, async move {
+            let _activity = activity;
             let tx = {
                 let mut guard = inner.lock().await;
                 guard.take().ok_or_else(tx_closed_error)?
@@ -279,7 +297,9 @@ impl AsyncTransaction {
 
     fn rollback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let activity = SessionActivity(Arc::clone(&self.session_transaction_active));
         future_into_py(py, async move {
+            let _activity = activity;
             let tx = {
                 let mut guard = inner.lock().await;
                 guard.take().ok_or_else(tx_closed_error)?
@@ -302,8 +322,10 @@ impl AsyncTransaction {
         _traceback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let activity = SessionActivity(Arc::clone(&self.session_transaction_active));
         let is_ok = exc_type.is_none(py);
         future_into_py(py, async move {
+            let _activity = activity;
             let tx_opt = {
                 let mut guard = inner.lock().await;
                 guard.take()
@@ -330,5 +352,12 @@ impl AsyncTransaction {
 
     fn __repr__(&self) -> String {
         "<AsyncTransaction>".to_owned()
+    }
+}
+
+impl Drop for AsyncTransaction {
+    fn drop(&mut self) {
+        self.session_transaction_active
+            .store(false, Ordering::Release);
     }
 }
