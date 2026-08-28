@@ -1057,7 +1057,7 @@ const fn frame_offset(bound: &WindowFrameBound) -> bool {
 
 /// `COUNT(*)` e l'unica forma in cui il wildcard sopravvive dentro una
 /// chiamata: `COUNT(t.*)` e ogni altro aggregato con `*` non sono validi.
-fn is_count_star(function: ScalarFunction, arguments: &[QueryExpression]) -> bool {
+const fn is_count_star(function: ScalarFunction, arguments: &[QueryExpression]) -> bool {
     matches!(function, ScalarFunction::Count)
         && matches!(arguments, [QueryExpression::Wildcard { relation: None }])
 }

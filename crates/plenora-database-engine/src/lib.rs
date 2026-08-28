@@ -386,10 +386,8 @@ fn collect_spatial_functions(filter: &FilterExpression, out: &mut Vec<SpatialFun
                 collect_spatial_functions(arg, out);
             }
         }
-        FilterExpression::Spatial { function, .. } => {
-            if !out.contains(function) {
-                out.push(*function);
-            }
+        FilterExpression::Spatial { function, .. } if !out.contains(function) => {
+            out.push(*function);
         }
         _ => {}
     }

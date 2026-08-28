@@ -54,6 +54,26 @@ def aconnect_mysql(
 ) -> Any:  # awaitable → AsyncDatabaseSession
     ...
 
+def connect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> DatabaseSession: ...
+
+def aconnect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Any: ...
+
 # ============================ DatabaseSession ===================================
 
 class DatabaseSession:

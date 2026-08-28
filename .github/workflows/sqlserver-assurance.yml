@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      RUSTUP_TOOLCHAIN: 1.92.0
+      RUSTUP_TOOLCHAIN: 1.98.0
       PLENORA_SQLSERVER_GATE_HOST_CARGO: "1"
       PLENORA_SQLSERVER_HOST: 127.0.0.1
       PLENORA_SQLSERVER_DATABASE: dataflow_test

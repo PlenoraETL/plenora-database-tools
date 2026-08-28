@@ -20,8 +20,8 @@ plenora-database-engine = { path = "../crates/plenora-database-engine" }
 plenora-db-postgres = { path = "../crates/plenora-db-postgres" }
 plenora-db-sqlserver = { path = "../crates/plenora-db-sqlserver" }
 plenora-db-mysql = { path = "../crates/plenora-db-mysql" }
-arrow-schema = "=59.1.0"
-chrono = { version = "=0.4.42", default-features = false, features = ["std"] }
+arrow-schema = "=59.2.0"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 serde_json = "=1.0.151"
 
 [[bin]]

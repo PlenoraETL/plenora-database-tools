@@ -14,8 +14,8 @@ IMAGE = "plenora-cargo-deny:0.20.2"
 ADVISORY_VOLUME = "plenora-cargo-deny-advisory"
 
 
-def commands(root: Path = ROOT) -> tuple[list[str], list[str]]:
-    """Comandi di build e check, esposti per il self-test statico."""
+def commands(root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
+    """Comandi di build e dei due check, esposti per il self-test statico."""
 
     build = [
         "docker",
@@ -38,7 +38,21 @@ def commands(root: Path = ROOT) -> tuple[list[str], list[str]]:
         "check",
         "--hide-inclusion-graph",
     ]
-    return build, check
+    fuzz_check = [
+        "docker",
+        "run",
+        "--rm",
+        "--volume",
+        f"{root}:/workspace:ro",
+        "--volume",
+        f"{ADVISORY_VOLUME}:/root/.cargo/advisory-db",
+        IMAGE,
+        "--manifest-path",
+        "fuzz/Cargo.toml",
+        "check",
+        "--hide-inclusion-graph",
+    ]
+    return build, check, fuzz_check
 
 
 def run(command: list[str]) -> None:

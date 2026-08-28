@@ -52,7 +52,7 @@ pub fn execute_scalar(
         })
         .await
         .map_err(to_py_err)?;
-        Python::with_gil(|py| scalar_to_python(py, rows).map(Bound::unbind))
+        Python::attach(|py| scalar_to_python(py, rows).map(Bound::unbind))
     })
 }
 
@@ -98,7 +98,7 @@ pub fn inspect_strings<'py>(
             .inspect(&secret, &operation, &CancellationToken::new())
             .await
             .map_err(to_py_err)?;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             crate::session::json_to_pylist_of_strings(py, &inspection.document, key)
                 .map(|value| value.into_any().unbind())
         })
@@ -123,7 +123,7 @@ pub fn inspect_objects(
             .inspect(&secret, &operation, &CancellationToken::new())
             .await
             .map_err(to_py_err)?;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             crate::session::json_to_pylist_of_dicts(py, &inspection.document, "objects")
                 .map(|value| value.into_any().unbind())
         })
@@ -149,7 +149,7 @@ pub fn inspect_describe(
             .inspect(&secret, &operation, &CancellationToken::new())
             .await
             .map_err(to_py_err)?;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             crate::session::json_value_to_pydict(py, &inspection.document)
                 .map(|value| value.into_any().unbind())
         })
@@ -200,7 +200,7 @@ pub fn begin(
             .begin_transaction(&secret, &options, &budget, &cancellation)
             .await
             .map_err(to_py_err)?;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let transaction = AsyncTransaction::new(scope);
             Ok(Py::new(py, transaction)?
                 .into_pyobject(py)?
@@ -210,6 +210,6 @@ pub fn begin(
     })
 }
 
-pub fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<PyObject> {
-    Python::with_gil(|py| rows_to_pylist(py, rows).map(|value| value.into_any().unbind()))
+pub fn rows_to_pyobject(rows: Vec<Row>) -> PyResult<Py<PyAny>> {
+    Python::attach(|py| rows_to_pylist(py, rows).map(|value| value.into_any().unbind()))
 }

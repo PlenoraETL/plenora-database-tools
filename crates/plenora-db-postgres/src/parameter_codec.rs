@@ -306,7 +306,7 @@ impl UuidParameter {
             return Err(DatabaseError::invalid_plan("parametro UUID non valido"));
         }
         let mut bytes = [0_u8; 16];
-        for (output, pair) in bytes.iter_mut().zip(compact.chunks_exact(2)) {
+        for (output, pair) in bytes.iter_mut().zip(compact.as_chunks::<2>().0) {
             let high = decode_hex_nibble(pair[0])
                 .ok_or_else(|| DatabaseError::invalid_plan("parametro UUID non valido"))?;
             let low = decode_hex_nibble(pair[1])

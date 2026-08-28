@@ -436,6 +436,7 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
         (cfg!(feature = "postgres"), "postgres"),
         (cfg!(feature = "mysql"), "mysql"),
         (cfg!(feature = "sqlserver"), "sqlserver"),
+        (cfg!(feature = "db2"), "db2"),
     ] {
         assert_eq!(
             providers.contains(name),
@@ -462,7 +463,7 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
 fn declared_providers_without_adapters_fail_closed_at_the_public_cli() {
     // I provider senza adapter pubblico devono fallire prima di qualunque
     // tentativo di connessione.
-    for provider in ["oracle", "db2", "sqlite", "duckdb"] {
+    for provider in ["oracle", "sqlite", "duckdb"] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);
         assert_eq!(envelope["error"]["category"], "unsupported");
@@ -487,6 +488,7 @@ fn every_provider_is_reachable_exactly_where_its_adapter_is_compiled() {
         // Stesso crate di `mysql`, stessa feature, provider diverso.
         ("mariadb", cfg!(feature = "mysql")),
         ("sqlserver", cfg!(feature = "sqlserver")),
+        ("db2", cfg!(feature = "db2")),
     ] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);

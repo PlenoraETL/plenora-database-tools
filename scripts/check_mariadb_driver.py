@@ -54,7 +54,7 @@ from scripts.mariadb_references import REFERENCES as MARIADB_REFERENCES  # noqa:
 from scripts.mysql_references import BASELINE as MYSQL_BASELINE  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-RUST_IMAGE = "rust:1.92"
+RUST_IMAGE = "rust:1.98"
 MYSQL_CONTAINER = "dataflow-mysql"
 MARKER = "PLENORA_MARIADB_EVIDENCE "
 

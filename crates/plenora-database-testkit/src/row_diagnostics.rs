@@ -14,8 +14,7 @@ use plenora_database_core::row_diagnostics::{
 };
 use plenora_database_core::{DatabaseError, Result, RollbackEvidence};
 use std::future::Future;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::{Context, Poll, Waker};
 
 /// Copione di una scrittura row-scoped simulata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,14 +140,8 @@ impl RowScopedWriter for ScriptedRowWriter {
 /// offline non devono però ereditarne il runtime. Il seam non sospende mai su
 /// I/O reale, quindi un poll ripetuto con waker inerte è sufficiente.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    struct Idle;
-    impl Wake for Idle {
-        fn wake(self: Arc<Self>) {}
-    }
-
     let mut future = std::pin::pin!(future);
-    let waker = Waker::from(Arc::new(Idle));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     loop {
         if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
             return output;

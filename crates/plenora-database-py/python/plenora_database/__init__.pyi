@@ -254,5 +254,25 @@ async def aconnect_mariadb(
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
 
+def connect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> _DatabaseSessionWrapper: ...
+
+async def aconnect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> _AsyncDatabaseSessionWrapper: ...
+
 
 __all__: list[str]

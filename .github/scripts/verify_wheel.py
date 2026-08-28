@@ -25,11 +25,43 @@ from pathlib import Path
 
 PACKAGE = "plenora-database"
 TAG_PREFIX = "py-v"
+DB2_RUNTIME_ENV = "PLENORA_EXPECT_DB2_RUNTIME"
 
 
 def fail(message: str) -> int:
     print(f"verify-wheel: {message}", file=sys.stderr)
     return 1
+
+
+def verify_db2_profile(package: object) -> str | None:
+    """Distingue il wheel standard dallo specifico artefatto DB2.
+
+    Un valore TLS invalido ferma la feature reale prima di aprire ODBC. Lo
+    stub standard deve invece rispondere con l'errore Unsupported tipizzato.
+    """
+
+    expect_runtime = os.environ.get(DB2_RUNTIME_ENV) == "1"
+    try:
+        package.connect_db2(
+            "localhost",
+            "wheel_probe",
+            "wheel_probe",
+            "wheel_probe",
+            tls_mode="wheel_probe_invalid",
+        )
+    except package.PlenoraUnsupportedError:
+        if expect_runtime:
+            return "feature DB2 richiesta ma il wheel contiene lo stub"
+        return None
+    except RuntimeError as error:
+        if not expect_runtime:
+            return "il wheel standard contiene il runtime DB2"
+        if "tls_mode Db2 non riconosciuto" not in str(error):
+            return "la feature DB2 non ha raggiunto la validazione nativa attesa"
+        return None
+    except Exception as error:  # pragma: no cover - diagnostica del gate
+        return f"profilo DB2 inatteso: {type(error).__name__}"
+    return "la probe DB2 ha tentato una connessione con TLS invalido"
 
 
 def main() -> int:
@@ -68,6 +100,8 @@ def main() -> int:
         return fail("Session senza execute: la superficie pubblica non e completa")
     if not hasattr(p, "PlenoraError"):
         return fail("PlenoraError assente dall'import top-level")
+    if db2_error := verify_db2_profile(p):
+        return fail(db2_error)
 
     print(
         f"verify-wheel: {PACKAGE} {declared} — import ok, "

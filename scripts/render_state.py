@@ -77,6 +77,14 @@ CAPABILITY_SOURCES = (
         "SqlServerProvider",
         None,
     ),
+    (
+        "IBM Db2 LUW",
+        "crates/plenora-db-db2",
+        "crates/plenora-db-db2/src/provider.rs",
+        None,
+        "Db2Provider",
+        None,
+    ),
 )
 CAPABILITY_GROUPS = (
     ("reads", "ReadCapabilities"),
@@ -104,6 +112,7 @@ PROVIDER_TEST_CRATES = (
     ("PostgreSQL", "plenora-db-postgres"),
     ("MySQL + MariaDB", "plenora-db-mysql"),
     ("SQL Server", "plenora-db-sqlserver"),
+    ("IBM Db2 LUW", "plenora-db-db2"),
 )
 
 
@@ -339,7 +348,7 @@ def test_inventory() -> list[tuple[str, int]]:
 
 
 def provider_test_inventory() -> list[tuple[str, int]]:
-    """Test Rust annotati nei crate che implementano i quattro prodotti.
+    """Test Rust annotati nei crate che implementano i cinque prodotti.
 
     MySQL e MariaDB condividono intenzionalmente lo stesso crate e molte suite:
     separarli contando i nomi sarebbe un fatto inventato, quindi restano una

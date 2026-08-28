@@ -1,6 +1,11 @@
 #![allow(clippy::redundant_pub_crate)]
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use plenora_database_core::plan::ProviderKind;
 // La famiglia `database-*` costruisce piani per qualunque provider compilato.
@@ -21,19 +26,31 @@ use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
 // Il giudizio sul commit incerto e comune a tutti i provider.
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
 use plenora_database_engine::parse_and_validate;
+#[cfg(feature = "db2")]
+use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
 #[cfg(feature = "mysql")]
 use plenora_db_mysql::{MariadbProvider, MysqlConfig, MysqlProvider};
 #[cfg(feature = "postgres")]
 use plenora_db_postgres::{PostgresProvider, PostgresTlsConfig, PostgresTlsMode};
 #[cfg(feature = "sqlserver")]
 use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 use rustls::{pki_types::CertificateDer, RootCertStore};
 use serde_json::json;
 use std::env;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::path::PathBuf;
@@ -96,11 +113,13 @@ pub(crate) enum CliError {
 /// La funzione resta indipendente dalle feature perche la semantica del commit
 /// non cambia con il provider compilato.
 #[cfg_attr(
-    not(any(feature = "postgres", feature = "mysql")),
-    allow(
-        dead_code,
-        reason = "nessun sottocomando SQL Server apre una transazione"
-    )
+    not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )),
+    allow(dead_code, reason = "nessun adapter compilato apre una transazione")
 )]
 pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
     match outcome {
@@ -114,11 +133,13 @@ pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
 /// Stesso attributo e stessa ragione di [`commit_status`], che accompagna
 /// sempre.
 #[cfg_attr(
-    not(any(feature = "postgres", feature = "mysql")),
-    allow(
-        dead_code,
-        reason = "nessun sottocomando SQL Server apre una transazione"
-    )
+    not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )),
+    allow(dead_code, reason = "nessun adapter compilato apre una transazione")
 )]
 pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
@@ -174,7 +195,12 @@ static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
 const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 const TLS_MATERIAL_MAX_BYTES: u64 = 1024 * 1024;
 
 #[cfg(feature = "postgres")]
@@ -457,6 +483,7 @@ fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
         (ProviderKind::Mysql, cfg!(feature = "mysql")),
         (ProviderKind::Mariadb, cfg!(feature = "mysql")),
         (ProviderKind::Sqlserver, cfg!(feature = "sqlserver")),
+        (ProviderKind::Db2, cfg!(feature = "db2")),
     ]
     .into_iter()
     .any(|(candidate, compiled)| candidate == kind && compiled);
@@ -472,10 +499,11 @@ fn ensure_adapter_available(kind: ProviderKind) -> CliResult<()> {
             | ProviderKind::Mysql
             | ProviderKind::Mariadb
             | ProviderKind::Sqlserver
+            | ProviderKind::Db2
     ) {
         "adapter non compilato in questo binario: ricostruire con la feature \
          di quel provider (--features mysql per mysql e mariadb, \
-         --features sqlserver, oppure --features full per tutti)"
+         --features sqlserver, --features db2, oppure --features full per tutti)"
     } else {
         "provider dichiarato dal contratto ma adapter non disponibile"
     };
@@ -1621,12 +1649,18 @@ fn parse_provider_kind(value: &str) -> CliResult<ProviderKind> {
     }
 }
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TlsPathEnvironments {
     ca: Option<String>,
     client_certificate: Option<String>,
     client_key: Option<String>,
+    mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1665,6 +1699,14 @@ enum ProviderArguments {
         port: Option<u16>,
         tls: TlsPathEnvironments,
     },
+    #[cfg(feature = "db2")]
+    Db2 {
+        host: String,
+        database: String,
+        username: String,
+        port: Option<u16>,
+        tls: TlsPathEnvironments,
+    },
 }
 
 enum PreparedProviderArguments {
@@ -1679,9 +1721,16 @@ enum PreparedProviderArguments {
     Mariadb(MysqlConfig),
     #[cfg(feature = "sqlserver")]
     Sqlserver(SqlServerConfig),
+    #[cfg(feature = "db2")]
+    Db2(Db2Config),
 }
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 fn parse_tls_path_environments(
     args: &mut impl Iterator<Item = String>,
 ) -> CliResult<TlsPathEnvironments> {
@@ -1691,6 +1740,7 @@ fn parse_tls_path_environments(
             "--tls-ca-path-env" => &mut tls.ca,
             "--tls-client-cert-path-env" => &mut tls.client_certificate,
             "--tls-client-key-path-env" => &mut tls.client_key,
+            "--tls-mode" => &mut tls.mode,
             _ if flag.starts_with("--") => return Err("opzione TLS provider sconosciuta".into()),
             _ => return Err("troppi argomenti".into()),
         };
@@ -1712,23 +1762,39 @@ fn parse_tls_path_environments(
 }
 
 #[cfg_attr(
-    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )),
     allow(clippy::needless_pass_by_ref_mut)
 )]
 fn parse_provider_arguments(
     kind: ProviderKind,
     args: &mut impl Iterator<Item = String>,
 ) -> CliResult<ProviderArguments> {
-    #[cfg(not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")))]
+    #[cfg(not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )))]
     let _ = args;
     match kind {
         #[cfg(feature = "postgres")]
         ProviderKind::Postgres => {
             let tls = parse_tls_path_environments(args)?;
+            if tls.mode.is_some() {
+                return Err("--tls-mode nella famiglia generica e supportato solo per Db2".into());
+            }
             Ok(ProviderArguments::Postgres { tls })
         }
-        #[cfg(any(feature = "mysql", feature = "sqlserver"))]
-        ProviderKind::Mysql | ProviderKind::Mariadb | ProviderKind::Sqlserver => {
+        #[cfg(any(feature = "mysql", feature = "sqlserver", feature = "db2"))]
+        ProviderKind::Mysql
+        | ProviderKind::Mariadb
+        | ProviderKind::Sqlserver
+        | ProviderKind::Db2 => {
             let host = args
                 .next()
                 .ok_or_else(|| "manca host provider".to_owned())?;
@@ -1750,6 +1816,9 @@ fn parse_provider_arguments(
                 })
                 .transpose()?;
             let tls = parse_tls_path_environments(&mut remaining)?;
+            if kind != ProviderKind::Db2 && tls.mode.is_some() {
+                return Err("--tls-mode nella famiglia generica e supportato solo per Db2".into());
+            }
             if tls.client_certificate.is_some() || tls.client_key.is_some() {
                 return Err("identità client TLS supportata solo per PostgreSQL".into());
             }
@@ -1772,6 +1841,14 @@ fn parse_provider_arguments(
                 }),
                 #[cfg(feature = "sqlserver")]
                 ProviderKind::Sqlserver => Ok(ProviderArguments::Sqlserver {
+                    host,
+                    database,
+                    username,
+                    port,
+                    tls,
+                }),
+                #[cfg(feature = "db2")]
+                ProviderKind::Db2 => Ok(ProviderArguments::Db2 {
                     host,
                     database,
                     username,
@@ -1810,7 +1887,12 @@ fn build_provider(
 }
 
 #[cfg_attr(
-    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )),
     allow(clippy::missing_const_for_fn, clippy::needless_pass_by_value)
 )]
 fn prepare_provider_arguments(
@@ -1860,6 +1942,32 @@ fn prepare_provider_arguments(
             config.validate_without_password()?;
             Ok(PreparedProviderArguments::Sqlserver(config))
         }
+        #[cfg(feature = "db2")]
+        ProviderArguments::Db2 {
+            host,
+            database,
+            username,
+            port,
+            tls,
+        } => {
+            let mut config = Db2Config::new(host, database, username);
+            if let Some(port) = port {
+                config = config.with_port(port);
+            }
+            if let Some(path) = prepare_db2_private_ca_path(tls.ca.as_deref())? {
+                config = config.with_private_ca_certificate(path);
+            }
+            config = match tls.mode.as_deref() {
+                None | Some("verify") => config,
+                Some("disable") => config.with_tls_mode(Db2TlsMode::Disable),
+                Some(_) => {
+                    return Err(
+                        "tls mode Db2 non riconosciuto: valori ammessi verify|disable".into(),
+                    )
+                }
+            };
+            Ok(PreparedProviderArguments::Db2(config))
+        }
     }
 }
 
@@ -1901,14 +2009,19 @@ fn mysql_family_config(
 // configurazione non serve e la sola forma che non mente in nessuna delle
 // quattro.
 #[cfg_attr(
-    not(any(feature = "mysql", feature = "sqlserver")),
+    not(any(feature = "mysql", feature = "sqlserver", feature = "db2")),
     allow(
         clippy::unnecessary_wraps,
         reason = "senza altri adapter resta un solo ramo, e non puo fallire"
     )
 )]
 #[cfg_attr(
-    not(any(feature = "postgres", feature = "mysql", feature = "sqlserver")),
+    not(any(
+        feature = "postgres",
+        feature = "mysql",
+        feature = "sqlserver",
+        feature = "db2"
+    )),
     allow(clippy::needless_pass_by_value)
 )]
 fn build_provider_from_prepared_arguments(
@@ -1938,10 +2051,17 @@ fn build_provider_from_prepared_arguments(
             1_024,
             8,
         )?)),
+        #[cfg(feature = "db2")]
+        PreparedProviderArguments::Db2(config) => Ok(Box::new(Db2Provider::new(config)?)),
     }
 }
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 fn tls_path_from_environment(env_name: Option<&str>) -> CliResult<Option<PathBuf>> {
     env_name
         .map(|name| {
@@ -1953,7 +2073,12 @@ fn tls_path_from_environment(env_name: Option<&str>) -> CliResult<Option<PathBuf
         .transpose()
 }
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 fn read_bounded_tls_material(path: &Path) -> CliResult<Vec<u8>> {
     let file = File::open(path).map_err(|_| CliError::from("materiale TLS non leggibile"))?;
     let metadata = file
@@ -2030,7 +2155,27 @@ fn prepare_private_ca_material(env_name: Option<&str>) -> CliResult<Option<Vec<u
     )?))
 }
 
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlserver"))]
+/// Risolve e valida la CA privata senza copiarla: il client IBM riceve un
+/// percorso assoluto tramite `SSLSERVERCERTIFICATE` e puo rileggerlo quando
+/// apre una nuova connessione.
+#[cfg(feature = "db2")]
+fn prepare_db2_private_ca_path(env_name: Option<&str>) -> CliResult<Option<PathBuf>> {
+    let Some(path) = tls_path_from_environment(env_name)? else {
+        return Ok(None);
+    };
+    let material = read_bounded_tls_material(&path)?;
+    validate_and_normalize_private_ca_material(&path, &material)?;
+    let absolute =
+        fs::canonicalize(path).map_err(|_| CliError::from("materiale TLS non leggibile"))?;
+    Ok(Some(absolute))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlserver",
+    feature = "db2"
+))]
 fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> CliResult<Vec<u8>> {
     let extension = path
         .extension()
@@ -2285,6 +2430,7 @@ fn feature_is_compiled(feature: &str) -> bool {
         ("postgres", cfg!(feature = "postgres")),
         ("mysql", cfg!(feature = "mysql")),
         ("sqlserver", cfg!(feature = "sqlserver")),
+        ("db2", cfg!(feature = "db2")),
     ]
     .into_iter()
     .any(|(name, compiled)| name == feature && compiled)
@@ -2338,6 +2484,9 @@ fn compiled_providers() -> Vec<&'static str> {
     if cfg!(feature = "sqlserver") {
         names.push("sqlserver");
     }
+    if cfg!(feature = "db2") {
+        names.push("db2");
+    }
     names
 }
 
@@ -2350,6 +2499,8 @@ fn usage() -> String {
     sections.push(mysql_usage());
     #[cfg(feature = "sqlserver")]
     sections.push(sqlserver_usage());
+    #[cfg(feature = "db2")]
+    sections.push(db2_usage());
     sections.push(global_flags_usage());
     sections.join("\n")
 }
@@ -2383,7 +2534,7 @@ fn common_usage() -> String {
         "    introspezione via Provider::inspect, uguale su tutti i provider compilati".to_owned(),
         "    le posizionali stanno prima degli args del provider, che sono in numero variabile"
             .to_owned(),
-        "  portable-compile <postgres|mysql|mariadb|sqlserver> <PORTABLE.json>".to_owned(),
+        "  portable-compile <postgres|mysql|mariadb|sqlserver|db2> <PORTABLE.json>".to_owned(),
         "    compila e stampa SQL + numero parametri, senza aprire una connessione".to_owned(),
         "  database-portable-execute <provider> <secret-env> <PORTABLE.json> [args provider]"
             .to_owned(),
@@ -2507,6 +2658,25 @@ fn sqlserver_usage() -> String {
         "    database-describe sqlserver <secret-env> <schema> <object> <resto args...>",
         "  esecuzione e transazioni passano dagli stessi comandi `database-*` comuni",
         "  documentati sopra; `execute_ddl` resta fuori dalla superficie del provider.",
+    ]
+    .join("\n")
+}
+
+#[cfg(feature = "db2")]
+fn db2_usage() -> String {
+    [
+        "",
+        "== IBM Db2 LUW ==",
+        "  args comuni: <secret-env> <host> <database> <user> [port] [--tls-ca-path-env <name>] [--tls-mode verify|disable]",
+        "  il default richiede TLS e verifica il server; la CA privata resta un file",
+        "  leggibile dal client IBM per l'intera durata del processo.",
+        "  l'adapter si raggiunge dai comandi generici:",
+        "    database-probe db2 <args...>",
+        "    database-inspect-catalogs db2 <args...>",
+        "    database-inspect-schemas db2 <args...>",
+        "    database-inspect-objects db2 <secret-env> <schema> <resto args...>",
+        "    database-describe db2 <secret-env> <schema> <object> <resto args...>",
+        "    database-portable-execute db2 <secret-env> <PORTABLE.json> <resto args...>",
     ]
     .join("\n")
 }

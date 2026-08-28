@@ -229,7 +229,7 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
             ErrorCategory::Internal => PlenoraInternalError::new_err(message),
         }
     };
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let bound = pyerr.value(py);
         // Ignora errori di setattr: sono attributi di comodo, non essenziali
         // per la propagazione dell'errore stesso.

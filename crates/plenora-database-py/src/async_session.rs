@@ -96,12 +96,12 @@ impl AsyncSession {
     fn __aexit__(
         slf: Py<Self>,
         py: Python<'_>,
-        _exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        _exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let mut guard = slf.borrow_mut(py);
                 guard.closed = true;
             });
@@ -259,7 +259,7 @@ impl AsyncSession {
             )
             .await
             .map_err(to_py_err)?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let obj = Py::new(py, reader)?;
                 Ok(obj.into_pyobject(py)?.into_any().unbind())
             })
@@ -317,7 +317,7 @@ impl AsyncSession {
             )
             .await
             .map_err(crate::errors::to_py_err)?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let d = crate::write::outcome_into_py(py, &outcome)?;
                 Ok(d.into_any().unbind())
             })
@@ -420,7 +420,7 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
             postgis_version,
             closed: false,
         };
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = Py::new(py, session)?;
             Ok(obj.into_pyobject(py)?.into_any().unbind())
         })

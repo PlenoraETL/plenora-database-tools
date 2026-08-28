@@ -432,6 +432,7 @@ fn postgres_probe_parser_accepts_private_ca_and_complete_client_identity_env_nam
                 ca: Some("PG_CA_PATH_ENV".to_owned()),
                 client_certificate: Some("PG_CERT_PATH_ENV".to_owned()),
                 client_key: Some("PG_KEY_PATH_ENV".to_owned()),
+                mode: None,
             },
         }
     );
@@ -474,6 +475,11 @@ fn provider_factories_resolve_private_ca_paths_from_environment() {
         #[cfg(feature = "sqlserver")]
         m.push((
             ProviderKind::Sqlserver,
+            vec!["db.example.test", "warehouse", "loader"],
+        ));
+        #[cfg(feature = "db2")]
+        m.push((
+            ProviderKind::Db2,
             vec!["db.example.test", "warehouse", "loader"],
         ));
         m
@@ -520,6 +526,8 @@ fn implemented_provider_factories_are_offline_and_typed() {
         v.push(ProviderKind::Mysql);
         #[cfg(feature = "sqlserver")]
         v.push(ProviderKind::Sqlserver);
+        #[cfg(feature = "db2")]
+        v.push(ProviderKind::Db2);
         v
     };
     for kind in structured {
@@ -533,6 +541,74 @@ fn implemented_provider_factories_are_offline_and_typed() {
             kind
         );
     }
+}
+
+#[cfg(feature = "db2")]
+#[test]
+fn db2_provider_arguments_preserve_defaults_and_explicit_port() {
+    let mut default_args = ["db.example.test", "warehouse", "loader"]
+        .into_iter()
+        .map(str::to_owned);
+    assert_eq!(
+        parse_provider_arguments(ProviderKind::Db2, &mut default_args)
+            .expect("porta Db2 di default"),
+        ProviderArguments::Db2 {
+            host: "db.example.test".to_owned(),
+            database: "warehouse".to_owned(),
+            username: "loader".to_owned(),
+            port: None,
+            tls: TlsPathEnvironments::default(),
+        }
+    );
+
+    let secret = SecretString::new("test-only-secret");
+    let mut explicit_args = ["db.example.test", "warehouse", "loader", "50001"]
+        .into_iter()
+        .map(str::to_owned);
+    assert_eq!(
+        build_provider(ProviderKind::Db2, &secret, &mut explicit_args)
+            .expect("provider Db2 con porta esplicita")
+            .kind(),
+        ProviderKind::Db2
+    );
+
+    let mut plaintext_args = [
+        "db.example.test",
+        "warehouse",
+        "loader",
+        "--tls-mode",
+        "disable",
+    ]
+    .into_iter()
+    .map(str::to_owned);
+    assert_eq!(
+        parse_provider_arguments(ProviderKind::Db2, &mut plaintext_args)
+            .expect("opt-out plaintext Db2 esplicito"),
+        ProviderArguments::Db2 {
+            host: "db.example.test".to_owned(),
+            database: "warehouse".to_owned(),
+            username: "loader".to_owned(),
+            port: None,
+            tls: TlsPathEnvironments {
+                mode: Some("disable".to_owned()),
+                ..TlsPathEnvironments::default()
+            },
+        }
+    );
+
+    let mut invalid_mode = [
+        "db.example.test",
+        "warehouse",
+        "loader",
+        "--tls-mode",
+        "opportunistic",
+    ]
+    .into_iter()
+    .map(str::to_owned);
+    let error = build_provider(ProviderKind::Db2, &secret, &mut invalid_mode)
+        .err()
+        .expect("mode TLS Db2 sconosciuto");
+    assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
 }
 
 #[cfg(feature = "postgres")]
@@ -570,6 +646,7 @@ fn provider_neutral_postgres_probe_honors_only_unambiguous_insecure_local() {
         ca: Some("PLENORA_TEST_CA".to_owned()),
         client_certificate: None,
         client_key: None,
+        mode: None,
     };
     let error = postgres_provider_for_probe_with_tls_policy(&configured_tls, true)
         .expect_err("insecure-local plus TLS material must fail closed");

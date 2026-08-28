@@ -82,9 +82,32 @@ pub fn validate_predicate(
         ProviderKind::Postgres => validate_postgres(predicate, reference),
         ProviderKind::Mysql => validate_mysql(predicate),
         ProviderKind::Sqlserver => validate_sqlserver(predicate),
+        ProviderKind::Db2 => validate_db2(predicate, reference),
         // Gli altri provider sono rifiutati dal compilatore portable prima di
         // raggiungere questa validazione.
         _ => Ok(()),
+    }
+}
+
+fn validate_db2(predicate: &SpatialPredicate, reference: &SpatialReference) -> Result<()> {
+    if reference.semantics != SpatialSemantics::Geometry {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Db2,
+            crate::ErrorPhase::Prepare,
+            "Db2 Spatial Analytics e qualificato soltanto con semantica geometry",
+        ));
+    }
+    match predicate {
+        SpatialPredicate::Intersects | SpatialPredicate::Contains | SpatialPredicate::Within => {
+            Ok(())
+        }
+        SpatialPredicate::DWithin { .. } | SpatialPredicate::BoundingBox => {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Db2,
+                crate::ErrorPhase::Prepare,
+                "il predicato spatial richiesto non e qualificato per Db2",
+            ))
+        }
     }
 }
 

@@ -151,3 +151,39 @@ fn dwithin_nan_is_rejected() {
     .unwrap_err();
     assert_eq!(err.category, crate::ErrorCategory::InvalidPlan);
 }
+
+#[test]
+fn db2_accepts_only_the_qualified_geometry_predicates() {
+    let reference = ref_with(4326, SpatialSemantics::Geometry);
+    for predicate in [
+        SpatialPredicate::Intersects,
+        SpatialPredicate::Contains,
+        SpatialPredicate::Within,
+    ] {
+        validate_predicate(ProviderKind::Db2, &predicate, &reference)
+            .expect("predicato Db2 qualificato");
+    }
+    for predicate in [
+        SpatialPredicate::BoundingBox,
+        SpatialPredicate::DWithin {
+            distance_meters: 1.0,
+        },
+    ] {
+        assert_eq!(
+            validate_predicate(ProviderKind::Db2, &predicate, &reference)
+                .expect_err("predicato Db2 non qualificato")
+                .category,
+            crate::ErrorCategory::Unsupported
+        );
+    }
+    assert_eq!(
+        validate_predicate(
+            ProviderKind::Db2,
+            &SpatialPredicate::Intersects,
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .expect_err("geography Db2")
+        .category,
+        crate::ErrorCategory::Unsupported
+    );
+}

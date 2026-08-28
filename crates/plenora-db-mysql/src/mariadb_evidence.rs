@@ -679,7 +679,7 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
         if let Err(error) = connection.query_drop(ddl).await {
             declared.push(format!(
                 "{syntax}=rifiutato({})",
-                server_code(&error).map_or(0, |code| code)
+                server_code(&error).unwrap_or(0)
             ));
         } else {
             // Il registro si rilegge con la stessa regola di prima: il nome
@@ -1651,6 +1651,7 @@ async fn drain_read(
     parameters: &ParameterBag,
     cancellation: &CancellationToken,
 ) -> Result<ReadOutcome, plenora_database_core::DatabaseError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let budget = read_budget();
     let mut stream = provider
         .read(&secret(), operation, parameters, &budget, cancellation)
@@ -1729,7 +1730,14 @@ async fn drain_read(
         outcome.batches += 1;
         outcome.rows += batch.num_rows();
     }
-    outcome.digest = format!("{:x}", hasher.finalize());
+    let digest = hasher.finalize();
+    outcome.digest.reserve(digest.len() * 2);
+    for byte in digest {
+        outcome.digest.push(char::from(HEX[usize::from(byte >> 4)]));
+        outcome
+            .digest
+            .push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
     Ok(outcome)
 }
 

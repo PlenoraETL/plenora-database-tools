@@ -155,7 +155,7 @@ fn outcome_to_pydict<'py>(py: Python<'py>, outcome: &WriteOutcome) -> PyResult<B
     })?;
     let converted = crate::py_convert::json_to_python(py, &value)?;
     converted
-        .downcast_into::<PyDict>()
+        .cast_into::<PyDict>()
         .map_err(|_| PyRuntimeError::new_err("esito di scrittura che non serializza in un oggetto"))
 }
 

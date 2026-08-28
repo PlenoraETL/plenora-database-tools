@@ -48,6 +48,7 @@ python scripts\check_mysql_reference.py --static
 python scripts\check_mysql_reference.py    # gate MySQL live
 python scripts\check_postgres_reference.py # gate PostgreSQL
 python scripts\check_sqlserver_reference.py
+python scripts\check_db2_reference.py       # gate IBM Db2 LUW live
 cargo test --workspace -- --skip live_     # unit, senza server
 cargo deny check                           # alternativa, se cargo-deny e installato
 ```

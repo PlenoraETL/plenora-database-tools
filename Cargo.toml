@@ -8,6 +8,7 @@ members = [
     "crates/plenora-db-postgres",
     "crates/plenora-db-sqlserver",
     "crates/plenora-db-mysql",
+    "crates/plenora-db-db2",
     "crates/plenora-database-cli",
     "crates/plenora-database-py",
 ]
@@ -28,7 +29,7 @@ default-members = [
 [workspace.package]
 version = "2.0.0"
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.98"
 publish = false
 # I crate non sono pubblicati e usano la licenza proprietaria del repository.
 # `license-file` e il campo Cargo previsto quando non esiste un identificatore
@@ -36,19 +37,19 @@ publish = false
 license-file = "LICENSE"
 
 [workspace.dependencies]
-arrow-array = "=59.1.0"
-arrow-ipc = "=59.1.0"
-arrow-schema = "=59.1.0"
+arrow-array = "=59.2.0"
+arrow-ipc = "=59.2.0"
+arrow-schema = "=59.2.0"
 bytes = "=1.12.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-thiserror = "=2.0.19"
-sha2 = "=0.10.9"
-base64 = "=0.22.1"
-chrono = { version = "=0.4.42", default-features = false, features = ["std"] }
-futures-util = "=0.3.31"
-tokio = { version = "=1.49.0", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util = { version = "=0.7.18", features = ["compat"] }
+thiserror = "=2.0.20"
+sha2 = "=0.11.0"
+base64 = "=0.23.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+futures-util = "=0.3.34"
+tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "=0.7.19", features = ["compat"] }
 # RUSTSEC-2026-0178: la 0.7.15 va in panic su un `DataRow` con meno campi
 # delle colonne dichiarate, quindi una risposta malformata del server
 # abbatte il processo (DoS, severity 6.9). Risolto in 0.7.18.
@@ -61,6 +62,9 @@ mysql_async = { version = "=0.37.0", default-features = false, features = ["mini
 # gia risolta come dipendenza transitiva di `mysql_async`: nessuna superficie
 # supply-chain aggiuntiva.
 mysql_common = { version = "=0.37.3", default-features = false }
+# DB2 usa il driver manager ODBC dinamico. Niente feature `prompt` (UI) e
+# niente unixODBC statico: il runtime IBM resta un prerequisito separato.
+odbc-api = { version = "=29.0.0", default-features = false, features = ["odbc_version_3_80"] }
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "=2.2.0"
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
@@ -73,6 +77,7 @@ plenora-database-testkit = { path = "crates/plenora-database-testkit" }
 plenora-db-postgres = { path = "crates/plenora-db-postgres" }
 plenora-db-sqlserver = { path = "crates/plenora-db-sqlserver" }
 plenora-db-mysql = { path = "crates/plenora-db-mysql" }
+plenora-db-db2 = { path = "crates/plenora-db-db2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

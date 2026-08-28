@@ -31,7 +31,11 @@ use pyo3::prelude::*;
 ///
 /// Il context è transaction-local server-side: `SET LOCAL` applicato
 /// dopo `BEGIN` e resettato automaticamente al commit/rollback.
-#[pyclass(module = "plenora_database._native", name = "SessionContext")]
+#[pyclass(
+    module = "plenora_database._native",
+    name = "SessionContext",
+    from_py_object
+)]
 #[derive(Clone, Default)]
 pub struct PySessionContext {
     pub(crate) inner: CoreContext,
@@ -54,7 +58,7 @@ fn to_session_value(value: &Bound<'_, PyAny>) -> PyResult<SessionValue> {
     )))
 }
 
-fn from_session_value(py: Python<'_>, value: &SessionValue) -> PyObject {
+fn from_session_value(py: Python<'_>, value: &SessionValue) -> Py<PyAny> {
     match value {
         SessionValue::Text(s) => s.clone().into_pyobject(py).unwrap().into_any().unbind(),
         SessionValue::Integer(i) => i.into_pyobject(py).unwrap().into_any().unbind(),
@@ -109,7 +113,7 @@ impl PySessionContext {
     /// Ritorna il valore associato alla chiave (senza classificazione)
     /// o None se assente. Il valore restituito rispetta il tipo
     /// originale (str/int/bool).
-    fn get(&self, py: Python<'_>, name: &str) -> Option<PyObject> {
+    fn get(&self, py: Python<'_>, name: &str) -> Option<Py<PyAny>> {
         self.inner
             .get(name)
             .map(|entry| from_session_value(py, &entry.value))

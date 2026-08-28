@@ -23,6 +23,7 @@ const DIALECTS: &[(&str, ProviderKind)] = &[
     ("mysql", ProviderKind::Mysql),
     ("mariadb", ProviderKind::Mariadb),
     ("sqlserver", ProviderKind::Sqlserver),
+    ("db2", ProviderKind::Db2),
 ];
 
 /// `portable-compile <dialetto> PORTABLE.json`: compila e stampa l'SQL.

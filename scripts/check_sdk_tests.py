@@ -37,7 +37,7 @@ Uso:
     python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
     python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 
-**Tracciato, non riproducibile.** `rust:1.92` e `python:3.13-slim` sono tag
+**Tracciato, non riproducibile.** `rust:1.98` e `python:3.13-slim` sono tag
 mutabili — la stessa riga puo risolvere due immagini diverse a distanza di un
 giorno — e l'`apt-get install` della build prende cio che il mirror pubblica
 oggi. Quel che il runner puo fare, e fa, e dire con cosa ha girato: id e
@@ -87,7 +87,7 @@ NATIVE = CRATE / "python" / "plenora_database" / "_native.abi3.so"
 PROBE = Path(__file__).resolve().parent / "sdk_wheel_probe.py"
 BUILD_REQUIREMENTS = ROOT / "requirements-sdk-build.txt"
 TEST_REQUIREMENTS = ROOT / "requirements-sdk-tests.txt"
-RUST_IMAGE = "rust:1.92"
+RUST_IMAGE = "rust:1.98"
 PYTHON_IMAGE = "python:3.13-slim"
 
 # Il repository entra nel container dei test in sola lettura, e la suite gira
@@ -176,6 +176,10 @@ SQLSERVER_SKIP = (
     "live test SQL Server: mancano env PLENORA_TEST_SQLSERVER_HOST "
     "e/o PLENORA_TEST_SQLSERVER_PASSWORD"
 )
+DB2_SKIP = (
+    "live test Db2: mancano env PLENORA_TEST_DB2_HOST "
+    "e/o PLENORA_TEST_DB2_PASSWORD"
+)
 BENCH_SKIP = (
     "bench opt-in: setta PLENORA_BENCH_PARITY=1 per lanciarlo "
     "(atteso ~10s di walltime per la sessione)"
@@ -185,7 +189,10 @@ BENCH_SKIP = (
 # la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
 # "passed" da solo cresce senza dire di cosa.
 SCOPE_CONTRACTS = {
-    "live": ScopeContract(passed=228, deselected=0, skips={}),
+    # Il gate SDK multipiattaforma qualifica il wheel standard, che non
+    # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
+    # devono restare tre skip espliciti, non essere assorbiti dal totale.
+    "live": ScopeContract(passed=228, deselected=0, skips={DB2_SKIP: 3}),
     "offline": ScopeContract(
         passed=25,
         deselected=0,
@@ -194,10 +201,11 @@ SCOPE_CONTRACTS = {
             MYSQL_SKIP: 30,
             MARIADB_SKIP: 3,
             SQLSERVER_SKIP: 3,
+            DB2_SKIP: 3,
             BENCH_SKIP: 2,
         },
     ),
-    "benchmark": ScopeContract(passed=2, deselected=226, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=229, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -596,7 +604,7 @@ def assert_worktree_unchanged(before: dict[str, str], stage: str) -> None:
 def image_identity(reference: str) -> dict[str, object]:
     """Id e digest dell'immagine **locale** dietro un riferimento.
 
-    Un tag e mutabile: `rust:1.92` oggi e `rust:1.92` fra un mese possono
+    Un tag e mutabile: `rust:1.98` oggi e `rust:1.98` fra un mese possono
     essere due immagini diverse, con due toolchain diverse, e il verdetto non
     avrebbe modo di dire quale delle due ha eseguito. Si chiede a Docker dopo
     la corsa, quando l'immagine e certamente presente.

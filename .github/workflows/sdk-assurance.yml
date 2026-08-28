@@ -74,7 +74,7 @@ jobs:
   sdk-assurance:
     name: suite SDK sui quattro provider
     # Il gate non installa Rust ne Python nel runner: costruisce dentro
-    # `rust:1.92` ed esegue dentro `python:3.13-slim`. Qui servono Docker,
+    # `rust:1.98` ed esegue dentro `python:3.13-slim`. Qui servono Docker,
     # che il runner ha, e un Python qualunque per lanciare la campagna.
     runs-on: ubuntu-24.04
     # La build in release del wheel e del CLI e la parte lunga, e la suite

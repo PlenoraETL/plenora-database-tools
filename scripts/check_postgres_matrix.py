@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = "rust:1.92"
+IMAGE = "rust:1.98"
 # Rete privata della matrice, creata e distrutta dal gate: non e la rete
 # di un progetto Compose e il nome non deve farlo credere.
 NETWORK = "plenora-postgres-matrix"

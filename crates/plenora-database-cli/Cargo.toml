@@ -18,7 +18,8 @@ default = ["postgres"]
 postgres = ["dep:plenora-db-postgres"]
 mysql = ["dep:plenora-db-mysql"]
 sqlserver = ["dep:plenora-db-sqlserver"]
-full = ["postgres", "mysql", "sqlserver"]
+db2 = ["dep:plenora-db-db2"]
+full = ["postgres", "mysql", "sqlserver", "db2"]
 
 [dependencies]
 arrow-ipc.workspace = true
@@ -28,6 +29,7 @@ plenora-database-engine.workspace = true
 plenora-db-mysql = { workspace = true, optional = true }
 plenora-db-postgres = { workspace = true, optional = true }
 plenora-db-sqlserver = { workspace = true, optional = true }
+plenora-db-db2 = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-pemfile.workspace = true
 serde_json.workspace = true

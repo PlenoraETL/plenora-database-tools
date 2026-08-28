@@ -1,5 +1,5 @@
 //! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL`, `MySQL`,
-//! `MariaDB` e `SQL Server`; gli altri provider fail-closed.
+//! `MariaDB`, `SQL Server` e `Db2`; gli altri provider fail-closed.
 //!
 //! Design: unico compile pass con `DialectKind` dispatch sui punti dove
 //! il dialect diverge (placeholder `$N` vs `?`, quoting `"` vs `` ` ``,
@@ -37,6 +37,7 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
         ProviderKind::Mysql => DialectKind::Mysql,
         ProviderKind::Mariadb => DialectKind::Mariadb,
         ProviderKind::Sqlserver => DialectKind::SqlServer,
+        ProviderKind::Db2 => DialectKind::Db2,
         other => {
             return Err(DatabaseError::unsupported(
                 other,
@@ -80,6 +81,9 @@ enum DialectKind {
     /// qualcun altro. Il costo di una variante e un `match` in piu; il costo
     /// dell'alternativa e non sapere piu di chi si sta parlando.
     Mariadb,
+    /// Db2 LUW: identificatori SQL standard, marker posizionali `?`, limite
+    /// espresso con `FETCH FIRST` e upsert tramite `MERGE`.
+    Db2,
 }
 
 /// La forma di scrittura a cui la clausola `RETURNING` si attacca.
@@ -132,7 +136,7 @@ impl CompileContext {
             // Il segnaposto e il primo punto in cui MariaDB e MySQL: la lista
             // di cio che i due condividono e lunga, e ogni riga di questo file
             // che li tratta insieme e una riga in cui si somigliano davvero.
-            DialectKind::Mysql | DialectKind::Mariadb => "?".to_owned(),
+            DialectKind::Mysql | DialectKind::Mariadb | DialectKind::Db2 => "?".to_owned(),
             // Posizionale come gli altri, e con un nome: `tiberius` lega per
             // ordine e si aspetta `@P1`, `@P2`. Il numero e lo stesso di
             // PostgreSQL, la sintassi no.
@@ -153,7 +157,10 @@ fn quote_identifier(name: &str, dialect: DialectKind) -> Result<String> {
 impl From<DialectKind> for IdentifierDialect {
     fn from(kind: DialectKind) -> Self {
         match kind {
-            DialectKind::Postgres => Self::Postgres,
+            // Il quoting e ANSI come PostgreSQL. Il limite di 63 byte resta
+            // intenzionalmente conservativo finche il contratto pubblico di
+            // `IdentifierDialect` non potra aggiungere Db2 in una nuova major.
+            DialectKind::Postgres | DialectKind::Db2 => Self::Postgres,
             // Il quoting: backtick raddoppiato, identico sui due prodotti.
             DialectKind::Mysql | DialectKind::Mariadb => Self::Mysql,
             // Parentesi quadre, con la chiusa raddoppiata. La regola c'era
@@ -292,7 +299,37 @@ fn compile_spatial(
             compile_spatial_mysql(&col, predicate, reference, ctx)
         }
         DialectKind::SqlServer => compile_spatial_sqlserver(&col, predicate, reference, ctx),
+        DialectKind::Db2 => compile_spatial_db2(&col, predicate, reference, ctx),
     }
+}
+
+fn compile_spatial_db2(
+    col: &str,
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    reference.validate()?;
+    spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
+    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    let srid = i32::try_from(reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan(format!(
+            "SRID {} eccede il range i32 supportato da Db2 (max {})",
+            reference.srid,
+            i32::MAX
+        ))
+    })?;
+    let srid = ctx.bind(ParameterValue::I32(srid));
+    let reference = format!("ST_GEOMETRY(BLOB(HEXTORAW({geometry})), {srid})");
+    let function = match predicate {
+        SpatialPredicate::Intersects => "ST_INTERSECTS",
+        SpatialPredicate::Contains => "ST_CONTAINS",
+        SpatialPredicate::Within => "ST_WITHIN",
+        SpatialPredicate::DWithin { .. } | SpatialPredicate::BoundingBox => {
+            unreachable!("spatial_policy::validate_predicate deve rifiutare il predicato Db2")
+        }
+    };
+    Ok(format!("({function}({col}, {reference}) = 1)"))
 }
 
 /// Il predicato spatial in T-SQL: un **metodo della colonna**.
@@ -526,6 +563,13 @@ fn compile_returning(
     }
     let refusal = match dialect {
         DialectKind::Postgres => None,
+        DialectKind::Db2 => Some((
+            ProviderKind::Db2,
+            format!(
+                "Db2 non espone RETURNING nella forma portable {}: usa una SELECT esplicita post-DML",
+                form.label()
+            ),
+        )),
         DialectKind::Mysql => Some((
             ProviderKind::Mysql,
             "RETURNING non esiste su MySQL, a nessuna versione e in nessuna forma. \
@@ -658,8 +702,12 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
         write!(sql, " ORDER BY {ob}").expect("write String");
     }
     if let Some(limit) = s.limit {
-        if ctx.dialect != DialectKind::SqlServer {
-            write!(sql, " LIMIT {limit}").expect("write String");
+        match ctx.dialect {
+            DialectKind::SqlServer => {}
+            DialectKind::Db2 => {
+                write!(sql, " FETCH FIRST {limit} ROWS ONLY").expect("write String");
+            }
+            _ => write!(sql, " LIMIT {limit}").expect("write String"),
         }
     }
     Ok(sql)
@@ -691,7 +739,8 @@ fn compile_insert(s: &InsertStatement, ctx: &mut CompileContext) -> Result<Strin
         .iter()
         .map(|c| quote_identifier(c, ctx.dialect))
         .collect();
-    let cols_sql = cols?.join(", ");
+    let cols = cols?;
+    let cols_sql = cols.join(", ");
     let rows: Result<Vec<String>> = s
         .values
         .iter()
@@ -863,6 +912,81 @@ fn compile_upsert_sqlserver(
     ))
 }
 
+/// L'upsert Db2 usa una source table `VALUES` e un singolo `MERGE` atomico.
+///
+/// I marker della source sono legati una sola volta. Gli assignment espliciti
+/// vengono compilati dopo la source e i riferimenti a colonna sono qualificati
+/// con `T` per non confonderli con le colonne omonime di `S`.
+fn compile_upsert_db2(
+    s: &UpsertStatement,
+    table: &str,
+    cols: &[String],
+    rows: &[Vec<String>],
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?;
+
+    let source_columns = cols.join(", ");
+    let source_rows = rows
+        .iter()
+        .map(|row| format!("({})", row.join(", ")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_column = |name: &str| -> Result<String> {
+        if !s.columns.iter().any(|candidate| candidate == name) {
+            return Err(DatabaseError::invalid_plan(format!(
+                "conflict_target nomina una colonna che l'upsert non scrive: {name}"
+            )));
+        }
+        quote_identifier(name, ctx.dialect)
+    };
+    let predicates: Result<Vec<_>> = s
+        .conflict_target
+        .iter()
+        .map(|column| {
+            let quoted = source_column(column)?;
+            Ok(format!("T.{quoted} = S.{quoted}"))
+        })
+        .collect();
+    let insert_values = cols
+        .iter()
+        .map(|column| format!("S.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sql = format!(
+        "MERGE INTO {table} AS T USING (VALUES {source_rows}) AS S ({source_columns}) ON {}",
+        predicates?.join(" AND ")
+    );
+    if !s.update_on_conflict.is_empty() {
+        let assignments: Result<Vec<_>> = s
+            .update_on_conflict
+            .iter()
+            .map(|(column, expression)| {
+                let column = quote_identifier(column, ctx.dialect)?;
+                let expression = match expression {
+                    Expression::Literal(value) => ctx.bind(value.clone()),
+                    Expression::Column(name) => {
+                        format!("T.{}", quote_identifier(name, ctx.dialect)?)
+                    }
+                };
+                Ok(format!("T.{column} = {expression}"))
+            })
+            .collect();
+        write!(
+            sql,
+            " WHEN MATCHED THEN UPDATE SET {}",
+            assignments?.join(", ")
+        )
+        .expect("write String");
+    }
+    write!(
+        sql,
+        " WHEN NOT MATCHED THEN INSERT ({source_columns}) VALUES ({insert_values})"
+    )
+    .expect("write String");
+    Ok(sql)
+}
+
 fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<String> {
     if s.columns.is_empty() || s.values.is_empty() {
         return Err(DatabaseError::invalid_plan(
@@ -889,7 +1013,8 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         .iter()
         .map(|c| quote_identifier(c, ctx.dialect))
         .collect();
-    let cols_sql = cols?.join(", ");
+    let cols = cols?;
+    let cols_sql = cols.join(", ");
     // Le righe restano scomposte finche non si sa chi le usa: T-SQL ha
     // bisogno di **rileggere** il segnaposto di una colonna per costruire la
     // condizione di conflitto, e una stringa gia unita non lo permetterebbe.
@@ -904,6 +1029,9 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
     let rows = rows?;
     if ctx.dialect == DialectKind::SqlServer {
         return compile_upsert_sqlserver(s, &table, &cols_sql, &rows, ctx);
+    }
+    if ctx.dialect == DialectKind::Db2 {
+        return compile_upsert_db2(s, &table, &cols, &rows, ctx);
     }
     let mut sql = format!(
         "INSERT INTO {table} ({cols_sql}) VALUES {}",
@@ -943,6 +1071,7 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         // forma: T-SQL non ha una clausola di conflitto e lo statement e un
         // altro.
         DialectKind::SqlServer => unreachable!("l'upsert T-SQL esce prima di questo match"),
+        DialectKind::Db2 => unreachable!("l'upsert Db2 esce prima di questo match"),
         DialectKind::Mysql | DialectKind::Mariadb => {
             // MySQL: ON DUPLICATE KEY UPDATE. Il conflict_target NON è
             // esplicito in MySQL (usa la primary key / unique index

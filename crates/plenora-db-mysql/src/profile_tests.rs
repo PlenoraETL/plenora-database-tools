@@ -362,7 +362,7 @@ fn every_method_that_returns_a_future_restamps_the_attribution() {
         for tail in headers {
             let end = tail
                 .find(format!("{}}}", '\n').as_str())
-                .map_or(tail.len(), |at| at);
+                .unwrap_or(tail.len());
             let block = &tail[..end];
             let mut methods = 0;
             for method in block.split(format!("{}    fn ", '\n').as_str()).skip(1) {

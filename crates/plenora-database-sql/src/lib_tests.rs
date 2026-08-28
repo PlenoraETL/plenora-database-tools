@@ -779,7 +779,7 @@ fn query_ast_limit_uses_each_dialect_syntax() {
 }
 
 #[test]
-fn oracle_and_db2_convert_wkb_before_spatial_predicates() {
+fn oracle_converts_wkb_and_db2_refuses_to_invent_an_srid() {
     let select = Select {
         source: source(),
         projection: vec![identifier("id")],
@@ -800,16 +800,30 @@ fn oracle_and_db2_convert_wkb_before_spatial_predicates() {
     .expect("Oracle spatial")
     .sql;
     assert!(oracle.contains("SDO_UTIL.FROM_WKBGEOMETRY(:1)"));
-    let db2 = Renderer::new(
+    let error = Renderer::new(
         Dialect::Db2,
         DialectCapabilities {
             spatial_intersects: true,
         },
     )
     .render_select(&select)
-    .expect("Db2 spatial")
-    .sql;
-    assert!(db2.contains("DB2GSE.ST_GeomFromWKB(?, 0)"));
+    .expect_err("Db2 spatial senza SRID");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Unsupported
+    );
+}
+
+#[test]
+fn db2_uses_the_measured_coordinate_dimension_name() {
+    assert_eq!(
+        spatial_function_name(Dialect::Db2, SpatialFunction::Dimensions),
+        "ST_COORDDIM"
+    );
+    assert_eq!(
+        spatial_function_name(Dialect::Db2, SpatialFunction::Srid),
+        "ST_SRID"
+    );
 }
 
 #[test]

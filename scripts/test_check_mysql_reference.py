@@ -803,7 +803,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         self.assertEqual(environment["PLENORA_MYSQL_CA"], "/tmp/mysql-ca.pem")
 
     def test_host_cargo_honours_an_explicit_executable(self) -> None:
-        executable = "C:/toolchains/rust-1.92/cargo.exe"
+        executable = "C:/toolchains/rust-1.98/cargo.exe"
         with (
             patch.dict(
                 gate.os.environ,
@@ -1519,7 +1519,7 @@ SDK_ARTIFACT = {
         "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
     ),
     "maturin": "1.14.1",
-    "rustc": "1.92.0",
+    "rustc": "1.98.0",
 }
 SDK_VERSIONS = {
     "pandas": "3.0.5",
@@ -1531,7 +1531,7 @@ SDK_VERSIONS = {
 SDK_COUNTS = {"passed": 231, "skipped": 4, "deselected": 0}
 SDK_IMAGES = {
     "build": {
-        "reference": "rust:1.92",
+        "reference": "rust:1.98",
         "id": "sha256:f58923369ba2",
         "digests": ["rust@sha256:f58923369ba2"],
     },
@@ -1794,7 +1794,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             },
         )
         self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
-        self.assertEqual(recorded["versions"]["rustc"], "1.92.0")
+        self.assertEqual(recorded["versions"]["rustc"], "1.98.0")
 
         # Il bench confronta due artefatti, quindi il verdetto ne identifica
         # due: del CLI servono anche le feature — decidono quali provider
@@ -1806,9 +1806,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertIn("--no-default-features", cli["build_command"])
         self.assertIn("--locked", cli["build_command"])
 
-        # Un tag e mutabile: senza id e digest il verdetto direbbe "rust:1.92"
-        # e non quale rust:1.92.
-        self.assertEqual(recorded["images"]["build"]["reference"], "rust:1.92")
+        # Un tag e mutabile: senza id e digest il verdetto direbbe "rust:1.98"
+        # e non quale rust:1.98.
+        self.assertEqual(recorded["images"]["build"]["reference"], "rust:1.98")
         self.assertTrue(recorded["images"]["build"]["id"].startswith("sha256:"))
         self.assertTrue(recorded["images"]["test"]["digests"])
 
@@ -2089,7 +2089,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
     def test_the_images_are_tracked_because_a_tag_is_not_a_pin(self) -> None:
         """La promessa e "tracciato", e il verdetto porta di cosa.
 
-        `rust:1.92` e un tag mutabile e l'`apt-get` della build non e fissato:
+        `rust:1.98` e un tag mutabile e l'`apt-get` della build non e fissato:
         chiamare l'ambiente riproducibile prometterebbe che una seconda corsa
         lo ricostruisce identico, che nessuna misura del runner garantisce.
         """
@@ -2098,16 +2098,16 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertIn("Tracciato, non riproducibile", source)
 
         with patch.object(sdk, "run", return_value="sha256:abc []\n") as observed:
-            identity = sdk.image_identity("rust:1.92")
+            identity = sdk.image_identity("rust:1.98")
         self.assertEqual(observed.call_args.args[0][:3], ["docker", "image", "inspect"])
-        self.assertEqual(identity["reference"], "rust:1.92")
+        self.assertEqual(identity["reference"], "rust:1.98")
         self.assertEqual(identity["id"], "sha256:abc")
 
         with patch.object(
             sdk, "run", return_value='sha256:abc ["rust@sha256:def"]\n'
         ):
             self.assertEqual(
-                sdk.image_identity("rust:1.92")["digests"], ["rust@sha256:def"]
+                sdk.image_identity("rust:1.98")["digests"], ["rust@sha256:def"]
             )
 
     def test_the_benchmarks_have_an_option_instead_of_an_impossible_filter(
@@ -2396,19 +2396,25 @@ class PythonSdkRunnerTests(unittest.TestCase):
         offline = sdk.SCOPE_CONTRACTS["offline"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (228, 0, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (228, 3, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (25, 203, 0)
+            (offline.passed, offline.skipped, offline.deselected), (25, 206, 0)
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 226),
+            (2, 0, 229),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
-        # offline salta cio che live esegue, e nessuno dei due deseleziona.
-        self.assertEqual(live.passed, offline.passed + offline.skipped)
+        # il wheel standard salta Db2 anche live, e nessuno deseleziona.
+        self.assertEqual(
+            live.passed + live.skipped,
+            offline.passed + offline.skipped,
+        )
         # Il bench e un sottoinsieme della stessa suite.
-        self.assertEqual(live.passed, benchmark.passed + benchmark.deselected)
+        self.assertEqual(
+            live.passed + live.skipped,
+            benchmark.passed + benchmark.deselected,
+        )
 
         for scope, contract in sdk.SCOPE_CONTRACTS.items():
             output, summary = sdk_suite_output(scope)
@@ -2492,6 +2498,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 sdk.MYSQL_SKIP,
                 sdk.MARIADB_SKIP,
                 sdk.SQLSERVER_SKIP,
+                sdk.DB2_SKIP,
                 sdk.BENCH_SKIP,
             },
         )

@@ -422,17 +422,10 @@ impl RowScopedWriter for ScriptedWriter {
 /// Esecutore minimo senza runtime: il seam resta agnostico e i test
 /// offline non introducono dipendenze.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
-
-    struct Idle;
-    impl Wake for Idle {
-        fn wake(self: Arc<Self>) {}
-    }
+    use std::task::{Context, Poll, Waker};
 
     let mut future = std::pin::pin!(future);
-    let waker = Waker::from(Arc::new(Idle));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     loop {
         if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
             return output;

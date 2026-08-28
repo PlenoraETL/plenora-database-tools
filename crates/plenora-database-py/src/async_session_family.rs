@@ -35,8 +35,12 @@ use crate::errors::to_py_err;
 use crate::py_convert::{portable_from_json, statement_from_python};
 use crate::session_family::ProviderBuilder;
 use plenora_database_core::plan::Operation;
+#[cfg(not(feature = "db2"))]
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::CancellationToken;
+#[cfg(not(feature = "db2"))]
+use plenora_database_core::{DatabaseError, ErrorPhase};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -102,12 +106,12 @@ impl AsyncDatabaseSession {
     fn __aexit__(
         slf: Py<Self>,
         py: Python<'_>,
-        _exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        _exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let mut guard = slf.borrow_mut(py);
                 guard.closed = true;
             });
@@ -326,7 +330,7 @@ impl AsyncDatabaseSession {
                 )
                 .await
                 .map_err(to_py_err)?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let reader = crate::arrow_reader::AsyncBatchReader::new(stream);
                 Ok(Py::new(py, reader)?.into_pyobject(py)?.into_any().unbind())
             })
@@ -386,7 +390,7 @@ impl AsyncDatabaseSession {
             )
             .await
             .map_err(to_py_err)?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let d = crate::write::outcome_into_py(py, &outcome)?;
                 Ok(d.into_any().unbind())
             })
@@ -506,6 +510,70 @@ pub fn aconnect_sqlserver<'py>(
     )
 }
 
+/// Factory async di `IBM Db2 LUW` sulla sessione provider-agnostic.
+///
+/// # Errors
+///
+/// Come [`aconnect_mysql`], con `tls_ca_path` persistente e opt-out plaintext
+/// disponibile solo tramite `tls_mode="disable"` esplicito.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "db2")]
+pub fn aconnect_db2<'py>(
+    py: Python<'py>,
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<std::path::PathBuf>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let secret = SecretString::new(password.to_owned());
+    open_async_endpoint(
+        py,
+        crate::session_family::Endpoint {
+            host: host.to_owned(),
+            database: database.to_owned(),
+            user: user.to_owned(),
+            secret,
+            port,
+            tls_ca_pem: None,
+            tls_ca_path,
+            tls_mode: tls_mode.to_owned(),
+        },
+        crate::session_family::db2_provider,
+        "IBM Db2 LUW",
+        "aconnect_db2",
+    )
+}
+
+/// Stub async fail-closed dei wheel senza feature `db2`.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "db2"))]
+pub fn aconnect_db2<'py>(
+    py: Python<'py>,
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<std::path::PathBuf>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let _ = (host, database, user, password, port, tls_ca_path, tls_mode);
+    future_into_py(py, async move {
+        Err::<AsyncDatabaseSession, _>(to_py_err(DatabaseError::unsupported(
+            ProviderKind::Db2,
+            ErrorPhase::Prepare,
+            "supporto Db2 non incluso in questo wheel; usa un artefatto costruito con la feature 'db2'",
+        )))
+    })
+}
+
 /// Il corpo comune delle factory async.
 ///
 /// La configurazione — TLS compreso — passa da `family_config`, la stessa che
@@ -525,23 +593,38 @@ fn open_async<'py>(
     product: &'static str,
     factory: &'static str,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let host = host.to_owned();
-    let database = database.to_owned();
-    let user = user.to_owned();
     let secret = SecretString::new(password.to_owned());
-    let tls_mode_owned = tls_mode.to_owned();
+    open_async_endpoint(
+        py,
+        crate::session_family::Endpoint {
+            host: host.to_owned(),
+            database: database.to_owned(),
+            user: user.to_owned(),
+            secret,
+            port,
+            tls_ca_pem,
+            tls_ca_path: None,
+            tls_mode: tls_mode.to_owned(),
+        },
+        build,
+        product,
+        factory,
+    )
+}
+
+/// Apre una sessione async a partire da un endpoint gia tipizzato.
+fn open_async_endpoint<'py>(
+    py: Python<'py>,
+    endpoint: crate::session_family::Endpoint,
+    build: ProviderBuilder,
+    product: &'static str,
+    factory: &'static str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let secret = endpoint.secret.clone();
     future_into_py(py, async move {
         // Il costruttore seleziona il prodotto senza confronti su etichette:
         // un nome errato non deve scegliere per omissione un altro motore.
-        let provider = build(crate::session_family::Endpoint {
-            host,
-            database,
-            user,
-            secret: secret.clone(),
-            port,
-            tls_ca_pem,
-            tls_mode: tls_mode_owned,
-        })?;
+        let provider = build(endpoint)?;
         let cancel = CancellationToken::new();
         let connection = provider
             .test_connection(&secret, &cancel)
@@ -551,7 +634,7 @@ fn open_async<'py>(
             .probe_capabilities(&secret, &cancel)
             .await
             .map_err(to_py_err)?;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let session = AsyncDatabaseSession {
                 provider,
                 product,

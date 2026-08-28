@@ -2,7 +2,8 @@
 
 Motori raggiungibili: **PostgreSQL** con `connect`, **MySQL** con
 `connect_mysql`, **MariaDB** con `connect_mariadb`, **SQL Server** con
-`connect_sqlserver`, e i rispettivi `aconnect_*` per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
+`connect_sqlserver`, **IBM Db2 LUW** con `connect_db2`, e i rispettivi
+`aconnect_*` per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
 dichiara un motore e finisce sull'altro viene rifiutato alla probe.
 
 Uso base:
@@ -76,10 +77,12 @@ from ._native import connect as _native_connect
 from ._native import (
     AsyncDatabaseSession,
     DatabaseSession,
+    aconnect_db2 as _native_aconnect_db2,
     aconnect_mariadb as _native_aconnect_mariadb,
     aconnect_mysql as _native_aconnect_mysql,
     aconnect_sqlserver as _native_aconnect_sqlserver,
     connect_mariadb as _native_connect_mariadb,
+    connect_db2 as _native_connect_db2,
     connect_mysql as _native_connect_mysql,
     connect_sqlserver as _native_connect_sqlserver,
 )
@@ -269,6 +272,32 @@ def connect_sqlserver(
     """
     native = _native_connect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return _DatabaseSessionWrapper(native)
+
+
+def connect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> "_DatabaseSessionWrapper":
+    """Apre una sessione IBM Db2 LUW sincrona.
+
+    Riusa la superficie provider-agnostic di MySQL/MariaDB/SQL Server:
+    transazioni, savepoint, introspezione, Arrow, write e AST portabili.
+    I placeholder SQL nativi sono ``?``.
+
+    TLS e fail-closed: ``require`` e il default; ``disable`` abilita
+    plaintext soltanto quando richiesto esplicitamente. Una CA privata si
+    passa come percorso persistente, perche il client IBM puo rileggerla
+    quando apre nuove connessioni.
+    """
+    native = _native_connect_db2(
+        host, database, user, password, port, tls_ca_path, tls_mode
     )
     return _DatabaseSessionWrapper(native)
 
@@ -522,6 +551,26 @@ async def aconnect_sqlserver(
     return _AsyncDatabaseSessionWrapper(native)
 
 
+async def aconnect_db2(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> "_AsyncDatabaseSessionWrapper":
+    """Apre una sessione IBM Db2 LUW asincrona.
+
+    E l'equivalente async di :func:`connect_db2`; default TLS, percorso CA e
+    opt-out plaintext hanno lo stesso contratto.
+    """
+    native = await _native_aconnect_db2(
+        host, database, user, password, port, tls_ca_path, tls_mode
+    )
+    return _AsyncDatabaseSessionWrapper(native)
+
+
 class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
     """Wrapper Python-side per AsyncDatabaseSession: aggiunge ergonomia
     `acopy_from` con auto-conversion source + portable AST builders
@@ -677,6 +726,8 @@ __all__ = [
     "aconnect_mariadb",
     "connect_sqlserver",
     "aconnect_sqlserver",
+    "connect_db2",
+    "aconnect_db2",
     "DatabaseSession",
     "AsyncDatabaseSession",
     "MysqlSession",

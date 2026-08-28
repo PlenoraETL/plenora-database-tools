@@ -10,8 +10,7 @@ fuzz_target!(|input: &[u8]| {
     } else {
         (&[0_u8, 0, 0][..], input)
     };
-    let max_components =
-        u64::from(u16::from_le_bytes([control[0], control[1]])).saturating_add(1);
+    let max_components = u64::from(u16::from_le_bytes([control[0], control[1]])).saturating_add(1);
     let max_depth = u64::from(control[2] % 64).saturating_add(1);
 
     assert_eq!(

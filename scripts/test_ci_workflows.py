@@ -455,48 +455,6 @@ class CiWorkflowTests(unittest.TestCase):
                             "riferimento mobile: va fissato al commit",
                         )
 
-    def test_the_ignored_pyo3_advisories_stay_unreachable(self) -> None:
-        """Un'eccezione motivata dalla non raggiungibilita va sorvegliata.
-
-        `deny.toml` ignora RUSTSEC-2026-0176 e 0177 perche i simboli
-        vulnerabili non compaiono nel workspace. Finche resta un commento,
-        pero, basta una riga nuova per rendere il percorso raggiungibile
-        lasciando `cargo deny` verde — l'eccezione sopravviverebbe al motivo
-        che la giustifica.
-
-        La guardia copre cio che si puo verificare per simbolo:
-        `PyCFunction::new_closure` (0177). Per 0176 — `nth`/`nth_back` sugli
-        iteratori di `PyList`/`PyTuple` — non esiste una firma testuale
-        affidabile: un `.nth(` puo essere su qualunque iteratore Rust, e
-        infatti i tre presenti sono su `str::split_whitespace()`. Quel lato
-        resta verificato a mano, e la nota in deny.toml lo dice.
-        """
-
-        policy = (ROOT / "deny.toml").read_text(encoding="utf-8")
-        ignored = "RUSTSEC-2026-0177" in policy
-        if not ignored:
-            self.skipTest("advisory non piu ignorata: la guardia non serve")
-
-        forbidden = ("PyCFunction", "new_closure")
-        offenders: list[str] = []
-        for path in sorted((ROOT / "crates").rglob("*.rs")):
-            text = path.read_text(encoding="utf-8")
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                stripped = line.lstrip()
-                if stripped.startswith("//"):
-                    continue
-                for symbol in forbidden:
-                    if symbol in line:
-                        relative = path.relative_to(ROOT).as_posix()
-                        offenders.append(f"{relative}:{line_number}: {symbol}")
-        self.assertEqual(
-            offenders,
-            [],
-            "RUSTSEC-2026-0177 e ignorata perche non raggiungibile, ma il "
-            f"simbolo ora compare: {offenders}. Aggiornare pyo3 a >= 0.29 "
-            "oppure togliere l'eccezione da deny.toml.",
-        )
-
     def test_every_job_that_uses_the_sources_checks_them_out(self) -> None:
         """Chi legge i file versionati deve prenderli, non presumerli.
 

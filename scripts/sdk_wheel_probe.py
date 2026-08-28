@@ -26,6 +26,7 @@ carica, ed e l'unica cosa che dice quale codice nativo ha risposto ai test.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import sys
 import sysconfig
@@ -89,6 +90,38 @@ def assert_installed(name: str, origin: Path, directories: list[Path]) -> None:
     )
 
 
+def assert_standard_wheel_excludes_db2_runtime() -> None:
+    """Il wheel generale espone DB2 ma non deve collegare ODBC di nascosto.
+
+    Un TLS mode volutamente invalido impedisce alla variante DB2 reale di
+    arrivare alla rete. La variante standard deve invece fermarsi prima con
+    l'errore pubblico `Unsupported`: e il contratto che rende distinguibile
+    un wheel generale dall'artefatto DB2 dedicato.
+
+    # Raises
+
+    `RuntimeError` se la factory manca, accetta la chiamata o restituisce una
+    categoria diversa.
+    """
+
+    package = importlib.import_module(PACKAGE)
+    try:
+        package.connect_db2(
+            "localhost",
+            "probe",
+            "probe",
+            "probe",
+            tls_mode="sdk_wheel_probe_invalid",
+        )
+    except package.PlenoraUnsupportedError:
+        return
+    except package.PlenoraError as error:
+        raise RuntimeError(
+            "la factory DB2 del wheel standard non ha fallito come Unsupported"
+        ) from error
+    raise RuntimeError("la factory DB2 del wheel standard ha accettato la chiamata")
+
+
 def main() -> int:
     directories = site_directories()
     # Il package si verifica prima di risolvere il nativo: risolvere `_native`
@@ -99,6 +132,7 @@ def main() -> int:
     assert_installed(PACKAGE, package, directories)
     native = module_origin(NATIVE)
     assert_installed(NATIVE, native, directories)
+    assert_standard_wheel_excludes_db2_runtime()
     digest = hashlib.sha256(native.read_bytes()).hexdigest()
     print(f"{ORIGIN_MARKER}{package.parent} {native} {digest}")
     return 0

@@ -185,3 +185,56 @@ def connect_sqlserver_reference():
 async def aconnect_sqlserver_reference():
     host, database, user, password, ca_pem = sqlserver_config_or_skip()
     return await p.aconnect_sqlserver(host, database, user, password, tls_ca_pem=ca_pem)
+
+
+# ============================== IBM Db2 LUW ==============================
+
+DB2_HOST_ENV = "PLENORA_TEST_DB2_HOST"
+DB2_DB_ENV = "PLENORA_TEST_DB2_DATABASE"
+DB2_USER_ENV = "PLENORA_TEST_DB2_USER"
+DB2_PWD_ENV = "PLENORA_TEST_DB2_PASSWORD"
+DB2_PORT_ENV = "PLENORA_TEST_DB2_PORT"
+DB2_CA_ENV = "PLENORA_TEST_DB2_CA"
+DB2_TLS_MODE_ENV = "PLENORA_TEST_DB2_TLS_MODE"
+
+
+def db2_config_or_skip() -> tuple:
+    host = os.environ.get(DB2_HOST_ENV)
+    password = os.environ.get(DB2_PWD_ENV)
+    if not host or not password:
+        pytest.skip(f"live test Db2: mancano env {DB2_HOST_ENV} e/o {DB2_PWD_ENV}")
+    return (
+        host,
+        os.environ.get(DB2_DB_ENV, "plenora"),
+        os.environ.get(DB2_USER_ENV, "db2inst1"),
+        password,
+        int(os.environ.get(DB2_PORT_ENV, "50000")),
+        os.environ.get(DB2_CA_ENV),
+        os.environ.get(DB2_TLS_MODE_ENV, "require"),
+    )
+
+
+def connect_db2_reference():
+    host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
+    return p.connect_db2(
+        host,
+        database,
+        user,
+        password,
+        port=port,
+        tls_ca_path=ca_path,
+        tls_mode=tls_mode,
+    )
+
+
+async def aconnect_db2_reference():
+    host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
+    return await p.aconnect_db2(
+        host,
+        database,
+        user,
+        password,
+        port=port,
+        tls_ca_path=ca_path,
+        tls_mode=tls_mode,
+    )

@@ -43,6 +43,17 @@ ROOT = Path(__file__).resolve().parents[1]
 STEPS: tuple[tuple[str, list[str]], ...] = (
     ("cargo fmt", ["cargo", "fmt", "--all", "--", "--check"]),
     (
+        "cargo fmt fuzz",
+        [
+            "cargo",
+            "fmt",
+            "--manifest-path",
+            "fuzz/Cargo.toml",
+            "--",
+            "--check",
+        ],
+    ),
+    (
         "cargo clippy",
         [
             "cargo",
@@ -62,10 +73,25 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         ["cargo", "test", "--workspace", "--", "--skip", "live_"],
     ),
     ("cargo check", ["cargo", "check", "--workspace", "--all-targets"]),
+    (
+        "cargo check fuzz",
+        [
+            "cargo",
+            "check",
+            "--manifest-path",
+            "fuzz/Cargo.toml",
+            "--locked",
+            "--all-targets",
+        ],
+    ),
     ("test_ci_workflows.py", [sys.executable, "scripts/test_ci_workflows.py"]),
     (
         "test_check_mariadb_reference.py",
         [sys.executable, "scripts/test_check_mariadb_reference.py"],
+    ),
+    (
+        "test_check_db2_reference.py",
+        [sys.executable, "scripts/test_check_db2_reference.py"],
     ),
     (
         "test_check_mysql_reference.py",

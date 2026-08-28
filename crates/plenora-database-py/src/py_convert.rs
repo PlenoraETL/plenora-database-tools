@@ -98,7 +98,7 @@ pub fn python_to_param(value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
         let s: String = value.extract()?;
         return Ok(ParameterValue::String(s));
     }
-    if let Ok(bytes) = value.downcast::<PyBytes>() {
+    if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(ParameterValue::Bytes(bytes.as_bytes().to_vec()));
     }
     if value.is_instance_of::<PyDict>() || value.is_instance_of::<PyList>() {
@@ -123,7 +123,7 @@ fn typed_to_param(kind: &str, value: &Bound<'_, PyAny>) -> PyResult<ParameterVal
         "decimal" => Ok(ParameterValue::Decimal(value.extract::<String>()?)),
         "null" => {
             let type_name: String = value
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .ok()
                 .and_then(|d| d.get_item("type_name").ok().flatten())
                 .and_then(|v| v.extract::<String>().ok())
@@ -207,14 +207,14 @@ fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
         let s: String = value.extract()?;
         return Ok(serde_json::Value::String(s));
     }
-    if let Ok(list) = value.downcast::<PyList>() {
+    if let Ok(list) = value.cast::<PyList>() {
         let mut out = Vec::with_capacity(list.len());
         for item in list.iter() {
             out.push(python_to_json(&item)?);
         }
         return Ok(serde_json::Value::Array(out));
     }
-    if let Ok(dict) = value.downcast::<PyDict>() {
+    if let Ok(dict) = value.cast::<PyDict>() {
         let mut out = serde_json::Map::with_capacity(dict.len());
         for (key, val) in dict.iter() {
             let key_str: String = key

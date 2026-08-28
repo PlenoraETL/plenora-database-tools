@@ -157,7 +157,14 @@ def validate_semantics(root: Path) -> list[Violation]:
     init_text = (root / "crates/plenora-database-py/python/plenora_database/__init__.py").read_text(
         encoding="utf-8"
     )
-    for factory in ("connect_mariadb", "aconnect_mariadb", "connect_sqlserver", "aconnect_sqlserver"):
+    for factory in (
+        "connect_mariadb",
+        "aconnect_mariadb",
+        "connect_sqlserver",
+        "aconnect_sqlserver",
+        "connect_db2",
+        "aconnect_db2",
+    ):
         if f"def {factory}(" not in init_text or f"`{factory}`" not in sdk_text:
             violations.append(Violation(sdk, f"factory SDK non documentata: {factory}"))
     if "non ancora esposto al SDK Python" in sdk_text:

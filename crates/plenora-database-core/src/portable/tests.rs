@@ -253,6 +253,7 @@ fn a_provider_without_a_dialect_is_refused_and_names_itself() {
                 | ProviderKind::Mysql
                 | ProviderKind::Mariadb
                 | ProviderKind::Sqlserver
+                | ProviderKind::Db2
         );
         match compiled {
             Ok(statement) => assert!(
@@ -294,6 +295,99 @@ fn sqlserver_speaks_tsql_where_the_others_speak_sql() {
         "SELECT TOP (10) [id] FROM [t] WHERE [id] = @P1 ORDER BY [id] ASC"
     );
     assert_eq!(compiled.params.len(), 1);
+}
+
+#[test]
+fn db2_uses_ansi_quoting_positional_markers_and_fetch_first() {
+    let stmt = select("work_order", vec!["id", "status"])
+        .schema("app")
+        .where_(eq("tenant_id", ParameterValue::I64(42)))
+        .order_by("id", Direction::Asc)
+        .limit(25)
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Db2, &stmt).expect("select Db2");
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\", \"status\" FROM \"app\".\"work_order\" WHERE \"tenant_id\" = ? ORDER BY \"id\" ASC FETCH FIRST 25 ROWS ONLY"
+    );
+    assert_eq!(compiled.params, vec![ParameterValue::I64(42)]);
+}
+
+#[test]
+fn db2_compiles_crud_but_refuses_unqualified_returning() {
+    let insert = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("t"),
+        columns: vec!["id".into(), "v".into()],
+        values: vec![vec![
+            Expression::literal(ParameterValue::I64(1)),
+            Expression::literal(ParameterValue::String("one".into())),
+        ]],
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Db2, &insert).expect("insert Db2");
+    assert_eq!(
+        compiled.sql,
+        "INSERT INTO \"t\" (\"id\", \"v\") VALUES (?, ?)"
+    );
+
+    let update = PortableStatement::Update(UpdateStatement {
+        table: TableRef::new("t"),
+        assignments: vec![(
+            "v".into(),
+            Expression::literal(ParameterValue::String("two".into())),
+        )],
+        filter: Some(eq("id", ParameterValue::I64(1))),
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Db2, &update).expect("update Db2");
+    assert_eq!(compiled.sql, "UPDATE \"t\" SET \"v\" = ? WHERE \"id\" = ?");
+
+    let delete = PortableStatement::Delete(DeleteStatement {
+        table: TableRef::new("t"),
+        filter: Some(eq("id", ParameterValue::I64(1))),
+        returning: vec!["id".into()],
+    });
+    let error = compile_portable(ProviderKind::Db2, &delete).expect_err("RETURNING Db2");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert!(error.message.contains("RETURNING"), "{}", error.message);
+}
+
+#[test]
+fn db2_upsert_is_one_atomic_merge_for_all_rows() {
+    let stmt = PortableStatement::Upsert(UpsertStatement {
+        table: TableRef::qualified("app", "cache"),
+        columns: vec!["id".into(), "value".into()],
+        values: vec![
+            vec![
+                Expression::literal(ParameterValue::I64(1)),
+                Expression::literal(ParameterValue::String("one".into())),
+            ],
+            vec![
+                Expression::literal(ParameterValue::I64(2)),
+                Expression::literal(ParameterValue::String("two".into())),
+            ],
+        ],
+        conflict_target: vec!["id".into()],
+        update_on_conflict: vec![(
+            "value".into(),
+            Expression::literal(ParameterValue::String("updated".into())),
+        )],
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Db2, &stmt).expect("merge Db2");
+    assert_eq!(
+        compiled.sql,
+        "MERGE INTO \"app\".\"cache\" AS T USING (VALUES (?, ?), (?, ?)) AS S (\"id\", \"value\") ON T.\"id\" = S.\"id\" WHEN MATCHED THEN UPDATE SET T.\"value\" = ? WHEN NOT MATCHED THEN INSERT (\"id\", \"value\") VALUES (S.\"id\", S.\"value\")"
+    );
+    assert_eq!(compiled.params.len(), 5);
+
+    let PortableStatement::Upsert(mut invalid) = stmt else {
+        unreachable!()
+    };
+    invalid.conflict_target = vec!["missing".into()];
+    let error = compile_portable(ProviderKind::Db2, &PortableStatement::Upsert(invalid))
+        .expect_err("chiave non presente nella source");
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
 }
 
 #[test]
@@ -724,6 +818,34 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
         .contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
+}
+
+#[test]
+fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let bytes = ewkb_point_2d(4326);
+    let stmt = select("features", vec!["id"])
+        .where_(spatial(
+            "shape",
+            SpatialPredicate::Intersects,
+            SpatialReference {
+                ewkb: bytes.clone(),
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Db2, &stmt).expect("spatial Db2");
+
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"features\" WHERE (ST_INTERSECTS(\"shape\", ST_GEOMETRY(BLOB(HEXTORAW(?)), ?)) = 1)"
+    );
+    assert_eq!(
+        compiled.params,
+        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
+    );
 }
 
 #[test]

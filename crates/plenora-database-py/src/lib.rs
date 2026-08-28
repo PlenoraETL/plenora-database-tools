@@ -1,8 +1,8 @@
 //! Bindings Python (`PyO3`) di `plenora-database-tools`.
 //!
-//! Espone sessioni sync e async sulle famiglie `PostgreSQL`, `MySQL`/`MariaDB` e `SQL`
-//! Server, preservando i contratti comuni su transazioni, Arrow e query
-//! portabili.
+//! Espone sessioni sync e async per `PostgreSQL`, `MySQL`/`MariaDB`, `SQL`
+//! Server e `IBM Db2 LUW`, preservando i contratti comuni su transazioni,
+//! Arrow e query portabili.
 //!
 //! Il modulo nativo e compilato come `plenora_database._native`; i wrapper
 //! Python idiomatici vivono in `python/plenora_database/__init__.py`, che e
@@ -33,11 +33,13 @@ mod write;
 use arrow_reader::{AsyncBatchReader, BatchReader};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_session_family::{
-    aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
+    aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
 };
 use async_transaction::AsyncTransaction;
 use session::{connect, Session};
-use session_family::{connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession};
+use session_family::{
+    connect_db2, connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession,
+};
 use transaction::Transaction;
 
 /// Runtime tokio globale condiviso da Session e Transaction. Costruito una
@@ -166,6 +168,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aconnect_mariadb, m)?)?;
     m.add_function(wrap_pyfunction!(connect_sqlserver, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_sqlserver, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_db2, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect_db2, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;

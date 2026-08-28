@@ -104,7 +104,7 @@ impl BatchReader {
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let cancel = CancellationToken::new();
         let batch_opt = py
-            .allow_threads(|| runtime().block_on(async { self.inner.next_batch(&cancel).await }))
+            .detach(|| runtime().block_on(async { self.inner.next_batch(&cancel).await }))
             .map_err(to_py_err)?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
@@ -255,7 +255,7 @@ impl AsyncBatchReader {
             match batch_opt {
                 Some(batch) => {
                     let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
-                    Python::with_gil(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
+                    Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
                 }
                 None => Err(PyStopAsyncIteration::new_err(())),
             }
@@ -278,7 +278,7 @@ impl AsyncBatchReader {
                     .finish()
                     .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
             }
-            Python::with_gil(|py| Ok(PyBytes::new(py, &buf).into_any().unbind()))
+            Python::attach(|py| Ok(PyBytes::new(py, &buf).into_any().unbind()))
         })
     }
 

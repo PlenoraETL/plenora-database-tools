@@ -17,11 +17,19 @@ license-file.workspace = true
 name = "plenora_database_native"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Db2 usa il driver ODBC di sistema. Rimane fuori dai wheel multipiattaforma
+# standard, che non possono assumere la presenza di unixODBC/IBM CLI Driver;
+# gli artefatti DB2 lo abilitano esplicitamente e ne qualificano il runtime.
+db2 = ["dep:plenora-db-db2"]
+
 [dependencies]
 plenora-database-core.workspace = true
 plenora-db-postgres.workspace = true
 plenora-db-mysql.workspace = true
 plenora-db-sqlserver.workspace = true
+plenora-db-db2 = { workspace = true, optional = true }
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
 # RUSTSEC-2025-0020: fino alla 0.24.0 `PyString::from_object` passava un
@@ -34,8 +42,8 @@ arrow-schema.workspace = true
 # codice non chiama quella funzione, ma la raggiungibilita non e una difesa
 # che si mantiene da sola: la prossima riga che la usasse non troverebbe
 # nessun gate a fermarla.
-pyo3 = { version = "0.24.2", features = ["extension-module", "abi3-py310", "serde"] }
-pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
+pyo3 = { version = "=0.29.2", features = ["extension-module", "abi3-py310", "serde"] }
+pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

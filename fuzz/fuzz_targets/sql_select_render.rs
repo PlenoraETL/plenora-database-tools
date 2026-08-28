@@ -230,12 +230,9 @@ fuzz_target!(|input: &[u8]| {
                 .iter()
                 .chain(std::iter::once(&statement.source.object))
             {
-                assert_quoting_round_trip(
-                    &renderer.quote_identifier(identifier),
-                    identifier.as_str(),
-                    open,
-                    close,
-                );
+                if let Ok(quoted) = renderer.quote_identifier(identifier) {
+                    assert_quoting_round_trip(&quoted, identifier.as_str(), open, close);
+                }
             }
 
             if let Ok(rendered) = renderer.render_select(&statement) {

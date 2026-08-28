@@ -54,13 +54,10 @@ async fn connect_cancel_safe(
 ) -> Result<PooledClient> {
     select_with_cancellation(provider.connect_session(secret), cancellation)
         .await
-        .map_or_else(
-            || {
-                provider.metrics.cancellation();
-                Err(cancelled_read_error(cancellation))
-            },
-            std::convert::identity,
-        )
+        .unwrap_or_else(|| {
+            provider.metrics.cancellation();
+            Err(cancelled_read_error(cancellation))
+        })
 }
 
 async fn start_read_query(
@@ -73,10 +70,9 @@ async fn start_read_query(
 ) -> Result<RowStream> {
     let parameter_count = parameter_refs.len();
     let (result, error_phase) = if let Some(parameter_types) = parameter_types {
-        let query = client.client()?.query_typed_raw(
-            sql,
-            parameter_refs.into_iter().zip(parameter_types.into_iter()),
-        );
+        let query = client
+            .client()?
+            .query_typed_raw(sql, parameter_refs.into_iter().zip(parameter_types));
         (
             select_with_cancellation(query, cancellation)
                 .await
@@ -223,10 +219,7 @@ pub async fn query_stream(
         .flatten();
     let mut typed_rows = None;
     if let Some(parameter_types) = typed_parameter_types {
-        let typed_parameters = parameter_refs
-            .iter()
-            .copied()
-            .zip(parameter_types.into_iter());
+        let typed_parameters = parameter_refs.iter().copied().zip(parameter_types);
         if let Some(result) = select_with_cancellation(
             client
                 .client()?

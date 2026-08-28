@@ -118,7 +118,7 @@ impl AsyncTransaction {
             // una riga o piu di una colonna invece di prendere la prima e
             // buttare via il resto. E' la stessa regola dei costruttori
             // scalar tipizzati del core.
-            Python::with_gil(|py| scalar_to_python(py, rows).map(Bound::unbind))
+            Python::attach(|py| scalar_to_python(py, rows).map(Bound::unbind))
         })
     }
 
@@ -297,9 +297,9 @@ impl AsyncTransaction {
     fn __aexit__<'py>(
         &self,
         py: Python<'py>,
-        exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let is_ok = exc_type.is_none(py);

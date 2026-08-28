@@ -46,7 +46,9 @@ fn decode_numeric_binary(payload: &[u8]) -> (bool, u128, u16) {
     let scale = u16::from_be_bytes([payload[6], payload[7]]);
     assert_eq!(payload.len(), 8 + digits * 2);
     let groups = payload[8..]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
         .collect::<Vec<_>>();
     assert!(groups.iter().all(|group| *group < 10_000));

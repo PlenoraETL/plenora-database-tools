@@ -47,3 +47,15 @@ passo della migrazione.
 
 I nuovi progetti ripartono da volumi vuoti e le fixture nascono dagli script in
 `docker/*/init`, che il primo avvio riesegue.
+
+## Reset del fixture Db2
+
+Il gate Db2 tratta `PLENORA_TEST` come schema di fixture sacrificabile: a ogni
+inizializzazione elimina soltanto gli oggetti che il fixture stesso conosce e
+ricrea lo schema. Se trova uno stato diverso da quello atteso fallisce, invece
+di allargare la cancellazione. Il volume dell'istanza resta persistente tra i
+riavvii; `down --volumes` e riservato alla chiusura esplicita della campagna.
+
+L'immagine Community non assume la presenza di `SYSTOOLSPACE`: il reset usa DDL
+esplicito e verificato. Questo rende il secondo avvio una parte della prova di
+idempotenza, non una condizione lasciata alla storia del volume locale.

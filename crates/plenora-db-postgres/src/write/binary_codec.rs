@@ -571,8 +571,10 @@ pub fn encode_numeric_binary(
     let integer_groups = (left_padding + integer_digits) / 4;
     let mut groups = padded
         .as_bytes()
-        .chunks_exact(4)
-        .map(parse_base10000_group)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|group| parse_base10000_group(group))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let leading = groups.iter().take_while(|digit| **digit == 0).count();
     let trailing = groups.iter().rev().take_while(|digit| **digit == 0).count();

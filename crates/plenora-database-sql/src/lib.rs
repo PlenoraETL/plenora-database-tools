@@ -1102,7 +1102,11 @@ impl Renderer {
                             format!("SDO_UTIL.FROM_WKBGEOMETRY({value})")
                         }
                         Dialect::Db2 => {
-                            format!("DB2GSE.ST_GeomFromWKB({value}, 0)")
+                            return Err(DatabaseError::unsupported(
+                                self.provider_kind(),
+                                ErrorPhase::Prepare,
+                                "parametro geometry Db2 richiede SRID dichiarato nel piano portable",
+                            ));
                         }
                     })
                 } else {
@@ -1381,10 +1385,11 @@ impl Renderer {
                         )
                     }
                     Dialect::Db2 => {
-                        format!(
-                            "DB2GSE.ST_INTERSECTS(\
-                             {quoted}, DB2GSE.ST_GeomFromWKB({placeholder}, 0)) = 1"
-                        )
+                        return Err(DatabaseError::unsupported(
+                            self.provider_kind(),
+                            ErrorPhase::Prepare,
+                            "spatial Db2 richiede SRID dichiarato nel piano portable",
+                        ));
                     }
                 };
                 Ok(expression)
@@ -1693,6 +1698,13 @@ const fn mysql_spatial_name(function: SpatialFunction) -> Option<&'static str> {
     }
 }
 
+const fn db2_spatial_name(function: SpatialFunction) -> Option<&'static str> {
+    match function {
+        SpatialFunction::Dimensions => Some("ST_COORDDIM"),
+        _ => None,
+    }
+}
+
 /// La forma con cui un membro T-SQL si scrive.
 ///
 /// Su ogni altro dialetto una funzione spatial e una chiamata e il nome basta a
@@ -1848,6 +1860,10 @@ pub const fn spatial_function_name(dialect: Dialect, function: SpatialFunction) 
 const fn dialect_spatial_name(dialect: Dialect, function: SpatialFunction) -> &'static str {
     match dialect {
         Dialect::Mysql => match mysql_spatial_name(function) {
+            Some(name) => name,
+            None => spatial_name(function),
+        },
+        Dialect::Db2 => match db2_spatial_name(function) {
             Some(name) => name,
             None => spatial_name(function),
         },

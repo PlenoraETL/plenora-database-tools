@@ -21,7 +21,7 @@ from scripts.compose_network import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = "rust:1.92"
+IMAGE = "rust:1.98"
 
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "

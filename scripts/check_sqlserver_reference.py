@@ -21,7 +21,7 @@ from scripts.compose_network import compose_network  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUST_IMAGE = "rust:1.92"
+RUST_IMAGE = "rust:1.98"
 CONTAINER = "dataflow-sqlserver"
 EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"

@@ -26,7 +26,7 @@
 //   che non sono item Rust e non vogliamo backtick-are ovunque.
 // - missing_const_for_fn: i #[pymethods] non possono essere const per via
 //   dei macro attributi di pyo3.
-// - needless_pass_by_value: __exit__ deve avere firma esatta (tre PyObject).
+// - needless_pass_by_value: __exit__ deve avere firma esatta (tre Py<PyAny>).
 #![allow(
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
@@ -90,7 +90,7 @@ impl Session {
         let secret = self.secret.clone();
         let cancel = CancellationToken::new();
         let inspection = py
-            .allow_threads(|| {
+            .detach(|| {
                 runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
             })
             .map_err(to_py_err)?;
@@ -120,10 +120,8 @@ impl Session {
         let provider: Arc<dyn plenora_database_core::provider::Provider> =
             Arc::clone(&self.provider) as Arc<dyn plenora_database_core::provider::Provider>;
         let secret = self.secret.clone();
-        py.allow_threads(|| {
-            runtime().block_on(crate::session_tx::run_transaction(provider, secret, work))
-        })
-        .map_err(to_py_err)
+        py.detach(|| runtime().block_on(crate::session_tx::run_transaction(provider, secret, work)))
+            .map_err(to_py_err)
     }
 }
 
@@ -278,7 +276,7 @@ impl Session {
         let json_str = value.to_string();
         let json_mod = py.import("json")?;
         let obj = json_mod.getattr("loads")?.call1((json_str,))?;
-        Ok(obj.downcast_into::<PyDict>()?)
+        Ok(obj.cast_into::<PyDict>()?)
     }
 
     /// Esegue DDL **fuori transazione**, in autocommit.
@@ -291,7 +289,7 @@ impl Session {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let sql = sql.to_owned();
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 provider.execute_ddl(&secret, &sql, &cancel).await
@@ -374,7 +372,7 @@ impl Session {
         self.ensure_open()?;
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
-        py.allow_threads(|| {
+        py.detach(|| {
             open_reader(
                 &self.provider,
                 &self.secret,
@@ -428,7 +426,7 @@ impl Session {
         self.ensure_open()?;
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
-        let result = py.allow_threads(|| {
+        let result = py.detach(|| {
             crate::write::copy_from_sync(
                 &self.provider,
                 &self.secret,
@@ -486,7 +484,7 @@ impl Session {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let tx = py
-            .allow_threads(|| {
+            .detach(|| {
                 runtime().block_on(async move {
                     let cancel = CancellationToken::new();
                     provider
@@ -507,9 +505,9 @@ impl Session {
     /// (ritorna False, secondo il protocollo Python).
     fn __exit__(
         &mut self,
-        _exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        _exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> bool {
         self.closed = true;
         false
@@ -604,7 +602,7 @@ pub fn connect(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<Session> {
     let cancel = CancellationToken::new();
     let provider_for_probe = Arc::clone(&provider);
     let secret_for_probe = SecretString::new(dsn.to_owned());
-    let caps_result = py.allow_threads(|| {
+    let caps_result = py.detach(|| {
         runtime().block_on(async move {
             provider_for_probe
                 .probe_capabilities(&secret_for_probe, &cancel)

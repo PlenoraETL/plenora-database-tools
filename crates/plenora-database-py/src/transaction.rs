@@ -69,7 +69,7 @@ impl Transaction {
     ) -> PyResult<Vec<Row>> {
         let statement = statement_from_python(sql, params.as_ref())?;
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.query(&statement, &cancel).await
@@ -97,7 +97,7 @@ impl Transaction {
     ) -> PyResult<u64> {
         let statement = statement_from_python(sql, params.as_ref())?;
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.execute(&statement, &cancel).await
@@ -144,7 +144,7 @@ impl Transaction {
         let ast = portable_from_json(ast_json)?;
         let tx = self.tx_mut()?;
         let rows: Vec<Row> = py
-            .allow_threads(|| {
+            .detach(|| {
                 runtime().block_on(async move {
                     let cancel = CancellationToken::new();
                     execute_portable_returning(&mut **tx, &ast, &cancel).await
@@ -158,7 +158,7 @@ impl Transaction {
     fn execute_portable_count(&mut self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         let ast = portable_from_json(ast_json)?;
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 execute_portable(&mut **tx, &ast, &cancel).await
@@ -208,7 +208,7 @@ impl Transaction {
             None
         };
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 let request = ConditionalUpdate {
@@ -226,7 +226,7 @@ impl Transaction {
     /// semplici `[A-Za-z_][A-Za-z0-9_]*`).
     fn savepoint(&mut self, py: Python<'_>, name: &str) -> PyResult<()> {
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.savepoint(name, &cancel).await
@@ -239,7 +239,7 @@ impl Transaction {
     /// `release_savepoint` per chiuderlo).
     fn rollback_to_savepoint(&mut self, py: Python<'_>, name: &str) -> PyResult<()> {
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.rollback_to_savepoint(name, &cancel).await
@@ -251,7 +251,7 @@ impl Transaction {
     /// Chiude il savepoint (equivalente a `RELEASE SAVEPOINT`).
     fn release_savepoint(&mut self, py: Python<'_>, name: &str) -> PyResult<()> {
         let tx = self.tx_mut()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.release_savepoint(name, &cancel).await
@@ -270,7 +270,7 @@ impl Transaction {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
         // Il provider va letto prima che `commit` consumi la transazione.
         let provider = tx.provider_kind();
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 let outcome = tx.commit(&cancel).await?;
@@ -286,7 +286,7 @@ impl Transaction {
     /// Rollback della transazione. La consuma.
     fn rollback(&mut self, py: Python<'_>) -> PyResult<()> {
         let tx = self.inner.take().ok_or_else(tx_closed_error)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 tx.rollback(&cancel).await
@@ -306,9 +306,9 @@ impl Transaction {
     fn __exit__(
         &mut self,
         py: Python<'_>,
-        exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> PyResult<bool> {
         // Se già chiusa (commit/rollback esplicito dentro il with), no-op.
         if self.inner.is_none() {

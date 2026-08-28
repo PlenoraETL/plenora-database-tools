@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.compose_network import compose_network  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = "rust:1.92"
+IMAGE = "rust:1.98"
 # La rete Compose si scopre dalle label del container: i compose
 # dichiarano progetti distinti, quindi un nome scritto a mano si rompe
 # in silenzio al primo rename.

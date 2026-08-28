@@ -30,7 +30,7 @@ from scripts.compose_network import container_variable  # noqa: E402
 from scripts.mysql_references import REFERENCES, MysqlReference  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = "rust:1.92"
+IMAGE = "rust:1.98"
 CONTAINER = "dataflow-mysql"
 RESULT_PREFIX = "PLENORA_MYSQL_PERF_RESULT="
 APPEND_MODE = "append_single_transaction"

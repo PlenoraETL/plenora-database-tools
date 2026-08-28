@@ -31,6 +31,7 @@ class ScopeTransactionIsImplemented(unittest.TestCase):
         "plenora-db-postgres",
         "plenora-db-mysql",
         "plenora-db-sqlserver",
+        "plenora-db-db2",
     )
 
     def sources(self, crate: str) -> list[Path]:

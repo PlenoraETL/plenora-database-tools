@@ -111,7 +111,8 @@ pub(super) async fn execute(
     .await;
     let mut writer = match writer {
         Ok(writer) => writer,
-        Err((transaction, error)) => {
+        Err(failure) => {
+            let (transaction, error) = *failure;
             return Err(rollback_error(transaction, error, execution_id).await);
         }
     };
@@ -292,26 +293,29 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
         cancellation: &'input CancellationToken,
         runtime: &'input WriteRuntime,
         constraint_column: Option<String>,
-    ) -> std::result::Result<Self, (Transaction<'transaction>, DatabaseError)> {
+    ) -> std::result::Result<Self, Box<(Transaction<'transaction>, DatabaseError)>> {
         let (sql, indexes) =
             match diagnostic_statement(operation, schema, plans, runtime.insert_mode) {
                 Ok(statement) => statement,
-                Err(error) => return Err((transaction, error)),
+                Err(error) => return Err(Box::new((transaction, error))),
             };
         let prepared = select_with_cancellation(transaction.prepare(&sql), cancellation).await;
         let statement = match prepared {
             Some(Ok(statement)) => statement,
             Some(Err(error)) => {
-                return Err((transaction, classify_error(ErrorPhase::Prepare, &error)));
+                return Err(Box::new((
+                    transaction,
+                    classify_error(ErrorPhase::Prepare, &error),
+                )));
             }
             None => {
-                return Err((
+                return Err(Box::new((
                     transaction,
                     diagnostic_error(
                         crate::error::interruption_category(cancellation),
                         "preparazione INSERT diagnostico PostgreSQL interrotta",
                     ),
-                ));
+                )));
             }
         };
         Ok(Self {

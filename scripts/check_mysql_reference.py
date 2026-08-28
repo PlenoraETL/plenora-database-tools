@@ -39,7 +39,7 @@ from scripts.mysql_references import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "dataflow-mysql"
-RUST_IMAGE = "rust:1.92"
+RUST_IMAGE = "rust:1.98"
 EXPECTED_DIGEST = BASELINE.digest
 EXPECTED_REFERENCE = BASELINE.image
 EXPECTED_VERSION = BASELINE.exact_version

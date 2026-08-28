@@ -47,10 +47,16 @@ use crate::py_convert::{
 use crate::runtime;
 use crate::transaction::Transaction;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+#[cfg(not(feature = "db2"))]
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::transaction::TransactionScope;
+#[cfg(not(feature = "db2"))]
+use plenora_database_core::ErrorPhase;
 use plenora_database_core::{CancellationToken, DatabaseError};
+#[cfg(feature = "db2")]
+use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
 use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
 use plenora_db_sqlserver::{
     CertificatePolicy as SqlServerCertificatePolicy, SqlServerConfig, SqlServerProvider,
@@ -58,6 +64,7 @@ use plenora_db_sqlserver::{
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::budget::session_budget as default_budget;
@@ -99,7 +106,7 @@ impl DatabaseSession {
         let secret = self.secret.clone();
         let cancel = CancellationToken::new();
         let inspection = py
-            .allow_threads(|| {
+            .detach(|| {
                 runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
             })
             .map_err(to_py_err)?;
@@ -129,10 +136,8 @@ impl DatabaseSession {
     {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
-        py.allow_threads(|| {
-            runtime().block_on(crate::session_tx::run_transaction(provider, secret, work))
-        })
-        .map_err(to_py_err)
+        py.detach(|| runtime().block_on(crate::session_tx::run_transaction(provider, secret, work)))
+            .map_err(to_py_err)
     }
 }
 
@@ -165,9 +170,9 @@ impl DatabaseSession {
 
     fn __exit__(
         &mut self,
-        _exc_type: PyObject,
-        _exc_value: PyObject,
-        _traceback: PyObject,
+        _exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
     ) -> bool {
         self.close();
         false
@@ -282,7 +287,7 @@ impl DatabaseSession {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let scope = py
-            .allow_threads(|| {
+            .detach(|| {
                 runtime().block_on(async move {
                     let cancel = CancellationToken::new();
                     provider
@@ -353,7 +358,7 @@ impl DatabaseSession {
         self.ensure_open()?;
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
-        py.allow_threads(|| {
+        py.detach(|| {
             open_family_reader(
                 &self.provider,
                 &self.secret,
@@ -423,7 +428,7 @@ impl DatabaseSession {
         self.ensure_open()?;
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
-        let result = py.allow_threads(|| {
+        let result = py.detach(|| {
             crate::family_write::copy_from_sync_family(
                 &self.provider,
                 &self.secret,
@@ -489,7 +494,7 @@ impl DatabaseSession {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let sql = sql.to_owned();
-        py.allow_threads(|| {
+        py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
                 provider.execute_ddl(&secret, &sql, &cancel).await
@@ -515,6 +520,10 @@ pub(crate) struct Endpoint {
     pub secret: SecretString,
     pub port: Option<u16>,
     pub tls_ca_pem: Option<Vec<u8>>,
+    // I wheel standard conservano la forma comune dell'endpoint ma non
+    // costruiscono il provider DB2 che consuma questo campo.
+    #[cfg_attr(not(feature = "db2"), allow(dead_code))]
+    pub tls_ca_path: Option<PathBuf>,
     pub tls_mode: String,
 }
 
@@ -600,6 +609,39 @@ pub(crate) fn sqlserver_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provide
     ))
 }
 
+/// Il provider `IBM Db2 LUW` attraverso il client ODBC ufficiale.
+///
+/// A differenza dei provider RustLS, il client IBM riceve il percorso della
+/// CA e puo rileggerlo a ogni nuova connessione; per questo la factory accetta
+/// un path persistente invece di copiare bytes PEM nella configurazione.
+#[cfg(feature = "db2")]
+pub(crate) fn db2_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
+    if endpoint.tls_ca_pem.is_some() {
+        return Err(PyRuntimeError::new_err(
+            "Db2 richiede tls_ca_path, non bytes PEM",
+        ));
+    }
+    let mut config = Db2Config::new(&endpoint.host, &endpoint.database, &endpoint.user);
+    if let Some(port) = endpoint.port {
+        config = config.with_port(port);
+    }
+    if let Some(path) = endpoint.tls_ca_path {
+        let absolute = std::fs::canonicalize(path)
+            .map_err(|_| PyRuntimeError::new_err("CA Db2 non leggibile"))?;
+        config = config.with_private_ca_certificate(absolute);
+    }
+    config = match endpoint.tls_mode.as_str() {
+        "require" => config,
+        "disable" => config.with_tls_mode(Db2TlsMode::Disable),
+        _ => {
+            return Err(PyRuntimeError::new_err(
+                "tls_mode Db2 non riconosciuto. Valori: 'require' (default) | 'disable'",
+            ))
+        }
+    };
+    Ok(Arc::new(Db2Provider::new(config).map_err(to_py_err)?))
+}
+
 /// Apre una connessione MySQL e produce una `DatabaseSession`.
 ///
 /// Parametri:
@@ -637,6 +679,7 @@ pub fn connect_mysql(
         secret: secret.clone(),
         port,
         tls_ca_pem,
+        tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
     })?;
     open_family_session(provider, secret, "MySQL", "connect_mysql")
@@ -721,6 +764,7 @@ pub fn connect_mariadb(
         secret: secret.clone(),
         port,
         tls_ca_pem,
+        tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
     })?;
     open_family_session(provider, secret, "MariaDB", "connect_mariadb")
@@ -803,7 +847,70 @@ pub fn connect_sqlserver(
         secret: secret.clone(),
         port,
         tls_ca_pem,
+        tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
     })?;
     open_family_session(provider, secret, "SQL Server", "connect_sqlserver")
+}
+
+/// Apre una sessione `IBM Db2 LUW` sulla superficie comune del SDK.
+///
+/// `tls_mode="require"` e il default sicuro. `disable` disabilita TLS e deve
+/// essere richiesto esplicitamente per fixture o ambienti locali. La CA
+/// privata e un percorso persistente, non un payload copiato nel binding.
+///
+/// # Errors
+///
+/// `PlenoraError` se configurazione, driver ODBC, connessione o probe falliscono.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "db2")]
+pub fn connect_db2(
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<PathBuf>,
+    tls_mode: &str,
+) -> PyResult<DatabaseSession> {
+    let secret = SecretString::new(password.to_owned());
+    let provider = db2_provider(Endpoint {
+        host: host.to_owned(),
+        database: database.to_owned(),
+        user: user.to_owned(),
+        secret: secret.clone(),
+        port,
+        tls_ca_pem: None,
+        tls_ca_path,
+        tls_mode: tls_mode.to_owned(),
+    })?;
+    open_family_session(provider, secret, "IBM Db2 LUW", "connect_db2")
+}
+
+/// Stub fail-closed dei wheel standard, che non incorporano il runtime ODBC.
+///
+/// Conserva la stessa API del wheel DB2: il codice applicativo riceve un
+/// errore tipizzato e azionabile invece di un `ImportError` dipendente dalla
+/// piattaforma.
+#[pyfunction]
+#[pyo3(signature = (host, database, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "db2"))]
+pub fn connect_db2(
+    host: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<PathBuf>,
+    tls_mode: &str,
+) -> PyResult<DatabaseSession> {
+    let _ = (host, database, user, password, port, tls_ca_path, tls_mode);
+    Err(to_py_err(DatabaseError::unsupported(
+        ProviderKind::Db2,
+        ErrorPhase::Prepare,
+        "supporto Db2 non incluso in questo wheel; usa un artefatto costruito con la feature 'db2'",
+    )))
 }

@@ -1,8 +1,8 @@
 # plenora-database
 
 Python SDK per `plenora-database-tools` — bindings PyO3 sopra al core
-Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB e SQL Server con API sync + async
-Pythonic, portable AST builder, error hierarchy tipizzata, spatial
+Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server e IBM
+Db2 LUW con API sync + async Pythonic, portable AST builder, error hierarchy tipizzata, spatial
 predicates e context manager per transazioni.
 
 - **Postgres**: OLTP + PostGIS coperti
@@ -14,6 +14,9 @@ predicates e context manager per transazioni.
   bulk e builder AST portabili. `TruncateInsert` resta fail-closed
 - **SQL Server**: esposto sync e async (`connect_sqlserver` /
   `aconnect_sqlserver`)
+- **IBM Db2 LUW**: esposto sync e async (`connect_db2` / `aconnect_db2`) negli
+  artefatti costruiti con la feature `db2`; i wheel standard mantengono la
+  stessa API ma rifiutano l'uso con `PlenoraUnsupportedError`
 - **Async**: `asyncio` bridge sopra al runtime tokio condiviso
 - **Performance**: benchmark di parita SDK/CLI disponibile come test opt-in
 
@@ -30,7 +33,7 @@ pip install plenora-database
 
 ### Da sorgenti (dev)
 
-Richiede Rust 1.92+ e [maturin](https://maturin.rs).
+Richiede Rust 1.98+ e [maturin](https://maturin.rs).
 
 ```bash
 pip install maturin
@@ -323,16 +326,19 @@ registrato dal runner, non copiato qui come se valesse per ogni macchina.
 | superficie | dichiarata | verificata dai workflow |
 |---|---|---|
 | Python ABI | 3.10+ | import e suite wheel su Python 3.12; assurance SDK su 3.13 |
-| Rust | 1.92 | 1.92 |
-| piattaforme wheel | Linux x86_64, macOS arm64, Windows x86_64 | una suite offline per ciascun artefatto |
+| Rust | 1.98 | 1.98 |
+| piattaforme wheel standard | Linux x86_64, macOS arm64, Windows x86_64 | una suite offline per ciascun artefatto; DB2 fail-closed |
+| artefatto DB2 | Linux x86_64 live; Windows x86_64 build-only | gate Db2 Linux; build, import e profilo nativo Windows |
 
 Wheel: `abi3-py310` → un solo wheel per platform copre tutte le
 versioni Python ≥ 3.10.
 
 ## Limitazioni
 
-- **Selezione del prodotto** — PostgreSQL, MySQL, MariaDB e SQL Server hanno
+- **Selezione del prodotto** — PostgreSQL, MySQL, MariaDB, SQL Server e Db2 hanno
   factory distinte; non esiste selezione automatica dal server raggiunto.
+- **Db2 su macOS** — non viene compilato nel wheel standard: manca una matrice
+  client IBM supportata da qualificare, quindi la factory resta fail-closed.
 - **Ripresa dello stream** — la lettura e incrementale, ma nessun provider
   pubblica un cursore riapribile da una seconda sessione.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
@@ -344,10 +350,11 @@ versioni Python ≥ 3.10.
 ### Test
 
 ```bash
-python scripts/check_sdk_tests.py                  # tutti e quattro i provider live
+python scripts/check_sdk_tests.py                  # i quattro provider del wheel standard
 python scripts/check_sdk_tests.py --offline        # solo i test senza server
 python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
 python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
+python scripts/check_db2_reference.py              # wheel DB2 e provider live dedicati
 ```
 
 **Albero pulito.** Il runner rifiuta di partire se `git status --porcelain
@@ -391,7 +398,7 @@ dentro il vincolo dichiarato da `pyproject.toml`, che il runner verifica — e
 test. Il runner confronta i pin con il `pip freeze` del container e
 fallisce se divergono.
 
-**Tracciato, non riproducibile.** `rust:1.92` e `python:3.13-slim` sono tag
+**Tracciato, non riproducibile.** `rust:1.98` e `python:3.13-slim` sono tag
 mutabili e l'`apt-get` della build prende cio che il mirror pubblica oggi:
 una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
 che il runner garantisce e di dire con cosa ha girato — id e digest delle due
@@ -409,7 +416,8 @@ deselezione fa lo stesso da un'altra porta, perche un `-k` che non seleziona
 piu niente non e un errore per pytest.
 
 Per `offline` il contratto va oltre il totale e fissa **quali** skip, e
-quanti per motivo per tutti e quattro i provider e per i benchmark opt-in.
+quanti per motivo per i provider del wheel standard, DB2 escluso in modo
+tipizzato, e per i benchmark opt-in.
 Un totale coincidente e proprio cio che rende invisibile
 una sostituzione — uno skip nuovo al posto di uno atteso lascia il numero
 fermo. I valori stanno tutti in `SCOPE_CONTRACTS`, dentro il runner: quando
