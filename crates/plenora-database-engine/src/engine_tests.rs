@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStatement;
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{Operation, ReadOperation, WriteOperation};
@@ -481,6 +482,42 @@ async fn session_owns_an_exclusive_transaction_and_updates_lifecycle() {
     assert_eq!(transaction.commit().await, Ok(CommitOutcome::Committed));
     session.close();
     assert_eq!(engine.statistics().active_sessions, 0);
+    assert_eq!(provider.executions.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn bound_statements_cross_execute_buffered_query_and_streaming() {
+    let provider = Arc::new(TestProvider::default());
+    let engine = Engine::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        SecretString::new("secret"),
+    );
+    let template = NativeStatement::new("SELECT $1::bigint", 1).expect("template");
+    let bound = template
+        .bind(vec![plenora_database_core::provider::ParameterValue::I64(
+            7,
+        )])
+        .expect("bind");
+    let mut session = engine.session().expect("sessione");
+    let cancellation = CancellationToken::new();
+    let mut transaction = session
+        .begin_transaction(&TransactionOptions::default(), &budget(), &cancellation)
+        .await
+        .expect("transazione");
+
+    assert_eq!(transaction.execute_bound(&bound).await.expect("execute"), 1);
+    assert!(transaction
+        .query_result_bound(&bound)
+        .await
+        .expect("query")
+        .is_empty());
+    let mut stream = transaction
+        .query_stream_bound(&bound, 8)
+        .await
+        .expect("stream");
+    assert!(stream.next_result().await.expect("batch result").is_none());
+    drop(stream);
+    transaction.rollback().await.expect("rollback");
     assert_eq!(provider.executions.load(Ordering::Relaxed), 1);
 }
 

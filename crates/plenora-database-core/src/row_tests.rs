@@ -37,6 +37,22 @@ fn get_by_index_returns_the_value() {
 }
 
 #[test]
+fn descriptor_access_rejects_a_descriptor_from_a_different_schema() {
+    let row = sample_row();
+    let name = ColumnDescriptor::new(1, "name".to_owned());
+    assert!(matches!(
+        row.get_descriptor(&name),
+        Some(ParameterValue::String(value)) if value == "plenora"
+    ));
+    assert!(row
+        .get_descriptor(&ColumnDescriptor::new(1, "other".to_owned()))
+        .is_none());
+    assert!(row
+        .get_descriptor(&ColumnDescriptor::new(8, "name".to_owned()))
+        .is_none());
+}
+
+#[test]
 fn index_by_name_shortcut_works() {
     let row = sample_row();
     assert!(matches!(&row["id"], ParameterValue::I32(42)));

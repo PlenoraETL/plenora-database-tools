@@ -1,6 +1,7 @@
 //! Engine e sessione applicativa sopra il pool posseduto dal provider.
 
 use crate::result::QueryResult;
+use crate::BoundStatement;
 use crate::MetaData;
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::metrics_recorder::{
@@ -559,11 +560,27 @@ impl SessionTransaction<'_> {
         self.scope.execute(statement, &self.cancellation).await
     }
 
+    /// Esegue uno statement immutabile con bind separati dal template.
+    ///
+    /// # Errors
+    ///
+    /// Propaga l'errore redatto del transaction scope.
+    pub async fn execute_bound(&mut self, statement: &BoundStatement) -> Result<u64> {
+        self.execute(statement.legacy()).await
+    }
+
     /// # Errors
     ///
     /// Propaga l'errore redatto del transaction scope.
     pub async fn query(&mut self, statement: &Statement) -> Result<Vec<Row>> {
         self.scope.query(statement, &self.cancellation).await
+    }
+
+    /// # Errors
+    ///
+    /// Propaga l'errore redatto del transaction scope.
+    pub async fn query_bound(&mut self, statement: &BoundStatement) -> Result<Vec<Row>> {
+        self.query(statement.legacy()).await
     }
 
     /// Apre uno stream che mantiene il prestito esclusivo della transazione.
@@ -585,6 +602,19 @@ impl SessionTransaction<'_> {
             inner,
             cancellation,
         })
+    }
+
+    /// Apre uno stream sopra un template immutabile e i suoi bind.
+    ///
+    /// # Errors
+    ///
+    /// Propaga l'errore redatto del transaction scope.
+    pub async fn query_stream_bound<'stream>(
+        &'stream mut self,
+        statement: &'stream BoundStatement,
+        batch_size: u32,
+    ) -> Result<SessionRowStream<'stream>> {
+        self.query_stream(statement.legacy(), batch_size).await
     }
 
     /// # Errors
@@ -610,6 +640,13 @@ impl SessionTransaction<'_> {
     /// Propaga l'errore del provider o metadata incoerenti fra le righe.
     pub async fn query_result(&mut self, statement: &Statement) -> Result<QueryResult> {
         QueryResult::from_rows(self.query(statement).await?)
+    }
+
+    /// # Errors
+    ///
+    /// Propaga l'errore del provider o metadata incoerenti fra le righe.
+    pub async fn query_result_bound(&mut self, statement: &BoundStatement) -> Result<QueryResult> {
+        QueryResult::from_rows(self.query_bound(statement).await?)
     }
 
     /// # Errors
@@ -667,6 +704,19 @@ impl SessionRowStream<'_> {
     /// Propaga l'errore redatto del cursor o la cancellazione collegata.
     pub async fn next_batch(&mut self) -> Result<Option<Vec<Row>>> {
         self.inner.next_batch(self.cancellation).await
+    }
+
+    /// Legge un batch attraverso lo stesso protocollo del risultato
+    /// bufferizzato, senza caricare lo stream completo in memoria.
+    ///
+    /// # Errors
+    ///
+    /// Propaga l'errore del cursor o metadata incoerenti nel batch.
+    pub async fn next_result(&mut self) -> Result<Option<QueryResult>> {
+        self.next_batch()
+            .await?
+            .map(QueryResult::from_rows)
+            .transpose()
     }
 }
 

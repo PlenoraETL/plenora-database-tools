@@ -9,6 +9,7 @@ pub mod metadata;
 pub mod result;
 pub mod retry;
 pub mod runtime;
+pub mod statement;
 pub use engine::{
     Engine, EngineOptions, EngineStatistics, Session, SessionRowStream, SessionTransaction,
 };
@@ -19,6 +20,7 @@ pub use runtime::{
     inspect_spatial_arrays, validate_prepared_budget, ContractLeases, DeadlineGuard,
     ReadBatchReservation, WriteResourceReservation,
 };
+pub use statement::{BoundStatement, NativeStatement};
 
 use plenora_database_core::capabilities::{ProviderCapabilities, TransactionScope};
 use plenora_database_core::plan::{

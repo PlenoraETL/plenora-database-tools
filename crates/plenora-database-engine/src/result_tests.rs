@@ -46,12 +46,16 @@ fn terminal_methods_enforce_cardinality_without_discarding_rows() {
 fn columns_are_available_before_consumption_and_on_empty_results() {
     let result = single(7);
     assert_eq!(result.columns(), Some(["value".to_owned()].as_slice()));
+    let descriptor = &result.column_descriptors().expect("descriptors")[0];
+    assert_eq!(descriptor.index(), 0);
+    assert_eq!(descriptor.name(), "value");
     assert_eq!(result.len(), 1);
 
     let columns: Arc<[String]> = vec!["id".to_owned(), "name".to_owned()].into();
     let empty =
         QueryResult::with_columns(Arc::clone(&columns), Vec::new()).expect("vuoto tipizzato");
     assert_eq!(empty.columns(), Some(columns.as_ref()));
+    assert_eq!(empty.column_descriptors().expect("descriptors").len(), 2);
     assert!(empty.is_empty());
 }
 

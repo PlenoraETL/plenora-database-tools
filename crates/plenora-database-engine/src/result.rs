@@ -2,8 +2,8 @@
 
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{
-    at_most_one_row, exactly_one_row, exactly_one_value, DatabaseError, ErrorCategory, ErrorPhase,
-    Result, Row,
+    at_most_one_row, exactly_one_row, exactly_one_value, ColumnDescriptor, DatabaseError,
+    ErrorCategory, ErrorPhase, Result, Row,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[derive(Debug, PartialEq)]
 pub struct QueryResult {
     columns: Option<Arc<[String]>>,
+    descriptors: Option<Arc<[ColumnDescriptor]>>,
     rows: Vec<Row>,
 }
 
@@ -47,12 +48,29 @@ impl QueryResult {
                 ));
             }
         }
-        Ok(Self { columns, rows })
+        let descriptors = columns.as_ref().map(|columns| {
+            columns
+                .iter()
+                .enumerate()
+                .map(|(index, name)| ColumnDescriptor::new(index, name.clone()))
+                .collect::<Vec<_>>()
+                .into()
+        });
+        Ok(Self {
+            columns,
+            descriptors,
+            rows,
+        })
     }
 
     #[must_use]
     pub fn columns(&self) -> Option<&[String]> {
         self.columns.as_deref()
+    }
+
+    #[must_use]
+    pub fn column_descriptors(&self) -> Option<&[ColumnDescriptor]> {
+        self.descriptors.as_deref()
     }
 
     #[must_use]

@@ -61,7 +61,7 @@ pub use portable::{
     SelectStatement, TableRef, UpdateStatement, UpsertStatement,
 };
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};
-pub use row::Row;
+pub use row::{ColumnDescriptor, Row};
 pub use row_diagnostics::{
     checked_source_row_end, diagnose_row_scoped_write, into_read_rejection, ReadDiagnosticsPolicy,
     ReadDiagnosticsTracker, RejectedRow, RollbackEvidence, RowApplication, RowDiagnostics,

@@ -7,6 +7,30 @@ use crate::provider::ParameterValue;
 use std::ops::Index;
 use std::sync::Arc;
 
+/// Identita stabile di una colonna dentro uno schema risultato.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ColumnDescriptor {
+    index: usize,
+    name: String,
+}
+
+impl ColumnDescriptor {
+    #[must_use]
+    pub const fn new(index: usize, name: String) -> Self {
+        Self { index, name }
+    }
+
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Riga tipizzata restituita dalla facade OLTP.
 ///
 /// I nomi delle colonne sono condivisi tramite `Arc<[String]>` fra tutte
@@ -92,6 +116,13 @@ impl Row {
     #[must_use]
     pub fn get_index(&self, index: usize) -> Option<&ParameterValue> {
         self.values.get(index)
+    }
+
+    /// Accede per descrittore verificando posizione e identita dello schema.
+    #[must_use]
+    pub fn get_descriptor(&self, descriptor: &ColumnDescriptor) -> Option<&ParameterValue> {
+        (self.columns.get(descriptor.index())? == descriptor.name())
+            .then(|| &self.values[descriptor.index()])
     }
 
     /// Consuma la riga e restituisce solo i valori. Utile ai consumer che
