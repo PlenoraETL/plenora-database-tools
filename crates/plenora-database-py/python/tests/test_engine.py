@@ -125,7 +125,7 @@ def test_family_engine_uses_the_core_lifecycle(
     engine = _family_engine(factory, config)
     assert engine.provider_kind == provider_kind
     with engine.session() as session:
-        assert session.execute_scalar("SELECT CAST(5 AS BIGINT)") == 5
+        assert session.execute_scalar("SELECT 5") == 5
     assert engine.statistics() == {
         "sessions_opened": 1,
         "active_sessions": 0,
@@ -146,6 +146,6 @@ async def test_async_family_engine_uses_the_core_lifecycle(
     engine = await _family_engine(async_factory, config)
     assert engine.provider_kind == provider_kind
     async with engine.session() as session:
-        assert await session.execute_scalar("SELECT CAST(6 AS BIGINT)") == 6
+        assert await session.execute_scalar("SELECT 6") == 6
     assert engine.statistics()["active_sessions"] == 0
     engine.dispose()
