@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use plenora_database_core::limits::Limits;
-use plenora_database_core::query::{validate_query_operation, QueryOperation};
+use plenora_database_core::relational::{validate_query_operation, QueryOperation};
 use plenora_database_sql::{Dialect, DialectCapabilities, RenderedSql, Renderer};
 
 const DIALECTS: [Dialect; 7] = [
@@ -55,6 +55,7 @@ fuzz_target!(|input: &[u8]| {
                 .render_query(&query)
                 .expect("rendering deterministico");
             assert_eq!(again, rendered);
+            assert_eq!(again.fingerprint(), rendered.fingerprint());
 
             // Le parti native devono ricomporre esattamente il testo nativo:
             // i preflight provider si appoggiano a questa separazione senza

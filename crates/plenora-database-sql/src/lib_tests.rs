@@ -1328,3 +1328,30 @@ fn postgres_renders_set_operations_and_recursive_cte() {
     assert!(sql.starts_with("WITH RECURSIVE \"tree\" AS ("));
     assert!(sql.contains(" UNION ALL (SELECT "));
 }
+
+#[test]
+fn lowered_statement_fingerprint_is_stable_and_bind_sensitive() {
+    let rendered = RenderedSql {
+        sql: "SELECT $1".to_owned(),
+        binds: vec![BindParameter {
+            ordinal: 1,
+            name: "tenant".to_owned(),
+        }],
+    };
+    assert_eq!(
+        rendered.fingerprint(),
+        [
+            193, 200, 110, 50, 129, 226, 80, 227, 57, 129, 116, 96, 134, 96, 188, 191, 121, 121,
+            159, 150, 137, 49, 1, 5, 148, 250, 122, 108, 160, 43, 227, 32,
+        ]
+    );
+    assert_eq!(rendered.fingerprint().len(), 32);
+
+    let mut different_layout = rendered.clone();
+    different_layout.binds[0].name = "account".to_owned();
+    assert_ne!(rendered.fingerprint(), different_layout.fingerprint());
+
+    let mut different_sql = rendered.clone();
+    different_sql.sql.push_str(" WHERE active");
+    assert_ne!(rendered.fingerprint(), different_sql.fingerprint());
+}

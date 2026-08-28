@@ -10,6 +10,7 @@ license-file.workspace = true
 [dependencies]
 plenora-database-core.workspace = true
 serde.workspace = true
+sha2.workspace = true
 
 # Serve solo al benchmark offline `bench_sql_render`, che emette JSONL.
 [dev-dependencies]

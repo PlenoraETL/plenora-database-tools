@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use plenora_database_core::limits::Limits;
-use plenora_database_core::query::{validate_query_operation, QueryOperation};
+use plenora_database_core::relational::{validate_query_operation, QueryOperation};
 use plenora_db_mysql::render_query;
 
 fuzz_target!(|input: &[u8]| {

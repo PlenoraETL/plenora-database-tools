@@ -375,6 +375,35 @@ impl CancellationToken {
         child
     }
 
+    /// Un token figlio di piu sorgenti di cancellazione.
+    ///
+    /// La deadline e la piu vicina fra i genitori. La cancellazione esplicita
+    /// di uno qualunque si propaga come [`CancellationReason::Parent`]; una
+    /// deadline conserva invece la propria classificazione.
+    #[must_use]
+    pub fn linked(parents: &[&Self]) -> Self {
+        let deadline = parents.iter().filter_map(|parent| parent.deadline()).min();
+        let child = Self::new_inner(deadline);
+        for parent in parents {
+            let mut children = lock_recover(&parent.inner.children);
+            children.retain(|existing| existing.strong_count() > 0);
+            children.push(Arc::downgrade(&child.inner));
+        }
+        for parent in parents {
+            if let Some(reason) = parent.reason() {
+                cancel_tree(
+                    Arc::clone(&child.inner),
+                    if reason == CancellationReason::Deadline {
+                        CancellationReason::Deadline
+                    } else {
+                        CancellationReason::Parent
+                    },
+                );
+            }
+        }
+        child
+    }
+
     #[must_use]
     pub fn cancelled(&self) -> Cancelled<'_> {
         Cancelled {

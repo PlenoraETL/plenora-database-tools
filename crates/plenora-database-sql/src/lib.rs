@@ -15,6 +15,7 @@ use plenora_database_core::relational::{
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
@@ -317,6 +318,27 @@ pub struct BindParameter {
 pub struct RenderedSql {
     pub sql: String,
     pub binds: Vec<BindParameter>,
+}
+
+impl RenderedSql {
+    /// Identita stabile del testo SQL e del layout dei bind, senza valori.
+    #[must_use]
+    pub fn fingerprint(&self) -> [u8; 32] {
+        fn component(hasher: &mut Sha256, value: &[u8]) {
+            hasher.update(value.len().to_string().as_bytes());
+            hasher.update(b":");
+            hasher.update(value);
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"plenora-lowered-statement-v1\0");
+        component(&mut hasher, self.sql.as_bytes());
+        for bind in &self.binds {
+            component(&mut hasher, bind.ordinal.to_string().as_bytes());
+            component(&mut hasher, bind.name.as_bytes());
+        }
+        hasher.finalize().into()
+    }
 }
 
 /// Parti di una query nativa separabili senza analizzare il testo SQL.

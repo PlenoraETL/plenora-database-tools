@@ -28,6 +28,18 @@ fn cancellation_is_idempotent_and_propagates_to_children() {
 }
 
 #[test]
+fn a_linked_token_observes_each_parent_and_the_nearest_deadline() {
+    let first = CancellationToken::new();
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
+    let second = CancellationToken::with_deadline(deadline);
+    let linked = CancellationToken::linked(&[&first, &second]);
+    assert_eq!(linked.deadline(), Some(deadline));
+
+    first.cancel();
+    assert_eq!(linked.reason(), Some(CancellationReason::Parent));
+}
+
+#[test]
 fn cancelled_future_is_woken_without_polling() {
     let token = CancellationToken::new();
     let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
