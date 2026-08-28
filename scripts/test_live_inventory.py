@@ -229,6 +229,11 @@ class AnnotatedTests(unittest.TestCase):
         source = "    #[tokio ::\n     test]\n    async fn live_multilinea() {}\n"
         self.assertEqual(inventory.annotated_tests(source), ["live_multilinea"])
 
+    def test_a_large_source_is_scanned_without_regex_backtracking(self) -> None:
+        helpers = "\n\n".join(f"fn helper_{index}() {{}}" for index in range(5_000))
+        source = f"{helpers}\n\n#[test]\nfn live_in_fondo() {{}}\n"
+        self.assertEqual(inventory.annotated_tests(source), ["live_in_fondo"])
+
     def test_a_composed_constant_predicate_is_evaluated(self) -> None:
         """`not(all())` e `all(any())` sono falsi quanto `any()`.
 

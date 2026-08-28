@@ -10,36 +10,56 @@ l'esecuzione usando i nomi completi.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-# Una definizione di funzione con il blocco di attributi che la precede.
-#
-# L'espressione copre esplicitamente queste forme Rust valide:
-#
-# * il blocco puo essere **vuoto** e gli attributi possono stare sulla stessa
-#   riga della firma (`#[test] fn x() {}`);
-# * una riga puo portare **piu** attributi (`#[test] #[allow(dead_code)]`);
-# * un attributo puo spezzarsi su piu righe, quindi dopo la parentesi chiusa si
-#   ammettono i ritorni a capo — `flatten_attributes` li ha gia resi innocui,
-#   ma la tolleranza resta;
-# * le righe vuote non spezzano il blocco: sono cio in cui `strip_noncode`
-#   trasforma i commenti;
-# * il nome puo essere un identificatore raw (`fn r#live_x()`).
-#
-# La forma della riga e inoltre volutamente **non ambigua**: gli spazi prima
-# dell'attributo e quelli dopo non possono contendersi lo stesso testo, perche
-# fra i due c'e un `#[...]` obbligatorio. Una versione con due `[ \t]*`
-# separati da un gruppo opzionale sembra equivalente e non lo e: su una lunga
-# sequenza di righe bianche il motore le ripartisce in ogni modo possibile, e
-# il match diventa esponenziale.
-DEFINITION = re.compile(
-    r"(?P<attributes>(?:[ \t]*(?:\#\[[^\]]*\][ \t\r\n]*)*\r?\n)*)"
-    r"[ \t]*(?P<inline>(?:\#\[[^\]]*\][ \t]*)*)"
+# La firma si riconosce una riga alla volta; gli attributi precedenti vengono
+# raccolti da `definitions`. Tenere le due operazioni separate evita un
+# prefisso regex ambiguo su file Rust molto grandi.
+FUNCTION = re.compile(
+    r"^[ \t]*(?P<inline>(?:\#\[[^\]]*\][ \t]*)*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+"
     r"(?:r\#)?(?P<name>[^\s(),;:]+)[ \t]*\(",
     re.MULTILINE,
 )
+ATTRIBUTE_LINE = re.compile(r"^[ \t]*(?:\#\[[^\]]*\][ \t]*)+$")
+
+
+@dataclass(frozen=True)
+class Definition:
+    name: str
+    attributes: str
+    inline: str
+    attributes_start: int
+    inline_end: int
+
+
+def definitions(code: str) -> tuple[Definition, ...]:
+    """Trova funzioni e attributi con una scansione lineare e limitata."""
+
+    found: list[Definition] = []
+    for match in FUNCTION.finditer(code):
+        start = match.start()
+        cursor = start
+        while cursor > 0:
+            previous_end = cursor - 1 if code[cursor - 1] == "\n" else cursor
+            previous_start = code.rfind("\n", 0, previous_end) + 1
+            line = code[previous_start:previous_end].rstrip("\r")
+            if line.strip() and ATTRIBUTE_LINE.fullmatch(line) is None:
+                break
+            cursor = previous_start
+        inline_start = match.start("inline")
+        found.append(
+            Definition(
+                name=match.group("name"),
+                attributes=code[cursor:inline_start],
+                inline=match.group("inline"),
+                attributes_start=cursor,
+                inline_end=match.end("inline"),
+            )
+        )
+    return tuple(found)
 
 # `#[test]`, `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`: il
 # segmento `test` deve essere l'**ultimo** del path, cioe seguito da `]` o
@@ -334,10 +354,10 @@ def annotated_tests(source: str) -> list[str]:
 def _annotated_tests(source: str) -> tuple[str, ...]:
     code = flatten_attributes(strip_noncode(source))
     return tuple(
-        match.group("name")
-        for match in DEFINITION.finditer(code)
-        if declares_a_test(match.group("attributes") + match.group("inline"))
-        and match.group("name").isidentifier()
+        definition.name
+        for definition in definitions(code)
+        if declares_a_test(definition.attributes + definition.inline)
+        and definition.name.isidentifier()
     )
 
 
@@ -391,15 +411,16 @@ def ignore_reasons(source: str) -> dict[str, str]:
     """Per ogni test annotato, il motivo del suo `#[ignore = "..."]`."""
 
     reasons: dict[str, str] = {}
-    for match in DEFINITION.finditer(flatten_attributes(strip_noncode(source))):
-        if not declares_a_test(match.group("attributes") + match.group("inline")):
+    code = flatten_attributes(strip_noncode(source))
+    for definition in definitions(code):
+        if not declares_a_test(definition.attributes + definition.inline):
             continue
         # Il motivo vive **dentro** una stringa, che `strip_noncode` ha
         # svuotato: va riletto dal sorgente originale. Le posizioni coincidono
         # perche lo svuotamento sostituisce carattere per carattere.
-        start = match.start("attributes")
-        end = match.end("inline")
+        start = definition.attributes_start
+        end = definition.inline_end
         reason = IGNORE_REASON.search(source[start:end])
         if reason:
-            reasons[match.group("name")] = reason.group(1)
+            reasons[definition.name] = reason.group(1)
     return reasons
