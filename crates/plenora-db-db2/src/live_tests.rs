@@ -24,6 +24,7 @@ use plenora_database_core::transaction::{
     CommitOutcome, IsolationLevel, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
+use plenora_database_engine::{Engine, Observation};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -109,6 +110,14 @@ async fn assert_live_catalog(
         )
         .await
         .expect("descrizione Db2 live");
+    let engine = Engine::new(Arc::new(live_provider()), secret.clone());
+    let typed = engine
+        .reflect_table(&source, false, cancellation)
+        .await
+        .expect("typed Db2 reflection");
+    let typed_table = typed.one_table().expect("one reflected table");
+    assert_eq!(typed_table.name(), "CATALOG_PROBE");
+    assert_eq!(typed_table.foreign_keys(), Observation::NotMeasured);
     let description: Db2ObjectDescription =
         serde_json::from_value(first.document).expect("documento catalogo Db2");
     assert_eq!(description.columns.len(), 5);

@@ -3,6 +3,7 @@ use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use plenora_database_core::loss::LossSeverity;
 use plenora_database_core::RemoteEffect;
+use plenora_database_engine::{Engine, Observation};
 
 #[cfg(test)]
 impl PostgresProvider {
@@ -1798,6 +1799,17 @@ mod tests {
         assert!(advanced_description.document["indexes"]
             .as_array()
             .is_some_and(|indexes| !indexes.is_empty()));
+        let engine = Engine::new(Arc::new(PostgresProvider::insecure_local()), secret.clone());
+        let typed = engine
+            .reflect_table(&advanced_source, false, &cancellation)
+            .await
+            .expect("typed PostgreSQL reflection");
+        let typed_table = typed.one_table().expect("one reflected table");
+        assert_eq!(typed_table.name(), "advanced_types");
+        assert!(matches!(
+            typed_table.constraints(),
+            Observation::Observed(values) if !values.is_empty()
+        ));
         let described_columns = advanced_description.document["columns"]
             .as_array()
             .expect("described columns");

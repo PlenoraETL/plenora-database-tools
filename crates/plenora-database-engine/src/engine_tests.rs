@@ -15,6 +15,8 @@ struct ProviderState {
     health_checks: u64,
     probes: u64,
     observed_secrets: Vec<String>,
+    inspections: u64,
+    inspected_secrets: Vec<String>,
 }
 
 #[derive(Default)]
@@ -35,6 +37,43 @@ impl TestProvider {
         } else {
             state.health_checks += 1;
         }
+    }
+
+    fn observe_inspection(&self, secret: &SecretString) {
+        let mut state = mutex(&self.state);
+        state.inspections += 1;
+        state.inspected_secrets.push(secret.expose().to_owned());
+    }
+}
+
+fn reflected_postgres_object() -> Inspection {
+    Inspection {
+        operation: "database.describe_object".to_owned(),
+        document: serde_json::json!({
+            "columns": [{
+                "name": "id", "native_type": "int8", "nullable": false,
+                "numeric_precision": null, "numeric_scale": null,
+                "spatial_srid": null, "spatial_dimensions": null,
+                "spatial_type": null, "spatial_crs_id": null,
+                "default_expression": null, "identity_kind": null,
+                "generated_kind": null, "native_declaration": "bigint",
+                "type_kind": "b", "composite_fields": [], "enum_labels": [],
+                "domain_base_type": null, "domain_constraints": [], "collation": null
+            }],
+            "schema_token": {
+                "schema_version": 1, "database_oid": 1, "namespace_oid": 2,
+                "relation_oid": 3, "structural_fingerprint": "test-token"
+            },
+            "relation": {
+                "kind": "table", "is_partition": false, "partition_key": null,
+                "view_definition": null, "comment": null, "row_security": false,
+                "force_row_security": false, "replica_identity": "default",
+                "persistence": "permanent", "is_populated": true,
+                "partition_bound": null, "owner": "owner", "tablespace": "default",
+                "parents": [], "partitions": []
+            },
+            "constraints": [], "indexes": [], "policies": [], "privileges": []
+        }),
     }
 }
 
@@ -94,16 +133,19 @@ impl Provider for TestProvider {
 
     fn inspect<'a>(
         &'a self,
-        _secret: &'a SecretString,
-        _operation: &'a Operation,
-        _cancellation: &'a CancellationToken,
+        secret: &'a SecretString,
+        operation: &'a Operation,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Inspection> {
-        Box::pin(async {
-            Err(DatabaseError::unsupported(
-                ProviderKind::Postgres,
-                ErrorPhase::Probe,
-                "inspect non usato dal test engine",
-            ))
+        self.observe_inspection(secret);
+        Box::pin(async move {
+            interrupted(cancellation, ErrorPhase::Probe)?;
+            if !matches!(operation, Operation::DatabaseDescribeObject { .. }) {
+                return Err(DatabaseError::invalid_plan(
+                    "operazione reflection inattesa nel test",
+                ));
+            }
+            Ok(reflected_postgres_object())
         })
     }
 
@@ -327,6 +369,65 @@ async fn capabilities_are_cached_and_secret_rotation_invalidates_them() {
         3
     );
     assert!(!format!("{engine:?}").contains("second"));
+}
+
+#[tokio::test]
+async fn metadata_cache_honours_ttl_refresh_invalidation_and_secret_rotation() {
+    let provider = Arc::new(TestProvider::default());
+    let engine = Engine::with_options(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        SecretString::new("first"),
+        noop_recorder(),
+        EngineOptions::new(Duration::from_millis(20)),
+    );
+    let source = ObjectRef {
+        catalog: None,
+        schema: Some("app".to_owned()),
+        object: "items".to_owned(),
+    };
+    let cancellation = CancellationToken::new();
+
+    let first = engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("prima reflection");
+    let cached = engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("reflection in cache");
+    assert!(Arc::ptr_eq(&first, &cached));
+    assert_eq!(engine.metadata_cache_entries(), 1);
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("reflection dopo TTL");
+    engine
+        .reflect_table(&source, true, &cancellation)
+        .await
+        .expect("refresh forzato");
+    assert_eq!(engine.invalidate_metadata(Some(&source)), 1);
+    assert_eq!(engine.invalidate_metadata(Some(&source)), 0);
+    engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("reflection dopo invalidazione");
+    engine
+        .rotate_secret(SecretString::new("second"))
+        .expect("rotazione secret");
+    assert_eq!(engine.metadata_cache_entries(), 0);
+    engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("reflection dopo rotazione");
+
+    let state = mutex(&provider.state);
+    assert_eq!(state.inspections, 5);
+    assert_eq!(
+        state.inspected_secrets,
+        ["first", "first", "first", "first", "second"]
+    );
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@ use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::{CancellationToken, ErrorCategory, ResourceBudget, ResourceLimits};
+use plenora_database_engine::{Engine, Observation};
 
 const DEFAULT_PASSWORD: &str = "DataFlow_Test_2026!";
 
@@ -490,15 +491,16 @@ async fn live_provider_connection_capabilities_and_inspect() {
         vec![plenora_database_core::geometry::Dimensions::Xy]
     );
 
+    let source = ObjectRef {
+        catalog: None,
+        schema: Some("dataflow_test".to_owned()),
+        object: "catalog_probe".to_owned(),
+    };
     let inspection = provider
         .inspect(
             &secret,
             &Operation::DatabaseDescribeObject {
-                source: ObjectRef {
-                    catalog: None,
-                    schema: Some("dataflow_test".to_owned()),
-                    object: "catalog_probe".to_owned(),
-                },
+                source: source.clone(),
             },
             &cancellation,
         )
@@ -507,6 +509,19 @@ async fn live_provider_connection_capabilities_and_inspect() {
     assert_eq!(inspection.operation, "database.describe_object");
     assert_eq!(inspection.document["name"], "catalog_probe");
     assert_eq!(inspection.document["engine"], "InnoDB");
+    let engine = Engine::new(
+        std::sync::Arc::new(
+            MysqlProvider::new(live_config(), 1).expect("typed reflection provider"),
+        ),
+        live_secret(),
+    );
+    let typed = engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("typed MySQL reflection");
+    let typed_table = typed.one_table().expect("one reflected table");
+    assert_eq!(typed_table.name(), "catalog_probe");
+    assert_eq!(typed_table.constraints(), Observation::NotMeasured);
 }
 
 #[tokio::test]

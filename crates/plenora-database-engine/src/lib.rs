@@ -5,10 +5,14 @@
 //! provider nell'executor.
 
 pub mod engine;
+pub mod metadata;
 pub mod result;
 pub mod retry;
 pub mod runtime;
-pub use engine::{Engine, EngineStatistics, Session, SessionRowStream, SessionTransaction};
+pub use engine::{
+    Engine, EngineOptions, EngineStatistics, Session, SessionRowStream, SessionTransaction,
+};
+pub use metadata::{MetaData, Observation, SchemaToken, Table};
 pub use result::QueryResult;
 pub use retry::{retry_with_policy, RetryPolicy};
 pub use runtime::{

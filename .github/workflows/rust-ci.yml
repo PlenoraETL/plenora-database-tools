@@ -69,6 +69,10 @@ jobs:
       # renderer SQL durante la migrazione compatibile verso Core v3.
       - name: scripts/check_relational_ir.py
         run: python3 scripts/check_relational_ir.py
+      # La reflection v3 deve restare tipizzata, fail-closed e collegata al
+      # lifecycle dell'Engine anche mentre i provider v2 parlano ancora JSON.
+      - name: scripts/check_typed_metadata.py
+        run: python3 scripts/check_typed_metadata.py
       # Il refactor misura solo il codice di prodotto: cancellare evidence o
       # spostare test non puo far apparire una riduzione che non esiste. Il
       # budget e una guardia, quindi vive nel workflow che esegue gli altri

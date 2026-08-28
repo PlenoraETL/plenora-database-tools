@@ -119,6 +119,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
     ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),
     ("check_relational_ir.py", [sys.executable, "scripts/check_relational_ir.py"]),
+    ("check_typed_metadata.py", [sys.executable, "scripts/check_typed_metadata.py"]),
     ("code_size.py --check", [sys.executable, "scripts/code_size.py", "--check"]),
     ("tests/", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."]),
     ("render_state.py --check", [sys.executable, "scripts/render_state.py", "--check"]),

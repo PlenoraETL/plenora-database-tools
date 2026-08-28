@@ -29,6 +29,7 @@ use plenora_database_core::{
     CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
     RetryDisposition,
 };
+use plenora_database_engine::{Engine, Observation};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -328,6 +329,21 @@ async fn live_reference_probe_and_catalog() {
         .any(|constraint| constraint.kind == "PRIMARY_KEY_CONSTRAINT"));
     assert!(description.indexes.iter().any(|index| index.primary_key));
     assert_eq!(description.token.structural_fingerprint.len(), 64);
+    let source = ObjectRef {
+        catalog: None,
+        schema: Some("plenora_test".to_owned()),
+        object: "catalog_probe".to_owned(),
+    };
+    let engine = Engine::new(Arc::new(live_provider()), live_secret());
+    let typed = engine
+        .reflect_table(&source, false, &cancellation)
+        .await
+        .expect("typed SQL Server reflection");
+    let typed_table = typed.one_table().expect("one reflected table");
+    assert!(matches!(
+        typed_table.constraints(),
+        Observation::Observed(values) if !values.is_empty()
+    ));
     assert!(session.is_reusable());
 }
 

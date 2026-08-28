@@ -1,11 +1,12 @@
 //! Engine e sessione applicativa sopra il pool posseduto dal provider.
 
 use crate::result::QueryResult;
+use crate::MetaData;
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::metrics_recorder::{
     noop_recorder, MetricEvent, MetricName, MetricTags, MetricValue, OperationKind, SharedRecorder,
 };
-use plenora_database_core::plan::ProviderKind;
+use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind};
 use plenora_database_core::provider::{ConnectionInfo, Provider, SecretString};
 use plenora_database_core::transaction::{
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
@@ -14,9 +15,34 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, ResourceBudget, Result,
     RetryDisposition, Row,
 };
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Opzioni di cache del layer applicativo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineOptions {
+    metadata_cache_ttl: Duration,
+}
+
+impl EngineOptions {
+    #[must_use]
+    pub const fn new(metadata_cache_ttl: Duration) -> Self {
+        Self { metadata_cache_ttl }
+    }
+
+    #[must_use]
+    pub const fn metadata_cache_ttl(self) -> Duration {
+        self.metadata_cache_ttl
+    }
+}
+
+impl Default for EngineOptions {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(30))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineStatistics {
@@ -36,6 +62,29 @@ struct Credentials {
     secret: SecretString,
     generation: u64,
     capabilities: Option<ProviderCapabilities>,
+    metadata: HashMap<MetadataCacheKey, CachedMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MetadataCacheKey {
+    catalog: Option<String>,
+    schema: Option<String>,
+    object: String,
+}
+
+impl From<&ObjectRef> for MetadataCacheKey {
+    fn from(source: &ObjectRef) -> Self {
+        Self {
+            catalog: source.catalog.clone(),
+            schema: source.schema.clone(),
+            object: source.object.clone(),
+        }
+    }
+}
+
+struct CachedMetadata {
+    observed_at: Instant,
+    value: Arc<MetaData>,
 }
 
 struct EngineInner {
@@ -44,6 +93,7 @@ struct EngineInner {
     lifecycle: Mutex<Lifecycle>,
     cancellation: CancellationToken,
     recorder: SharedRecorder,
+    options: EngineOptions,
 }
 
 fn mutex<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -77,7 +127,7 @@ impl fmt::Debug for Engine {
 impl Engine {
     #[must_use]
     pub fn new(provider: Arc<dyn Provider>, secret: SecretString) -> Self {
-        Self::with_recorder(provider, secret, noop_recorder())
+        Self::with_options(provider, secret, noop_recorder(), EngineOptions::default())
     }
 
     #[must_use]
@@ -86,6 +136,16 @@ impl Engine {
         secret: SecretString,
         recorder: SharedRecorder,
     ) -> Self {
+        Self::with_options(provider, secret, recorder, EngineOptions::default())
+    }
+
+    #[must_use]
+    pub fn with_options(
+        provider: Arc<dyn Provider>,
+        secret: SecretString,
+        recorder: SharedRecorder,
+        options: EngineOptions,
+    ) -> Self {
         Self {
             inner: Arc::new(EngineInner {
                 provider,
@@ -93,10 +153,12 @@ impl Engine {
                     secret,
                     generation: 0,
                     capabilities: None,
+                    metadata: HashMap::new(),
                 }),
                 lifecycle: Mutex::new(Lifecycle::default()),
                 cancellation: CancellationToken::new(),
                 recorder,
+                options,
             }),
         }
     }
@@ -116,6 +178,11 @@ impl Engine {
         }
     }
 
+    #[must_use]
+    pub fn metadata_cache_entries(&self) -> usize {
+        read(&self.inner.credentials).metadata.len()
+    }
+
     /// Impedisce nuovi lavori e cancella sessioni e operazioni in corso.
     ///
     /// Il pool viene rilasciato quando cade l'ultimo handle provider ancora
@@ -129,7 +196,9 @@ impl Engine {
         };
         if changed {
             self.inner.cancellation.cancel();
-            write(&self.inner.credentials).capabilities.take();
+            let mut credentials = write(&self.inner.credentials);
+            credentials.capabilities.take();
+            credentials.metadata.clear();
         }
     }
 
@@ -148,6 +217,7 @@ impl Engine {
         credentials.secret = secret;
         credentials.generation = generation;
         credentials.capabilities.take();
+        credentials.metadata.clear();
         drop(credentials);
         Ok(())
     }
@@ -230,6 +300,100 @@ impl Engine {
         );
         error.retry = RetryDisposition::Safe;
         Err(error)
+    }
+
+    /// Riflette un oggetto nel catalogo tipizzato, con cache a TTL.
+    ///
+    /// `refresh` forza una nuova osservazione. Una rotazione del secret
+    /// invalida la cache e scarta ogni risposta iniziata con il secret vecchio.
+    ///
+    /// # Errors
+    ///
+    /// Propaga errori redatti del provider e documenti incompatibili.
+    pub async fn reflect_table(
+        &self,
+        source: &ObjectRef,
+        refresh: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<MetaData>> {
+        const MAX_ATTEMPTS: usize = 3;
+        let key = MetadataCacheKey::from(source);
+        for _ in 0..MAX_ATTEMPTS {
+            self.ensure_open(ErrorPhase::Probe)?;
+            let (secret, generation, cached) = {
+                let credentials = read(&self.inner.credentials);
+                let cached = credentials.metadata.get(&key).and_then(|entry| {
+                    (entry.observed_at.elapsed() < self.inner.options.metadata_cache_ttl)
+                        .then(|| Arc::clone(&entry.value))
+                });
+                (credentials.secret.clone(), credentials.generation, cached)
+            };
+            if !refresh {
+                if let Some(cached) = cached {
+                    return Ok(cached);
+                }
+            }
+            let linked = CancellationToken::linked(&[&self.inner.cancellation, cancellation]);
+            let operation = Operation::DatabaseDescribeObject {
+                source: source.clone(),
+            };
+            let started = Instant::now();
+            let inspection = self
+                .inner
+                .provider
+                .inspect(&secret, &operation, &linked)
+                .await;
+            self.record_duration(OperationKind::Probe, started);
+            self.ensure_open(ErrorPhase::Probe)?;
+            if read(&self.inner.credentials).generation != generation {
+                continue;
+            }
+            let metadata = Arc::new(MetaData::from_inspection(
+                self.provider_kind(),
+                source,
+                inspection?,
+            )?);
+            let mut credentials = write(&self.inner.credentials);
+            if credentials.generation != generation {
+                continue;
+            }
+            credentials.metadata.insert(
+                key.clone(),
+                CachedMetadata {
+                    observed_at: Instant::now(),
+                    value: Arc::clone(&metadata),
+                },
+            );
+            drop(credentials);
+            return Ok(metadata);
+        }
+        let mut error = DatabaseError::new(
+            ErrorCategory::Transient,
+            ErrorPhase::Probe,
+            Some(self.provider_kind()),
+            "secret ruotato ripetutamente durante la reflection",
+        );
+        error.retry = RetryDisposition::Safe;
+        Err(error)
+    }
+
+    /// Invalida una voce o l'intera cache metadata e restituisce quante voci
+    /// sono state rimosse.
+    #[must_use]
+    pub fn invalidate_metadata(&self, source: Option<&ObjectRef>) -> usize {
+        let mut credentials = write(&self.inner.credentials);
+        if let Some(source) = source {
+            usize::from(
+                credentials
+                    .metadata
+                    .remove(&MetadataCacheKey::from(source))
+                    .is_some(),
+            )
+        } else {
+            let removed = credentials.metadata.len();
+            credentials.metadata.clear();
+            removed
+        }
     }
 
     /// Crea un confine di lavoro non condivisibile fra task concorrenti.
