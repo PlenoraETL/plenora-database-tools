@@ -56,7 +56,7 @@ use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::ResourceBudget;
 #[cfg(test)]
 use plenora_database_core::resource::ResourceKind;

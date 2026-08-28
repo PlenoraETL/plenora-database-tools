@@ -12,7 +12,7 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{ObjectRef, Operation, ReadOperation, WriteOperation};
 #[cfg(feature = "postgres")]
 use plenora_database_core::plan::{OrderBy, SortDirection};
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::relational::QueryOperation;
 // Il percorso `postgres-read-ipc` e l'unico che pianifica una lettura e ne
 // misura il budget: fuori dalla feature questo nome non ha un chiamante.
 use plenora_database_core::provider::{Inspection, Provider, SecretString};

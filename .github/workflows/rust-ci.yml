@@ -64,6 +64,11 @@ jobs:
       # loro corpo vive in file dedicati per tenere leggibile il prodotto.
       - name: scripts/check_test_layout.py
         run: python3 scripts/check_test_layout.py
+      # Il modello query canonico e una proprieta architetturale: questa
+      # guardia impedisce di reintrodurre AST paralleli nei provider o nel
+      # renderer SQL durante la migrazione compatibile verso Core v3.
+      - name: scripts/check_relational_ir.py
+        run: python3 scripts/check_relational_ir.py
       # Il refactor misura solo il codice di prodotto: cancellare evidence o
       # spostare test non puo far apparire una riduzione che non esiste. Il
       # budget e una guardia, quindi vive nel workflow che esegue gli altri

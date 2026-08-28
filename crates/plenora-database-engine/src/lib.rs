@@ -16,7 +16,7 @@ use plenora_database_core::capabilities::{ProviderCapabilities, TransactionScope
 use plenora_database_core::plan::{
     FilterExpression, ObjectRef, Operation, Plan, TransactionProfile, WriteMode, WriteOperation,
 };
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::{DatabaseError, Result};
 use sha2::{Digest, Sha256};
 

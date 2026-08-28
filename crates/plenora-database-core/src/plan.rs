@@ -110,7 +110,7 @@ pub enum FilterExpression {
         case_insensitive: bool,
     },
     Spatial {
-        function: crate::query::SpatialFunction,
+        function: crate::relational::SpatialFunction,
         field: String,
         geometry_parameter: Option<String>,
         distance_parameter: Option<String>,

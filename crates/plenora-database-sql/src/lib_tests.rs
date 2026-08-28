@@ -1,6 +1,6 @@
 use super::*;
 use plenora_database_core::plan::ObjectRef;
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     ColumnRef, CommonTableExpression, QueryJoin, QueryLock, QueryOrdering, QueryProjection,
     QuerySetOperation,
 };
@@ -88,6 +88,64 @@ fn postgres_uses_quoted_identifiers_and_binds() {
     );
     assert_eq!(rendered.binds[0].name, "secret_value");
     assert!(!rendered.sql.contains("secret_value"));
+}
+
+#[test]
+fn legacy_select_lowers_through_the_canonical_ir_on_two_dialects() {
+    let select = Select {
+        source: source(),
+        projection: vec![identifier("id"), identifier("name")],
+        filter: Some(Expression::And(vec![
+            Expression::In {
+                field: identifier("id"),
+                parameters: vec!["first".to_owned(), "second".to_owned()],
+            },
+            Expression::Between {
+                field: identifier("score"),
+                lower_parameter: "lower".to_owned(),
+                upper_parameter: "upper".to_owned(),
+            },
+            Expression::Like {
+                field: identifier("name"),
+                parameter: "pattern".to_owned(),
+                case_insensitive: false,
+            },
+        ])),
+        order_by: vec![Ordering {
+            field: identifier("id"),
+            direction: SortDirection::Desc,
+        }],
+        limit: Some(5),
+    };
+
+    for (dialect, expected) in [
+        (
+            Dialect::Postgres,
+            "SELECT \"id\", \"name\" FROM \"public\".\"events\" WHERE (\"id\" IN ($1, $2) AND \"score\" BETWEEN $3 AND $4 AND \"name\" LIKE $5) ORDER BY \"id\" DESC LIMIT 5",
+        ),
+        (
+            Dialect::Mysql,
+            "SELECT `id`, `name` FROM `public`.`events` WHERE (`id` IN (?, ?) AND `score` BETWEEN ? AND ? AND `name` LIKE ?) ORDER BY `id` DESC LIMIT 5",
+        ),
+    ] {
+        let rendered = Renderer::new(
+            dialect,
+            DialectCapabilities {
+                spatial_intersects: false,
+            },
+        )
+        .render_select(&select)
+        .expect("canonical lowering");
+        assert_eq!(rendered.sql, expected);
+        assert_eq!(
+            rendered
+                .binds
+                .iter()
+                .map(|bind| bind.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "lower", "upper", "pattern"]
+        );
+    }
 }
 
 #[test]

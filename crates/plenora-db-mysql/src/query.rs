@@ -32,7 +32,7 @@ use crate::types::mysql_renderer;
 use crate::{MysqlColumnSpec, MAX_IDENTIFIER_CHARACTERS};
 use mysql_async::Column;
 use plenora_database_core::limits::Limits;
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     validate_query_operation, walk_query_expression, JoinKind, QueryExpression, QueryOperation,
     QueryOrdering, QuerySource, QueryWalkControl, QueryWalkNode, ScalarFunction, SpatialFunction,
     WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -838,10 +838,42 @@ fn ensure_expression(
                 stack.push((left, scope));
                 stack.push((right, scope));
             }
+            QueryExpression::InList {
+                expression, values, ..
+            } => {
+                stack.push((expression, scope));
+                stack.extend(values.iter().map(|value| (value, scope)));
+            }
+            QueryExpression::Between {
+                expression,
+                lower,
+                upper,
+                ..
+            } => {
+                stack.push((expression, scope));
+                stack.push((lower, scope));
+                stack.push((upper, scope));
+            }
+            QueryExpression::Like {
+                expression,
+                pattern,
+                case_insensitive,
+                ..
+            } => {
+                if *case_insensitive {
+                    return Err(unsupported(
+                        "LIKE case-insensitive richiede una collation esplicita",
+                    ));
+                }
+                stack.push((expression, scope));
+                stack.push((pattern, scope));
+            }
+            QueryExpression::Not { expression } | QueryExpression::IsNull { expression, .. } => {
+                stack.push((expression, scope));
+            }
             QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
                 stack.extend(arguments.iter().map(|argument| (argument, scope)));
             }
-            QueryExpression::IsNull { expression, .. } => stack.push((expression, scope)),
             QueryExpression::Window {
                 function,
                 arguments,

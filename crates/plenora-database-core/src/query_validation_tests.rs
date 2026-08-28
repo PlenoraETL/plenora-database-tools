@@ -102,6 +102,73 @@ fn query_walker_can_skip_or_break_a_subtree() {
 }
 
 #[test]
+fn canonical_predicates_share_validation_and_traversal() {
+    let column = || QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: "name".to_owned(),
+        },
+    };
+    let parameter = |name: &str| QueryExpression::Parameter {
+        name: name.to_owned(),
+    };
+    let expression = QueryExpression::Not {
+        expression: Box::new(QueryExpression::And {
+            arguments: vec![
+                QueryExpression::InList {
+                    expression: Box::new(column()),
+                    values: vec![parameter("first"), parameter("second")],
+                    negated: false,
+                },
+                QueryExpression::Between {
+                    expression: Box::new(column()),
+                    lower: Box::new(parameter("lower")),
+                    upper: Box::new(parameter("upper")),
+                    negated: false,
+                },
+                QueryExpression::Like {
+                    expression: Box::new(column()),
+                    pattern: Box::new(parameter("pattern")),
+                    case_insensitive: false,
+                    negated: false,
+                },
+            ],
+        }),
+    };
+    let query = query_with_filter(expression);
+    validate_query_operation(&query, &Limits::default()).expect("canonical predicates");
+
+    let mut parameters = Vec::new();
+    assert!(walk_query(&query, |node| {
+        if let QueryWalkNode::Expression(QueryExpression::Parameter { name }) = node {
+            parameters.push(name.clone());
+        }
+        QueryWalkControl::Continue
+    }));
+    parameters.sort();
+    assert_eq!(parameters, ["first", "lower", "pattern", "second", "upper"]);
+}
+
+#[test]
+fn canonical_in_list_rejects_an_empty_value_set() {
+    let error = validate_query_operation(
+        &query_with_filter(QueryExpression::InList {
+            expression: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: None,
+                    field: "event_id".to_owned(),
+                },
+            }),
+            values: Vec::new(),
+            negated: false,
+        }),
+        &Limits::default(),
+    )
+    .expect_err("empty IN list");
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+}
+
+#[test]
 fn rejects_deep_query_without_recursive_validation() {
     let mut expression = QueryExpression::Parameter {
         name: "value".to_owned(),

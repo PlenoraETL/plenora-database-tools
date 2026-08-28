@@ -6,7 +6,7 @@ use plenora_database_core::capabilities::{
 use plenora_database_core::geometry::Dimensions;
 use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::{ErrorPhase, Result};
 use std::collections::BTreeMap;
 use tokio_postgres::Client;

@@ -14,7 +14,7 @@ use plenora_database_core::provider::{
     BatchStream, ConnectionInfo, Inspection, ParameterBag, PreparedWrite, Provider, ProviderFuture,
     SecretString,
 };
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::transaction::{
     TransactionOptions, TransactionScope as TransactionScopeContract,

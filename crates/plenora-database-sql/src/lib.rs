@@ -5,11 +5,12 @@
 
 use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
-use plenora_database_core::query::SpatialFunction;
-use plenora_database_core::query::{
+use plenora_database_core::relational::SpatialFunction;
+use plenora_database_core::relational::{
     validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLock,
-    QueryLockStrength, QueryLockWait, QueryOperation, QuerySetOperator, QuerySource,
-    ScalarFunction, SpatialOperator, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryProjection,
+    QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator, WindowFrame, WindowFrameBound,
+    WindowFrameUnits,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -168,6 +169,144 @@ pub struct Select {
     pub limit: Option<u64>,
 }
 
+fn simple_column(field: &Identifier) -> QueryExpression {
+    QueryExpression::Column {
+        column: plenora_database_core::relational::ColumnRef {
+            relation: None,
+            field: field.as_str().to_owned(),
+        },
+    }
+}
+
+fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
+    let parameter = |name: &str| QueryExpression::Parameter {
+        name: name.to_owned(),
+    };
+    match expression {
+        Expression::And(arguments) => QueryExpression::And {
+            arguments: arguments
+                .iter()
+                .map(simple_expression_to_relational)
+                .collect(),
+        },
+        Expression::Or(arguments) => QueryExpression::Or {
+            arguments: arguments
+                .iter()
+                .map(simple_expression_to_relational)
+                .collect(),
+        },
+        Expression::Compare {
+            field,
+            operator,
+            parameter: name,
+        } => QueryExpression::Compare {
+            left: Box::new(simple_column(field)),
+            operator: *operator,
+            right: Box::new(parameter(name)),
+        },
+        Expression::IsNull(field) | Expression::IsNotNull(field) => QueryExpression::IsNull {
+            expression: Box::new(simple_column(field)),
+            negated: matches!(expression, Expression::IsNotNull(_)),
+        },
+        Expression::In { field, parameters } => QueryExpression::InList {
+            expression: Box::new(simple_column(field)),
+            values: parameters.iter().map(|name| parameter(name)).collect(),
+            negated: false,
+        },
+        Expression::Between {
+            field,
+            lower_parameter,
+            upper_parameter,
+        } => QueryExpression::Between {
+            expression: Box::new(simple_column(field)),
+            lower: Box::new(parameter(lower_parameter)),
+            upper: Box::new(parameter(upper_parameter)),
+            negated: false,
+        },
+        Expression::Like {
+            field,
+            parameter: name,
+            case_insensitive,
+        } => QueryExpression::Like {
+            expression: Box::new(simple_column(field)),
+            pattern: Box::new(parameter(name)),
+            case_insensitive: *case_insensitive,
+            negated: false,
+        },
+        Expression::SpatialIntersects {
+            field,
+            wkb_parameter,
+        } => QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![simple_column(field), parameter(wkb_parameter)],
+        },
+        Expression::SpatialPredicate {
+            function,
+            field,
+            geometry_parameter,
+            distance_parameter,
+        } => {
+            let mut arguments = vec![simple_column(field)];
+            arguments.extend(geometry_parameter.iter().map(|name| parameter(name)));
+            arguments.extend(distance_parameter.iter().map(|name| parameter(name)));
+            QueryExpression::Spatial {
+                function: *function,
+                arguments,
+            }
+        }
+    }
+}
+
+fn simple_select_to_relational(select: &Select) -> QueryOperation {
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: plenora_database_core::plan::ObjectRef {
+                catalog: select
+                    .source
+                    .catalog
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                schema: select
+                    .source
+                    .schema
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                object: select.source.object.as_str().to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: select
+            .projection
+            .iter()
+            .map(|field| QueryProjection {
+                expression: simple_column(field),
+                alias: None,
+            })
+            .collect(),
+        joins: Vec::new(),
+        filter: select.filter.as_ref().map(simple_expression_to_relational),
+        group_by: Vec::new(),
+        having: None,
+        order_by: select
+            .order_by
+            .iter()
+            .map(|order| QueryOrdering {
+                expression: simple_column(&order.field),
+                direction: order.direction,
+            })
+            .collect(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: select.limit,
+        row_offset: None,
+        locking: None,
+        declared_crs: Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindParameter {
     pub ordinal: usize,
@@ -259,65 +398,7 @@ impl Renderer {
     /// Restituisce `InvalidPlan` per projection o gruppi vuoti e
     /// `Unsupported` per funzioni non pubblicizzate dal dialect.
     pub fn render_select(&self, select: &Select) -> Result<RenderedSql> {
-        if select.projection.is_empty() {
-            return Err(DatabaseError::invalid_plan(
-                "la projection SQL deve essere esplicita e non vuota",
-            ));
-        }
-        self.validate_select_dialect_limits(select)?;
-        let mut sql = String::from("SELECT ");
-        if self.dialect == Dialect::SqlServer {
-            if let Some(limit) = select.limit {
-                sql.push_str("TOP (");
-                sql.push_str(&limit.to_string());
-                sql.push_str(") ");
-            }
-        }
-        let projection_sql: Result<Vec<String>> = select
-            .projection
-            .iter()
-            .map(|field| self.quote(field))
-            .collect();
-        sql.push_str(&projection_sql?.join(", "));
-        sql.push_str(" FROM ");
-        sql.push_str(&self.render_object(&select.source)?);
-
-        let mut binds = Vec::new();
-        if let Some(filter) = &select.filter {
-            sql.push_str(" WHERE ");
-            sql.push_str(&self.render_expression(filter, &mut binds)?);
-        }
-        if !select.order_by.is_empty() {
-            sql.push_str(" ORDER BY ");
-            let order_parts: Result<Vec<String>> = select
-                .order_by
-                .iter()
-                .map(|order| {
-                    let direction = match order.direction {
-                        SortDirection::Asc => "ASC",
-                        SortDirection::Desc => "DESC",
-                    };
-                    Ok(format!("{} {direction}", self.quote(&order.field)?))
-                })
-                .collect();
-            sql.push_str(&order_parts?.join(", "));
-        }
-        if let Some(limit) = select.limit {
-            match self.dialect {
-                Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
-                    sql.push_str(" LIMIT ");
-                    sql.push_str(&limit.to_string());
-                }
-                Dialect::Oracle | Dialect::Db2 => {
-                    sql.push_str(" FETCH FIRST ");
-                    sql.push_str(&limit.to_string());
-                    sql.push_str(" ROWS ONLY");
-                }
-                Dialect::SqlServer => {}
-            }
-        }
-        self.validate_bind_count(&binds)?;
-        Ok(RenderedSql { sql, binds })
+        self.render_query(&simple_select_to_relational(select))
     }
 
     /// Renderizza il nuovo AST relazionale mantenendo tutti i valori nei bind.
@@ -958,18 +1039,86 @@ impl Renderer {
                 if *negated { "NOT " } else { "" },
                 self.render_query_inner(query, binds, false)?
             )),
+            QueryExpression::Compare { .. }
+            | QueryExpression::InList { .. }
+            | QueryExpression::Between { .. }
+            | QueryExpression::Like { .. }
+            | QueryExpression::Not { .. }
+            | QueryExpression::And { .. }
+            | QueryExpression::Or { .. }
+            | QueryExpression::IsNull { .. } => self.render_predicate_expression(expression, binds),
+        }
+    }
+
+    fn render_predicate_expression(
+        &self,
+        expression: &QueryExpression,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        match expression {
             QueryExpression::Compare {
                 left,
                 operator,
                 right,
+            } => Ok(format!(
+                "{} {} {}",
+                self.render_query_expression(left, binds)?,
+                comparison_symbol(*operator),
+                self.render_query_expression(right, binds)?
+            )),
+            QueryExpression::InList {
+                expression,
+                values,
+                negated,
             } => {
-                let symbol = comparison_symbol(*operator);
+                if values.is_empty() {
+                    return Err(DatabaseError::invalid_plan("lista IN query vuota"));
+                }
+                let expression = self.render_query_expression(expression, binds)?;
+                let values = values
+                    .iter()
+                    .map(|value| self.render_query_expression(value, binds))
+                    .collect::<Result<Vec<_>>>()?;
                 Ok(format!(
-                    "{} {symbol} {}",
-                    self.render_query_expression(left, binds)?,
-                    self.render_query_expression(right, binds)?
+                    "{expression} {}IN ({})",
+                    if *negated { "NOT " } else { "" },
+                    values.join(", ")
                 ))
             }
+            QueryExpression::Between {
+                expression,
+                lower,
+                upper,
+                negated,
+            } => Ok(format!(
+                "{} {}BETWEEN {} AND {}",
+                self.render_query_expression(expression, binds)?,
+                if *negated { "NOT " } else { "" },
+                self.render_query_expression(lower, binds)?,
+                self.render_query_expression(upper, binds)?
+            )),
+            QueryExpression::Like {
+                expression,
+                pattern,
+                case_insensitive,
+                negated,
+            } => {
+                let operator = if *case_insensitive && self.dialect == Dialect::Postgres {
+                    "ILIKE"
+                } else {
+                    "LIKE"
+                };
+                Ok(format!(
+                    "{} {}{operator} {}",
+                    self.render_query_expression(expression, binds)?,
+                    if *negated { "NOT " } else { "" },
+                    self.render_query_expression(pattern, binds)?
+                ))
+            }
+            QueryExpression::Not { expression } => Ok(format!(
+                "NOT ({})",
+                self.render_query_expression(expression, binds)?
+            )),
             QueryExpression::And { arguments } => self.render_query_group("AND", arguments, binds),
             QueryExpression::Or { arguments } => self.render_query_group("OR", arguments, binds),
             QueryExpression::IsNull {
@@ -980,6 +1129,7 @@ impl Renderer {
                 self.render_query_expression(expression, binds)?,
                 if *negated { "NOT " } else { "" }
             )),
+            _ => unreachable!("chiamata soltanto per espressioni predicate"),
         }
     }
 
@@ -1024,7 +1174,7 @@ impl Renderer {
         &self,
         call: &str,
         partition_by: &[QueryExpression],
-        order_by: &[plenora_database_core::query::QueryOrdering],
+        order_by: &[plenora_database_core::relational::QueryOrdering],
         frame: Option<&WindowFrame>,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
@@ -1075,6 +1225,20 @@ impl Renderer {
         arguments: &[QueryExpression],
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
+        if !self.capabilities.spatial_intersects {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "AST spatial non abilitato per il dialect",
+            ));
+        }
+        if function == SpatialFunction::DWithin && self.dialect != Dialect::Postgres {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "d_within richiede PostgreSQL/PostGIS",
+            ));
+        }
         if self.dialect == Dialect::SqlServer {
             return self.render_sql_server_spatial_function(function, arguments, binds);
         }
@@ -1261,9 +1425,9 @@ impl Renderer {
     /// Restituisce gli stessi errori capability/strutturali di
     /// [`Self::render_select`].
     pub fn render_filter(&self, expression: &Expression) -> Result<RenderedSql> {
-        self.validate_expression_dialect_limits(expression)?;
         let mut binds = Vec::new();
-        let sql = self.render_expression(expression, &mut binds)?;
+        let sql =
+            self.render_query_expression(&simple_expression_to_relational(expression), &mut binds)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
@@ -1279,223 +1443,6 @@ impl Renderer {
     /// Come `quote_identifier` per ognuna delle componenti.
     pub fn quote_object(&self, object: &ObjectName) -> Result<String> {
         self.render_object(object)
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn render_expression(
-        &self,
-        expression: &Expression,
-        binds: &mut Vec<BindParameter>,
-    ) -> Result<String> {
-        match expression {
-            Expression::And(args) => self.render_group("AND", args, binds),
-            Expression::Or(args) => self.render_group("OR", args, binds),
-            Expression::Compare {
-                field,
-                operator,
-                parameter,
-            } => {
-                let symbol = match operator {
-                    ComparisonOperator::Eq => "=",
-                    ComparisonOperator::Ne => "<>",
-                    ComparisonOperator::Lt => "<",
-                    ComparisonOperator::Lte => "<=",
-                    ComparisonOperator::Gt => ">",
-                    ComparisonOperator::Gte => ">=",
-                };
-                let placeholder = self.bind(parameter, binds);
-                Ok(format!("{} {symbol} {placeholder}", self.quote(field)?))
-            }
-            Expression::IsNull(field) => Ok(format!("{} IS NULL", self.quote(field)?)),
-            Expression::IsNotNull(field) => Ok(format!("{} IS NOT NULL", self.quote(field)?)),
-            Expression::In { field, parameters } => {
-                if parameters.is_empty() {
-                    return Err(DatabaseError::invalid_plan("filtro IN senza parametri"));
-                }
-                let placeholders = parameters
-                    .iter()
-                    .map(|parameter| self.bind(parameter, binds))
-                    .collect::<Vec<_>>();
-                Ok(format!(
-                    "{} IN ({})",
-                    self.quote(field)?,
-                    placeholders.join(", ")
-                ))
-            }
-            Expression::Between {
-                field,
-                lower_parameter,
-                upper_parameter,
-            } => {
-                let lower = self.bind(lower_parameter, binds);
-                let upper = self.bind(upper_parameter, binds);
-                Ok(format!(
-                    "{} BETWEEN {lower} AND {upper}",
-                    self.quote(field)?
-                ))
-            }
-            Expression::Like {
-                field,
-                parameter,
-                case_insensitive,
-            } => {
-                let placeholder = self.bind(parameter, binds);
-                let operator = if *case_insensitive && self.dialect == Dialect::Postgres {
-                    "ILIKE"
-                } else {
-                    "LIKE"
-                };
-                Ok(format!("{} {operator} {placeholder}", self.quote(field)?))
-            }
-            Expression::SpatialIntersects {
-                field,
-                wkb_parameter,
-            } => {
-                if !self.capabilities.spatial_intersects {
-                    return Err(DatabaseError::unsupported(
-                        self.provider_kind(),
-                        ErrorPhase::Prepare,
-                        "spatial intersects non supportato dal dialect",
-                    ));
-                }
-                if self.dialect == Dialect::SqlServer {
-                    return Err(DatabaseError::unsupported(
-                        self.provider_kind(),
-                        ErrorPhase::Prepare,
-                        "spatial SQL Server richiede tipo geometry/geography e SRID risolti",
-                    ));
-                }
-                let placeholder = self.bind(wkb_parameter, binds);
-                let quoted = self.quote(field)?;
-                let expression = match self.dialect {
-                    Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
-                        format!("ST_Intersects({quoted}, ST_GeomFromWKB({placeholder}))")
-                    }
-                    Dialect::SqlServer => {
-                        return Err(DatabaseError::unsupported(
-                            self.provider_kind(),
-                            ErrorPhase::Prepare,
-                            "spatial SQL Server senza tipo e SRID risolti",
-                        ));
-                    }
-                    Dialect::Oracle => {
-                        format!(
-                            "SDO_RELATE({quoted}, SDO_UTIL.FROM_WKBGEOMETRY({placeholder}), \
-                             'mask=ANYINTERACT') = 'TRUE'"
-                        )
-                    }
-                    Dialect::Db2 => {
-                        return Err(DatabaseError::unsupported(
-                            self.provider_kind(),
-                            ErrorPhase::Prepare,
-                            "spatial Db2 richiede SRID dichiarato nel piano portable",
-                        ));
-                    }
-                };
-                Ok(expression)
-            }
-            Expression::SpatialPredicate {
-                function,
-                field,
-                geometry_parameter,
-                distance_parameter,
-            } => self.render_spatial_predicate(
-                *function,
-                field,
-                geometry_parameter.as_deref(),
-                distance_parameter.as_deref(),
-                binds,
-            ),
-        }
-    }
-
-    fn render_spatial_predicate(
-        &self,
-        function: SpatialFunction,
-        field: &Identifier,
-        geometry_parameter: Option<&str>,
-        distance_parameter: Option<&str>,
-        binds: &mut Vec<BindParameter>,
-    ) -> Result<String> {
-        if !self.capabilities.spatial_intersects {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                "AST spatial non abilitato per il dialect",
-            ));
-        }
-        // Il profilo MySQL abilita soltanto il sottoinsieme verificato in
-        // `plenora_db_mysql::query::VERIFIED_SPATIAL_FUNCTIONS`.
-        // DWithin non è nativo MySQL (no ST_DWithin diretto); resta unsupported
-        // finché non emergono profili che ne giustifichino l'emulazione via
-        // ST_Distance + confronto scalare.
-        match self.dialect {
-            Dialect::Postgres | Dialect::Mysql => {}
-            _ => {
-                return Err(DatabaseError::unsupported(
-                    self.provider_kind(),
-                    ErrorPhase::Prepare,
-                    "predicato spatial non supportato dal dialect",
-                ));
-            }
-        }
-        let quoted = self.quote(field)?;
-        if function.is_unary_predicate() {
-            return Ok(format!(
-                "{}({quoted})",
-                dialect_spatial_name(self.dialect, function)
-            ));
-        }
-        let geometry_name = geometry_parameter.ok_or_else(|| {
-            DatabaseError::invalid_plan("predicato spatial senza parametro geometria")
-        })?;
-        let geometry = self.bind(geometry_name, binds);
-        // Postgres accetta EWKB (WKB con SRID embedded); MySQL usa WKB puro
-        // + SRID come secondo argomento opzionale (non passiamo SRID —
-        // il consumer deve fornire WKB con SRID già settato via ST_SRID).
-        let right = match self.dialect {
-            Dialect::Postgres => format!("ST_GeomFromEWKB({geometry})"),
-            Dialect::Mysql => format!("ST_GeomFromWKB({geometry})"),
-            _ => unreachable!("dialect check sopra"),
-        };
-        if function == SpatialFunction::DWithin {
-            if self.dialect != Dialect::Postgres {
-                return Err(DatabaseError::unsupported(
-                    self.provider_kind(),
-                    ErrorPhase::Prepare,
-                    "d_within richiede Postgres/PostGIS (MySQL non ha ST_DWithin nativo)",
-                ));
-            }
-            let distance_name = distance_parameter
-                .ok_or_else(|| DatabaseError::invalid_plan("d_within senza parametro distanza"))?;
-            let distance = self.bind(distance_name, binds);
-            return Ok(format!("ST_DWithin({quoted}, {right}, {distance})"));
-        }
-        if !function.is_binary_predicate() {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                "funzione spatial non valida come filtro",
-            ));
-        }
-        let name = dialect_spatial_name(self.dialect, function);
-        Ok(format!("{name}({quoted}, {right})"))
-    }
-
-    fn render_group(
-        &self,
-        operator: &str,
-        args: &[Expression],
-        binds: &mut Vec<BindParameter>,
-    ) -> Result<String> {
-        if args.is_empty() {
-            return Err(DatabaseError::invalid_plan("gruppo filtro SQL vuoto"));
-        }
-        let rendered = args
-            .iter()
-            .map(|arg| self.render_expression(arg, binds))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(format!("({})", rendered.join(&format!(" {operator} "))))
     }
 
     fn bind(&self, name: &str, binds: &mut Vec<BindParameter>) -> String {
@@ -1531,61 +1478,6 @@ impl Renderer {
             .map(|part| self.quote(part))
             .collect();
         Ok(parts?.join("."))
-    }
-
-    fn validate_select_dialect_limits(&self, select: &Select) -> Result<()> {
-        if self.dialect != Dialect::SqlServer {
-            return Ok(());
-        }
-        for identifier in select
-            .source
-            .catalog
-            .iter()
-            .chain(select.source.schema.iter())
-            .chain(std::iter::once(&select.source.object))
-            .chain(select.projection.iter())
-            .chain(select.order_by.iter().map(|ordering| &ordering.field))
-        {
-            Self::validate_identifier(identifier)?;
-        }
-        if let Some(filter) = &select.filter {
-            self.validate_expression_dialect_limits(filter)?;
-        }
-        Ok(())
-    }
-
-    fn validate_expression_dialect_limits(&self, expression: &Expression) -> Result<()> {
-        if self.dialect != Dialect::SqlServer {
-            return Ok(());
-        }
-        let mut stack = vec![expression];
-        while let Some(value) = stack.pop() {
-            match value {
-                Expression::And(arguments) | Expression::Or(arguments) => {
-                    stack.extend(arguments);
-                }
-                Expression::Compare { field, .. }
-                | Expression::IsNull(field)
-                | Expression::IsNotNull(field)
-                | Expression::In { field, .. }
-                | Expression::Between { field, .. }
-                | Expression::Like { field, .. }
-                | Expression::SpatialIntersects { field, .. }
-                | Expression::SpatialPredicate { field, .. } => {
-                    Self::validate_identifier(field)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_identifier(identifier: &Identifier) -> Result<()> {
-        if identifier.as_str().chars().count() > SQL_SERVER_MAX_IDENTIFIER_CHARS {
-            return Err(DatabaseError::invalid_plan(
-                "identificatore SQL Server oltre 128 caratteri",
-            ));
-        }
-        Ok(())
     }
 
     fn validate_bind_count(&self, binds: &[BindParameter]) -> Result<()> {

@@ -11,7 +11,7 @@ use crate::SqlServerSession;
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
-use plenora_database_core::query::{
+use plenora_database_core::relational::{
     walk_query, walk_query_expression, ColumnRef, QueryExpression, QueryOperation, QueryProjection,
     QuerySource, QueryWalkControl, QueryWalkNode, SpatialFunction,
 };

@@ -8,7 +8,7 @@ use plenora_database_core::arrow::array::{Array, BinaryArray};
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::plan::{ObjectRef, ReadOperation};
 use plenora_database_core::provider::{BatchStream, ParameterBag, ProviderFuture};
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::{
     interruption_category, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase,

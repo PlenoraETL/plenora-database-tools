@@ -14,7 +14,7 @@
 use crate::geometry::Dimensions;
 use crate::geometry::SpatialSemantics;
 use crate::plan::ProviderKind;
-use crate::query::SpatialFunction;
+use crate::relational::SpatialFunction;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

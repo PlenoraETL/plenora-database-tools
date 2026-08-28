@@ -25,7 +25,7 @@ fn policy_closes_unqualified_filter_forms() {
     assert_eq!(error.message, CASE_INSENSITIVE_LIKE_REFUSAL);
 
     let spatial = FilterExpression::Spatial {
-        function: plenora_database_core::query::SpatialFunction::Intersects,
+        function: plenora_database_core::relational::SpatialFunction::Intersects,
         field: "shape".to_owned(),
         geometry_parameter: Some("geometry".to_owned()),
         distance_parameter: None,

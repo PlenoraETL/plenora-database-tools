@@ -22,6 +22,7 @@ pub mod primary_key;
 pub mod protocol;
 pub mod provider;
 pub mod query;
+pub mod relational;
 pub mod resource;
 pub mod row;
 pub mod row_diagnostics;

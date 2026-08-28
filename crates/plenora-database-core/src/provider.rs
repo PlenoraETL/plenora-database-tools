@@ -5,7 +5,7 @@ use crate::capabilities::ProviderCapabilities;
 use crate::loss::LossReport;
 use crate::outcome::WriteOutcome;
 use crate::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
-use crate::query::QueryOperation;
+use crate::relational::QueryOperation;
 use crate::resource::{ResourceBudget, ResourceLease};
 use crate::transaction::{TransactionOptions, TransactionScope};
 use crate::CancellationToken;

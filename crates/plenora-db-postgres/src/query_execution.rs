@@ -14,7 +14,7 @@ use crate::{contract_schema, PostgresProvider};
 use futures_util::StreamExt;
 use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{BatchStream, ParameterBag, SecretString};
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use tokio_postgres::types::{ToSql, Type};

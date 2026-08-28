@@ -7,7 +7,7 @@ use crate::{ensure_end, print_json, secret_from_env, CliError, CliResult};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::portable::{compile_portable, PortableStatement};
 use plenora_database_core::provider::{ParameterBag, Provider};
-use plenora_database_core::query::QueryOperation;
+use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;

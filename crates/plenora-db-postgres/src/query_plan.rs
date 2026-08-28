@@ -1,7 +1,7 @@
 use crate::error::public_error;
 use crate::types::{ColumnKind, ColumnSpec};
 use plenora_database_core::plan::{FilterExpression, ReadOperation, SortDirection};
-use plenora_database_core::query::{QueryExpression, QueryOperation};
+use plenora_database_core::relational::{QueryExpression, QueryOperation};
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
     lower_filter, select_columns_by_name, Dialect, DialectCapabilities, Expression, FilterLowering,

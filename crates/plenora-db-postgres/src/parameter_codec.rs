@@ -3,7 +3,7 @@ use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use plenora_database_core::plan::FilterExpression;
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
-use plenora_database_core::query::SpatialFunction;
+use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::{DatabaseError, Result};
 use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 
