@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-rm -f /tmp/plenora-fixture-ready
-
 schema_count="$(
     su - db2inst1 -c ". ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -x \"SELECT COUNT(*) FROM SYSCAT.SCHEMATA WHERE SCHEMANAME = 'PLENORA_TEST'\""
 )"
@@ -20,4 +18,3 @@ elif [[ "${schema_count}" != "0" ]]; then
 fi
 
 su - db2inst1 -c ". ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -stvf /opt/plenora-fixture/fixture.sql"
-touch /tmp/plenora-fixture-ready

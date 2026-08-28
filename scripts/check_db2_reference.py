@@ -19,6 +19,8 @@ from scripts import live_inventory  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "docker-compose.db2.yml"
 DOCKERFILE = ROOT / "docker" / "db2-client" / "Dockerfile"
+HEALTHCHECK = ROOT / "docker" / "db2-client" / "healthcheck.sh"
+INIT_FIXTURE = ROOT / "docker" / "db2-client" / "init-fixture.sh"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-db2" / "src" / "live_tests.rs"
 SPATIAL_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "spatial_live_tests.rs"
@@ -138,6 +140,19 @@ def validate_build_contract() -> dict[str, str]:
     ):
         if required not in source:
             raise RuntimeError(f"contratto build Db2 assente: {required}")
+
+    healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
+    init_fixture = INIT_FIXTURE.read_text(encoding="utf-8")
+    for required in (
+        "SYSCAT.TABLES",
+        "SPATIAL_PROBE",
+        'test "${fixture_tables}" != "1"',
+        "isql -b -k",
+    ):
+        if required not in healthcheck:
+            raise RuntimeError(f"contratto healthcheck Db2 assente: {required}")
+    if "/tmp/plenora-fixture-ready" in healthcheck or "/tmp/plenora-fixture-ready" in init_fixture:
+        raise RuntimeError("healthcheck Db2 dipendente da un marker non persistente")
     return {"rust": images[0], "db2": images[1]}
 
 
@@ -204,7 +219,7 @@ def run_python_live() -> None:
         "python3.12 -m pytest -q -ra db2_sdk_gate_tests/test_db2_session.py"
     )
     output = compose_exec(["sh", "-lc", script], PYTHON_ENV)
-    if not re.search(r"\b3 passed in ", output):
+    if not re.search(r"\b5 passed in ", output):
         raise RuntimeError("matrice Python Db2 non completa")
 
 
@@ -251,7 +266,7 @@ def main() -> int:
         "container": container,
         "server_version": probe["connection"].get("server_version"),
         "live_tests": {"expected": len(executed), "passed": len(executed), "failed": 0},
-        "python_live_tests": {"expected": 3, "passed": 3, "failed": 0},
+        "python_live_tests": {"expected": 5, "passed": 5, "failed": 0},
         "executed_live_tests": executed,
         "steps": steps,
         "platform_matrix": {
