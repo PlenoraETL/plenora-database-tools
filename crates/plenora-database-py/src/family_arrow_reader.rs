@@ -23,6 +23,7 @@
     clippy::missing_const_for_fn,
     clippy::needless_pass_by_value,
     clippy::future_not_send,
+    clippy::too_many_arguments,
     clippy::redundant_pub_crate
 )]
 
@@ -49,11 +50,11 @@ pub(crate) fn open_family_reader(
     projection: Vec<String>,
     order_by: Vec<(String, String)>,
     limit: Option<u64>,
+    cancellation: CancellationToken,
 ) -> Result<BatchReader, DatabaseError> {
     let operation = make_read_operation(schema, object, projection, order_by, limit)?;
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
-    let cancellation = CancellationToken::new();
     let stream_cancellation = cancellation.clone();
     let stream = runtime().block_on(async move {
         provider_arc

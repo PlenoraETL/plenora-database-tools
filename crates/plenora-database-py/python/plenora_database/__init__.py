@@ -88,6 +88,14 @@ from ._native import (
     connect_db2 as _native_connect_db2,
     connect_mysql as _native_connect_mysql,
     connect_sqlserver as _native_connect_sqlserver,
+    create_async_db2_engine as _native_create_async_db2_engine,
+    create_async_mariadb_engine as _native_create_async_mariadb_engine,
+    create_async_mysql_engine as _native_create_async_mysql_engine,
+    create_async_sqlserver_engine as _native_create_async_sqlserver_engine,
+    create_db2_engine as _native_create_db2_engine,
+    create_mariadb_engine as _native_create_mariadb_engine,
+    create_mysql_engine as _native_create_mysql_engine,
+    create_sqlserver_engine as _native_create_sqlserver_engine,
 )
 
 # Compatibilita con i nomi privati pubblicati dagli stub della famiglia.
@@ -706,6 +714,134 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         return await self._native.execute_portable_count(ast_json)
 
 
+def create_mysql_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> Engine:
+    """Crea un Engine MySQL con lo stesso lifecycle di PostgreSQL."""
+    native = _native_create_mysql_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return Engine(native, _DatabaseSessionWrapper)
+
+
+async def create_async_mysql_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> AsyncEngine:
+    """Crea la variante asyncio dell'Engine MySQL."""
+    native = await _native_create_async_mysql_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
+
+
+def create_mariadb_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> Engine:
+    """Crea un Engine MariaDB esplicito e qualificato dalla probe."""
+    native = _native_create_mariadb_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return Engine(native, _DatabaseSessionWrapper)
+
+
+async def create_async_mariadb_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> AsyncEngine:
+    """Crea la variante asyncio dell'Engine MariaDB."""
+    native = await _native_create_async_mariadb_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
+
+
+def create_sqlserver_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> Engine:
+    """Crea un Engine SQL Server con lifecycle Core v3."""
+    native = _native_create_sqlserver_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return Engine(native, _DatabaseSessionWrapper)
+
+
+async def create_async_sqlserver_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_pem: bytes | None = None,
+    tls_mode: str = "require",
+) -> AsyncEngine:
+    """Crea la variante asyncio dell'Engine SQL Server."""
+    native = await _native_create_async_sqlserver_engine(
+        host, database, user, password, port, tls_ca_pem, tls_mode
+    )
+    return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
+
+
+def create_db2_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Engine:
+    """Crea un Engine Db2; richiede il wheel costruito con feature Db2."""
+    native = _native_create_db2_engine(
+        host, database, user, password, port, tls_ca_path, tls_mode
+    )
+    return Engine(native, _DatabaseSessionWrapper)
+
+
+async def create_async_db2_engine(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> AsyncEngine:
+    """Crea la variante asyncio dell'Engine Db2."""
+    native = await _native_create_async_db2_engine(
+        host, database, user, password, port, tls_ca_path, tls_mode
+    )
+    return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
+
+
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
     """Apre una nuova sessione Postgres asincrona.
 
@@ -736,6 +872,14 @@ AsyncMysqlSession = AsyncDatabaseSession
 __all__ = [
     "create_engine",
     "create_async_engine",
+    "create_mysql_engine",
+    "create_async_mysql_engine",
+    "create_mariadb_engine",
+    "create_async_mariadb_engine",
+    "create_sqlserver_engine",
+    "create_async_sqlserver_engine",
+    "create_db2_engine",
+    "create_async_db2_engine",
     "Engine",
     "AsyncEngine",
     "connect",

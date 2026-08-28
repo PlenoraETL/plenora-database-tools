@@ -206,10 +206,10 @@ class _AsyncDatabaseInspector:
 
 
 def version() -> str: ...
-def create_engine(dsn: str, tls_mode: str = "require") -> Engine: ...
+def create_engine(dsn: str, tls_mode: str = "require") -> Engine[Session]: ...
 async def create_async_engine(
     dsn: str, tls_mode: str = "require"
-) -> AsyncEngine: ...
+) -> AsyncEngine[AsyncSession]: ...
 def connect(dsn: str, tls_mode: str = "require") -> Session: ...
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 
@@ -259,6 +259,26 @@ async def aconnect_mariadb(
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
 
+def connect_sqlserver(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> _DatabaseSessionWrapper: ...
+
+async def aconnect_sqlserver(
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> _AsyncDatabaseSessionWrapper: ...
+
 def connect_db2(
     host: str,
     database: str,
@@ -278,6 +298,47 @@ async def aconnect_db2(
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
+
+def create_mysql_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> Engine[_DatabaseSessionWrapper]: ...
+async def create_async_mysql_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
+def create_mariadb_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> Engine[_DatabaseSessionWrapper]: ...
+async def create_async_mariadb_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
+def create_sqlserver_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> Engine[_DatabaseSessionWrapper]: ...
+async def create_async_sqlserver_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_pem: bytes | None = ...,
+    tls_mode: str = "require",
+) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
+def create_db2_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> Engine[_DatabaseSessionWrapper]: ...
+async def create_async_db2_engine(
+    host: str, database: str, user: str, password: str,
+    port: int | None = ..., tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
 
 
 __all__: list[str]

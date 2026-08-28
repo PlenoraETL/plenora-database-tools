@@ -47,9 +47,10 @@
 //! ```
 //!
 //! Il core Rust non crea un runtime sincrono annidato: chi chiama possiede il
-//! runtime async. Nel binding Python, `create_engine` e
-//! `create_async_engine` costruiscono sessioni PostgreSQL governate da questo
-//! lifecycle; le factory `connect*` restano il percorso compatibile diretto.
+//! runtime async. Nel binding Python, le factory `create*_engine` costruiscono
+//! sessioni PostgreSQL, MySQL, MariaDB, SQL Server o Db2 governate da questo
+//! lifecycle; le factory `connect*` restano adapter compatibili sopra lo
+//! stesso percorso.
 
 pub mod engine;
 pub mod metadata;

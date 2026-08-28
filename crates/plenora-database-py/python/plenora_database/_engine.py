@@ -1,8 +1,8 @@
-"""Engine applicativi PostgreSQL sopra il lifecycle del Core v3."""
+"""Engine applicativi provider-neutral sopra il lifecycle del Core v3."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from ._async_session import AsyncSession
 from ._native import AsyncEngine as _NativeAsyncEngine
@@ -13,10 +13,15 @@ from ._session import Session
 class Engine:
     """Factory condivisibile di sessioni sync, una per unita di lavoro."""
 
-    __slots__ = ("_native",)
+    __slots__ = ("_native", "_wrap_session")
 
-    def __init__(self, native: _NativeEngine) -> None:
+    def __init__(
+        self,
+        native: _NativeEngine,
+        wrap_session: Callable[[Any], Any] | None = None,
+    ) -> None:
         self._native = native
+        self._wrap_session = wrap_session or Session
 
     @property
     def provider_kind(self) -> str:
@@ -26,8 +31,8 @@ class Engine:
     def is_disposed(self) -> bool:
         return self._native.is_disposed
 
-    def session(self) -> Session:
-        return Session(self._native.session())
+    def session(self) -> Any:
+        return self._wrap_session(self._native.session())
 
     def statistics(self) -> dict:
         return self._native.statistics()
@@ -49,10 +54,15 @@ class Engine:
 class AsyncEngine:
     """Factory condivisibile di sessioni asyncio, una per unita di lavoro."""
 
-    __slots__ = ("_native",)
+    __slots__ = ("_native", "_wrap_session")
 
-    def __init__(self, native: _NativeAsyncEngine) -> None:
+    def __init__(
+        self,
+        native: _NativeAsyncEngine,
+        wrap_session: Callable[[Any], Any] | None = None,
+    ) -> None:
         self._native = native
+        self._wrap_session = wrap_session or AsyncSession
 
     @property
     def provider_kind(self) -> str:
@@ -62,8 +72,8 @@ class AsyncEngine:
     def is_disposed(self) -> bool:
         return self._native.is_disposed
 
-    def session(self) -> AsyncSession:
-        return AsyncSession(self._native.session())
+    def session(self) -> Any:
+        return self._wrap_session(self._native.session())
 
     def statistics(self) -> dict:
         return self._native.statistics()

@@ -55,8 +55,9 @@ Le aree da consolidare sono:
 - builder Python mutabili che costruiscono dizionari JSON e sono gia legati a
   una sessione;
 - reflection resa come dizionari, quindi senza identita e tipi stabili;
-- lifecycle di pool e connessioni implementato nei provider ma non governato da
-  un `Engine` pubblico comune;
+- operazioni specializzate (Arrow, DDL e inspect) ancora eseguite dal trait
+  provider, sebbene il loro lifecycle e la cancellazione siano governati
+  dall'`Engine` pubblico comune;
 - risultati distinti per scalar, righe e Arrow, senza un unico protocollo di
   consumo;
 - implementazioni sync e async esposte in superfici parallele;

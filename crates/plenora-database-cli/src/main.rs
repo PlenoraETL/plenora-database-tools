@@ -25,7 +25,7 @@ use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
 // Il giudizio sul commit incerto e comune a tutti i provider.
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
-use plenora_database_engine::parse_and_validate;
+use plenora_database_engine::{parse_and_validate, Engine as CoreEngine};
 #[cfg(feature = "db2")]
 use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
 #[cfg(feature = "mysql")]
@@ -56,6 +56,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use arrow_ipc::writer::FileWriter;
 
@@ -525,6 +526,12 @@ struct ProviderTarget {
     secret_environment: String,
 }
 
+struct OpenedProvider {
+    secret: SecretString,
+    provider: Arc<dyn Provider>,
+    engine: CoreEngine,
+}
+
 impl ProviderTarget {
     fn parse(args: &mut impl Iterator<Item = String>) -> CliResult<Self> {
         let provider = args.next().ok_or_else(|| "manca il provider".to_owned())?;
@@ -539,23 +546,26 @@ impl ProviderTarget {
         })
     }
 
-    fn open(
-        &self,
-        args: &mut impl Iterator<Item = String>,
-    ) -> CliResult<(SecretString, Box<dyn Provider>)> {
+    fn open(&self, args: &mut impl Iterator<Item = String>) -> CliResult<OpenedProvider> {
         let arguments = prepare_provider_arguments(parse_provider_arguments(self.kind, args)?)?;
         let secret = secret_from_env(&self.secret_environment)?;
-        let provider = build_provider_from_prepared_arguments(arguments, &secret)?;
-        Ok((secret, provider))
+        let provider: Arc<dyn Provider> =
+            Arc::from(build_provider_from_prepared_arguments(arguments, &secret)?);
+        let engine = CoreEngine::new(Arc::clone(&provider), secret.clone());
+        Ok(OpenedProvider {
+            secret,
+            provider,
+            engine,
+        })
     }
 }
 
 async fn database_probe(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let target = ProviderTarget::parse(args)?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
     let cancellation = CancellationToken::new();
-    let connection = provider.test_connection(&secret, &cancellation).await?;
-    let capabilities = provider.probe_capabilities(&secret, &cancellation).await?;
+    let connection = opened.engine.health_check(&cancellation).await?;
+    let capabilities = opened.engine.capabilities(false, &cancellation).await?;
     print_json(&json!({
         "schema_version": 1,
         "connection": connection,
@@ -594,7 +604,7 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
     // cio che resta: dopo di loro non arriverebbe mai.
     let mut peekable = args.peekable();
     let allow_raw = peekable.next_if(|value| value == "--allow-raw").is_some();
-    let (secret, provider) = target.open(&mut peekable)?;
+    let opened = target.open(&mut peekable)?;
 
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
@@ -603,15 +613,16 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
     } else {
         plenora_database_core::transaction::TransactionOptions::pfm_defaults()
     };
-    let mut transaction = provider
-        .begin_transaction(&secret, &options, &budget, &cancellation)
+    let mut session = opened.engine.session()?;
+    let mut transaction = session
+        .begin_transaction(&options, &budget, &cancellation)
         .await?;
     let statement = plenora_database_core::transaction::Statement {
         sql,
         params: Vec::new(),
     };
-    let affected = transaction.execute(&statement, &cancellation).await?;
-    let commit = transaction.commit(&cancellation).await?;
+    let affected = transaction.execute(&statement).await?;
+    let commit = transaction.commit().await?;
     print_json(&json!({
         "provider": kind,
         "status": commit_status(&commit),
@@ -650,7 +661,7 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
     let path = args
         .next()
         .ok_or_else(|| "manca il percorso di PORTABLE.json".to_owned())?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
 
     let source = std::fs::read_to_string(&path).map_err(|error| {
         format!(
@@ -669,9 +680,9 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
 
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
-    let mut transaction = provider
+    let mut session = opened.engine.session()?;
+    let mut transaction = session
         .begin_transaction(
-            &secret,
             &plenora_database_core::transaction::TransactionOptions::default(),
             &budget,
             &cancellation,
@@ -682,28 +693,36 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
     // La domanda la pone il core, che e anche chi la usa per rifiutare la meta
     // sbagliata: una seconda copia qui smetterebbe di seguirlo in silenzio.
     let outcome = if plenora_database_core::facade::statement_returns_rows(&statement) {
-        plenora_database_core::facade::execute_portable_returning(
-            transaction.as_mut(),
-            &statement,
-            &cancellation,
-        )
-        .await
-        .map(|rows| {
-            let count = rows.len();
-            let rows = rows
-                .iter()
-                .map(|row| json!({"columns": row.columns(), "values": row.values()}))
-                .collect::<Vec<_>>();
-            json!({"rows": rows, "count": count})
-        })
+        transaction
+            .run(|scope, cancellation| {
+                Box::pin(async move {
+                    plenora_database_core::facade::execute_portable_returning(
+                        scope,
+                        &statement,
+                        cancellation,
+                    )
+                    .await
+                })
+            })
+            .await
+            .map(|rows| {
+                let count = rows.len();
+                let rows = rows
+                    .iter()
+                    .map(|row| json!({"columns": row.columns(), "values": row.values()}))
+                    .collect::<Vec<_>>();
+                json!({"rows": rows, "count": count})
+            })
     } else {
-        plenora_database_core::facade::execute_portable(
-            transaction.as_mut(),
-            &statement,
-            &cancellation,
-        )
-        .await
-        .map(|affected| json!({"affected_rows": affected}))
+        transaction
+            .run(|scope, cancellation| {
+                Box::pin(async move {
+                    plenora_database_core::facade::execute_portable(scope, &statement, cancellation)
+                        .await
+                })
+            })
+            .await
+            .map(|affected| json!({"affected_rows": affected}))
     };
     let outcome = match outcome {
         Ok(outcome) => outcome,
@@ -711,11 +730,11 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
             // Un rifiuto del compilatore o del server lascia la transazione
             // aperta: chiuderla e responsabilita di chi l'ha aperta, e un
             // rollback silenzioso e la sola cosa onesta da fare qui.
-            let _ = transaction.rollback(&cancellation).await;
+            let _ = transaction.rollback().await;
             return Err(error.into());
         }
     };
-    let commit = transaction.commit(&cancellation).await?;
+    let commit = transaction.commit().await?;
     print_json(&json!({
         "provider": kind,
         "status": commit_status(&commit),
@@ -742,13 +761,13 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
     let sql = args
         .next()
         .ok_or_else(|| "manca lo statement SQL".to_owned())?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
 
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
-    let mut transaction = provider
+    let mut session = opened.engine.session()?;
+    let mut transaction = session
         .begin_transaction(
-            &secret,
             &plenora_database_core::transaction::TransactionOptions::pfm_defaults(),
             &budget,
             &cancellation,
@@ -758,18 +777,18 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
         sql,
         params: Vec::new(),
     };
-    let outcome = transaction.query(&statement, &cancellation).await;
+    let outcome = transaction.query(&statement).await;
     // La transazione si chiude comunque: un rifiuto di forma non deve lasciare
     // aperta una lettura sul server.
     let value = match outcome {
         Ok(rows) if rows.len() > 1 => {
-            let _ = transaction.rollback(&cancellation).await;
+            let _ = transaction.rollback().await;
             return Err("la query scalare ha reso piu di una riga".to_owned().into());
         }
         Ok(rows) => match rows.first() {
             None => None,
             Some(row) if row.values().len() != 1 => {
-                let _ = transaction.rollback(&cancellation).await;
+                let _ = transaction.rollback().await;
                 return Err("la query scalare ha reso piu di una colonna"
                     .to_owned()
                     .into());
@@ -777,11 +796,11 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
             Some(row) => Some(row.values()[0].clone()),
         },
         Err(error) => {
-            let _ = transaction.rollback(&cancellation).await;
+            let _ = transaction.rollback().await;
             return Err(error.into());
         }
     };
-    let commit = transaction.commit(&cancellation).await?;
+    let commit = transaction.commit().await?;
     print_json(&json!({
         "provider": kind,
         "status": commit_status(&commit),
@@ -798,9 +817,11 @@ async fn database_execute_ddl(args: &mut impl Iterator<Item = String>) -> CliRes
     let sql = args
         .next()
         .ok_or_else(|| "manca lo statement DDL".to_owned())?;
-    let (secret, provider) = target.open(args)?;
-    provider
-        .execute_ddl(&secret, &sql, &CancellationToken::new())
+    let opened = target.open(args)?;
+    let session = opened.engine.session()?;
+    opened
+        .provider
+        .execute_ddl(&opened.secret, &sql, &session.cancellation_token())
         .await?;
     print_json(&json!({"provider": kind, "status": "ok"}))
 }
@@ -884,11 +905,19 @@ async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliR
         )
     })?;
     let parameters = read_parameters(&parameters_path)?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
     let budget = ResourceBudget::new(ResourceLimits::default())?;
-    let cancellation = CancellationToken::new();
-    let mut stream = provider
-        .query(&secret, &operation, &parameters, &budget, &cancellation)
+    let session = opened.engine.session()?;
+    let cancellation = session.cancellation_token();
+    let mut stream = opened
+        .provider
+        .query(
+            &opened.secret,
+            &operation,
+            &parameters,
+            &budget,
+            &cancellation,
+        )
         .await?;
     consume_summary(kind, stream.as_mut(), &cancellation).await
 }
@@ -914,16 +943,24 @@ async fn database_read(
         )
     })?;
     let parameters = read_parameters(&parameters_path)?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
     let budget = ResourceBudget::new(ResourceLimits {
         rows: IPC_DEFAULT_MAX_ROWS,
         output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
         duration_ms: IPC_DEFAULT_TIMEOUT_MS,
         ..ResourceLimits::default()
     })?;
-    let cancellation = CancellationToken::new();
-    let mut stream = provider
-        .read(&secret, &operation, &parameters, &budget, &cancellation)
+    let session = opened.engine.session()?;
+    let cancellation = session.cancellation_token();
+    let mut stream = opened
+        .provider
+        .read(
+            &opened.secret,
+            &operation,
+            &parameters,
+            &budget,
+            &cancellation,
+        )
         .await?;
     if let Some(path) = output {
         let mut report =
@@ -978,16 +1015,31 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             error.column()
         )
     })?;
-    let (secret, provider) = target.open(args)?;
+    let opened = target.open(args)?;
     let stream = ipc_input::IpcFileBatchStream::open(&input_path)?;
     let input_schema = stream.schema();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
-    let cancellation = CancellationToken::new();
-    let prepared = provider
-        .prepare_write(&secret, &operation, input_schema, &budget, &cancellation)
+    let session = opened.engine.session()?;
+    let cancellation = session.cancellation_token();
+    let prepared = opened
+        .provider
+        .prepare_write(
+            &opened.secret,
+            &operation,
+            input_schema,
+            &budget,
+            &cancellation,
+        )
         .await?;
-    let outcome = provider
-        .write(&secret, prepared, Box::new(stream), &budget, &cancellation)
+    let outcome = opened
+        .provider
+        .write(
+            &opened.secret,
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        )
         .await?;
     print_json(&serde_json::to_value(outcome).map_err(|_| "outcome non serializzabile".to_owned())?)
 }
@@ -1013,10 +1065,12 @@ async fn database_inspect(
 ) -> CliResult<()> {
     let target = ProviderTarget::parse(args)?;
     let operation = source(args)?;
-    let (secret, provider) = target.open(args)?;
-    let kind = provider.kind();
-    let inspection = provider
-        .inspect(&secret, &operation, &CancellationToken::new())
+    let opened = target.open(args)?;
+    let kind = opened.provider.kind();
+    let session = opened.engine.session()?;
+    let inspection = opened
+        .provider
+        .inspect(&opened.secret, &operation, &session.cancellation_token())
         .await?;
     print_json(&inspection_output(kind, inspection)?)
 }

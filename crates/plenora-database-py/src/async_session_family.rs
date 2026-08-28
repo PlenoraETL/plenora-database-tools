@@ -31,6 +31,7 @@
 )]
 
 use crate::arrow_reader::{default_budget as reader_default_budget, make_read_operation};
+use crate::async_session_ops::{SharedEngineSession, TransactionBackend};
 use crate::errors::to_py_err;
 use crate::py_convert::{portable_from_json, statement_from_python};
 use crate::session_family::ProviderBuilder;
@@ -41,6 +42,7 @@ use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
 use plenora_database_core::CancellationToken;
 #[cfg(not(feature = "db2"))]
 use plenora_database_core::{DatabaseError, ErrorPhase};
+use plenora_database_engine::Engine;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -60,10 +62,35 @@ pub struct AsyncDatabaseSession {
     secret: SecretString,
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
+    engine_handle: Option<SharedEngineSession>,
+    operation_cancellation: CancellationToken,
     closed: bool,
 }
 
 impl AsyncDatabaseSession {
+    pub(crate) fn from_engine(
+        engine: &Engine,
+        provider: Arc<dyn Provider>,
+        secret: SecretString,
+        capabilities: plenora_database_core::capabilities::ProviderCapabilities,
+        product: &'static str,
+        factory: &'static str,
+    ) -> plenora_database_core::Result<Self> {
+        let session = engine.session()?;
+        let operation_cancellation = session.cancellation_token();
+        Ok(Self {
+            provider,
+            product,
+            factory,
+            secret,
+            server_version: capabilities.provider_version.clone(),
+            capabilities,
+            engine_handle: Some(Arc::new(tokio::sync::Mutex::new(Some(session)))),
+            operation_cancellation,
+            closed: false,
+        })
+    }
+
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(format!(
@@ -72,6 +99,21 @@ impl AsyncDatabaseSession {
             )));
         }
         Ok(())
+    }
+
+    fn cancellation(&self) -> CancellationToken {
+        self.operation_cancellation.clone()
+    }
+
+    fn transaction_backend(&self) -> TransactionBackend {
+        TransactionBackend::Engine(
+            Arc::clone(
+                self.engine_handle
+                    .as_ref()
+                    .expect("ensure_open garantisce la sessione Engine"),
+            ),
+            self.cancellation(),
+        )
     }
 }
 
@@ -96,6 +138,8 @@ impl AsyncDatabaseSession {
 
     fn close(&mut self) {
         self.closed = true;
+        self.operation_cancellation.cancel();
+        self.engine_handle.take();
     }
 
     fn __aenter__<'py>(slf: PyRef<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -113,7 +157,7 @@ impl AsyncDatabaseSession {
         future_into_py(py, async move {
             Python::attach(|py| {
                 let mut guard = slf.borrow_mut(py);
-                guard.closed = true;
+                guard.close();
             });
             Ok(false)
         })
@@ -135,12 +179,7 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute(
-            py,
-            Arc::clone(&self.provider),
-            self.secret.clone(),
-            statement,
-        )
+        crate::async_session_ops::execute_with_backend(py, self.transaction_backend(), statement)
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -152,10 +191,9 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_scalar(
+        crate::async_session_ops::execute_scalar_with_backend(
             py,
-            Arc::clone(&self.provider),
-            self.secret.clone(),
+            self.transaction_backend(),
             statement,
         )
     }
@@ -169,10 +207,9 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_rows(
+        crate::async_session_ops::execute_rows_with_backend(
             py,
-            Arc::clone(&self.provider),
-            self.secret.clone(),
+            self.transaction_backend(),
             statement,
         )
     }
@@ -184,7 +221,7 @@ impl AsyncDatabaseSession {
             Arc::clone(&self.provider),
             self.secret.clone(),
             sql.to_owned(),
-            CancellationToken::new(),
+            self.cancellation(),
         )
     }
 
@@ -196,7 +233,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             Operation::DatabaseListCatalogs,
             "catalogs",
-            CancellationToken::new(),
+            self.cancellation(),
         )
     }
 
@@ -208,7 +245,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             Operation::DatabaseListSchemas { source: None },
             "schemas",
-            CancellationToken::new(),
+            self.cancellation(),
         )
     }
 
@@ -219,7 +256,7 @@ impl AsyncDatabaseSession {
             Arc::clone(&self.provider),
             self.secret.clone(),
             schema.to_owned(),
-            CancellationToken::new(),
+            self.cancellation(),
         )
     }
 
@@ -236,7 +273,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             schema.to_owned(),
             object.to_owned(),
-            CancellationToken::new(),
+            self.cancellation(),
         )
     }
 
@@ -251,7 +288,7 @@ impl AsyncDatabaseSession {
     ))]
     #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
     fn begin<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         isolation: Option<&str>,
         read_only: Option<bool>,
@@ -268,7 +305,18 @@ impl AsyncDatabaseSession {
             context,
             native_query_policy,
         )?;
-        crate::async_session_ops::begin(py, Arc::clone(&self.provider), self.secret.clone(), opts)
+        let awaitable = crate::async_session_ops::begin_engine(
+            py,
+            Arc::clone(
+                self.engine_handle
+                    .as_ref()
+                    .expect("ensure_open garantisce la sessione Engine"),
+            ),
+            opts,
+            self.cancellation(),
+        )?;
+        self.closed = true;
+        Ok(awaitable)
     }
 
     /// Esegue un PortableStatement async e ritorna rows come list[dict].
@@ -279,10 +327,9 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast = portable_from_json(ast_json)?;
-        crate::async_session_ops::execute_portable_rows(
+        crate::async_session_ops::execute_portable_rows_with_backend(
             py,
-            Arc::clone(&self.provider),
-            self.secret.clone(),
+            self.transaction_backend(),
             ast,
         )
     }
@@ -295,10 +342,9 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast = portable_from_json(ast_json)?;
-        crate::async_session_ops::execute_portable_count(
+        crate::async_session_ops::execute_portable_count_with_backend(
             py,
-            Arc::clone(&self.provider),
-            self.secret.clone(),
+            self.transaction_backend(),
             ast,
         )
     }
@@ -321,10 +367,10 @@ impl AsyncDatabaseSession {
         let object = object.to_owned();
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
+        let cancel = self.cancellation();
         future_into_py(py, async move {
             let operation = make_read_operation(&schema, &object, projection, order_by, limit)
                 .map_err(to_py_err)?;
-            let cancel = CancellationToken::new();
             let stream = provider
                 .read(
                     &secret,
@@ -380,6 +426,7 @@ impl AsyncDatabaseSession {
         let policy = mapping_policy.to_owned();
         let keys = keys.unwrap_or_default();
         let update_columns = update_columns.unwrap_or_default();
+        let cancellation = self.cancellation();
         future_into_py(py, async move {
             let outcome = crate::family_write::do_copy_from_async_family(
                 provider,
@@ -392,6 +439,7 @@ impl AsyncDatabaseSession {
                 &policy,
                 keys,
                 update_columns,
+                cancellation,
             )
             .await
             .map_err(to_py_err)?;
@@ -630,25 +678,21 @@ fn open_async_endpoint<'py>(
         // Il costruttore seleziona il prodotto senza confronti su etichette:
         // un nome errato non deve scegliere per omissione un altro motore.
         let provider = build(endpoint)?;
-        let cancel = CancellationToken::new();
-        let connection = provider
-            .test_connection(&secret, &cancel)
-            .await
-            .map_err(to_py_err)?;
-        let capabilities = provider
-            .probe_capabilities(&secret, &cancel)
+        let engine = Engine::new(Arc::clone(&provider), secret.clone());
+        let capabilities = engine
+            .capabilities(false, &CancellationToken::new())
             .await
             .map_err(to_py_err)?;
         Python::attach(|py| {
-            let session = AsyncDatabaseSession {
+            let session = AsyncDatabaseSession::from_engine(
+                &engine,
                 provider,
-                product,
-                factory,
                 secret,
                 capabilities,
-                server_version: connection.server_version,
-                closed: false,
-            };
+                product,
+                factory,
+            )
+            .map_err(to_py_err)?;
             Ok(Py::new(py, session)?.into_pyobject(py)?.into_any().unbind())
         })
     })

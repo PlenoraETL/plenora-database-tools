@@ -6,7 +6,35 @@ import pytest
 
 import plenora_database as p
 
-from ._harness import LOCAL_TLS_MODE, postgres_dsn_or_skip
+from ._harness import (
+    LOCAL_TLS_MODE,
+    mariadb_config_or_skip,
+    mysql_config_or_skip,
+    postgres_dsn_or_skip,
+    sqlserver_config_or_skip,
+)
+
+
+FAMILY_ENGINES = (
+    ("mysql", p.create_mysql_engine, p.create_async_mysql_engine, mysql_config_or_skip),
+    (
+        "mariadb",
+        p.create_mariadb_engine,
+        p.create_async_mariadb_engine,
+        mariadb_config_or_skip,
+    ),
+    (
+        "sqlserver",
+        p.create_sqlserver_engine,
+        p.create_async_sqlserver_engine,
+        sqlserver_config_or_skip,
+    ),
+)
+
+
+def _family_engine(factory, config):
+    host, database, user, password, ca_pem = config()
+    return factory(host, database, user, password, tls_ca_pem=ca_pem)
 
 
 def test_engine_reuses_one_pool_across_request_sessions() -> None:
@@ -61,3 +89,40 @@ async def test_async_engine_owned_transaction_closes_its_request_session() -> No
             ) as transaction:
                 assert await transaction.execute_scalar("SELECT 4::BIGINT") == 4
         assert engine.statistics()["active_sessions"] == 0
+
+
+@pytest.mark.parametrize(
+    ("provider_kind", "factory", "_async_factory", "config"),
+    FAMILY_ENGINES,
+    ids=[entry[0] for entry in FAMILY_ENGINES],
+)
+def test_family_engine_uses_the_core_lifecycle(
+    provider_kind, factory, _async_factory, config
+) -> None:
+    engine = _family_engine(factory, config)
+    assert engine.provider_kind == provider_kind
+    with engine.session() as session:
+        assert session.execute_scalar("SELECT CAST(5 AS BIGINT)") == 5
+    assert engine.statistics() == {
+        "sessions_opened": 1,
+        "active_sessions": 0,
+        "disposed": False,
+    }
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_kind", "_factory", "async_factory", "config"),
+    FAMILY_ENGINES,
+    ids=[entry[0] for entry in FAMILY_ENGINES],
+)
+async def test_async_family_engine_uses_the_core_lifecycle(
+    provider_kind, _factory, async_factory, config
+) -> None:
+    engine = await _family_engine(async_factory, config)
+    assert engine.provider_kind == provider_kind
+    async with engine.session() as session:
+        assert await session.execute_scalar("SELECT CAST(6 AS BIGINT)") == 6
+    assert engine.statistics()["active_sessions"] == 0
+    engine.dispose()

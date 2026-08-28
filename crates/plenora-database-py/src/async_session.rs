@@ -42,7 +42,7 @@ pub struct AsyncSession {
     server_version: String,
     postgis_version: Option<String>,
     engine_handle: Option<SharedEngineSession>,
-    operation_cancellation: Option<CancellationToken>,
+    operation_cancellation: CancellationToken,
     closed: bool,
 }
 
@@ -64,7 +64,7 @@ impl AsyncSession {
             server_version,
             postgis_version,
             engine_handle: Some(Arc::new(tokio::sync::Mutex::new(Some(session)))),
-            operation_cancellation: Some(operation_cancellation),
+            operation_cancellation,
             closed: false,
         })
     }
@@ -83,15 +83,17 @@ impl AsyncSession {
     }
 
     fn cancellation(&self) -> CancellationToken {
-        self.operation_cancellation
-            .as_ref()
-            .map_or_else(CancellationToken::new, CancellationToken::clone)
+        self.operation_cancellation.clone()
     }
 
     fn transaction_backend(&self) -> TransactionBackend {
-        self.engine_handle.as_ref().map_or_else(
-            || TransactionBackend::Direct(self.provider(), self.secret.clone()),
-            |handle| TransactionBackend::Engine(Arc::clone(handle), self.cancellation()),
+        TransactionBackend::Engine(
+            Arc::clone(
+                self.engine_handle
+                    .as_ref()
+                    .expect("ensure_open garantisce la sessione Engine"),
+            ),
+            self.cancellation(),
         )
     }
 }
@@ -122,9 +124,7 @@ impl AsyncSession {
 
     fn close(&mut self) {
         self.closed = true;
-        if let Some(cancellation) = &self.operation_cancellation {
-            cancellation.cancel();
-        }
+        self.operation_cancellation.cancel();
         self.engine_handle.take();
     }
 
@@ -415,17 +415,18 @@ impl AsyncSession {
             context,
             native_query_policy,
         )?;
-        if let Some(engine_handle) = &self.engine_handle {
-            let awaitable = crate::async_session_ops::begin_engine(
-                py,
-                Arc::clone(engine_handle),
-                opts,
-                self.cancellation(),
-            )?;
-            self.closed = true;
-            return Ok(awaitable);
-        }
-        crate::async_session_ops::begin(py, self.provider(), self.secret.clone(), opts)
+        let awaitable = crate::async_session_ops::begin_engine(
+            py,
+            Arc::clone(
+                self.engine_handle
+                    .as_ref()
+                    .expect("ensure_open garantisce la sessione Engine"),
+            ),
+            opts,
+            self.cancellation(),
+        )?;
+        self.closed = true;
+        Ok(awaitable)
     }
 
     fn execute_portable_count<'py>(
@@ -467,27 +468,17 @@ impl AsyncSession {
 pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bound<'py, PyAny>> {
     let provider_built = crate::session::build_provider(tls_mode)?;
     let secret_for_result = SecretString::new(dsn.to_owned());
-    let secret_for_probe = SecretString::new(dsn.to_owned());
     future_into_py(py, async move {
         let provider = Arc::new(provider_built);
-        let provider_for_probe = Arc::clone(&provider);
+        let provider_for_core: Arc<dyn Provider> = Arc::clone(&provider) as Arc<dyn Provider>;
+        let engine = Engine::new(provider_for_core, secret_for_result.clone());
         let cancel = CancellationToken::new();
-        let caps = provider_for_probe
-            .probe_capabilities(&secret_for_probe, &cancel)
+        let caps = engine
+            .capabilities(false, &cancel)
             .await
             .map_err(to_py_err)?;
-        let postgis_version = caps.extension_versions.get("postgis").cloned();
-        let server_version = caps.provider_version.clone();
-        let session = AsyncSession {
-            provider,
-            secret: secret_for_result,
-            capabilities: caps,
-            server_version,
-            postgis_version,
-            engine_handle: None,
-            operation_cancellation: None,
-            closed: false,
-        };
+        let session = AsyncSession::from_engine(&engine, provider, secret_for_result, caps)
+            .map_err(to_py_err)?;
         Python::attach(|py| {
             let obj = Py::new(py, session)?;
             Ok(obj.into_pyobject(py)?.into_any().unbind())

@@ -52,9 +52,12 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::transaction::TransactionScope;
+use plenora_database_core::CancellationToken;
+#[cfg(not(feature = "db2"))]
+use plenora_database_core::DatabaseError;
 #[cfg(not(feature = "db2"))]
 use plenora_database_core::ErrorPhase;
-use plenora_database_core::{CancellationToken, DatabaseError};
+use plenora_database_engine::{Engine, Session as EngineSession};
 #[cfg(feature = "db2")]
 use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
 use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
@@ -65,7 +68,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::budget::session_budget as default_budget;
 
@@ -93,10 +96,39 @@ pub struct DatabaseSession {
     /// Il nome della factory da citare quando la sessione e chiusa.
     factory: &'static str,
     server_version: String,
+    engine_handle: Mutex<Option<EngineSession>>,
+    operation_cancellation: CancellationToken,
     closed: bool,
 }
 
 impl DatabaseSession {
+    pub(crate) fn from_engine(
+        engine: &Engine,
+        provider: Arc<dyn Provider>,
+        secret: SecretString,
+        capabilities: plenora_database_core::capabilities::ProviderCapabilities,
+        product: &'static str,
+        factory: &'static str,
+    ) -> plenora_database_core::Result<Self> {
+        let session = engine.session()?;
+        let operation_cancellation = session.cancellation_token();
+        Ok(Self {
+            provider,
+            secret,
+            server_version: capabilities.provider_version.clone(),
+            capabilities,
+            product,
+            factory,
+            engine_handle: Mutex::new(Some(session)),
+            operation_cancellation,
+            closed: false,
+        })
+    }
+
+    fn cancellation(&self) -> CancellationToken {
+        self.operation_cancellation.clone()
+    }
+
     /// Esegue una `Operation` di ispezione e rende il documento JSON.
     ///
     /// Passa da `Provider::inspect`, cosi tutti i prodotti seguono lo stesso
@@ -104,7 +136,7 @@ impl DatabaseSession {
     fn run_inspect(&self, py: Python<'_>, op: Operation) -> PyResult<serde_json::Value> {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
-        let cancel = CancellationToken::new();
+        let cancel = self.cancellation();
         let inspection = py
             .detach(|| {
                 runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
@@ -134,10 +166,23 @@ impl DatabaseSession {
             + 'static,
         R: Send + 'static,
     {
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        py.detach(|| runtime().block_on(crate::session_tx::run_transaction(provider, secret, work)))
-            .map_err(to_py_err)
+        let mut guard = self
+            .engine_handle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("sessione consumata da una transazione"))?;
+        let cancellation = self.cancellation();
+        let result = py.detach(|| {
+            runtime().block_on(crate::session_tx::run_engine_transaction(
+                session,
+                &cancellation,
+                work,
+            ))
+        });
+        drop(guard);
+        result.map_err(to_py_err)
     }
 }
 
@@ -162,6 +207,11 @@ impl DatabaseSession {
 
     fn close(&mut self) {
         self.closed = true;
+        self.operation_cancellation.cancel();
+        self.engine_handle
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -267,7 +317,7 @@ impl DatabaseSession {
     ))]
     #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
     fn begin(
-        &self,
+        &mut self,
         py: Python<'_>,
         isolation: Option<&str>,
         read_only: Option<bool>,
@@ -284,19 +334,24 @@ impl DatabaseSession {
             context,
             native_query_policy,
         )?;
-        let provider = Arc::clone(&self.provider);
-        let secret = self.secret.clone();
-        let scope = py
+        let cancellation = self.cancellation();
+        let session = self
+            .engine_handle
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("sessione consumata da una transazione"))?;
+        let transaction = py
             .detach(|| {
                 runtime().block_on(async move {
-                    let cancel = CancellationToken::new();
-                    provider
-                        .begin_transaction(&secret, &opts, &default_budget(), &cancel)
+                    session
+                        .begin_owned_transaction(&opts, &default_budget(), &cancellation)
                         .await
                 })
             })
             .map_err(to_py_err)?;
-        Ok(Transaction::new(scope))
+        self.closed = true;
+        Ok(Transaction::new(Box::new(transaction)))
     }
 
     /// Esegue un PortableStatement (JSON) e ritorna rows come list[dict].
@@ -367,6 +422,7 @@ impl DatabaseSession {
                 projection,
                 order_by,
                 limit,
+                self.cancellation(),
             )
         })
         .map_err(to_py_err)
@@ -440,6 +496,7 @@ impl DatabaseSession {
                 mapping_policy,
                 keys,
                 update_columns,
+                self.cancellation(),
             )
         });
         crate::write::wrap_outcome(py, result)
@@ -494,11 +551,9 @@ impl DatabaseSession {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let sql = sql.to_owned();
+        let cancel = self.cancellation();
         py.detach(|| {
-            runtime().block_on(async move {
-                let cancel = CancellationToken::new();
-                provider.execute_ddl(&secret, &sql, &cancel).await
-            })
+            runtime().block_on(async move { provider.execute_ddl(&secret, &sql, &cancel).await })
         })
         .map_err(to_py_err)
     }
@@ -782,29 +837,17 @@ fn open_family_session(
     product: &'static str,
     factory: &'static str,
 ) -> PyResult<DatabaseSession> {
-    let provider_probe = Arc::clone(&provider);
-    let secret_probe = secret.clone();
-    let (connection, capabilities) = runtime()
+    let engine = Engine::new(Arc::clone(&provider), secret.clone());
+    let engine_for_probe = engine.clone();
+    let capabilities = runtime()
         .block_on(async move {
-            let cancel = CancellationToken::new();
-            let conn = provider_probe
-                .test_connection(&secret_probe, &cancel)
-                .await?;
-            let caps = provider_probe
-                .probe_capabilities(&secret_probe, &cancel)
-                .await?;
-            Ok::<_, DatabaseError>((conn, caps))
+            engine_for_probe
+                .capabilities(false, &CancellationToken::new())
+                .await
         })
         .map_err(to_py_err)?;
-    Ok(DatabaseSession {
-        provider,
-        secret,
-        capabilities,
-        product,
-        factory,
-        server_version: connection.server_version,
-        closed: false,
-    })
+    DatabaseSession::from_engine(&engine, provider, secret, capabilities, product, factory)
+        .map_err(to_py_err)
 }
 
 /// Apre una connessione `SQL Server` e produce una sessione della famiglia.

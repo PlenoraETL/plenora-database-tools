@@ -48,6 +48,7 @@ pub(crate) async fn do_copy_from_async_family(
     mapping_policy: &str,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(mode)?;
     let profile_enum = parse_profile(transaction_profile)?;
@@ -68,12 +69,11 @@ pub(crate) async fn do_copy_from_async_family(
         update_columns,
     )?;
     let budget = default_budget();
-    let cancel = CancellationToken::new();
     let prepared = provider
-        .prepare_write(&secret, &operation, input_schema, &budget, &cancel)
+        .prepare_write(&secret, &operation, input_schema, &budget, &cancellation)
         .await?;
     let outcome = provider
-        .write(&secret, prepared, Box::new(stream), &budget, &cancel)
+        .write(&secret, prepared, Box::new(stream), &budget, &cancellation)
         .await?;
     Ok(outcome)
 }
@@ -96,6 +96,7 @@ pub(crate) fn copy_from_sync_family(
     mapping_policy: &str,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
@@ -117,6 +118,7 @@ pub(crate) fn copy_from_sync_family(
             &policy_owned,
             keys,
             update_columns,
+            cancellation,
         )
         .await
     })

@@ -37,7 +37,11 @@ use async_session_family::{
     aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
 };
 use async_transaction::AsyncTransaction;
-use engine::{create_async_engine, create_engine, PyAsyncEngine, PyEngine};
+use engine::{
+    create_async_db2_engine, create_async_engine, create_async_mariadb_engine,
+    create_async_mysql_engine, create_async_sqlserver_engine, create_db2_engine, create_engine,
+    create_mariadb_engine, create_mysql_engine, create_sqlserver_engine, PyAsyncEngine, PyEngine,
+};
 use session::{connect, Session};
 use session_family::{
     connect_db2, connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession,
@@ -162,6 +166,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(create_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_async_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_mysql_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_mysql_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_mariadb_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_mariadb_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_sqlserver_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_sqlserver_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_db2_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_db2_engine, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mysql, m)?)?;

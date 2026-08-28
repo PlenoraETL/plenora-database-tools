@@ -44,10 +44,10 @@ python -c "import plenora_database as p; print(p.version())"
 
 ## Quickstart
 
-Per un server PostgreSQL, il confine applicativo consigliato e un `Engine`
-longevo e una sessione per request. Le factory `connect*` restano compatibili;
-gli Engine degli altri provider verranno aperti soltanto dopo una qualifica
-live specifica.
+Per un server applicativo, il confine consigliato e un `Engine` longevo e una
+sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server e Db2 espongono lo
+stesso lifecycle; le factory `connect*` restano adapter compatibili sopra di
+esso.
 
 ```python
 engine = p.create_engine(dsn)
@@ -64,6 +64,10 @@ engine.dispose()
 La variante asyncio si crea con `await p.create_async_engine(dsn)` e usa
 `async with engine.session()`; l'esempio completo sync/async e in
 [`examples/core_v3_repository.py`](examples/core_v3_repository.py).
+Gli altri provider usano factory esplicite, per esempio
+`p.create_mysql_engine(host, database, user, password)` e
+`await p.create_async_sqlserver_engine(...)`: la classe restituita resta
+`Engine`/`AsyncEngine`, mentre la factory dichiara senza ambiguita il prodotto.
 
 ### Sync
 

@@ -7,7 +7,20 @@ import struct
 import plenora_database as p
 import pytest
 
-from ._harness import aconnect_db2_reference, connect_db2_reference
+from ._harness import (
+    aconnect_db2_reference,
+    connect_db2_reference,
+    db2_config_or_skip,
+)
+
+
+def _db2_engine_args() -> tuple[tuple, dict]:
+    host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
+    return (host, database, user, password), {
+        "port": port,
+        "tls_ca_path": ca_path,
+        "tls_mode": tls_mode,
+    }
 
 
 def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None:
@@ -67,3 +80,26 @@ async def test_db2_async_capabilities_inspect_and_scalar_query() -> None:
         ) == 2
     finally:
         session.close()
+
+
+def test_db2_engine_uses_the_core_lifecycle() -> None:
+    args, kwargs = _db2_engine_args()
+    with p.create_db2_engine(*args, **kwargs) as engine:
+        assert engine.provider_kind == "db2"
+        with engine.session() as session:
+            assert session.execute_scalar(
+                "SELECT CAST(7 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
+            ) == 7
+        assert engine.statistics()["active_sessions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
+    args, kwargs = _db2_engine_args()
+    async with await p.create_async_db2_engine(*args, **kwargs) as engine:
+        assert engine.provider_kind == "db2"
+        async with engine.session() as session:
+            assert await session.execute_scalar(
+                "SELECT CAST(8 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
+            ) == 8
+        assert engine.statistics()["active_sessions"] == 0

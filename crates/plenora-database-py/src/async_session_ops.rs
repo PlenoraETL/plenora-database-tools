@@ -22,20 +22,7 @@ pub(crate) type SharedEngineSession = Arc<Mutex<Option<EngineSession>>>;
 
 #[derive(Clone)]
 pub(crate) enum TransactionBackend {
-    Direct(Arc<dyn Provider>, SecretString),
     Engine(SharedEngineSession, CancellationToken),
-}
-
-async fn run_transaction<R: Send>(
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    work: impl for<'a> FnOnce(
-            &'a mut dyn TransactionScope,
-            &'a CancellationToken,
-        ) -> plenora_database_core::provider::ProviderFuture<'a, R>
-        + Send,
-) -> plenora_database_core::Result<R> {
-    crate::session_tx::run_transaction(provider, secret, work).await
 }
 
 async fn run_with_backend<R: Send>(
@@ -46,23 +33,17 @@ async fn run_with_backend<R: Send>(
         ) -> plenora_database_core::provider::ProviderFuture<'a, R>
         + Send,
 ) -> plenora_database_core::Result<R> {
-    match backend {
-        TransactionBackend::Direct(provider, secret) => {
-            run_transaction(provider, secret, work).await
-        }
-        TransactionBackend::Engine(session, cancellation) => {
-            let mut guard = session.lock().await;
-            let current = guard.as_mut().ok_or_else(|| {
-                plenora_database_core::DatabaseError::new(
-                    plenora_database_core::ErrorCategory::InvalidConfiguration,
-                    plenora_database_core::ErrorPhase::Connect,
-                    None,
-                    "sessione Engine chiusa o trasferita a una transazione",
-                )
-            })?;
-            crate::session_tx::run_engine_transaction(current, &cancellation, work).await
-        }
-    }
+    let TransactionBackend::Engine(session, cancellation) = backend;
+    let mut guard = session.lock().await;
+    let current = guard.as_mut().ok_or_else(|| {
+        plenora_database_core::DatabaseError::new(
+            plenora_database_core::ErrorCategory::InvalidConfiguration,
+            plenora_database_core::ErrorPhase::Connect,
+            None,
+            "sessione Engine chiusa o trasferita a una transazione",
+        )
+    })?;
+    crate::session_tx::run_engine_transaction(current, &cancellation, work).await
 }
 
 pub(crate) fn execute_with_backend(
@@ -162,33 +143,6 @@ pub(crate) fn begin_engine(
     })
 }
 
-pub fn execute(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    statement: Statement,
-) -> PyResult<Bound<'_, PyAny>> {
-    execute_with_backend(py, TransactionBackend::Direct(provider, secret), statement)
-}
-
-pub fn execute_scalar(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    statement: Statement,
-) -> PyResult<Bound<'_, PyAny>> {
-    execute_scalar_with_backend(py, TransactionBackend::Direct(provider, secret), statement)
-}
-
-pub fn execute_rows(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    statement: Statement,
-) -> PyResult<Bound<'_, PyAny>> {
-    execute_rows_with_backend(py, TransactionBackend::Direct(provider, secret), statement)
-}
-
 pub fn execute_ddl(
     py: Python<'_>,
     provider: Arc<dyn Provider>,
@@ -273,47 +227,6 @@ pub fn inspect_describe(
         Python::attach(|py| {
             crate::session::json_value_to_pydict(py, &inspection.document)
                 .map(|value| value.into_any().unbind())
-        })
-    })
-}
-
-pub fn execute_portable_rows(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    statement: PortableStatement,
-) -> PyResult<Bound<'_, PyAny>> {
-    execute_portable_rows_with_backend(py, TransactionBackend::Direct(provider, secret), statement)
-}
-
-pub fn execute_portable_count(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    statement: PortableStatement,
-) -> PyResult<Bound<'_, PyAny>> {
-    execute_portable_count_with_backend(py, TransactionBackend::Direct(provider, secret), statement)
-}
-
-pub fn begin(
-    py: Python<'_>,
-    provider: Arc<dyn Provider>,
-    secret: SecretString,
-    options: TransactionOptions,
-) -> PyResult<Bound<'_, PyAny>> {
-    future_into_py(py, async move {
-        let budget = crate::budget::session_budget();
-        let cancellation = CancellationToken::new();
-        let scope = provider
-            .begin_transaction(&secret, &options, &budget, &cancellation)
-            .await
-            .map_err(to_py_err)?;
-        Python::attach(|py| {
-            let transaction = AsyncTransaction::new(scope);
-            Ok(Py::new(py, transaction)?
-                .into_pyobject(py)?
-                .into_any()
-                .unbind())
         })
     })
 }
