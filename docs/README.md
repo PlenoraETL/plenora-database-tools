@@ -6,6 +6,7 @@ Pochi documenti, ciascuno con un ruolo esplicito.
 | --- | --- |
 | [`STATO.md`](STATO.md) | generato dal codice: crate, capability, sub-comandi, inventario dei test |
 | [`operativo.md`](operativo.md) | cio che i file Compose non dicono da soli |
+| [`database-core-v3-roadmap.md`](database-core-v3-roadmap.md) | piano di evoluzione additivo verso Core, unit of work e migrazioni |
 | [`mariadb/EVIDENCE.md`](mariadb/EVIDENCE.md) | inventario generato delle prove che sostengono MariaDB |
 | [`mariadb/SESSION-MATRIX.md`](mariadb/SESSION-MATRIX.md) | esito live generato della semantica di sessione |
 | [`mariadb/ADR-0014-evidence-first.md`](mariadb/ADR-0014-evidence-first.md) | decisione ancora citata dal codice, ridotta al suo vincolo attuale |
