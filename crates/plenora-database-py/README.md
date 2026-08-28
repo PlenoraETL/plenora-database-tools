@@ -44,6 +44,27 @@ python -c "import plenora_database as p; print(p.version())"
 
 ## Quickstart
 
+Per un server PostgreSQL, il confine applicativo consigliato e un `Engine`
+longevo e una sessione per request. Le factory `connect*` restano compatibili;
+gli Engine degli altri provider verranno aperti soltanto dopo una qualifica
+live specifica.
+
+```python
+engine = p.create_engine(dsn)
+
+def handle_request(user_id: int):
+    with engine.session() as session:
+        with session.begin(native_query_policy="deny") as tx:
+            return tx.select("users").where_eq("id", user_id).one_or_none()
+
+# allo shutdown dell'applicazione
+engine.dispose()
+```
+
+La variante asyncio si crea con `await p.create_async_engine(dsn)` e usa
+`async with engine.session()`; l'esempio completo sync/async e in
+[`examples/core_v3_repository.py`](examples/core_v3_repository.py).
+
 ### Sync
 
 ```python

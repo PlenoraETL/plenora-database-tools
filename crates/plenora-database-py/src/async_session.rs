@@ -13,12 +13,14 @@
     clippy::too_many_lines
 )]
 
-use crate::arrow_reader::open_reader_async;
+use crate::arrow_reader::{make_read_operation, open_reader_async};
+use crate::async_session_ops::{SharedEngineSession, TransactionBackend};
 use crate::errors::to_py_err;
 use crate::py_convert::{portable_from_json, statement_from_python};
 use plenora_database_core::plan::Operation;
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
+use plenora_database_engine::Engine;
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -39,10 +41,34 @@ pub struct AsyncSession {
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
+    engine_handle: Option<SharedEngineSession>,
+    operation_cancellation: Option<CancellationToken>,
     closed: bool,
 }
 
 impl AsyncSession {
+    pub(crate) fn from_engine(
+        engine: &Engine,
+        provider: Arc<PostgresProvider>,
+        secret: SecretString,
+        capabilities: plenora_database_core::capabilities::ProviderCapabilities,
+    ) -> plenora_database_core::Result<Self> {
+        let server_version = capabilities.provider_version.clone();
+        let postgis_version = capabilities.extension_versions.get("postgis").cloned();
+        let session = engine.session()?;
+        let operation_cancellation = session.cancellation_token();
+        Ok(Self {
+            provider,
+            secret,
+            capabilities,
+            server_version,
+            postgis_version,
+            engine_handle: Some(Arc::new(tokio::sync::Mutex::new(Some(session)))),
+            operation_cancellation: Some(operation_cancellation),
+            closed: false,
+        })
+    }
+
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(
@@ -54,6 +80,19 @@ impl AsyncSession {
 
     fn provider(&self) -> Arc<dyn Provider> {
         Arc::clone(&self.provider) as Arc<dyn Provider>
+    }
+
+    fn cancellation(&self) -> CancellationToken {
+        self.operation_cancellation
+            .as_ref()
+            .map_or_else(CancellationToken::new, CancellationToken::clone)
+    }
+
+    fn transaction_backend(&self) -> TransactionBackend {
+        self.engine_handle.as_ref().map_or_else(
+            || TransactionBackend::Direct(self.provider(), self.secret.clone()),
+            |handle| TransactionBackend::Engine(Arc::clone(handle), self.cancellation()),
+        )
     }
 }
 
@@ -83,6 +122,10 @@ impl AsyncSession {
 
     fn close(&mut self) {
         self.closed = true;
+        if let Some(cancellation) = &self.operation_cancellation {
+            cancellation.cancel();
+        }
+        self.engine_handle.take();
     }
 
     /// Snapshot locale dei contatori del provider. Non e una coroutine:
@@ -109,7 +152,7 @@ impl AsyncSession {
         future_into_py(py, async move {
             Python::attach(|py| {
                 let mut guard = slf.borrow_mut(py);
-                guard.closed = true;
+                guard.close();
             });
             Ok(false)
         })
@@ -124,7 +167,7 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute(py, self.provider(), self.secret.clone(), statement)
+        crate::async_session_ops::execute_with_backend(py, self.transaction_backend(), statement)
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -136,10 +179,9 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_scalar(
+        crate::async_session_ops::execute_scalar_with_backend(
             py,
-            self.provider(),
-            self.secret.clone(),
+            self.transaction_backend(),
             statement,
         )
     }
@@ -153,7 +195,11 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_rows(py, self.provider(), self.secret.clone(), statement)
+        crate::async_session_ops::execute_rows_with_backend(
+            py,
+            self.transaction_backend(),
+            statement,
+        )
     }
 
     fn execute_ddl<'py>(&self, py: Python<'py>, sql: &str) -> PyResult<Bound<'py, PyAny>> {
@@ -163,6 +209,7 @@ impl AsyncSession {
             self.provider(),
             self.secret.clone(),
             sql.to_owned(),
+            self.cancellation(),
         )
     }
 
@@ -174,6 +221,7 @@ impl AsyncSession {
             self.secret.clone(),
             Operation::DatabaseListCatalogs,
             "catalogs",
+            self.cancellation(),
         )
     }
 
@@ -185,6 +233,7 @@ impl AsyncSession {
             self.secret.clone(),
             Operation::DatabaseListSchemas { source: None },
             "schemas",
+            self.cancellation(),
         )
     }
 
@@ -195,6 +244,7 @@ impl AsyncSession {
             self.provider(),
             self.secret.clone(),
             schema.to_owned(),
+            self.cancellation(),
         )
     }
 
@@ -211,6 +261,7 @@ impl AsyncSession {
             self.secret.clone(),
             schema.to_owned(),
             object.to_owned(),
+            self.cancellation(),
         )
     }
 
@@ -221,10 +272,9 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast = portable_from_json(ast_json)?;
-        crate::async_session_ops::execute_portable_rows(
+        crate::async_session_ops::execute_portable_rows_with_backend(
             py,
-            self.provider(),
-            self.secret.clone(),
+            self.transaction_backend(),
             ast,
         )
     }
@@ -255,16 +305,15 @@ impl AsyncSession {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
-        let schema = schema.to_owned();
-        let object = object.to_owned();
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
+        let operation =
+            make_read_operation(schema, object, projection, order_by, limit).map_err(to_py_err)?;
+        let cancellation = self.cancellation();
         future_into_py(py, async move {
-            let reader = open_reader_async(
-                provider, secret, schema, object, projection, order_by, limit,
-            )
-            .await
-            .map_err(to_py_err)?;
+            let reader = open_reader_async(provider, secret, operation, cancellation)
+                .await
+                .map_err(to_py_err)?;
             Python::attach(|py| {
                 let obj = Py::new(py, reader)?;
                 Ok(obj.into_pyobject(py)?.into_any().unbind())
@@ -308,6 +357,7 @@ impl AsyncSession {
         let policy_owned = mapping_policy.to_owned();
         let keys_owned = keys.unwrap_or_default();
         let update_columns_owned = update_columns.unwrap_or_default();
+        let cancellation = self.cancellation();
         future_into_py(py, async move {
             let outcome = crate::write::copy_from_async(
                 provider,
@@ -320,6 +370,7 @@ impl AsyncSession {
                 policy_owned,
                 keys_owned,
                 update_columns_owned,
+                cancellation,
             )
             .await
             .map_err(crate::errors::to_py_err)?;
@@ -346,7 +397,7 @@ impl AsyncSession {
     ))]
     #[allow(clippy::too_many_arguments)] // API PyO3 keyword — non fattibile compressione
     fn begin<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         isolation: Option<&str>,
         read_only: Option<bool>,
@@ -364,6 +415,16 @@ impl AsyncSession {
             context,
             native_query_policy,
         )?;
+        if let Some(engine_handle) = &self.engine_handle {
+            let awaitable = crate::async_session_ops::begin_engine(
+                py,
+                Arc::clone(engine_handle),
+                opts,
+                self.cancellation(),
+            )?;
+            self.closed = true;
+            return Ok(awaitable);
+        }
         crate::async_session_ops::begin(py, self.provider(), self.secret.clone(), opts)
     }
 
@@ -374,10 +435,9 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let ast = portable_from_json(ast_json)?;
-        crate::async_session_ops::execute_portable_count(
+        crate::async_session_ops::execute_portable_count_with_backend(
             py,
-            self.provider(),
-            self.secret.clone(),
+            self.transaction_backend(),
             ast,
         )
     }
@@ -424,6 +484,8 @@ pub fn aconnect<'py>(py: Python<'py>, dsn: &str, tls_mode: &str) -> PyResult<Bou
             capabilities: caps,
             server_version,
             postgis_version,
+            engine_handle: None,
+            operation_cancellation: None,
             closed: false,
         };
         Python::attach(|py| {

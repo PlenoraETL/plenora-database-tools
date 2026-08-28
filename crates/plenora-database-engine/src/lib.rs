@@ -47,9 +47,9 @@
 //! ```
 //!
 //! Il core Rust non crea un runtime sincrono annidato: chi chiama possiede il
-//! runtime async. I binding Python `Session`/`AsyncSession` restano compatibili
-//! durante la transizione, ma non vanno descritti come wrapper di `Engine`
-//! finche il binding dedicato non esiste e non supera la propria campagna.
+//! runtime async. Nel binding Python, `create_engine` e
+//! `create_async_engine` costruiscono sessioni PostgreSQL governate da questo
+//! lifecycle; le factory `connect*` restano il percorso compatibile diretto.
 
 pub mod engine;
 pub mod metadata;
@@ -58,7 +58,8 @@ pub mod retry;
 pub mod runtime;
 pub mod statement;
 pub use engine::{
-    Engine, EngineOptions, EngineStatistics, Session, SessionRowStream, SessionTransaction,
+    Engine, EngineOptions, EngineStatistics, OwnedSessionTransaction, Session, SessionRowStream,
+    SessionTransaction,
 };
 pub use metadata::{MetaData, Observation, SchemaToken, Table};
 pub use result::QueryResult;

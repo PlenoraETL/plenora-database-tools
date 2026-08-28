@@ -87,11 +87,15 @@ fn batch_to_ipc_bytes(
 #[pyclass(module = "plenora_database._native", unsendable)]
 pub struct BatchReader {
     inner: Box<dyn BatchStream>,
+    cancellation: CancellationToken,
 }
 
 impl BatchReader {
-    pub(crate) fn new(inner: Box<dyn BatchStream>) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
+        Self {
+            inner,
+            cancellation,
+        }
     }
 }
 
@@ -102,9 +106,10 @@ impl BatchReader {
     }
 
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let cancel = CancellationToken::new();
         let batch_opt = py
-            .detach(|| runtime().block_on(async { self.inner.next_batch(&cancel).await }))
+            .detach(|| {
+                runtime().block_on(async { self.inner.next_batch(&self.cancellation).await })
+            })
             .map_err(to_py_err)?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
@@ -190,14 +195,10 @@ pub(crate) fn make_read_operation(
 pub(crate) fn open_reader(
     provider: &Arc<PostgresProvider>,
     secret: &SecretString,
-    schema: &str,
-    object: &str,
-    projection: Vec<String>,
-    order_by: Vec<(String, String)>,
-    limit: Option<u64>,
+    operation: ReadOperation,
+    cancellation: CancellationToken,
 ) -> Result<BatchReader, DatabaseError> {
-    let operation = make_read_operation(schema, object, projection, order_by, limit)?;
-    let cancel = CancellationToken::new();
+    let stream_cancellation = cancellation.clone();
     let stream = runtime().block_on(async move {
         provider
             .read(
@@ -205,11 +206,11 @@ pub(crate) fn open_reader(
                 &operation,
                 &ParameterBag::default(),
                 &default_budget(),
-                &cancel,
+                &stream_cancellation,
             )
             .await
     })?;
-    Ok(BatchReader::new(stream))
+    Ok(BatchReader::new(stream, cancellation))
 }
 
 // ============================ Async BatchReader ============================
@@ -229,11 +230,15 @@ fn wrap(stream: Box<dyn BatchStream>) -> SharedStream {
 #[pyclass(module = "plenora_database._native")]
 pub struct AsyncBatchReader {
     inner: SharedStream,
+    cancellation: CancellationToken,
 }
 
 impl AsyncBatchReader {
-    pub(crate) fn new(inner: Box<dyn BatchStream>) -> Self {
-        Self { inner: wrap(inner) }
+    pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
+        Self {
+            inner: wrap(inner),
+            cancellation,
+        }
     }
 }
 
@@ -245,13 +250,13 @@ impl AsyncBatchReader {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let cancellation = self.cancellation.clone();
         future_into_py(py, async move {
             let mut guard = inner.lock().await;
             let stream = guard
                 .as_mut()
                 .ok_or_else(|| PyRuntimeError::new_err("AsyncBatchReader esaurito"))?;
-            let cancel = CancellationToken::new();
-            let batch_opt = stream.next_batch(&cancel).await.map_err(to_py_err)?;
+            let batch_opt = stream.next_batch(&cancellation).await.map_err(to_py_err)?;
             match batch_opt {
                 Some(batch) => {
                     let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
@@ -291,22 +296,17 @@ impl AsyncBatchReader {
 pub(crate) async fn open_reader_async(
     provider: Arc<PostgresProvider>,
     secret: SecretString,
-    schema: String,
-    object: String,
-    projection: Vec<String>,
-    order_by: Vec<(String, String)>,
-    limit: Option<u64>,
+    operation: ReadOperation,
+    cancellation: CancellationToken,
 ) -> Result<AsyncBatchReader, DatabaseError> {
-    let operation = make_read_operation(&schema, &object, projection, order_by, limit)?;
-    let cancel = CancellationToken::new();
     let stream = provider
         .read(
             &secret,
             &operation,
             &ParameterBag::default(),
             &default_budget(),
-            &cancel,
+            &cancellation,
         )
         .await?;
-    Ok(AsyncBatchReader::new(stream))
+    Ok(AsyncBatchReader::new(stream, cancellation))
 }

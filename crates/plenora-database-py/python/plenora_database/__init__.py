@@ -28,6 +28,7 @@ from ._session import Session, _Inspector
 from ._transaction import Transaction
 from ._async_session import AsyncSession, _AsyncInspector
 from ._async_transaction import AsyncTransaction
+from ._engine import AsyncEngine, Engine
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -73,6 +74,8 @@ from .errors import (
 from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
 from ._native import SessionContext  # PFM CHG-002
 from ._native import aconnect as _native_aconnect
+from ._native import create_async_engine as _native_create_async_engine
+from ._native import create_engine as _native_create_engine
 from ._native import connect as _native_connect
 from ._native import (
     AsyncDatabaseSession,
@@ -109,6 +112,19 @@ def connect(dsn: str, tls_mode: str = "require") -> Session:
     i due preset di produzione più comuni.
     """
     return Session(_native_connect(dsn, tls_mode))
+
+
+def create_engine(dsn: str, tls_mode: str = "require") -> Engine:
+    """Crea un Engine PostgreSQL sync condivisibile fra richieste."""
+    return Engine(_native_create_engine(dsn, tls_mode))
+
+
+async def create_async_engine(
+    dsn: str, tls_mode: str = "require"
+) -> AsyncEngine:
+    """Crea un Engine PostgreSQL asyncio condivisibile fra richieste."""
+    native = await _native_create_async_engine(dsn, tls_mode)
+    return AsyncEngine(native)
 
 
 def connect_mysql(
@@ -718,6 +734,10 @@ MysqlSession = DatabaseSession
 AsyncMysqlSession = AsyncDatabaseSession
 
 __all__ = [
+    "create_engine",
+    "create_async_engine",
+    "Engine",
+    "AsyncEngine",
     "connect",
     "aconnect",
     "connect_mysql",

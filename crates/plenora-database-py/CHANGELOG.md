@@ -8,6 +8,9 @@ incompatibili, sempre indicate come **breaking**.
 
 ### Aggiunto
 
+- `create_engine` e `create_async_engine` per PostgreSQL: un pool condiviso,
+  sessione per unita di lavoro, lifecycle e cancellazione governati dal Core
+  v3, con parita sync/async.
 - `connect_mariadb` e `aconnect_mariadb`, con prodotto esplicito e nessuna
   selezione automatica rispetto a MySQL.
 - `connect_sqlserver` e `aconnect_sqlserver` nella superficie comune del SDK.

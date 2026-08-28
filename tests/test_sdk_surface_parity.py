@@ -111,7 +111,7 @@ def assert_pair(
         )
 
 
-def exposed(path: Path) -> set[str]:
+def exposed(path: Path, rust_class: str | None = None) -> set[str]:
     """I metodi che pyo3 pubblica, cioe quelli dentro `#[pymethods]`.
 
     Il blocco si chiude sulla graffa a colonna zero: gli helper privati che
@@ -120,7 +120,12 @@ def exposed(path: Path) -> set[str]:
     """
 
     text = path.read_text(encoding="utf-8")
-    blocks = re.findall(r"#\[pymethods\]\n(?:impl[^\n]*\n)(.*?)\n\}\n", text, re.S)
+    implementation = r"impl[^\n]*" if rust_class is None else rf"impl {re.escape(rust_class)}"
+    blocks = re.findall(
+        rf"#\[pymethods\]\n{implementation}\s*\{{(.*?)\n\}}\n",
+        text,
+        re.S,
+    )
     names: set[str] = set()
     for block in blocks:
         names |= set(re.findall(r"^    (?:pub )?fn (\w+)", block, re.M))
@@ -183,9 +188,14 @@ class SyncAndAsyncAreOneSurface(unittest.TestCase):
             asynchronous = {public_name(name) for name in exposed(SRC / async_file)}
             with self.subTest(synchronous=sync_file, asynchronous=async_file):
                 self.assertEqual(synchronous, asynchronous)
+        self.assertEqual(
+            exposed(SRC / "engine.rs", "PyEngine"),
+            {public_name(name) for name in exposed(SRC / "engine.rs", "PyAsyncEngine")},
+        )
 
     def test_python_implementations_have_the_same_surface(self) -> None:
         for sync_file, sync_class, async_file, async_class in (
+            ("_engine.py", "Engine", "_engine.py", "AsyncEngine"),
             ("_session.py", "Session", "_async_session.py", "AsyncSession"),
             ("_transaction.py", "Transaction", "_async_transaction.py", "AsyncTransaction"),
             ("_session.py", "_Inspector", "_async_session.py", "_AsyncInspector"),
@@ -201,6 +211,7 @@ class SyncAndAsyncAreOneSurface(unittest.TestCase):
 
     def test_public_stubs_have_the_same_surface(self) -> None:
         for sync_file, sync_class, async_file, async_class in (
+            ("_engine.pyi", "Engine", "_engine.pyi", "AsyncEngine"),
             ("_session.pyi", "Session", "_async_session.pyi", "AsyncSession"),
             ("_transaction.pyi", "Transaction", "_async_transaction.pyi", "AsyncTransaction"),
             ("_session.pyi", "_Inspector", "_async_session.pyi", "_AsyncInspector"),
@@ -217,6 +228,7 @@ class SyncAndAsyncAreOneSurface(unittest.TestCase):
     def test_native_stub_has_the_same_surface_for_both_families(self) -> None:
         native = PACKAGE / "_native.pyi"
         for sync_class, async_class in (
+            ("Engine", "AsyncEngine"),
             ("Session", "AsyncSession"),
             ("DatabaseSession", "AsyncDatabaseSession"),
             ("Transaction", "AsyncTransaction"),
@@ -226,18 +238,20 @@ class SyncAndAsyncAreOneSurface(unittest.TestCase):
 
     def test_native_stub_describes_every_implemented_method(self) -> None:
         native = PACKAGE / "_native.pyi"
-        for rust_file, class_name in (
-            ("session.rs", "Session"),
-            ("async_session.rs", "AsyncSession"),
-            ("session_family.rs", "DatabaseSession"),
-            ("async_session_family.rs", "AsyncDatabaseSession"),
-            ("transaction.rs", "Transaction"),
-            ("async_transaction.rs", "AsyncTransaction"),
+        for rust_file, rust_class, stub_class in (
+            ("engine.rs", "PyEngine", "Engine"),
+            ("engine.rs", "PyAsyncEngine", "AsyncEngine"),
+            ("session.rs", "Session", "Session"),
+            ("async_session.rs", "AsyncSession", "AsyncSession"),
+            ("session_family.rs", "DatabaseSession", "DatabaseSession"),
+            ("async_session_family.rs", "AsyncDatabaseSession", "AsyncDatabaseSession"),
+            ("transaction.rs", "Transaction", "Transaction"),
+            ("async_transaction.rs", "AsyncTransaction", "AsyncTransaction"),
         ):
-            with self.subTest(implementation=rust_file, stub=class_name):
+            with self.subTest(implementation=rust_file, stub=stub_class):
                 self.assertEqual(
-                    exposed(SRC / rust_file),
-                    set(class_methods(native, class_name)),
+                    exposed(SRC / rust_file, rust_class),
+                    set(class_methods(native, stub_class)),
                 )
 
     def test_async_query_contains_no_duplicate_validation_rules(self) -> None:

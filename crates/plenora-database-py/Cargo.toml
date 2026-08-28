@@ -26,6 +26,7 @@ db2 = ["dep:plenora-db-db2"]
 
 [dependencies]
 plenora-database-core.workspace = true
+plenora-database-engine.workspace = true
 plenora-db-postgres.workspace = true
 plenora-db-mysql.workspace = true
 plenora-db-sqlserver.workspace = true

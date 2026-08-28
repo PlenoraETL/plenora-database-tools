@@ -3,6 +3,7 @@
 use plenora_database_core::provider::{Provider, ProviderFuture, SecretString};
 use plenora_database_core::transaction::{AccessMode, TransactionOptions, TransactionScope};
 use plenora_database_core::{CancellationToken, Result};
+use plenora_database_engine::Session as EngineSession;
 use pyo3::PyResult;
 use std::sync::Arc;
 
@@ -69,6 +70,41 @@ where
         }
         Err(error) => {
             let _ = transaction.rollback(&cancellation).await;
+            Err(error)
+        }
+    }
+}
+
+/// Variante governata da una sessione del Core v3 gia aperta dall'Engine.
+pub async fn run_engine_transaction<R, F>(
+    session: &mut EngineSession,
+    cancellation: &CancellationToken,
+    work: F,
+) -> Result<R>
+where
+    F: for<'a> FnOnce(&'a mut dyn TransactionScope, &'a CancellationToken) -> ProviderFuture<'a, R>
+        + Send,
+    R: Send,
+{
+    let mut transaction = session
+        .begin_transaction(
+            &TransactionOptions::default(),
+            &crate::budget::session_budget(),
+            cancellation,
+        )
+        .await?;
+    let result = transaction.run(work).await;
+    match result {
+        Ok(value) => {
+            let provider_kind = transaction.provider_kind();
+            let outcome = transaction.commit().await?;
+            if !outcome.is_committed() {
+                return Err(crate::errors_commit::commit_outcome_unknown(provider_kind));
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = transaction.rollback().await;
             Err(error)
         }
     }

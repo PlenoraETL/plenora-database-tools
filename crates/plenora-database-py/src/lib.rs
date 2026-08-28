@@ -18,6 +18,7 @@ mod async_session_family;
 mod async_session_ops;
 mod async_transaction;
 mod budget;
+mod engine;
 mod errors;
 mod errors_commit;
 mod family_arrow_reader;
@@ -36,6 +37,7 @@ use async_session_family::{
     aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
 };
 use async_transaction::AsyncTransaction;
+use engine::{create_async_engine, create_engine, PyAsyncEngine, PyEngine};
 use session::{connect, Session};
 use session_family::{
     connect_db2, connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession,
@@ -158,6 +160,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
     m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(create_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_engine, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mysql, m)?)?;
@@ -171,6 +175,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect_db2, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_db2, m)?)?;
     m.add_class::<Session>()?;
+    m.add_class::<PyEngine>()?;
+    m.add_class::<PyAsyncEngine>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<AsyncSession>()?;
     m.add_class::<AsyncTransaction>()?;

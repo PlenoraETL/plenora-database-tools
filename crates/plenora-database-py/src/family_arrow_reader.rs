@@ -53,17 +53,18 @@ pub(crate) fn open_family_reader(
     let operation = make_read_operation(schema, object, projection, order_by, limit)?;
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
+    let cancellation = CancellationToken::new();
+    let stream_cancellation = cancellation.clone();
     let stream = runtime().block_on(async move {
-        let cancel = CancellationToken::new();
         provider_arc
             .read(
                 &secret_owned,
                 &operation,
                 &ParameterBag::default(),
                 &default_budget(),
-                &cancel,
+                &stream_cancellation,
             )
             .await
     })?;
-    Ok(BatchReader::new(stream))
+    Ok(BatchReader::new(stream, cancellation))
 }

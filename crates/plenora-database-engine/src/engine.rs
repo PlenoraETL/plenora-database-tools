@@ -8,7 +8,7 @@ use plenora_database_core::metrics_recorder::{
     noop_recorder, MetricEvent, MetricName, MetricTags, MetricValue, OperationKind, SharedRecorder,
 };
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind};
-use plenora_database_core::provider::{ConnectionInfo, Provider, SecretString};
+use plenora_database_core::provider::{ConnectionInfo, Provider, ProviderFuture, SecretString};
 use plenora_database_core::transaction::{
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
@@ -481,6 +481,15 @@ impl Session {
         self.closed
     }
 
+    /// Token figlio collegato alla chiusura della sessione e dell'engine.
+    ///
+    /// Gli adapter possono usarlo per operazioni specializzate che non
+    /// attraversano un `SessionTransaction`, mantenendo lo stesso lifecycle.
+    #[must_use]
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.child_token()
+    }
+
     pub fn close(&mut self) {
         if !self.closed {
             self.closed = true;
@@ -516,6 +525,38 @@ impl Session {
         })
     }
 
+    /// Consuma la sessione e apre una transazione posseduta.
+    ///
+    /// Questa forma serve ai binding e agli executor che devono conservare la
+    /// transazione oltre lo stack frame che l'ha aperta. Mantiene le stesse
+    /// garanzie della forma borrowed: una sola transazione per sessione,
+    /// cancellazione collegata all'engine e chiusura del lifecycle al drop.
+    ///
+    /// # Errors
+    ///
+    /// Propaga gli errori di lifecycle, budget, cancellazione e provider.
+    pub async fn begin_owned_transaction(
+        self,
+        options: &TransactionOptions,
+        budget: &ResourceBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OwnedSessionTransaction> {
+        self.ensure_open()?;
+        let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+        let secret = read(&self.inner.credentials).secret.clone();
+        let scope = self
+            .inner
+            .provider
+            .begin_transaction(&secret, options, budget, &linked)
+            .await?;
+        Ok(OwnedSessionTransaction {
+            scope,
+            cancellation: linked.child_token(),
+            stream_cancellation: linked,
+            _session: self,
+        })
+    }
+
     fn ensure_open(&self) -> Result<()> {
         if self.closed || mutex(&self.inner.lifecycle).disposed {
             Err(DatabaseError::new(
@@ -536,6 +577,135 @@ impl Drop for Session {
     }
 }
 
+/// Transazione `'static` che possiede il lifecycle della propria [`Session`].
+///
+/// Implementa il contratto provider-neutral [`TransactionScope`], quindi i
+/// binding possono riusare gli stessi executor delle transazioni native. La
+/// sessione viene chiusa soltanto dopo commit, rollback o quarantena al drop.
+pub struct OwnedSessionTransaction {
+    scope: Box<dyn TransactionScope>,
+    cancellation: CancellationToken,
+    stream_cancellation: CancellationToken,
+    _session: Session,
+}
+
+impl TransactionScope for OwnedSessionTransaction {
+    fn provider_kind(&self) -> ProviderKind {
+        self.scope.provider_kind()
+    }
+
+    fn execute<'a>(
+        &'a mut self,
+        statement: &'a Statement,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, u64> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.execute(statement, &linked).await
+        })
+    }
+
+    fn query<'a>(
+        &'a mut self,
+        statement: &'a Statement,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, Vec<Row>> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.query(statement, &linked).await
+        })
+    }
+
+    fn query_stream<'a>(
+        &'a mut self,
+        statement: &'a Statement,
+        batch_size: u32,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
+        self.stream_cancellation = CancellationToken::linked(&[&self.cancellation, cancellation]);
+        self.scope
+            .query_stream(statement, batch_size, &self.stream_cancellation)
+    }
+
+    fn savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.savepoint(name, &linked).await
+        })
+    }
+
+    fn rollback_to_savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.rollback_to_savepoint(name, &linked).await
+        })
+    }
+
+    fn release_savepoint<'a>(
+        &'a mut self,
+        name: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.release_savepoint(name, &linked).await
+        })
+    }
+
+    fn execute_conditional_update<'a>(
+        &'a mut self,
+        request: ConditionalUpdate<'a>,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope
+                .execute_conditional_update(request, &linked)
+                .await
+        })
+    }
+
+    fn commit(
+        self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'_, CommitOutcome> {
+        Box::pin(async move {
+            let Self {
+                scope,
+                cancellation: internal,
+                stream_cancellation: _,
+                _session,
+            } = *self;
+            let linked = CancellationToken::linked(&[&internal, cancellation]);
+            scope.commit(&linked).await
+        })
+    }
+
+    fn rollback(
+        self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<'_, ()> {
+        Box::pin(async move {
+            let Self {
+                scope,
+                cancellation: internal,
+                stream_cancellation: _,
+                _session,
+            } = *self;
+            let linked = CancellationToken::linked(&[&internal, cancellation]);
+            scope.rollback(&linked).await
+        })
+    }
+}
+
 /// Transazione vincolata al lifecycle esclusivo di una [`Session`].
 pub struct SessionTransaction<'session> {
     scope: Box<dyn TransactionScope>,
@@ -551,6 +721,26 @@ impl SessionTransaction<'_> {
 
     pub fn cancel(&self) {
         self.cancellation.cancel();
+    }
+
+    /// Esegue un'operazione generica sullo scope mantenendo la cancellazione
+    /// collegata al lifecycle della sessione e dell'engine.
+    ///
+    /// Serve agli adapter che condividono executor provider-neutral senza
+    /// esporre direttamente ne lo scope ne il token interno.
+    ///
+    /// # Errors
+    ///
+    /// Propaga l'errore redatto restituito dall'operazione.
+    pub async fn run<R, F>(&mut self, work: F) -> Result<R>
+    where
+        F: for<'a> FnOnce(
+            &'a mut dyn TransactionScope,
+            &'a CancellationToken,
+        ) -> ProviderFuture<'a, R>,
+        R: Send,
+    {
+        work(self.scope.as_mut(), &self.cancellation).await
     }
 
     /// # Errors

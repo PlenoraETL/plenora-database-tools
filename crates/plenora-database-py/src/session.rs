@@ -33,7 +33,7 @@
     clippy::needless_pass_by_value
 )]
 
-use crate::arrow_reader::{open_reader, BatchReader};
+use crate::arrow_reader::{make_read_operation, open_reader, BatchReader};
 use crate::errors::to_py_err;
 use crate::py_convert::{
     portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
@@ -44,11 +44,12 @@ use plenora_database_core::facade::{execute_portable, execute_portable_returning
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
+use plenora_database_engine::{Engine, Session as EngineSession};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::budget::session_budget as default_budget;
 
@@ -79,16 +80,40 @@ pub struct Session {
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
+    engine_handle: Option<Mutex<Option<EngineSession>>>,
+    operation_cancellation: Option<CancellationToken>,
     closed: bool,
 }
 
 impl Session {
+    pub(crate) fn from_engine(
+        engine: &Engine,
+        provider: Arc<PostgresProvider>,
+        secret: SecretString,
+        capabilities: plenora_database_core::capabilities::ProviderCapabilities,
+    ) -> plenora_database_core::Result<Self> {
+        let server_version = capabilities.provider_version.clone();
+        let postgis_version = capabilities.extension_versions.get("postgis").cloned();
+        let session = engine.session()?;
+        let operation_cancellation = session.cancellation_token();
+        Ok(Self {
+            provider,
+            secret,
+            capabilities,
+            server_version,
+            postgis_version,
+            engine_handle: Some(Mutex::new(Some(session))),
+            operation_cancellation: Some(operation_cancellation),
+            closed: false,
+        })
+    }
+
     /// Chiama `Provider::inspect(op)` sul runtime tokio globale e ritorna
     /// il documento JSON come `serde_json::Value`.
     fn run_inspect(&self, py: Python<'_>, op: Operation) -> PyResult<serde_json::Value> {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
-        let cancel = CancellationToken::new();
+        let cancel = self.cancellation();
         let inspection = py
             .detach(|| {
                 runtime().block_on(async move { provider.inspect(&secret, &op, &cancel).await })
@@ -106,6 +131,12 @@ impl Session {
         Ok(())
     }
 
+    fn cancellation(&self) -> CancellationToken {
+        self.operation_cancellation
+            .as_ref()
+            .map_or_else(CancellationToken::new, CancellationToken::clone)
+    }
+
     /// Esegue uno statement in una transazione dedicata e committa.
     fn run_tx<F, R>(&self, py: Python<'_>, work: F) -> PyResult<R>
     where
@@ -117,6 +148,24 @@ impl Session {
             + 'static,
         R: Send + 'static,
     {
+        if let Some(engine_handle) = &self.engine_handle {
+            let mut guard = engine_handle.lock().unwrap_or_else(PoisonError::into_inner);
+            let session = guard.as_mut().ok_or_else(|| {
+                PyRuntimeError::new_err("sessione Engine consumata da una transazione")
+            })?;
+            let cancellation = self.cancellation();
+            let result = py
+                .detach(|| {
+                    runtime().block_on(crate::session_tx::run_engine_transaction(
+                        session,
+                        &cancellation,
+                        work,
+                    ))
+                })
+                .map_err(to_py_err);
+            drop(guard);
+            return result;
+        }
         let provider: Arc<dyn plenora_database_core::provider::Provider> =
             Arc::clone(&self.provider) as Arc<dyn plenora_database_core::provider::Provider>;
         let secret = self.secret.clone();
@@ -158,6 +207,15 @@ impl Session {
     /// vengono rilasciate quando l'oggetto Python viene garbage-collected.
     fn close(&mut self) {
         self.closed = true;
+        if let Some(cancellation) = &self.operation_cancellation {
+            cancellation.cancel();
+        }
+        if let Some(engine_handle) = &mut self.engine_handle {
+            engine_handle
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+        }
     }
 
     /// Esegue un statement DML/DDL e ritorna il numero di righe modificate.
@@ -279,11 +337,9 @@ impl Session {
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let sql = sql.to_owned();
+        let cancel = self.cancellation();
         py.detach(|| {
-            runtime().block_on(async move {
-                let cancel = CancellationToken::new();
-                provider.execute_ddl(&secret, &sql, &cancel).await
-            })
+            runtime().block_on(async move { provider.execute_ddl(&secret, &sql, &cancel).await })
         })
         .map_err(to_py_err)
     }
@@ -362,18 +418,10 @@ impl Session {
         self.ensure_open()?;
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
-        py.detach(|| {
-            open_reader(
-                &self.provider,
-                &self.secret,
-                schema,
-                object,
-                projection,
-                order_by,
-                limit,
-            )
-        })
-        .map_err(to_py_err)
+        let operation =
+            make_read_operation(schema, object, projection, order_by, limit).map_err(to_py_err)?;
+        py.detach(|| open_reader(&self.provider, &self.secret, operation, self.cancellation()))
+            .map_err(to_py_err)
     }
 
     /// Bulk write via `prepare_write` + `write` del provider Postgres
@@ -428,6 +476,7 @@ impl Session {
                 mapping_policy,
                 keys,
                 update_columns,
+                self.cancellation(),
             )
         });
         crate::write::wrap_outcome(py, result)
@@ -453,7 +502,7 @@ impl Session {
     ))]
     #[allow(clippy::too_many_arguments)] // API PyO3 keyword — non fattibile compressione
     fn begin(
-        &self,
+        &mut self,
         py: Python<'_>,
         isolation: Option<&str>,
         read_only: Option<bool>,
@@ -471,6 +520,31 @@ impl Session {
             context,
             native_query_policy,
         )?;
+        let operation_cancellation = self.cancellation();
+        if let Some(engine_handle) = &mut self.engine_handle {
+            let session = engine_handle
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err("sessione Engine consumata da una transazione")
+                })?;
+            let transaction = py
+                .detach(|| {
+                    runtime().block_on(async move {
+                        session
+                            .begin_owned_transaction(
+                                &opts,
+                                &default_budget(),
+                                &operation_cancellation,
+                            )
+                            .await
+                    })
+                })
+                .map_err(to_py_err)?;
+            self.closed = true;
+            return Ok(Transaction::new(Box::new(transaction)));
+        }
         let provider = Arc::clone(&self.provider);
         let secret = self.secret.clone();
         let tx = py
@@ -499,7 +573,7 @@ impl Session {
         _exc_value: Py<PyAny>,
         _traceback: Py<PyAny>,
     ) -> bool {
-        self.closed = true;
+        self.close();
         false
     }
 
@@ -620,6 +694,8 @@ pub fn connect(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<Session> {
         capabilities: caps,
         server_version,
         postgis_version,
+        engine_handle: None,
+        operation_cancellation: None,
         closed: false,
     })
 }

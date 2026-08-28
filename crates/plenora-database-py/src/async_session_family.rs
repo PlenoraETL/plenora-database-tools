@@ -184,6 +184,7 @@ impl AsyncDatabaseSession {
             Arc::clone(&self.provider),
             self.secret.clone(),
             sql.to_owned(),
+            CancellationToken::new(),
         )
     }
 
@@ -195,6 +196,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             Operation::DatabaseListCatalogs,
             "catalogs",
+            CancellationToken::new(),
         )
     }
 
@@ -206,6 +208,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             Operation::DatabaseListSchemas { source: None },
             "schemas",
+            CancellationToken::new(),
         )
     }
 
@@ -216,6 +219,7 @@ impl AsyncDatabaseSession {
             Arc::clone(&self.provider),
             self.secret.clone(),
             schema.to_owned(),
+            CancellationToken::new(),
         )
     }
 
@@ -232,6 +236,7 @@ impl AsyncDatabaseSession {
             self.secret.clone(),
             schema.to_owned(),
             object.to_owned(),
+            CancellationToken::new(),
         )
     }
 
@@ -331,7 +336,7 @@ impl AsyncDatabaseSession {
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| {
-                let reader = crate::arrow_reader::AsyncBatchReader::new(stream);
+                let reader = crate::arrow_reader::AsyncBatchReader::new(stream, cancel);
                 Ok(Py::new(py, reader)?.into_pyobject(py)?.into_any().unbind())
             })
         })

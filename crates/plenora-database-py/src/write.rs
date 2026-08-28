@@ -231,6 +231,7 @@ async fn do_copy_from_async(
     keys: Vec<String>,
     update_columns: Vec<String>,
     ipc_bytes: Vec<u8>,
+    cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let (input_schema, batches, declared_rows) = decode_ipc_stream(&ipc_bytes)?;
     let stream = VecBatchStream {
@@ -248,12 +249,11 @@ async fn do_copy_from_async(
         update_columns,
     )?;
     let budget = default_budget();
-    let cancel = CancellationToken::new();
     let prepared = provider
-        .prepare_write(&secret, &operation, input_schema, &budget, &cancel)
+        .prepare_write(&secret, &operation, input_schema, &budget, &cancellation)
         .await?;
     let outcome = provider
-        .write(&secret, prepared, Box::new(stream), &budget, &cancel)
+        .write(&secret, prepared, Box::new(stream), &budget, &cancellation)
         .await?;
     Ok(outcome)
 }
@@ -278,6 +278,7 @@ pub(crate) fn copy_from_sync(
     mapping_policy: &str,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(mode)?;
     let profile_enum = parse_profile(transaction_profile)?;
@@ -299,6 +300,7 @@ pub(crate) fn copy_from_sync(
             keys,
             update_columns,
             ipc_owned,
+            cancellation,
         )
         .await
     })
@@ -323,6 +325,7 @@ pub(crate) async fn copy_from_async(
     mapping_policy: String,
     keys: Vec<String>,
     update_columns: Vec<String>,
+    cancellation: CancellationToken,
 ) -> Result<WriteOutcome, DatabaseError> {
     let mode_enum = parse_mode(&mode)?;
     let profile_enum = parse_profile(&transaction_profile)?;
@@ -338,6 +341,7 @@ pub(crate) async fn copy_from_async(
         keys,
         update_columns,
         ipc_bytes,
+        cancellation,
     )
     .await
 }

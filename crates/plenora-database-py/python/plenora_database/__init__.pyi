@@ -4,6 +4,7 @@ from typing import Any
 from . import spatial as spatial
 from ._async_session import AsyncSession
 from ._async_transaction import AsyncTransaction
+from ._engine import AsyncEngine, Engine
 from ._native import (
     AsyncDatabaseSession,
     DatabaseSession,
@@ -205,6 +206,10 @@ class _AsyncDatabaseInspector:
 
 
 def version() -> str: ...
+def create_engine(dsn: str, tls_mode: str = "require") -> Engine: ...
+async def create_async_engine(
+    dsn: str, tls_mode: str = "require"
+) -> AsyncEngine: ...
 def connect(dsn: str, tls_mode: str = "require") -> Session: ...
 async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 

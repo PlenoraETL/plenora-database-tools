@@ -556,6 +556,97 @@ async fn session_owns_an_exclusive_transaction_and_updates_lifecycle() {
     assert_eq!(provider.executions.load(Ordering::Relaxed), 1);
 }
 
+#[test]
+fn specialized_session_operations_receive_the_engine_lifecycle_token() {
+    let engine = Engine::new(
+        Arc::new(TestProvider::default()),
+        SecretString::new("secret"),
+    );
+    let session = engine.session().expect("sessione");
+    let cancellation = session.cancellation_token();
+    assert!(!cancellation.is_cancelled());
+    engine.dispose();
+    assert!(cancellation.is_cancelled());
+}
+
+#[tokio::test]
+async fn owned_transaction_keeps_session_alive_until_commit() {
+    let provider = Arc::new(TestProvider::default());
+    let engine = Engine::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        SecretString::new("secret"),
+    );
+    let cancellation = CancellationToken::new();
+    let session = engine.session().expect("sessione owned");
+    let mut transaction = session
+        .begin_owned_transaction(&TransactionOptions::default(), &budget(), &cancellation)
+        .await
+        .expect("transazione owned");
+    assert_eq!(engine.statistics().active_sessions, 1);
+    assert_eq!(
+        transaction
+            .execute(&Statement::new("SELECT 1"), &CancellationToken::new())
+            .await,
+        Ok(1)
+    );
+    assert_eq!(
+        Box::new(transaction)
+            .commit(&CancellationToken::new())
+            .await,
+        Ok(CommitOutcome::Committed)
+    );
+    assert_eq!(engine.statistics().active_sessions, 0);
+}
+
+#[tokio::test]
+async fn owned_transaction_observes_engine_disposal() {
+    let engine = Engine::new(
+        Arc::new(TestProvider::default()),
+        SecretString::new("secret"),
+    );
+    let session = engine.session().expect("sessione owned");
+    let mut transaction = session
+        .begin_owned_transaction(
+            &TransactionOptions::default(),
+            &budget(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("transazione owned");
+    engine.dispose();
+    let error = transaction
+        .execute(&Statement::new("SELECT 1"), &CancellationToken::new())
+        .await
+        .expect_err("transazione owned cancellata dal dispose");
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    drop(transaction);
+    assert_eq!(engine.statistics().active_sessions, 0);
+}
+
+#[tokio::test]
+async fn abandoned_owned_transaction_releases_provider_and_session_lifecycles() {
+    let provider = Arc::new(TestProvider::with_pool_limit(1, Duration::ZERO));
+    let engine = Engine::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        SecretString::new("secret"),
+    );
+    let transaction = engine
+        .session()
+        .expect("sessione owned")
+        .begin_owned_transaction(
+            &TransactionOptions::default(),
+            &budget(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("transazione owned");
+    assert_eq!(provider.active_transactions.load(Ordering::Acquire), 1);
+    assert_eq!(engine.statistics().active_sessions, 1);
+    drop(transaction);
+    assert_eq!(provider.active_transactions.load(Ordering::Acquire), 0);
+    assert_eq!(engine.statistics().active_sessions, 0);
+}
+
 #[tokio::test]
 async fn bound_statements_cross_execute_buffered_query_and_streaming() {
     let provider = Arc::new(TestProvider::default());
