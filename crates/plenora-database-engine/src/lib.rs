@@ -5,9 +5,11 @@
 //! provider nell'executor.
 
 pub mod engine;
+pub mod result;
 pub mod retry;
 pub mod runtime;
 pub use engine::{Engine, EngineStatistics, Session, SessionRowStream, SessionTransaction};
+pub use result::QueryResult;
 pub use retry::{retry_with_policy, RetryPolicy};
 pub use runtime::{
     inspect_spatial_arrays, validate_prepared_budget, ContractLeases, DeadlineGuard,

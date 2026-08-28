@@ -68,6 +68,12 @@ impl Row {
         &self.columns
     }
 
+    /// Clona soltanto l'handle ai nomi condivisi, non le stringhe.
+    #[must_use]
+    pub fn shared_columns(&self) -> Arc<[String]> {
+        Arc::clone(&self.columns)
+    }
+
     #[must_use]
     pub fn values(&self) -> &[ParameterValue] {
         &self.values

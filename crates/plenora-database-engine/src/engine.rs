@@ -1,5 +1,6 @@
 //! Engine e sessione applicativa sopra il pool posseduto dal provider.
 
+use crate::result::QueryResult;
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::metrics_recorder::{
     noop_recorder, MetricEvent, MetricName, MetricTags, MetricValue, OperationKind, SharedRecorder,
@@ -436,6 +437,15 @@ impl SessionTransaction<'_> {
         self.scope
             .rollback_to_savepoint(name, &self.cancellation)
             .await
+    }
+
+    /// Esegue una query e applica il protocollo uniforme di consumo.
+    ///
+    /// # Errors
+    ///
+    /// Propaga l'errore del provider o metadata incoerenti fra le righe.
+    pub async fn query_result(&mut self, statement: &Statement) -> Result<QueryResult> {
+        QueryResult::from_rows(self.query(statement).await?)
     }
 
     /// # Errors

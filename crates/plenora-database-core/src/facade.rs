@@ -10,40 +10,54 @@ use crate::row::Row;
 use crate::transaction::{Statement, TransactionScope};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 
-fn expect_single_row(rows: Vec<Row>) -> Result<Row> {
+/// Estrae esattamente una riga.
+///
+/// # Errors
+///
+/// `NotFound` per zero righe, `Conflict` per piu di una.
+pub fn exactly_one_row(rows: Vec<Row>) -> Result<Row> {
     if rows.is_empty() {
         return Err(not_found("query attesa a 1 riga, ricevute 0"));
     }
     if rows.len() > 1 {
         return Err(too_many_rows(rows.len()));
     }
-    Ok(rows.into_iter().next().expect("controllato lunghezza"))
+    let mut rows = rows;
+    rows.pop()
+        .ok_or_else(|| not_found("query attesa a 1 riga, ricevute 0"))
 }
 
-fn expect_at_most_one_row(rows: Vec<Row>) -> Result<Option<Row>> {
+/// Estrae zero o una riga.
+///
+/// # Errors
+///
+/// `Conflict` per piu di una riga.
+pub fn at_most_one_row(rows: Vec<Row>) -> Result<Option<Row>> {
     if rows.is_empty() {
         return Ok(None);
     }
     if rows.len() > 1 {
         return Err(too_many_rows(rows.len()));
     }
-    Ok(Some(
-        rows.into_iter().next().expect("controllato lunghezza"),
-    ))
+    Ok(rows.into_iter().next())
 }
 
-fn expect_single_column(row: Row) -> Result<ParameterValue> {
+/// Estrae l'unico valore di una riga.
+///
+/// # Errors
+///
+/// `DataMapping` quando la riga non contiene esattamente una colonna.
+pub fn exactly_one_value(row: Row) -> Result<ParameterValue> {
     if row.len() != 1 {
         return Err(malformed(&format!(
             "scalar attesa a 1 colonna, ricevute {}",
             row.len()
         )));
     }
-    Ok(row
-        .into_values()
-        .into_iter()
-        .next()
-        .expect("controllato lunghezza"))
+    let mut values = row.into_values();
+    values
+        .pop()
+        .ok_or_else(|| malformed("scalar attesa a 1 colonna, ricevute 0"))
 }
 
 /// Estrae lo scalare da un result set: al piu **una** riga, esattamente
@@ -61,7 +75,7 @@ fn expect_single_column(row: Row) -> Result<ParameterValue> {
 /// `Conflict` se le righe sono piu di una, `DataMapping` se le colonne non
 /// sono esattamente una.
 pub fn scalar_opt(rows: Vec<Row>) -> Result<Option<ParameterValue>> {
-    expect_at_most_one_row(rows)?.map_or(Ok(None), |row| expect_single_column(row).map(Some))
+    at_most_one_row(rows)?.map_or(Ok(None), |row| exactly_one_value(row).map(Some))
 }
 
 fn not_found(message: &str) -> DatabaseError {
@@ -139,7 +153,7 @@ pub async fn query_one(
     cancellation: &CancellationToken,
 ) -> Result<Row> {
     let rows = tx.query(statement, cancellation).await?;
-    expect_single_row(rows)
+    exactly_one_row(rows)
 }
 
 /// Esegue una query che può ritornare zero o una riga.
@@ -154,7 +168,7 @@ pub async fn query_optional(
     cancellation: &CancellationToken,
 ) -> Result<Option<Row>> {
     let rows = tx.query(statement, cancellation).await?;
-    expect_at_most_one_row(rows)
+    at_most_one_row(rows)
 }
 
 macro_rules! scalar_getter {
@@ -172,7 +186,7 @@ macro_rules! scalar_getter {
             cancellation: &CancellationToken,
         ) -> Result<$ty> {
             let row = query_one(tx, statement, cancellation).await?;
-            let value = expect_single_column(row)?;
+            let value = exactly_one_value(row)?;
             match value {
                 $pattern => Ok($extract),
                 other => Err(scalar_type_mismatch($expected, &other)),
@@ -279,7 +293,7 @@ pub async fn execute_portable_returning_one(
     cancellation: &CancellationToken,
 ) -> Result<Row> {
     let rows = execute_portable_returning(tx, statement, cancellation).await?;
-    expect_single_row(rows)
+    exactly_one_row(rows)
 }
 
 // ============================================================================
@@ -310,7 +324,7 @@ pub async fn execute_scalar_enum(
     cancellation: &CancellationToken,
 ) -> Result<(String, String)> {
     let row = query_one(tx, statement, cancellation).await?;
-    let value = expect_single_column(row)?;
+    let value = exactly_one_value(row)?;
     match value {
         ParameterValue::Enum { type_name, label } => Ok((type_name, label)),
         other => Err(scalar_type_mismatch("enum", &other)),
@@ -333,7 +347,7 @@ pub async fn execute_scalar_decimal(
     cancellation: &CancellationToken,
 ) -> Result<String> {
     let row = query_one(tx, statement, cancellation).await?;
-    let value = expect_single_column(row)?;
+    let value = exactly_one_value(row)?;
     match value {
         ParameterValue::Decimal(v) => Ok(v),
         other => Err(scalar_type_mismatch("decimal", &other)),
