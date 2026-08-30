@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+import plenora_database as p
+
 from ._harness import (
     aconnect_mariadb_reference,
     aconnect_sqlserver_reference,
@@ -28,6 +30,25 @@ def test_mariadb_sync_capabilities_inspect_ddl_and_transaction() -> None:
             f"INSERT INTO {table} (id, label) VALUES (?, ?)", [1, "maria"]
         ) == 1
         assert session.execute_scalar(f"SELECT label FROM {table} WHERE id = ?", [1]) == "maria"
+        target = p.table(table, "id", "label")
+        returned = session.execute(
+            p.insert(target)
+            .values(id=p.bind("id"), label=p.bind("label"))
+            .returning(target.c.id),
+            {"id": 2, "label": "core-v3"},
+        )
+        assert returned.scalar_one() == 2
+        upserted = session.execute(
+            p.upsert(target)
+            .values(id=p.bind("id"), label=p.bind("insert_label"))
+            .on_conflict(target.c.id)
+            .set(label=p.bind("update_label")),
+            {"id": 2, "insert_label": "ignored", "update_label": "UPSERTED"},
+        )
+        assert upserted.affected_rows is not None and upserted.affected_rows >= 1
+        assert session.execute(
+            p.delete(target).where(target.c.id == p.bind("id")), {"id": 2}
+        ) == 1
         assert session.inspect.describe("dataflow_test", table)["columns"]
     finally:
         try:
@@ -74,6 +95,32 @@ def test_sqlserver_sync_capabilities_inspect_ddl_and_transaction() -> None:
         assert session.execute_scalar(
             f"SELECT [label] FROM {qualified} WHERE [id] = @P1", [1]
         ) == "tds"
+        target = p.table(table, "id", "label", schema="plenora_test")
+        returned = session.execute(
+            p.insert(target)
+            .values(id=p.bind("id"), label=p.bind("label"))
+            .returning(target.c.id),
+            {"id": 2, "label": "core-v3"},
+        )
+        assert returned.scalar_one() == 2
+        upserted = session.execute(
+            p.upsert(target)
+            .values(id=p.bind("id"), label=p.bind("insert_label"))
+            .on_conflict(target.c.id)
+            .set(label=p.bind("update_label")),
+            {"id": 2, "insert_label": "ignored", "update_label": "UPSERTED"},
+        )
+        assert upserted.affected_rows is None
+        assert session.execute_scalar(
+            f"SELECT [label] FROM {qualified} WHERE [id] = @P1", [2]
+        ) == "UPSERTED"
+        deleted = session.execute(
+            p.delete(target)
+            .where(target.c.id == p.bind("id"))
+            .returning(target.c.id),
+            {"id": 2},
+        )
+        assert deleted.scalar_one() == 2
         assert session.inspect.describe("plenora_test", table)["columns"]
     finally:
         try:

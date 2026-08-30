@@ -47,6 +47,28 @@ def _postgres_expression_statement():
     )
 
 
+def _catalog_aggregate_statement():
+    objects = p.table("tables", "table_schema", schema="information_schema")
+    grouping = objects.c.table_schema
+    total = p.func.count()
+    return (
+        p.select(total.label("object_count"))
+        .select_from(objects)
+        .group_by(grouping)
+        .having(total >= total)
+        .order_by(grouping)
+        .limit(1)
+    )
+
+
+def _window_cte_statement():
+    objects = p.table("tables", "table_schema", schema="information_schema")
+    ranked = p.select(
+        p.func.count(objects.c.table_schema).over().label("position")
+    ).cte("ranked")
+    return p.select(ranked.c.position).select_from(ranked).limit(1)
+
+
 def test_engine_reuses_one_pool_across_request_sessions() -> None:
     engine = p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE)
     assert engine.provider_kind == "postgres"
@@ -54,6 +76,9 @@ def test_engine_reuses_one_pool_across_request_sessions() -> None:
         assert session.execute_scalar("SELECT 1::BIGINT") == 1
         result = session.execute(_postgres_expression_statement(), {"minimum": "a"})
         assert isinstance(result.scalar_one(), str)
+        aggregate = session.execute(_catalog_aggregate_statement())
+        assert aggregate.scalar_one() >= 1
+        assert session.execute(_window_cte_statement()).scalar_one() >= 1
     statistics = engine.statistics()
     assert statistics["sessions_opened"] == 1
     assert statistics["active_sessions"] == 0
@@ -142,6 +167,9 @@ def test_family_engine_uses_the_core_lifecycle(
         assert session.execute_scalar("SELECT 5") == 5
         statement = p.select(p.bind("answer").label("answer"))
         assert session.execute(statement, {"answer": 15}).scalar_one() == 15
+        aggregate = session.execute(_catalog_aggregate_statement())
+        assert aggregate.scalar_one() >= 1
+        assert session.execute(_window_cte_statement()).scalar_one() >= 1
     assert engine.statistics() == {
         "sessions_opened": 1,
         "active_sessions": 0,

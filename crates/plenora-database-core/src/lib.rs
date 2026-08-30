@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod provider;
 pub mod query;
 pub mod relational;
+pub mod relational_mutation;
 pub mod resource;
 pub mod row;
 pub mod row_diagnostics;
@@ -60,6 +61,7 @@ pub use portable::{
     Expression, InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection,
     SelectStatement, TableRef, UpdateStatement, UpsertStatement,
 };
+pub use relational_mutation::{compile_relational_mutation, LoweredMutation};
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};
 pub use row::{ColumnDescriptor, Row};
 pub use row_diagnostics::{

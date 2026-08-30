@@ -83,7 +83,14 @@ users = p.table("users", "id", "team_id", "name", schema="app").alias("u")
 teams = p.table("teams", "id", "name", schema="app").alias("t")
 
 statement = (
-    p.select(users.c.id, users.c.name, teams.c.name.label("team"))
+    p.select(
+        users.c.id,
+        users.c.name,
+        teams.c.name.label("team"),
+        p.func.count(users.c.id)
+        .over(partition_by=(users.c.team_id,))
+        .label("team_size"),
+    )
     .select_from(users)
     .join(teams, users.c.team_id == teams.c.id)
     .where(users.c.id >= p.bind("minimum_id"))
@@ -102,6 +109,30 @@ engine.dispose()
 varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. Il path
 SQL raw resta invariato: `session.execute(sql, valori_posizionali)` continua a
 restituire il numero di righe interessate.
+
+La superficie comprende inoltre `IN`/`BETWEEN`/`LIKE`/test di null, funzioni
+scalar e aggregate tramite `func`, `GROUP BY`/`HAVING`, finestre e frame,
+subquery scalari o derivate, `EXISTS`, CTE e `UNION`/`INTERSECT`/`EXCEPT`.
+Una CTE o subquery richiede label esplicite quando i nomi della proiezione non
+sono determinabili. `Result.rows()` e i terminali `row_*` restituiscono `Row`,
+accessibile per posizione, nome o descrittore `Column`; i terminali storici
+continuano a restituire dizionari per compatibilita.
+
+`bind()` resta non tipizzato per compatibilita quando il contesto della colonna
+basta al database. Per una proiezione senza sorgente, o quando il server non
+puo inferire il tipo, si usa un hint logico chiuso:
+
+```python
+statement = p.select(
+    p.bind("answer", p.BindType.INTEGER).label("answer")
+)
+```
+
+`BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
+`BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE` e
+`TIMESTAMP` per il dialect. In particolare Db2 rifiuta ancora in prepare una
+projection con bind non tipizzato, mentre la forma tipizzata viene resa con un
+`CAST` e `SYSIBM.SYSDUMMY1`.
 
 ### Sync
 
@@ -132,16 +163,15 @@ import asyncio
 import plenora_database as p
 
 async def main():
-    async with await p.aconnect("host=localhost user=me dbname=app") as s:
-        caps = s.capabilities
-        schemas = await s.inspect.schemas()
-        cnt = await s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
-        rows = await s.select("users").where_eq("active", True).all()
+    engine = await p.create_async_engine("host=localhost user=me dbname=app")
 
-        # Concorrenza: gather non blocca l'event loop
-        results = await asyncio.gather(
-            *(s.execute_scalar("SELECT $1::int", [i]) for i in range(10))
-        )
+    async def scalar(i: int):
+        # Ogni task usa la propria sessione; l'Engine condiviso governa il pool.
+        async with engine.session() as session:
+            return await session.execute_scalar("SELECT $1::int", [i])
+
+    results = await asyncio.gather(*(scalar(i) for i in range(10)))
+    engine.dispose()
 
 asyncio.run(main())
 ```

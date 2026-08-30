@@ -6,11 +6,12 @@ import pytest
 
 import plenora_database as p
 from plenora_database.expression import (
+    _compile_mutation_statement,
     _compile_statement,
     _execute_statement,
     _execute_statement_async,
 )
-from plenora_database._native import compile_relational_query
+from plenora_database._native import compile_relational_mutation, compile_relational_query
 
 
 def _joined_statement() -> p.SelectStatement:
@@ -93,7 +94,170 @@ def test_bind_validation_is_exact_and_does_not_expose_values() -> None:
     assert secret not in statement.to_json()
 
 
+def test_typed_bind_is_additive_and_keeps_the_untyped_ast_stable() -> None:
+    assert p.bind("legacy")._ast() == {"kind": "parameter", "name": "legacy"}
+    typed = p.bind("answer", p.BindType.INTEGER)
+    assert typed._ast() == {
+        "kind": "typed_parameter",
+        "name": "answer",
+        "parameter_type": "integer",
+    }
+    sql, names = compile_relational_query(p.select(typed).to_json(), "db2")
+    assert sql == "SELECT CAST(? AS INTEGER) FROM SYSIBM.SYSDUMMY1"
+    assert names == ["answer"]
+    with pytest.raises(TypeError):
+        p.bind("unsafe", "INTEGER")
+
+
+@pytest.mark.parametrize("provider", ("postgres", "mysql", "mariadb", "sqlserver", "db2"))
+def test_functions_grouping_having_and_predicates_use_the_canonical_ir(
+    provider: str,
+) -> None:
+    sales = p.table("sales", "category", "amount", "name")
+    total = p.func.sum(sales.c.amount)
+    statement = (
+        p.select(sales.c.category, total.label("total"))
+        .where(
+            sales.c.name.ilike(p.bind("pattern"))
+            & sales.c.amount.between(p.bind("lower"), p.bind("upper"))
+            & sales.c.category.in_(p.bind("first"), p.bind("second"))
+            & sales.c.name.is_not_null()
+        )
+        .group_by(sales.c.category)
+        .having(total > p.bind("minimum"))
+    )
+
+    sql, names = compile_relational_query(statement.to_json(), provider)
+
+    assert "SUM(" in sql
+    assert "GROUP BY" in sql
+    assert "HAVING" in sql
+    assert "BETWEEN" in sql
+    assert "IN (" in sql
+    assert "IS NOT NULL" in sql
+    assert names == ["pattern", "lower", "upper", "first", "second", "minimum"]
+
+
+@pytest.mark.parametrize("provider", ("postgres", "mysql", "mariadb", "sqlserver", "db2"))
+def test_windows_subqueries_ctes_and_set_operations_compile_for_every_provider(
+    provider: str,
+) -> None:
+    events = p.table("events", "tenant", "sequence")
+    ranked = p.select(
+        events.c.tenant,
+        p.func.sum(events.c.sequence)
+        .over(
+            partition_by=(events.c.tenant,),
+            order_by=(events.c.sequence,),
+            rows=(None, 0),
+        )
+        .label("running_total"),
+    ).subquery("ranked")
+    aggregate = (
+        p.select(ranked.c.tenant.label("tenant"))
+        .select_from(ranked)
+        .where(ranked.c.running_total > p.bind("minimum"))
+    )
+    cte = aggregate.cte("qualified")
+    alternative = p.select(events.c.tenant.label("tenant")).where(
+        events.c.sequence == p.bind("exact")
+    )
+    statement = (
+        p.select(cte.c.tenant)
+        .select_from(cte)
+        .where(alternative.exists())
+        .union(alternative, all=True)
+    )
+
+    sql, names = compile_relational_query(statement.to_json(), provider)
+
+    assert sql.startswith("WITH ")
+    assert "OVER (" in sql
+    assert "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in sql
+    assert "EXISTS (" in sql
+    assert "UNION ALL" in sql
+    assert names == ["minimum", "exact", "exact"]
+
+
+def test_advanced_expression_validation_fails_before_native_compilation() -> None:
+    users = p.table("users", "id", "name")
+
+    with pytest.raises(TypeError):
+        users.c.id.in_()
+    with pytest.raises(TypeError):
+        p.func.lower("name")
+    with pytest.raises(ValueError):
+        p.func.sum(users.c.id).over(rows=(None, 0), range_=(None, 0))
+    with pytest.raises(ValueError):
+        p.select(p.func.count()).subquery("counts")
+    with pytest.raises(ValueError):
+        p.select(users.c.id, users.c.name).scalar_subquery()
+    invalid_window = p.select(p.func.lower(p.bind("value")).over())
+    with pytest.raises(p.PlenoraInvalidPlanError):
+        compile_relational_query(invalid_window.to_json(), "postgres")
+
+
+def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider() -> None:
+    users = p.table("users", "id", "name", schema="app")
+    update = p.update(users).values(name=p.bind("name")).where(
+        users.c.id == p.bind("identity")
+    )
+    secret = "private-name-54e2"
+
+    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
+        sql, names, returns_rows = compile_relational_mutation(
+            update.to_json(), provider
+        )
+        assert names == ["name", "identity"]
+        assert returns_rows is False
+        assert secret not in sql
+
+    sql, values, returns_rows = _compile_mutation_statement(
+        update, {"name": secret, "identity": 7}, "postgres"
+    )
+    assert "$1" in sql and "$2" in sql
+    assert values == [secret, 7]
+    assert returns_rows is False
+    assert secret not in update.to_json()
+
+    returning = p.insert(users).values(
+        id=p.bind("identity"), name=p.bind("name")
+    ).returning(users.c.id)
+    for provider in ("postgres", "mariadb", "sqlserver"):
+        _, names, returns_rows = compile_relational_mutation(
+            returning.to_json(), provider
+        )
+        assert names == ["identity", "name"]
+        assert returns_rows is True
+    for provider in ("mysql", "db2"):
+        with pytest.raises(p.PlenoraError):
+            compile_relational_mutation(returning.to_json(), provider)
+
+    upsert = (
+        p.upsert(users)
+        .values(id=p.bind("identity"), name=p.bind("insert_name"))
+        .on_conflict(users.c.id)
+        .set(name=p.bind("updated_name"))
+    )
+    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
+        sql, names, returns_rows = compile_relational_mutation(
+            upsert.to_json(), provider
+        )
+        assert names == ["identity", "insert_name", "updated_name"]
+        assert returns_rows is False
+        assert secret not in sql
+
+    with pytest.raises(p.PlenoraError):
+        compile_relational_mutation(
+            p.upsert(users)
+            .values(id=p.bind("identity"), name=p.bind("name"))
+            .to_json(),
+            "postgres",
+        )
+
+
 def test_result_cardinality_and_rows_are_defensive_copies() -> None:
+    users = p.table("users", "value")
     result = p.Result([{"value": 1}])
     first = result.one()
     first["value"] = 99
@@ -101,11 +265,22 @@ def test_result_cardinality_and_rows_are_defensive_copies() -> None:
     assert result.keys() == ("value",)
     assert result.scalar_one() == 1
     assert result.all() == [{"value": 1}]
+    row = result.row_one()
+    assert row[0] == row["value"] == row[users.c.value] == 1
+    assert tuple(row) == (1,)
+    assert row.as_dict() == {"value": 1}
+    assert result.tuples() == [(1,)]
     assert p.Result([]).one_or_none() is None
+    assert p.Result([]).row_one_or_none() is None
     with pytest.raises(p.NoResultFound):
         p.Result([]).one()
     with pytest.raises(p.MultipleResultsFound):
         p.Result([{"value": 1}, {"value": 2}]).one_or_none()
+    unknown = p.MutationResult("upsert", "sqlserver", None)
+    assert unknown.count_is_known is False
+    assert "unknown" in repr(unknown)
+    with pytest.raises(TypeError):
+        bool(unknown)
 
 
 def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:

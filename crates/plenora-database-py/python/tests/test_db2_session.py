@@ -90,8 +90,74 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
             assert session.execute_scalar(
                 "SELECT CAST(7 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
             ) == 7
-            statement = p.select(p.bind("answer").label("answer"))
-            assert session.execute(statement, {"answer": 17}).scalar_one() == 17
+            assert session.execute(
+                p.select(
+                    p.bind("answer", p.BindType.INTEGER).label("ANSWER")
+                ),
+                {"answer": 7},
+            ).scalar_one() == 7
+            tables = p.table(
+                "READ_PROBE", "ID", "LABEL", schema="PLENORA_TEST"
+            )
+            statement = (
+                p.select(tables.c.LABEL)
+                .where(tables.c.ID == p.bind("identity"))
+                .limit(1)
+            )
+            assert session.execute(statement, {"identity": 1}).scalar_one() == "alpha"
+            total = p.func.count()
+            aggregate = (
+                p.select(tables.c.LABEL, total.label("OBJECT_COUNT"))
+                .group_by(tables.c.LABEL)
+                .having(total >= total)
+                .limit(1)
+            )
+            assert session.execute(aggregate).one()["OBJECT_COUNT"] >= 1
+            ranked = p.select(
+                p.func.count(tables.c.LABEL).over().label("POSITION")
+            ).cte("RANKED")
+            assert (
+                session.execute(
+                    p.select(ranked.c.POSITION).select_from(ranked).limit(1)
+                ).scalar_one()
+                >= 1
+            )
+            target = p.table("READ_PROBE", "ID", "LABEL", schema="PLENORA_TEST")
+            transaction = session.begin()
+            try:
+                assert transaction.execute(
+                    p.insert(target).values(
+                        ID=p.bind("identity"), LABEL=p.bind("label")
+                    ),
+                    {"identity": 90, "label": "core-v3"},
+                ) == 1
+                assert transaction.execute(
+                    p.update(target)
+                    .values(LABEL=p.bind("label"))
+                    .where(target.c.ID == p.bind("identity")),
+                    {"label": "CORE-V3", "identity": 90},
+                ) == 1
+                upserted = transaction.execute(
+                    p.upsert(target)
+                    .values(ID=p.bind("identity"), LABEL=p.bind("insert_label"))
+                    .on_conflict(target.c.ID)
+                    .set(LABEL=p.bind("update_label")),
+                    {
+                        "identity": 90,
+                        "insert_label": "ignored",
+                        "update_label": "UPSERTED",
+                    },
+                )
+                assert (
+                    upserted.affected_rows is not None
+                    and upserted.affected_rows >= 1
+                )
+                assert transaction.execute(
+                    p.delete(target).where(target.c.ID == p.bind("identity")),
+                    {"identity": 90},
+                ) == 1
+            finally:
+                transaction.rollback()
         assert engine.statistics()["active_sessions"] == 0
 
 
@@ -104,6 +170,15 @@ async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
             assert await session.execute_scalar(
                 "SELECT CAST(8 AS BIGINT) FROM SYSIBM.SYSDUMMY1"
             ) == 8
-            statement = p.select(p.bind("answer").label("answer"))
-            assert (await session.execute(statement, {"answer": 18})).scalar_one() == 18
+            tables = p.table(
+                "READ_PROBE", "ID", "LABEL", schema="PLENORA_TEST"
+            ).alias("r")
+            statement = (
+                p.select(tables.c.LABEL)
+                .where(tables.c.ID == p.bind("identity"))
+                .limit(1)
+            )
+            assert (
+                await session.execute(statement, {"identity": 1})
+            ).scalar_one() == "alpha"
         assert engine.statistics()["active_sessions"] == 0

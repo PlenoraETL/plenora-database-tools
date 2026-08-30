@@ -8,6 +8,7 @@ from ._async_session import AsyncSession
 from ._native import AsyncEngine as _NativeAsyncEngine
 from ._native import Engine as _NativeEngine
 from ._session import Session
+from .metadata import MetaData
 
 
 class Engine:
@@ -31,11 +32,38 @@ class Engine:
     def is_disposed(self) -> bool:
         return self._native.is_disposed
 
+    @property
+    def metadata_cache_entries(self) -> int:
+        return self._native.metadata_cache_entries
+
     def session(self) -> Any:
         return self._wrap_session(self._native.session())
 
     def statistics(self) -> dict:
         return self._native.statistics()
+
+    def reflect_table(
+        self,
+        schema: str | None,
+        table: str,
+        *,
+        catalog: str | None = None,
+        refresh: bool = False,
+    ) -> MetaData:
+        return MetaData.from_document(
+            self._native.reflect_table(
+                schema, table, catalog=catalog, refresh=refresh
+            )
+        )
+
+    def invalidate_metadata(
+        self,
+        schema: str | None = None,
+        table: str | None = None,
+        *,
+        catalog: str | None = None,
+    ) -> int:
+        return self._native.invalidate_metadata(schema, table, catalog=catalog)
 
     def dispose(self) -> None:
         self._native.dispose()
@@ -72,11 +100,38 @@ class AsyncEngine:
     def is_disposed(self) -> bool:
         return self._native.is_disposed
 
+    @property
+    def metadata_cache_entries(self) -> int:
+        return self._native.metadata_cache_entries
+
     def session(self) -> Any:
         return self._wrap_session(self._native.session())
 
     def statistics(self) -> dict:
         return self._native.statistics()
+
+    async def reflect_table(
+        self,
+        schema: str | None,
+        table: str,
+        *,
+        catalog: str | None = None,
+        refresh: bool = False,
+    ) -> MetaData:
+        return MetaData.from_document(
+            await self._native.reflect_table(
+                schema, table, catalog=catalog, refresh=refresh
+            )
+        )
+
+    def invalidate_metadata(
+        self,
+        schema: str | None = None,
+        table: str | None = None,
+        *,
+        catalog: str | None = None,
+    ) -> int:
+        return self._native.invalidate_metadata(schema, table, catalog=catalog)
 
     def dispose(self) -> None:
         self._native.dispose()

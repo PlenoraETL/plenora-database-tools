@@ -62,6 +62,31 @@ def test_execute_ddl_insert_scalar_roundtrip(session) -> None:
     )
     assert count == 1
 
+    target = p.table("_v04_sdk_test", "id", "label", "amount")
+    assert session.execute(
+        p.insert(target).values(
+            id=p.bind("id"), label=p.bind("label"), amount=p.bind("amount")
+        ),
+        {"id": 2, "label": "beta", "amount": 20},
+    ) == 1
+    assert session.execute(
+        p.update(target)
+        .values(label=p.bind("label"))
+        .where(target.c.id == p.bind("id")),
+        {"label": "BETA", "id": 2},
+    ) == 1
+    upserted = session.execute(
+        p.upsert(target)
+        .values(id=p.bind("id"), label=p.bind("insert_label"), amount=p.bind("amount"))
+        .on_conflict(target.c.id)
+        .set(label=p.bind("update_label")),
+        {"id": 2, "insert_label": "ignored", "amount": 20, "update_label": "UPSERTED"},
+    )
+    assert upserted.affected_rows is not None and upserted.affected_rows >= 1
+    assert session.execute(
+        p.delete(target).where(target.c.id == p.bind("id")), {"id": 2}
+    ) == 1
+
 
 def test_execute_returning_rows_provides_dicts(session) -> None:
     session.execute(

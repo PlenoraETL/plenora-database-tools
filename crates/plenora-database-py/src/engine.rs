@@ -8,18 +8,25 @@ use crate::session::{build_provider, Session};
 use crate::session_family::{DatabaseSession, Endpoint, ProviderBuilder};
 use crate::{AsyncDatabaseSession, AsyncSession};
 use plenora_database_core::capabilities::ProviderCapabilities;
-use plenora_database_core::plan::ProviderKind;
+use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
 #[cfg(not(feature = "db2"))]
 use plenora_database_core::{DatabaseError, ErrorPhase};
-use plenora_database_engine::Engine as CoreEngine;
+use plenora_database_engine::{Engine as CoreEngine, MetaData};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+fn metadata_to_python<'py>(py: Python<'py>, metadata: &MetaData) -> PyResult<Bound<'py, PyAny>> {
+    let document = serde_json::to_value(metadata).map_err(|_| {
+        pyo3::exceptions::PyRuntimeError::new_err("metadata tipizzati non serializzabili")
+    })?;
+    crate::py_convert::json_to_python(py, &document)
+}
 
 enum SessionTarget {
     Postgres(Arc<PostgresProvider>),
@@ -113,6 +120,60 @@ impl PyEngine {
     }
 
     #[getter]
+    fn metadata_cache_entries(&self) -> usize {
+        self.binding.core.metadata_cache_entries()
+    }
+
+    /// Riflette una tabella tramite il catalogo tipizzato e la cache del Core.
+    #[pyo3(signature = (schema, table, *, catalog=None, refresh=false))]
+    fn reflect_table<'py>(
+        &self,
+        py: Python<'py>,
+        schema: Option<String>,
+        table: String,
+        catalog: Option<String>,
+        refresh: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let source = ObjectRef {
+            catalog,
+            schema,
+            object: table,
+        };
+        let core = self.binding.core.clone();
+        let metadata = py
+            .detach(|| {
+                runtime().block_on(async move {
+                    core.reflect_table(&source, refresh, &CancellationToken::new())
+                        .await
+                })
+            })
+            .map_err(to_py_err)?;
+        metadata_to_python(py, &metadata)
+    }
+
+    #[pyo3(signature = (schema=None, table=None, *, catalog=None))]
+    fn invalidate_metadata(
+        &self,
+        schema: Option<String>,
+        table: Option<String>,
+        catalog: Option<String>,
+    ) -> PyResult<usize> {
+        match table {
+            Some(object) => Ok(self.binding.core.invalidate_metadata(Some(&ObjectRef {
+                catalog,
+                schema,
+                object,
+            }))),
+            None if schema.is_none() && catalog.is_none() => {
+                Ok(self.binding.core.invalidate_metadata(None))
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "table e obbligatoria quando schema o catalog sono presenti",
+            )),
+        }
+    }
+
+    #[getter]
     fn provider_kind(&self) -> &'static str {
         self.binding.provider_kind
     }
@@ -188,6 +249,57 @@ impl PyAsyncEngine {
         value.set_item("active_sessions", statistics.active_sessions)?;
         value.set_item("disposed", statistics.disposed)?;
         Ok(value)
+    }
+
+    #[getter]
+    fn metadata_cache_entries(&self) -> usize {
+        self.binding.core.metadata_cache_entries()
+    }
+
+    #[pyo3(signature = (schema, table, *, catalog=None, refresh=false))]
+    fn reflect_table<'py>(
+        &self,
+        py: Python<'py>,
+        schema: Option<String>,
+        table: String,
+        catalog: Option<String>,
+        refresh: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let source = ObjectRef {
+            catalog,
+            schema,
+            object: table,
+        };
+        let core = self.binding.core.clone();
+        future_into_py(py, async move {
+            let metadata = core
+                .reflect_table(&source, refresh, &CancellationToken::new())
+                .await
+                .map_err(to_py_err)?;
+            Python::attach(|py| metadata_to_python(py, &metadata).map(Bound::unbind))
+        })
+    }
+
+    #[pyo3(signature = (schema=None, table=None, *, catalog=None))]
+    fn invalidate_metadata(
+        &self,
+        schema: Option<String>,
+        table: Option<String>,
+        catalog: Option<String>,
+    ) -> PyResult<usize> {
+        match table {
+            Some(object) => Ok(self.binding.core.invalidate_metadata(Some(&ObjectRef {
+                catalog,
+                schema,
+                object,
+            }))),
+            None if schema.is_none() && catalog.is_none() => {
+                Ok(self.binding.core.invalidate_metadata(None))
+            }
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "table e obbligatoria quando schema o catalog sono presenti",
+            )),
+        }
     }
 
     #[getter]

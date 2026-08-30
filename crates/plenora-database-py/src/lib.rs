@@ -168,6 +168,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         relational_query::compile_relational_query,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(
+        relational_query::compile_relational_mutation,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(create_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_async_engine, m)?)?;

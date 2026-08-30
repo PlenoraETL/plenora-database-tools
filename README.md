@@ -53,10 +53,12 @@ cargo test --workspace -- --skip live_     # unit, senza server
 cargo deny check                           # alternativa, se cargo-deny e installato
 ```
 
-`scripts/sweep.py` e il percorso locale canonico per i gate offline. I gate
-live avviano i propri fixture Compose e valgono soltanto per il provider che
-nominano. Ogni provider ha il suo progetto: i volumi sono prefissati dal
-progetto e non si toccano fra loro.
+`scripts/sweep.py` e il percorso locale canonico per i gate offline. Le
+campagne live definite nei workflow avviano i propri fixture Compose; invocati
+direttamente, i singoli runner presuppongono invece il fixture del provider gia
+healthy. Ogni campagna vale soltanto per il provider che nomina. Ogni provider
+ha il suo progetto: i volumi sono prefissati dal progetto e non si toccano fra
+loro.
 
 ## Regole che non cambiano
 

@@ -546,6 +546,10 @@ pub enum QueryExpression {
     Parameter {
         name: String,
     },
+    TypedParameter {
+        name: String,
+        parameter_type: QueryParameterType,
+    },
     Scalar {
         function: ScalarFunction,
         arguments: Vec<Self>,
@@ -630,6 +634,23 @@ pub enum QueryExpression {
         expression: Box<Self>,
         negated: bool,
     },
+}
+
+/// Tipo logico chiuso di un bind relazionale.
+///
+/// Non contiene SQL nativo: il renderer sceglie la dichiarazione corretta per
+/// il dialect, cosi un hint di tipo non diventa un escape hatch testuale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryParameterType {
+    Boolean,
+    Integer,
+    BigInteger,
+    Float,
+    String,
+    Binary,
+    Date,
+    Timestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -802,6 +823,76 @@ pub struct QueryOperation {
     /// richiede un CRS dimostrabile resta rifiutata.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_crs: Vec<crate::plan::DeclaredCrs>,
+}
+
+/// Assegnazione DML canonica; il valore resta una espressione senza payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationAssignment {
+    pub column: String,
+    pub value: QueryExpression,
+}
+
+/// Inserimento relazionale. Le righe contengono espressioni allineate alle
+/// colonne e non valori applicativi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsertOperation {
+    pub target: crate::plan::ObjectRef,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<QueryExpression>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returning: Vec<String>,
+}
+
+/// Aggiornamento relazionale con predicato canonico condiviso dalle query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateOperation {
+    pub target: crate::plan::ObjectRef,
+    pub assignments: Vec<MutationAssignment>,
+    pub filter: Option<QueryExpression>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returning: Vec<String>,
+}
+
+/// Cancellazione relazionale con eventuale proiezione delle righe eliminate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteOperation {
+    pub target: crate::plan::ObjectRef,
+    pub filter: Option<QueryExpression>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returning: Vec<String>,
+}
+
+/// Inserimento con gestione atomica del conflitto.
+///
+/// Il bersaglio resta esplicito anche sui prodotti che lo ricavano dagli indici unici: e parte
+/// del significato portabile dell'operazione e serve ai lowering che devono
+/// costruire il predicato di match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpsertOperation {
+    pub target: crate::plan::ObjectRef,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<QueryExpression>>,
+    pub conflict_target: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub update_on_conflict: Vec<MutationAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returning: Vec<String>,
+}
+
+/// Mutazioni del Core v3. `SELECT` resta [`QueryOperation`] per compatibilita
+/// seriale; questo enum e il nuovo confine DML additivo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MutationOperation {
+    Insert(InsertOperation),
+    Update(UpdateOperation),
+    Delete(DeleteOperation),
+    Upsert(UpsertOperation),
 }
 
 impl QueryOperation {
@@ -1026,7 +1117,8 @@ fn push_expression_children<'a>(
         }
         QueryExpression::Wildcard { .. }
         | QueryExpression::Column { .. }
-        | QueryExpression::Parameter { .. } => {}
+        | QueryExpression::Parameter { .. }
+        | QueryExpression::TypedParameter { .. } => {}
     }
 }
 
@@ -1449,7 +1541,8 @@ pub fn validate_query_operation(
                         }
                         identifier(&column.field, limits.max_identifier_bytes)?;
                     }
-                    QueryExpression::Parameter { name } => identifier(name, 256)?,
+                    QueryExpression::Parameter { name }
+                    | QueryExpression::TypedParameter { name, .. } => identifier(name, 256)?,
                     QueryExpression::Scalar {
                         function,
                         arguments,

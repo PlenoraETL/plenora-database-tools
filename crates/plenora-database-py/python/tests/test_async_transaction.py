@@ -109,6 +109,36 @@ async def test_builders_work_inside_async_transaction(session) -> None:
         await tx.delete("_pyf7tx").where_eq("id", 10).execute()
         assert await tx.select("_pyf7tx").where_eq("id", 10).one() is None
 
+        target = p.table("_pyf7tx", "id", "val")
+        inserted = await tx.execute(
+            p.insert(target)
+            .values(id=p.bind("id"), val=p.bind("value"))
+            .returning(target.c.id),
+            {"id": 11, "value": "eleven"},
+        )
+        assert inserted.scalar_one() == 11
+        assert await tx.execute(
+            p.update(target)
+            .values(val=p.bind("value"))
+            .where(target.c.id == p.bind("id")),
+            {"value": "ELEVEN", "id": 11},
+        ) == 1
+        upserted = await tx.execute(
+            p.upsert(target)
+            .values(id=p.bind("id"), val=p.bind("insert_value"))
+            .on_conflict(target.c.id)
+            .set(val=p.bind("update_value")),
+            {"id": 11, "insert_value": "ignored", "update_value": "UPSERTED"},
+        )
+        assert upserted.affected_rows == 1
+        deleted = await tx.execute(
+            p.delete(target)
+            .where(target.c.id == p.bind("id"))
+            .returning(target.c.id),
+            {"id": 11},
+        )
+        assert deleted.scalar_one() == 11
+
 
 # --------------------------- savepoints ---------------------------
 

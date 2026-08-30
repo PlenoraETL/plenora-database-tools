@@ -3,9 +3,9 @@ from typing import Any, Mapping, overload
 
 from ._native import Session as _NativeSession, SessionContext
 from ._transaction import Transaction
-from .expression import SelectStatement
+from .expression import ExecutableStatement
 from .query import Delete, Insert, Select, Update, Upsert
-from .result import Result
+from .result import MutationResult, Result
 
 
 class Session:
@@ -26,8 +26,8 @@ class Session:
     def execute(self, sql: str, params: list | None = None) -> int: ...
     @overload
     def execute(
-        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
-    ) -> Result: ...
+        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | int | MutationResult: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_ddl(self, sql: str) -> None: ...
     def execute_returning_rows(

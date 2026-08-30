@@ -71,11 +71,10 @@ fn source_free_parameter_query_uses_each_dialect_bind() {
         },
         alias: Some("answer".to_owned()),
     }];
-    for (dialect, placeholder, source) in [
-        (Dialect::Postgres, "$1", None),
-        (Dialect::Mysql, "?", None),
-        (Dialect::SqlServer, "@p1", None),
-        (Dialect::Db2, "?", Some("SYSIBM.SYSDUMMY1")),
+    for (dialect, placeholder) in [
+        (Dialect::Postgres, "$1"),
+        (Dialect::Mysql, "?"),
+        (Dialect::SqlServer, "@p1"),
     ] {
         let rendered = Renderer::new(
             dialect,
@@ -86,13 +85,88 @@ fn source_free_parameter_query_uses_each_dialect_bind() {
         .render_query(&query)
         .expect("source-free parameter query");
         assert!(rendered.sql.starts_with("SELECT "), "{dialect:?}");
-        match source {
-            Some(source) => assert!(rendered.sql.ends_with(source), "{dialect:?}"),
-            None => assert!(!rendered.sql.contains(" FROM "), "{dialect:?}"),
-        }
+        assert!(!rendered.sql.contains(" FROM "), "{dialect:?}");
         assert!(rendered.sql.contains(placeholder), "{dialect:?}");
         assert_eq!(rendered.binds[0].name, "answer");
     }
+}
+
+#[test]
+fn db2_rejects_an_untyped_parameter_projection_before_execution() {
+    let mut query = simple_query();
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::Parameter {
+            name: "answer".to_owned(),
+        },
+        alias: Some("answer".to_owned()),
+    }];
+    let error = Renderer::new(
+        Dialect::Db2,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect_err("Db2 non puo inferire il tipo del parametro nella projection");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Unsupported
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+}
+
+#[test]
+fn db2_renders_a_typed_parameter_projection_with_a_type_context() {
+    let mut query = simple_query();
+    query.source = None;
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::TypedParameter {
+            name: "answer".to_owned(),
+            parameter_type: QueryParameterType::Integer,
+        },
+        alias: Some("answer".to_owned()),
+    }];
+    let rendered = Renderer::new(
+        Dialect::Db2,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("il cast rende il bind tipizzabile da Db2");
+    assert_eq!(
+        rendered.sql,
+        "SELECT CAST(? AS INTEGER) AS \"answer\" FROM SYSIBM.SYSDUMMY1"
+    );
+    assert_eq!(rendered.binds[0].name, "answer");
+}
+
+#[test]
+fn db2_correlates_an_unaliased_schema_qualified_table() {
+    let mut query = simple_query();
+    query.source = Some(QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("SYSCAT".to_owned()),
+            object: "TABLES".to_owned(),
+        },
+        alias: None,
+    });
+    query.projection = vec![QueryProjection {
+        expression: query_column("TABLES", "TABSCHEMA"),
+        alias: None,
+    }];
+    let rendered = Renderer::new(
+        Dialect::Db2,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("source Db2 qualificata senza alias esplicito");
+    assert!(rendered
+        .sql
+        .contains("FROM \"SYSCAT\".\"TABLES\" AS \"TABLES\""));
 }
 
 #[test]

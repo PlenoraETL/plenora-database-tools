@@ -19,6 +19,7 @@ from scripts import live_inventory  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "docker-compose.db2.yml"
 DOCKERFILE = ROOT / "docker" / "db2-client" / "Dockerfile"
+ENTRYPOINT = ROOT / "docker" / "db2-client" / "entrypoint.sh"
 HEALTHCHECK = ROOT / "docker" / "db2-client" / "healthcheck.sh"
 INIT_FIXTURE = ROOT / "docker" / "db2-client" / "init-fixture.sh"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-db2" / "src" / "live_tests.rs"
@@ -141,18 +142,26 @@ def validate_build_contract() -> dict[str, str]:
         if required not in source:
             raise RuntimeError(f"contratto build Db2 assente: {required}")
 
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
     healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
     init_fixture = INIT_FIXTURE.read_text(encoding="utf-8")
     for required in (
         "SYSCAT.TABLES",
+        "CATALOG_PROBE",
+        "READ_PROBE",
+        "TX_PROBE",
+        "WRITE_PROBE",
         "SPATIAL_PROBE",
-        'test "${fixture_tables}" != "1"',
+        "CATALOG_PROBE_VIEW",
+        'test "${fixture_objects}" != "6"',
+        'test "${schema_objects}" != "6"',
         "isql -b -k",
     ):
         if required not in healthcheck:
             raise RuntimeError(f"contratto healthcheck Db2 assente: {required}")
-    if "/tmp/plenora-fixture-ready" in healthcheck or "/tmp/plenora-fixture-ready" in init_fixture:
-        raise RuntimeError("healthcheck Db2 dipendente da un marker non persistente")
+    marker = "/run/plenora-fixture-ready"
+    if marker not in entrypoint or marker not in healthcheck or marker not in init_fixture:
+        raise RuntimeError("sincronizzazione startup del fixture Db2 incompleta")
     return {"rust": images[0], "db2": images[1]}
 
 

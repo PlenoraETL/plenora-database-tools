@@ -5,9 +5,10 @@ mod wire;
 use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::provider::Inspection;
 use plenora_database_core::Result;
+use serde::Serialize;
 
 /// Distingue una superficie osservata da una che il provider non misura.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum Observation<T> {
     NotMeasured,
@@ -30,7 +31,7 @@ impl<T> Observation<T> {
 }
 
 /// Token strutturale senza collisioni semantiche fra provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum SchemaToken {
     Postgres {
@@ -52,7 +53,7 @@ pub enum SchemaToken {
 }
 
 /// Catalogo tipizzato prodotto da una o piu operazioni di reflection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MetaData {
     provider: ProviderKind,
     tables: Box<[Table]>,
@@ -98,7 +99,7 @@ impl MetaData {
 }
 
 /// Oggetto relazionale riflesso con token e attributi nativi separati.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Table {
     catalog: Option<String>,
     schema: Option<String>,
@@ -174,7 +175,7 @@ impl Table {
 }
 
 /// Colonna comune; i campi non osservabili restano `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Column {
     name: String,
     ordinal: Option<u64>,
@@ -252,7 +253,7 @@ impl Column {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SpatialColumnMetadata {
     srid: Option<u32>,
     dimensions: Option<String>,
@@ -282,7 +283,7 @@ impl SpatialColumnMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Index {
     name: Option<String>,
     unique: Option<bool>,
@@ -333,7 +334,7 @@ impl Index {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IndexElement {
     expression: String,
     included: Option<bool>,
@@ -363,7 +364,7 @@ impl IndexElement {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Constraint {
     name: String,
     kind: String,
@@ -402,7 +403,7 @@ impl Constraint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ForeignKey {
     name: String,
     columns: Observation<Box<[String]>>,
@@ -463,7 +464,7 @@ impl ForeignKey {
 }
 
 /// Attributi di relazione non portabili, separati dal catalogo comune.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum NativeTableMetadata {
     Postgres(Box<PostgresTableMetadata>),
@@ -473,7 +474,7 @@ pub enum NativeTableMetadata {
     Db2,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PostgresTableMetadata {
     pub is_partition: bool,
@@ -494,20 +495,20 @@ pub struct PostgresTableMetadata {
     pub privileges: Box<[PostgresPrivilege]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresRelationRef {
     pub schema: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresPartition {
     pub schema: String,
     pub name: String,
     pub bound: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresPolicy {
     pub name: String,
     pub permissive: bool,
@@ -517,26 +518,26 @@ pub struct PostgresPolicy {
     pub check_expression: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresPrivilege {
     pub grantee: String,
     pub privilege: String,
     pub grantable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MysqlTableMetadata {
     pub engine: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SqlServerTableMetadata {
     pub temporal_type: u8,
     pub memory_optimized: bool,
     pub durability: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum NativeColumnMetadata {
     Postgres(PostgresColumnMetadata),
@@ -546,7 +547,7 @@ pub enum NativeColumnMetadata {
     Db2(Db2ColumnMetadata),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresColumnMetadata {
     pub identity_kind: Option<String>,
     pub generated_kind: Option<String>,
@@ -558,13 +559,13 @@ pub struct PostgresColumnMetadata {
     pub collation: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PostgresCompositeField {
     pub name: String,
     pub declaration: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MysqlColumnMetadata {
     pub character_set: Option<String>,
     pub collation: Option<String>,
@@ -573,7 +574,7 @@ pub struct MysqlColumnMetadata {
     pub generation_expression: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SqlServerColumnMetadata {
     pub type_schema: String,
     pub max_length: i16,
@@ -584,12 +585,12 @@ pub struct SqlServerColumnMetadata {
     pub computed_persisted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Db2ColumnMetadata {
     pub length: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum NativeIndexMetadata {
     Postgres {
@@ -618,14 +619,14 @@ pub enum NativeIndexMetadata {
     Db2,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SqlServerSpatialIndexMetadata {
     pub spatial_type: String,
     pub tessellation_scheme: String,
     pub bounding_box: Option<SqlServerSpatialBoundingBox>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SqlServerSpatialBoundingBox {
     pub xmin: f64,
     pub ymin: f64,
@@ -633,7 +634,7 @@ pub struct SqlServerSpatialBoundingBox {
     pub ymax: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum NativeIndexElementMetadata {
     Postgres { position: u64, opclass: String },
@@ -643,7 +644,7 @@ pub enum NativeIndexElementMetadata {
     Db2,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub enum NativeConstraintMetadata {
     Postgres {

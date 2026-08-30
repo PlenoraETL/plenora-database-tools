@@ -18,3 +18,4 @@ elif [[ "${schema_count}" != "0" ]]; then
 fi
 
 su - db2inst1 -c ". ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -stvf /opt/plenora-fixture/fixture.sql"
+touch /run/plenora-fixture-ready

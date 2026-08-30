@@ -31,20 +31,49 @@ from ._async_transaction import AsyncTransaction
 from ._engine import AsyncEngine, Engine
 from .expression import (
     BindParameter,
+    BindType,
     Column,
+    CommonTable,
+    DerivedTable,
+    DeleteStatement,
+    ExecutableStatement,
     Expression,
+    FunctionExpression,
+    InsertStatement,
     Ordering,
     Predicate,
+    ScalarSubquery,
     SelectStatement,
     Table,
+    UpdateStatement,
+    UpsertStatement,
+    WindowExpression,
     and_,
     bind,
     column,
+    delete,
+    func,
+    insert,
     or_,
     select,
     table,
+    update,
+    upsert,
 )
-from .result import MultipleResultsFound, NoResultFound, Result
+from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .metadata import (
+    ColumnMetadata,
+    Constraint,
+    ForeignKey,
+    Index,
+    IndexElement,
+    MetaData,
+    NativeAttributes,
+    Observation,
+    SchemaToken,
+    SpatialColumnMetadata,
+    TableMetadata,
+)
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -381,7 +410,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         return repr(self._native)
 
     def execute(self, sql, params=None):
-        if isinstance(sql, SelectStatement):
+        if isinstance(sql, ExecutableStatement):
             from .expression import _execute_statement
 
             return _execute_statement(
@@ -661,7 +690,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
 
     # --- delegazione async coroutines ---
     async def execute(self, sql, params=None):
-        if isinstance(sql, SelectStatement):
+        if isinstance(sql, ExecutableStatement):
             from .expression import _execute_statement_async
 
             return await _execute_statement_async(
@@ -921,19 +950,48 @@ __all__ = [
     "table",
     "column",
     "bind",
+    "func",
     "select",
+    "insert",
+    "update",
+    "delete",
+    "upsert",
     "and_",
     "or_",
     "Table",
     "Column",
+    "CommonTable",
+    "DerivedTable",
     "Expression",
+    "ExecutableStatement",
+    "FunctionExpression",
     "Predicate",
     "Ordering",
     "BindParameter",
+    "BindType",
+    "ScalarSubquery",
     "SelectStatement",
+    "InsertStatement",
+    "UpdateStatement",
+    "DeleteStatement",
+    "UpsertStatement",
+    "WindowExpression",
     "Result",
+    "Row",
     "NoResultFound",
     "MultipleResultsFound",
+    "MutationResult",
+    "MetaData",
+    "TableMetadata",
+    "ColumnMetadata",
+    "SpatialColumnMetadata",
+    "SchemaToken",
+    "Observation",
+    "NativeAttributes",
+    "Index",
+    "IndexElement",
+    "Constraint",
+    "ForeignKey",
     "connect",
     "aconnect",
     "connect_mysql",

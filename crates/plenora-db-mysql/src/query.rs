@@ -618,7 +618,10 @@ fn ensure_qualified_shape(
     for key in &query.group_by {
         // Un intero letterale in GROUP BY e una posizione ordinale per MySQL:
         // un placeholder nella stessa posizione renderebbe la chiave ambigua.
-        if matches!(key, QueryExpression::Parameter { .. }) {
+        if matches!(
+            key,
+            QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
+        ) {
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
                 "parametro in GROUP BY: la chiave sarebbe ambigua",
@@ -800,7 +803,7 @@ fn ensure_expression(
                 }
                 ensure_identifier(&column.field)?;
             }
-            QueryExpression::Parameter { .. } => {}
+            QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {}
             QueryExpression::Scalar {
                 function,
                 arguments,

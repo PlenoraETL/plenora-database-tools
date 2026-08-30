@@ -1,19 +1,28 @@
 #!/bin/sh
-# La salute segue lo stato persistente del fixture, non un marker in `/tmp` che
-# sparisce al riavvio mentre Db2 conserva il database sul volume.
+# Il marker appartiene al solo startup corrente; l'entrypoint lo rimuove prima
+# che il setup IBM riesegua gli script custom. L'inventario sotto verifica poi
+# che il fixture persistente sia davvero completo.
 set -eu
 
 test -n "${DB2INST1_PASSWORD:-}"
+test -f /run/plenora-fixture-ready
 
-if ! fixture_tables="$(
-    su - db2inst1 -c '. ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -x "SELECT COUNT(*) FROM SYSCAT.TABLES WHERE TABSCHEMA = '\''PLENORA_TEST'\'' AND TABNAME = '\''SPATIAL_PROBE'\''"' 2>/dev/null
+if ! fixture_objects="$(
+    su - db2inst1 -c '. ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -x "SELECT COUNT(*) FROM SYSCAT.TABLES WHERE TABSCHEMA = '\''PLENORA_TEST'\'' AND ((TYPE = '\''T'\'' AND TABNAME IN ('\''CATALOG_PROBE'\'', '\''READ_PROBE'\'', '\''TX_PROBE'\'', '\''WRITE_PROBE'\'', '\''SPATIAL_PROBE'\'')) OR (TYPE = '\''V'\'' AND TABNAME = '\''CATALOG_PROBE_VIEW'\''))"' 2>/dev/null
 )"; then
     echo "probe catalogo fixture Db2 fallita" >&2
     exit 1
 fi
-fixture_tables="$(printf '%s' "${fixture_tables}" | tr -d '[:space:]')"
-if test "${fixture_tables}" != "1"; then
-    echo "oggetto finale del fixture Db2 non disponibile" >&2
+if ! schema_objects="$(
+    su - db2inst1 -c '. ~/sqllib/db2profile && db2 connect to plenora >/dev/null && db2 -x "SELECT COUNT(*) FROM SYSCAT.TABLES WHERE TABSCHEMA = '\''PLENORA_TEST'\''"' 2>/dev/null
+)"; then
+    echo "probe inventario schema Db2 fallita" >&2
+    exit 1
+fi
+fixture_objects="$(printf '%s' "${fixture_objects}" | tr -d '[:space:]')"
+schema_objects="$(printf '%s' "${schema_objects}" | tr -d '[:space:]')"
+if test "${fixture_objects}" != "6" || test "${schema_objects}" != "6"; then
+    echo "inventario fixture Db2 incompleto" >&2
     exit 1
 fi
 

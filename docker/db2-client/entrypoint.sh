@@ -4,6 +4,7 @@
 # `/database/config` a root:root e bloccare il setup prima dell'healthcheck.
 set -eu
 
+rm -f /run/plenora-fixture-ready
 mkdir -p /database/config
 chown -R 1000:1000 /database/config
 

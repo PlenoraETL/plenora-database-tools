@@ -19,6 +19,13 @@ incompatibili, sempre indicate come **breaking**.
 - Expression language immutabile (`table`, `select`, `bind`, predicati, join,
   ordinamento e paginazione) compilata dall'IR relazionale canonico per tutti i
   provider pubblici, con `Result` uniforme su sessioni e transazioni sync/async.
+- Expression language avanzata con funzioni scalar e aggregate, grouping,
+  window, subquery, CTE e set operation, qualificata live sui cinque provider.
+- `Row` immutabile e terminali tipizzati additivi su `Result`, con accesso per
+  posizione, nome e descrittore di colonna.
+- `BindType` e `bind(..., type_=...)` aggiungono hint logici chiusi e portabili,
+  compresa la projection tipizzata richiesta da Db2 quando manca una colonna
+  da cui inferire il tipo.
 
 ### Breaking
 
@@ -28,6 +35,11 @@ incompatibili, sempre indicate come **breaking**.
 
 ### Corretto
 
+- Su Db2 una projection con parametro privo di contesto di tipo viene ora
+  rifiutata in prepare, invece di inviare al server SQL che Db2 non puo tipizzare.
+- Le tabelle Db2 qualificate con schema e senza alias esplicito ricevono una
+  correlazione deterministica, cosi i descrittori `table.c.column` restano
+  validi anche nel dialect Db2.
 - Il decoder MySQL conserva come byte i `BLOB` ASCII invece di dedurne il tipo
   dall'aspetto del contenuto.
 - Una cella assente nel protocollo non viene convertita in `NULL` SQL.

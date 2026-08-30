@@ -212,13 +212,15 @@ def render_document() -> bytes:
         paragraph(
             "Tre percorsi coesistono durante la migrazione: SQL raw; builder portable legacy per "
             "select/insert/update/delete/upsert; expression language Core v3 che serializza "
-            "direttamente nell'IR relazionale canonico. Il nuovo primo incremento copre colonne, "
-            "alias, join, confronti, AND/OR/NOT, distinct, order by, limit e offset."
+            "direttamente nell'IR relazionale canonico. La superficie copre colonne, alias, join, "
+            "predicati, funzioni scalar e aggregate, grouping, window, subquery, CTE, set "
+            "operation, distinct, order by, limit e offset."
         ),
         paragraph(
             "Result è oggi uno snapshot bufferizzato: all, first, one, one_or_none, scalar, "
-            "scalar_one e scalar_one_or_none. Streaming Result, Row tipizzata, funzioni, "
-            "aggregati, finestre, CTE e DML Core v3 restano passi successivi della roadmap."
+            "scalar_one e scalar_one_or_none. Row aggiunge accesso per posizione, nome e Column "
+            "senza cambiare i terminali storici. Streaming Result, DML Core v3, unit of work e "
+            "migrazioni restano passi successivi della roadmap."
         ),
         paragraph("8. Concorrenza, lifecycle e sicurezza", "Heading1"),
         paragraph("• Engine è condivisibile; sessione e transazione appartengono a una sola unità concorrente.", "ListBullet"),

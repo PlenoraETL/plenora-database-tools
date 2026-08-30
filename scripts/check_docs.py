@@ -182,6 +182,22 @@ def validate_semantics(root: Path) -> list[Violation]:
         violations.append(Violation(migration, "copy_from esiste ma la migrazione lo nega"))
     if "server_cursor` resta `false`" not in migration_text:
         violations.append(Violation(migration, "manca la distinzione streaming/cursore riapribile"))
+    unsafe_session_guidance = (
+        "_session = p.connect(dsn)",
+        "UNA `Session` globale",
+        "più query in parallelo sullo stesso Session",
+    )
+    for phrase in unsafe_session_guidance:
+        if phrase in migration_text:
+            violations.append(
+                Violation(migration, "la guida propone una Session globale condivisa")
+            )
+    if "Ogni request/task apre invece la propria `Session`" not in migration_text:
+        violations.append(
+            Violation(migration, "manca il lifecycle Engine globale e Session per request")
+        )
+    if "*(s.execute_scalar" in sdk_text:
+        violations.append(Violation(sdk, "l'esempio async condivide una Session fra task"))
 
     root_readme = (root / "README.md").read_text(encoding="utf-8")
     for command in (

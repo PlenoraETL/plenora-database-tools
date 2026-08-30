@@ -174,6 +174,25 @@ def declared(node: ast.ClassDef) -> dict[str, tuple]:
     return {item.name: signature(item) for item in node.body if isinstance(item, Function)}
 
 
+def dynamic_attributes(node: ast.ClassDef) -> set[str]:
+    """Nomi chiusi serviti da ``__getattr__`` tramite un catalogo letterale."""
+
+    for item in node.body:
+        if not isinstance(item, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "_FUNCTIONS"
+            for target in item.targets
+        ):
+            continue
+        if not isinstance(item.value, ast.Dict):
+            return set()
+        return {
+            key.value
+            for key in item.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+    return set()
+
+
 def is_public(name: str) -> bool:
     """Pubblico: non privato, oppure un dunder che fa parte del protocollo."""
     return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
@@ -292,14 +311,31 @@ class SdkStubsTest(unittest.TestCase):
                 real = resolved_methods(runtime_path, name)
                 if real is None:
                     continue
+                runtime_node = classes(parse(runtime_path)).get(name)
+                dynamic = set() if runtime_node is None else dynamic_attributes(runtime_node)
                 for method, promised in declared(node).items():
                     with self.subTest(stub=stub_path.name, cls=name, method=method):
+                        if method in dynamic:
+                            continue
                         self.assertIn(
                             method,
                             real,
                             "dichiarato nello stub e assente dal runtime",
                         )
                         self.assertEqual(promised, real[method])
+
+    def test_i_cataloghi_dinamici_corrispondono_agli_stub(self) -> None:
+        """Uno ``__getattr__`` chiuso non rende invisibili funzioni aggiunte o rimosse."""
+
+        for stub_path, runtime_path in stub_pairs():
+            stub_classes = classes(parse(stub_path))
+            for name, runtime_node in classes(parse(runtime_path)).items():
+                dynamic = dynamic_attributes(runtime_node)
+                if not dynamic or name not in stub_classes:
+                    continue
+                promised = set(declared(stub_classes[name])) - {"__getattr__"}
+                with self.subTest(stub=stub_path.name, cls=name):
+                    self.assertEqual(dynamic, promised)
 
     def test_il_risolutore_statico_copre_mixin_import_e_alias(self) -> None:
         """Una estrazione leggibile non deve sembrare una API rimossa."""

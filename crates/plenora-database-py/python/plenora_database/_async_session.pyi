@@ -10,8 +10,8 @@ from .async_query import (
     AsyncUpdate,
     AsyncUpsert,
 )
-from .expression import SelectStatement
-from .result import Result
+from .expression import ExecutableStatement
+from .result import MutationResult, Result
 
 
 class AsyncSession:
@@ -33,8 +33,8 @@ class AsyncSession:
     async def execute(self, sql: str, params: list | None = None) -> int: ...
     @overload
     async def execute(
-        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
-    ) -> Result: ...
+        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | int | MutationResult: ...
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     async def execute_returning_rows(
         self, sql: str, params: list | None = None

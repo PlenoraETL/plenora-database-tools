@@ -5,8 +5,8 @@ oggi invocato via `subprocess` al chiamante Python nativo equivalente.
 
 ## TL;DR
 
-- **Vantaggio atteso**: una sessione riusata evita startup del processo e
-  riconnessione a ogni operazione. Il benchmark opt-in misura il rapporto
+- **Vantaggio atteso**: un `Engine` longevo riusa pool e stato del provider,
+  evitando startup del processo e riconnessione a ogni operazione. Il benchmark opt-in misura il rapporto
   sulla macchina e sul commit della singola corsa; vedi `README.md#performance`.
 - **Cambio operativo**: pattern `subprocess.run([...], check=True) + json.loads(stdout)` diventa una chiamata diretta di metodo che ritorna già l'oggetto Python tipizzato.
 - **Retro-compat**: nessuna. Da fare endpoint-by-endpoint (runbook sotto).
@@ -21,21 +21,29 @@ Prima di ogni consumer, sostituire l'apertura connessione:
 os.environ["PFM_POSTGRES_DSN"] = dsn
 # ogni call rifà connect + probe
 
-# Dopo (SDK):
+# Dopo (SDK): un Engine condiviso, una Session per unità di lavoro.
 import plenora_database as p
-_session = p.connect(dsn)   # global module-level, apre una volta
-# tutte le call riusano _session
+engine = p.create_engine(dsn)   # global module-level
+
+def load_user(user_id: int):
+    with engine.session() as session:
+        return session.select("users").where_eq("id", user_id).one_or_none()
+
+# allo shutdown dell'applicazione
+engine.dispose()
 ```
 
 Per FastAPI:
 ```python
-# app startup
-app.state.pg = p.connect(dsn)
-# oppure per async
-app.state.pg = await p.aconnect(dsn)
+# app startup: l'Engine è condiviso, le Session no
+app.state.pg = await p.create_async_engine(dsn)
+
+# dentro una request/task
+async with app.state.pg.session() as session:
+    user = await session.select("users").where_eq("id", user_id).one_or_none()
 
 # app shutdown
-app.state.pg.close()
+app.state.pg.dispose()
 ```
 
 ## Mappa 1:1 dei sub-comandi
@@ -43,7 +51,8 @@ app.state.pg.close()
 Legenda:
 - `DSN_ENV` = nome della variabile che contiene la DSN (nel CLI è argument)
 - `SQL` = stringa SQL
-- Le equivalenze SDK assumono `import plenora_database as p` e `s = p.connect(dsn)`.
+- Le equivalenze SDK assumono `import plenora_database as p` e una `Session` `s`
+  ottenuta con `engine.session()` per la singola unità di lavoro.
 
 ### `execute-scalar`
 
@@ -261,7 +270,7 @@ Categorizzali per hot-path vs cold-path:
 - **Cold path** (job cron, migrations, one-off): switch opzionale.
   Beneficio marginale.
 
-### Passo 2 — Boot Session al app startup
+### Passo 2 — Boot dell'Engine all'avvio dell'app
 
 Prima della prima PR, aggiungi al bootstrap dell'app:
 
@@ -269,18 +278,18 @@ Prima della prima PR, aggiungi al bootstrap dell'app:
 # pfm/db.py
 import plenora_database as p
 
-_pg: p.Session | None = None
+_pg: p.Engine | None = None
 
-def get_pg() -> p.Session:
+def get_pg_engine() -> p.Engine:
     global _pg
     if _pg is None:
-        _pg = p.connect(os.environ["PFM_POSTGRES_DSN"])
+        _pg = p.create_engine(os.environ["PFM_POSTGRES_DSN"])
     return _pg
 
 def close_pg() -> None:
     global _pg
     if _pg is not None:
-        _pg.close()
+        _pg.dispose()
         _pg = None
 ```
 
@@ -290,11 +299,11 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
-    app.state.pg = await p.aconnect(os.environ["PFM_POSTGRES_DSN"])
+    app.state.pg = await p.create_async_engine(os.environ["PFM_POSTGRES_DSN"])
     try:
         yield
     finally:
-        app.state.pg.close()
+        app.state.pg.dispose()
 
 app = FastAPI(lifespan=lifespan)
 ```
@@ -306,7 +315,7 @@ Per ogni endpoint hot:
 1. Trova il subprocess: `result = subprocess.run(["plenora-database", ...], capture_output=True, check=True)`
 2. Trova la `json.loads(result.stdout)` corrispondente
 3. Sostituisci con la chiamata SDK dalla tabella sopra
-4. Rimuovi il pattern `os.environ["PFM_DSN"] = dsn` (non serve più — il SDK ha la DSN già bindata alla Session)
+4. Rimuovi il pattern `os.environ["PFM_DSN"] = dsn` (non serve più — il SDK ha la DSN già bindata all'Engine)
 5. Adatta l'error handling: `subprocess.CalledProcessError` → `p.PlenoraError` (gerarchia specifica per branching)
 6. Test unit + integration
 7. Deploy dietro feature flag se preferisci graduale
@@ -386,22 +395,23 @@ def measured(op: str):
 
 @measured("get_user_by_id")
 def get_user_by_id(uid):
-    return get_pg().select("users").where_eq("id", uid).one()
+    with get_pg_engine().session() as session:
+        return session.select("users").where_eq("id", uid).one()
 ```
 
 ## FAQ
 
 **Q**: Il SDK gestisce pool di connessioni?
-**A**: Sì. `PostgresProvider` (dietro `Session`) ha un pool interno di
-   default 10 connessioni. Puoi tenere UNA `Session` globale nell'app
-   e il pool sotto il cofano gestisce la concorrenza (async in
-   particolare gira più query in parallelo sullo stesso Session).
+**A**: Sì. L'`Engine` possiede il pool e può essere condiviso fra task e thread.
+   Ogni request/task apre invece la propria `Session`, che non va condivisa con
+   un'altra unità concorrente e viene chiusa al termine del relativo scope.
 
 **Q**: Cosa succede se la connessione si rompe (network partition)?
 **A**: `PlenoraIoError` o `PlenoraTransientError` (in base al fase).
    L'attributo `retry` dice `Safe` per read idempotenti,
-   `RequiresRecovery` per commit ambigui. La `Session` non si
-   auto-close: puoi ritentare o chiuderla e aprirne una nuova.
+   `RequiresRecovery` per commit ambigui. Lo scope chiude la `Session`; una
+   richiesta successiva ne ottiene una nuova dall'`Engine`. Un outcome di commit
+   ignoto richiede recovery esplicita e non viene ritentato automaticamente.
 
 **Q**: Il SDK funziona su Windows?
 **A**: Sì — il wheel abi3 è built per Linux/macOS/Windows via CI. Il

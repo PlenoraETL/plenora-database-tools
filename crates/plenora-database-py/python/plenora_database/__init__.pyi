@@ -35,18 +35,34 @@ from ._session import Session
 from ._transaction import Transaction
 from .expression import (
     BindParameter,
+    BindType,
     Column,
+    CommonTable,
+    DeleteStatement,
+    DerivedTable,
+    ExecutableStatement,
     Expression,
+    FunctionExpression,
+    InsertStatement,
     Ordering,
     Predicate,
+    ScalarSubquery,
     SelectStatement,
     Table,
+    UpdateStatement,
+    UpsertStatement,
+    WindowExpression,
     and_,
     bind,
     column,
+    delete,
+    func,
+    insert,
     or_,
     select,
     table,
+    update,
+    upsert,
 )
 from .async_query import (
     AsyncDelete,
@@ -56,7 +72,20 @@ from .async_query import (
     AsyncUpsert,
 )
 from .query import Delete, Insert, Select, Update, Upsert
-from .result import MultipleResultsFound, NoResultFound, Result
+from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .metadata import (
+    ColumnMetadata,
+    Constraint,
+    ForeignKey,
+    Index,
+    IndexElement,
+    MetaData,
+    NativeAttributes,
+    Observation,
+    SchemaToken,
+    SpatialColumnMetadata,
+    TableMetadata,
+)
 from .spatial import SpatialReference
 from .types import (
     TypedValue,
@@ -98,8 +127,8 @@ class _DatabaseSessionWrapper:
     def execute(self, sql: str, params: list | None = None) -> int: ...
     @overload
     def execute(
-        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
-    ) -> Result: ...
+        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | int | MutationResult: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_returning_rows(
         self, sql: str, params: list | None = None
@@ -168,8 +197,8 @@ class _AsyncDatabaseSessionWrapper:
     async def execute(self, sql: str, params: list | None = None) -> int: ...
     @overload
     async def execute(
-        self, sql: SelectStatement, params: Mapping[str, Any] | None = None
-    ) -> Result: ...
+        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | int | MutationResult: ...
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     async def execute_returning_rows(
         self, sql: str, params: list | None = None

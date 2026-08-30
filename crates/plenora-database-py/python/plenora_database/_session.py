@@ -14,9 +14,9 @@ from typing import Any, Mapping, overload
 from ._arrow_io import _to_ipc_bytes
 from ._native import Session as _NativeSession
 from ._transaction import Transaction
-from .expression import SelectStatement, _execute_statement
+from .expression import ExecutableStatement, _execute_statement
 from .query import _BuilderFactory
-from .result import Result
+from .result import MutationResult, Result
 
 
 class Session(_BuilderFactory):
@@ -70,12 +70,12 @@ class Session(_BuilderFactory):
     @overload
     def execute(
         self,
-        sql: SelectStatement,
+        sql: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result: ...
+    ) -> Result | int | MutationResult: ...
 
     def execute(self, sql, params=None):
-        if isinstance(sql, SelectStatement):
+        if isinstance(sql, ExecutableStatement):
             return _execute_statement(
                 self._native,
                 sql,

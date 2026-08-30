@@ -22,8 +22,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .async_query import _AsyncBuilderFactory
-from .expression import SelectStatement, _execute_statement_async
-from .result import Result
+from .expression import ExecutableStatement, _execute_statement_async
+from .result import MutationResult, Result
 
 if TYPE_CHECKING:
     from ._native import AsyncSession as _NativeAsyncSession
@@ -84,12 +84,12 @@ class AsyncSession(_AsyncBuilderFactory):
     @overload
     async def execute(
         self,
-        sql: SelectStatement,
+        sql: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result: ...
+    ) -> Result | int | MutationResult: ...
 
     async def execute(self, sql, params=None):
-        if isinstance(sql, SelectStatement):
+        if isinstance(sql, ExecutableStatement):
             return await _execute_statement_async(
                 self._native,
                 sql,

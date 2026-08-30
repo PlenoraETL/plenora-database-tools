@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping, overload
 
-from .expression import SelectStatement, _execute_statement
+from .expression import ExecutableStatement, _execute_statement
 from .query import _BuilderFactory
-from .result import Result
+from .result import MutationResult, Result
 
 if TYPE_CHECKING:
     from ._native import Transaction as _NativeTransaction
@@ -128,12 +128,12 @@ class Transaction(_BuilderFactory):
     @overload
     def execute(
         self,
-        sql: SelectStatement,
+        sql: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result: ...
+    ) -> Result | int | MutationResult: ...
 
     def execute(self, sql, params=None):
-        if isinstance(sql, SelectStatement):
+        if isinstance(sql, ExecutableStatement):
             return _execute_statement(self._native, sql, params, self._provider)
         return self._native.execute(sql, params)
 

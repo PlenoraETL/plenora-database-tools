@@ -8,9 +8,9 @@ use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::relational::{
     validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLock,
-    QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryProjection,
-    QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator, WindowFrame, WindowFrameBound,
-    WindowFrameUnits,
+    QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryParameterType,
+    QueryProjection, QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator, WindowFrame,
+    WindowFrameBound, WindowFrameUnits,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -536,6 +536,18 @@ impl Renderer {
         if query.projection.is_empty() {
             return Err(DatabaseError::invalid_plan("query senza projection"));
         }
+        if self.dialect == Dialect::Db2
+            && query
+                .projection
+                .iter()
+                .any(|item| matches!(&item.expression, QueryExpression::Parameter { .. }))
+        {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "projection Db2 con parametro privo di contesto di tipo non supportata",
+            ));
+        }
         let mut sql = String::new();
         if !query.common_table_expressions.is_empty() {
             sql.push_str("WITH ");
@@ -844,6 +856,9 @@ impl Renderer {
         if let Some(alias) = &source.alias {
             value.push_str(" AS ");
             value.push_str(&self.quote(&Identifier::new(alias.clone())?)?);
+        } else if self.dialect == Dialect::Db2 {
+            value.push_str(" AS ");
+            value.push_str(&self.quote(&Identifier::new(source.object.object.clone())?)?);
         }
         Ok(value)
     }
@@ -1021,6 +1036,16 @@ impl Renderer {
                 }
             }
             QueryExpression::Parameter { name } => Ok(self.bind(name, binds)),
+            QueryExpression::TypedParameter {
+                name,
+                parameter_type,
+            } => {
+                let placeholder = self.bind(name, binds);
+                Ok(format!(
+                    "CAST({placeholder} AS {})",
+                    self.render_parameter_type(*parameter_type)
+                ))
+            }
             QueryExpression::Scalar {
                 function,
                 arguments,
@@ -1081,6 +1106,54 @@ impl Renderer {
             | QueryExpression::And { .. }
             | QueryExpression::Or { .. }
             | QueryExpression::IsNull { .. } => self.render_predicate_expression(expression, binds),
+        }
+    }
+
+    const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {
+        match parameter_type {
+            QueryParameterType::Boolean => match self.dialect {
+                Dialect::SqlServer => "BIT",
+                Dialect::Oracle => "NUMBER(1)",
+                _ => "BOOLEAN",
+            },
+            QueryParameterType::Integer => match self.dialect {
+                Dialect::Oracle => "NUMBER(10)",
+                _ => "INTEGER",
+            },
+            QueryParameterType::BigInteger => match self.dialect {
+                Dialect::Oracle => "NUMBER(19)",
+                _ => "BIGINT",
+            },
+            QueryParameterType::Float => match self.dialect {
+                Dialect::Postgres => "DOUBLE PRECISION",
+                Dialect::SqlServer => "FLOAT",
+                Dialect::Sqlite => "REAL",
+                Dialect::Oracle => "BINARY_DOUBLE",
+                _ => "DOUBLE",
+            },
+            QueryParameterType::String => match self.dialect {
+                Dialect::Postgres | Dialect::Sqlite => "TEXT",
+                Dialect::Mysql => "CHAR",
+                Dialect::SqlServer => "NVARCHAR(MAX)",
+                Dialect::Duckdb => "VARCHAR",
+                Dialect::Oracle => "VARCHAR2(4000)",
+                Dialect::Db2 => "VARCHAR(32672)",
+            },
+            QueryParameterType::Binary => match self.dialect {
+                Dialect::Postgres => "BYTEA",
+                Dialect::Mysql => "BINARY",
+                Dialect::SqlServer => "VARBINARY(MAX)",
+                Dialect::Sqlite | Dialect::Duckdb => "BLOB",
+                Dialect::Oracle => "RAW(2000)",
+                Dialect::Db2 => "VARCHAR(32672) FOR BIT DATA",
+            },
+            QueryParameterType::Date => "DATE",
+            QueryParameterType::Timestamp => match self.dialect {
+                Dialect::Mysql => "DATETIME(6)",
+                Dialect::SqlServer => "DATETIME2",
+                Dialect::Sqlite => "TEXT",
+                _ => "TIMESTAMP",
+            },
         }
     }
 
@@ -1186,7 +1259,10 @@ impl Renderer {
                        binds: &mut Vec<BindParameter>|
          -> Result<String> {
             let value = renderer.render_query_expression(expression, binds)?;
-            if matches!(expression, QueryExpression::Parameter { .. }) {
+            if matches!(
+                expression,
+                QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
+            ) {
                 Ok(format!("ST_GeomFromEWKB({value})"))
             } else {
                 Ok(value)
@@ -1282,7 +1358,11 @@ impl Renderer {
             .map(|(index, argument)| {
                 let value = self.render_query_expression(argument, binds)?;
                 if spatial_geometry_argument(function, index)
-                    && matches!(argument, QueryExpression::Parameter { .. })
+                    && matches!(
+                        argument,
+                        QueryExpression::Parameter { .. }
+                            | QueryExpression::TypedParameter { .. }
+                    )
                 {
                     Ok(match self.dialect {
                         Dialect::Postgres => format!("ST_GeomFromEWKB({value})"),
@@ -1412,7 +1492,9 @@ impl Renderer {
         expression: &QueryExpression,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        let QueryExpression::Parameter { name } = expression else {
+        let (QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. }) =
+            expression
+        else {
             return self.render_query_expression(expression, binds);
         };
         let profile = self

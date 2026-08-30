@@ -119,6 +119,37 @@ def test_builders_work_inside_transaction(session) -> None:
         tx.delete("_pyf5_tx").where_eq("id", 10).execute()
         assert tx.select("_pyf5_tx").where_eq("id", 10).one() is None
 
+        target = plenora_database.table("_pyf5_tx", "id", "val")
+        inserted = tx.execute(
+            plenora_database.insert(target)
+            .values(id=plenora_database.bind("id"), val=plenora_database.bind("value"))
+            .returning(target.c.id),
+            {"id": 11, "value": "eleven"},
+        )
+        assert inserted.scalar_one() == 11
+        changed = tx.execute(
+            plenora_database.update(target)
+            .values(val=plenora_database.bind("value"))
+            .where(target.c.id == plenora_database.bind("id")),
+            {"value": "ELEVEN", "id": 11},
+        )
+        assert changed == 1
+        upserted = tx.execute(
+            plenora_database.upsert(target)
+            .values(id=plenora_database.bind("id"), val=plenora_database.bind("insert_value"))
+            .on_conflict(target.c.id)
+            .set(val=plenora_database.bind("update_value")),
+            {"id": 11, "insert_value": "ignored", "update_value": "UPSERTED"},
+        )
+        assert upserted.affected_rows == 1
+        deleted = tx.execute(
+            plenora_database.delete(target)
+            .where(target.c.id == plenora_database.bind("id"))
+            .returning(target.c.id),
+            {"id": 11},
+        )
+        assert deleted.scalar_one() == 11
+
 
 # --------------------------- savepoints ---------------------------
 
