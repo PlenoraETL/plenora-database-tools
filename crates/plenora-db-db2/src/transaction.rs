@@ -141,6 +141,33 @@ impl Db2Transaction {
     }
 }
 
+/// Esegue DDL su una connessione dedicata lasciata in autocommit.
+///
+/// Il driver Db2 non garantisce un conteggio righe per il DDL: usare il path
+/// DML trasformerebbe quindi un'esecuzione valida in un errore di protocollo.
+/// Il task bloccante viene atteso anche se la cancellazione arriva dopo l'I/O,
+/// perché abbandonarlo farebbe riportare `RemoteEffect::None` mentre lo
+/// statement potrebbe essere ancora in esecuzione sul server.
+pub async fn execute_ddl(
+    config: &Db2Config,
+    secret: &SecretString,
+    sql: &str,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    if cancellation.is_cancelled() {
+        return Err(interruption_error(cancellation, ErrorPhase::Write));
+    }
+    let config = config.clone();
+    let secret = secret.clone();
+    let sql = sql.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let (connection, timeout) = open_connection(&config, &secret)?;
+        execute_control(&connection, timeout, &sql, ErrorPhase::Write)
+    })
+    .await
+    .map_err(|_| task_error(ErrorPhase::Write))?
+}
+
 pub fn validate_options(options: &TransactionOptions) -> Result<()> {
     if options.access_mode.is_some() {
         return Err(DatabaseError::unsupported(

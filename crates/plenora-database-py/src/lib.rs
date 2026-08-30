@@ -152,6 +152,26 @@ pub fn validate_ewkb_reference(ewkb: &[u8], srid: u32, dimensions: &str) -> PyRe
     .map_err(|e| PyValueError::new_err(e.message))
 }
 
+/// Valida frame EWKB e restituisce il tipo geometrico canonico della radice.
+///
+/// # Errors
+///
+/// `PyValueError` se il buffer non e un EWKB valido, il frame non coincide o
+/// il tipo radice non appartiene al catalogo geometrico canonico.
+#[pyfunction]
+pub fn inspect_ewkb_geometry_type(ewkb: &[u8], srid: u32, dimensions: &str) -> PyResult<String> {
+    use pyo3::exceptions::PyValueError;
+
+    validate_ewkb_reference(ewkb, srid, dimensions)?;
+    let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(ewkb, u64::MAX, u64::MAX)
+        .map_err(|error| PyValueError::new_err(error.message))?;
+    inspection
+        .root
+        .geometry_type_name()
+        .map(str::to_owned)
+        .ok_or_else(|| PyValueError::new_err("tipo geometrico EWKB non riconosciuto"))
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
@@ -164,6 +184,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(geographic_srids, m)?)?;
     m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect_ewkb_geometry_type, m)?)?;
     m.add_function(wrap_pyfunction!(
         relational_query::compile_relational_query,
         m

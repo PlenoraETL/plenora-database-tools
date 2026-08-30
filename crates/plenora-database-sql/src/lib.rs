@@ -1039,13 +1039,7 @@ impl Renderer {
             QueryExpression::TypedParameter {
                 name,
                 parameter_type,
-            } => {
-                let placeholder = self.bind(name, binds);
-                Ok(format!(
-                    "CAST({placeholder} AS {})",
-                    self.render_parameter_type(*parameter_type)
-                ))
-            }
+            } => Ok(self.render_typed_parameter(name, *parameter_type, binds)),
             QueryExpression::Scalar {
                 function,
                 arguments,
@@ -1054,6 +1048,15 @@ impl Renderer {
                 function,
                 arguments,
             } => self.render_spatial_function(*function, arguments, binds),
+            QueryExpression::SpatialOutput {
+                expression,
+                semantics,
+            } => self.render_spatial_output(expression, *semantics, binds),
+            QueryExpression::SpatialValue {
+                expression,
+                srid,
+                semantics,
+            } => self.render_spatial_value(expression, *srid, *semantics, binds),
             QueryExpression::SpatialOperator {
                 operator,
                 left,
@@ -1107,6 +1110,61 @@ impl Renderer {
             | QueryExpression::Or { .. }
             | QueryExpression::IsNull { .. } => self.render_predicate_expression(expression, binds),
         }
+    }
+
+    fn render_typed_parameter(
+        &self,
+        name: &str,
+        parameter_type: plenora_database_core::relational::QueryParameterType,
+        binds: &mut Vec<BindParameter>,
+    ) -> String {
+        format!(
+            "CAST({} AS {})",
+            self.bind(name, binds),
+            self.render_parameter_type(parameter_type)
+        )
+    }
+
+    fn render_spatial_output(
+        &self,
+        expression: &QueryExpression,
+        semantics: SpatialSemantics,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        if self.dialect != Dialect::Postgres {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "projection EWKB OLTP non qualificata per il provider",
+            ));
+        }
+        let value = self.render_query_expression(expression, binds)?;
+        Ok(match semantics {
+            SpatialSemantics::Geometry => format!("ST_AsEWKB({value})"),
+            SpatialSemantics::Geography => format!("ST_AsEWKB(({value})::geometry)"),
+        })
+    }
+
+    fn render_spatial_value(
+        &self,
+        expression: &QueryExpression,
+        srid: u32,
+        semantics: SpatialSemantics,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        if self.dialect != Dialect::Postgres {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "bind spatial OLTP non qualificato per il provider",
+            ));
+        }
+        let value = self.render_query_expression(expression, binds)?;
+        let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
+        Ok(match semantics {
+            SpatialSemantics::Geometry => geometry,
+            SpatialSemantics::Geography => format!("({geometry})::geography"),
+        })
     }
 
     const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {

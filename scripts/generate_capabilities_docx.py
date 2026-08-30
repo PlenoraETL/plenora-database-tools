@@ -210,17 +210,14 @@ def render_document() -> bytes:
         ),
         paragraph("7. Query ed expression language", "Heading1"),
         paragraph(
-            "Tre percorsi coesistono durante la migrazione: SQL raw; builder portable legacy per "
-            "select/insert/update/delete/upsert; expression language Core v3 che serializza "
-            "direttamente nell'IR relazionale canonico. La superficie copre colonne, alias, join, "
-            "predicati, funzioni scalar e aggregate, grouping, window, subquery, CTE, set "
-            "operation, distinct, order by, limit e offset."
+            "L'inventario esatto dell'expression language e delle query pubbliche è generato "
+            "dagli stub PEP 561 nella sezione 11. I valori applicativi restano nei bind e il "
+            "supporto concreto di ogni provider si legge dalle capability della connessione."
         ),
         paragraph(
-            "Result è oggi uno snapshot bufferizzato: all, first, one, one_or_none, scalar, "
-            "scalar_one e scalar_one_or_none. Row aggiunge accesso per posizione, nome e Column "
-            "senza cambiare i terminali storici. Streaming Result, DML Core v3, unit of work e "
-            "migrazioni restano passi successivi della roadmap."
+            "Classi e terminali di Result, Row e dello strato ORM-like non sono ricopiati in "
+            "prosa: la stessa sezione 11 li deriva dalla superficie pubblica che il wheel "
+            "distribuisce."
         ),
         paragraph("8. Concorrenza, lifecycle e sicurezza", "Heading1"),
         paragraph("• Engine è condivisibile; sessione e transazione appartengono a una sola unità concorrente.", "ListBullet"),
@@ -252,7 +249,7 @@ def render_document() -> bytes:
             paragraph("• nessun provider offre cursori riapribili o stream resumable;", "ListBullet"),
             paragraph("• nessun provider pubblica array binding nel contratto bulk;", "ListBullet"),
             paragraph("• il percorso bulk non restituisce righe generate dal server;", "ListBullet"),
-            paragraph("• la libreria non è ancora un ORM completo: identity map, unit of work e migration planner sono roadmap;", "ListBullet"),
+            paragraph("• la compatibilità SQLAlchemy non è dichiarata in blocco: ogni superficie ORM-like richiede test e gate propri;", "ListBullet"),
             paragraph("• una query native resta un escape hatch governabile dalla NativeQueryPolicy.", "ListBullet"),
             paragraph("13. Fonti e interpretazione", "Heading1"),
             paragraph(

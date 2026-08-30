@@ -918,6 +918,11 @@ fn ensure_expression(
                     "spatial operator non ancora qualificato nel path query",
                 ));
             }
+            QueryExpression::SpatialOutput { .. } | QueryExpression::SpatialValue { .. } => {
+                return Err(unsupported(
+                    "I/O spatial OLTP non ancora qualificato nel path query",
+                ));
+            }
             QueryExpression::ScalarSubquery { .. }
             | QueryExpression::Exists { .. }
             | QueryExpression::InSubquery { .. } => {

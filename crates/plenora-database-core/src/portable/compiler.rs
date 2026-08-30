@@ -184,6 +184,36 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
     match expr {
         Expression::Literal(v) => Ok(ctx.bind(v.clone())),
         Expression::Column(name) => quote_identifier(name, ctx.dialect),
+        Expression::SpatialValue {
+            expression,
+            srid,
+            semantics,
+        } => {
+            if *srid == 0 {
+                return Err(DatabaseError::invalid_plan(
+                    "valore spatial richiede SRID positivo",
+                ));
+            }
+            if ctx.dialect != DialectKind::Postgres {
+                return Err(DatabaseError::unsupported(
+                    match ctx.dialect {
+                        DialectKind::Mysql => ProviderKind::Mysql,
+                        DialectKind::Mariadb => ProviderKind::Mariadb,
+                        DialectKind::SqlServer => ProviderKind::Sqlserver,
+                        DialectKind::Db2 => ProviderKind::Db2,
+                        DialectKind::Postgres => unreachable!(),
+                    },
+                    crate::ErrorPhase::Prepare,
+                    "bind spatial OLTP non qualificato per il provider",
+                ));
+            }
+            let value = compile_expression(expression, ctx)?;
+            let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
+            Ok(match semantics {
+                SpatialSemantics::Geometry => geometry,
+                SpatialSemantics::Geography => format!("({geometry})::geography"),
+            })
+        }
     }
 }
 
@@ -967,6 +997,13 @@ fn compile_upsert_db2(
                     Expression::Literal(value) => ctx.bind(value.clone()),
                     Expression::Column(name) => {
                         format!("T.{}", quote_identifier(name, ctx.dialect)?)
+                    }
+                    Expression::SpatialValue { .. } => {
+                        return Err(DatabaseError::unsupported(
+                            ProviderKind::Db2,
+                            crate::ErrorPhase::Prepare,
+                            "bind spatial Db2 non qualificato nell'upsert",
+                        ));
                     }
                 };
                 Ok(format!("T.{column} = {expression}"))

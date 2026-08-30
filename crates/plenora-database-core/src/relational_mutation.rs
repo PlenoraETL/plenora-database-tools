@@ -196,13 +196,18 @@ fn column(expression: &QueryExpression, target: &crate::plan::ObjectRef) -> Resu
 }
 
 fn insert_value(expression: &QueryExpression, bind_names: &mut Vec<String>) -> Result<Expression> {
-    let (QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. }) =
-        expression
-    else {
-        return Err(DatabaseError::invalid_plan("valore INSERT richiede bind()"));
-    };
-    bind_names.push(name.clone());
-    Ok(Expression::Literal(ParameterValue::I64(0)))
+    match expression {
+        QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
+            bind_names.push(name.clone());
+            Ok(Expression::Literal(ParameterValue::I64(0)))
+        }
+        QueryExpression::SpatialValue {
+            expression,
+            srid,
+            semantics,
+        } => spatial_value(expression, *srid, *semantics, bind_names),
+        _ => Err(DatabaseError::invalid_plan("valore INSERT richiede bind()")),
+    }
 }
 
 fn value(
@@ -216,10 +221,41 @@ fn value(
             Ok(Expression::Literal(ParameterValue::I64(0)))
         }
         QueryExpression::Column { .. } => Ok(Expression::Column(column(expression, target)?)),
+        QueryExpression::SpatialValue {
+            expression,
+            srid,
+            semantics,
+        } => spatial_value(expression, *srid, *semantics, bind_names),
         _ => Err(DatabaseError::invalid_plan(
             "valore DML richiede bind() o Column",
         )),
     }
+}
+
+fn spatial_value(
+    expression: &QueryExpression,
+    srid: u32,
+    semantics: crate::geometry::SpatialSemantics,
+    bind_names: &mut Vec<String>,
+) -> Result<Expression> {
+    if srid == 0 {
+        return Err(DatabaseError::invalid_plan(
+            "valore spatial richiede SRID positivo",
+        ));
+    }
+    let (QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. }) =
+        expression
+    else {
+        return Err(DatabaseError::invalid_plan(
+            "valore spatial richiede un bind",
+        ));
+    };
+    bind_names.push(name.clone());
+    Ok(Expression::SpatialValue {
+        expression: Box::new(Expression::Literal(ParameterValue::Bytes(Vec::new()))),
+        srid,
+        semantics,
+    })
 }
 
 fn predicate(

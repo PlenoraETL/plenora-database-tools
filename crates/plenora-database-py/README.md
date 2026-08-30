@@ -134,6 +134,96 @@ statement = p.select(
 projection con bind non tipizzato, mentre la forma tipizzata viene resa con un
 `CAST` e `SYSIBM.SYSDUMMY1`.
 
+### ORM-like dichiarativo sync e async
+
+L'ORM riusa le stesse `Table`, `Column`, transazioni e mutazioni canoniche. La
+sessione ORM apre e possiede una transazione Core: il context manager esegue
+`flush` e commit in uscita normale, rollback in caso di errore.
+
+```python
+import plenora_database as p
+
+class Account(p.DeclarativeBase):
+    __tablename__ = "accounts"
+    __schema__ = "app"
+
+    id: p.Mapped[int] = p.mapped_column(primary_key=True)
+    name: p.Mapped[str] = p.mapped_column(nullable=False)
+    version: p.Mapped[int] = p.mapped_column(version=True)
+
+with engine.session() as core_session:
+    with p.OrmSession(core_session) as orm:
+        account = orm.get(Account, 7)
+        if account is None:
+            account = Account(id=7, name="Ada")
+            orm.add(account)
+        else:
+            account.name = "Grace"
+```
+
+Le chiavi primarie possono essere semplici o composite; `get` riceve uno
+scalare nel primo caso e una tupla nel secondo. L'identity map rende stabile
+l'oggetto restituito; i setter validano i tipi Python dichiarati, tracciano gli
+attributi modificati e una colonna `version=True` aggiunge il controllo di
+concorrenza ottimistica a update e delete. `inspect_instance` espone stato,
+identita e nomi dirty senza esporre valori applicativi.
+`mapped_column(int)` corrisponde a SQL `INTEGER` e rifiuta valori fuori dal suo
+intervallo prima dell'I/O; una futura superficie `BIGINT` richiedera un tipo
+ORM distinto, cosi il binding non deve indovinare la larghezza dal valore.
+
+Le query di entita partono da `orm.query(Account)` e compongono gli stessi
+predicati dell'expression language. Oltre a ordinamento e paginazione espongono
+join tramite relationship, proiezioni, tuple di entita e caricamento eager con
+`selectinload` o `joinedload`. Quest'ultimo e limitato alle relazioni scalari;
+le collezioni usano `selectinload`, cosi limit e paginazione non duplicano le
+entita root. I valori restano bind separati. `refresh`, `expire`, `expunge` e
+`merge` completano il lifecycle; l'autoflush e attivo per default e si puo
+disabilitare nel costruttore della sessione.
+
+Una chiave `generated=True` e una colonna `server_default=True` possono essere
+omesse dal costruttore. PostgreSQL, MariaDB e SQL Server le idratano dallo
+statement di insert; MySQL e Db2 leggono prima l'identita locale della
+connessione e poi i default nella stessa transazione. Un provider fuori da
+questo insieme fallisce prima dell'I/O. Per generare DDL, il solo marker
+`server_default=True` non basta: va fornito un `ServerDefault` esplicito.
+
+`relationship` copre many-to-one, one-to-many, one-to-one e many-to-many con
+tabella `secondary`. `back_populates` mantiene coerenti i due lati e le cascade
+`save-update`, `delete` e `delete-orphan` sono sempre esplicite: il default non
+cascada nulla. Il descrittore non effettua mai I/O; si usa `load` oppure un
+loader eager. Il flush ordina il grafo parent/child, propaga chiavi generate e
+risolve con un update differito i cicli che hanno almeno una FK nullable.
+
+Le colonne geometriche si dichiarano con
+`mapped_column(p.Geometry(srid=4326), ...)`: l'assegnazione verifica EWKB,
+SRID, dimensioni, semantica e, se dichiarato, il tipo geometrico concreto
+tramite il validatore nativo. `Geometry.bind`, `predicate` e `function`
+costruiscono nodi spatial dell'IR senza incorporare il payload. Su PostgreSQL,
+`get`/query proiettano la colonna come EWKB e insert/update costruiscono il
+valore da un bind EWKB tramite il DML canonico; questo percorso e coperto live.
+Sugli altri provider l'I/O Geometry ORM resta fail-closed in attesa di una
+prova equivalente.
+
+`UniqueConstraint` e `ForeignKeyConstraint` descrivono anche vincoli compositi;
+l'ereditarieta pubblicata e la forma concrete esplicita. `OrmMetadata` compila
+e applica create/drop table nei dialetti qualificati. `MigrationRunner` e la
+variante async eseguono catene lineari, una revisione per transazione, mentre
+`OrmSession.listen` registra hook locali sul lifecycle del flush.
+
+`AsyncOrmSession` espone lo stesso mapping, identity map, planner del flush e
+regole di concorrenza. Le operazioni che fanno I/O sono coroutine; `add`,
+`delete` e la composizione della query restano locali:
+
+```python
+async with p.AsyncOrmSession(session) as orm:
+    orm.add(Account(id=1, name="Ada"))
+
+async with p.AsyncOrmSession(session) as orm:
+    account = await orm.query(Account).where(
+        Account.name == p.bind("wanted")
+    ).one({"wanted": "Ada"})
+```
+
 ### Sync
 
 ```python
@@ -433,6 +523,11 @@ versioni Python ≥ 3.10.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
+- **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
+  composite richiedono ancora un mapping FK esplicito e restano fail-closed;
+  `joinedload` non accetta collezioni. L'ereditarieta e solo concrete, le
+  migrazioni sono lineari e il runner Db2 non e ancora qualificato. DDL e I/O
+  Geometry ORM fuori da PostgreSQL restano chiusi dove manca una prova live.
 
 ## Sviluppo
 

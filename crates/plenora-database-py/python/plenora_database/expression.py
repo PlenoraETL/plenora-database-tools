@@ -160,6 +160,81 @@ class BindParameter(Expression):
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class _SpatialOutput(Expression):
+    expression: Expression
+    semantics: str
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "spatial_output",
+            "expression": self.expression._ast(),
+            "semantics": self.semantics,
+        }
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _SpatialValue(Expression):
+    expression: Expression
+    srid: int
+    semantics: str
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "spatial_value",
+            "expression": self.expression._ast(),
+            "srid": self.srid,
+            "semantics": self.semantics,
+        }
+
+
+def _spatial_output(expression: Expression, semantics: str) -> Expression:
+    if not isinstance(expression, Column):
+        raise TypeError("projection spatial richiede una Column")
+    if semantics not in {"geometry", "geography"}:
+        raise ValueError("semantics spatial non valida")
+    return _SpatialOutput(expression, semantics)
+
+
+def _spatial_value(expression: Expression, srid: int, semantics: str) -> Expression:
+    if not isinstance(expression, BindParameter):
+        raise TypeError("valore spatial richiede bind()")
+    if not isinstance(srid, int) or isinstance(srid, bool) or srid <= 0:
+        raise ValueError("valore spatial richiede SRID positivo")
+    if semantics not in {"geometry", "geography"}:
+        raise ValueError("semantics spatial non valida")
+    return _SpatialValue(expression, srid, semantics)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _SpatialFunction(Expression):
+    function: str
+    arguments: tuple[Expression, ...]
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "spatial",
+            "function": self.function,
+            "arguments": [argument._ast() for argument in self.arguments],
+        }
+
+
+def _spatial_function(function: str, *arguments: Expression) -> Expression:
+    if not isinstance(function, str) or not function:
+        raise ValueError("funzione spatial non valida")
+    if not arguments or not all(isinstance(item, Expression) for item in arguments):
+        raise TypeError("funzione spatial richiede espressioni relazionali")
+    return _SpatialFunction(function, tuple(arguments))
+
+
+def _spatial_predicate(function: str, *arguments: Expression) -> Predicate:
+    if not isinstance(function, str) or not function:
+        raise ValueError("predicato spatial non valido")
+    if not arguments or not all(isinstance(item, Expression) for item in arguments):
+        raise TypeError("predicato spatial richiede espressioni relazionali")
+    return Predicate("spatial", tuple(arguments), operator=function)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class Wildcard(Expression):
     table: Relation | None = None
 
@@ -316,6 +391,12 @@ class Predicate(Expression):
                 "expression": expression._ast(),
                 "query": query.statement.to_ast(),
                 "negated": self.negated,
+            }
+        if self.kind == "spatial":
+            return {
+                "kind": "spatial",
+                "function": self.operator,
+                "arguments": [argument._ast() for argument in self.arguments],
             }
         raise ValueError("predicato relazionale non supportato")
 
@@ -552,7 +633,9 @@ def _expression_table(expression: Expression) -> Relation | None:
         return expression.table
     if isinstance(expression, Label):
         return _expression_table(expression.expression)
-    if isinstance(expression, (FunctionExpression, Predicate)):
+    if isinstance(expression, (_SpatialOutput, _SpatialValue)):
+        return _expression_table(expression.expression)
+    if isinstance(expression, (FunctionExpression, _SpatialFunction, Predicate)):
         for argument in expression.arguments:
             if relation := _expression_table(argument):
                 return relation

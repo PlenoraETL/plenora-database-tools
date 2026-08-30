@@ -3,6 +3,7 @@
 //! Contiene solo riferimenti a colonne e parametri: i valori restano nel
 //! `ParameterBag` e non possono essere interpolati nel testo SQL.
 
+use crate::geometry::SpatialSemantics;
 use crate::plan::{ComparisonOperator, ObjectRef, SortDirection};
 use serde::{Deserialize, Serialize};
 
@@ -558,6 +559,22 @@ pub enum QueryExpression {
         function: SpatialFunction,
         arguments: Vec<Self>,
     },
+    /// Serializza sul filo una colonna spatial nel formato binario canonico.
+    ///
+    /// Non e una funzione SQL scelta dal consumer: il renderer qualificato
+    /// decide l'involucro del provider (per esempio `ST_AsEWKB` su Postgres).
+    SpatialOutput {
+        expression: Box<Self>,
+        semantics: SpatialSemantics,
+    },
+    /// Costruisce un valore spatial da un bind EWKB e dal frame dichiarato.
+    ///
+    /// Il payload resta nel bind; l'IR porta soltanto metadati e struttura.
+    SpatialValue {
+        expression: Box<Self>,
+        srid: u32,
+        semantics: SpatialSemantics,
+    },
     SpatialOperator {
         operator: SpatialOperator,
         left: Box<Self>,
@@ -1112,7 +1129,10 @@ fn push_expression_children<'a>(
             stack.push(QueryWalkNode::Operation(query));
             stack.push(QueryWalkNode::Expression(expression));
         }
-        QueryExpression::IsNull { expression, .. } | QueryExpression::Not { expression } => {
+        QueryExpression::SpatialOutput { expression, .. }
+        | QueryExpression::SpatialValue { expression, .. }
+        | QueryExpression::IsNull { expression, .. }
+        | QueryExpression::Not { expression } => {
             stack.push(QueryWalkNode::Expression(expression));
         }
         QueryExpression::Wildcard { .. }
@@ -1589,6 +1609,41 @@ pub fn validate_query_operation(
                         for argument in arguments {
                             stack.push(Node::Expression(argument, depth.saturating_add(1), inner));
                         }
+                    }
+                    QueryExpression::SpatialOutput { expression, .. } => {
+                        if !matches!(expression.as_ref(), QueryExpression::Column { .. }) {
+                            return Err(crate::DatabaseError::invalid_plan(
+                                "projection spatial richiede una colonna",
+                            ));
+                        }
+                        stack.push(Node::Expression(
+                            expression,
+                            depth.saturating_add(1),
+                            position,
+                        ));
+                    }
+                    QueryExpression::SpatialValue {
+                        expression, srid, ..
+                    } => {
+                        if *srid == 0 {
+                            return Err(crate::DatabaseError::invalid_plan(
+                                "valore spatial richiede SRID positivo",
+                            ));
+                        }
+                        if !matches!(
+                            expression.as_ref(),
+                            QueryExpression::Parameter { .. }
+                                | QueryExpression::TypedParameter { .. }
+                        ) {
+                            return Err(crate::DatabaseError::invalid_plan(
+                                "valore spatial richiede un bind",
+                            ));
+                        }
+                        stack.push(Node::Expression(
+                            expression,
+                            depth.saturating_add(1),
+                            position,
+                        ));
                     }
                     QueryExpression::SpatialOperator { left, right, .. }
                     | QueryExpression::Compare { left, right, .. } => {

@@ -217,6 +217,13 @@ def validate_cli_probe(document: object) -> None:
         raise RuntimeError("probe CLI Db2 con capabilities.provider inatteso")
 
 
+PYTHON_LIVE_TARGETS = (
+    "db2_sdk_gate_tests/test_db2_session.py",
+    "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
+)
+PYTHON_LIVE_EXPECTED = 6
+
+
 def run_python_live() -> None:
     script = (
         "rm -rf /tmp/db2_sdk_gate_tests && "
@@ -225,10 +232,10 @@ def run_python_live() -> None:
         "cd /tmp && "
         "PLENORA_EXPECT_DB2_RUNTIME=1 "
         "python3.12 /workspace/.github/scripts/verify_wheel.py && "
-        "python3.12 -m pytest -q -ra db2_sdk_gate_tests/test_db2_session.py"
+        "python3.12 -m pytest -q -ra " + " ".join(PYTHON_LIVE_TARGETS)
     )
     output = compose_exec(["sh", "-lc", script], PYTHON_ENV)
-    if not re.search(r"\b5 passed in ", output):
+    if not re.search(rf"\b{PYTHON_LIVE_EXPECTED} passed in ", output):
         raise RuntimeError("matrice Python Db2 non completa")
 
 
@@ -275,7 +282,11 @@ def main() -> int:
         "container": container,
         "server_version": probe["connection"].get("server_version"),
         "live_tests": {"expected": len(executed), "passed": len(executed), "failed": 0},
-        "python_live_tests": {"expected": 5, "passed": 5, "failed": 0},
+        "python_live_tests": {
+            "expected": PYTHON_LIVE_EXPECTED,
+            "passed": PYTHON_LIVE_EXPECTED,
+            "failed": 0,
+        },
         "executed_live_tests": executed,
         "steps": steps,
         "platform_matrix": {

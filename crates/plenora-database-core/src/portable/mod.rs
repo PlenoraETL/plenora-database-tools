@@ -59,6 +59,11 @@ impl TableRef {
 pub enum Expression {
     Literal(ParameterValue),
     Column(String),
+    SpatialValue {
+        expression: Box<Self>,
+        srid: u32,
+        semantics: crate::geometry::SpatialSemantics,
+    },
 }
 
 impl Expression {

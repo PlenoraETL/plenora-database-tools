@@ -26,6 +26,27 @@ incompatibili, sempre indicate come **breaking**.
 - `BindType` e `bind(..., type_=...)` aggiungono hint logici chiusi e portabili,
   compresa la projection tipizzata richiesta da Db2 quando manca una colonna
   da cui inferire il tipo.
+- Verticale ORM-like sync e async: mapping dichiarativo con `DeclarativeBase`,
+  `Mapped` e `mapped_column`, registry, identity map, stati delle istanze e
+  unit of work transazionale con autoflush, merge, expire, expunge, cascade e
+  rollback del grafo; `AsyncOrmSession` condivide mapper e invarianti.
+- Query di entita tramite `OrmSession.query`, con composizione
+  join, filtri relazionali, eager loading, proiezioni e tuple multi-entita,
+  terminali a cardinalita esplicita e `refresh` delle istanze persistenti.
+- Chiavi primarie semplici o composite, vincoli unique/FK compositi, tipi
+  Python verificati ed ereditarieta concrete esplicita.
+- Chiavi `generated=True` e colonne `server_default=True`: idratazione dallo
+  statement su PostgreSQL, MariaDB e SQL Server; recupero dell'identita locale
+  e SELECT nella stessa transazione su MySQL e Db2.
+- Relazioni many-to-one, one-to-many, one-to-one e many-to-many senza lazy I/O,
+  con `back_populates`, cascade esplicite e planner dei cicli FK nullable.
+- Versioning ottimistico integrato nel flush tramite una colonna dichiarata
+  `version=True`; un conteggio diverso da una riga produce `StaleObjectError`.
+- Tipo ORM `Geometry` con validazione EWKB, SRID, dimensioni e semantica;
+  validazione del tipo concreto, predicati/funzioni ORM e proiezione/bind
+  canonici qualificati per PostgreSQL. Gli altri provider restano fail-closed.
+- `OrmMetadata`, `ServerDefault`, runner di migrazioni lineari sync/async e hook
+  locali della sessione completano il perimetro schema/lifecycle.
 
 ### Breaking
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::SpatialSemantics;
 use crate::plan::{ComparisonOperator, ObjectRef};
 use crate::relational::{
     ColumnRef, MutationAssignment, QueryExpression, UpdateOperation, UpsertOperation,
@@ -50,6 +51,32 @@ fn insert_uses_named_layout_without_carrying_values() {
 
     assert!(compile_relational_mutation(ProviderKind::Mysql, &operation).is_err());
     assert!(compile_relational_mutation(ProviderKind::Db2, &operation).is_err());
+}
+
+#[test]
+fn postgres_spatial_value_keeps_payload_in_a_named_bind() {
+    let operation = MutationOperation::Insert(InsertOperation {
+        target: target(),
+        columns: vec!["shape".to_owned()],
+        rows: vec![vec![QueryExpression::SpatialValue {
+            expression: Box::new(parameter("shape")),
+            srid: 4_326,
+            semantics: SpatialSemantics::Geometry,
+        }]],
+        returning: Vec::new(),
+    });
+
+    let postgres = compile_relational_mutation(ProviderKind::Postgres, &operation)
+        .expect("bind spatial PostgreSQL");
+    assert_eq!(postgres.bind_names, ["shape"]);
+    assert!(
+        postgres
+            .sql
+            .contains("ST_SetSRID(ST_GeomFromEWKB($1), 4326)"),
+        "{}",
+        postgres.sql
+    );
+    assert!(compile_relational_mutation(ProviderKind::Mysql, &operation).is_err());
 }
 
 #[test]

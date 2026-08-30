@@ -62,6 +62,42 @@ fn simple_query() -> QueryOperation {
 }
 
 #[test]
+fn postgres_spatial_output_encodes_a_column_as_ewkb() {
+    let mut query = simple_query();
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::SpatialOutput {
+            expression: Box::new(query_column("e", "shape")),
+            semantics: SpatialSemantics::Geometry,
+        },
+        alias: Some("shape".to_owned()),
+    }];
+    let rendered = Renderer::new(
+        Dialect::Postgres,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("projection EWKB PostgreSQL");
+    assert!(
+        rendered
+            .sql
+            .contains("ST_AsEWKB(\"e\".\"shape\") AS \"shape\""),
+        "{}",
+        rendered.sql
+    );
+
+    assert!(Renderer::new(
+        Dialect::Mysql,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .is_err());
+}
+
+#[test]
 fn source_free_parameter_query_uses_each_dialect_bind() {
     let mut query = simple_query();
     query.source = None;

@@ -161,6 +161,17 @@ impl Provider for Db2Provider {
             Ok(Box::new(transaction) as Box<dyn TransactionScopeContract>)
         })
     }
+
+    fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            crate::transaction::execute_ddl(&self.config, secret, sql, cancellation).await
+        })
+    }
 }
 
 pub fn db2_capabilities(provider_version: String, spatial_available: bool) -> ProviderCapabilities {
