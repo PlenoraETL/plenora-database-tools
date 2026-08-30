@@ -2396,13 +2396,13 @@ class PythonSdkRunnerTests(unittest.TestCase):
         offline = sdk.SCOPE_CONTRACTS["offline"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (301, 6, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (319, 6, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (79, 228, 0)
+            (offline.passed, offline.skipped, offline.deselected), (96, 229, 0)
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 305),
+            (2, 0, 323),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 anche live, e nessuno deseleziona.

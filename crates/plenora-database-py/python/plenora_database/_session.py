@@ -161,7 +161,7 @@ class Session(_BuilderFactory):
           - `source`: input dati. Accetta:
               * `pyarrow.Table` (schema derivato)
               * `pyarrow.RecordBatch`
-              * lista di `pyarrow.RecordBatch` (tutti con stesso schema)
+              * iterabile di `pyarrow.RecordBatch` (stesso schema)
               * `list[dict]` (convertito via `pa.Table.from_pylist`)
               * `pandas.DataFrame` (convertito via
                 `pa.Table.from_pandas`, richiede pandas installato)

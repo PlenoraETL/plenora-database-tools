@@ -141,4 +141,6 @@ def test_top_level_import_works() -> None:
     mod = importlib.import_module("plenora_database")
     assert hasattr(mod, "PlenoraError")
     assert hasattr(mod, "PlenoraCommitOutcomeUnknownError")
+    assert hasattr(mod, "JsonInput")
+    assert hasattr(mod, "JsonGeometry")
     assert hasattr(mod, "SessionContext")

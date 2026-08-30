@@ -33,6 +33,7 @@ from ._native import (
 )
 from ._session import Session
 from ._transaction import Transaction
+from .json_input import JsonField, JsonGeometry, JsonInput, JsonInputError, JsonSchema
 from .expression import (
     BindParameter,
     BindType,

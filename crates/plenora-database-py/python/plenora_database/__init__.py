@@ -84,6 +84,13 @@ from .async_query import (
 )
 from . import spatial
 from .spatial import SpatialReference
+from .json_input import (
+    JsonField,
+    JsonGeometry,
+    JsonInput,
+    JsonInputError,
+    JsonSchema,
+)
 from .orm import (
     AsyncMigrationRunner,
     AsyncOrmEntityTupleQuery,
@@ -573,7 +580,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         preflight non e qualificato e resta fail-closed.
 
         `source` accetta:
-          - `pyarrow.Table` / `RecordBatch` / list[RecordBatch]
+          - `pyarrow.Table` / `RecordBatch` / iterabile di RecordBatch
           - `list[dict]` (converted via pa.Table.from_pylist)
           - `pandas.DataFrame` (converted via pa.Table.from_pandas)
           - `bytes` (Arrow IPC stream self-contained)
@@ -1062,6 +1069,12 @@ __all__ = [
     # Spatial
     "spatial",
     "SpatialReference",
+    # JSON ingress: bordo Python verso ORM / Arrow
+    "JsonField",
+    "JsonGeometry",
+    "JsonInput",
+    "JsonInputError",
+    "JsonSchema",
     # ORM sync verticale
     "DeclarativeBase",
     "AsyncMigrationRunner",

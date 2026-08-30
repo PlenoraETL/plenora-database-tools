@@ -224,6 +224,101 @@ async with p.AsyncOrmSession(session) as orm:
     ).one({"wanted": "Ada"})
 ```
 
+### Ingresso JSON tipizzato
+
+JSON resta un formato di ingresso del bordo Python, non il protocollo fra SDK
+e provider. `JsonInput` richiede un `JsonSchema` chiuso e converte ogni record
+prima in valori Python tipizzati, poi, a scelta, in istanze ORM transienti o
+in `pyarrow.RecordBatch`. Non esiste inferenza dai primi record: un campo
+assente, aggiuntivo, nullo contro schema o di tipo diverso fallisce prima
+dell'I/O.
+
+```python
+import plenora_database as p
+
+ingress = p.JsonInput(
+    p.JsonSchema(
+        [
+            p.JsonField("id", int),
+            p.JsonField("name", str),
+            p.JsonField("note", str, nullable=True),
+        ]
+    )
+)
+
+# Un mapping, un documento oggetto/array o un iterabile di mapping.
+records = ingress.records(
+    '[{"id":1,"name":"Ada","note":null}]'
+)
+
+# Un file iterato viene interpretato come JSON Lines e letto una riga alla
+# volta. Il generatore produce batch bounded senza caricare il file intero.
+with open("accounts.jsonl", encoding="utf-8") as lines:
+    outcome = session.copy_from(
+        "app", "accounts", ingress.batches(lines, batch_size=1_024)
+    )
+```
+
+`copy_from` continua a ricevere Arrow: l'adattatore non introduce un secondo
+data plane. La lettura e la validazione JSON Lines sono incrementali; la
+chiamata bulk serializza i batch risultanti nello stream IPC richiesto dal
+binding nativo. Per mantenere bounded anche ogni singola scrittura, il
+chiamante può inviare un batch per chiamata e osserva quindi esplicitamente i
+relativi confini transazionali.
+
+Un mapper dichiarativo è già uno schema esplicito. I campi generati o con
+default server-side sono esclusi dalla forma derivata:
+
+```python
+ingress = p.JsonInput.for_model(Account)
+accounts = ingress.objects(json_lines, Account)
+```
+
+Per sorgenti asincrone che producono un mapping o una riga JSON completa per
+iterazione, sono disponibili `arecords`, `aobjects` e `abatches`:
+
+```python
+async for batch in ingress.abatches(async_lines, batch_size=1_024):
+    await session.acopy_from("app", "accounts", batch)
+```
+
+In questa forma ogni `acopy_from` ha il proprio esito; non viene promessa una
+transazione implicita che copra l'intero iteratore.
+
+Le geometrie richiedono sempre un CRS dichiarato nello schema. Il payload
+GeoJSON non può sostituirlo o ridefinirlo:
+
+```python
+place_input = p.JsonInput(
+    p.JsonSchema(
+        [
+            p.JsonField("id", int),
+            p.JsonField(
+                "shape",
+                p.JsonGeometry(
+                    srid=4326,
+                    dimensions="xy",
+                    semantics="geometry",
+                    geometry_type="point",
+                    encoding="ewkb",
+                ),
+            ),
+        ]
+    )
+)
+```
+
+La conversione supporta Point, LineString, Polygon, i rispettivi Multi e
+GeometryCollection, in XY o XYZ. X/Y/M e X/Y/Z/M restano chiusi perché GeoJSON
+non permette di distinguere in modo affidabile l'asse M. `encoding="wkb"` e
+`encoding="ewkb"` sono scelte esplicite: non tutti i provider qualificano la
+stessa forma spatial in scrittura. I batch portano `geoarrow.wkb`, SRID,
+dimensioni, semantica e dichiarazione del tipo nei metadata canonici.
+
+`JsonInputError` espone un codice stabile, l'indice del record e, quando il
+campo proviene dallo schema, il suo nome. Il messaggio non include mai il
+valore rifiutato, la riga JSON o altri frammenti del payload.
+
 ### Sync
 
 ```python

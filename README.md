@@ -42,10 +42,40 @@ Plenora distingue il percorso applicativo dal percorso bulk:
 - le geometrie viaggiano come WKB/EWKB con frame CRS e metadati GeoArrow,
   mantenendo il payload fuori dall'AST e dai messaggi di errore.
 
-JSON non è il formato del data plane né il contratto interno fra i layer. Un
-consumer può naturalmente convertire input JSON in oggetti o batch Arrow al
-proprio bordo applicativo, senza obbligare il core database a perdere tipi,
-nullability o metadati geometrici.
+JSON non è il formato del data plane né il contratto interno fra i layer. Lo
+SDK Python espone però un adattatore di ingresso: valida mapping, documenti
+JSON e JSON Lines contro uno schema chiuso, poi produce oggetti ORM o batch
+Arrow. Tipi, nullability e CRS vengono dichiarati prima di leggere i dati;
+non sono inferiti dal payload.
+
+```python
+import plenora_database as p
+
+ingress = p.JsonInput(
+    p.JsonSchema(
+        [
+            p.JsonField("id", int),
+            p.JsonField("name", str),
+            p.JsonField(
+                "shape",
+                p.JsonGeometry(
+                    srid=4326,
+                    geometry_type="point",
+                    encoding="ewkb",
+                ),
+            ),
+        ]
+    )
+)
+
+with open("places.jsonl", encoding="utf-8") as lines:
+    session.copy_from("app", "places", ingress.batches(lines))
+```
+
+Il file JSON Lines viene letto incrementalmente; ogni geometria GeoJSON viene
+convertita al bordo in WKB/EWKB e il batch porta i metadata GeoArrow canonici.
+La forma async, la conversione verso modelli e i limiti operativi sono nel
+[`README dello SDK`](crates/plenora-database-py/README.md#ingresso-json-tipizzato).
 
 ## Installazione Python
 

@@ -7,6 +7,8 @@ Rust (`_native.copy_from` / `_native.acopy_from`).
 from __future__ import annotations
 
 import io
+from collections.abc import Iterable, Iterator
+from itertools import chain
 from typing import Any
 
 
@@ -105,14 +107,23 @@ def _narrow_batches(schema: Any, batches: list, pa: Any) -> tuple:
     percorso comune non paga una copia.
     """
 
+    narrowed_schema, replacements = _narrowed_schema(schema, pa)
+    return narrowed_schema, [
+        _narrowed_batch(
+            batch, schema, narrowed_schema, replacements, pa
+        )
+        for batch in batches
+    ]
+
+
+def _narrowed_schema(schema: Any, pa: Any) -> tuple[Any, dict[int, Any]]:
+    """Calcola una volta lo schema stretto per uno stream di batch."""
+
     replacements = {
         index: narrowed
         for index, field in enumerate(schema)
         if (narrowed := _narrowed_type(field.type, pa)) is not None
     }
-    if not replacements:
-        return schema, batches
-
     narrowed_schema = schema
     for index, replacement in replacements.items():
         field = schema.field(index)
@@ -120,19 +131,33 @@ def _narrow_batches(schema: Any, batches: list, pa: Any) -> tuple:
             index,
             pa.field(field.name, replacement, field.nullable, field.metadata),
         )
-    converted = [
-        pa.RecordBatch.from_arrays(
-            [
-                column.cast(narrowed_schema.field(index).type)
-                if index in replacements
-                else column
-                for index, column in enumerate(batch.columns)
-            ],
-            schema=narrowed_schema,
-        )
-        for batch in batches
-    ]
-    return narrowed_schema, converted
+    return narrowed_schema, replacements
+
+
+def _narrowed_batch(
+    batch: Any,
+    source_schema: Any,
+    narrowed_schema: Any,
+    replacements: dict[int, Any],
+    pa: Any,
+) -> Any:
+    """Valida e converte un batch senza materializzare l'iterabile."""
+
+    if not isinstance(batch, pa.RecordBatch):
+        raise TypeError("copy_from: l'iterabile deve contenere solo RecordBatch")
+    if batch.schema != source_schema:
+        raise ValueError("copy_from: i RecordBatch devono avere lo stesso schema")
+    if not replacements:
+        return batch
+    return pa.RecordBatch.from_arrays(
+        [
+            column.cast(narrowed_schema.field(index).type)
+            if index in replacements
+            else column
+            for index, column in enumerate(batch.columns)
+        ],
+        schema=narrowed_schema,
+    )
 
 
 def _to_ipc_bytes(source: Any) -> bytes:
@@ -142,7 +167,7 @@ def _to_ipc_bytes(source: Any) -> bytes:
       - `bytes` — passato-through (assunto IPC valido, verificato dal Rust)
       - `pyarrow.Table` — batches iterati e scritti
       - `pyarrow.RecordBatch` — un unico batch
-      - lista di `pyarrow.RecordBatch` (tutti con stesso schema)
+      - iterabile di `pyarrow.RecordBatch` (tutti con stesso schema)
       - `pandas.DataFrame` — convertito via `pyarrow.Table.from_pandas`
       - `list[dict]` — convertito via `pyarrow.Table.from_pylist`
 
@@ -192,17 +217,32 @@ def _to_ipc_bytes(source: Any) -> bytes:
                 f"copy_from: lista deve contenere pyarrow.RecordBatch o dict, "
                 f"trovato {type(first).__name__}"
             )
+    elif isinstance(source, Iterable):
+        iterator: Iterator[Any] = iter(source)
+        try:
+            first = next(iterator)
+        except StopIteration:
+            raise ValueError("copy_from: iterabile vuoto") from None
+        if not isinstance(first, pa.RecordBatch):
+            raise TypeError(
+                "copy_from: l'iterabile deve contenere pyarrow.RecordBatch"
+            )
+        schema = first.schema
+        batches = chain((first,), iterator)
     else:
         raise TypeError(
             f"copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
-            f"list di RecordBatch/dict o pandas.DataFrame — "
+            f"iterabile di RecordBatch, list di dict o pandas.DataFrame — "
             f"trovato {type(source).__name__}"
         )
 
-    schema, batches = _narrow_batches(schema, list(batches), pa)
+    source_schema = schema
+    schema, replacements = _narrowed_schema(source_schema, pa)
 
     buf = io.BytesIO()
     with ipc.new_stream(buf, schema) as writer:
         for batch in batches:
-            writer.write_batch(batch)
+            writer.write_batch(
+                _narrowed_batch(batch, source_schema, schema, replacements, pa)
+            )
     return buf.getvalue()
