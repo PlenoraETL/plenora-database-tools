@@ -285,7 +285,7 @@ impl PostgresProvider {
         let Some(result) = control::select_with_cancellation(
             client
                 .client()?
-                .query("SELECT ag_catalog.create_graph($1)", &[&graph]),
+                .query("SELECT ag_catalog.create_graph($1::name)", &[&graph]),
             cancellation,
         )
         .await
@@ -323,9 +323,10 @@ impl PostgresProvider {
         validate_graph_name(graph)?;
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
-            client
-                .client()?
-                .query("SELECT ag_catalog.drop_graph($1, $2)", &[&graph, &cascade]),
+            client.client()?.query(
+                "SELECT ag_catalog.drop_graph($1::name, $2)",
+                &[&graph, &cascade],
+            ),
             cancellation,
         )
         .await
