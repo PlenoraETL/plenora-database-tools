@@ -6,6 +6,7 @@ import os
 import pytest
 
 import plenora_database as p
+from plenora_database._ast import literal_value
 
 from ._harness import connect_postgres, postgres_dsn_or_skip
 
@@ -58,8 +59,9 @@ def test_uuid_in_where_via_builder(session) -> None:
 
 def test_int64_helper_keeps_small_values_typed_as_i64() -> None:
     value = p.int64(1)
-    assert value._plenora_typed_kind == "int64"
+    assert value._plenora_typed_kind == "i64"
     assert value._plenora_typed_value == 1
+    assert literal_value(value) == {"type": "i64", "value": 1}
 
 
 def test_int64_helper_rejects_invalid_values_without_echoing_them() -> None:

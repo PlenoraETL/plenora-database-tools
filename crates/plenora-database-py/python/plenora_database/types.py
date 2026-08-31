@@ -65,7 +65,7 @@ def int64(value: int) -> TypedValue:
         raise TypeError("int64 richiede un int Python")
     if not -(1 << 63) <= value < (1 << 63):
         raise OverflowError("int64 fuori dall'intervallo signed 64-bit")
-    return TypedValue("int64", value)
+    return TypedValue("i64", value)
 
 
 def date(value: str) -> TypedValue:
