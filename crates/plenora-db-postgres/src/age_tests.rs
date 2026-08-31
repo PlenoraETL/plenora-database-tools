@@ -56,7 +56,7 @@ mod live {
     use plenora_database_core::graph::{GraphStatement, GraphValue};
     use plenora_database_core::provider::{Provider, SecretString};
     use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
-    use plenora_database_core::transaction::TransactionOptions;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
     use plenora_database_core::CancellationToken;
     use std::collections::BTreeMap;
     use tokio_postgres::NoTls;
@@ -140,6 +140,13 @@ mod live {
             .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
             .await
             .expect("begin AGE");
+        let search_path_before = tx
+            .query(
+                &Statement::new("SELECT current_setting('search_path')"),
+                &cancel,
+            )
+            .await
+            .expect("search path before AGE");
         let create = GraphStatement::new(
             "plenora_age_gate",
             "CREATE (a:Person {name: $name, active: true}), (b:Person {name: 'Bob'}), (a)-[:KNOWS {since: 2024}]->(b) RETURN a",
@@ -184,6 +191,37 @@ mod live {
             Some(GraphValue::Map(_))
         ));
         assert_eq!(rows[0].values.get("missing"), Some(&GraphValue::Null));
+        let search_path_after = tx
+            .query(
+                &Statement::new("SELECT current_setting('search_path')"),
+                &cancel,
+            )
+            .await
+            .expect("search path after AGE");
+        assert_eq!(
+            search_path_after[0].values(),
+            search_path_before[0].values()
+        );
+
+        tx.savepoint("age_graph_savepoint", &cancel)
+            .await
+            .expect("AGE savepoint");
+        tx.execute_graph(
+            &GraphStatement::new(
+                "plenora_age_gate",
+                "CREATE (:Person {name: 'SavepointRollback'}) RETURN 1",
+                vec!["one".to_owned()],
+            ),
+            &cancel,
+        )
+        .await
+        .expect("AGE write after savepoint");
+        tx.rollback_to_savepoint("age_graph_savepoint", &cancel)
+            .await
+            .expect("AGE rollback to savepoint");
+        tx.release_savepoint("age_graph_savepoint", &cancel)
+            .await
+            .expect("AGE release savepoint");
         tx.commit(&cancel).await.expect("commit AGE");
 
         let mut rollback_tx = provider
@@ -219,6 +257,21 @@ mod live {
             .await
             .expect("verify rollback");
         assert_eq!(rows[0].values.get("total"), Some(&GraphValue::Integer(0)));
+        let savepoint_rows = verify_tx
+            .execute_graph(
+                &GraphStatement::new(
+                    "plenora_age_gate",
+                    "MATCH (p:Person {name: 'SavepointRollback'}) RETURN count(p)",
+                    vec!["total".to_owned()],
+                ),
+                &cancel,
+            )
+            .await
+            .expect("verify savepoint rollback");
+        assert_eq!(
+            savepoint_rows[0].values.get("total"),
+            Some(&GraphValue::Integer(0))
+        );
         verify_tx.rollback(&cancel).await.expect("close verify AGE");
     }
 }
