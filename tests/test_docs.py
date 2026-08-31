@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from scripts import check_docs
+from scripts.generate_capabilities_docx import portable_text_bytes
 
 
 class DocumentationGateTests(unittest.TestCase):
@@ -39,6 +40,15 @@ class DocumentationGateTests(unittest.TestCase):
 
     def test_repository_license_metadata_is_consistent(self) -> None:
         self.assertEqual(check_docs.validate_license(check_docs.ROOT), [])
+
+    def test_generated_docx_inputs_ignore_platform_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lf = root / "lf.txt"
+            crlf = root / "crlf.txt"
+            lf.write_bytes(b"first\nsecond\n")
+            crlf.write_bytes(b"first\r\nsecond\r\n")
+            self.assertEqual(portable_text_bytes(lf), portable_text_bytes(crlf))
 
 
 if __name__ == "__main__":

@@ -68,13 +68,26 @@ def public_class_inventory(exports: set[str]) -> list[tuple[str, list[str]]]:
     return sorted(classes.items())
 
 
+def portable_text_bytes(path: Path) -> bytes:
+    """Return UTF-8 text with platform-specific line endings normalized."""
+
+    normalized = (
+        path.read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    return normalized.encode("utf-8")
+
+
 def source_fingerprint() -> str:
     """Identifica gli input del documento senza dipendere dal commit contenitore."""
 
     digest = hashlib.sha256()
     for path in (STATE, SDK_README, PACKAGE / "__init__.py", *sorted(PACKAGE.glob("*.pyi"))):
         digest.update(path.relative_to(ROOT).as_posix().encode())
-        digest.update(path.read_bytes())
+        # Git may materialize text files with CRLF on Windows and LF on Linux.
+        # The generated artifact must stay byte-identical on both platforms.
+        digest.update(portable_text_bytes(path))
     return digest.hexdigest()[:12]
 
 
