@@ -90,6 +90,30 @@ mod live {
             .expect("create graph");
     }
 
+    async fn raw_parameter_probe(dsn: &str) {
+        let (client, connection) = tokio_postgres::connect(dsn, NoTls)
+            .await
+            .expect("connect AGE parameter probe");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client.batch_execute("LOAD 'age'").await.expect("load AGE");
+        let statement =
+            GraphStatement::new("plenora_age_gate", "RETURN $name", vec!["name".to_owned()])
+                .with_params(BTreeMap::from([("name".to_owned(), json!("Alice"))]));
+        let sql = build_cypher_sql(&statement).expect("build parameter probe");
+        let prepared = client.prepare(&sql).await.expect("prepare parameter probe");
+        assert_eq!(prepared.params().len(), 1);
+        assert_eq!(prepared.params()[0].name(), "agtype");
+        let parameter = AgeParameter::new(
+            serde_json::to_string(&statement.params).expect("encode parameter probe"),
+        );
+        client
+            .query(&prepared, &[&parameter])
+            .await
+            .expect("bind parameter probe");
+    }
+
     fn budget() -> ResourceBudget {
         ResourceBudget::new(ResourceLimits::default()).expect("budget")
     }
@@ -100,6 +124,7 @@ mod live {
             return;
         };
         setup_graph(&dsn).await;
+        raw_parameter_probe(&dsn).await;
         let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
         let secret = SecretString::new(dsn);
         let cancel = CancellationToken::new();
