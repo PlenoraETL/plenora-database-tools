@@ -20,6 +20,10 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
                 COALESCE(
                   (SELECT extversion FROM pg_extension WHERE extname = 'postgis'),
                   ''
+                ),
+                COALESCE(
+                  (SELECT extversion FROM pg_extension WHERE extname = 'age'),
+                  ''
                 )
             ",
             &[],
@@ -28,10 +32,14 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         .map_err(|error| classify_error(ErrorPhase::Probe, &error))?;
     let server_version: String = row.get(0);
     let postgis_version: String = row.get(1);
+    let age_version: String = row.get(2);
     let spatial = !postgis_version.is_empty();
     let mut extensions = BTreeMap::new();
     if spatial {
         extensions.insert("postgis".to_owned(), postgis_version);
+    }
+    if !age_version.is_empty() {
+        extensions.insert("age".to_owned(), age_version);
     }
     Ok(ProviderCapabilities {
         schema_version: 2,

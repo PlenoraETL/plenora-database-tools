@@ -10,6 +10,7 @@ pub mod ewkb;
 pub mod facade;
 pub mod field_contract;
 pub mod geometry;
+pub mod graph;
 pub mod identifier;
 pub mod limits;
 pub mod loss;
@@ -50,6 +51,10 @@ pub use facade::{
     execute_scalar_f64, execute_scalar_i32, execute_scalar_i64, execute_scalar_json,
     execute_scalar_string, execute_scalar_timestamp, execute_scalar_timestamptz,
     execute_scalar_uuid, query_one, query_optional,
+};
+pub use graph::{
+    AgeCapabilities, GraphEdge, GraphRow, GraphStatement, GraphValue, GraphVertex,
+    QUALIFIED_AGE_VERSION, QUALIFIED_POSTGRES_MAJOR,
 };
 pub use metrics_recorder::{
     noop_recorder, CollectRecorder, MetricEvent, MetricName, MetricTags, MetricValue,

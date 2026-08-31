@@ -36,7 +36,8 @@
 use crate::arrow_reader::{make_read_operation, open_reader, BatchReader};
 use crate::errors::to_py_err;
 use crate::py_convert::{
-    portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
+    graph_rows_to_pylist, graph_statement_from_python, portable_from_json, rows_to_pylist,
+    scalar_to_python, statement_from_python,
 };
 use crate::runtime;
 use crate::transaction::Transaction;
@@ -81,6 +82,7 @@ pub struct Session {
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
     server_version: String,
     postgis_version: Option<String>,
+    age_version: Option<String>,
     engine: Engine,
     engine_handle: Mutex<Option<EngineSession>>,
     operation_cancellation: CancellationToken,
@@ -97,6 +99,7 @@ impl Session {
     ) -> plenora_database_core::Result<Self> {
         let server_version = capabilities.provider_version.clone();
         let postgis_version = capabilities.extension_versions.get("postgis").cloned();
+        let age_version = capabilities.extension_versions.get("age").cloned();
         let session = engine.session()?;
         let operation_cancellation = session.cancellation_token();
         Ok(Self {
@@ -105,6 +108,7 @@ impl Session {
             capabilities,
             server_version,
             postgis_version,
+            age_version,
             engine: engine.clone(),
             engine_handle: Mutex::new(Some(session)),
             operation_cancellation,
@@ -198,6 +202,93 @@ impl Session {
         self.postgis_version.as_deref()
     }
 
+    /// Versione dell'estensione AGE installata, anche quando non qualificata.
+    #[getter]
+    fn age_version(&self) -> Option<&str> {
+        self.age_version.as_deref()
+    }
+
+    /// Capability graph sondate separatamente dal contratto relazionale v2.
+    #[getter]
+    fn age_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        let capabilities = py
+            .detach(|| {
+                runtime().block_on(async move {
+                    provider.age_capabilities(&secret, &cancellation).await
+                })
+            })
+            .map_err(to_py_err)?;
+        let value = serde_json::to_value(capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability AGE non serializzabili"))?;
+        json_value_to_pydict(py, &value)
+    }
+
+    #[getter]
+    fn age_admin_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        let capabilities = py
+            .detach(|| {
+                runtime().block_on(async move {
+                    provider
+                        .age_admin_capabilities(&secret, &cancellation)
+                        .await
+                })
+            })
+            .map_err(to_py_err)?;
+        let value = serde_json::to_value(capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability admin AGE non serializzabili"))?;
+        json_value_to_pydict(py, &value)
+    }
+
+    fn list_graphs(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move { provider.list_graphs(&secret, &cancellation).await })
+        })
+        .map_err(to_py_err)
+    }
+
+    fn create_graph(&self, py: Python<'_>, graph: &str) -> PyResult<()> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move {
+                provider.create_graph(&secret, &graph, &cancellation).await
+            })
+        })
+        .map_err(to_py_err)
+    }
+
+    #[pyo3(signature = (graph, *, cascade=false))]
+    fn drop_graph(&self, py: Python<'_>, graph: &str, cascade: bool) -> PyResult<()> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move {
+                provider
+                    .drop_graph(&secret, &graph, cascade, &cancellation)
+                    .await
+            })
+        })
+        .map_err(to_py_err)
+    }
+
     /// True se la sessione è stata chiusa (via `close()` o uscendo dal
     /// context manager).
     #[getter]
@@ -277,6 +368,27 @@ impl Session {
             Box::pin(async move { tx.query(&statement, cancel).await })
         })?;
         rows_to_pylist(py, rows)
+    }
+
+    /// Esegue Cypher tramite Apache AGE. `columns` dichiara il record di
+    /// ritorno richiesto da AGE; `params` resta una mappa bindata separata.
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
+    fn cypher<'py>(
+        &self,
+        py: Python<'py>,
+        graph: &str,
+        cypher: &str,
+        columns: Vec<String>,
+        params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
+    ) -> PyResult<Bound<'py, PyList>> {
+        self.ensure_open()?;
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
+        let rows = self.run_tx(py, move |tx, cancel| {
+            Box::pin(async move { tx.execute_graph(&statement, cancel).await })
+        })?;
+        graph_rows_to_pylist(py, &rows)
     }
 
     /// Esegue un `PortableStatement` (serializzato come JSON) e ritorna

@@ -6,6 +6,7 @@ from ._transaction import Transaction
 from .expression import ExecutableStatement
 from .query import Delete, Insert, Select, Update, Upsert
 from .result import MutationResult, Result
+from .graph import GraphValue
 
 
 class Session:
@@ -16,6 +17,15 @@ class Session:
     def capabilities(self) -> dict: ...
     @property
     def postgis_version(self) -> str | None: ...
+    @property
+    def age_version(self) -> str | None: ...
+    @property
+    def age_capabilities(self) -> dict: ...
+    @property
+    def age_admin_capabilities(self) -> dict: ...
+    def list_graphs(self) -> list[str]: ...
+    def create_graph(self, graph: str) -> None: ...
+    def drop_graph(self, graph: str, *, cascade: bool = False) -> None: ...
     @property
     def is_closed(self) -> bool: ...
     def close(self) -> None: ...
@@ -33,6 +43,15 @@ class Session:
     def execute_returning_rows(
         self, sql: str, params: list | None = None
     ) -> list[dict]: ...
+    def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
+    ) -> list[dict[str, GraphValue]]: ...
     def begin(
         self,
         isolation: str | None = None,

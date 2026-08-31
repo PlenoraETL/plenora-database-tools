@@ -1337,9 +1337,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
         note = (ROOT / "docs" / "operativo.md").read_text(encoding="utf-8")
         body = note.split("**Migrazione (una tantum).**", 1)[1].split("\n## ", 1)[0]
+        commands = body.split("```bash", 1)[1].split("```", 1)[0]
         listed = {
             token
-            for token in re.findall(r"dataflow-[a-z0-9-]+", body)
+            for token in re.findall(r"(?:dataflow|plenora)-[a-z0-9-]+", commands)
             if not token.endswith("-")
         }
         self.assertEqual(
@@ -1475,6 +1476,7 @@ SDK_FIXTURE_VARIABLES = {
         "MSSQL_SA_PASSWORD",
         "PLENORA_TEST_DATABASE",
     ),
+    "plenora-age": ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"),
 }
 
 
@@ -2396,13 +2398,13 @@ class PythonSdkRunnerTests(unittest.TestCase):
         offline = sdk.SCOPE_CONTRACTS["offline"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (332, 6, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (337, 6, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (101, 237, 0)
+            (offline.passed, offline.skipped, offline.deselected), (104, 239, 0)
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 336),
+            (2, 0, 341),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 anche live, e nessuno deseleziona.
@@ -2499,6 +2501,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 sdk.MARIADB_SKIP,
                 sdk.SQLSERVER_SKIP,
                 sdk.DB2_SKIP,
+                sdk.AGE_SKIP,
                 sdk.BENCH_SKIP,
             },
         )

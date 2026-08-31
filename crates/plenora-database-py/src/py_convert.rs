@@ -33,6 +33,7 @@
 
 use crate::errors::to_py_err;
 use plenora_database_core::facade::scalar_opt;
+use plenora_database_core::graph::{GraphRow, GraphStatement};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::transaction::Statement;
@@ -41,6 +42,7 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyFloat, PyList, PyString};
 use pyo3::IntoPyObjectExt;
+use std::collections::BTreeMap;
 
 /// Converte una lista Python di parametri in `Vec<ParameterValue>`.
 ///
@@ -177,7 +179,7 @@ pub fn param_to_python<'py>(
     }
 }
 
-fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+pub fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
     if value.is_none() {
         return Ok(serde_json::Value::Null);
     }
@@ -296,6 +298,44 @@ pub fn json_to_python<'py>(
 /// Costruisce uno statement canonico da SQL e parametri Python.
 pub fn statement_from_python(sql: &str, params: Option<&Bound<'_, PyList>>) -> PyResult<Statement> {
     Ok(Statement::new(sql.to_owned()).with_params(params_from_python(params)?))
+}
+
+/// Costruisce una richiesta graph mantenendo i parametri separati dal testo
+/// Cypher. Gli errori non includono mai valori della mappa.
+pub fn graph_statement_from_python(
+    graph: &str,
+    cypher: &str,
+    columns: Vec<String>,
+    params: Option<&Bound<'_, PyDict>>,
+    max_rows: usize,
+) -> PyResult<GraphStatement> {
+    let mut converted = BTreeMap::new();
+    if let Some(params) = params {
+        for (key, value) in params.iter() {
+            let key: String = key.extract().map_err(|_| {
+                PyTypeError::new_err("i nomi parametro Cypher devono essere stringhe")
+            })?;
+            converted.insert(key, python_to_json(&value)?);
+        }
+    }
+    let statement = GraphStatement::new(graph, cypher, columns)
+        .with_params(converted)
+        .with_max_rows(max_rows);
+    statement.validate().map_err(to_py_err)?;
+    Ok(statement)
+}
+
+pub fn graph_rows_to_pylist<'py>(
+    py: Python<'py>,
+    rows: &[GraphRow],
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for row in rows {
+        let value = serde_json::to_value(&row.values)
+            .map_err(|_| PyValueError::new_err("risultato graph non serializzabile"))?;
+        list.append(json_to_python(py, &value)?)?;
+    }
+    Ok(list)
 }
 
 /// Deserializza l'AST portabile senza esporre nel messaggio il payload JSON.

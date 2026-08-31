@@ -132,6 +132,7 @@ POSTGRES_CONTAINER = "dataflow-postgres"
 MYSQL_CONTAINER = "dataflow-mysql"
 MARIADB_CONTAINER = "dataflow-mariadb"
 SQLSERVER_CONTAINER = "dataflow-sqlserver"
+AGE_CONTAINER = "plenora-age"
 # Il container si ispeziona con il nome esplicito sopra; i client invece
 # devono usare il DNS Compose coperto dal certificato della fixture.
 SQLSERVER_TLS_HOST = "sqlserver"
@@ -180,6 +181,7 @@ DB2_SKIP = (
     "live test Db2: mancano env PLENORA_TEST_DB2_HOST "
     "e/o PLENORA_TEST_DB2_PASSWORD"
 )
+AGE_SKIP = "live test AGE: manca env PLENORA_TEST_AGE_DSN"
 BENCH_SKIP = (
     "bench opt-in: setta PLENORA_BENCH_PARITY=1 per lanciarlo "
     "(atteso ~10s di walltime per la sessione)"
@@ -192,9 +194,9 @@ SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
     # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
     # devono restare skip espliciti, non essere assorbiti dal totale.
-    "live": ScopeContract(passed=332, deselected=0, skips={DB2_SKIP: 6}),
+    "live": ScopeContract(passed=337, deselected=0, skips={DB2_SKIP: 6}),
     "offline": ScopeContract(
-        passed=101,
+        passed=104,
         deselected=0,
         skips={
             POSTGRES_SKIP: 182,
@@ -202,10 +204,11 @@ SCOPE_CONTRACTS = {
             MARIADB_SKIP: 7,
             SQLSERVER_SKIP: 6,
             DB2_SKIP: 6,
+            AGE_SKIP: 2,
             BENCH_SKIP: 2,
         },
     ),
-    "benchmark": ScopeContract(passed=2, deselected=336, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=341, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -757,8 +760,15 @@ def live_environment(*, cli: str) -> list[str]:
         f"host={POSTGRES_CONTAINER} port={POSTGRES_PORT} user={postgres_user} "
         f"password={postgres_password} dbname={postgres_database}"
     )
+    age_dsn = (
+        f"host={AGE_CONTAINER} port={POSTGRES_PORT} "
+        f"user={container_variable(AGE_CONTAINER, 'POSTGRES_USER')} "
+        f"password={container_variable(AGE_CONTAINER, 'POSTGRES_PASSWORD')} "
+        f"dbname={container_variable(AGE_CONTAINER, 'POSTGRES_DB')}"
+    )
     return [
         "-e", f"PLENORA_TEST_POSTGRES_DSN={dsn}",
+        "-e", f"PLENORA_TEST_AGE_DSN={age_dsn}",
         "-e", f"PLENORA_TEST_MYSQL_HOST={MYSQL_CONTAINER}",
         "-e",
         f"PLENORA_TEST_MYSQL_DATABASE="
@@ -883,6 +893,7 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
             MYSQL_CONTAINER,
             MARIADB_CONTAINER,
             SQLSERVER_CONTAINER,
+            AGE_CONTAINER,
         )
         mysql_tls = compose_volume(MYSQL_CONTAINER, "/etc/mysql/tls")
         mariadb_tls = compose_volume(MARIADB_CONTAINER, "/etc/mysql/tls")

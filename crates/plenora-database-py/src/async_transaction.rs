@@ -21,13 +21,16 @@
 )]
 
 use crate::errors::to_py_err;
-use crate::py_convert::{portable_from_json, scalar_to_python, statement_from_python};
+use crate::py_convert::{
+    graph_rows_to_pylist, graph_statement_from_python, portable_from_json, scalar_to_python,
+    statement_from_python,
+};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::transaction::{ConditionalUpdate, TransactionScope};
 use plenora_database_core::{CancellationToken, Row};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -155,6 +158,34 @@ impl AsyncTransaction {
                 tx.query(&statement, &cancel).await.map_err(to_py_err)?
             };
             crate::async_session_ops::rows_to_pyobject(rows)
+        })
+    }
+
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
+    fn cypher<'py>(
+        &self,
+        py: Python<'py>,
+        graph: &str,
+        cypher: &str,
+        columns: Vec<String>,
+        params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let rows = {
+                let mut guard = locked_tx(&inner).await?;
+                let tx = guard.as_mut().expect("guard checked non-None");
+                let cancel = CancellationToken::new();
+                tx.execute_graph(&statement, &cancel)
+                    .await
+                    .map_err(to_py_err)?
+            };
+            Python::attach(|py| {
+                graph_rows_to_pylist(py, &rows).map(|value| value.into_any().unbind())
+            })
         })
     }
 

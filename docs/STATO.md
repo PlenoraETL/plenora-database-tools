@@ -17,7 +17,7 @@ python scripts\render_state.py
 | `plenora-database-cli` | 2.0.0 |
 | `plenora-database-core` | 2.0.0 |
 | `plenora-database-engine` | 2.0.0 |
-| `plenora-database-py` | 0.12.0 |
+| `plenora-database-py` | 0.13.0 |
 | `plenora-database-sql` | 2.0.0 |
 | `plenora-database-testkit` | 2.0.0 |
 | `plenora-db-db2` | 2.0.0 |
@@ -29,6 +29,8 @@ python scripts\render_state.py
 
 La major attiva e `contracts/v2/`, e contiene:
 
+- `age-admin-capabilities.schema.json`
+- `age-capabilities.schema.json`
 - `capabilities.schema.json`
 - `common.schema.json`
 - `golden-manifest.schema.json`
@@ -160,7 +162,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 294 |
+| PostgreSQL | 300 |
 | MySQL + MariaDB | 297 |
 | SQL Server | 148 |
 | IBM Db2 LUW | 55 |

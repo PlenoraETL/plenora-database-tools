@@ -1,0 +1,70 @@
+name: age-assurance
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - ".github/workflows/age-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "contracts/v2/**"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-db-postgres/**"
+      - "crates/plenora-database-py/**"
+      - "docker-compose.age.yml"
+      - "scripts/check_age_reference.py"
+      - "scripts/test_check_age_reference.py"
+      - "scripts/compose_network.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: age-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  age:
+    name: Apache AGE 1.7.0 / PostgreSQL 18
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: self-test del gate
+        run: python3 scripts/test_check_age_reference.py
+      - name: avvia AGE pinnato per digest
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.age.yml config --quiet
+          docker compose -f docker-compose.age.yml up -d --wait
+          mkdir -p "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache"
+      - name: prova live AGE
+        run: python3 scripts/check_age_reference.py 2>&1 | tee assurance-results/age-reference.log
+      - name: il candidato non e cambiato
+        run: test -z "$(git status --porcelain=v1 -uall)"
+      - name: diagnostica
+        if: failure()
+        run: docker compose -f docker-compose.age.yml logs --no-color > assurance-results/age-compose.log 2>&1 || true
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: age-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+      - name: ferma AGE
+        if: always()
+        run: docker compose -f docker-compose.age.yml down --volumes || true

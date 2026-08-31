@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "postgres_major": 18,
+  "extension_version": "1.7.0",
+  "list_graphs": true,
+  "create_graph": true,
+  "drop_graph": true
+}

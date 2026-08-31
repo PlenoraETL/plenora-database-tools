@@ -5,6 +5,7 @@ from ._native import Transaction as _NativeTransaction
 from .expression import ExecutableStatement
 from .query import Delete, Insert, Select, Update, Upsert
 from .result import MutationResult, Result
+from .graph import GraphValue
 
 
 class Transaction:
@@ -37,6 +38,15 @@ class Transaction:
     def execute_returning_rows(
         self, sql: str, params: list | None = None
     ) -> list[dict]: ...
+    def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
+    ) -> list[dict[str, GraphValue]]: ...
     def select(self, table: str, schema: str | None = None) -> Select: ...
     def insert(self, table: str, schema: str | None = None) -> Insert: ...
     def update(self, table: str, schema: str | None = None) -> Update: ...

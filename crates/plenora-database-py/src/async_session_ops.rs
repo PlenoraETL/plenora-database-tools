@@ -4,8 +4,9 @@
 
 use crate::async_transaction::AsyncTransaction;
 use crate::errors::to_py_err;
-use crate::py_convert::{rows_to_pylist, scalar_to_python};
+use crate::py_convert::{graph_rows_to_pylist, rows_to_pylist, scalar_to_python};
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
+use plenora_database_core::graph::GraphStatement;
 use plenora_database_core::plan::{ObjectRef, Operation};
 use plenora_database_core::portable::PortableStatement;
 use plenora_database_core::provider::{Provider, SecretString};
@@ -88,6 +89,21 @@ pub(crate) fn execute_rows_with_backend(
         .await
         .map_err(to_py_err)?;
         rows_to_pyobject(rows)
+    })
+}
+
+pub(crate) fn execute_graph_with_backend(
+    py: Python<'_>,
+    backend: TransactionBackend,
+    statement: GraphStatement,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let rows = run_with_backend(backend, move |tx, cancel| {
+            Box::pin(async move { tx.execute_graph(&statement, cancel).await })
+        })
+        .await
+        .map_err(to_py_err)?;
+        Python::attach(|py| graph_rows_to_pylist(py, &rows).map(|value| value.into_any().unbind()))
     })
 }
 

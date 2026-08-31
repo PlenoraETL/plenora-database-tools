@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .async_query import _AsyncBuilderFactory
 from .expression import ExecutableStatement, _execute_statement_async
+from .graph import GraphValue, _decode_rows
 from .result import MutationResult, Result
 
 if TYPE_CHECKING:
@@ -52,6 +53,25 @@ class AsyncSession(_AsyncBuilderFactory):
     @property
     def postgis_version(self) -> str | None:
         return self._native.postgis_version
+
+    @property
+    def age_version(self) -> str | None:
+        return self._native.age_version
+
+    async def age_capabilities(self) -> dict:
+        return await self._native.age_capabilities()
+
+    async def age_admin_capabilities(self) -> dict:
+        return await self._native.age_admin_capabilities()
+
+    async def list_graphs(self) -> list[str]:
+        return await self._native.list_graphs()
+
+    async def create_graph(self, graph: str) -> None:
+        await self._native.create_graph(graph)
+
+    async def drop_graph(self, graph: str, *, cascade: bool = False) -> None:
+        await self._native.drop_graph(graph, cascade=cascade)
 
     @property
     def is_closed(self) -> bool:
@@ -105,6 +125,20 @@ class AsyncSession(_AsyncBuilderFactory):
         self, sql: str, params: list | None = None
     ) -> list[dict]:
         return await self._native.execute_returning_rows(sql, params)
+
+    async def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
+    ) -> list[dict[str, GraphValue]]:
+        rows = await self._native.cypher(
+            graph, query, columns, params, max_rows=max_rows
+        )
+        return _decode_rows(rows)
 
     async def execute_ddl(self, sql: str) -> None:
         return await self._native.execute_ddl(sql)

@@ -4,6 +4,7 @@
 //! batch-bounded verso Arrow/GeoArrow-WKB e tutte le modalità di scrittura
 //! definite dal core.
 
+mod age;
 mod arrow;
 mod catalog;
 mod connection;
@@ -23,6 +24,7 @@ mod transaction;
 mod types;
 mod write;
 
+pub use age::parse_agtype;
 pub use spatial::{build_spatial_select, spatial_reference};
 
 pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode};
@@ -45,6 +47,7 @@ use connection::{
 use error::{check_cancelled, classify_error, public_error};
 use metrics::PostgresMetrics;
 use plenora_database_core::capabilities::ProviderCapabilities;
+use plenora_database_core::graph::{validate_graph_name, AgeAdminCapabilities, AgeCapabilities};
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
     ObjectRef, Operation, ProviderKind, ReadOperation, WriteOperation,
@@ -177,6 +180,184 @@ impl Default for PostgresProvider {
 }
 
 impl PostgresProvider {
+    /// Sonda il contratto AGE separato dal documento capability relazionale.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce un errore classificato se connessione o probe non sono
+    /// completabili. Un AGE assente o non qualificato produce invece un
+    /// documento fail-closed valido.
+    pub async fn age_capabilities(
+        &self,
+        secret: &SecretString,
+        cancellation: &CancellationToken,
+    ) -> Result<plenora_database_core::graph::AgeCapabilities> {
+        check_cancelled(cancellation, ErrorPhase::Probe)?;
+        let client = self.connect_session(secret).await?;
+        age::probe_age_capabilities(client.client()?).await
+    }
+
+    /// Capability amministrative AGE additive, separate dal documento graph
+    /// v1 per non cambiarne il wire contract.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce un errore classificato se connessione o probe falliscono.
+    pub async fn age_admin_capabilities(
+        &self,
+        secret: &SecretString,
+        cancellation: &CancellationToken,
+    ) -> Result<AgeAdminCapabilities> {
+        Ok(AgeAdminCapabilities::from_age(
+            &self.age_capabilities(secret, cancellation).await?,
+        ))
+    }
+
+    async fn qualified_age_session(
+        &self,
+        secret: &SecretString,
+        cancellation: &CancellationToken,
+    ) -> Result<PooledClient> {
+        check_cancelled(cancellation, ErrorPhase::Prepare)?;
+        let mut client = self.connect_session(secret).await?;
+        let capabilities: AgeCapabilities = age::probe_age_capabilities(client.client()?).await?;
+        if !capabilities.qualified() {
+            client.invalidate();
+            return Err(DatabaseError::unsupported(
+                ProviderKind::Postgres,
+                ErrorPhase::Prepare,
+                "Apache AGE 1.7.0 su PostgreSQL 18 non e disponibile o qualificato",
+            ));
+        }
+        // Le funzioni amministrative AGE risolvono internamente operatori e
+        // opclass non qualificati. Questa e una sessione dedicata presa dal
+        // pool: prima del riuso `connect_session` esegue sempre `DISCARD ALL`,
+        // quindi il search_path non attraversa il confine verso il chiamante.
+        client
+            .client()?
+            .execute(
+                "SELECT set_config('search_path', $1, false)",
+                &[&"ag_catalog,\"$user\",public"],
+            )
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+        Ok(client)
+    }
+
+    /// Elenca i grafi AGE in ordine stabile.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce `Unsupported` fuori dalla coppia qualificata, oppure un
+    /// errore classificato di connessione, cancellazione o lettura.
+    pub async fn list_graphs(
+        &self,
+        secret: &SecretString,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<String>> {
+        let mut client = self.qualified_age_session(secret, cancellation).await?;
+        let Some(result) = control::select_with_cancellation(
+            client.client()?.query(
+                "SELECT name::text FROM ag_catalog.ag_graph ORDER BY name",
+                &[],
+            ),
+            cancellation,
+        )
+        .await
+        else {
+            client.invalidate();
+            drop(client);
+            return Err(DatabaseError::interrupted(
+                cancellation,
+                Some(ProviderKind::Postgres),
+                ErrorPhase::Read,
+                "elenco grafi AGE interrotto",
+            ));
+        };
+        let rows = result.map_err(|error| classify_error(ErrorPhase::Read, &error));
+        drop(client);
+        let graphs = rows?.into_iter().map(|row| row.get(0)).collect();
+        Ok(graphs)
+    }
+
+    /// Crea un grafo AGE usando un parametro PostgreSQL, mai interpolazione.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce `InvalidPlan` per un nome non valido, `Unsupported` fuori
+    /// dalla coppia qualificata, oppure un errore classificato del server.
+    pub async fn create_graph(
+        &self,
+        secret: &SecretString,
+        graph: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        validate_graph_name(graph)?;
+        let mut client = self.qualified_age_session(secret, cancellation).await?;
+        let Some(result) = control::select_with_cancellation(
+            client
+                .client()?
+                .query("SELECT ag_catalog.create_graph($1::name)", &[&graph]),
+            cancellation,
+        )
+        .await
+        else {
+            client.invalidate();
+            drop(client);
+            return Err(DatabaseError::interrupted(
+                cancellation,
+                Some(ProviderKind::Postgres),
+                ErrorPhase::Write,
+                "creazione grafo AGE interrotta",
+            ));
+        };
+        let outcome = result
+            .map(|_| ())
+            .map_err(|error| classify_error(ErrorPhase::Write, &error));
+        drop(client);
+        outcome
+    }
+
+    /// Elimina un grafo AGE. `cascade` resta una scelta esplicita del
+    /// chiamante e viene bindata separatamente dal nome.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce `InvalidPlan` per un nome non valido, `Unsupported` fuori
+    /// dalla coppia qualificata, oppure un errore classificato del server.
+    pub async fn drop_graph(
+        &self,
+        secret: &SecretString,
+        graph: &str,
+        cascade: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        validate_graph_name(graph)?;
+        let mut client = self.qualified_age_session(secret, cancellation).await?;
+        let Some(result) = control::select_with_cancellation(
+            client.client()?.query(
+                "SELECT ag_catalog.drop_graph($1::name, $2)",
+                &[&graph, &cascade],
+            ),
+            cancellation,
+        )
+        .await
+        else {
+            client.invalidate();
+            drop(client);
+            return Err(DatabaseError::interrupted(
+                cancellation,
+                Some(ProviderKind::Postgres),
+                ErrorPhase::Write,
+                "eliminazione grafo AGE interrotta",
+            ));
+        };
+        let outcome = result
+            .map(|_| ())
+            .map_err(|error| classify_error(ErrorPhase::Write, &error));
+        drop(client);
+        outcome
+    }
     /// Costruzione base condivisa da `default()`, `new()`,
     /// `for_profile()`, `insecure_local()`.
     ///

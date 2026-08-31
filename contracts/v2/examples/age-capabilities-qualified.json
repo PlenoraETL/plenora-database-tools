@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "postgres_major": 18,
+  "extension_version": "1.7.0",
+  "query": true,
+  "parameters": true,
+  "writes": true,
+  "transactions": true,
+  "vertex": true,
+  "edge": true,
+  "path": true
+}

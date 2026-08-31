@@ -362,6 +362,52 @@ async def main():
 asyncio.run(main())
 ```
 
+## Graph con Apache AGE
+
+La superficie graph usa PostgreSQL con l'estensione AGE. Le capability si
+aprono soltanto sulla coppia qualificata AGE 1.7.0 / PostgreSQL 18; la versione
+installata e il documento separato sono leggibili da `age_version` e
+`age_capabilities`. Le operazioni amministrative hanno un documento additivo
+separato, `age_admin_capabilities`, cosi il contratto AGE v1 resta invariato.
+
+```python
+with plenora_database.connect(dsn, tls_mode="insecure_local") as session:
+    if "people" not in session.list_graphs():
+        session.create_graph("people")
+    rows = session.cypher(
+        "people",
+        "MATCH (p:Person) WHERE p.name = $name RETURN p",
+        columns=["person"],
+        params={"name": "Alice"},
+        max_rows=10_000,
+    )
+    person = rows[0]["person"]  # Vertex
+```
+
+`columns` e obbligatorio perche AGE richiede la forma del record restituito.
+Nomi di grafo, colonne e parametri sono identificatori validati; i valori
+viaggiano nella mappa `agtype` bindata e non vengono interpolati nella query.
+`Vertex`, `Edge` e `Path` preservano identita, label, estremi e proprieta.
+`max_rows` e obbligatoriamente compreso tra 1 e 1.000.000: l'adapter chiede al
+server una sola riga sentinella oltre il limite e fallisce con
+`ResourceLimit`, senza materializzare un risultato arbitrariamente grande.
+
+`list_graphs()`, `create_graph()` e `drop_graph(..., cascade=...)` legano nomi
+e opzioni come parametri PostgreSQL. La forma async usa gli stessi nomi come
+coroutine. `cascade=False` e intenzionale: la cancellazione dei dati dipendenti
+richiede una scelta esplicita.
+
+La stessa firma e disponibile su `Transaction`, `AsyncSession` e
+`AsyncTransaction`. Le scritture Cypher partecipano a commit, rollback e
+savepoint PostgreSQL.
+
+Il gate live attraversa le clausole AGE documentate (`MATCH`, `WITH`,
+`RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `CREATE`, `DELETE`, `SET`, `REMOVE`,
+`MERGE`, `UNWIND`), parametri preparati, percorsi a lunghezza variabile,
+funzioni su path, concorrenza, limiti, cancellazione e timeout. Cypher resta
+testo opaco: l'adapter non riscrive il linguaggio e quindi non impedisce
+funzioni AGE aggiuntive, ma pubblica solo cio che il gate qualifica.
+
 ## Transaction context
 
 ```python

@@ -42,11 +42,13 @@ mod stream;
 #[cfg(test)]
 mod tests;
 
+use crate::age::{build_cypher_sql, parse_agtype, probe_age_capabilities, AgeParameter};
 use crate::control::select_with_cancellation;
 use crate::error::{check_cancelled, classify_error, public_error};
 use crate::pool::PooledClient;
 use decode::decode_rows;
 use params::{encode_params, validate_parameter_targets};
+use plenora_database_core::graph::{GraphRow, GraphStatement, GraphValue};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::provider::ProviderFuture;
@@ -60,6 +62,7 @@ use plenora_database_core::{
     RetryDisposition,
 };
 use sql::{build_begin_sql, phase_of, quote_identifier};
+use std::collections::BTreeMap;
 use stream::PostgresRowStream;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Statement as PreparedStatement;
@@ -379,6 +382,121 @@ impl TransactionScope for PostgresTransaction {
             };
             let rows = query_result.map_err(|error| classify_error(ErrorPhase::Read, &error))?;
             decode_rows(&rows)
+        })
+    }
+
+    fn execute_graph<'a>(
+        &'a mut self,
+        statement: &'a GraphStatement,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Vec<GraphRow>> {
+        Box::pin(async move {
+            // Cypher puo contenere scritture anche quando restituisce righe:
+            // la fase conservativa e sempre Write.
+            self.ensure_open(ErrorPhase::Write)?;
+            check_cancelled(cancellation, ErrorPhase::Write)?;
+            statement.validate()?;
+            let client = self.client.client()?;
+            let capabilities = probe_age_capabilities(client).await?;
+            if !capabilities.qualified() {
+                return Err(DatabaseError::unsupported(
+                    plenora_database_core::plan::ProviderKind::Postgres,
+                    ErrorPhase::Prepare,
+                    "Apache AGE 1.7.0 su PostgreSQL 18 non e disponibile o qualificato",
+                ));
+            }
+
+            let sql = build_cypher_sql(statement)?;
+            let encoded_params = if statement.params.is_empty() {
+                None
+            } else {
+                Some(AgeParameter::new(
+                    serde_json::to_string(&statement.params).map_err(|_| {
+                        DatabaseError::invalid_plan(
+                            "la mappa parametri Cypher non e serializzabile",
+                        )
+                    })?,
+                ))
+            };
+            let parameter_refs: Vec<&(dyn ToSql + Sync)> = encoded_params
+                .iter()
+                .map(|value| value as &(dyn ToSql + Sync))
+                .collect();
+            // AGE risolve internamente `graphid_ops` e altri oggetti senza
+            // qualificarli. Anche con `cypher`/`agtype` qualificati, quindi,
+            // ag_catalog deve stare nel search_path durante lo statement.
+            // Salviamo e ripristiniamo il valore transaction-local per non
+            // alterare le query SQL successive del chiamante.
+            let previous_search_path: String = client
+                .query_one("SELECT current_setting('search_path')", &[])
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
+                .get(0);
+            client
+                .execute(
+                    "SELECT set_config('search_path', $1, true)",
+                    &[&"ag_catalog,\"$user\",public"],
+                )
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+            let Some(result) =
+                select_with_cancellation(client.query(&sql, &parameter_refs), cancellation).await
+            else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(Self::interruption_error(
+                    cancellation,
+                    ErrorPhase::Write,
+                    "operazione graph cancellata durante l'esecuzione",
+                ));
+            };
+            let rows = match result {
+                Ok(rows) => rows,
+                Err(error) => {
+                    let mapped = classify_error(ErrorPhase::Write, &error);
+                    if error.is_closed() {
+                        self.client.invalidate();
+                        self.open = false;
+                    }
+                    return Err(mapped);
+                }
+            };
+            client
+                .execute(
+                    "SELECT set_config('search_path', $1, true)",
+                    &[&previous_search_path],
+                )
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+
+            if rows.len() > statement.max_rows {
+                return Err(DatabaseError::resource_limit(
+                    "il risultato Cypher supera il limite righe dichiarato",
+                ));
+            }
+
+            rows.iter()
+                .map(|row| {
+                    let mut values = BTreeMap::new();
+                    for (index, column) in statement.columns.iter().enumerate() {
+                        let raw: Option<String> = row.try_get(index).map_err(|_| {
+                            DatabaseError::new(
+                                ErrorCategory::DataMapping,
+                                ErrorPhase::Read,
+                                Some(plenora_database_core::plan::ProviderKind::Postgres),
+                                "valore agtype non decodificabile",
+                            )
+                        })?;
+                        let value = raw
+                            .as_deref()
+                            .map(parse_agtype)
+                            .transpose()?
+                            .unwrap_or(GraphValue::Null);
+                        values.insert(column.clone(), value);
+                    }
+                    Ok(GraphRow { values })
+                })
+                .collect()
         })
     }
 
