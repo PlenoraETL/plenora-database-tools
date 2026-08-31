@@ -6,6 +6,8 @@ incompatibili, sempre indicate come **breaking**.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-31
+
 ### Aggiunto
 
 - API `cypher()` sync/async su sessione e transazione per Apache AGE, con
