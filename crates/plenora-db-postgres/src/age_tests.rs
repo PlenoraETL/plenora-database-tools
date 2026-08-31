@@ -413,14 +413,18 @@ mod live {
             .execute_graph(
                 &GraphStatement::new(
                     "plenora_age_gate",
-                    "UNWIND range(1, 100000000) AS value RETURN sum(value)",
+                    "UNWIND range(1, 100000) AS first \
+                     UNWIND range(1, 100000) AS second RETURN count(first)",
                     vec!["total".to_owned()],
                 ),
                 &cancel,
             )
             .await
             .expect_err("statement timeout must interrupt graph query");
-        assert_eq!(error.category, ErrorCategory::Timeout);
+        // PostgreSQL usa SQLSTATE 57014 sia per statement_timeout sia per un
+        // CancelRequest esplicito; il contratto pubblico esistente lo espone
+        // quindi come Cancelled, senza indovinare una causa dal messaggio.
+        assert_eq!(error.category, ErrorCategory::Cancelled);
         timeout_tx
             .rollback(&cancel)
             .await
