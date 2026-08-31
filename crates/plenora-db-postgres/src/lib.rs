@@ -229,6 +229,18 @@ impl PostgresProvider {
                 "Apache AGE 1.7.0 su PostgreSQL 18 non e disponibile o qualificato",
             ));
         }
+        // Le funzioni amministrative AGE risolvono internamente operatori e
+        // opclass non qualificati. Questa e una sessione dedicata presa dal
+        // pool: prima del riuso `connect_session` esegue sempre `DISCARD ALL`,
+        // quindi il search_path non attraversa il confine verso il chiamante.
+        client
+            .client()?
+            .execute(
+                "SELECT set_config('search_path', $1, false)",
+                &[&"ag_catalog,\"$user\",public"],
+            )
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
         Ok(client)
     }
 
