@@ -130,6 +130,7 @@ from .types import (
     TypedValue,
     date,
     decimal,
+    int64,
     null,
     timestamp,
     timestamptz,

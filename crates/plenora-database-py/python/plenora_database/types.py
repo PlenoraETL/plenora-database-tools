@@ -16,6 +16,8 @@ Esempi:
                   [p.timestamptz("2026-01-01T00:00:00Z")])
         s.execute("INSERT INTO t(bal) VALUES ($1)",
                   [p.decimal("1234.56")])
+        s.execute("INSERT INTO t(row_version) VALUES ($1)",
+                  [p.int64(1)])
         s.execute("INSERT INTO t(val) VALUES ($1)",
                   [p.null("text")])   # NULL con hint tipo colonna
 
@@ -51,6 +53,19 @@ class TypedValue:
 def uuid(value: str) -> TypedValue:
     """Forza il parametro a `ParameterValue::Uuid`."""
     return TypedValue("uuid", value)
+
+
+def int64(value: int) -> TypedValue:
+    """Forza un ``int`` Python a ``ParameterValue::I64``.
+
+    Utile quando il valore rientra nell'intervallo ``int4`` ma PostgreSQL si
+    aspetta un parametro binario ``bigint``/``int8``.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("int64 richiede un int Python")
+    if not -(1 << 63) <= value < (1 << 63):
+        raise OverflowError("int64 fuori dall'intervallo signed 64-bit")
+    return TypedValue("int64", value)
 
 
 def date(value: str) -> TypedValue:

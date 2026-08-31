@@ -53,6 +53,58 @@ def test_uuid_in_where_via_builder(session) -> None:
         session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
 
 
+# ------------------------------ Int64 ------------------------------
+
+
+def test_int64_helper_keeps_small_values_typed_as_i64() -> None:
+    value = p.int64(1)
+    assert value._plenora_typed_kind == "int64"
+    assert value._plenora_typed_value == 1
+
+
+def test_int64_helper_rejects_invalid_values_without_echoing_them() -> None:
+    for value in (True, "1", 1.0):
+        with pytest.raises(TypeError, match="int64 richiede un int Python"):
+            p.int64(value)
+    for value in (-(1 << 63) - 1, 1 << 63):
+        with pytest.raises(OverflowError, match="signed 64-bit"):
+            p.int64(value)
+
+
+def test_int64_small_value_roundtrip_direct_bigint_cast(session) -> None:
+    assert session.execute_scalar("SELECT $1::bigint", [p.int64(1)]) == 1
+
+
+def test_int64_small_value_bigint_crud_via_builders(session) -> None:
+    session.execute("DROP TABLE IF EXISTS _pyf6b_int64")
+    session.execute(
+        "CREATE TABLE _pyf6b_int64 (id INT PRIMARY KEY, row_version BIGINT NOT NULL)"
+    )
+    try:
+        inserted = (
+            session.insert("_pyf6b_int64")
+            .values(id=1, row_version=p.int64(1))
+            .execute()
+        )
+        assert inserted == 1
+        updated = (
+            session.update("_pyf6b_int64")
+            .set(row_version=p.int64(2))
+            .where_eq("row_version", p.int64(1))
+            .execute()
+        )
+        assert updated == 1
+        row = (
+            session.select("_pyf6b_int64")
+            .columns("row_version")
+            .where_eq("row_version", p.int64(2))
+            .one()
+        )
+        assert row == {"row_version": 2}
+    finally:
+        session.execute("DROP TABLE IF EXISTS _pyf6b_int64")
+
+
 # ------------------------------ Date/Timestamp ------------------------------
 
 
