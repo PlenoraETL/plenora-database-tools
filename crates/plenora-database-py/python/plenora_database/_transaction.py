@@ -21,6 +21,16 @@ if TYPE_CHECKING:
     from ._native import Transaction as _NativeTransaction
 
 
+def _require_native(transaction: "Transaction") -> "_NativeTransaction":
+    native = transaction._native
+    if native is None:
+        raise RuntimeError(
+            "transaction non attiva: gia committata o rollback-ata "
+            "(o chiusa dal context manager)"
+        )
+    return native
+
+
 class Transaction(_BuilderFactory):
     """Transazione user-managed. Costruita da `Session.begin(...)`.
 
@@ -48,15 +58,6 @@ class Transaction(_BuilderFactory):
         self._native: _NativeTransaction | None = native
         self._provider = provider
 
-    def _require_native(self) -> "_NativeTransaction":
-        native = self._native
-        if native is None:
-            raise RuntimeError(
-                "transaction non attiva: gia committata o rollback-ata "
-                "(o chiusa dal context manager)"
-            )
-        return native
-
     # ---------------------------- attributi ----------------------------
 
     @property
@@ -67,7 +68,7 @@ class Transaction(_BuilderFactory):
     # ------------------------- lifecycle --------------------------------
 
     def commit(self) -> None:
-        native = self._require_native()
+        native = _require_native(self)
         try:
             native.commit()
         finally:
@@ -77,7 +78,7 @@ class Transaction(_BuilderFactory):
             del native
 
     def rollback(self) -> None:
-        native = self._require_native()
+        native = _require_native(self)
         try:
             native.rollback()
         finally:
@@ -85,13 +86,13 @@ class Transaction(_BuilderFactory):
             del native
 
     def savepoint(self, name: str) -> None:
-        self._require_native().savepoint(name)
+        _require_native(self).savepoint(name)
 
     def rollback_to_savepoint(self, name: str) -> None:
-        self._require_native().rollback_to_savepoint(name)
+        _require_native(self).rollback_to_savepoint(name)
 
     def release_savepoint(self, name: str) -> None:
-        self._require_native().release_savepoint(name)
+        _require_native(self).release_savepoint(name)
 
     def conditional_update(
         self,
@@ -124,7 +125,7 @@ class Transaction(_BuilderFactory):
             PlenoraNotFoundError: chiave assente.
             PlenoraConcurrentModificationError: mismatch versione.
         """
-        self._require_native().conditional_update(
+        _require_native(self).conditional_update(
             update_sql,
             update_params,
             expected_affected_rows,
@@ -165,21 +166,21 @@ class Transaction(_BuilderFactory):
     ) -> Result | int | MutationResult: ...
 
     def execute(self, sql, params=None):
-        native = self._require_native()
+        native = _require_native(self)
         if isinstance(sql, ExecutableStatement):
             return _execute_statement(native, sql, params, self._provider)
         return native.execute(sql, params)
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
-        return self._require_native().execute_scalar(sql, params)
+        return _require_native(self).execute_scalar(sql, params)
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
-        return self._require_native().execute_returning_rows(sql, params)
+        return _require_native(self).execute_returning_rows(sql, params)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 
     def _execute_portable_rows(self, ast_json: str) -> list[dict]:
-        return self._require_native().execute_portable_rows(ast_json)
+        return _require_native(self).execute_portable_rows(ast_json)
 
     def _execute_portable_count(self, ast_json: str) -> int:
-        return self._require_native().execute_portable_count(ast_json)
+        return _require_native(self).execute_portable_count(ast_json)
