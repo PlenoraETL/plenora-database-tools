@@ -15,6 +15,7 @@ from ._arrow_io import _to_ipc_bytes
 from ._native import Session as _NativeSession
 from ._transaction import Transaction
 from .expression import ExecutableStatement, _execute_statement
+from .graph import GraphValue, _decode_rows
 from .query import _BuilderFactory
 from .result import MutationResult, Result
 
@@ -93,6 +94,25 @@ class Session(_BuilderFactory):
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return self._native.execute_returning_rows(sql, params)
+
+    @property
+    def age_version(self) -> str | None:
+        return self._native.age_version
+
+    @property
+    def age_capabilities(self) -> dict:
+        """Capability AGE v1; tutte false fuori da AGE 1.7.0/PostgreSQL 18."""
+        return self._native.age_capabilities
+
+    def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, GraphValue]]:
+        """Esegue Cypher con parametri bindati tramite Apache AGE."""
+        return _decode_rows(self._native.cypher(graph, query, columns, params))
 
     # ------------------------ Arrow batch read -------------------------
 

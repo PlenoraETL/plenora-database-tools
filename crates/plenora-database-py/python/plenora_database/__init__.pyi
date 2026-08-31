@@ -74,6 +74,7 @@ from .async_query import (
 )
 from .query import Delete, Insert, Select, Update, Upsert
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .graph import Edge, GraphValue, Path, Vertex
 from .metadata import (
     ColumnMetadata,
     Constraint,

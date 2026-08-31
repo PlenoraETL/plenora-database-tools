@@ -14,6 +14,10 @@
       "schema": "../capabilities.schema.json"
     },
     {
+      "file": "age-capabilities-qualified.json",
+      "schema": "../age-capabilities.schema.json"
+    },
+    {
       "file": "loss-report-strict.json",
       "schema": "../loss-report.schema.json"
     },

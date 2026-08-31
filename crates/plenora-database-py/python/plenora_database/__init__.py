@@ -61,6 +61,7 @@ from .expression import (
     upsert,
 )
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .graph import Edge, GraphValue, Path, Vertex
 from .metadata import (
     ColumnMetadata,
     Constraint,
@@ -1071,6 +1072,10 @@ __all__ = [
     # Spatial
     "spatial",
     "SpatialReference",
+    "Vertex",
+    "Edge",
+    "Path",
+    "GraphValue",
     # JSON ingress: bordo Python verso ORM / Arrow
     "JsonField",
     "JsonGeometry",

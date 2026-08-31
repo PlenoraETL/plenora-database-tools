@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/age-capabilities.schema.json",
+  "title": "Apache AGE capability document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "postgres_major",
+    "extension_version",
+    "query",
+    "parameters",
+    "writes",
+    "transactions",
+    "vertex",
+    "edge",
+    "path"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "postgres_major": { "type": ["integer", "null"], "minimum": 1 },
+    "extension_version": { "type": ["string", "null"] },
+    "query": { "type": "boolean" },
+    "parameters": { "type": "boolean" },
+    "writes": { "type": "boolean" },
+    "transactions": { "type": "boolean" },
+    "vertex": { "type": "boolean" },
+    "edge": { "type": "boolean" },
+    "path": { "type": "boolean" }
+  }
+}

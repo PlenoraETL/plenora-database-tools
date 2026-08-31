@@ -1,0 +1,17 @@
+name: plenora-age-reference
+
+services:
+  age:
+    image: apache/age@sha256:e7de1717e487dac7c1be93a1cd5360a2cf07ff4170342c2af2ac4713c21baf00
+    container_name: plenora-age
+    environment:
+      POSTGRES_DB: plenora_age
+      POSTGRES_USER: plenora
+      POSTGRES_PASSWORD: plenora_age_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plenora -d plenora_age"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql

@@ -4,6 +4,14 @@ Il changelog descrive l'impatto per chi aggiorna. La storia implementativa e le
 review restano in Git. Fino alla 1.0, una minor puo contenere modifiche
 incompatibili, sempre indicate come **breaking**.
 
+## [Unreleased]
+
+### Aggiunto
+
+- API `cypher()` sync/async su sessione e transazione per Apache AGE, con
+  parametri separati dal testo, risultati `Vertex`/`Edge`/`Path` tipizzati e
+  capability fail-closed qualificate per AGE 1.7.0 su PostgreSQL 18.
+
 ## [0.12.0] — 2026-08-31
 
 La versione interna `0.11.0` non e stata pubblicata: questa release consolida

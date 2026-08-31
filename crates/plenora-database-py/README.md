@@ -362,6 +362,33 @@ async def main():
 asyncio.run(main())
 ```
 
+## Graph con Apache AGE
+
+La superficie graph usa PostgreSQL con l'estensione AGE. Le capability si
+aprono soltanto sulla coppia qualificata AGE 1.7.0 / PostgreSQL 18; la versione
+installata e il documento separato sono leggibili da `age_version` e
+`age_capabilities`.
+
+```python
+with plenora_database.connect(dsn, tls_mode="insecure_local") as session:
+    rows = session.cypher(
+        "people",
+        "MATCH (p:Person) WHERE p.name = $name RETURN p",
+        columns=["person"],
+        params={"name": "Alice"},
+    )
+    person = rows[0]["person"]  # Vertex
+```
+
+`columns` e obbligatorio perche AGE richiede la forma del record restituito.
+Nomi di grafo, colonne e parametri sono identificatori validati; i valori
+viaggiano nella mappa `agtype` bindata e non vengono interpolati nella query.
+`Vertex`, `Edge` e `Path` preservano identita, label, estremi e proprieta.
+
+La stessa firma e disponibile su `Transaction`, `AsyncSession` e
+`AsyncTransaction`. Le scritture Cypher partecipano a commit, rollback e
+savepoint PostgreSQL.
+
 ## Transaction context
 
 ```python

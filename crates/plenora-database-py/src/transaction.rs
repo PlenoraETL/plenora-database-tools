@@ -21,7 +21,8 @@
 
 use crate::errors::to_py_err;
 use crate::py_convert::{
-    portable_from_json, rows_to_pylist, scalar_to_python, statement_from_python,
+    graph_rows_to_pylist, graph_statement_from_python, portable_from_json, rows_to_pylist,
+    scalar_to_python, statement_from_python,
 };
 use crate::runtime;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
@@ -29,7 +30,7 @@ use plenora_database_core::transaction::{ConditionalUpdate, TransactionScope};
 use plenora_database_core::{CancellationToken, Row};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -147,6 +148,28 @@ impl Transaction {
     ) -> PyResult<Bound<'py, PyList>> {
         let rows = self.query_rows(py, sql, params)?;
         rows_to_pylist(py, rows)
+    }
+
+    #[pyo3(signature = (graph, cypher, columns, params=None))]
+    fn cypher<'py>(
+        &mut self,
+        py: Python<'py>,
+        graph: &str,
+        cypher: &str,
+        columns: Vec<String>,
+        params: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let statement = graph_statement_from_python(graph, cypher, columns, params.as_ref())?;
+        let tx = self.tx_mut()?;
+        let rows = py
+            .detach(|| {
+                runtime().block_on(async move {
+                    let cancel = CancellationToken::new();
+                    tx.execute_graph(&statement, &cancel).await
+                })
+            })
+            .map_err(to_py_err)?;
+        graph_rows_to_pylist(py, &rows)
     }
 
     /// Esegue un `PortableStatement` nella transazione, ritorna le righe.

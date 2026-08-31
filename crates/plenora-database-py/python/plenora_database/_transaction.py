@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .expression import ExecutableStatement, _execute_statement
+from .graph import GraphValue, _decode_rows
 from .query import _BuilderFactory
 from .result import MutationResult, Result
 
@@ -176,6 +177,17 @@ class Transaction(_BuilderFactory):
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
         return _require_native(self).execute_returning_rows(sql, params)
+
+    def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, GraphValue]]:
+        return _decode_rows(
+            _require_native(self).cypher(graph, query, columns, params)
+        )
 
     # ------- API interne consumate dai builder (via json AST) -----------
 

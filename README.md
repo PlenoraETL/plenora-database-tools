@@ -24,6 +24,7 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 | ORM-like | mapping dichiarativo sync/async, identity map, unit of work, relazioni, eager loading, concorrenza ottimistica, DDL e migrazioni lineari |
 | Data plane | lettura streaming e scritture bulk basate su Arrow |
 | Spatial | metadati GeoArrow, geometrie WKB/EWKB, validazione CRS e operazioni spatial qualificate per provider |
+| Graph | Cypher parametrizzato e valori `agtype` tipizzati tramite Apache AGE su PostgreSQL |
 | SDK Python | API applicativa, engine/session lifecycle, factory per provider, stub PEP 561 e binding PyO3 |
 | CLI | inspect, probe, read, write e diagnostica sugli stessi contratti del core |
 | Assurance | contratti JSON Schema, golden test, fixture reali, matrici live, benchmark e fuzzing |
@@ -271,6 +272,7 @@ python scripts\check_cargo_deny.py          # supply chain in Docker, tool fissa
 python scripts\check_mysql_reference.py --static
 python scripts\check_mysql_reference.py     # gate MySQL live
 python scripts\check_postgres_reference.py  # gate PostgreSQL live
+python scripts\check_age_reference.py       # gate AGE 1.7.0 / PostgreSQL 18 live
 python scripts\check_sqlserver_reference.py # gate SQL Server live
 python scripts\check_db2_reference.py       # gate IBM Db2 LUW live
 python scripts\check_sdk_campaign.py        # wheel + fixture dei provider standard

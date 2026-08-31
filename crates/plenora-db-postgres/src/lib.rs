@@ -4,6 +4,7 @@
 //! batch-bounded verso Arrow/GeoArrow-WKB e tutte le modalità di scrittura
 //! definite dal core.
 
+mod age;
 mod arrow;
 mod catalog;
 mod connection;
@@ -23,6 +24,7 @@ mod transaction;
 mod types;
 mod write;
 
+pub use age::parse_agtype;
 pub use spatial::{build_spatial_select, spatial_reference};
 
 pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode};
@@ -177,6 +179,22 @@ impl Default for PostgresProvider {
 }
 
 impl PostgresProvider {
+    /// Sonda il contratto AGE separato dal documento capability relazionale.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce un errore classificato se connessione o probe non sono
+    /// completabili. Un AGE assente o non qualificato produce invece un
+    /// documento fail-closed valido.
+    pub async fn age_capabilities(
+        &self,
+        secret: &SecretString,
+        cancellation: &CancellationToken,
+    ) -> Result<plenora_database_core::graph::AgeCapabilities> {
+        check_cancelled(cancellation, ErrorPhase::Probe)?;
+        let client = self.connect_session(secret).await?;
+        age::probe_age_capabilities(client.client()?).await
+    }
     /// Costruzione base condivisa da `default()`, `new()`,
     /// `for_profile()`, `insecure_local()`.
     ///

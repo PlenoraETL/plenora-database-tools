@@ -6,6 +6,7 @@
 //! espone primitive; la traduzione verso lo specifico provider spetta al
 //! driver.
 
+use crate::graph::{GraphRow, GraphStatement};
 use crate::native_query_policy::NativeQueryPolicy;
 use crate::outcome::{CertainPhase, Recovery};
 use crate::provider::{ParameterValue, ProviderFuture};
@@ -211,6 +212,24 @@ pub trait TransactionScope: Send {
         statement: &'a Statement,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Vec<Row>>;
+
+    /// Esegue una richiesta graph. Il default e deliberatamente fail-closed:
+    /// soltanto un provider con un adapter qualificato puo aprire la
+    /// superficie.
+    fn execute_graph<'a>(
+        &'a mut self,
+        _statement: &'a GraphStatement,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Vec<GraphRow>> {
+        let provider = self.provider_kind();
+        Box::pin(async move {
+            Err(crate::DatabaseError::unsupported(
+                provider,
+                crate::ErrorPhase::Prepare,
+                "operazioni graph non supportate dal provider",
+            ))
+        })
+    }
 
     /// Apre una lettura server-side: le righe vengono materializzate in
     /// batch di `batch_size` righe alla volta senza mai caricare l'intero

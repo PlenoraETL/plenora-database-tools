@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Mapping, overload
 
 from .async_query import _AsyncBuilderFactory
 from .expression import ExecutableStatement, _execute_statement_async
+from .graph import GraphValue, _decode_rows
 from .result import MutationResult, Result
 
 if TYPE_CHECKING:
@@ -116,6 +117,16 @@ class AsyncTransaction(_AsyncBuilderFactory):
         self, sql: str, params: list | None = None
     ) -> list[dict]:
         return await self._native.execute_returning_rows(sql, params)
+
+    async def cypher(
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, GraphValue]]:
+        rows = await self._native.cypher(graph, query, columns, params)
+        return _decode_rows(rows)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 
