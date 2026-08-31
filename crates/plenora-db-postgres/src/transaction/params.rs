@@ -8,11 +8,12 @@
 //! del testo originale (utile per `SELECT $1::text::uuid` pattern).
 
 use super::sql::unsupported_param;
-use crate::parameter_codec::{DecimalParameter, UuidParameter};
+use crate::error::public_error;
+use crate::parameter_codec::{DecimalParameter, IntegerParameter, UuidParameter};
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use plenora_database_core::provider::ParameterValue;
-use plenora_database_core::Result;
+use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 
 pub(super) enum SqlParam {
@@ -58,8 +59,12 @@ impl ToSql for SqlParam {
         match self {
             Self::Null(_) => Ok(IsNull::Yes),
             Self::Bool(v) => v.to_sql(ty, out),
-            Self::I32(v) => v.to_sql(ty, out),
-            Self::I64(v) => v.to_sql(ty, out),
+            Self::I32(v) => IntegerParameter(i64::from(*v)).to_sql(ty, out),
+            Self::I64(v) => IntegerParameter(*v).to_sql(ty, out),
+            // Il target preparato richiede esplicitamente la rappresentazione
+            // IEEE-754 a 32 bit; la riduzione di precisione e quindi intenzionale.
+            #[allow(clippy::cast_possible_truncation)]
+            Self::F64(v) if *ty == Type::FLOAT4 => (*v as f32).to_sql(ty, out),
             Self::F64(v) => v.to_sql(ty, out),
             Self::String(v) => v.as_str().to_sql(ty, out),
             Self::Bytes(v) => v.as_slice().to_sql(ty, out),
@@ -97,6 +102,91 @@ impl ToSql for SqlParam {
 
 pub(super) fn encode_params(params: &[ParameterValue]) -> Result<Vec<SqlParam>> {
     params.iter().map(encode_param).collect()
+}
+
+pub(super) fn validate_parameter_targets(
+    params: &[ParameterValue],
+    targets: &[Type],
+) -> Result<()> {
+    if params.len() != targets.len() {
+        return Err(public_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Prepare,
+            false,
+            "numero di parametri diverso dai target PostgreSQL preparati",
+        ));
+    }
+    for (index, (param, target)) in params.iter().zip(targets).enumerate() {
+        if parameter_accepts_target(param, target) {
+            continue;
+        }
+        return Err(public_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Prepare,
+            false,
+            &format!(
+                "bind PostgreSQL incompatibile al parametro {}: tipo portabile {}, target {}",
+                index + 1,
+                portable_type_name(param),
+                target.name()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn parameter_accepts_target(param: &ParameterValue, target: &Type) -> bool {
+    let textual = matches!(
+        *target,
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN
+    );
+    match param {
+        ParameterValue::Null { type_name } => map_null_type(type_name) == *target,
+        ParameterValue::Bool(_) => *target == Type::BOOL,
+        ParameterValue::I32(value) => match *target {
+            Type::INT2 => i16::try_from(*value).is_ok(),
+            Type::INT4 | Type::INT8 | Type::NUMERIC => true,
+            _ => false,
+        },
+        ParameterValue::I64(value) => match *target {
+            Type::INT2 => i16::try_from(*value).is_ok(),
+            Type::INT4 => i32::try_from(*value).is_ok(),
+            Type::INT8 | Type::NUMERIC => true,
+            _ => false,
+        },
+        ParameterValue::F64(_) => matches!(*target, Type::FLOAT4 | Type::FLOAT8),
+        ParameterValue::String(_) => textual,
+        ParameterValue::Bytes(_) | ParameterValue::Wkb { .. } => *target == Type::BYTEA,
+        ParameterValue::Date(_) => *target == Type::DATE,
+        ParameterValue::Timestamp(_) => *target == Type::TIMESTAMP,
+        ParameterValue::TimestampTz(_) => *target == Type::TIMESTAMPTZ,
+        ParameterValue::Uuid(_) => *target == Type::UUID || textual,
+        ParameterValue::Decimal(_) => *target == Type::NUMERIC || textual,
+        ParameterValue::Json(_) => matches!(*target, Type::JSON | Type::JSONB),
+        ParameterValue::Enum { .. } => {
+            textual || matches!(target.kind(), tokio_postgres::types::Kind::Enum(_))
+        }
+    }
+}
+
+const fn portable_type_name(param: &ParameterValue) -> &'static str {
+    match param {
+        ParameterValue::Null { .. } => "null",
+        ParameterValue::Bool(_) => "bool",
+        ParameterValue::I32(_) => "i32",
+        ParameterValue::I64(_) => "i64",
+        ParameterValue::F64(_) => "f64",
+        ParameterValue::String(_) => "string",
+        ParameterValue::Bytes(_) => "bytes",
+        ParameterValue::Date(_) => "date",
+        ParameterValue::Timestamp(_) => "timestamp",
+        ParameterValue::TimestampTz(_) => "timestamp_tz",
+        ParameterValue::Json(_) => "json",
+        ParameterValue::Wkb { .. } => "wkb",
+        ParameterValue::Decimal(_) => "decimal",
+        ParameterValue::Uuid(_) => "uuid",
+        ParameterValue::Enum { .. } => "enum",
+    }
 }
 
 fn encode_param(param: &ParameterValue) -> Result<SqlParam> {

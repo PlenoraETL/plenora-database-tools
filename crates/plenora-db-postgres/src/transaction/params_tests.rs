@@ -226,3 +226,33 @@ fn debug_impl_redacts_the_value() {
     );
     assert!(s.contains("REDACTED"));
 }
+
+#[test]
+fn small_i32_is_serialized_with_the_prepared_int8_width() {
+    let mut encoded = BytesMut::new();
+    SqlParam::I32(1)
+        .to_sql(&Type::INT8, &mut encoded)
+        .expect("i32 ampliabile a int8");
+    assert_eq!(encoded.len(), 8);
+}
+
+#[test]
+fn bind_validation_reports_only_position_and_types() {
+    let sentinel = 8_675_309_i64;
+    let error = validate_parameter_targets(&[ParameterValue::I64(sentinel)], &[Type::UUID])
+        .expect_err("i64 non e un UUID");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(error.message.contains("parametro 1"));
+    assert!(error.message.contains("i64"));
+    assert!(error.message.contains("uuid"));
+    assert!(!error.message.contains(&sentinel.to_string()));
+}
+
+#[test]
+fn integer_narrowing_is_range_checked_before_serialization() {
+    let sentinel = i64::from(i32::MAX) + 1;
+    let error = validate_parameter_targets(&[ParameterValue::I64(sentinel)], &[Type::INT4])
+        .expect_err("i64 fuori range int4");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(!error.message.contains(&sentinel.to_string()));
+}

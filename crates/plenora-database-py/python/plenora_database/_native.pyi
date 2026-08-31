@@ -504,6 +504,9 @@ class PlenoraError(RuntimeError):
     provider: str | None
     execution_id: str | None
     diagnostics: dict | list | None
+    parameter_index: int | None
+    portable_type: str | None
+    target_type: str | None
 
 class PlenoraInvalidPlanError(PlenoraError): ...
 class PlenoraInvalidConfigurationError(PlenoraError): ...

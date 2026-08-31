@@ -133,6 +133,7 @@ from .types import (
     TypedValue,
     date,
     decimal,
+    int32,
     int64,
     null,
     timestamp,
@@ -1116,6 +1117,7 @@ __all__ = [
     # Typed params helpers
     "TypedValue",
     "uuid",
+    "int32",
     "int64",
     "date",
     "timestamp",

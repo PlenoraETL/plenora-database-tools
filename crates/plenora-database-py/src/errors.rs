@@ -13,6 +13,8 @@
 //!   - `provider` (str, "postgres" / "mysql" / "sqlserver" / None)
 //!   - `execution_id` (str o None)
 //!   - `diagnostics` (dict decodificato dal Value serde) o None
+//!   - `parameter_index`, `portable_type`, `target_type` per un errore di bind
+//!     diagnosticato prima dell'esecuzione; altrimenti None
 //!
 //! Il messaggio testuale (`str(exc)`) è "<category>: <message>".
 
@@ -191,6 +193,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// generico. Il consumer può filtrare separatamente per retry/quarantine
 /// logic senza matching stringhe nel messaggio.
 pub fn to_py_err(err: DatabaseError) -> PyErr {
+    let bind_context = bind_error_context(&err.message);
     let message = format!("{}: {}", category_name(err.category), err.message);
     let is_commit_outcome_unknown = err.category == ErrorCategory::Internal
         && err.phase == ErrorPhase::Commit
@@ -255,6 +258,18 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
                     .ok()
             });
         let _ = bound.setattr("diagnostics", diagnostics_py);
+        let _ = bound.setattr(
+            "parameter_index",
+            bind_context.as_ref().map(|context| context.0),
+        );
+        let _ = bound.setattr(
+            "portable_type",
+            bind_context.as_ref().map(|context| context.1.as_str()),
+        );
+        let _ = bound.setattr(
+            "target_type",
+            bind_context.as_ref().map(|context| context.2.as_str()),
+        );
         // PFM CHG-004: attributi extra su commit-outcome-unknown per
         // guidare il recovery lato consumer.
         if is_commit_outcome_unknown {
@@ -267,6 +282,17 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
     });
     pyerr
 }
+
+fn bind_error_context(message: &str) -> Option<(usize, String, String)> {
+    let rest = message.strip_prefix("bind PostgreSQL incompatibile al parametro ")?;
+    let (index, rest) = rest.split_once(": tipo portabile ")?;
+    let (portable, target) = rest.split_once(", target ")?;
+    Some((index.parse().ok()?, portable.to_owned(), target.to_owned()))
+}
+
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
 
 const fn category_name(c: ErrorCategory) -> &'static str {
     match c {

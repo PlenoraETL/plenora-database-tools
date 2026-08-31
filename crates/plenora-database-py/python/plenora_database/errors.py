@@ -14,6 +14,8 @@ Ogni istanza porta attributi ispezionabili:
   - `provider` (str: "postgres" / "mysql" / "sqlserver" / None)
   - `execution_id` (str o None)
   - `diagnostics` (dict/list se il core ha fornito diagnostiche, else None)
+  - `parameter_index`, `portable_type`, `target_type` (diagnostica bind
+    sanificata, oppure None)
 
 Uso tipico:
 

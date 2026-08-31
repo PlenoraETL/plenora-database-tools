@@ -1,11 +1,15 @@
 """F3-5 — Test integrazione live per Transaction context + savepoints."""
 from __future__ import annotations
 
+import gc
 import os
+import sys
+import threading
 
 import pytest
 
 import plenora_database
+from plenora_database._transaction import Transaction
 
 from ._harness import connect_postgres, postgres_dsn_or_skip
 
@@ -29,6 +33,111 @@ def _session():
 
 # --------------------------- lifecycle ---------------------------
 
+
+def test_context_exit_destroys_thread_affine_native_before_traceback_handoff() -> None:
+    destroyed_on: list[int] = []
+
+    class _ThreadAffineNative:
+        is_active = True
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            self.is_active = False
+            return False
+
+        def __del__(self) -> None:
+            destroyed_on.append(threading.get_ident())
+
+    origin = threading.get_ident()
+    escaped: list[BaseException] = []
+    tx = Transaction(_ThreadAffineNative())
+    try:
+        with tx:
+            raise RuntimeError("route failed")
+    except RuntimeError as error:
+        escaped.append(error)
+
+    assert tx.is_active is False
+    assert destroyed_on == [origin]
+
+    # Simula la consegna dell'eccezione da una route sync a un handler async:
+    # il traceback conserva `tx`, ma non deve piu conservare il native.
+    worker = threading.Thread(target=lambda: (escaped.clear(), gc.collect()))
+    worker.start()
+    worker.join()
+    assert destroyed_on == [origin]
+
+
+def test_context_exit_detaches_native_even_when_native_cleanup_fails() -> None:
+    destroyed_on: list[int] = []
+
+    class _FailingThreadAffineNative:
+        is_active = True
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            raise RuntimeError("sanitized native cleanup failure")
+
+        def __del__(self) -> None:
+            destroyed_on.append(threading.get_ident())
+
+    origin = threading.get_ident()
+    escaped: list[BaseException] = []
+    tx = Transaction(_FailingThreadAffineNative())
+    try:
+        with tx:
+            pass
+    except RuntimeError as error:
+        escaped.append(error)
+
+    assert tx.is_active is False
+    assert destroyed_on == [origin]
+    worker = threading.Thread(target=lambda: (escaped.clear(), gc.collect()))
+    worker.start()
+    worker.join()
+    assert destroyed_on == [origin]
+
+
+def test_native_transaction_is_detached_before_cross_thread_exception_gc() -> None:
+    dsn = postgres_dsn_or_skip()
+    handoff: list[BaseException] = []
+    worker_failures: list[BaseException] = []
+
+    class _RouteFailure(RuntimeError):
+        pass
+
+    def sync_route() -> None:
+        session = None
+        try:
+            session = connect_postgres(dsn)
+            tx = session.begin()
+            try:
+                with tx:
+                    raise _RouteFailure("sanitized route failure")
+            except _RouteFailure as error:
+                # AnyIO conserva l'eccezione e il suo traceback mentre torna
+                # dal worker sync all'exception handler async.
+                handoff.append(error)
+        except BaseException as error:  # pragma: no cover - diagnostica thread
+            worker_failures.append(error)
+        finally:
+            if session is not None:
+                session.close()
+            session = None
+
+    worker = threading.Thread(target=sync_route)
+    worker.start()
+    worker.join()
+    assert worker_failures == []
+    assert len(handoff) == 1
+
+    unraisable: list[str] = []
+    previous_hook = sys.unraisablehook
+    sys.unraisablehook = lambda issue: unraisable.append(str(issue.exc_value))
+    try:
+        handoff.clear()
+        gc.collect()
+    finally:
+        sys.unraisablehook = previous_hook
+    assert not any("unsendable" in message.lower() for message in unraisable)
 
 def test_begin_returns_active_transaction(session) -> None:
     tx = session.begin()

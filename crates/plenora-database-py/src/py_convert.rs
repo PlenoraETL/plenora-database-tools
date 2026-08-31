@@ -113,10 +113,11 @@ pub fn python_to_param(value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
 
 /// Costruisce un `ParameterValue` dal tag esplicito di un `TypedValue`
 /// Python. I tag validi sono i variant snake_case di `ParameterValue`
-/// (`uuid`, `i64`, `date`, `timestamp`, `timestamp_tz`, `decimal`, `null`).
+/// (`uuid`, `i32`, `i64`, `date`, `timestamp`, `timestamp_tz`, `decimal`, `null`).
 fn typed_to_param(kind: &str, value: &Bound<'_, PyAny>) -> PyResult<ParameterValue> {
     match kind {
         "uuid" => Ok(ParameterValue::Uuid(value.extract::<String>()?)),
+        "i32" => Ok(ParameterValue::I32(value.extract::<i32>()?)),
         "i64" => Ok(ParameterValue::I64(value.extract::<i64>()?)),
         "date" => Ok(ParameterValue::Date(value.extract::<String>()?)),
         "timestamp" => Ok(ParameterValue::Timestamp(value.extract::<String>()?)),
@@ -136,7 +137,7 @@ fn typed_to_param(kind: &str, value: &Bound<'_, PyAny>) -> PyResult<ParameterVal
             Ok(ParameterValue::Null { type_name })
         }
         _ => Err(PyTypeError::new_err(
-            "TypedValue kind sconosciuto (attesi: uuid, i64, date, timestamp, timestamp_tz, decimal, null)",
+            "TypedValue kind sconosciuto (attesi: uuid, i32, i64, date, timestamp, timestamp_tz, decimal, null)",
         )),
     }
 }

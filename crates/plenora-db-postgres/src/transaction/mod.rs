@@ -46,8 +46,9 @@ use crate::control::select_with_cancellation;
 use crate::error::{check_cancelled, classify_error, public_error};
 use crate::pool::PooledClient;
 use decode::decode_rows;
-use params::encode_params;
+use params::{encode_params, validate_parameter_targets};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
+use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
@@ -61,6 +62,7 @@ use plenora_database_core::{
 use sql::{build_begin_sql, phase_of, quote_identifier};
 use stream::PostgresRowStream;
 use tokio_postgres::types::ToSql;
+use tokio_postgres::Statement as PreparedStatement;
 
 /// Transazione `PostgreSQL` costruita sopra un `PooledClient`.
 pub struct PostgresTransaction {
@@ -173,6 +175,28 @@ impl PostgresTransaction {
             diagnostics: None,
         }
     }
+
+    async fn prepare_bind(
+        &mut self,
+        sql: &str,
+        params: &[ParameterValue],
+        cancellation: &CancellationToken,
+        operation_phase: ErrorPhase,
+    ) -> Result<PreparedStatement> {
+        let client = self.client.client()?;
+        let Some(result) = select_with_cancellation(client.prepare(sql), cancellation).await else {
+            self.client.invalidate();
+            self.open = false;
+            return Err(Self::interruption_error(
+                cancellation,
+                operation_phase,
+                "preparazione PostgreSQL cancellata",
+            ));
+        };
+        let prepared = result.map_err(|error| classify_error(operation_phase, &error))?;
+        validate_parameter_targets(params, prepared.params())?;
+        Ok(prepared)
+    }
 }
 
 impl TransactionScope for PostgresTransaction {
@@ -195,6 +219,9 @@ impl TransactionScope for PostgresTransaction {
                 .iter()
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
+            let prepared = self
+                .prepare_bind(&statement.sql, &statement.params, cancellation, phase)
+                .await?;
             let client = self.client.client()?;
             // `select_with_cancellation` mette in race la query con il token.
             // Su cancellazione il client
@@ -205,11 +232,9 @@ impl TransactionScope for PostgresTransaction {
             // perché è expensive (nuova connessione + protocol) e
             // non è thread-safe rispetto al client in uso.
             // L'invalidazione del pool è più conservativa.
-            let Some(result) = select_with_cancellation(
-                client.execute(statement.sql.as_str(), &param_refs),
-                cancellation,
-            )
-            .await
+            let Some(result) =
+                select_with_cancellation(client.execute(&prepared, &param_refs), cancellation)
+                    .await
             else {
                 self.client.invalidate();
                 self.open = false;
@@ -330,13 +355,18 @@ impl TransactionScope for PostgresTransaction {
                 .iter()
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
+            let prepared = self
+                .prepare_bind(
+                    &statement.sql,
+                    &statement.params,
+                    cancellation,
+                    ErrorPhase::Read,
+                )
+                .await?;
             let client = self.client.client()?;
             // Anche la lettura osserva la cancellazione mentre è in flight.
-            let Some(query_result) = select_with_cancellation(
-                client.query(statement.sql.as_str(), &param_refs),
-                cancellation,
-            )
-            .await
+            let Some(query_result) =
+                select_with_cancellation(client.query(&prepared, &param_refs), cancellation).await
             else {
                 self.client.invalidate();
                 self.open = false;
@@ -387,12 +417,18 @@ impl TransactionScope for PostgresTransaction {
                 "DECLARE {cursor_name} NO SCROLL CURSOR FOR {}",
                 statement.sql
             );
+            let prepared = self
+                .prepare_bind(
+                    &declare_sql,
+                    &statement.params,
+                    cancellation,
+                    ErrorPhase::Read,
+                )
+                .await?;
             let client = self.client.client()?;
-            let Some(declare_result) = select_with_cancellation(
-                client.execute(declare_sql.as_str(), &param_refs),
-                cancellation,
-            )
-            .await
+            let Some(declare_result) =
+                select_with_cancellation(client.execute(&prepared, &param_refs), cancellation)
+                    .await
             else {
                 self.client.invalidate();
                 self.open = false;
@@ -433,9 +469,17 @@ impl TransactionScope for PostgresTransaction {
                 .iter()
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
+            let prepared_update = self
+                .prepare_bind(
+                    &request.update.sql,
+                    &request.update.params,
+                    cancellation,
+                    ErrorPhase::Write,
+                )
+                .await?;
             let client = self.client.client()?;
             let Some(update_result) = select_with_cancellation(
-                client.execute(request.update.sql.as_str(), &update_param_refs),
+                client.execute(&prepared_update, &update_param_refs),
                 cancellation,
             )
             .await
@@ -471,9 +515,12 @@ impl TransactionScope for PostgresTransaction {
                     .iter()
                     .map(|value| value as &(dyn ToSql + Sync))
                     .collect();
+                let prepared_probe = self
+                    .prepare_bind(&probe.sql, &probe.params, cancellation, ErrorPhase::Read)
+                    .await?;
                 let probe_client = self.client.client()?;
                 let Some(probe_result) = select_with_cancellation(
-                    probe_client.query(probe.sql.as_str(), &probe_refs),
+                    probe_client.query(&prepared_probe, &probe_refs),
                     cancellation,
                 )
                 .await

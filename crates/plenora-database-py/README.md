@@ -409,6 +409,7 @@ s.execute("INSERT INTO t(val) VALUES ($1)", [p.null("text")])
 
 Formati:
 - `p.uuid(str)` — 36 char con dash
+- `p.int32(int)` — forza un bind binario `integer`/`int4`
 - `p.int64(int)` — forza un bind binario `bigint`/`int8`, anche per valori piccoli
 - `p.date(str)` — `YYYY-MM-DD`
 - `p.timestamp(str)` — ISO-8601 senza tz (`YYYY-MM-DDTHH:MM:SS`)

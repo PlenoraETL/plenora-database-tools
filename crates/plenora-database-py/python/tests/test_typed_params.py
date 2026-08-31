@@ -54,7 +54,24 @@ def test_uuid_in_where_via_builder(session) -> None:
         session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
 
 
-# ------------------------------ Int64 ------------------------------
+# ------------------------------ Integer helpers ------------------------------
+
+
+def test_int32_helper_keeps_values_typed_and_checks_its_range() -> None:
+    value = p.int32(1)
+    assert value._plenora_typed_kind == "i32"
+    assert value._plenora_typed_value == 1
+    assert literal_value(value) == {"type": "i32", "value": 1}
+    for invalid in (True, "1", 1.0):
+        with pytest.raises(TypeError, match="int32 richiede un int Python"):
+            p.int32(invalid)
+    for invalid in (-(1 << 31) - 1, 1 << 31):
+        with pytest.raises(OverflowError, match="signed 32-bit"):
+            p.int32(invalid)
+
+
+def test_int32_small_value_roundtrip_direct_integer_cast(session) -> None:
+    assert session.execute_scalar("SELECT $1::integer", [p.int32(1)]) == 1
 
 
 def test_int64_helper_keeps_small_values_typed_as_i64() -> None:
@@ -77,6 +94,26 @@ def test_int64_small_value_roundtrip_direct_bigint_cast(session) -> None:
     assert session.execute_scalar("SELECT $1::bigint", [p.int64(1)]) == 1
 
 
+def test_untyped_small_int_is_safely_widened_for_bigint(session) -> None:
+    # Compatibilita tollerante: l'helper resta utile per dichiarare l'intento,
+    # ma un normale int Python piccolo non produce piu un frame int4/int8.
+    assert session.execute_scalar("SELECT $1::bigint", [1]) == 1
+
+
+def test_incompatible_bind_reports_position_and_types_without_value(session) -> None:
+    sentinel = 8_675_309
+    with pytest.raises(p.PlenoraDataMappingError) as raised:
+        session.execute_scalar("SELECT $1::uuid", [p.int64(sentinel)])
+    message = str(raised.value)
+    assert "parametro 1" in message
+    assert "i64" in message
+    assert "uuid" in message
+    assert str(sentinel) not in message
+    assert raised.value.parameter_index == 1
+    assert raised.value.portable_type == "i64"
+    assert raised.value.target_type == "uuid"
+
+
 def test_int64_small_value_bigint_crud_via_builders(session) -> None:
     session.execute("DROP TABLE IF EXISTS _pyf6b_int64")
     session.execute(
@@ -86,9 +123,10 @@ def test_int64_small_value_bigint_crud_via_builders(session) -> None:
         inserted = (
             session.insert("_pyf6b_int64")
             .values(id=1, row_version=p.int64(1))
-            .execute()
+            .returning("row_version")
+            .one()
         )
-        assert inserted == 1
+        assert inserted == {"row_version": 1}
         updated = (
             session.update("_pyf6b_int64")
             .set(row_version=p.int64(2))

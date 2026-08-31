@@ -240,6 +240,39 @@ pub struct DecimalParameter {
     scale: i8,
 }
 
+#[derive(Debug)]
+pub struct IntegerParameter(pub i64);
+
+impl ToSql for IntegerParameter {
+    fn to_sql(
+        &self,
+        target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        match *target_type {
+            Type::INT2 => i16::try_from(self.0)
+                .map_err(|_| "intero fuori intervallo per target int2")?
+                .to_sql(target_type, output),
+            Type::INT4 => i32::try_from(self.0)
+                .map_err(|_| "intero fuori intervallo per target int4")?
+                .to_sql(target_type, output),
+            Type::INT8 => self.0.to_sql(target_type, output),
+            Type::NUMERIC => DecimalParameter {
+                value: i128::from(self.0),
+                scale: 0,
+            }
+            .to_sql(target_type, output),
+            _ => Err("tipo intero incompatibile col target PostgreSQL".into()),
+        }
+    }
+
+    fn accepts(_target_type: &Type) -> bool {
+        true
+    }
+
+    to_sql_checked!();
+}
+
 impl DecimalParameter {
     pub fn parse(value: &str) -> Result<Self> {
         let (negative, unsigned) = match value.as_bytes().first() {
@@ -398,8 +431,8 @@ pub fn bind_parameters(
                 .ok_or_else(|| DatabaseError::invalid_plan("parametro filtro mancante"))?;
             let boxed: Box<dyn ToSql + Sync + Send> = match value {
                 ParameterValue::Bool(value) => Box::new(*value),
-                ParameterValue::I32(value) => Box::new(*value),
-                ParameterValue::I64(value) => Box::new(*value),
+                ParameterValue::I32(value) => Box::new(IntegerParameter(i64::from(*value))),
+                ParameterValue::I64(value) => Box::new(IntegerParameter(*value)),
                 ParameterValue::F64(value) => Box::new(*value),
                 ParameterValue::String(value) => Box::new(value.clone()),
                 ParameterValue::Bytes(value) => Box::new(value.clone()),

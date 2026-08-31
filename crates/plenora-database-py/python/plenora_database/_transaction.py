@@ -45,31 +45,53 @@ class Transaction(_BuilderFactory):
     __slots__ = ("_native", "_provider")
 
     def __init__(self, native: "_NativeTransaction", provider: str = "postgres") -> None:
-        self._native = native
+        self._native: _NativeTransaction | None = native
         self._provider = provider
+
+    def _require_native(self) -> "_NativeTransaction":
+        native = self._native
+        if native is None:
+            raise RuntimeError(
+                "transaction non attiva: gia committata o rollback-ata "
+                "(o chiusa dal context manager)"
+            )
+        return native
 
     # ---------------------------- attributi ----------------------------
 
     @property
     def is_active(self) -> bool:
-        return self._native.is_active
+        native = self._native
+        return native is not None and native.is_active
 
     # ------------------------- lifecycle --------------------------------
 
     def commit(self) -> None:
-        self._native.commit()
+        native = self._require_native()
+        try:
+            native.commit()
+        finally:
+            # `_native.Transaction` e thread-affine. Il wrapper puo restare
+            # nel traceback e migrare a un altro thread, l'oggetto nativo no.
+            self._native = None
+            del native
 
     def rollback(self) -> None:
-        self._native.rollback()
+        native = self._require_native()
+        try:
+            native.rollback()
+        finally:
+            self._native = None
+            del native
 
     def savepoint(self, name: str) -> None:
-        self._native.savepoint(name)
+        self._require_native().savepoint(name)
 
     def rollback_to_savepoint(self, name: str) -> None:
-        self._native.rollback_to_savepoint(name)
+        self._require_native().rollback_to_savepoint(name)
 
     def release_savepoint(self, name: str) -> None:
-        self._native.release_savepoint(name)
+        self._require_native().release_savepoint(name)
 
     def conditional_update(
         self,
@@ -102,7 +124,7 @@ class Transaction(_BuilderFactory):
             PlenoraNotFoundError: chiave assente.
             PlenoraConcurrentModificationError: mismatch versione.
         """
-        self._native.conditional_update(
+        self._require_native().conditional_update(
             update_sql,
             update_params,
             expected_affected_rows,
@@ -114,11 +136,21 @@ class Transaction(_BuilderFactory):
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
-        # Delega al lato nativo: commit su nessuna eccezione, rollback altrimenti.
-        return self._native.__exit__(exc_type, exc_value, traceback)
+        native = self._native
+        if native is None:
+            return False
+        self._native = None
+        # `native` viene distrutto su questo thread anche se `self` resta nel
+        # traceback consegnato a un exception handler asincrono.
+        try:
+            return native.__exit__(exc_type, exc_value, traceback)
+        finally:
+            # Copre anche un errore prodotto da commit/rollback nativo.
+            del native
 
     def __repr__(self) -> str:
-        return repr(self._native)
+        native = self._native
+        return repr(native) if native is not None else "<Transaction active=False>"
 
     # --------------------------- SQL raw --------------------------------
 
@@ -133,20 +165,21 @@ class Transaction(_BuilderFactory):
     ) -> Result | int | MutationResult: ...
 
     def execute(self, sql, params=None):
+        native = self._require_native()
         if isinstance(sql, ExecutableStatement):
-            return _execute_statement(self._native, sql, params, self._provider)
-        return self._native.execute(sql, params)
+            return _execute_statement(native, sql, params, self._provider)
+        return native.execute(sql, params)
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
-        return self._native.execute_scalar(sql, params)
+        return self._require_native().execute_scalar(sql, params)
 
     def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
-        return self._native.execute_returning_rows(sql, params)
+        return self._require_native().execute_returning_rows(sql, params)
 
     # ------- API interne consumate dai builder (via json AST) -----------
 
     def _execute_portable_rows(self, ast_json: str) -> list[dict]:
-        return self._native.execute_portable_rows(ast_json)
+        return self._require_native().execute_portable_rows(ast_json)
 
     def _execute_portable_count(self, ast_json: str) -> int:
-        return self._native.execute_portable_count(ast_json)
+        return self._require_native().execute_portable_count(ast_json)

@@ -8,6 +8,12 @@ incompatibili, sempre indicate come **breaking**.
 
 ### Aggiunto
 
+- Helper pubblici `int32()` e `int64()` per dichiarare esplicitamente la
+  larghezza dei bind interi; PostgreSQL adatta inoltre gli interi Python al
+  tipo preparato `smallint`/`integer`/`bigint` senza frame binari incoerenti.
+- Gli errori di bind PostgreSQL incompatibili espongono posizione, tipo
+  portabile e tipo target come attributi strutturati, senza includere il valore
+  del parametro nel messaggio pubblico.
 - `create_engine` e `create_async_engine` per PostgreSQL: un pool condiviso,
   sessione per unita di lavoro, lifecycle e cancellazione governati dal Core
   v3, con parita sync/async.
@@ -56,6 +62,9 @@ incompatibili, sempre indicate come **breaking**.
 
 ### Corretto
 
+- La chiusura di una transazione Python sgancia subito l'oggetto nativo
+  thread-affine, evitando che un traceback trasferito tra thread ne rimandi la
+  distruzione al thread sbagliato.
 - Su Db2 una projection con parametro privo di contesto di tipo viene ora
   rifiutata in prepare, invece di inviare al server SQL che Db2 non puo tipizzare.
 - Le tabelle Db2 qualificate con schema e senza alias esplicito ricevono una

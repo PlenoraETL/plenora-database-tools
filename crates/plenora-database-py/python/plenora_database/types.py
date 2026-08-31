@@ -18,6 +18,8 @@ Esempi:
                   [p.decimal("1234.56")])
         s.execute("INSERT INTO t(row_version) VALUES ($1)",
                   [p.int64(1)])
+        s.execute("INSERT INTO t(retry_count) VALUES ($1)",
+                  [p.int32(1)])
         s.execute("INSERT INTO t(val) VALUES ($1)",
                   [p.null("text")])   # NULL con hint tipo colonna
 
@@ -66,6 +68,15 @@ def int64(value: int) -> TypedValue:
     if not -(1 << 63) <= value < (1 << 63):
         raise OverflowError("int64 fuori dall'intervallo signed 64-bit")
     return TypedValue("i64", value)
+
+
+def int32(value: int) -> TypedValue:
+    """Forza un ``int`` Python a ``ParameterValue::I32``."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("int32 richiede un int Python")
+    if not -(1 << 31) <= value < (1 << 31):
+        raise OverflowError("int32 fuori dall'intervallo signed 32-bit")
+    return TypedValue("i32", value)
 
 
 def date(value: str) -> TypedValue:
