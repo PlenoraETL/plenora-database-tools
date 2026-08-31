@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import io
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 
 from scripts import check_docs
-from scripts.generate_capabilities_docx import portable_text_bytes, render_document
 
 
 class DocumentationGateTests(unittest.TestCase):
@@ -42,22 +39,6 @@ class DocumentationGateTests(unittest.TestCase):
 
     def test_repository_license_metadata_is_consistent(self) -> None:
         self.assertEqual(check_docs.validate_license(check_docs.ROOT), [])
-
-    def test_generated_docx_inputs_ignore_platform_line_endings(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            lf = root / "lf.txt"
-            crlf = root / "crlf.txt"
-            lf.write_bytes(b"first\nsecond\n")
-            crlf.write_bytes(b"first\r\nsecond\r\n")
-            self.assertEqual(portable_text_bytes(lf), portable_text_bytes(crlf))
-
-    def test_generated_docx_uses_platform_independent_zip_entries(self) -> None:
-        with zipfile.ZipFile(io.BytesIO(render_document())) as document:
-            self.assertTrue(document.infolist())
-            self.assertTrue(
-                all(info.compress_type == zipfile.ZIP_STORED for info in document.infolist())
-            )
 
 
 if __name__ == "__main__":

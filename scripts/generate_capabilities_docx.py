@@ -68,26 +68,13 @@ def public_class_inventory(exports: set[str]) -> list[tuple[str, list[str]]]:
     return sorted(classes.items())
 
 
-def portable_text_bytes(path: Path) -> bytes:
-    """Return UTF-8 text with platform-specific line endings normalized."""
-
-    normalized = (
-        path.read_text(encoding="utf-8")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-    )
-    return normalized.encode("utf-8")
-
-
 def source_fingerprint() -> str:
     """Identifica gli input del documento senza dipendere dal commit contenitore."""
 
     digest = hashlib.sha256()
     for path in (STATE, SDK_README, PACKAGE / "__init__.py", *sorted(PACKAGE.glob("*.pyi"))):
         digest.update(path.relative_to(ROOT).as_posix().encode())
-        # Git may materialize text files with CRLF on Windows and LF on Linux.
-        # The generated artifact must stay byte-identical on both platforms.
-        digest.update(portable_text_bytes(path))
+        digest.update(path.read_bytes())
     return digest.hexdigest()[:12]
 
 
@@ -331,12 +318,10 @@ def render_document() -> bytes:
         "docProps/app.xml": app,
     }
     output = io.BytesIO()
-    # Store entries verbatim: DEFLATE output can vary with the zlib version even
-    # when every XML part is identical, which made the generated gate OS-specific.
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, value in entries.items():
             info = zipfile.ZipInfo(name, FIXED_ZIP_TIME)
-            info.compress_type = zipfile.ZIP_STORED
+            info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o600 << 16
             archive.writestr(info, value.encode("utf-8"))
     return output.getvalue()
