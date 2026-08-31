@@ -73,7 +73,10 @@ def test_context_exit_detaches_native_even_when_native_cleanup_fails() -> None:
     class _FailingThreadAffineNative:
         is_active = True
 
-        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        # Un metodo PyO3 non crea un frame Python che conservi ``self``.
+        # Lo staticmethod riproduce quella proprieta mentre solleva l'errore.
+        @staticmethod
+        def __exit__(exc_type, exc_value, traceback) -> bool:
             raise RuntimeError("sanitized native cleanup failure")
 
         def __del__(self) -> None:
