@@ -213,8 +213,6 @@ Le capability dipendono anche dal server concreto, dalle estensioni installate
 e dalla piattaforma. Per questo la fonte non è una tabella copiata qui:
 
 - [`docs/STATO.md`](docs/STATO.md) espone lo stato generato dal codice;
-- [`PLENORA-CAPABILITIES-CLI-SDK.docx`](docs/PLENORA-CAPABILITIES-CLI-SDK.docx)
-  raccoglie l'inventario generato di CLI e SDK;
 - `session.capabilities` e `database-probe` descrivono il target realmente
   raggiunto a runtime.
 
