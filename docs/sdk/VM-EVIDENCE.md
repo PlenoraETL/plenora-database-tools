@@ -15,12 +15,12 @@ e non e cambiato durante la misura.
 
 | campo | valore |
 | --- | --- |
-| commit | `fc1b3315dd520f3a42e8a549422a1f7de1560813` |
-| live | `332 passed, 6 skipped in 9.88s` |
-| benchmark | `2 passed, 336 deselected in 1.03s` |
-| offline | `101 passed, 237 skipped in 0.76s` |
-| wheel live/benchmark SHA-256 | `97258f821b47199868093b5549df86796c184dc3dcc5bfdbc25664c7c8251cd4` |
-| wheel offline SHA-256 | `4a063f646d75eec4f96d5a8dbb87dac0747b7de137597877060ed117a1e56cf2` |
+| commit | `65b6b8151c2a5e63ca5f96c0e2fb0c607100ed83` |
+| live | `332 passed, 6 skipped in 10.03s` |
+| benchmark | `2 passed, 336 deselected in 1.07s` |
+| offline | `101 passed, 237 skipped in 0.79s` |
+| wheel live/benchmark SHA-256 | `8df1d8da6a8937c7d3648b345424f7c45b316946b856a8d355eee734ead6597b` |
+| wheel offline SHA-256 | `318794a9df8de063b12452ff58cdfe1866a9a4d8c9e15276688f623e1725f30c` |
 | modulo nativo SHA-256 | `e921ca6fe5de591e1d753fe9e66e6f633d5d3555bcebcd0f6105f27b6045fd03` |
 | CLI SHA-256 | `f8d9c60ffaa8fb1b8dd06b3c553a1a749079e2134a7e8ec9d011a6708a7fffa00` |
 | immagine build | `rust@sha256:271849e998ffce5776454bbf98c5dc21baafc854ff8e566197908d3aca9a881e8` |
