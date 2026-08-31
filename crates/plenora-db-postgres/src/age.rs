@@ -127,7 +127,10 @@ impl ToSql for AgeParameter {
     }
 
     fn accepts(target_type: &Type) -> bool {
-        target_type.name() == "agtype" && target_type.schema() == "ag_catalog"
+        // Lo statement qualifica sia funzione sia tipo con `ag_catalog`; qui
+        // controllare anche lo schema renderebbe il codec dipendente da come
+        // il driver ha materializzato i metadata del tipo custom.
+        target_type.name() == "agtype"
     }
 
     to_sql_checked!();

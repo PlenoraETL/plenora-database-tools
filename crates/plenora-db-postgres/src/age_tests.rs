@@ -41,6 +41,14 @@ fn parser_rejects_unknown_annotations_without_echoing_payload() {
     assert!(!error.message.contains("very-secret"));
 }
 
+#[test]
+fn age_parameter_debug_is_redacted() {
+    let parameter = AgeParameter::new("{\"token\":\"very-secret\"}".to_owned());
+    let debug = format!("{parameter:?}");
+    assert!(!debug.contains("very-secret"));
+    assert!(debug.contains("REDACTED"));
+}
+
 #[cfg(test)]
 mod live {
     use super::*;
