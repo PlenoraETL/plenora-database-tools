@@ -4,7 +4,10 @@ Il changelog descrive l'impatto per chi aggiorna. La storia implementativa e le
 review restano in Git. Fino alla 1.0, una minor puo contenere modifiche
 incompatibili, sempre indicate come **breaking**.
 
-## [0.11.0] — non rilasciata
+## [0.12.0] — 2026-08-31
+
+La versione interna `0.11.0` non e stata pubblicata: questa release consolida
+il relativo lavoro in un unico artefatto canonico e verificabile.
 
 ### Aggiunto
 

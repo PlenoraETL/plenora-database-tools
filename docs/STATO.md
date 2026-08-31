@@ -17,7 +17,7 @@ python scripts\render_state.py
 | `plenora-database-cli` | 2.0.0 |
 | `plenora-database-core` | 2.0.0 |
 | `plenora-database-engine` | 2.0.0 |
-| `plenora-database-py` | 0.11.0 |
+| `plenora-database-py` | 0.12.0 |
 | `plenora-database-sql` | 2.0.0 |
 | `plenora-database-testkit` | 2.0.0 |
 | `plenora-db-db2` | 2.0.0 |
@@ -160,7 +160,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 293 |
+| PostgreSQL | 294 |
 | MySQL + MariaDB | 297 |
 | SQL Server | 148 |
 | IBM Db2 LUW | 55 |
