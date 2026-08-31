@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from scripts import check_docs
-from scripts.generate_capabilities_docx import portable_text_bytes
+from scripts.generate_capabilities_docx import portable_text_bytes, render_document
 
 
 class DocumentationGateTests(unittest.TestCase):
@@ -49,6 +51,13 @@ class DocumentationGateTests(unittest.TestCase):
             lf.write_bytes(b"first\nsecond\n")
             crlf.write_bytes(b"first\r\nsecond\r\n")
             self.assertEqual(portable_text_bytes(lf), portable_text_bytes(crlf))
+
+    def test_generated_docx_uses_platform_independent_zip_entries(self) -> None:
+        with zipfile.ZipFile(io.BytesIO(render_document())) as document:
+            self.assertTrue(document.infolist())
+            self.assertTrue(
+                all(info.compress_type == zipfile.ZIP_STORED for info in document.infolist())
+            )
 
 
 if __name__ == "__main__":

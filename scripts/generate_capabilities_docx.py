@@ -331,10 +331,12 @@ def render_document() -> bytes:
         "docProps/app.xml": app,
     }
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    # Store entries verbatim: DEFLATE output can vary with the zlib version even
+    # when every XML part is identical, which made the generated gate OS-specific.
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for name, value in entries.items():
             info = zipfile.ZipInfo(name, FIXED_ZIP_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o600 << 16
             archive.writestr(info, value.encode("utf-8"))
     return output.getvalue()
