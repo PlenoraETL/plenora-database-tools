@@ -422,6 +422,23 @@ impl TransactionScope for PostgresTransaction {
                 .iter()
                 .map(|value| value as &(dyn ToSql + Sync))
                 .collect();
+            // AGE risolve internamente `graphid_ops` e altri oggetti senza
+            // qualificarli. Anche con `cypher`/`agtype` qualificati, quindi,
+            // ag_catalog deve stare nel search_path durante lo statement.
+            // Salviamo e ripristiniamo il valore transaction-local per non
+            // alterare le query SQL successive del chiamante.
+            let previous_search_path: String = client
+                .query_one("SELECT current_setting('search_path')", &[])
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
+                .get(0);
+            client
+                .execute(
+                    "SELECT set_config('search_path', $1, true)",
+                    &[&"ag_catalog,\"$user\",public"],
+                )
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
             let Some(result) =
                 select_with_cancellation(client.query(&sql, &parameter_refs), cancellation).await
             else {
@@ -444,6 +461,13 @@ impl TransactionScope for PostgresTransaction {
                     return Err(mapped);
                 }
             };
+            client
+                .execute(
+                    "SELECT set_config('search_path', $1, true)",
+                    &[&previous_search_path],
+                )
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
 
             rows.iter()
                 .map(|row| {
