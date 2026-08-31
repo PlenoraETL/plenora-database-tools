@@ -307,6 +307,7 @@ pub fn graph_statement_from_python(
     cypher: &str,
     columns: Vec<String>,
     params: Option<&Bound<'_, PyDict>>,
+    max_rows: usize,
 ) -> PyResult<GraphStatement> {
     let mut converted = BTreeMap::new();
     if let Some(params) = params {
@@ -317,7 +318,9 @@ pub fn graph_statement_from_python(
             converted.insert(key, python_to_json(&value)?);
         }
     }
-    let statement = GraphStatement::new(graph, cypher, columns).with_params(converted);
+    let statement = GraphStatement::new(graph, cypher, columns)
+        .with_params(converted)
+        .with_max_rows(max_rows);
     statement.validate().map_err(to_py_err)?;
     Ok(statement)
 }

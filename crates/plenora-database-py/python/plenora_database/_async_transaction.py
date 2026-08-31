@@ -124,8 +124,12 @@ class AsyncTransaction(_AsyncBuilderFactory):
         query: str,
         columns: list[str],
         params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
     ) -> list[dict[str, GraphValue]]:
-        rows = await self._native.cypher(graph, query, columns, params)
+        rows = await self._native.cypher(
+            graph, query, columns, params, max_rows=max_rows
+        )
         return _decode_rows(rows)
 
     # ------- API interne consumate dai builder (via json AST) -----------

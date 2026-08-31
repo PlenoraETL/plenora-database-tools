@@ -39,7 +39,13 @@ class Transaction:
         self, sql: str, params: list | None = None
     ) -> list[dict]: ...
     def cypher(
-        self, graph: str, query: str, columns: list[str], params: dict[str, Any] | None = None
+        self,
+        graph: str,
+        query: str,
+        columns: list[str],
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
     ) -> list[dict[str, GraphValue]]: ...
     def select(self, table: str, schema: str | None = None) -> Select: ...
     def insert(self, table: str, schema: str | None = None) -> Insert: ...

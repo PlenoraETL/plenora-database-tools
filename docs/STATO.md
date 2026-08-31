@@ -29,6 +29,7 @@ python scripts\render_state.py
 
 La major attiva e `contracts/v2/`, e contiene:
 
+- `age-admin-capabilities.schema.json`
 - `age-capabilities.schema.json`
 - `capabilities.schema.json`
 - `common.schema.json`

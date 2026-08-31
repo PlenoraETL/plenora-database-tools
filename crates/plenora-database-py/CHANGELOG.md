@@ -11,6 +11,12 @@ incompatibili, sempre indicate come **breaking**.
 - API `cypher()` sync/async su sessione e transazione per Apache AGE, con
   parametri separati dal testo, risultati `Vertex`/`Edge`/`Path` tipizzati e
   capability fail-closed qualificate per AGE 1.7.0 su PostgreSQL 18.
+- Amministrazione graph sync/async con `list_graphs()`, `create_graph()` e
+  `drop_graph()`, protetta da un capability document additivo che non modifica
+  il contratto AGE v1.
+- `cypher(..., max_rows=...)` limita i risultati prima della materializzazione;
+  il gate live copre l'intera matrice di clausole AGE documentate, percorsi
+  variabili, concorrenza, cancellazione e timeout.
 
 ## [0.12.0] — 2026-08-31
 

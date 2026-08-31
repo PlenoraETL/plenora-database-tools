@@ -19,6 +19,7 @@ import pytest
 import plenora_database as p
 
 POSTGRES_DSN_ENV = "PLENORA_TEST_POSTGRES_DSN"
+AGE_DSN_ENV = "PLENORA_TEST_AGE_DSN"
 
 # Il riferimento di sviluppo non parla TLS: chiederlo qui e l'unica differenza
 # rispetto a un uso di produzione del SDK.
@@ -50,6 +51,21 @@ async def aconnect_postgres(dsn: str | None = None):
     """
 
     return await p.aconnect(dsn or postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+
+
+def age_dsn_or_skip() -> str:
+    dsn = os.environ.get(AGE_DSN_ENV)
+    if not dsn:
+        pytest.skip(f"live test AGE: manca env {AGE_DSN_ENV}")
+    return dsn
+
+
+def connect_age():
+    return p.connect(age_dsn_or_skip(), LOCAL_TLS_MODE)
+
+
+async def aconnect_age():
+    return await p.aconnect(age_dsn_or_skip(), LOCAL_TLS_MODE)
 
 
 # ================================== MySQL ===================================

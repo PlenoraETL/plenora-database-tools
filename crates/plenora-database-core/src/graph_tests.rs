@@ -8,6 +8,33 @@ fn capabilities_are_fail_closed_outside_exact_qualified_pair() {
     assert!(!AgeCapabilities::from_probe(18, Some("1.6.0".to_owned()), true).qualified());
     assert!(!AgeCapabilities::from_probe(18, Some("1.7.0".to_owned()), false).qualified());
     assert!(AgeCapabilities::from_probe(18, Some("1.7.0".to_owned()), true).qualified());
+    assert!(!AgeAdminCapabilities::default().qualified());
+    assert!(AgeAdminCapabilities::from_age(&AgeCapabilities::from_probe(
+        18,
+        Some("1.7.0".to_owned()),
+        true,
+    ))
+    .qualified());
+}
+
+#[test]
+fn graph_statement_bounds_materialized_rows() {
+    assert_eq!(
+        GraphStatement::new("people", "RETURN 1", vec!["one".to_owned()]).max_rows,
+        DEFAULT_GRAPH_MAX_ROWS
+    );
+    assert!(
+        GraphStatement::new("people", "RETURN 1", vec!["one".to_owned()])
+            .with_max_rows(0)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        GraphStatement::new("people", "RETURN 1", vec!["one".to_owned()])
+            .with_max_rows(MAX_GRAPH_ROWS + 1)
+            .validate()
+            .is_err()
+    );
 }
 
 #[test]

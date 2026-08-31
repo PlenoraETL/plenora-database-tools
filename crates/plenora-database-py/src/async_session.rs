@@ -154,6 +154,72 @@ impl AsyncSession {
         })
     }
 
+    fn age_admin_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        future_into_py(py, async move {
+            let capabilities = provider
+                .age_admin_capabilities(&secret, &cancellation)
+                .await
+                .map_err(to_py_err)?;
+            let value = serde_json::to_value(capabilities)
+                .map_err(|_| PyRuntimeError::new_err("capability admin AGE non serializzabili"))?;
+            Python::attach(|py| {
+                crate::session::json_value_to_pydict(py, &value)
+                    .map(|value| value.into_any().unbind())
+            })
+        })
+    }
+
+    fn list_graphs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        future_into_py(py, async move {
+            provider
+                .list_graphs(&secret, &cancellation)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    fn create_graph<'py>(&self, py: Python<'py>, graph: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        future_into_py(py, async move {
+            provider
+                .create_graph(&secret, &graph, &cancellation)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    #[pyo3(signature = (graph, *, cascade=false))]
+    fn drop_graph<'py>(
+        &self,
+        py: Python<'py>,
+        graph: &str,
+        cascade: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        future_into_py(py, async move {
+            provider
+                .drop_graph(&secret, &graph, cascade, &cancellation)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
     #[getter]
     fn is_closed(&self) -> bool {
         self.closed
@@ -239,7 +305,7 @@ impl AsyncSession {
         )
     }
 
-    #[pyo3(signature = (graph, cypher, columns, params=None))]
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
     fn cypher<'py>(
         &self,
         py: Python<'py>,
@@ -247,9 +313,11 @@ impl AsyncSession {
         cypher: &str,
         columns: Vec<String>,
         params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
-        let statement = graph_statement_from_python(graph, cypher, columns, params.as_ref())?;
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
         crate::async_session_ops::execute_graph_with_backend(
             py,
             self.transaction_backend(),

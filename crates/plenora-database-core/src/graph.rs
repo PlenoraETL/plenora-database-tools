@@ -16,6 +16,8 @@ pub const MAX_CYPHER_BYTES: usize = 1_048_576;
 pub const MAX_GRAPH_COLUMNS: usize = 64;
 pub const MAX_GRAPH_PARAMETERS: usize = 256;
 pub const MAX_GRAPH_PARAMETER_BYTES: usize = 1_048_576;
+pub const DEFAULT_GRAPH_MAX_ROWS: usize = 10_000;
+pub const MAX_GRAPH_ROWS: usize = 1_000_000;
 
 /// Capability AGE pubblicate separatamente dal documento provider v2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +92,52 @@ impl AgeCapabilities {
     }
 }
 
+/// Capability amministrative AGE, pubblicate in un documento additivo
+/// separato per non modificare il contratto `AgeCapabilities` v1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgeAdminCapabilities {
+    pub schema_version: u32,
+    pub postgres_major: Option<u16>,
+    pub extension_version: Option<String>,
+    pub list_graphs: bool,
+    pub create_graph: bool,
+    pub drop_graph: bool,
+}
+
+impl Default for AgeAdminCapabilities {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            postgres_major: None,
+            extension_version: None,
+            list_graphs: false,
+            create_graph: false,
+            drop_graph: false,
+        }
+    }
+}
+
+impl AgeAdminCapabilities {
+    #[must_use]
+    pub fn from_age(capabilities: &AgeCapabilities) -> Self {
+        let qualified = capabilities.qualified();
+        Self {
+            schema_version: 1,
+            postgres_major: capabilities.postgres_major,
+            extension_version: capabilities.extension_version.clone(),
+            list_graphs: qualified,
+            create_graph: qualified,
+            drop_graph: qualified,
+        }
+    }
+
+    #[must_use]
+    pub const fn qualified(&self) -> bool {
+        self.list_graphs && self.create_graph && self.drop_graph
+    }
+}
+
 /// Richiesta Cypher. Il nome del grafo e le colonne sono identificatori, il
 /// testo Cypher e opaco e i valori restano in una mappa bindata separata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +148,8 @@ pub struct GraphStatement {
     pub columns: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, Value>,
+    #[serde(default = "default_graph_max_rows")]
+    pub max_rows: usize,
 }
 
 impl GraphStatement {
@@ -110,12 +160,19 @@ impl GraphStatement {
             cypher: cypher.into(),
             columns,
             params: BTreeMap::new(),
+            max_rows: DEFAULT_GRAPH_MAX_ROWS,
         }
     }
 
     #[must_use]
     pub fn with_params(mut self, params: BTreeMap<String, Value>) -> Self {
         self.params = params;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_rows(mut self, max_rows: usize) -> Self {
+        self.max_rows = max_rows;
         self
     }
 
@@ -157,6 +214,11 @@ impl GraphStatement {
                 "la mappa parametri Cypher supera 256 elementi",
             ));
         }
+        if self.max_rows == 0 || self.max_rows > MAX_GRAPH_ROWS {
+            return Err(DatabaseError::invalid_plan(
+                "il limite righe Cypher deve essere tra 1 e 1000000",
+            ));
+        }
         for name in self.params.keys() {
             validate_identifier(name, "nome parametro Cypher")?;
         }
@@ -170,6 +232,22 @@ impl GraphStatement {
         }
         Ok(())
     }
+}
+
+const fn default_graph_max_rows() -> usize {
+    DEFAULT_GRAPH_MAX_ROWS
+}
+
+/// Valida un nome graph prima che venga passato alle funzioni amministrative
+/// AGE. La funzione e condivisa con `GraphStatement` per mantenere un solo
+/// confine contro identificatori arbitrari.
+///
+/// # Errors
+///
+/// Restituisce `InvalidPlan` se il nome non e un identificatore ASCII semplice
+/// lungo da 1 a 63 byte.
+pub fn validate_graph_name(value: &str) -> Result<()> {
+    validate_identifier(value, "nome del grafo")
 }
 
 fn validate_identifier(value: &str, role: &str) -> Result<()> {

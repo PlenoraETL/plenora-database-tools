@@ -10,16 +10,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.compose_network import compose_network
+from scripts.compose_network import compose_network, container_variable
 
 
 CONTAINER = "plenora-age"
 IMAGE = "rust:1.98"
 LIVE_TEST = "age::tests::live::live_age_1_7_pg18_parameters_types_and_transactions"
-DSN = (
-    "host=plenora-age port=5432 user=plenora "
-    "password=plenora_age_test dbname=plenora_age"
-)
+
+
+def age_dsn() -> str:
+    return (
+        f"host={CONTAINER} port=5432 "
+        f"user={container_variable(CONTAINER, 'POSTGRES_USER')} "
+        f"password={container_variable(CONTAINER, 'POSTGRES_PASSWORD')} "
+        f"dbname={container_variable(CONTAINER, 'POSTGRES_DB')}"
+    )
 
 
 def cargo_command() -> list[str]:
@@ -39,7 +44,7 @@ def cargo_command() -> list[str]:
         "--network",
         network,
         "-e",
-        f"PLENORA_TEST_AGE_DSN={DSN}",
+        f"PLENORA_TEST_AGE_DSN={age_dsn()}",
         "-e",
         "PLENORA_REQUIRE_LIVE_AGE=1",
         IMAGE,

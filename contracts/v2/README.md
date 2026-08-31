@@ -6,6 +6,7 @@ in Git, che e dove sta la storia.
 - `plan.schema.json`: input validato per test, inspect, read e write;
 - `capabilities.schema.json`: capability scoperte sul target;
 - `age-capabilities.schema.json`: capability AGE v1, separate dal provider relazionale;
+- `age-admin-capabilities.schema.json`: capability amministrative AGE additive;
 - `loss-report.schema.json`: perdite di mapping esplicite;
 - `write-outcome.schema.json`: committed, rolled back, partial e unknown;
 - `common.schema.json`: identificatori, provider, oggetti e policy;

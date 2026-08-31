@@ -34,6 +34,7 @@ docker rm -f dataflow-mariadb \
              dataflow-postgres \
              dataflow-postgres-tls \
              dataflow-postgres-tls-certgen \
+             plenora-age \
              dataflow-sqlserver \
              dataflow-sqlserver-certgen \
              dataflow-sqlserver-init

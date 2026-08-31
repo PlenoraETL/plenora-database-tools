@@ -2,7 +2,7 @@
 """Campagna live del SDK Python: fixture, wheel, suite, verdetto.
 
 `check_sdk_tests.py` costruisce wheel e CLI, li installa fuori dall'albero ed
-esegue gli scope dichiarati. Questa campagna gli fornisce i quattro riferimenti
+esegue gli scope dichiarati. Questa campagna gli fornisce i cinque riferimenti
 live e registra un verdetto riproducibile; la copertura e necessaria anche per
 valutare l'eccezione pyo3 dichiarata in `deny.toml`.
 
@@ -11,7 +11,7 @@ con le campagne di sessione e dell'evidenza MariaDB. Qui restano le due cose
 che riguardano questa misura: da dove deve partire, e cosa la fa fallire.
 
 La campagna accende un riferimento per ciascuna factory pubblica:
-PostgreSQL, MySQL, MariaDB e SQL Server. MariaDB usa la riga principale del
+PostgreSQL, Apache AGE, MySQL, MariaDB e SQL Server. MariaDB usa la riga principale del
 suo ciclo di evidenza; le righe di compatibilita restano responsabilita del
 gate del provider.
 """
@@ -29,11 +29,12 @@ sys.path.insert(0, str(ROOT))
 from scripts.check_sdk_tests import measure_live_scopes, preflight  # noqa: E402
 from scripts.fixture_campaign import campaign  # noqa: E402
 
-# I quattro riferimenti che la suite interroga. L'ordine e quello in cui vengono
+# I cinque riferimenti che la suite interroga. L'ordine e quello in cui vengono
 # accesi, e non conta: i compose dichiarano progetti distinti e non si
 # toccano fra loro.
 COMPOSE_FILES = (
     "docker-compose.postgres.yml",
+    "docker-compose.age.yml",
     "docker-compose.mysql.yml",
     "docker-compose.mariadb.yml",
     "docker-compose.sqlserver.yml",

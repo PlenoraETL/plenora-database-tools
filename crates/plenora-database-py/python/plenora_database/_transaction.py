@@ -184,9 +184,13 @@ class Transaction(_BuilderFactory):
         query: str,
         columns: list[str],
         params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
     ) -> list[dict[str, GraphValue]]:
         return _decode_rows(
-            _require_native(self).cypher(graph, query, columns, params)
+            _require_native(self).cypher(
+                graph, query, columns, params, max_rows=max_rows
+            )
         )
 
     # ------- API interne consumate dai builder (via json AST) -----------

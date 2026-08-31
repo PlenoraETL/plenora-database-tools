@@ -14,6 +14,7 @@ fn sql_binds_parameters_and_never_interpolates_values() {
     assert!(sql.contains(", $1)"));
     assert!(!sql.contains("secret"));
     assert!(sql.contains("ag_catalog.agtype_out"));
+    assert!(sql.ends_with("LIMIT 10001"));
 }
 
 #[test]
@@ -70,26 +71,6 @@ mod live {
         configured
     }
 
-    async fn setup_graph(dsn: &str) {
-        let (client, connection) = tokio_postgres::connect(dsn, NoTls)
-            .await
-            .expect("connect AGE setup");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
-            .batch_execute("LOAD 'age'; SET search_path = ag_catalog, public")
-            .await
-            .expect("load AGE");
-        client
-            .batch_execute(
-                "SELECT drop_graph(name, true) FROM ag_graph WHERE name = 'plenora_age_gate';
-                 SELECT create_graph('plenora_age_gate');",
-            )
-            .await
-            .expect("create graph");
-    }
-
     async fn raw_parameter_probe(dsn: &str) {
         let (client, connection) = tokio_postgres::connect(dsn, NoTls)
             .await
@@ -119,12 +100,11 @@ mod live {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // matrice live unica: il gate esige un solo test --exact
     async fn live_age_1_7_pg18_parameters_types_and_transactions() {
         let Some(dsn) = configured_dsn() else {
             return;
         };
-        setup_graph(&dsn).await;
-        raw_parameter_probe(&dsn).await;
         let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
         let secret = SecretString::new(dsn);
         let cancel = CancellationToken::new();
@@ -135,6 +115,44 @@ mod live {
         assert!(capabilities.qualified());
         assert_eq!(capabilities.extension_version.as_deref(), Some("1.7.0"));
         assert_eq!(capabilities.postgres_major, Some(18));
+        let admin = provider
+            .age_admin_capabilities(&secret, &cancel)
+            .await
+            .expect("AGE admin capabilities");
+        assert!(admin.qualified());
+        for graph in ["plenora_age_gate", "plenora_age_admin_gate"] {
+            if provider
+                .list_graphs(&secret, &cancel)
+                .await
+                .expect("list before cleanup")
+                .iter()
+                .any(|candidate| candidate == graph)
+            {
+                provider
+                    .drop_graph(&secret, graph, true, &cancel)
+                    .await
+                    .expect("drop stale graph");
+            }
+        }
+        provider
+            .create_graph(&secret, "plenora_age_admin_gate", &cancel)
+            .await
+            .expect("create admin graph");
+        assert!(provider
+            .list_graphs(&secret, &cancel)
+            .await
+            .expect("list admin graph")
+            .iter()
+            .any(|graph| graph == "plenora_age_admin_gate"));
+        provider
+            .drop_graph(&secret, "plenora_age_admin_gate", true, &cancel)
+            .await
+            .expect("drop admin graph");
+        provider
+            .create_graph(&secret, "plenora_age_gate", &cancel)
+            .await
+            .expect("create test graph");
+        raw_parameter_probe(secret.expose()).await;
 
         let mut tx = provider
             .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
@@ -191,6 +209,96 @@ mod live {
             Some(GraphValue::Map(_))
         ));
         assert_eq!(rows[0].values.get("missing"), Some(&GraphValue::Null));
+
+        let merge = GraphStatement::new(
+            "plenora_age_gate",
+            "MERGE (c:Person {name: 'Carol'}) SET c.rank = 3 RETURN c.rank",
+            vec!["rank".to_owned()],
+        );
+        let rows = tx
+            .execute_graph(&merge, &cancel)
+            .await
+            .expect("MERGE and SET");
+        assert_eq!(rows[0].values.get("rank"), Some(&GraphValue::Integer(3)));
+        let remove = GraphStatement::new(
+            "plenora_age_gate",
+            "MATCH (c:Person {name: 'Carol'}) REMOVE c.rank RETURN c.rank",
+            vec!["rank".to_owned()],
+        );
+        let rows = tx.execute_graph(&remove, &cancel).await.expect("REMOVE");
+        assert_eq!(rows[0].values.get("rank"), Some(&GraphValue::Null));
+
+        let unwind = GraphStatement::new(
+            "plenora_age_gate",
+            "UNWIND $values AS value WITH value ORDER BY value SKIP 1 LIMIT 2 RETURN value",
+            vec!["value".to_owned()],
+        )
+        .with_params(BTreeMap::from([("values".to_owned(), json!([4, 1, 3, 2]))]));
+        let rows = tx
+            .execute_graph(&unwind, &cancel)
+            .await
+            .expect("UNWIND WITH");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.values.get("value"))
+                .collect::<Vec<_>>(),
+            vec![Some(&GraphValue::Integer(2)), Some(&GraphValue::Integer(3))]
+        );
+
+        let variable_path = GraphStatement::new(
+            "plenora_age_gate",
+            "MATCH p=(a:Person {name: 'Alice'})-[:KNOWS*1..2]->(b) RETURN length(p), nodes(p), relationships(p)",
+            vec!["length".to_owned(), "nodes".to_owned(), "edges".to_owned()],
+        );
+        let rows = tx
+            .execute_graph(&variable_path, &cancel)
+            .await
+            .expect("variable path and functions");
+        assert_eq!(rows[0].values.get("length"), Some(&GraphValue::Integer(1)));
+        assert!(matches!(
+            rows[0].values.get("nodes"),
+            Some(GraphValue::List(_))
+        ));
+        assert!(matches!(
+            rows[0].values.get("edges"),
+            Some(GraphValue::List(_))
+        ));
+
+        let terminal = GraphStatement::new(
+            "plenora_age_gate",
+            "CREATE (:Disposable {name: 'terminal'})",
+            vec!["unused".to_owned()],
+        );
+        assert!(tx
+            .execute_graph(&terminal, &cancel)
+            .await
+            .expect("terminal CREATE")
+            .is_empty());
+        let delete = GraphStatement::new(
+            "plenora_age_gate",
+            "MATCH (d:Disposable {name: 'terminal'}) DELETE d RETURN d",
+            vec!["deleted".to_owned()],
+        );
+        assert!(matches!(
+            tx.execute_graph(&delete, &cancel)
+                .await
+                .expect("DELETE with RETURN")[0]
+                .values
+                .get("deleted"),
+            Some(GraphValue::Vertex(_))
+        ));
+
+        let bounded = GraphStatement::new(
+            "plenora_age_gate",
+            "UNWIND [1, 2, 3] AS value RETURN value",
+            vec!["value".to_owned()],
+        )
+        .with_max_rows(2);
+        let error = tx
+            .execute_graph(&bounded, &cancel)
+            .await
+            .expect_err("row limit must fail closed");
+        assert_eq!(error.category, ErrorCategory::ResourceLimit);
         let search_path_after = tx
             .query(
                 &Statement::new("SELECT current_setting('search_path')"),
@@ -273,5 +381,82 @@ mod live {
             Some(&GraphValue::Integer(0))
         );
         verify_tx.rollback(&cancel).await.expect("close verify AGE");
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let mut cancelled_tx = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
+            .await
+            .expect("begin cancellation probe");
+        let error = cancelled_tx
+            .execute_graph(
+                &GraphStatement::new("plenora_age_gate", "RETURN 1", vec!["one".to_owned()]),
+                &cancelled,
+            )
+            .await
+            .expect_err("pre-cancelled graph query must fail");
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+        cancelled_tx
+            .rollback(&cancel)
+            .await
+            .expect("rollback cancellation probe");
+
+        let timeout_options = TransactionOptions {
+            statement_timeout_ms: Some(10),
+            ..TransactionOptions::default()
+        };
+        let mut timeout_tx = provider
+            .begin_transaction(&secret, &timeout_options, &budget(), &cancel)
+            .await
+            .expect("begin timeout probe");
+        let error = timeout_tx
+            .execute_graph(
+                &GraphStatement::new(
+                    "plenora_age_gate",
+                    "UNWIND range(1, 100000000) AS value RETURN sum(value)",
+                    vec!["total".to_owned()],
+                ),
+                &cancel,
+            )
+            .await
+            .expect_err("statement timeout must interrupt graph query");
+        assert_eq!(error.category, ErrorCategory::Timeout);
+        timeout_tx
+            .rollback(&cancel)
+            .await
+            .expect("rollback timeout probe");
+
+        let mut first = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
+            .await
+            .expect("begin first concurrent session");
+        let mut second = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
+            .await
+            .expect("begin second concurrent session");
+        let count = GraphStatement::new(
+            "plenora_age_gate",
+            "MATCH (p:Person) RETURN count(p)",
+            vec!["total".to_owned()],
+        );
+        let (first_rows, second_rows) = tokio::join!(
+            first.execute_graph(&count, &cancel),
+            second.execute_graph(&count, &cancel)
+        );
+        assert_eq!(first_rows.expect("first concurrent result").len(), 1);
+        assert_eq!(second_rows.expect("second concurrent result").len(), 1);
+        first
+            .rollback(&cancel)
+            .await
+            .expect("rollback first concurrent");
+        second
+            .rollback(&cancel)
+            .await
+            .expect("rollback second concurrent");
+
+        provider
+            .drop_graph(&secret, "plenora_age_gate", true, &cancel)
+            .await
+            .expect("final graph cleanup");
     }
 }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/age-admin-capabilities.schema.json",
+  "title": "Apache AGE administrative capability document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "postgres_major",
+    "extension_version",
+    "list_graphs",
+    "create_graph",
+    "drop_graph"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "postgres_major": { "type": ["integer", "null"], "minimum": 1 },
+    "extension_version": { "type": ["string", "null"] },
+    "list_graphs": { "type": "boolean" },
+    "create_graph": { "type": "boolean" },
+    "drop_graph": { "type": "boolean" }
+  }
+}

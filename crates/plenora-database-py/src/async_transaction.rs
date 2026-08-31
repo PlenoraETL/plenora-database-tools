@@ -161,7 +161,7 @@ impl AsyncTransaction {
         })
     }
 
-    #[pyo3(signature = (graph, cypher, columns, params=None))]
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
     fn cypher<'py>(
         &self,
         py: Python<'py>,
@@ -169,8 +169,10 @@ impl AsyncTransaction {
         cypher: &str,
         columns: Vec<String>,
         params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let statement = graph_statement_from_python(graph, cypher, columns, params.as_ref())?;
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let rows = {

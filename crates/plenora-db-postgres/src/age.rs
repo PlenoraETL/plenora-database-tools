@@ -90,8 +90,9 @@ pub fn build_cypher_sql(statement: &GraphStatement) -> Result<String> {
     } else {
         ", $1".to_owned()
     };
+    let fetch_rows = statement.max_rows.saturating_add(1);
     Ok(format!(
-        "SELECT {output_columns} FROM ag_catalog.cypher('{}', {delimiter}{}{delimiter}{parameters}) AS q({record_columns})",
+        "SELECT {output_columns} FROM ag_catalog.cypher('{}', {delimiter}{}{delimiter}{parameters}) AS q({record_columns}) LIMIT {fetch_rows}",
         statement.graph, statement.cypher
     ))
 }

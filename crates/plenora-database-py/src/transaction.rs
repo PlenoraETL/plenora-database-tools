@@ -150,7 +150,7 @@ impl Transaction {
         rows_to_pylist(py, rows)
     }
 
-    #[pyo3(signature = (graph, cypher, columns, params=None))]
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
     fn cypher<'py>(
         &mut self,
         py: Python<'py>,
@@ -158,8 +158,10 @@ impl Transaction {
         cypher: &str,
         columns: Vec<String>,
         params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
     ) -> PyResult<Bound<'py, PyList>> {
-        let statement = graph_statement_from_python(graph, cypher, columns, params.as_ref())?;
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
         let tx = self.tx_mut()?;
         let rows = py
             .detach(|| {

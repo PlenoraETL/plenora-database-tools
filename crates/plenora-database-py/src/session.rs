@@ -227,6 +227,68 @@ impl Session {
         json_value_to_pydict(py, &value)
     }
 
+    #[getter]
+    fn age_admin_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        let capabilities = py
+            .detach(|| {
+                runtime().block_on(async move {
+                    provider
+                        .age_admin_capabilities(&secret, &cancellation)
+                        .await
+                })
+            })
+            .map_err(to_py_err)?;
+        let value = serde_json::to_value(capabilities)
+            .map_err(|_| PyRuntimeError::new_err("capability admin AGE non serializzabili"))?;
+        json_value_to_pydict(py, &value)
+    }
+
+    fn list_graphs(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move { provider.list_graphs(&secret, &cancellation).await })
+        })
+        .map_err(to_py_err)
+    }
+
+    fn create_graph(&self, py: Python<'_>, graph: &str) -> PyResult<()> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move {
+                provider.create_graph(&secret, &graph, &cancellation).await
+            })
+        })
+        .map_err(to_py_err)
+    }
+
+    #[pyo3(signature = (graph, *, cascade=false))]
+    fn drop_graph(&self, py: Python<'_>, graph: &str, cascade: bool) -> PyResult<()> {
+        self.ensure_open()?;
+        let provider = Arc::clone(&self.provider);
+        let secret = self.secret.clone();
+        let graph = graph.to_owned();
+        let cancellation = self.cancellation();
+        py.detach(|| {
+            runtime().block_on(async move {
+                provider
+                    .drop_graph(&secret, &graph, cascade, &cancellation)
+                    .await
+            })
+        })
+        .map_err(to_py_err)
+    }
+
     /// True se la sessione è stata chiusa (via `close()` o uscendo dal
     /// context manager).
     #[getter]
@@ -310,7 +372,7 @@ impl Session {
 
     /// Esegue Cypher tramite Apache AGE. `columns` dichiara il record di
     /// ritorno richiesto da AGE; `params` resta una mappa bindata separata.
-    #[pyo3(signature = (graph, cypher, columns, params=None))]
+    #[pyo3(signature = (graph, cypher, columns, params=None, *, max_rows=10_000))]
     fn cypher<'py>(
         &self,
         py: Python<'py>,
@@ -318,9 +380,11 @@ impl Session {
         cypher: &str,
         columns: Vec<String>,
         params: Option<Bound<'_, PyDict>>,
+        max_rows: usize,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
-        let statement = graph_statement_from_python(graph, cypher, columns, params.as_ref())?;
+        let statement =
+            graph_statement_from_python(graph, cypher, columns, params.as_ref(), max_rows)?;
         let rows = self.run_tx(py, move |tx, cancel| {
             Box::pin(async move { tx.execute_graph(&statement, cancel).await })
         })?;

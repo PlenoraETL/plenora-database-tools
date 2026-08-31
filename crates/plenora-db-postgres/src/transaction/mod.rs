@@ -469,6 +469,12 @@ impl TransactionScope for PostgresTransaction {
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
 
+            if rows.len() > statement.max_rows {
+                return Err(DatabaseError::resource_limit(
+                    "il risultato Cypher supera il limite righe dichiarato",
+                ));
+            }
+
             rows.iter()
                 .map(|row| {
                     let mut values = BTreeMap::new();

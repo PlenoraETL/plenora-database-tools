@@ -275,7 +275,7 @@ python scripts\check_postgres_reference.py  # gate PostgreSQL live
 python scripts\check_age_reference.py       # gate AGE 1.7.0 / PostgreSQL 18 live
 python scripts\check_sqlserver_reference.py # gate SQL Server live
 python scripts\check_db2_reference.py       # gate IBM Db2 LUW live
-python scripts\check_sdk_campaign.py        # wheel + fixture dei provider standard
+python scripts\check_sdk_campaign.py        # wheel + fixture relazionali e AGE
 cargo test --workspace -- --skip live_      # unit, senza server
 cargo deny check                            # alternativa se cargo-deny è installato
 ```

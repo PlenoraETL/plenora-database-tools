@@ -135,6 +135,34 @@ def exposed(path: Path, rust_class: str | None = None) -> set[str]:
 class TheTwoSessionsAgree(unittest.TestCase):
     #: metodo -> perche esiste su un solo lato.
     DECLARED_DIFFERENCES = {
+        "age_admin_capabilities": (
+            "descrive l'amministrazione Apache AGE, estensione disponibile "
+            "soltanto sulla sessione PostgreSQL"
+        ),
+        "age_capabilities": (
+            "descrive Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
+        "age_version": (
+            "descrive Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
+        "create_graph": (
+            "amministra Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
+        "cypher": (
+            "esegue query Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
+        "drop_graph": (
+            "amministra Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
+        "list_graphs": (
+            "amministra Apache AGE, estensione disponibile soltanto sulla "
+            "sessione PostgreSQL"
+        ),
         "metrics": (
             "poggia su `metrics_snapshot`, metodo inerente di PostgresProvider e "
             "non del trait Provider: la sessione di famiglia tiene un "

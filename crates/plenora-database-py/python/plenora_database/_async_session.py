@@ -61,6 +61,18 @@ class AsyncSession(_AsyncBuilderFactory):
     async def age_capabilities(self) -> dict:
         return await self._native.age_capabilities()
 
+    async def age_admin_capabilities(self) -> dict:
+        return await self._native.age_admin_capabilities()
+
+    async def list_graphs(self) -> list[str]:
+        return await self._native.list_graphs()
+
+    async def create_graph(self, graph: str) -> None:
+        await self._native.create_graph(graph)
+
+    async def drop_graph(self, graph: str, *, cascade: bool = False) -> None:
+        await self._native.drop_graph(graph, cascade=cascade)
+
     @property
     def is_closed(self) -> bool:
         return self._native.is_closed
@@ -120,8 +132,12 @@ class AsyncSession(_AsyncBuilderFactory):
         query: str,
         columns: list[str],
         params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 10_000,
     ) -> list[dict[str, GraphValue]]:
-        rows = await self._native.cypher(graph, query, columns, params)
+        rows = await self._native.cypher(
+            graph, query, columns, params, max_rows=max_rows
+        )
         return _decode_rows(rows)
 
     async def execute_ddl(self, sql: str) -> None:
