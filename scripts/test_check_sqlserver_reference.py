@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import check_sqlserver_reference as gate
@@ -161,6 +162,67 @@ class RequiredLiveTests(unittest.TestCase):
         self.assertIn("live_database_probe_sqlserver_private_ca", arguments)
         self.assertIn("--exact", arguments)
         self.assertIn("--ignored", arguments)
+
+
+class ApplicationDatabaseReadiness(unittest.TestCase):
+    def test_probe_uses_the_application_login_and_database(self) -> None:
+        completed = CompletedProcess([], 0, stdout="1\n", stderr="")
+        with patch.object(gate.subprocess, "run", return_value=completed) as run:
+            self.assertTrue(gate.application_database_ready())
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["docker", "exec", gate.CONTAINER])
+        self.assertEqual(command[command.index("-U") + 1], "dataflow")
+        self.assertEqual(command[command.index("-d") + 1], "dataflow_test")
+
+    def test_wait_retries_until_the_application_database_is_ready(self) -> None:
+        with (
+            patch.object(
+                gate, "application_database_ready", side_effect=[False, False, True]
+            ) as probe,
+            patch.object(gate.time, "monotonic", side_effect=[0, 1, 2]),
+            patch.object(gate.time, "sleep") as sleep,
+        ):
+            gate.wait_for_application_database()
+
+        self.assertEqual(probe.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_wait_fails_closed_when_the_application_database_stays_unavailable(self) -> None:
+        with (
+            patch.object(gate, "application_database_ready", return_value=False),
+            patch.object(gate.time, "monotonic", side_effect=[0, 60]),
+            patch.object(gate.time, "sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "applicativo SQL Server"):
+                gate.wait_for_application_database()
+
+        sleep.assert_not_called()
+
+    def test_rotation_waits_for_application_database_before_tls_test(self) -> None:
+        events: list[str] = []
+        with (
+            patch.object(
+                gate,
+                "certificate_identity",
+                side_effect=["server-before", "ca", "server-after", "ca"],
+            ),
+            patch.object(gate, "run"),
+            patch.object(
+                gate,
+                "wait_for_application_database",
+                side_effect=lambda: events.append("ready"),
+            ),
+            patch.object(gate, "materialize_private_ca"),
+            patch.object(
+                gate,
+                "run_cargo",
+                side_effect=lambda *args, **kwargs: events.append("tls-test"),
+            ),
+        ):
+            gate.rotate_server_certificate()
+
+        self.assertEqual(events, ["ready", "tls-test"])
 
 
 class ComposeNetworkDiscovery(unittest.TestCase):

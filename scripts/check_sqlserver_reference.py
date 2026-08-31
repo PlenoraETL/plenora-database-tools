@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,6 +79,8 @@ def skipped_with_reasons() -> dict[str, str]:
 DEFAULT_PASSWORD = "DataFlow_Test_2026!"
 DOCKER_TIMEOUT_SECONDS = 30
 CARGO_TIMEOUT_SECONDS = 15 * 60
+APPLICATION_READY_TIMEOUT_SECONDS = 60
+APPLICATION_READY_INTERVAL_SECONDS = 2
 ASSURANCE_RESULTS = ROOT / "assurance-results"
 PRIVATE_CA = ASSURANCE_RESULTS / "sqlserver-private-ca.pem"
 
@@ -232,6 +235,57 @@ def materialize_private_ca() -> None:
         raise RuntimeError("CA privata SQL Server non materializzata")
 
 
+def application_database_ready() -> bool:
+    """Prova il contratto di connessione usato dai test, non solo il motore.
+
+    La healthcheck Compose entra come ``sa`` nel database predefinito. Dopo un
+    riavvio puo quindi diventare verde mentre il database applicativo e ancora
+    in recovery: in quella finestra SQL Server risponde 4060 al login che i
+    test usano davvero.
+    """
+
+    try:
+        completed = subprocess.run(
+            [
+                "docker",
+                "exec",
+                CONTAINER,
+                "/opt/mssql-tools18/bin/sqlcmd",
+                "-S",
+                "localhost",
+                "-U",
+                "dataflow",
+                "-P",
+                DEFAULT_PASSWORD,
+                "-d",
+                "dataflow_test",
+                "-C",
+                "-b",
+                "-h",
+                "-1",
+                "-W",
+                "-Q",
+                "SET NOCOUNT ON; SELECT 1;",
+            ],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=DOCKER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "1"
+
+
+def wait_for_application_database() -> None:
+    deadline = time.monotonic() + APPLICATION_READY_TIMEOUT_SECONDS
+    while not application_database_ready():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("database applicativo SQL Server non pronto")
+        time.sleep(APPLICATION_READY_INTERVAL_SECONDS)
+
+
 def certificate_identity(path: str) -> str:
     return docker_value(
         [
@@ -281,6 +335,7 @@ def rotate_server_certificate() -> dict[str, str]:
         ],
         timeout_seconds=3 * 60,
     )
+    wait_for_application_database()
     server_after = certificate_identity("/var/opt/mssql/tls/server.pem")
     ca_after = certificate_identity("/var/opt/mssql/tls/ca.pem")
     if server_before == server_after:
