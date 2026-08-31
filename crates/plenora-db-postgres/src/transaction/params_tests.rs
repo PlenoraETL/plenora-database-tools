@@ -158,14 +158,19 @@ fn uuid_invalid_hex_is_rejected() {
 }
 
 #[test]
-fn null_type_hint_maps_to_pg_type_with_text_fallback() {
+fn null_type_hint_maps_to_exact_pg_type_with_text_fallback() {
     assert_eq!(map_null_type("bool"), Type::BOOL);
     assert_eq!(map_null_type("BOOLEAN"), Type::BOOL);
     assert_eq!(map_null_type("integer"), Type::INT4);
     assert_eq!(map_null_type("int8"), Type::INT8);
     assert_eq!(map_null_type("float8"), Type::FLOAT8);
     assert_eq!(map_null_type("text"), Type::TEXT);
-    assert_eq!(map_null_type("varchar"), Type::TEXT);
+    assert_eq!(map_null_type("varchar"), Type::VARCHAR);
+    assert_eq!(map_null_type("character varying"), Type::VARCHAR);
+    assert_eq!(map_null_type("char"), Type::BPCHAR);
+    assert_eq!(map_null_type("character"), Type::BPCHAR);
+    assert_eq!(map_null_type("bpchar"), Type::BPCHAR);
+    assert_eq!(map_null_type("name"), Type::NAME);
     assert_eq!(map_null_type("bytea"), Type::BYTEA);
     assert_eq!(map_null_type("date"), Type::DATE);
     assert_eq!(map_null_type("timestamp"), Type::TIMESTAMP);
@@ -176,6 +181,33 @@ fn null_type_hint_maps_to_pg_type_with_text_fallback() {
     // fallback dichiarato: qualsiasi type hint sconosciuto → TEXT.
     assert_eq!(map_null_type("hstore"), Type::TEXT);
     assert_eq!(map_null_type(""), Type::TEXT);
+}
+
+#[test]
+fn typed_null_text_hints_accept_the_matching_prepared_targets() {
+    let cases = [
+        ("text", Type::TEXT),
+        ("varchar", Type::VARCHAR),
+        ("character varying", Type::VARCHAR),
+        ("char", Type::BPCHAR),
+        ("character", Type::BPCHAR),
+        ("bpchar", Type::BPCHAR),
+        ("name", Type::NAME),
+    ];
+
+    for (hint, target) in cases {
+        let value = ParameterValue::Null {
+            type_name: hint.to_owned(),
+        };
+        validate_parameter_targets(std::slice::from_ref(&value), std::slice::from_ref(&target))
+            .unwrap_or_else(|error| {
+                panic!("hint {hint} rifiutato per {}: {error:?}", target.name())
+            });
+        match encode(&value).expect("typed null codificabile") {
+            SqlParam::Null(encoded) => assert_eq!(encoded, target, "hint {hint}"),
+            other => panic!("typed null {hint} codificato come {other:?}"),
+        }
+    }
 }
 
 #[test]
