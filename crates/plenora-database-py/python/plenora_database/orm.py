@@ -58,6 +58,20 @@ _GEOMETRY_TYPES = frozenset(
     }
 )
 
+_MYSQL_GEOMETRY_TYPES = frozenset(
+    {
+        "point",
+        "linestring",
+        "polygon",
+        "multipoint",
+        "multilinestring",
+        "multipolygon",
+        "geometrycollection",
+    }
+)
+_MYSQL_ORM_PROVIDERS = frozenset({"mysql", "mariadb"})
+_GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_MYSQL_ORM_PROVIDERS})
+
 
 class OrmError(RuntimeError):
     """Errore pubblico dello strato ORM; non include valori applicativi."""
@@ -1301,7 +1315,9 @@ class OrmQuery(Generic[T]):
                     raise OrmUnsupportedError(
                         "joinedload di collezioni richiede una strategia di deduplicazione"
                     )
-                statement = _joinedload_statement(self._mapper, statement, relation)
+                statement = _joinedload_statement(
+                    self._mapper, statement, relation, self._session._provider
+                )
             additions.append(loader)
         return replace(
             self,
@@ -1325,7 +1341,9 @@ class OrmQuery(Generic[T]):
         projections = tuple(
             projection
             for index, mapper in enumerate(mappers)
-            for projection in _orm_projections(mapper, f"orm_entity_{index}_")
+            for projection in _orm_projections(
+                mapper, f"orm_entity_{index}_", self._session._provider
+            )
         )
         return OrmEntityTupleQuery(
             self._session,
@@ -1407,7 +1425,9 @@ class AsyncOrmQuery(Generic[T]):
                     raise OrmUnsupportedError(
                         "joinedload di collezioni richiede una strategia di deduplicazione"
                     )
-                statement = _joinedload_statement(self._mapper, statement, relation)
+                statement = _joinedload_statement(
+                    self._mapper, statement, relation, self._session._provider
+                )
             additions.append(loader)
         return replace(
             self,
@@ -1431,7 +1451,9 @@ class AsyncOrmQuery(Generic[T]):
         projections = tuple(
             projection
             for index, mapper in enumerate(mappers)
-            for projection in _orm_projections(mapper, f"orm_entity_{index}_")
+            for projection in _orm_projections(
+                mapper, f"orm_entity_{index}_", self._session._provider
+            )
         )
         return AsyncOrmEntityTupleQuery(
             self._session,
@@ -1484,6 +1506,12 @@ class OrmRowsQuery:
     ) -> list[Mapping[str, Any]]:
         self._session._require_active()
         self._session._autoflush_now()
+        _validate_spatial_statement(
+            self._statement, self._session._spatial_functions
+        )
+        parameters = _geometry_query_parameters(
+            self._statement, parameters, self._session._provider
+        )
         result = self._session._transaction.execute(self._statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("proiezione ORM senza risultato relazionale")
@@ -1508,6 +1536,12 @@ class OrmEntityTupleQuery:
     def all(self, parameters: Mapping[str, Any] | None = None) -> list[tuple[Any, ...]]:
         self._session._require_active()
         self._session._autoflush_now()
+        _validate_spatial_statement(
+            self._statement, self._session._spatial_functions
+        )
+        parameters = _geometry_query_parameters(
+            self._statement, parameters, self._session._provider
+        )
         result = self._session._transaction.execute(self._statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("query ORM multi-entita senza risultato relazionale")
@@ -1515,7 +1549,9 @@ class OrmEntityTupleQuery:
         for row in result.all():
             entities: list[Any] = []
             for index, mapper in enumerate(self._mappers):
-                values = _entity_projection_values(mapper, row, index)
+                values = _entity_projection_values(
+                    mapper, row, index, self._session._provider
+                )
                 entities.append(
                     None
                     if _projected_entity_is_null(mapper, values)
@@ -1544,6 +1580,12 @@ class AsyncOrmRowsQuery:
     ) -> list[Mapping[str, Any]]:
         await self._session._autoflush_async()
         transaction = await self._session._ensure_started()
+        _validate_spatial_statement(
+            self._statement, self._session._spatial_functions
+        )
+        parameters = _geometry_query_parameters(
+            self._statement, parameters, self._session._provider
+        )
         result = await transaction.execute(self._statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("proiezione ORM senza risultato relazionale")
@@ -1570,6 +1612,12 @@ class AsyncOrmEntityTupleQuery:
     ) -> list[tuple[Any, ...]]:
         await self._session._autoflush_async()
         transaction = await self._session._ensure_started()
+        _validate_spatial_statement(
+            self._statement, self._session._spatial_functions
+        )
+        parameters = _geometry_query_parameters(
+            self._statement, parameters, self._session._provider
+        )
         result = await transaction.execute(self._statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("query ORM multi-entita senza risultato relazionale")
@@ -1577,7 +1625,9 @@ class AsyncOrmEntityTupleQuery:
         for row in result.all():
             entities: list[Any] = []
             for index, mapper in enumerate(self._mappers):
-                values = _entity_projection_values(mapper, row, index)
+                values = _entity_projection_values(
+                    mapper, row, index, self._session._provider
+                )
                 entities.append(
                     None
                     if _projected_entity_is_null(mapper, values)
@@ -1585,6 +1635,165 @@ class AsyncOrmEntityTupleQuery:
                 )
             output.append(tuple(entities))
         return output
+
+
+def _session_spatial_functions(capabilities: Any) -> frozenset[str] | None:
+    spatial = capabilities.get("spatial") if isinstance(capabilities, Mapping) else None
+    functions = spatial.get("functions") if isinstance(spatial, Mapping) else None
+    if not isinstance(functions, list) or not all(
+        isinstance(item, str) for item in functions
+    ):
+        return None
+    return frozenset(functions)
+
+
+def _validate_spatial_statement(
+    statement: SelectStatement, functions: frozenset[str] | None
+) -> None:
+    # Le fake session dei test unitari non pubblicano il documento completo;
+    # le sessioni reali si. Quando il catalogo e presente ogni funzione del
+    # piano deve appartenere all'intersezione misurata dal provider.
+    if functions is None:
+        return
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if value.get("kind") == "spatial":
+                function = value.get("function")
+                if not isinstance(function, str) or function not in functions:
+                    raise OrmUnsupportedError(
+                        "funzione spatial ORM non qualificata dal provider"
+                    )
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(statement.to_ast())
+
+
+def _geometry_query_parameters(
+    statement: SelectStatement,
+    parameters: Mapping[str, Any] | None,
+    provider: str,
+) -> Mapping[str, Any] | None:
+    """Normalizza i bind Geometry canonici nel formato del provider.
+
+    L'IR conserva soltanto nome, SRID e semantica: il payload resta nella
+    mappa separata e viene validato qui, immediatamente prima dell'I/O.
+    """
+
+    if provider not in _MYSQL_ORM_PROVIDERS or parameters is None:
+        return parameters
+    spatial_binds: dict[str, tuple[int, str]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if value.get("kind") == "spatial_value":
+                expression = value.get("expression")
+                srid = value.get("srid")
+                semantics = value.get("semantics")
+                if (
+                    not isinstance(expression, Mapping)
+                    or expression.get("kind")
+                    not in {"parameter", "typed_parameter"}
+                    or not isinstance(expression.get("name"), str)
+                    or not isinstance(srid, int)
+                    or isinstance(srid, bool)
+                    or not isinstance(semantics, str)
+                ):
+                    raise OrmMappingError("bind Geometry ORM non valido")
+                name = expression["name"]
+                frame = (srid, semantics)
+                previous = spatial_binds.setdefault(name, frame)
+                if previous != frame:
+                    raise OrmMappingError(
+                        "bind Geometry ORM riusato con frame incompatibili"
+                    )
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(statement.to_ast())
+    if not spatial_binds:
+        return parameters
+    normalized = dict(parameters)
+    for name, (srid, semantics) in spatial_binds.items():
+        if name not in normalized:
+            continue
+        if semantics != "geometry":
+            raise OrmUnsupportedError(
+                "MySQL/MariaDB non qualificano la semantica geography ORM"
+            )
+        raw = normalized[name]
+        if isinstance(raw, SpatialReference):
+            if raw.semantics != semantics:
+                raise ValueError(
+                    "valore geometry incompatibile con il mapping dichiarato"
+                )
+            ewkb = raw.ewkb
+        elif isinstance(raw, (bytes, bytearray)):
+            ewkb = bytes(raw)
+        else:
+            raise TypeError(
+                "un bind Geometry ORM accetta bytes, bytearray o SpatialReference"
+            )
+        reference = SpatialReference.validated(ewkb, srid, "xy", semantics)
+        normalized[name] = _geometry_bind_value(reference, provider)
+    return normalized
+
+
+def _require_geometry_mapping(type_: Geometry, provider: str) -> None:
+    if provider not in _GEOMETRY_ORM_PROVIDERS:
+        raise OrmUnsupportedError(
+            "Geometry ORM non e qualificata per il provider"
+        )
+    if provider not in _MYSQL_ORM_PROVIDERS:
+        return
+    if type_.semantics != "geometry":
+        raise OrmUnsupportedError(
+            "MySQL/MariaDB non qualificano la semantica geography ORM"
+        )
+    if type_.dimensions != "xy":
+        raise OrmUnsupportedError(
+            "Geometry ORM MySQL/MariaDB qualifica soltanto coordinate XY"
+        )
+    if (
+        type_.geometry_type is not None
+        and type_.geometry_type not in _MYSQL_GEOMETRY_TYPES
+    ):
+        raise OrmUnsupportedError(
+            "tipo Geometry ORM non qualificato per MySQL/MariaDB"
+        )
+
+
+def _require_geometry_mapper(mapper: Mapper, provider: str) -> None:
+    for attribute in mapper.attributes:
+        if isinstance(attribute.type_, Geometry):
+            _require_geometry_mapping(attribute.type_, provider)
+
+
+def _geometry_bind_value(value: SpatialReference, provider: str) -> bytes:
+    if provider not in _MYSQL_ORM_PROVIDERS:
+        return value.ewkb
+    try:
+        from . import _native
+    except ImportError as error:
+        raise RuntimeError(
+            "modulo nativo non disponibile per preparare Geometry ORM"
+        ) from error
+    converter = getattr(_native, "geometry_wkb_xy", None)
+    if converter is None:
+        raise RuntimeError(
+            "estensione nativa incompatibile con Geometry ORM MySQL/MariaDB"
+        )
+    converted = converter(value.ewkb)
+    if not isinstance(converted, bytes):
+        raise RuntimeError("conversione Geometry ORM non ha restituito bytes")
+    return converted
 
 
 def _mapper(model: type[DeclarativeBase]) -> Mapper:
@@ -1684,6 +1893,7 @@ class OrmSession:
         if not isinstance(provider, str):
             raise TypeError("Session Core senza provider dichiarato")
         self._provider = provider
+        self._spatial_functions = _session_spatial_functions(capabilities)
         self._transaction = begin()
         self._identity_map: dict[
             tuple[type[DeclarativeBase], tuple[Any, ...]], DeclarativeBase
@@ -1771,7 +1981,9 @@ class OrmSession:
         self._require_active()
         mapper = _mapper(model)  # type: ignore[arg-type]
         self._require_relational_load(mapper)
-        return OrmQuery(self, mapper, select(*_orm_projections(mapper)))
+        return OrmQuery(
+            self, mapper, select(*_orm_projections(mapper, provider=self._provider))
+        )
 
     def get(self, model: type[T], identity: Any) -> T | None:
         self._require_active()
@@ -1783,7 +1995,12 @@ class OrmSession:
             return self._identity_map[key]  # type: ignore[return-value]
         self._require_relational_load(mapper)
         predicate, parameters = _identity_values_predicate(mapper, identity_values)
-        statement = select(*_orm_projections(mapper)).where(predicate).limit(2)
+        statement = (
+            select(*_orm_projections(mapper, provider=self._provider))
+            .where(predicate)
+            .limit(2)
+        )
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
         result = self._transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
@@ -1807,13 +2024,18 @@ class OrmSession:
             raise OrmStateError("refresh richiede un'istanza persistent della sessione")
         identity = _identity(mapper, instance)
         predicate, parameters = _identity_values_predicate(mapper, identity)
-        statement = select(*_orm_projections(mapper)).where(predicate).limit(2)
+        statement = (
+            select(*_orm_projections(mapper, provider=self._provider))
+            .where(predicate)
+            .limit(2)
+        )
         result = self._transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
         row = result.one_or_none()
         if row is None:
             raise NoResultFound("refresh ORM senza riga")
+        _validate_geometry_row(mapper, row, self._provider)
         for attribute in mapper.attributes:
             name = attribute.name
             if name is None or name not in row:
@@ -2015,7 +2237,7 @@ class OrmSession:
         if target_primary is None:
             raise OrmMappingError("target relationship senza chiave")
         statement = (
-            select(*_orm_projections(target_mapper))
+            select(*_orm_projections(target_mapper, provider=self._provider))
             .select_from(target_mapper.table)
             .join(
                 secondary,
@@ -2145,12 +2367,7 @@ class OrmSession:
                 _state(exclude).dirty.update(excluded_dirty)
 
     def _require_relational_load(self, mapper: Mapper) -> None:
-        if self._provider != "postgres" and any(
-            isinstance(attribute.type_, Geometry) for attribute in mapper.attributes
-        ):
-            raise OrmUnsupportedError(
-                "il caricamento ORM spatial non e qualificato per il provider"
-            )
+        _require_geometry_mapper(mapper, self._provider)
 
     def _execute_entities(
         self,
@@ -2161,6 +2378,8 @@ class OrmSession:
     ) -> list[Any]:
         self._require_active()
         self._autoflush_now()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
         result = self._transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
@@ -2191,11 +2410,9 @@ class OrmSession:
         )
         related = None
         if all(value is not None for value in identity_values):
-            values = {
-                attribute.name: row.get(f"{prefix}{attribute.name}")
-                for attribute in target_mapper.attributes
-                if attribute.name is not None
-            }
+            values = _mapped_row_values(
+                target_mapper, row, prefix, self._provider
+            )
             related = self._hydrate(target_mapper, values)
         _assign_loaded_relationship(instance, relation, related)
 
@@ -2265,7 +2482,9 @@ class OrmSession:
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
         predicate = column.in_(*(bind(name) for name in parameters))
-        statement = select(*_orm_projections(mapper)).where(predicate)
+        statement = select(
+            *_orm_projections(mapper, provider=self._provider)
+        ).where(predicate)
         return self._execute_entities(mapper, statement, parameters)
 
     def _selectin_many_to_many(
@@ -2285,7 +2504,7 @@ class OrmSession:
         local_column = secondary.c[relation.secondary_local_key or ""]
         statement = (
             select(
-                *_orm_projections(target_mapper),
+                *_orm_projections(target_mapper, provider=self._provider),
                 local_column.label("orm_eager_owner"),
             )
             .select_from(target_mapper.table)
@@ -2309,6 +2528,7 @@ class OrmSession:
     def _hydrate(
         self, mapper: Mapper, row: Mapping[str, Any], *, emit: bool = True
     ) -> DeclarativeBase:
+        _validate_geometry_row(mapper, row, self._provider)
         identity = _row_identity(mapper, row)
         key = (mapper.model, identity)
         existing = self._identity_map.get(key)
@@ -2577,11 +2797,8 @@ class OrmSession:
                     isinstance(attribute.type_, Geometry)
                     and value is not None
                     and (state.status is ObjectState.PENDING or name in state.dirty)
-                    and self._provider != "postgres"
                 ):
-                    raise OrmUnsupportedError(
-                        "le mutazioni ORM spatial non sono qualificate per il provider"
-                    )
+                    _require_geometry_mapping(attribute.type_, self._provider)
 
     def _insert(self, instance: DeclarativeBase) -> None:
         mapper = _mapper(type(instance))
@@ -2608,7 +2825,7 @@ class OrmSession:
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
-                    parameters[bind_name] = value.ewkb
+                    parameters[bind_name] = _geometry_bind_value(value, self._provider)
                 else:
                     assignments[name] = bind(bind_name)
                     parameters[bind_name] = value
@@ -2729,7 +2946,7 @@ class OrmSession:
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
-                parameters[bind_name] = value.ewkb
+                parameters[bind_name] = _geometry_bind_value(value, self._provider)
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -2853,6 +3070,7 @@ class AsyncOrmSession(OrmSession):
         if not isinstance(provider, str):
             raise TypeError("AsyncSession Core senza provider dichiarato")
         self._provider = provider
+        self._spatial_functions = _session_spatial_functions(capabilities)
         self._session = session
         self._transaction: Any | None = None
         self._identity_map = {}
@@ -2915,7 +3133,9 @@ class AsyncOrmSession(OrmSession):
         self._require_active()
         mapper = _mapper(model)  # type: ignore[arg-type]
         self._require_relational_load(mapper)
-        return AsyncOrmQuery(self, mapper, select(*_orm_projections(mapper)))
+        return AsyncOrmQuery(
+            self, mapper, select(*_orm_projections(mapper, provider=self._provider))
+        )
 
     async def get(self, model: type[T], identity: Any) -> T | None:
         self._require_active()
@@ -2927,8 +3147,13 @@ class AsyncOrmSession(OrmSession):
             return self._identity_map[key]  # type: ignore[return-value]
         self._require_relational_load(mapper)
         predicate, parameters = _identity_values_predicate(mapper, identity_values)
-        statement = select(*_orm_projections(mapper)).where(predicate).limit(2)
+        statement = (
+            select(*_orm_projections(mapper, provider=self._provider))
+            .where(predicate)
+            .limit(2)
+        )
         transaction = await self._ensure_started()
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
         result = await transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
@@ -2952,7 +3177,11 @@ class AsyncOrmSession(OrmSession):
             raise OrmStateError("refresh richiede un'istanza persistent della sessione")
         identity = _identity(mapper, instance)
         predicate, parameters = _identity_values_predicate(mapper, identity)
-        statement = select(*_orm_projections(mapper)).where(predicate).limit(2)
+        statement = (
+            select(*_orm_projections(mapper, provider=self._provider))
+            .where(predicate)
+            .limit(2)
+        )
         transaction = await self._ensure_started()
         result = await transaction.execute(statement, parameters)
         if not isinstance(result, Result):
@@ -2960,6 +3189,7 @@ class AsyncOrmSession(OrmSession):
         row = result.one_or_none()
         if row is None:
             raise NoResultFound("refresh ORM senza riga")
+        _validate_geometry_row(mapper, row, self._provider)
         for attribute in mapper.attributes:
             name = attribute.name
             if name is None or name not in row:
@@ -3130,7 +3360,7 @@ class AsyncOrmSession(OrmSession):
         if target_primary is None:
             raise OrmMappingError("target relationship senza chiave")
         statement = (
-            select(*_orm_projections(target_mapper))
+            select(*_orm_projections(target_mapper, provider=self._provider))
             .select_from(target_mapper.table)
             .join(
                 secondary,
@@ -3154,6 +3384,8 @@ class AsyncOrmSession(OrmSession):
     ) -> list[Any]:
         await self._autoflush_async()
         transaction = await self._ensure_started()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
         result = await transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
@@ -3184,11 +3416,9 @@ class AsyncOrmSession(OrmSession):
         )
         related = None
         if all(value is not None for value in identity_values):
-            values = {
-                attribute.name: row.get(f"{prefix}{attribute.name}")
-                for attribute in target_mapper.attributes
-                if attribute.name is not None
-            }
+            values = _mapped_row_values(
+                target_mapper, row, prefix, self._provider
+            )
             related = await self._hydrate_row_async(target_mapper, values)
         _assign_loaded_relationship(instance, relation, related)
 
@@ -3259,9 +3489,9 @@ class AsyncOrmSession(OrmSession):
         if column is None:
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
-        statement = select(*_orm_projections(mapper)).where(
-            column.in_(*(bind(name) for name in parameters))
-        )
+        statement = select(
+            *_orm_projections(mapper, provider=self._provider)
+        ).where(column.in_(*(bind(name) for name in parameters)))
         return await self._execute_entities_async(mapper, statement, parameters)
 
     async def _selectin_many_to_many_async(
@@ -3281,7 +3511,7 @@ class AsyncOrmSession(OrmSession):
         local_column = secondary.c[relation.secondary_local_key or ""]
         statement = (
             select(
-                *_orm_projections(target_mapper),
+                *_orm_projections(target_mapper, provider=self._provider),
                 local_column.label("orm_eager_owner"),
             )
             .select_from(target_mapper.table)
@@ -3410,7 +3640,7 @@ class AsyncOrmSession(OrmSession):
                     assignments[name] = _spatial_value(
                         bind(bind_name), attribute.type_.srid, attribute.type_.semantics
                     )
-                    parameters[bind_name] = value.ewkb
+                    parameters[bind_name] = _geometry_bind_value(value, self._provider)
                 else:
                     assignments[name] = bind(bind_name)
                     parameters[bind_name] = value
@@ -3603,7 +3833,7 @@ class AsyncOrmSession(OrmSession):
                 assignments[name] = _spatial_value(
                     bind(bind_name), attribute.type_.srid, attribute.type_.semantics
                 )
-                parameters[bind_name] = value.ewkb
+                parameters[bind_name] = _geometry_bind_value(value, self._provider)
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -3662,7 +3892,13 @@ class AsyncOrmSession(OrmSession):
         await self._emit_async("after_delete", instance)
 
 
-def _orm_projections(mapper: Mapper, prefix: str = "") -> tuple[Expression, ...]:
+def _geometry_srid_alias(projected_name: str) -> str:
+    return f"orm_geometry_srid_{projected_name}"
+
+
+def _orm_projections(
+    mapper: Mapper, prefix: str = "", provider: str = "postgres"
+) -> tuple[Expression, ...]:
     projections: list[Expression] = []
     for attribute in mapper.attributes:
         name = attribute.name
@@ -3670,9 +3906,19 @@ def _orm_projections(mapper: Mapper, prefix: str = "") -> tuple[Expression, ...]
         if name is None or column is None:
             raise OrmMappingError("attributo mappato privo di colonna")
         if isinstance(attribute.type_, Geometry):
+            _require_geometry_mapping(attribute.type_, provider)
+            projected_name = f"{prefix}{name}"
             projection = _spatial_output(column, attribute.type_.semantics).label(
-                f"{prefix}{name}"
+                projected_name
             )
+            projections.append(projection)
+            if provider in _MYSQL_ORM_PROVIDERS:
+                projections.append(
+                    _spatial_function("srid", column).label(
+                        _geometry_srid_alias(projected_name)
+                    )
+                )
+            continue
         else:
             projection = column.label(f"{prefix}{name}") if prefix else column
         projections.append(projection)
@@ -3688,14 +3934,59 @@ def _query_relationship(
     return relation
 
 
-def _entity_projection_values(
-    mapper: Mapper, row: Mapping[str, Any], index: int
+def _mapped_row_values(
+    mapper: Mapper,
+    row: Mapping[str, Any],
+    prefix: str,
+    provider: str,
 ) -> dict[str, Any]:
-    return {
-        attribute.name: row[f"orm_entity_{index}_{attribute.name}"]
+    values = {
+        attribute.name: row[f"{prefix}{attribute.name}"]
         for attribute in mapper.attributes
         if attribute.name is not None
     }
+    if provider in _MYSQL_ORM_PROVIDERS:
+        for attribute in mapper.attributes:
+            if isinstance(attribute.type_, Geometry) and attribute.name is not None:
+                values[_geometry_srid_alias(attribute.name)] = row[
+                    _geometry_srid_alias(f"{prefix}{attribute.name}")
+                ]
+    return values
+
+
+def _entity_projection_values(
+    mapper: Mapper, row: Mapping[str, Any], index: int, provider: str
+) -> dict[str, Any]:
+    return _mapped_row_values(mapper, row, f"orm_entity_{index}_", provider)
+
+
+def _validate_geometry_row(
+    mapper: Mapper, row: Mapping[str, Any], provider: str
+) -> None:
+    if provider not in _MYSQL_ORM_PROVIDERS:
+        return
+    for attribute in mapper.attributes:
+        type_ = attribute.type_
+        name = attribute.name
+        if not isinstance(type_, Geometry) or name is None:
+            continue
+        srid_name = _geometry_srid_alias(name)
+        if name not in row or srid_name not in row:
+            raise OrmMappingError("risultato privo del frame Geometry ORM")
+        value = row.get(name)
+        observed = row.get(srid_name)
+        if value is None:
+            if observed is not None:
+                raise OrmMappingError("SRID presente per una Geometry ORM NULL")
+            continue
+        if (
+            not isinstance(observed, int)
+            or isinstance(observed, bool)
+            or observed != type_.srid
+        ):
+            raise OrmMappingError(
+                "SRID Geometry ORM diverso dal mapping dichiarato"
+            )
 
 
 def _projected_entity_is_null(mapper: Mapper, values: Mapping[str, Any]) -> bool:
@@ -3769,12 +4060,17 @@ def _loader_prefix(relation: Relationship[Any]) -> str:
 
 
 def _joinedload_statement(
-    mapper: Mapper, statement: SelectStatement, relation: Relationship[Any]
+    mapper: Mapper,
+    statement: SelectStatement,
+    relation: Relationship[Any],
+    provider: str,
 ) -> SelectStatement:
     joined = _join_statement(mapper, statement, relation, None, "left")
     projections = (
         *joined.projections,
-        *_orm_projections(_mapper(relation.target), _loader_prefix(relation)),
+        *_orm_projections(
+            _mapper(relation.target), _loader_prefix(relation), provider
+        ),
     )
     return replace(joined, projections=projections)
 
@@ -3954,12 +4250,16 @@ def _qualified_table(table: Table, provider: str) -> str:
 def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
     type_ = attribute.type_
     if isinstance(type_, Geometry):
-        if provider != "postgres":
-            raise OrmUnsupportedError(
-                "DDL spatial ORM qualificato soltanto per PostgreSQL/PostGIS"
-            )
+        _require_geometry_mapping(type_, provider)
         base = type_.semantics
         geometry_type = type_.geometry_type or "geometry"
+        if provider == "mysql":
+            return f"{geometry_type.upper()} SRID {type_.srid}"
+        if provider == "mariadb":
+            # MariaDB non ammette l'attributo SRID di colonna. Il frame viene
+            # comunque scritto come secondo argomento e verificato per riga
+            # con ST_SRID durante l'idratazione ORM.
+            return geometry_type.upper()
         return f"{base}({geometry_type}, {type_.srid})"
     mapping = {
         int: "INTEGER",

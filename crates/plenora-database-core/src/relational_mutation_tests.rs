@@ -54,7 +54,7 @@ fn insert_uses_named_layout_without_carrying_values() {
 }
 
 #[test]
-fn postgres_spatial_value_keeps_payload_in_a_named_bind() {
+fn qualified_spatial_values_keep_payloads_in_named_binds() {
     let operation = MutationOperation::Insert(InsertOperation {
         target: target(),
         columns: vec!["shape".to_owned()],
@@ -76,7 +76,31 @@ fn postgres_spatial_value_keeps_payload_in_a_named_bind() {
         "{}",
         postgres.sql
     );
-    assert!(compile_relational_mutation(ProviderKind::Mysql, &operation).is_err());
+    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let lowered =
+            compile_relational_mutation(provider, &operation).expect("bind spatial MySQL/MariaDB");
+        assert_eq!(lowered.bind_names, ["shape"]);
+        assert!(
+            lowered
+                .sql
+                .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326)"),
+            "{}",
+            lowered.sql
+        );
+    }
+
+    let geography = MutationOperation::Insert(InsertOperation {
+        target: target(),
+        columns: vec!["shape".to_owned()],
+        rows: vec![vec![QueryExpression::SpatialValue {
+            expression: Box::new(parameter("shape")),
+            srid: 4_326,
+            semantics: SpatialSemantics::Geography,
+        }]],
+        returning: Vec::new(),
+    });
+    assert!(compile_relational_mutation(ProviderKind::Mysql, &geography).is_err());
+    assert!(compile_relational_mutation(ProviderKind::Mariadb, &geography).is_err());
 }
 
 #[test]

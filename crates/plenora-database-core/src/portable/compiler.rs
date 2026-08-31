@@ -194,8 +194,26 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "valore spatial richiede SRID positivo",
                 ));
             }
-            if ctx.dialect != DialectKind::Postgres {
-                return Err(DatabaseError::unsupported(
+            let value = compile_expression(expression, ctx)?;
+            match ctx.dialect {
+                DialectKind::Postgres => {
+                    let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
+                    Ok(match semantics {
+                        SpatialSemantics::Geometry => geometry,
+                        SpatialSemantics::Geography => format!("({geometry})::geography"),
+                    })
+                }
+                DialectKind::Mysql | DialectKind::Mariadb
+                    if *semantics == SpatialSemantics::Geometry =>
+                {
+                    // Entrambi i prodotti richiedono un argomento binario
+                    // tipizzato. MariaDB rifiuta il placeholder nudo con
+                    // 4079; la forma con CAST e stata misurata dalla sonda
+                    // `raw.spatial_write_forms` ed e condivisa con il writer
+                    // Arrow dello stesso crate provider.
+                    Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
+                }
+                _ => Err(DatabaseError::unsupported(
                     match ctx.dialect {
                         DialectKind::Mysql => ProviderKind::Mysql,
                         DialectKind::Mariadb => ProviderKind::Mariadb,
@@ -205,14 +223,8 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     },
                     crate::ErrorPhase::Prepare,
                     "bind spatial OLTP non qualificato per il provider",
-                ));
+                )),
             }
-            let value = compile_expression(expression, ctx)?;
-            let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
-            Ok(match semantics {
-                SpatialSemantics::Geometry => geometry,
-                SpatialSemantics::Geography => format!("({geometry})::geography"),
-            })
         }
     }
 }

@@ -28,14 +28,22 @@ pub fn compile_relational_query(
     ast_json: &str,
     provider_name: &str,
 ) -> PyResult<(String, Vec<String>)> {
-    let (dialect, _) = provider(provider_name)
+    let (dialect, provider) = provider(provider_name)
         .ok_or_else(|| PyValueError::new_err("provider relazionale non supportato"))?;
     let query: QueryOperation = serde_json::from_str(ast_json)
         .map_err(|_| PyValueError::new_err("IR relazionale non valido"))?;
     let rendered = Renderer::new(
         dialect,
         DialectCapabilities {
-            spatial_intersects: false,
+            // L'ORM verifica ogni nome contro `capabilities.spatial.functions`
+            // della sessione prima di arrivare qui. Questo interruttore apre
+            // il lowering soltanto sui tre provider con I/O Geometry ORM
+            // qualificato; SQL Server e Db2 restano chiusi fino ai propri
+            // gate live.
+            spatial_intersects: matches!(
+                provider,
+                ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Mariadb
+            ),
         },
     )
     .render_query(&query)

@@ -10,6 +10,7 @@ Pochi documenti, ciascuno con un ruolo esplicito.
 | [`mariadb/EVIDENCE.md`](mariadb/EVIDENCE.md) | inventario generato delle prove che sostengono MariaDB |
 | [`mariadb/SESSION-MATRIX.md`](mariadb/SESSION-MATRIX.md) | esito live generato della semantica di sessione |
 | [`mariadb/ADR-0014-evidence-first.md`](mariadb/ADR-0014-evidence-first.md) | decisione ancora citata dal codice, ridotta al suo vincolo attuale |
+| [`sdk/VM-EVIDENCE.md`](sdk/VM-EVIDENCE.md) | ultimo verdetto SDK autorevole eseguito nella VM |
 
 ## Perche cosi poco
 

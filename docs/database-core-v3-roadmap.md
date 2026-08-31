@@ -47,7 +47,12 @@ la complessita degli altri due.
 
 ## Diagnosi architetturale
 
-La base necessaria esiste, ma non e ancora organizzata come API applicativa.
+La diagnosi iniziale che collocava mapper, identity map e flush planner fra le
+assenze non descrive piu il punto di partenza. Quelle fondamenta, insieme al
+lifecycle di sessione, al mapping dichiarativo e alle migrazioni lineari, sono
+ora parte dell'API applicativa. Lo stato preciso resta quello generato in
+[`STATO.md`](STATO.md); questa roadmap ordina il lavoro residuo.
+
 Le aree da consolidare sono:
 
 - tre rappresentazioni parzialmente sovrapposte delle query fra
@@ -61,7 +66,9 @@ Le aree da consolidare sono:
 - risultati distinti per scalar, righe e Arrow, senza un unico protocollo di
   consumo;
 - implementazioni sync e async esposte in superfici parallele;
-- assenza di mapper, identity map, flush planner e migration planner.
+- qualifica ORM provider per provider, con Geometry ancora da chiudere fuori
+  dalle righe sostenute da gate live;
+- migrazioni non lineari, inheritance avanzata e loader di collezione con join.
 
 La prima riduzione di complessita non arriva comprimendo funzioni, ma eliminando
 queste rappresentazioni e orchestrazioni duplicate.
@@ -298,6 +305,11 @@ le ambiguita dell'API di riferimento.
 
 ## Sequenza di implementazione
 
+Le fasi A, B e il nucleo della fase D hanno gia prodotto le fondamenta oggi
+esposte. Non sono piu la sequenza operativa corrente; restano qui come forma
+architetturale del programma. Le capability effettive non si deducono da
+questa sezione, ma dal documento generato e dai gate nominati dal codice.
+
 ### Fase A: consolidamento senza rotture
 
 1. misurare duplicazioni fra i tre AST e fissare la baseline;
@@ -356,19 +368,23 @@ Il programma non si valuta soltanto contando feature o righe.
 - Workload multiutente senza perdita di session context, starvation o riuso di
   connessioni compromesse.
 
-## Primo incremento eseguibile
+## Prossimo macro-blocco eseguibile
 
-Il primo incremento deve restare piccolo e reversibile:
+Il lavoro a maggior valore e la qualifica Geometry ORM multi-provider, senza
+allargare per somiglianza fra dialetti:
 
-1. creare un inventario strutturale dei tre AST;
-2. definire il nucleo IR comune per identificatori, table source, expression,
-   predicate e bind;
-3. convertire soltanto `SELECT` semplice e i relativi golden test;
-4. collegare PostgreSQL e un secondo dialetto con differenze marcate;
-5. misurare righe eliminate, adattatori introdotti e costo di compilazione;
-6. decidere, dai risultati, se estendere l'IR a join/CTE o correggerne il
-   modello prima che diventi pubblico.
+1. conservare il verdetto della campagna SDK eseguita in VM, legato a commit,
+   digest degli artefatti e immagini;
+2. qualificare insieme MySQL e MariaDB, che condividono il crate ma mantengono
+   profili e DDL distinti;
+3. qualificare SQL Server con un gate dedicato;
+4. affrontare Db2 separatamente e per ultimo;
+5. chiudere il blocco con campagna live completa, fuzz lungo e release
+   candidate dell'SDK.
 
-Questo incremento non cambia il contratto v2 e non introduce ancora l'ORM. Se
-non riduce davvero duplicazione e complessita, il gate impedisce di propagare
-un quarto modello query nel repository.
+Ogni riga provider deve coprire almeno Point, LineString, Polygon, `NULL`, SRID,
+EWKB invalido, dimensionalita XY/XYZ, insert, update, query, round trip e
+predicati spatial. La capability resta negata finche il relativo gate live non
+e verde. Niente lazy loading implicito e niente `joinedload` sulle collezioni
+restano scelte intenzionali; inheritance avanzata e migrazioni non lineari non
+bloccano questo macro-blocco.

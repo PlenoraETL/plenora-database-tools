@@ -59,6 +59,7 @@ pub struct EwkbInspection {
     pub has_any_z: bool,
     pub has_any_m: bool,
     pub has_any_embedded_srid: bool,
+    pub embedded_srid_count: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +88,7 @@ struct Scanner<'a> {
     has_any_z: bool,
     has_any_m: bool,
     has_any_embedded_srid: bool,
+    embedded_srid_count: u64,
 }
 
 impl Scanner<'_> {
@@ -191,6 +193,12 @@ impl Scanner<'_> {
         self.has_any_z |= header.has_z;
         self.has_any_m |= header.has_m;
         self.has_any_embedded_srid |= header.srid.is_some();
+        if header.srid.is_some() {
+            self.embedded_srid_count = self
+                .embedded_srid_count
+                .checked_add(1)
+                .ok_or_else(|| resource_error("overflow SRID embedded EWKB"))?;
+        }
         let children = match header.base_type {
             1 => {
                 self.coordinates(1, header.dimensions)?;
@@ -254,6 +262,7 @@ pub fn inspect_ewkb_detailed(
         has_any_z: false,
         has_any_m: false,
         has_any_embedded_srid: false,
+        embedded_srid_count: 0,
     };
     let mut depth = 1;
     let mut frames = Vec::<Frame>::new();
@@ -296,6 +305,7 @@ pub fn inspect_ewkb_detailed(
                     has_any_z: scanner.has_any_z,
                     has_any_m: scanner.has_any_m,
                     has_any_embedded_srid: scanner.has_any_embedded_srid,
+                    embedded_srid_count: scanner.embedded_srid_count,
                 });
             };
             if frame.remaining == 0 {

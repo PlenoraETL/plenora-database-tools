@@ -87,14 +87,50 @@ fn postgres_spatial_output_encodes_a_column_as_ewkb() {
         rendered.sql
     );
 
-    assert!(Renderer::new(
+    let mysql = Renderer::new(
         Dialect::Mysql,
         DialectCapabilities {
             spatial_intersects: false,
         },
     )
     .render_query(&query)
-    .is_err());
+    .expect("projection WKB MySQL");
+    assert!(
+        mysql.sql.contains("ST_AsBinary(`e`.`shape`) AS `shape`"),
+        "{}",
+        mysql.sql
+    );
+}
+
+#[test]
+fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
+    let mut query = simple_query();
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::SpatialValue {
+            expression: Box::new(QueryExpression::Parameter {
+                name: "shape".to_owned(),
+            }),
+            srid: 4_326,
+            semantics: SpatialSemantics::Geometry,
+        },
+        alias: Some("shape".to_owned()),
+    }];
+    let rendered = Renderer::new(
+        Dialect::Mysql,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .render_query(&query)
+    .expect("bind WKB MySQL");
+    assert!(
+        rendered
+            .sql
+            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326) AS `shape`"),
+        "{}",
+        rendered.sql
+    );
+    assert_eq!(rendered.binds[0].name, "shape");
 }
 
 #[test]

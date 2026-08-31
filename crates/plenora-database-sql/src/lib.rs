@@ -1131,18 +1131,23 @@ impl Renderer {
         semantics: SpatialSemantics,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        if self.dialect != Dialect::Postgres {
-            return Err(DatabaseError::unsupported(
+        let value = self.render_query_expression(expression, binds)?;
+        match (self.dialect, semantics) {
+            (Dialect::Postgres, SpatialSemantics::Geometry) => Ok(format!("ST_AsEWKB({value})")),
+            (Dialect::Postgres, SpatialSemantics::Geography) => {
+                Ok(format!("ST_AsEWKB(({value})::geometry)"))
+            }
+            (Dialect::Mysql, SpatialSemantics::Geometry) => {
+                // Il frame non viaggia in WKB: il chiamante ORM proietta
+                // anche ST_SRID e verifica la coppia prima di idratare.
+                Ok(format!("ST_AsBinary({value})"))
+            }
+            _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
-                "projection EWKB OLTP non qualificata per il provider",
-            ));
+                "projection spatial OLTP non qualificata per il provider",
+            )),
         }
-        let value = self.render_query_expression(expression, binds)?;
-        Ok(match semantics {
-            SpatialSemantics::Geometry => format!("ST_AsEWKB({value})"),
-            SpatialSemantics::Geography => format!("ST_AsEWKB(({value})::geometry)"),
-        })
     }
 
     fn render_spatial_value(
@@ -1152,19 +1157,23 @@ impl Renderer {
         semantics: SpatialSemantics,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        if self.dialect != Dialect::Postgres {
-            return Err(DatabaseError::unsupported(
+        let value = self.render_query_expression(expression, binds)?;
+        match (self.dialect, semantics) {
+            (Dialect::Postgres, SpatialSemantics::Geometry) => {
+                Ok(format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})"))
+            }
+            (Dialect::Postgres, SpatialSemantics::Geography) => Ok(format!(
+                "(ST_SetSRID(ST_GeomFromEWKB({value}), {srid}))::geography"
+            )),
+            (Dialect::Mysql, SpatialSemantics::Geometry) => {
+                Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
+            }
+            _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
                 "bind spatial OLTP non qualificato per il provider",
-            ));
+            )),
         }
-        let value = self.render_query_expression(expression, binds)?;
-        let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
-        Ok(match semantics {
-            SpatialSemantics::Geometry => geometry,
-            SpatialSemantics::Geography => format!("({geometry})::geography"),
-        })
     }
 
     const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {

@@ -101,6 +101,39 @@ class LiveAsyncPlace(p.DeclarativeBase):
     )
 
 
+_MYSQL_POINT = p.Geometry(srid=4326, geometry_type="point")
+_MYSQL_LINESTRING = p.Geometry(srid=4326, geometry_type="linestring")
+_MYSQL_POLYGON = p.Geometry(srid=4326, geometry_type="polygon")
+
+
+class LiveMysqlGeometry(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_mysql_geometry"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    point: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _MYSQL_POINT, nullable=False
+    )
+    line: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _MYSQL_LINESTRING, nullable=False
+    )
+    polygon: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _MYSQL_POLYGON, nullable=False
+    )
+    optional_point: p.Mapped[p.SpatialReference | None] = p.mapped_column(
+        _MYSQL_POINT
+    )
+
+
+class LiveMysqlGeometryXyz(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_mysql_geometry_xyz"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    shape: p.Mapped[p.SpatialReference] = p.mapped_column(
+        p.Geometry(srid=4326, dimensions="xyz", geometry_type="point"),
+        nullable=False,
+    )
+
+
 class LivePortableGenerated(p.DeclarativeBase):
     __tablename__ = "_plenora_orm_portable_generated"
 
@@ -226,6 +259,35 @@ def _ewkb_point(x: float, y: float, srid: int = 4326) -> bytes:
         + srid.to_bytes(4, "little")
         + struct.pack("<dd", x, y)
     )
+
+
+def _ewkb_linestring(points: tuple[tuple[float, float], ...], srid: int = 4326) -> bytes:
+    return (
+        b"\x01"
+        + (0x2000_0002).to_bytes(4, "little")
+        + srid.to_bytes(4, "little")
+        + len(points).to_bytes(4, "little")
+        + b"".join(struct.pack("<dd", *point) for point in points)
+    )
+
+
+def _ewkb_polygon(
+    ring: tuple[tuple[float, float], ...], srid: int = 4326
+) -> bytes:
+    return (
+        b"\x01"
+        + (0x2000_0003).to_bytes(4, "little")
+        + srid.to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + len(ring).to_bytes(4, "little")
+        + b"".join(struct.pack("<dd", *point) for point in ring)
+    )
+
+
+def _root_wkb(ewkb: bytes) -> bytes:
+    return ewkb[:1] + (int.from_bytes(ewkb[1:5], "little") & 0x0FFF_FFFF).to_bytes(
+        4, "little"
+    ) + ewkb[9:]
 
 
 class _FakeTransaction:
@@ -434,7 +496,7 @@ def test_rollback_after_successful_flush_restores_entry_snapshot() -> None:
     assert p.inspect_instance(account).state is p.ObjectState.DETACHED
 
 
-def test_geometry_mapping_uses_canonical_ewkb_and_other_providers_fail_closed() -> None:
+def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_closed() -> None:
     with pytest.raises(ValueError, match="geometry_type"):
         p.Geometry(srid=4326, geometry_type="not-a-geometry")
 
@@ -463,18 +525,54 @@ def test_geometry_mapping_uses_canonical_ewkb_and_other_providers_fail_closed() 
     projection = read_transaction.executed[0][0].to_ast()["projection"][1]
     assert projection["expression"]["kind"] == "spatial_output"
 
+    for provider in ("mysql", "mariadb"):
+        mysql_transaction = _FakeTransaction()
+        mysql = p.OrmSession(_FakeSession(mysql_transaction, provider=provider))
+        mysql.add(Place(id=3, shape=ewkb))
+        mysql.flush()
+        _, parameters = mysql_transaction.executed[0]
+        assert _root_wkb(ewkb) in parameters.values()
+
+        mysql_read = _FakeTransaction(
+            [
+                {
+                    "id": 3,
+                    "shape": _root_wkb(ewkb),
+                    "orm_geometry_srid_shape": 4326,
+                }
+            ]
+        )
+        mysql_reader = p.OrmSession(_FakeSession(mysql_read, provider=provider))
+        loaded = mysql_reader.get(Place, 3)
+        assert loaded is not None and loaded.shape.ewkb == _root_wkb(ewkb)
+        projections = mysql_read.executed[0][0].to_ast()["projection"]
+        assert projections[2]["alias"] == "orm_geometry_srid_shape"
+        predicate = _MYSQL_POINT.predicate(
+            "intersects", Place.shape, _MYSQL_POINT.bind("reference")
+        )
+        mysql_reader.query(Place).where(predicate).all({"reference": ewkb})
+        assert mysql_read.executed[-1][1]["reference"] == _root_wkb(ewkb)
+        mysql.rollback()
+        mysql_reader.rollback()
+
+        missing_srid = p.OrmSession(
+            _FakeSession(
+                _FakeTransaction([{"id": 4, "shape": _root_wkb(ewkb)}]),
+                provider=provider,
+            )
+        )
+        with pytest.raises(p.OrmMappingError, match="frame Geometry"):
+            missing_srid.get(Place, 4)
+        missing_srid.rollback()
+
     rejected_transaction = _FakeTransaction()
-    rejected = p.OrmSession(_FakeSession(rejected_transaction, provider="mysql"))
-    rejected.add(Place(id=3, shape=ewkb))
-    with pytest.raises(p.OrmUnsupportedError, match="spatial"):
+    rejected = p.OrmSession(
+        _FakeSession(rejected_transaction, provider="sqlserver")
+    )
+    rejected.add(Place(id=4, shape=ewkb))
+    with pytest.raises(p.OrmUnsupportedError, match="Geometry ORM"):
         rejected.flush()
     assert rejected_transaction.executed == []
-
-    rejected_read = _FakeTransaction()
-    rejected_reader = p.OrmSession(_FakeSession(rejected_read, provider="mysql"))
-    with pytest.raises(p.OrmUnsupportedError, match="spatial"):
-        rejected_reader.get(Place, 3)
-    assert rejected_read.executed == []
 
     orm.rollback()
     reader.rollback()
@@ -1028,6 +1126,95 @@ def test_live_db2_generated_defaults_and_ddl() -> None:
     finally:
         if created:
             metadata.drop_all(session, checkfirst=False)
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "connector"),
+    (
+        ("mysql", connect_mysql_reference),
+        ("mariadb", connect_mariadb_reference),
+    ),
+)
+def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) -> None:
+    session = connector()
+    assert session.capabilities["provider"] == provider
+    metadata = p.OrmMetadata(models=(LiveMysqlGeometry,))
+    point = _ewkb_point(9.19, 45.46)
+    moved_point = _ewkb_point(9.20, 45.47)
+    line = _ewkb_linestring(((9.18, 45.45), (9.20, 45.47)))
+    polygon = _ewkb_polygon(
+        (
+            (9.10, 45.40),
+            (9.30, 45.40),
+            (9.30, 45.55),
+            (9.10, 45.55),
+            (9.10, 45.40),
+        )
+    )
+    try:
+        metadata.drop_all(session)
+        metadata.create_all(session)
+
+        with pytest.raises(ValueError):
+            LiveMysqlGeometry(
+                id=99,
+                point=b"EWKB-invalid",
+                line=line,
+                polygon=polygon,
+            )
+        with pytest.raises(ValueError, match="SRID"):
+            LiveMysqlGeometry(
+                id=99,
+                point=_ewkb_point(9.19, 45.46, srid=3857),
+                line=line,
+                polygon=polygon,
+            )
+        with pytest.raises(p.OrmUnsupportedError, match="XY"):
+            p.OrmMetadata(models=(LiveMysqlGeometryXyz,)).create_all(session)
+
+        with p.OrmSession(session) as orm:
+            orm.add(
+                LiveMysqlGeometry(
+                    id=1,
+                    point=point,
+                    line=line,
+                    polygon=polygon,
+                    optional_point=None,
+                )
+            )
+
+        with p.OrmSession(session) as orm:
+            loaded = orm.get(LiveMysqlGeometry, 1)
+            assert loaded is not None
+            assert loaded.point.ewkb == _root_wkb(point)
+            assert loaded.line.ewkb == _root_wkb(line)
+            assert loaded.polygon.ewkb == _root_wkb(polygon)
+            assert loaded.optional_point is None
+            assert loaded.point.srid == 4326
+            loaded.point = moved_point
+            loaded.optional_point = point
+
+        predicate = _MYSQL_POINT.predicate(
+            "intersects", LiveMysqlGeometry.point, _MYSQL_POINT.bind("reference")
+        )
+        with p.OrmSession(session) as orm:
+            [queried] = orm.query(LiveMysqlGeometry).where(predicate).all(
+                {"reference": moved_point}
+            )
+            assert queried.point.ewkb == _root_wkb(moved_point)
+            assert queried.optional_point is not None
+            assert queried.optional_point.ewkb == _root_wkb(point)
+            orm.delete(queried)
+
+        assert (
+            session.execute_scalar(
+                "SELECT COUNT(*) FROM _plenora_orm_mysql_geometry"
+            )
+            == 0
+        )
+    finally:
+        metadata.drop_all(session)
         session.close()
 
 

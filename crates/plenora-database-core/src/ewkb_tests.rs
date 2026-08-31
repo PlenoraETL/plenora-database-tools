@@ -68,4 +68,15 @@ fn reports_root_contract_metadata_from_the_validated_header() {
     assert_eq!(inspection.root.dimensions_label(), "xyz");
     assert_eq!(inspection.root.geometry_type_name(), Some("Point"));
     assert_eq!(inspection.root.srid, Some(4_326));
+    assert!(inspection.has_any_embedded_srid);
+    assert_eq!(inspection.embedded_srid_count, 1);
+}
+
+#[test]
+fn counts_embedded_srids_beyond_the_root() {
+    let bytes = collection(&point_z_srid());
+    let inspection = inspect_ewkb_detailed(&bytes, 10, 2).expect("valid collection");
+    assert_eq!(inspection.root.srid, None);
+    assert!(inspection.has_any_embedded_srid);
+    assert_eq!(inspection.embedded_srid_count, 1);
 }
