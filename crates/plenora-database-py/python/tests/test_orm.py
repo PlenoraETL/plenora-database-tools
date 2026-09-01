@@ -1242,17 +1242,9 @@ def test_live_portable_generated_defaults_and_ddl(provider: str, connector) -> N
 def test_live_db2_generated_defaults_and_ddl() -> None:
     session = connect_db2_reference()
     metadata = p.OrmMetadata(models=(LivePortableGenerated,))
-    created = False
     try:
-        schema = session.execute_scalar("VALUES CURRENT SCHEMA")
-        tables = session.inspect.tables(schema)
-        if any(
-            item.get("name", "").lower() == LivePortableGenerated.__table__.name.lower()
-            for item in tables
-        ):
-            metadata.drop_all(session, checkfirst=False)
+        _drop_db2_models_if_present(session, LivePortableGenerated)
         metadata.create_all(session)
-        created = True
         with p.OrmSession(session) as orm:
             instance = LivePortableGenerated(name="Ada")
             orm.add(instance)
@@ -1263,9 +1255,20 @@ def test_live_db2_generated_defaults_and_ddl() -> None:
             assert loaded is not None and loaded.name == "Ada"
             orm.delete(loaded)
     finally:
-        if created:
-            metadata.drop_all(session, checkfirst=False)
+        _drop_db2_models_if_present(session, LivePortableGenerated)
         session.close()
+
+
+def _drop_db2_models_if_present(
+    session: p.DatabaseSession, *models: type[p.DeclarativeBase]
+) -> None:
+    schema = session.execute_scalar("VALUES CURRENT SCHEMA")
+    existing = {
+        item.get("name", "").lower() for item in session.inspect.tables(schema)
+    }
+    for model in reversed(models):
+        if model.__table__.name.lower() in existing:
+            p.OrmMetadata(models=(model,)).drop_all(session, checkfirst=False)
 
 
 @pytest.mark.parametrize(
@@ -1377,7 +1380,12 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
         )
     )
     try:
-        metadata.drop_all(session)
+        if provider == "db2":
+            _drop_db2_models_if_present(
+                session, LivePortableGeometry, LivePortableGeometryXyz
+            )
+        else:
+            metadata.drop_all(session)
         metadata.create_all(session)
         with pytest.raises(ValueError):
             LivePortableGeometry(
@@ -1450,7 +1458,12 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
         )
         assert session.execute_scalar(f"SELECT COUNT(*) FROM {table_name}") == 0
     finally:
-        metadata.drop_all(session)
+        if provider == "db2":
+            _drop_db2_models_if_present(
+                session, LivePortableGeometry, LivePortableGeometryXyz
+            )
+        else:
+            metadata.drop_all(session)
         session.close()
 
 
