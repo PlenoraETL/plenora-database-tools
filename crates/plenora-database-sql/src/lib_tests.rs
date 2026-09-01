@@ -100,6 +100,37 @@ fn postgres_spatial_output_encodes_a_column_as_ewkb() {
         "{}",
         mysql.sql
     );
+
+    let sqlserver = Renderer::new(
+        Dialect::SqlServer,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .render_query(&query)
+    .expect("projection WKB SQL Server");
+    assert!(
+        sqlserver
+            .sql
+            .contains("([e].[shape]).AsBinaryZM() AS [shape]"),
+        "{}",
+        sqlserver.sql
+    );
+
+    let db2 = Renderer::new(
+        Dialect::Db2,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .render_query(&query)
+    .expect("projection WKB Db2");
+    assert!(
+        db2.sql
+            .contains("HEX(ST_ASBINARY(\"e\".\"shape\")) AS \"shape\""),
+        "{}",
+        db2.sql
+    );
 }
 
 #[test]
@@ -131,6 +162,42 @@ fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
         rendered.sql
     );
     assert_eq!(rendered.binds[0].name, "shape");
+}
+
+#[test]
+fn sqlserver_and_db2_spatial_values_keep_the_frame_outside_the_bind() {
+    let mut query = simple_query();
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::SpatialValue {
+            expression: Box::new(QueryExpression::Parameter {
+                name: "shape".to_owned(),
+            }),
+            srid: 4_326,
+            semantics: SpatialSemantics::Geometry,
+        },
+        alias: Some("shape".to_owned()),
+    }];
+    for (dialect, fragment) in [
+        (
+            Dialect::SqlServer,
+            "geometry::STGeomFromWKB(@p1, 4326) AS [shape]",
+        ),
+        (
+            Dialect::Db2,
+            "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326) AS \"shape\"",
+        ),
+    ] {
+        let rendered = Renderer::new(
+            dialect,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .render_query(&query)
+        .expect("bind WKB qualificato");
+        assert!(rendered.sql.contains(fragment), "{}", rendered.sql);
+        assert_eq!(rendered.binds[0].name, "shape");
+    }
 }
 
 #[test]

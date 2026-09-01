@@ -70,7 +70,16 @@ _MYSQL_GEOMETRY_TYPES = frozenset(
     }
 )
 _MYSQL_ORM_PROVIDERS = frozenset({"mysql", "mariadb"})
-_GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_MYSQL_ORM_PROVIDERS})
+_SQLSERVER_ORM_PROVIDERS = frozenset({"sqlserver"})
+_DB2_ORM_PROVIDERS = frozenset({"db2"})
+_WKB_ORM_PROVIDERS = frozenset(
+    {*_MYSQL_ORM_PROVIDERS, *_SQLSERVER_ORM_PROVIDERS, *_DB2_ORM_PROVIDERS}
+)
+_FRAMED_ORM_PROVIDERS = _WKB_ORM_PROVIDERS
+_GEOMETRY_ONLY_ORM_PROVIDERS = _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
+_XY_XYZ_ORM_PROVIDERS = _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
+_QUALIFIED_ORM_GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
+_GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_WKB_ORM_PROVIDERS})
 
 
 class OrmError(RuntimeError):
@@ -1684,7 +1693,7 @@ def _geometry_query_parameters(
     mappa separata e viene validato qui, immediatamente prima dell'I/O.
     """
 
-    if provider not in _MYSQL_ORM_PROVIDERS or parameters is None:
+    if provider not in _WKB_ORM_PROVIDERS or parameters is None:
         return parameters
     spatial_binds: dict[str, tuple[int, str]] = {}
 
@@ -1724,9 +1733,12 @@ def _geometry_query_parameters(
     for name, (srid, semantics) in spatial_binds.items():
         if name not in normalized:
             continue
-        if semantics != "geometry":
+        if (
+            provider in _GEOMETRY_ONLY_ORM_PROVIDERS
+            and semantics != "geometry"
+        ):
             raise OrmUnsupportedError(
-                "MySQL/MariaDB non qualificano la semantica geography ORM"
+                "il provider non qualifica la semantica geography ORM"
             )
         raw = normalized[name]
         if isinstance(raw, SpatialReference):
@@ -1741,7 +1753,8 @@ def _geometry_query_parameters(
             raise TypeError(
                 "un bind Geometry ORM accetta bytes, bytearray o SpatialReference"
             )
-        reference = SpatialReference.validated(ewkb, srid, "xy", semantics)
+        dimensions = "xy" if provider in _MYSQL_ORM_PROVIDERS else "unknown"
+        reference = SpatialReference.validated(ewkb, srid, dimensions, semantics)
         normalized[name] = _geometry_bind_value(reference, provider)
     return normalized
 
@@ -1751,15 +1764,22 @@ def _require_geometry_mapping(type_: Geometry, provider: str) -> None:
         raise OrmUnsupportedError(
             "Geometry ORM non e qualificata per il provider"
         )
-    if provider not in _MYSQL_ORM_PROVIDERS:
+    if provider == "postgres":
         return
-    if type_.semantics != "geometry":
+    if (
+        provider in _GEOMETRY_ONLY_ORM_PROVIDERS
+        and type_.semantics != "geometry"
+    ):
         raise OrmUnsupportedError(
-            "MySQL/MariaDB non qualificano la semantica geography ORM"
+            "il provider non qualifica la semantica geography ORM"
         )
-    if type_.dimensions != "xy":
+    if provider in _MYSQL_ORM_PROVIDERS and type_.dimensions != "xy":
         raise OrmUnsupportedError(
             "Geometry ORM MySQL/MariaDB qualifica soltanto coordinate XY"
+        )
+    if provider in _XY_XYZ_ORM_PROVIDERS and type_.dimensions not in {"xy", "xyz"}:
+        raise OrmUnsupportedError(
+            "Geometry ORM del provider qualifica soltanto coordinate XY e XYZ"
         )
     if (
         type_.geometry_type is not None
@@ -1767,6 +1787,12 @@ def _require_geometry_mapping(type_: Geometry, provider: str) -> None:
     ):
         raise OrmUnsupportedError(
             "tipo Geometry ORM non qualificato per MySQL/MariaDB"
+        )
+    if provider in _XY_XYZ_ORM_PROVIDERS and (
+        type_.geometry_type not in _QUALIFIED_ORM_GEOMETRY_TYPES
+    ):
+        raise OrmUnsupportedError(
+            "tipo Geometry ORM non qualificato per il provider"
         )
 
 
@@ -1777,7 +1803,7 @@ def _require_geometry_mapper(mapper: Mapper, provider: str) -> None:
 
 
 def _geometry_bind_value(value: SpatialReference, provider: str) -> bytes:
-    if provider not in _MYSQL_ORM_PROVIDERS:
+    if provider not in _WKB_ORM_PROVIDERS:
         return value.ewkb
     try:
         from . import _native
@@ -1785,10 +1811,13 @@ def _geometry_bind_value(value: SpatialReference, provider: str) -> bytes:
         raise RuntimeError(
             "modulo nativo non disponibile per preparare Geometry ORM"
         ) from error
-    converter = getattr(_native, "geometry_wkb_xy", None)
+    converter_name = (
+        "geometry_wkb_xy" if provider in _MYSQL_ORM_PROVIDERS else "geometry_wkb"
+    )
+    converter = getattr(_native, converter_name, None)
     if converter is None:
         raise RuntimeError(
-            "estensione nativa incompatibile con Geometry ORM MySQL/MariaDB"
+            "estensione nativa incompatibile con Geometry ORM"
         )
     converted = converter(value.ewkb)
     if not isinstance(converted, bytes):
@@ -3912,7 +3941,7 @@ def _orm_projections(
                 projected_name
             )
             projections.append(projection)
-            if provider in _MYSQL_ORM_PROVIDERS:
+            if provider in _FRAMED_ORM_PROVIDERS:
                 projections.append(
                     _spatial_function("srid", column).label(
                         _geometry_srid_alias(projected_name)
@@ -3945,9 +3974,17 @@ def _mapped_row_values(
         for attribute in mapper.attributes
         if attribute.name is not None
     }
-    if provider in _MYSQL_ORM_PROVIDERS:
+    if provider in _FRAMED_ORM_PROVIDERS:
         for attribute in mapper.attributes:
             if isinstance(attribute.type_, Geometry) and attribute.name is not None:
+                value = values[attribute.name]
+                if provider == "db2" and isinstance(value, str):
+                    try:
+                        values[attribute.name] = bytes.fromhex(value)
+                    except ValueError as error:
+                        raise OrmMappingError(
+                            "WKB Geometry ORM Db2 non valido"
+                        ) from error
                 values[_geometry_srid_alias(attribute.name)] = row[
                     _geometry_srid_alias(f"{prefix}{attribute.name}")
                 ]
@@ -3963,7 +4000,7 @@ def _entity_projection_values(
 def _validate_geometry_row(
     mapper: Mapper, row: Mapping[str, Any], provider: str
 ) -> None:
-    if provider not in _MYSQL_ORM_PROVIDERS:
+    if provider not in _FRAMED_ORM_PROVIDERS:
         return
     for attribute in mapper.attributes:
         type_ = attribute.type_
@@ -4260,6 +4297,10 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
             # comunque scritto come secondo argomento e verificato per riga
             # con ST_SRID durante l'idratazione ORM.
             return geometry_type.upper()
+        if provider == "sqlserver":
+            return base
+        if provider == "db2":
+            return "ST_GEOMETRY"
         return f"{base}({geometry_type}, {type_.srid})"
     mapping = {
         int: "INTEGER",

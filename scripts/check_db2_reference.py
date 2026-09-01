@@ -220,8 +220,9 @@ def validate_cli_probe(document: object) -> None:
 PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_db2_session.py",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
+    "db2_sdk_gate_tests/test_orm.py::test_live_db2_geometry_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 6
+PYTHON_LIVE_EXPECTED = 7
 
 
 def run_python_live() -> None:

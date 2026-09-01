@@ -88,6 +88,21 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
             lowered.sql
         );
     }
+    let sqlserver = compile_relational_mutation(ProviderKind::Sqlserver, &operation)
+        .expect("bind spatial SQL Server");
+    assert_eq!(sqlserver.bind_names, ["shape"]);
+    assert!(
+        sqlserver.sql.contains("geometry::STGeomFromWKB(@P1, 4326)"),
+        "{}",
+        sqlserver.sql
+    );
+    let db2 = compile_relational_mutation(ProviderKind::Db2, &operation).expect("bind spatial Db2");
+    assert_eq!(db2.bind_names, ["shape"]);
+    assert!(
+        db2.sql.contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
+        "{}",
+        db2.sql
+    );
 
     let geography = MutationOperation::Insert(InsertOperation {
         target: target(),
@@ -101,6 +116,12 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
     });
     assert!(compile_relational_mutation(ProviderKind::Mysql, &geography).is_err());
     assert!(compile_relational_mutation(ProviderKind::Mariadb, &geography).is_err());
+    assert!(compile_relational_mutation(ProviderKind::Db2, &geography).is_err());
+    let sqlserver_geography = compile_relational_mutation(ProviderKind::Sqlserver, &geography)
+        .expect("bind geography SQL Server");
+    assert!(sqlserver_geography
+        .sql
+        .contains("geography::STGeomFromWKB(@P1, 4326)"));
 }
 
 #[test]
