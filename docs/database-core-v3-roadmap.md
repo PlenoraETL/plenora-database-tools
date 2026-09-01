@@ -66,8 +66,8 @@ Le aree da consolidare sono:
 - risultati distinti per scalar, righe e Arrow, senza un unico protocollo di
   consumo;
 - implementazioni sync e async esposte in superfici parallele;
-- qualifica ORM provider per provider, con Geometry ancora da chiudere fuori
-  dalle righe sostenute da gate live;
+- qualifica ORM provider per provider, con Geometry chiusa sulle righe sostenute
+  dai gate live e ancora negata fuori dalla matrice misurata;
 - migrazioni non lineari, inheritance avanzata e loader di collezione con join.
 
 La prima riduzione di complessita non arriva comprimendo funzioni, ma eliminando
@@ -368,23 +368,27 @@ Il programma non si valuta soltanto contando feature o righe.
 - Workload multiutente senza perdita di session context, starvation o riuso di
   connessioni compromesse.
 
+## Macro-blocco Geometry ORM multi-provider chiuso
+
+La matrice qualificata copre PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server e
+Db2 senza dedurre supporto per somiglianza fra dialetti. I gate live coprono
+Point, LineString, Polygon, `NULL`, SRID, EWKB invalido, dimensionalita
+qualificate, insert, update, query, round trip e predicati spatial. I verdetti
+VM e Db2 sono registrati in [`sdk/VM-EVIDENCE.md`](sdk/VM-EVIDENCE.md).
+
+Niente lazy loading implicito e niente `joinedload` sulle collezioni restano
+scelte intenzionali; inheritance avanzata e migrazioni non lineari non erano
+bloccanti per questo macro-blocco.
+
 ## Prossimo macro-blocco eseguibile
 
-Il lavoro a maggior valore e la qualifica Geometry ORM multi-provider, senza
-allargare per somiglianza fra dialetti:
+Il passo successivo e stabilizzare il delta per una release minor dell'SDK:
 
-1. conservare il verdetto della campagna SDK eseguita in VM, legato a commit,
-   digest degli artefatti e immagini;
-2. qualificare insieme MySQL e MariaDB, che condividono il crate ma mantengono
-   profili e DDL distinti;
-3. qualificare SQL Server con un gate dedicato;
-4. affrontare Db2 separatamente e per ultimo;
-5. chiudere il blocco con campagna live completa, fuzz lungo e release
-   candidate dell'SDK.
+1. integrare la branch tramite review e CI completa;
+2. eseguire sweep offline, supply-chain gate e fuzz lungo sul commit candidato;
+3. costruire e verificare la matrice wheel sulle piattaforme dichiarate;
+4. pubblicare una release candidate e promuoverla solo con tutti i gate
+   eseguiti e verdi.
 
-Ogni riga provider deve coprire almeno Point, LineString, Polygon, `NULL`, SRID,
-EWKB invalido, dimensionalita XY/XYZ, insert, update, query, round trip e
-predicati spatial. La capability resta negata finche il relativo gate live non
-e verde. Niente lazy loading implicito e niente `joinedload` sulle collezioni
-restano scelte intenzionali; inheritance avanzata e migrazioni non lineari non
-bloccano questo macro-blocco.
+Il fuzz lungo e la matrice wheel finale non sono ancora stati eseguiti su
+questo delta e non vanno conteggiati come passati.

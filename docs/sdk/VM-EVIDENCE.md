@@ -7,9 +7,10 @@ mano. Il comando autorevole resta il runner del repository:
 python scripts/check_sdk_campaign.py
 ```
 
-Le corse sono state eseguite il 31 agosto 2026 in una VM Linux usando soltanto
-il daemon Docker della VM. In tutte le corse riportate il checkout era pulito
-e non e cambiato durante la misura.
+Le prime corse sono state eseguite il 31 agosto 2026; la qualifica Db2 e stata
+eseguita il 1 settembre 2026. Tutte usano una VM Linux e soltanto il relativo
+daemon Docker. In tutte le corse riportate il checkout era pulito e non e
+cambiato durante la misura.
 
 ## Bind PostgreSQL e lifecycle delle transazioni Python
 
@@ -50,6 +51,50 @@ thread. I sei skip live restano esclusivamente i casi Db2 dedicati.
 
 I sei skip live sono esclusivamente i casi Db2, che richiedono il runner e il
 gate dedicati.
+
+## Qualifica Geometry ORM Db2
+
+| campo | valore |
+| --- | --- |
+| commit | `d737afc64ea2c90329ec46271f2cb57b6f1c458e` |
+| generato | `2026-09-01T01:38:35.478419+00:00` |
+| server | `DB2 v12.1.5.0` |
+| unit offline | `44 passed, 12 ignored` |
+| live Rust | `12 passed, 0 failed` |
+| wheel Python live | `7 passed, 0 failed` |
+| immagine fixture | `sha256:4a086fe8098851ec96332a039540e76ac20bd9663fe56b0dd4a9b3e097486802` |
+| immagine Db2 | `icr.io/db2_community/db2@sha256:2de8151713c261843868c5c3411b57be6ae779d99d70a5b3022337836776bfda6` |
+| immagine Rust | `rust@sha256:271849e998ffce5776454bbf98c5dc21baafc854ff8e566197908d3aca9a881e8` |
+| piattaforma | `linux-x86_64` |
+| verdetto | `passed` |
+
+Il gate ha costruito e importato `plenora-database 0.13.0` dai sorgenti del
+commit, poi ha esercitato Point, LineString e Polygon XY, Point XYZ, `NULL`,
+SRID, input EWKB invalido, insert, lettura, update, predicato spatial e delete.
+Il risultato Db2 e semanticamente stabile; `ST_GEOMETRY` puo normalizzare le
+coordinate floating point di un ULP, quindi il gate verifica struttura esatta
+e coordinate con tolleranza esplicita invece dell'identita accidentale dei
+byte WKB.
+
+## Chiusura Geometry ORM multi-provider
+
+| campo | valore |
+| --- | --- |
+| commit | `a97a0c6a74b9dfd10a433f098e0691f4db7baee2` |
+| live | `342 passed, 7 skipped in 10.16s` |
+| benchmark | `2 passed, 347 deselected in 1.08s` |
+| offline | `passed` |
+| wheel SHA-256 | `1109585277220945247c6dd84d250c623decc1aec45ceebfcc1975032a167dd3e` |
+| modulo nativo SHA-256 | `0f9c477adad60fab0c208207fd5685a6048166fd0928efa61086eb578a1304b52` |
+| CLI SHA-256 | `e49c29366e4e0fa960b0fc839b245b5c08700052134589ac1985438585a5fa700` |
+| immagine build | `rust@sha256:271849e998ffce5776454bbf98c5dc21baafc854ff8e566197908d3aca9a881e8` |
+| immagine test | `python@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bcc2623f` |
+| Python / Rust | `3.13.15` / `1.98.0` |
+| verdetto | live, benchmark e offline `passed`, `authoritative=true` |
+
+I sette skip live sono esclusivamente i test Db2 che richiedono il fixture
+dedicato; non sono conteggiati come copertura implicita e sono chiusi dal gate
+Db2 riportato nella sezione precedente.
 
 ## Baseline precedente
 

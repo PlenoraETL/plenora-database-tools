@@ -6,6 +6,23 @@ incompatibili, sempre indicate come **breaking**.
 
 ## [Unreleased]
 
+### Aggiunto
+
+- `Geometry` ORM e ora qualificata live anche su MySQL, MariaDB, SQL Server e
+  Db2. MySQL/MariaDB coprono le geometrie OGC in XY; SQL Server e Db2 coprono
+  Point, LineString e Polygon in XY/XYZ. SQL Server qualifica entrambe le
+  semantiche `geometry` e `geography`, mentre Db2 resta `geometry`-only.
+
+### Corretto
+
+- I round trip Geometry ORM conservano separatamente WKB e SRID sui provider
+  che non trasportano il frame EWKB, inclusi valori `NULL`, insert e update.
+- Il percorso transazionale Db2 riconosce il discriminator `SQL_BLOB` del
+  driver IBM CLI e decodifica in modo redatto la rappresentazione esadecimale
+  restituita da `ST_ASBINARY`.
+- Il fixture Db2 prepara uno spazio pagina adatto alle righe con piu colonne
+  `ST_GEOMETRY`, cosi il gate live esercita lo stesso DDL pubblicato dall'ORM.
+
 ## [0.13.0] — 2026-08-31
 
 ### Aggiunto
