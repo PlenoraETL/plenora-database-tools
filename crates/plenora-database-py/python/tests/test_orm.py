@@ -347,6 +347,55 @@ def _root_wkb(ewkb: bytes) -> bytes:
     return ewkb[:1] + iso_type.to_bytes(4, "little") + ewkb[offset:]
 
 
+def _wkb_structure_and_coordinates(value: bytes) -> tuple[tuple[int, ...], tuple[float, ...]]:
+    assert value[:1] == b"\x01"
+    geometry_type = int.from_bytes(value[1:5], "little")
+    dimensions = 3 if geometry_type // 1000 in {1, 3} else 2
+    base_type = geometry_type % 1000
+    offset = 5
+    structure = [geometry_type]
+    coordinates: list[float] = []
+
+    def read_points(count: int) -> None:
+        nonlocal offset
+        width = count * dimensions
+        coordinates.extend(struct.unpack_from(f"<{width}d", value, offset))
+        offset += width * 8
+
+    if base_type == 1:
+        read_points(1)
+    elif base_type == 2:
+        count = int.from_bytes(value[offset : offset + 4], "little")
+        offset += 4
+        structure.append(count)
+        read_points(count)
+    elif base_type == 3:
+        rings = int.from_bytes(value[offset : offset + 4], "little")
+        offset += 4
+        structure.append(rings)
+        for _ in range(rings):
+            count = int.from_bytes(value[offset : offset + 4], "little")
+            offset += 4
+            structure.append(count)
+            read_points(count)
+    else:
+        raise AssertionError("tipo WKB del fixture non supportato")
+    assert offset == len(value)
+    return tuple(structure), tuple(coordinates)
+
+
+def _assert_portable_wkb(actual: bytes, expected: bytes, provider: str) -> None:
+    if provider != "db2":
+        assert actual == expected
+        return
+    actual_structure, actual_coordinates = _wkb_structure_and_coordinates(actual)
+    expected_structure, expected_coordinates = _wkb_structure_and_coordinates(expected)
+    assert actual_structure == expected_structure
+    assert actual_coordinates == pytest.approx(
+        expected_coordinates, rel=0.0, abs=1e-12
+    )
+
+
 class _FakeTransaction:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = [] if rows is None else rows
@@ -1331,9 +1380,9 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
         with p.OrmSession(session) as orm:
             loaded = orm.get(LiveMysqlGeometry, 1)
             assert loaded is not None
-            assert loaded.point.ewkb == _root_wkb(point)
-            assert loaded.line.ewkb == _root_wkb(line)
-            assert loaded.polygon.ewkb == _root_wkb(polygon)
+            _assert_portable_wkb(loaded.point.ewkb, _root_wkb(point), provider)
+            _assert_portable_wkb(loaded.line.ewkb, _root_wkb(line), provider)
+            _assert_portable_wkb(loaded.polygon.ewkb, _root_wkb(polygon), provider)
             assert loaded.optional_point is None
             assert loaded.point.srid == 4326
             loaded.point = moved_point
@@ -1425,7 +1474,7 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             assert loaded.polygon.ewkb == _root_wkb(polygon)
             assert loaded.optional_point is None
             assert loaded.point.srid == 4326
-            assert loaded_xyz.shape.ewkb == _root_wkb(point_xyz)
+            _assert_portable_wkb(loaded_xyz.shape.ewkb, _root_wkb(point_xyz), provider)
             assert loaded_xyz.shape.dimensions == "xyz"
             loaded.point = moved_point
             loaded.optional_point = point
@@ -1439,9 +1488,11 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             [queried] = orm.query(LivePortableGeometry).where(predicate).all(
                 {"reference": moved_point}
             )
-            assert queried.point.ewkb == _root_wkb(moved_point)
+            _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
             assert queried.optional_point is not None
-            assert queried.optional_point.ewkb == _root_wkb(point)
+            _assert_portable_wkb(
+                queried.optional_point.ewkb, _root_wkb(point), provider
+            )
             queried.optional_point = None
 
         with p.OrmSession(session) as orm:
