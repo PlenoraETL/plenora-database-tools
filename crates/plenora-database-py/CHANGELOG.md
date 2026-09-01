@@ -6,6 +6,8 @@ incompatibili, sempre indicate come **breaking**.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-01
+
 ### Aggiunto
 
 - `Geometry` ORM e ora qualificata live anche su MySQL, MariaDB, SQL Server e
