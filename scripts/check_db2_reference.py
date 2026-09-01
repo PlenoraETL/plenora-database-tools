@@ -134,6 +134,7 @@ def validate_build_contract() -> dict[str, str]:
     if len(images) != 2:
         raise RuntimeError("Dockerfile Db2 senza due immagini fissate per digest")
     for required in (
+        "--disablerepo=CRB",
         "python3.12 -m maturin build",
         "--features db2",
         "--auditwheel skip",

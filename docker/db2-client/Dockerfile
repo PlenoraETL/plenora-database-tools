@@ -6,8 +6,11 @@ FROM icr.io/db2_community/db2@sha256:2de8151713c261843868c5c3411b57be6ae79d99d70
 # quel driver espone SQLLEN a 64 bit al driver manager. `libdb2`, destinato
 # al percorso CLI/SQLLEN a 32 bit, corrompe gli indicatori di lunghezza di
 # unixODBC su x86_64. Le due immagini sorgente sono entrambe fissate per
-# digest e nessuna libreria viene incorporata nell'artefatto Rust.
-RUN dnf install --assumeyes \
+# digest e nessuna libreria viene incorporata nell'artefatto Rust. L'immagine
+# IBM abilita anche il repository CentOS Stream CRB, ma questi pacchetti
+# provengono dai repository UBI: lo disabilitiamo per non rendere il gate
+# dipendente da un mirror esterno non necessario.
+RUN dnf --disablerepo=CRB install --assumeyes \
         unixODBC \
         unixODBC-devel \
         python3.12 \
