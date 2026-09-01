@@ -203,9 +203,41 @@ pub fn geometry_wkb_xy<'py>(
             "Geometry ORM MySQL/MariaDB non qualifica SRID EWKB annidati",
         ));
     }
-    if !root_has_srid {
-        return Ok(pyo3::types::PyBytes::new(py, ewkb));
+    let wkb = geometry_wkb_bytes(ewkb, root_has_srid)?;
+    Ok(pyo3::types::PyBytes::new(py, &wkb))
+}
+
+/// Converte l'involucro EWKB qualificato nel WKB ISO accettato dai
+/// costruttori spatial di SQL Server e Db2.
+///
+/// Il frame SRID resta separato nell'IR e nel costruttore SQL. Gli SRID
+/// annidati restano rifiutati: rimuoverli richiederebbe riscrivere l'intero
+/// albero e nessun gate ORM pubblica quella forma.
+///
+/// # Errors
+///
+/// `PyValueError` se il buffer non e valido o contiene SRID annidati.
+#[pyfunction]
+pub fn geometry_wkb<'py>(
+    py: Python<'py>,
+    ewkb: &[u8],
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    use pyo3::exceptions::PyValueError;
+
+    let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(ewkb, u64::MAX, u64::MAX)
+        .map_err(|error| PyValueError::new_err(error.message))?;
+    let root_has_srid = inspection.root.srid.is_some();
+    if inspection.embedded_srid_count != u64::from(root_has_srid) {
+        return Err(PyValueError::new_err(
+            "Geometry ORM non qualifica SRID EWKB annidati",
+        ));
     }
+    let wkb = geometry_wkb_bytes(ewkb, root_has_srid)?;
+    Ok(pyo3::types::PyBytes::new(py, &wkb))
+}
+
+fn geometry_wkb_bytes(ewkb: &[u8], root_has_srid: bool) -> PyResult<Vec<u8>> {
+    use pyo3::exceptions::PyValueError;
 
     let endian = *ewkb
         .first()
@@ -220,18 +252,32 @@ pub fn geometry_wkb_xy<'py>(
         1 => u32::from_le_bytes(raw),
         _ => return Err(PyValueError::new_err("byte order EWKB non valido")),
     };
-    type_word &= !0x2000_0000;
-    let mut wkb = Vec::with_capacity(ewkb.len().saturating_sub(4));
+    let has_z = type_word & 0x8000_0000 != 0;
+    let has_m = type_word & 0x4000_0000 != 0;
+    type_word &= 0x0fff_ffff;
+    if has_z {
+        type_word = type_word
+            .checked_add(1_000)
+            .ok_or_else(|| PyValueError::new_err("tipo EWKB non rappresentabile come WKB ISO"))?;
+    }
+    if has_m {
+        type_word = type_word
+            .checked_add(2_000)
+            .ok_or_else(|| PyValueError::new_err("tipo EWKB non rappresentabile come WKB ISO"))?;
+    }
+    let removed = if root_has_srid { 4 } else { 0 };
+    let mut wkb = Vec::with_capacity(ewkb.len().saturating_sub(removed));
     wkb.push(endian);
     wkb.extend_from_slice(&match endian {
         0 => type_word.to_be_bytes(),
         _ => type_word.to_le_bytes(),
     });
+    let body_offset = if root_has_srid { 9 } else { 5 };
     wkb.extend_from_slice(
-        ewkb.get(9..)
+        ewkb.get(body_offset..)
             .ok_or_else(|| PyValueError::new_err("payload EWKB troncato"))?,
     );
-    Ok(pyo3::types::PyBytes::new(py, &wkb))
+    Ok(wkb)
 }
 
 #[pymodule]
@@ -248,6 +294,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_ewkb_reference, m)?)?;
     m.add_function(wrap_pyfunction!(inspect_ewkb_geometry_type, m)?)?;
     m.add_function(wrap_pyfunction!(geometry_wkb_xy, m)?)?;
+    m.add_function(wrap_pyfunction!(geometry_wkb, m)?)?;
     m.add_function(wrap_pyfunction!(
         relational_query::compile_relational_query,
         m

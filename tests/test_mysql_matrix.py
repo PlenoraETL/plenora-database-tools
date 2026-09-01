@@ -18,6 +18,7 @@ from scripts.check_mysql_matrix import (
     live_inventory,
     live_reference_command,
     qualify,
+    quiet,
     server_command,
     verify_candidate_unit,
     verify_hardening,
@@ -249,6 +250,13 @@ class MysqlMatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "start failed"):
                 qualify(self.entry, {})
         self.assertEqual(calls, ["discard", "discard"])
+
+    def test_quiet_cleanup_tolerates_a_missing_docker_executable(self) -> None:
+        with patch(
+            "scripts.check_mysql_matrix.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            self.assertEqual(quiet(["docker", "network", "rm", "fixture"]), 127)
 
     def test_inventory_and_unit_suite_run_before_matrix_network_creation(self) -> None:
         calls: list[str] = []

@@ -37,12 +37,17 @@ pub fn compile_relational_query(
         DialectCapabilities {
             // L'ORM verifica ogni nome contro `capabilities.spatial.functions`
             // della sessione prima di arrivare qui. Questo interruttore apre
-            // il lowering soltanto sui tre provider con I/O Geometry ORM
-            // qualificato; SQL Server e Db2 restano chiusi fino ai propri
-            // gate live.
+            // il lowering soltanto sui provider con I/O Geometry ORM
+            // qualificato. La superficie Python mantiene poi chiuse per
+            // provider semantiche, dimensioni e tipi non attraversati dai
+            // rispettivi gate live.
             spatial_intersects: matches!(
                 provider,
-                ProviderKind::Postgres | ProviderKind::Mysql | ProviderKind::Mariadb
+                ProviderKind::Postgres
+                    | ProviderKind::Mysql
+                    | ProviderKind::Mariadb
+                    | ProviderKind::Sqlserver
+                    | ProviderKind::Db2
             ),
         },
     )

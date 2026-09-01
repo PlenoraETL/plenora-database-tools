@@ -1142,6 +1142,12 @@ impl Renderer {
                 // anche ST_SRID e verifica la coppia prima di idratare.
                 Ok(format!("ST_AsBinary({value})"))
             }
+            (Dialect::SqlServer, _) => Ok(format!("({value}).AsBinaryZM()")),
+            (Dialect::Db2, SpatialSemantics::Geometry) => {
+                // Il percorso transazionale Db2 lega il BLOB come testo e il
+                // driver CLI lo converte nella rappresentazione esadecimale.
+                Ok(format!("ST_ASBINARY({value})"))
+            }
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1167,6 +1173,15 @@ impl Renderer {
             )),
             (Dialect::Mysql, SpatialSemantics::Geometry) => {
                 Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
+            }
+            (Dialect::SqlServer, SpatialSemantics::Geometry) => {
+                Ok(format!("geometry::STGeomFromWKB({value}, {srid})"))
+            }
+            (Dialect::SqlServer, SpatialSemantics::Geography) => {
+                Ok(format!("geography::STGeomFromWKB({value}, {srid})"))
+            }
+            (Dialect::Db2, SpatialSemantics::Geometry) => {
+                Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
             }
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),

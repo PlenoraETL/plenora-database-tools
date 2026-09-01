@@ -134,6 +134,49 @@ class LiveMysqlGeometryXyz(p.DeclarativeBase):
     )
 
 
+_PORTABLE_POINT = p.Geometry(srid=4326, geometry_type="point")
+_PORTABLE_LINESTRING = p.Geometry(srid=4326, geometry_type="linestring")
+_PORTABLE_POLYGON = p.Geometry(srid=4326, geometry_type="polygon")
+
+
+class LivePortableGeometry(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_portable_geometry"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    point: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _PORTABLE_POINT, nullable=False
+    )
+    line: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _PORTABLE_LINESTRING, nullable=False
+    )
+    polygon: p.Mapped[p.SpatialReference] = p.mapped_column(
+        _PORTABLE_POLYGON, nullable=False
+    )
+    optional_point: p.Mapped[p.SpatialReference | None] = p.mapped_column(
+        _PORTABLE_POINT
+    )
+
+
+class LivePortableGeometryXyz(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_portable_geometry_xyz"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    shape: p.Mapped[p.SpatialReference] = p.mapped_column(
+        p.Geometry(srid=4326, dimensions="xyz", geometry_type="point"),
+        nullable=False,
+    )
+
+
+class LiveSqlServerGeography(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_sqlserver_geography"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    shape: p.Mapped[p.SpatialReference] = p.mapped_column(
+        p.Geometry(srid=4326, semantics="geography", geometry_type="point"),
+        nullable=False,
+    )
+
+
 class LivePortableGenerated(p.DeclarativeBase):
     __tablename__ = "_plenora_orm_portable_generated"
 
@@ -261,6 +304,15 @@ def _ewkb_point(x: float, y: float, srid: int = 4326) -> bytes:
     )
 
 
+def _ewkb_point_xyz(x: float, y: float, z: float, srid: int = 4326) -> bytes:
+    return (
+        b"\x01"
+        + (0xA000_0001).to_bytes(4, "little")
+        + srid.to_bytes(4, "little")
+        + struct.pack("<ddd", x, y, z)
+    )
+
+
 def _ewkb_linestring(points: tuple[tuple[float, float], ...], srid: int = 4326) -> bytes:
     return (
         b"\x01"
@@ -285,9 +337,63 @@ def _ewkb_polygon(
 
 
 def _root_wkb(ewkb: bytes) -> bytes:
-    return ewkb[:1] + (int.from_bytes(ewkb[1:5], "little") & 0x0FFF_FFFF).to_bytes(
-        4, "little"
-    ) + ewkb[9:]
+    type_word = int.from_bytes(ewkb[1:5], "little")
+    iso_type = type_word & 0x0FFF_FFFF
+    if type_word & 0x8000_0000:
+        iso_type += 1_000
+    if type_word & 0x4000_0000:
+        iso_type += 2_000
+    offset = 9 if type_word & 0x2000_0000 else 5
+    return ewkb[:1] + iso_type.to_bytes(4, "little") + ewkb[offset:]
+
+
+def _wkb_structure_and_coordinates(value: bytes) -> tuple[tuple[int, ...], tuple[float, ...]]:
+    assert value[:1] == b"\x01"
+    geometry_type = int.from_bytes(value[1:5], "little")
+    dimensions = 3 if geometry_type // 1000 in {1, 3} else 2
+    base_type = geometry_type % 1000
+    offset = 5
+    structure = [geometry_type]
+    coordinates: list[float] = []
+
+    def read_points(count: int) -> None:
+        nonlocal offset
+        width = count * dimensions
+        coordinates.extend(struct.unpack_from(f"<{width}d", value, offset))
+        offset += width * 8
+
+    if base_type == 1:
+        read_points(1)
+    elif base_type == 2:
+        count = int.from_bytes(value[offset : offset + 4], "little")
+        offset += 4
+        structure.append(count)
+        read_points(count)
+    elif base_type == 3:
+        rings = int.from_bytes(value[offset : offset + 4], "little")
+        offset += 4
+        structure.append(rings)
+        for _ in range(rings):
+            count = int.from_bytes(value[offset : offset + 4], "little")
+            offset += 4
+            structure.append(count)
+            read_points(count)
+    else:
+        raise AssertionError("tipo WKB del fixture non supportato")
+    assert offset == len(value)
+    return tuple(structure), tuple(coordinates)
+
+
+def _assert_portable_wkb(actual: bytes, expected: bytes, provider: str) -> None:
+    if provider != "db2":
+        assert actual == expected
+        return
+    actual_structure, actual_coordinates = _wkb_structure_and_coordinates(actual)
+    expected_structure, expected_coordinates = _wkb_structure_and_coordinates(expected)
+    assert actual_structure == expected_structure
+    assert actual_coordinates == pytest.approx(
+        expected_coordinates, rel=0.0, abs=1e-12
+    )
 
 
 class _FakeTransaction:
@@ -576,6 +682,90 @@ def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_clo
 
     orm.rollback()
     reader.rollback()
+
+
+@pytest.mark.parametrize("provider", ("sqlserver", "db2"))
+def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> None:
+    point = _ewkb_point(9.19, 45.46)
+    line = _ewkb_linestring(((9.18, 45.45), (9.20, 45.47)))
+    polygon = _ewkb_polygon(
+        (
+            (9.10, 45.40),
+            (9.30, 45.40),
+            (9.30, 45.55),
+            (9.10, 45.55),
+            (9.10, 45.40),
+        )
+    )
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction, provider=provider))
+    orm.add(
+        LivePortableGeometry(
+            id=1,
+            point=point,
+            line=line,
+            polygon=polygon,
+            optional_point=None,
+        )
+    )
+    orm.flush()
+    statement, parameters = transaction.executed[0]
+    optional_expression = statement.to_ast()["rows"][0][4]
+    assert optional_expression["kind"] == "spatial_value"
+    assert _root_wkb(point) in parameters.values()
+    assert _root_wkb(line) in parameters.values()
+    assert _root_wkb(polygon) in parameters.values()
+    optional_value = parameters["orm_insert_4"]
+    if provider == "sqlserver":
+        assert optional_value._plenora_typed_kind == "null"
+        assert optional_value._plenora_typed_value == {"type_name": "varbinary"}
+    else:
+        assert optional_value is None
+    orm.rollback()
+
+    def encoded(value: bytes) -> bytes | str:
+        return value.hex().upper() if provider == "db2" else value
+
+    row = {
+        "id": 1,
+        "point": encoded(_root_wkb(point)),
+        "orm_geometry_srid_point": 4326,
+        "line": encoded(_root_wkb(line)),
+        "orm_geometry_srid_line": 4326,
+        "polygon": encoded(_root_wkb(polygon)),
+        "orm_geometry_srid_polygon": 4326,
+        "optional_point": None,
+        "orm_geometry_srid_optional_point": None,
+    }
+    read_transaction = _FakeTransaction([row])
+    reader = p.OrmSession(_FakeSession(read_transaction, provider=provider))
+    loaded = reader.get(LivePortableGeometry, 1)
+    assert loaded is not None
+    assert loaded.point.ewkb == _root_wkb(point)
+    assert loaded.line.ewkb == _root_wkb(line)
+    assert loaded.polygon.ewkb == _root_wkb(polygon)
+    assert loaded.optional_point is None
+    assert loaded.point.srid == 4326
+    reader.rollback()
+
+    if provider == "db2":
+        invalid_row = dict(row, point="WKB-non-esadecimale")
+        invalid_reader = p.OrmSession(
+            _FakeSession(_FakeTransaction([invalid_row]), provider=provider)
+        )
+        with pytest.raises(p.OrmMappingError, match="WKB Geometry ORM Db2"):
+            invalid_reader.get(LivePortableGeometry, 1)
+        invalid_reader.rollback()
+
+
+@pytest.mark.parametrize("provider", ("sqlserver", "db2"))
+def test_portable_geometry_keeps_unqualified_types_closed(provider: str) -> None:
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction, provider=provider))
+    orm.add(Place(id=1, shape=_ewkb_point(9.19, 45.46)))
+    with pytest.raises(p.OrmUnsupportedError, match="tipo Geometry ORM"):
+        orm.flush()
+    assert transaction.executed == []
 
 
 @pytest.mark.parametrize(
@@ -1103,17 +1293,9 @@ def test_live_portable_generated_defaults_and_ddl(provider: str, connector) -> N
 def test_live_db2_generated_defaults_and_ddl() -> None:
     session = connect_db2_reference()
     metadata = p.OrmMetadata(models=(LivePortableGenerated,))
-    created = False
     try:
-        schema = session.execute_scalar("VALUES CURRENT SCHEMA")
-        tables = session.inspect.tables(schema)
-        if any(
-            item.get("name", "").lower() == LivePortableGenerated.__table__.name.lower()
-            for item in tables
-        ):
-            metadata.drop_all(session, checkfirst=False)
+        _drop_db2_models_if_present(session, LivePortableGenerated)
         metadata.create_all(session)
-        created = True
         with p.OrmSession(session) as orm:
             instance = LivePortableGenerated(name="Ada")
             orm.add(instance)
@@ -1124,9 +1306,20 @@ def test_live_db2_generated_defaults_and_ddl() -> None:
             assert loaded is not None and loaded.name == "Ada"
             orm.delete(loaded)
     finally:
-        if created:
-            metadata.drop_all(session, checkfirst=False)
+        _drop_db2_models_if_present(session, LivePortableGenerated)
         session.close()
+
+
+def _drop_db2_models_if_present(
+    session: p.DatabaseSession, *models: type[p.DeclarativeBase]
+) -> None:
+    schema = session.execute_scalar("VALUES CURRENT SCHEMA")
+    existing = {
+        item.get("name", "").lower() for item in session.inspect.tables(schema)
+    }
+    for model in reversed(models):
+        if model.__table__.name.lower() in existing:
+            p.OrmMetadata(models=(model,)).drop_all(session, checkfirst=False)
 
 
 @pytest.mark.parametrize(
@@ -1216,6 +1409,151 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
     finally:
         metadata.drop_all(session)
         session.close()
+
+
+def _exercise_live_portable_geometry(provider: str, connector) -> None:
+    session = connector()
+    assert session.capabilities["provider"] == provider
+    metadata = p.OrmMetadata(
+        models=(LivePortableGeometry, LivePortableGeometryXyz)
+    )
+    point = _ewkb_point(9.19, 45.46)
+    moved_point = _ewkb_point(9.20, 45.47)
+    point_xyz = _ewkb_point_xyz(9.19, 45.46, 120.0)
+    line = _ewkb_linestring(((9.18, 45.45), (9.20, 45.47)))
+    polygon = _ewkb_polygon(
+        (
+            (9.10, 45.40),
+            (9.30, 45.40),
+            (9.30, 45.55),
+            (9.10, 45.55),
+            (9.10, 45.40),
+        )
+    )
+    try:
+        if provider == "db2":
+            _drop_db2_models_if_present(
+                session, LivePortableGeometry, LivePortableGeometryXyz
+            )
+        else:
+            metadata.drop_all(session)
+        metadata.create_all(session)
+        with pytest.raises(ValueError):
+            LivePortableGeometry(
+                id=99,
+                point=b"EWKB-invalid",
+                line=line,
+                polygon=polygon,
+            )
+        with pytest.raises(ValueError, match="SRID"):
+            LivePortableGeometry(
+                id=99,
+                point=_ewkb_point(9.19, 45.46, srid=3857),
+                line=line,
+                polygon=polygon,
+            )
+
+        with p.OrmSession(session) as orm:
+            orm.add(
+                LivePortableGeometry(
+                    id=1,
+                    point=point,
+                    line=line,
+                    polygon=polygon,
+                    optional_point=None,
+                )
+            )
+            orm.add(LivePortableGeometryXyz(id=1, shape=point_xyz))
+
+        with p.OrmSession(session) as orm:
+            loaded = orm.get(LivePortableGeometry, 1)
+            loaded_xyz = orm.get(LivePortableGeometryXyz, 1)
+            assert loaded is not None and loaded_xyz is not None
+            _assert_portable_wkb(loaded.point.ewkb, _root_wkb(point), provider)
+            _assert_portable_wkb(loaded.line.ewkb, _root_wkb(line), provider)
+            _assert_portable_wkb(loaded.polygon.ewkb, _root_wkb(polygon), provider)
+            assert loaded.optional_point is None
+            assert loaded.point.srid == 4326
+            _assert_portable_wkb(loaded_xyz.shape.ewkb, _root_wkb(point_xyz), provider)
+            assert loaded_xyz.shape.dimensions == "xyz"
+            loaded.point = moved_point
+            loaded.optional_point = point
+
+        predicate = _PORTABLE_POINT.predicate(
+            "intersects",
+            LivePortableGeometry.point,
+            _PORTABLE_POINT.bind("reference"),
+        )
+        with p.OrmSession(session) as orm:
+            [queried] = orm.query(LivePortableGeometry).where(predicate).all(
+                {"reference": moved_point}
+            )
+            _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
+            assert queried.optional_point is not None
+            _assert_portable_wkb(
+                queried.optional_point.ewkb, _root_wkb(point), provider
+            )
+            queried.optional_point = None
+
+        with p.OrmSession(session) as orm:
+            loaded = orm.get(LivePortableGeometry, 1)
+            assert loaded is not None
+            assert loaded.optional_point is None
+            orm.delete(loaded)
+            xyz = orm.get(LivePortableGeometryXyz, 1)
+            assert xyz is not None
+            orm.delete(xyz)
+
+        table_name = (
+            '"_plenora_orm_portable_geometry"'
+            if provider == "db2"
+            else "_plenora_orm_portable_geometry"
+        )
+        assert session.execute_scalar(f"SELECT COUNT(*) FROM {table_name}") == 0
+    finally:
+        if provider == "db2":
+            _drop_db2_models_if_present(
+                session, LivePortableGeometry, LivePortableGeometryXyz
+            )
+        else:
+            metadata.drop_all(session)
+        session.close()
+
+
+def test_live_sqlserver_geometry_orm_qualification() -> None:
+    _exercise_live_portable_geometry("sqlserver", connect_sqlserver_reference)
+
+    session = connect_sqlserver_reference()
+    metadata = p.OrmMetadata(models=(LiveSqlServerGeography,))
+    point = _ewkb_point(9.19, 45.46)
+    try:
+        metadata.drop_all(session)
+        metadata.create_all(session)
+        with p.OrmSession(session) as orm:
+            orm.add(LiveSqlServerGeography(id=1, shape=point))
+        predicate = p.Geometry(
+            srid=4326, semantics="geography", geometry_type="point"
+        ).predicate(
+            "intersects",
+            LiveSqlServerGeography.shape,
+            p.Geometry(
+                srid=4326, semantics="geography", geometry_type="point"
+            ).bind("reference"),
+        )
+        with p.OrmSession(session) as orm:
+            [loaded] = orm.query(LiveSqlServerGeography).where(predicate).all(
+                {"reference": point}
+            )
+            assert loaded.shape.ewkb == _root_wkb(point)
+            assert loaded.shape.semantics == "geography"
+            orm.delete(loaded)
+    finally:
+        metadata.drop_all(session)
+        session.close()
+
+
+def test_live_db2_geometry_orm_qualification() -> None:
+    _exercise_live_portable_geometry("db2", connect_db2_reference)
 
 
 @pytest.mark.asyncio

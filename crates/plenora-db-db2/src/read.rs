@@ -252,7 +252,7 @@ impl Values {
                     .transpose()
                     .map_err(|_| mapping("VARCHAR Db2 non UTF-8"))?,
             ),
-            Self::Geometry(values) => values.push(value.map(decode_hex_wkb).transpose()?),
+            Self::Geometry(values) => values.push(value.map(decode_hex_binary).transpose()?),
             Self::Date(values) => values.push(text.map(parse_date).transpose()?),
             Self::Timestamp(values) => values.push(text.map(parse_timestamp).transpose()?),
         }
@@ -377,9 +377,9 @@ fn parse_check(value: Option<&[u8]>, message: &'static str) -> Result<u64> {
         .map_err(|_| read_error(ErrorCategory::DataMapping, message))
 }
 
-pub fn decode_hex_wkb(value: &[u8]) -> Result<Vec<u8>> {
+pub fn decode_hex_binary(value: &[u8]) -> Result<Vec<u8>> {
     if !value.len().is_multiple_of(2) {
-        return Err(mapping("WKB esadecimale Db2 con lunghezza dispari"));
+        return Err(mapping("dato binario Db2 con lunghezza dispari"));
     }
     value
         .as_chunks::<2>()
@@ -398,7 +398,7 @@ fn hex_nibble(value: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(value - b'0'),
         b'a'..=b'f' => Ok(value - b'a' + 10),
         b'A'..=b'F' => Ok(value - b'A' + 10),
-        _ => Err(mapping("WKB esadecimale Db2 non valido")),
+        _ => Err(mapping("dato binario esadecimale Db2 non valido")),
     }
 }
 

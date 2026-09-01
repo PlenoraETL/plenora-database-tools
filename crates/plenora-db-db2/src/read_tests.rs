@@ -1,4 +1,4 @@
-use crate::read::{bind_parameters, decode_hex_wkb, parse_date, parse_decimal, parse_timestamp};
+use crate::read::{bind_parameters, decode_hex_binary, parse_date, parse_decimal, parse_timestamp};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::ErrorCategory;
 use std::collections::BTreeMap;
@@ -52,10 +52,10 @@ fn extra_parameters_fail_before_the_network() {
 
 #[test]
 fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
-    let point = decode_hex_wkb(b"0101000000000000000000F03F0000000000000040")
+    let point = decode_hex_binary(b"0101000000000000000000F03F0000000000000040")
         .expect("WKB point esadecimale");
     assert_eq!(point.len(), 21);
     assert_eq!(&point[..5], &[1, 1, 0, 0, 0]);
-    assert!(decode_hex_wkb(b"010").is_err());
-    assert!(decode_hex_wkb(b"01GG").is_err());
+    assert!(decode_hex_binary(b"010").is_err());
+    assert!(decode_hex_binary(b"01GG").is_err());
 }

@@ -47,3 +47,29 @@ fn describe_declarations_match_tiberius_wire_types_and_repeated_binds() {
         "@p1 int, @p2 nvarchar(4000), @p3 int, @p4 varbinary(max)"
     );
 }
+
+#[test]
+fn typed_binary_null_is_bound_and_declared_without_opening_unknown_types() {
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "payload".to_owned(),
+        ParameterValue::Null {
+            type_name: "varbinary".to_owned(),
+        },
+    )]));
+    let names = ["payload".to_owned()];
+    let mut query = Query::new("SELECT @P1");
+
+    bind_parameters(&mut query, &names, &parameters).expect("typed binary NULL");
+    assert_eq!(
+        parameter_declarations(&names, &parameters).expect("declarations"),
+        Some("@p1 varbinary(max)".to_owned())
+    );
+
+    let unknown = ParameterBag::new(BTreeMap::from([(
+        "payload".to_owned(),
+        ParameterValue::Null {
+            type_name: "unknown".to_owned(),
+        },
+    )]));
+    assert!(parameter_declarations(&names, &unknown).is_err());
+}

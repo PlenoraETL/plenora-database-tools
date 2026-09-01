@@ -1,8 +1,9 @@
 use crate::connection::open_connection;
 use crate::error::{driver_error, interruption_error, task_error};
+use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
-use odbc_api::{Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
+use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture, SecretString};
@@ -18,6 +19,8 @@ use std::sync::Arc;
 
 const QUERY_BATCH_ROWS: usize = 256;
 const QUERY_CELL_BYTES: usize = 64 * 1024;
+// IBM CLI espone BLOB con il proprio discriminator, non SQL_LONGVARBINARY.
+const DB2_SQL_BLOB: SqlDataType = SqlDataType(-98);
 
 pub struct Db2Transaction {
     connection: Option<Connection<'static>>,
@@ -447,6 +450,13 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
         }
         DataType::Date => Ok(ParameterValue::Date(text.to_owned())),
         DataType::Timestamp { .. } => Ok(ParameterValue::Timestamp(canonical_timestamp(text)?)),
+        DataType::Binary { .. }
+        | DataType::Varbinary { .. }
+        | DataType::LongVarbinary { .. }
+        | DataType::Other {
+            data_type: DB2_SQL_BLOB,
+            ..
+        } => decode_hex_binary(value).map(ParameterValue::Bytes),
         DataType::Char { .. }
         | DataType::WChar { .. }
         | DataType::Varchar { .. }
@@ -492,9 +502,13 @@ const fn type_name(data_type: DataType) -> &'static str {
         | DataType::WVarchar { .. }
         | DataType::LongVarchar { .. }
         | DataType::WLongVarchar { .. } => "varchar",
-        DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
-            "binary"
-        }
+        DataType::Binary { .. }
+        | DataType::Varbinary { .. }
+        | DataType::LongVarbinary { .. }
+        | DataType::Other {
+            data_type: DB2_SQL_BLOB,
+            ..
+        } => "binary",
         DataType::Unknown | DataType::Other { .. } => "unknown",
     }
 }

@@ -213,6 +213,16 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     // Arrow dello stesso crate provider.
                     Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
                 }
+                DialectKind::SqlServer => {
+                    let constructor = match semantics {
+                        SpatialSemantics::Geometry => "geometry::STGeomFromWKB",
+                        SpatialSemantics::Geography => "geography::STGeomFromWKB",
+                    };
+                    Ok(format!("{constructor}({value}, {srid})"))
+                }
+                DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
+                    Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
+                }
                 _ => Err(DatabaseError::unsupported(
                     match ctx.dialect {
                         DialectKind::Mysql => ProviderKind::Mysql,

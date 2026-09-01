@@ -202,8 +202,11 @@ costruiscono nodi spatial dell'IR senza incorporare il payload. Su PostgreSQL,
 `get`/query proiettano la colonna come EWKB e insert/update costruiscono il
 valore da un bind EWKB tramite il DML canonico. MySQL e MariaDB qualificano
 Geometry ORM XY per i tipi OGC lineari, con SRID verificato a ogni round trip;
-geography e le dimensioni Z/M restano chiuse. SQL Server e Db2 restano
-fail-closed in attesa dei rispettivi gate live.
+geography e le dimensioni Z/M restano chiuse. SQL Server qualifica Point,
+LineString e Polygon XY/XYZ sia `geometry` sia `geography`; Db2 qualifica gli
+stessi tipi e dimensioni con semantica `geometry`. Entrambi verificano il frame
+SRID a ogni idratazione. Le dimensioni M/XYZM e i tipi non nominati restano
+fail-closed.
 
 `UniqueConstraint` e `ForeignKeyConstraint` descrivono anche vincoli compositi;
 l'ereditarieta pubblicata e la forma concrete esplicita. `OrmMetadata` compila
@@ -671,8 +674,8 @@ versioni Python ≥ 3.10.
   composite richiedono ancora un mapping FK esplicito e restano fail-closed;
   `joinedload` non accetta collezioni. L'ereditarieta e solo concrete, le
   migrazioni sono lineari e il runner Db2 non e ancora qualificato. Geometry
-  ORM e qualificata su PostgreSQL, MySQL e MariaDB nei limiti dichiarati sopra;
-  SQL Server e Db2 restano chiusi dove manca una prova live.
+  ORM e qualificata sui cinque provider nei limiti dichiarati sopra; tipi,
+  dimensioni o semantiche fuori da quella matrice restano chiusi.
 
 ## Sviluppo
 

@@ -89,11 +89,7 @@ pub fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Res
         }
         ParameterValue::Wkb { bytes, .. } => query.bind(bytes.clone()),
         ParameterValue::Enum { label, .. } => query.bind(label.clone()),
-        ParameterValue::Null { .. } => {
-            return Err(unsupported(
-                "NULL bindato SQL Server richiede un tipo target risolto",
-            ));
-        }
+        ParameterValue::Null { type_name } => bind_null_parameter(query, type_name)?,
     }
     Ok(())
 }
@@ -141,8 +137,27 @@ fn parameter_type(value: &ParameterValue) -> Result<&'static str> {
             "varbinary(max)"
         }),
         ParameterValue::Enum { label, .. } => Ok(string_parameter_type(label)),
-        ParameterValue::Null { .. } => Err(unsupported(
-            "NULL bindato SQL Server richiede un tipo target risolto",
+        ParameterValue::Null { type_name } => null_parameter_type(type_name),
+    }
+}
+
+fn bind_null_parameter(query: &mut Query<'static>, type_name: &str) -> Result<()> {
+    match type_name {
+        "binary" | "varbinary" => {
+            query.bind(Option::<Vec<u8>>::None);
+            Ok(())
+        }
+        _ => Err(unsupported(
+            "NULL bindato SQL Server richiede un tipo target qualificato",
+        )),
+    }
+}
+
+fn null_parameter_type(type_name: &str) -> Result<&'static str> {
+    match type_name {
+        "binary" | "varbinary" => Ok("varbinary(max)"),
+        _ => Err(unsupported(
+            "NULL bindato SQL Server richiede un tipo target qualificato",
         )),
     }
 }

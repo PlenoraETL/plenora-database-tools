@@ -21,12 +21,13 @@ def qualified(names: set[str]) -> set[str]:
 
 class Db2ReferenceGateTests(unittest.TestCase):
     def test_python_live_inventory_includes_the_orm_gate(self) -> None:
-        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 6)
+        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 7)
         self.assertEqual(
             gate.PYTHON_LIVE_TARGETS,
             (
                 "db2_sdk_gate_tests/test_db2_session.py",
                 "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
+                "db2_sdk_gate_tests/test_orm.py::test_live_db2_geometry_orm_qualification",
             ),
         )
 
