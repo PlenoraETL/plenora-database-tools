@@ -35,6 +35,7 @@ from .expression import (
 )
 from .result import MultipleResultsFound, NoResultFound, Result
 from .spatial import SpatialReference
+from .types import null as typed_null
 
 T = TypeVar("T")
 
@@ -1825,6 +1826,16 @@ def _geometry_bind_value(value: SpatialReference, provider: str) -> bytes:
     return converted
 
 
+def _geometry_parameter_value(
+    value: SpatialReference | None, provider: str
+) -> Any:
+    if value is None:
+        if provider in _SQLSERVER_ORM_PROVIDERS:
+            return typed_null("varbinary")
+        return None
+    return _geometry_bind_value(value, provider)
+
+
 def _mapper(model: type[DeclarativeBase]) -> Mapper:
     mapper = getattr(model, "__mapper__", None)
     if not isinstance(mapper, Mapper):
@@ -2557,6 +2568,7 @@ class OrmSession:
     def _hydrate(
         self, mapper: Mapper, row: Mapping[str, Any], *, emit: bool = True
     ) -> DeclarativeBase:
+        row = _normalize_geometry_row(mapper, row, self._provider)
         _validate_geometry_row(mapper, row, self._provider)
         identity = _row_identity(mapper, row)
         key = (mapper.model, identity)
@@ -2848,13 +2860,17 @@ class OrmSession:
             if name is not None and name in instance.__dict__:
                 bind_name = f"orm_insert_{index}"
                 value = instance.__dict__[name]
-                if isinstance(attribute.type_, Geometry) and value is not None:
+                if isinstance(attribute.type_, Geometry) and (
+                    value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                ):
                     assignments[name] = _spatial_value(
                         bind(bind_name),
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
-                    parameters[bind_name] = _geometry_bind_value(value, self._provider)
+                    parameters[bind_name] = _geometry_parameter_value(
+                        value, self._provider
+                    )
                 else:
                     assignments[name] = bind(bind_name)
                     parameters[bind_name] = value
@@ -2969,13 +2985,17 @@ class OrmSession:
             bind_name = f"orm_update_{index}"
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
-            if isinstance(attribute.type_, Geometry) and value is not None:
+            if isinstance(attribute.type_, Geometry) and (
+                value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+            ):
                 assignments[name] = _spatial_value(
                     bind(bind_name),
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
-                parameters[bind_name] = _geometry_bind_value(value, self._provider)
+                parameters[bind_name] = _geometry_parameter_value(
+                    value, self._provider
+                )
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -3665,11 +3685,17 @@ class AsyncOrmSession(OrmSession):
             if name is not None and name in instance.__dict__:
                 bind_name = f"orm_insert_{index}"
                 value = instance.__dict__[name]
-                if isinstance(attribute.type_, Geometry) and value is not None:
+                if isinstance(attribute.type_, Geometry) and (
+                    value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                ):
                     assignments[name] = _spatial_value(
-                        bind(bind_name), attribute.type_.srid, attribute.type_.semantics
+                        bind(bind_name),
+                        attribute.type_.srid,
+                        attribute.type_.semantics,
                     )
-                    parameters[bind_name] = _geometry_bind_value(value, self._provider)
+                    parameters[bind_name] = _geometry_parameter_value(
+                        value, self._provider
+                    )
                 else:
                     assignments[name] = bind(bind_name)
                     parameters[bind_name] = value
@@ -3858,11 +3884,17 @@ class AsyncOrmSession(OrmSession):
             bind_name = f"orm_update_{index}"
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
-            if isinstance(attribute.type_, Geometry) and value is not None:
+            if isinstance(attribute.type_, Geometry) and (
+                value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+            ):
                 assignments[name] = _spatial_value(
-                    bind(bind_name), attribute.type_.srid, attribute.type_.semantics
+                    bind(bind_name),
+                    attribute.type_.srid,
+                    attribute.type_.semantics,
                 )
-                parameters[bind_name] = _geometry_bind_value(value, self._provider)
+                parameters[bind_name] = _geometry_parameter_value(
+                    value, self._provider
+                )
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -3977,17 +4009,28 @@ def _mapped_row_values(
     if provider in _FRAMED_ORM_PROVIDERS:
         for attribute in mapper.attributes:
             if isinstance(attribute.type_, Geometry) and attribute.name is not None:
-                value = values[attribute.name]
-                if provider == "db2" and isinstance(value, str):
-                    try:
-                        values[attribute.name] = bytes.fromhex(value)
-                    except ValueError as error:
-                        raise OrmMappingError(
-                            "WKB Geometry ORM Db2 non valido"
-                        ) from error
                 values[_geometry_srid_alias(attribute.name)] = row[
                     _geometry_srid_alias(f"{prefix}{attribute.name}")
                 ]
+    return _normalize_geometry_row(mapper, values, provider)
+
+
+def _normalize_geometry_row(
+    mapper: Mapper, row: Mapping[str, Any], provider: str
+) -> dict[str, Any]:
+    values = dict(row)
+    if provider != "db2":
+        return values
+    for attribute in mapper.attributes:
+        name = attribute.name
+        if not isinstance(attribute.type_, Geometry) or name is None:
+            continue
+        value = values.get(name)
+        if isinstance(value, str):
+            try:
+                values[name] = bytes.fromhex(value)
+            except ValueError as error:
+                raise OrmMappingError("WKB Geometry ORM Db2 non valido") from error
     return values
 
 

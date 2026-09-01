@@ -664,6 +664,12 @@ def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> No
     assert _root_wkb(point) in parameters.values()
     assert _root_wkb(line) in parameters.values()
     assert _root_wkb(polygon) in parameters.values()
+    optional_value = parameters["orm_insert_4"]
+    if provider == "sqlserver":
+        assert optional_value._plenora_typed_kind == "null"
+        assert optional_value._plenora_typed_value == {"type_name": "varbinary"}
+    else:
+        assert optional_value is None
     orm.rollback()
 
     def encoded(value: bytes) -> bytes | str:
@@ -690,6 +696,15 @@ def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> No
     assert loaded.optional_point is None
     assert loaded.point.srid == 4326
     reader.rollback()
+
+    if provider == "db2":
+        invalid_row = dict(row, point="WKB-non-esadecimale")
+        invalid_reader = p.OrmSession(
+            _FakeSession(_FakeTransaction([invalid_row]), provider=provider)
+        )
+        with pytest.raises(p.OrmMappingError, match="WKB Geometry ORM Db2"):
+            invalid_reader.get(LivePortableGeometry, 1)
+        invalid_reader.rollback()
 
 
 @pytest.mark.parametrize("provider", ("sqlserver", "db2"))
@@ -1417,7 +1432,13 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             assert queried.point.ewkb == _root_wkb(moved_point)
             assert queried.optional_point is not None
             assert queried.optional_point.ewkb == _root_wkb(point)
-            orm.delete(queried)
+            queried.optional_point = None
+
+        with p.OrmSession(session) as orm:
+            loaded = orm.get(LivePortableGeometry, 1)
+            assert loaded is not None
+            assert loaded.optional_point is None
+            orm.delete(loaded)
             xyz = orm.get(LivePortableGeometryXyz, 1)
             assert xyz is not None
             orm.delete(xyz)
