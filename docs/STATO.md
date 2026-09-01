@@ -164,8 +164,8 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 | --- | --- |
 | PostgreSQL | 300 |
 | MySQL + MariaDB | 297 |
-| SQL Server | 148 |
-| IBM Db2 LUW | 55 |
+| SQL Server | 149 |
+| IBM Db2 LUW | 56 |
 
 ### Famiglie del gate MySQL
 
