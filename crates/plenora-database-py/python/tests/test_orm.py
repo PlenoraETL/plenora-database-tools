@@ -660,7 +660,9 @@ def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> No
         )
     )
     orm.flush()
-    _, parameters = transaction.executed[0]
+    statement, parameters = transaction.executed[0]
+    optional_expression = statement.to_ast()["rows"][0][4]
+    assert optional_expression["kind"] == "spatial_value"
     assert _root_wkb(point) in parameters.values()
     assert _root_wkb(line) in parameters.values()
     assert _root_wkb(polygon) in parameters.values()

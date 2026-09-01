@@ -76,6 +76,7 @@ _DB2_ORM_PROVIDERS = frozenset({"db2"})
 _WKB_ORM_PROVIDERS = frozenset(
     {*_MYSQL_ORM_PROVIDERS, *_SQLSERVER_ORM_PROVIDERS, *_DB2_ORM_PROVIDERS}
 )
+_SPATIAL_NULL_WRAPPER_PROVIDERS = _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
 _FRAMED_ORM_PROVIDERS = _WKB_ORM_PROVIDERS
 _GEOMETRY_ONLY_ORM_PROVIDERS = _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
 _XY_XYZ_ORM_PROVIDERS = _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
@@ -2861,7 +2862,8 @@ class OrmSession:
                 bind_name = f"orm_insert_{index}"
                 value = instance.__dict__[name]
                 if isinstance(attribute.type_, Geometry) and (
-                    value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                    value is not None
+                    or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
                         bind(bind_name),
@@ -2986,7 +2988,8 @@ class OrmSession:
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
             if isinstance(attribute.type_, Geometry) and (
-                value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                value is not None
+                or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
                     bind(bind_name),
@@ -3686,7 +3689,8 @@ class AsyncOrmSession(OrmSession):
                 bind_name = f"orm_insert_{index}"
                 value = instance.__dict__[name]
                 if isinstance(attribute.type_, Geometry) and (
-                    value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                    value is not None
+                    or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
                         bind(bind_name),
@@ -3885,7 +3889,8 @@ class AsyncOrmSession(OrmSession):
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
             if isinstance(attribute.type_, Geometry) and (
-                value is not None or self._provider in _SQLSERVER_ORM_PROVIDERS
+                value is not None
+                or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
                     bind(bind_name),
