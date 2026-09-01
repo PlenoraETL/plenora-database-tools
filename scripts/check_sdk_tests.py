@@ -35,6 +35,7 @@ Uso:
     python scripts/check_sdk_tests.py                  # tutti i quattro provider
     python scripts/check_sdk_tests.py --offline        # solo test senza server
     python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
+    python scripts/check_sdk_tests.py --stabilization-only # cicli runtime ripetuti
     python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 
 **Tracciato, non riproducibile.** `rust:1.98` e `python:3.13-slim` sono tag
@@ -198,12 +199,12 @@ SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
     # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
     # devono restare skip espliciti, non essere assorbiti dal totale.
-    "live": ScopeContract(passed=342, deselected=0, skips={DB2_SKIP: 7}),
+    "live": ScopeContract(passed=372, deselected=0, skips={DB2_SKIP: 7}),
     "offline": ScopeContract(
         passed=108,
         deselected=0,
         skips={
-            POSTGRES_SKIP: 182,
+            POSTGRES_SKIP: 212,
             MYSQL_SKIP: 34,
             MARIADB_SKIP: 7,
             SQLSERVER_SKIP: 7,
@@ -212,7 +213,8 @@ SCOPE_CONTRACTS = {
             BENCH_SKIP: 2,
         },
     ),
-    "benchmark": ScopeContract(passed=2, deselected=347, skips={}),
+    "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=377, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -882,9 +884,9 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
     `PYTHONPATH` punta al package locale.
 
     `offline` non tocca i riferimenti — nessuna rete, nessuna credenziale, i
-    test live si saltano da soli. `benchmark` e `live` vedono entrambi i
-    riferimenti; il primo filtra i soli bench di parita, che senza filtro
-    girerebbero comunque dentro la corsa completa.
+    test live si saltano da soli. `benchmark`, `stabilization` e `live` vedono
+    i riferimenti; i primi due selezionano rispettivamente i bench di parita e
+    i cicli runtime ripetuti, che girano anche dentro la corsa completa.
     """
 
     command = ["docker", "run", "--rm"]
@@ -910,6 +912,8 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
         environment = live_environment(cli=cli_binary_path())
     if scope == "benchmark":
         selection += ["-k", "benchmark"]
+    elif scope == "stabilization":
+        selection = ["tests/test_stabilization.py"]
 
     suite = f"{REPOSITORY_MOUNT}/crates/plenora-database-py/python/tests"
     script = (
@@ -1182,7 +1186,7 @@ def verdict(
 #: Gli scope che hanno bisogno dei riferimenti accesi, nell'ordine in cui la
 #: campagna li misura. `live` per prima: e quella che dice se il SDK funziona,
 #: e se non funziona i tempi del bench non interessano piu.
-LIVE_SCOPES = ("live", "benchmark")
+LIVE_SCOPES = ("live", "stabilization", "benchmark")
 
 
 def preconditions() -> None:
@@ -1299,7 +1303,7 @@ def measure_scopes(
 
 
 def measure_live_scopes() -> dict[str, object]:
-    """I due scope che hanno bisogno dei riferimenti, per la campagna.
+    """I tre scope che hanno bisogno dei riferimenti, per la campagna.
 
     Zero argomenti perche e cio che `campaign(measure=...)` chiama, e nessun
     `dirty`: il preflight della campagna rifiuta un albero sporco, quindi qui
@@ -1326,6 +1330,11 @@ def main() -> int:
         action="store_true",
         help="dei soli bench di parita, sui riferimenti live",
     )
+    scope.add_argument(
+        "--stabilization-only",
+        action="store_true",
+        help="ripete timeout, rollback e concorrenza sul wheel installato",
+    )
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
@@ -1339,6 +1348,8 @@ def main() -> int:
         selected = "offline"
     elif arguments.benchmark_only:
         selected = "benchmark"
+    elif arguments.stabilization_only:
+        selected = "stabilization"
     else:
         selected = "live"
 

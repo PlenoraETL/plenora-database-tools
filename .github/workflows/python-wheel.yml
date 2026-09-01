@@ -1,14 +1,14 @@
 name: python-wheel
 
-# Builda wheel abi3-py310 per Linux (manylinux_2_34), macOS (arm64) e
-# Windows (x86_64). Un unico wheel per platform copre Python >= 3.10.
-# macOS produce solo l'artefatto ARM; il job documenta il comando per la build
-# Intel, che resta fuori da questa matrice.
+# Builda wheel abi3-py310 standard per Linux (manylinux_2_34) e Windows
+# (x86_64), piu il wheel runtime Db2 Linux x86_64 con build tag `1db2`.
+# Un unico wheel per piattaforma copre Python >= 3.10. La rimozione della
+# distribuzione macOS ARM e incompatibile e appartiene alla prossima major.
 #
 # Ogni job di build installa e verifica il proprio wheel **prima**
 # dell'upload: un artefatto rotto non deve nemmeno diventare scaricabile,
 # e il caricamento del modulo nativo si prova solo sulla piattaforma che
-# lo ha compilato. Le tre verifiche stanno in
+# lo ha compilato. Le verifiche standard stanno in
 # `.github/scripts/verify_wheel.py`, una sola volta.
 #
 # Il workflow non pubblica su un package index: costruisce e verifica artifact
@@ -35,7 +35,7 @@ jobs:
     name: build linux-x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build wheel (manylinux_2_34)
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -49,7 +49,7 @@ jobs:
             --manifest-path crates/plenora-database-py/Cargo.toml
           manylinux: 2_34
           rust-toolchain: '1.98.0'
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install and verify wheel
@@ -63,49 +63,9 @@ jobs:
       - name: Offline SDK suite
         shell: bash
         run: bash .github/scripts/offline_suite.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-linux-x86_64
-          path: dist/*.whl
-
-  # ---------------- macOS (arm64 only) ----------------
-  # La matrice distribuisce solo ARM. Per Intel usare localmente
-  # `maturin build --target x86_64-apple-darwin`.
-  macos:
-    name: build macos-aarch64
-    runs-on: macos-latest       # runner ARM (M1/M2)
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Build wheel (aarch64)
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
-          maturin-version: '1.14.1'
-          command: build
-          args: >-
-            --release
-            --locked
-            --out dist
-            --manifest-path crates/plenora-database-py/Cargo.toml
-            --target aarch64-apple-darwin
-          rust-toolchain: '1.98.0'
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - name: Install and verify wheel
-        shell: bash
-        run: |
-          python -m pip install dist/*.whl
-          python .github/scripts/verify_wheel.py
-      # Dopo l'import, la suite offline verifica il comportamento:
-      # esercita parametri tipizzati, Arrow, AST portable e spatial senza
-      # bisogno di un server; i test live si saltano da soli.
-      - name: Offline SDK suite
-        shell: bash
-        run: bash .github/scripts/offline_suite.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: wheel-macos-aarch64
           path: dist/*.whl
 
   # ---------------- Windows (x86_64) ----------------
@@ -113,7 +73,7 @@ jobs:
     name: build windows-x86_64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -126,7 +86,7 @@ jobs:
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           rust-toolchain: '1.98.0'
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install and verify wheel
@@ -140,10 +100,59 @@ jobs:
       - name: Offline SDK suite
         shell: bash
         run: bash .github/scripts/offline_suite.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-windows-x86_64
           path: dist/*.whl
+
+  # ---------------- Db2 runtime (Linux x86_64) ----------------
+  # Questo non e il wheel standard: usa il client IBM del fixture e porta il
+  # build tag PEP 427 `1db2`. Viene esportato solo dopo la qualifica live.
+  db2-linux:
+    name: build and qualify db2-linux-x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Dipendenze del gate
+        run: python -m pip install -r requirements-self-tests.txt
+      - name: Self-test del gate
+        run: |
+          python scripts/test_name_db2_wheel.py
+          python scripts/test_check_db2_reference.py
+      - name: Build del riferimento Db2 e del wheel
+        run: |
+          mkdir -p assurance-results "$RUNNER_TEMP/db2-dist"
+          docker compose -f docker-compose.db2.yml config --quiet
+          docker compose -f docker-compose.db2.yml up -d --build --wait --wait-timeout 900
+      - name: Qualifica live prima della distribuzione
+        run: |
+          python scripts/check_db2_reference.py 2>&1 \
+            | tee assurance-results/db2-reference.log
+      - name: Esporta e verifica il nome dell'artefatto qualificato
+        run: |
+          docker compose -f docker-compose.db2.yml cp \
+            db2:/opt/plenora-wheel/. "$RUNNER_TEMP/db2-dist/"
+          python scripts/name_db2_wheel.py --check "$RUNNER_TEMP/db2-dist"
+      - name: Il candidato non e cambiato
+        run: test -z "$(git status --porcelain=v1 -uall)"
+      - name: Diagnostica
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/db2-containers.txt
+          docker compose -f docker-compose.db2.yml logs --no-color \
+            > assurance-results/db2-compose.log 2>&1 || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-db2-linux-x86_64
+          path: ${{ runner.temp }}/db2-dist/*-1db2-cp310-abi3-linux_x86_64.whl
+          if-no-files-found: error
+      - name: Ferma il riferimento
+        if: always()
+        run: docker compose -f docker-compose.db2.yml down --volumes || true
 
   # ---------------- Smoke test ----------------
   # Verifica l'artefatto dopo upload/download, nella stessa forma ricevuta da
@@ -153,12 +162,12 @@ jobs:
     needs: [linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wheel-linux-x86_64
           path: dist
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install and verify wheel
@@ -179,19 +188,19 @@ jobs:
   # i wheel si distribuiscono a mano.
   attach-to-release:
     name: attach wheels to release
-    needs: [linux, macos, windows, smoke-test]
+    needs: [linux, windows, db2-linux, smoke-test]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
       - name: List collected wheels
         run: ls -la dist/
       - name: Upload wheels to release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*.whl

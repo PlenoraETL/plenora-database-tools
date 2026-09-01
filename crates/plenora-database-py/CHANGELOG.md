@@ -1,10 +1,26 @@
 # Changelog — plenora-database Python SDK
 
 Il changelog descrive l'impatto per chi aggiorna. La storia implementativa e le
-review restano in Git. Fino alla 1.0, una minor puo contenere modifiche
-incompatibili, sempre indicate come **breaking**.
+review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
+
+### Breaking
+
+- La distribuzione ufficiale non produce piu wheel macOS ARM. La matrice
+  standard resta Linux x86_64 e Windows x86_64; la modifica appartiene alla
+  major 1.0.
+
+### Aggiunto
+
+- Il runtime Db2 Linux x86_64 viene distribuito come wheel distinto con build
+  tag `1db2`, solo dopo la qualifica live completa contro Db2 LUW 12.1.
+- La campagna SDK schedulata include dieci cicli ripetuti di cancellazione,
+  recupero della sessione, rollback e concorrenza async sul wheel installato.
+
+### Manutenzione
+
+- Le JavaScript action GitHub sono aggiornate alle release basate su Node 24.
 
 ## [0.14.0] — 2026-09-01
 

@@ -94,6 +94,10 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_db2_reference.py"],
     ),
     (
+        "test_name_db2_wheel.py",
+        [sys.executable, "scripts/test_name_db2_wheel.py"],
+    ),
+    (
         "test_check_mysql_reference.py",
         [sys.executable, "scripts/test_check_mysql_reference.py"],
     ),

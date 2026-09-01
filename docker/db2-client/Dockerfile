@@ -52,7 +52,8 @@ RUN chmod 0755 \
         --features db2 \
         --auditwheel skip \
         --out /opt/plenora-wheel \
+    && python3.12 /workspace/scripts/name_db2_wheel.py /opt/plenora-wheel \
     && python3.12 -m pip install --no-cache-dir --no-deps \
-        /opt/plenora-wheel/*.whl
+        /opt/plenora-wheel/*-1db2-cp310-abi3-linux_x86_64.whl
 
 ENTRYPOINT ["/usr/local/bin/plenora-db2-entrypoint"]
