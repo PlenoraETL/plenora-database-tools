@@ -3,7 +3,7 @@ name: python-wheel
 # Builda wheel abi3-py310 standard per Linux (manylinux_2_34) e Windows
 # (x86_64), piu il wheel runtime Db2 Linux x86_64 con build tag `1db2`.
 # Un unico wheel per piattaforma copre Python >= 3.10. La rimozione della
-# distribuzione macOS ARM e incompatibile e appartiene alla prossima major.
+# distribuzione macOS ARM e incompatibile e appartiene alla major 1.0.
 #
 # Ogni job di build installa e verifica il proprio wheel **prima**
 # dell'upload: un artefatto rotto non deve nemmeno diventare scaricabile,

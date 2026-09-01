@@ -5,6 +5,8 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-01
+
 ### Breaking
 
 - La distribuzione ufficiale non produce piu wheel macOS ARM. La matrice
