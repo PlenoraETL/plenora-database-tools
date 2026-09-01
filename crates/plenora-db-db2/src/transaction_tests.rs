@@ -98,8 +98,10 @@ fn transaction_text_decoder_preserves_significant_spaces() {
 
 #[test]
 fn transaction_binary_decoder_recovers_the_driver_hex_representation() {
-    let data_type = DataType::LongVarbinary {
-        length: std::num::NonZeroUsize::new(2_147_483_647),
+    let data_type = DataType::Other {
+        data_type: odbc_api::sys::SqlDataType(-98),
+        column_size: std::num::NonZeroUsize::new(2_147_483_647),
+        decimal_digits: 0,
     };
     assert_eq!(
         decode_value(Some(b"010203FEFF"), data_type).expect("BLOB Db2"),
