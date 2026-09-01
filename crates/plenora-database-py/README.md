@@ -149,6 +149,40 @@ statement = p.select(
 projection con bind non tipizzato, mentre la forma tipizzata viene resa con un
 `CAST` e `SYSIBM.SYSDUMMY1`.
 
+### Letture riprendibili
+
+Una lettura Arrow ordinata puo essere riaperta con un checkpoint keyset
+persistente. Il chiamante cattura i valori ordinati dell'ultima riga realmente
+consegnata, salva il JSON e lo passa a una nuova sessione:
+
+```python
+checkpoint = p.ReadCheckpoint(
+    "postgres",
+    "public",
+    "events",
+    [("tenant_id", "asc"), ("event_id", "asc")],
+    [last_tenant_id, last_event_id],
+    projection=["tenant_id", "event_id", "payload"],
+)
+stored = checkpoint.to_json()
+
+resumed = p.ReadCheckpoint.from_json(stored)
+reader = session.read(
+    "public",
+    "events",
+    projection=["tenant_id", "event_id", "payload"],
+    order_by=[("tenant_id", "asc"), ("event_id", "asc")],
+    limit=10_000,
+    checkpoint=resumed,
+)
+```
+
+Provider, catalogo, sorgente, proiezione e ordinamento appartengono allo scope
+firmato: un token riusato su una lettura diversa viene rifiutato prima
+dell'I/O. `limit` puo cambiare fra le pagine. Il `repr` e gli errori pubblici
+non espongono i valori contenuti nel token. La forma async usa lo stesso
+oggetto con `await session.aread(...)`.
+
 ### ORM-like dichiarativo sync e async
 
 L'ORM riusa le stesse `Table`, `Column`, transazioni e mutazioni canoniche. La
@@ -189,9 +223,9 @@ ORM distinto, cosi il binding non deve indovinare la larghezza dal valore.
 Le query di entita partono da `orm.query(Account)` e compongono gli stessi
 predicati dell'expression language. Oltre a ordinamento e paginazione espongono
 join tramite relationship, proiezioni, tuple di entita e caricamento eager con
-`selectinload` o `joinedload`. Quest'ultimo e limitato alle relazioni scalari;
-le collezioni usano `selectinload`, cosi limit e paginazione non duplicano le
-entita root. I valori restano bind separati. `refresh`, `expire`, `expunge` e
+`selectinload` o `joinedload`. `joinedload` accetta anche collezioni e
+deduplica le entita root mentre accumula i figli nell'identity map. I valori
+restano bind separati. `refresh`, `expire`, `expunge` e
 `merge` completano il lifecycle; l'autoflush e attivo per default e si puo
 disabilitare nel costruttore della sessione.
 
@@ -203,7 +237,8 @@ questo insieme fallisce prima dell'I/O. Per generare DDL, il solo marker
 `server_default=True` non basta: va fornito un `ServerDefault` esplicito.
 
 `relationship` copre many-to-one, one-to-many, one-to-one e many-to-many con
-tabella `secondary`. `back_populates` mantiene coerenti i due lati e le cascade
+tabella `secondary`, incluse chiavi composite su entrambi i lati.
+`back_populates` mantiene coerenti i due lati e le cascade
 `save-update`, `delete` e `delete-orphan` sono sempre esplicite: il default non
 cascada nulla. Il descrittore non effettua mai I/O; si usa `load` oppure un
 loader eager. Il flush ordina il grafo parent/child, propaga chiavi generate e
@@ -224,9 +259,10 @@ SRID a ogni idratazione. Le dimensioni M/XYZM e i tipi non nominati restano
 fail-closed.
 
 `UniqueConstraint` e `ForeignKeyConstraint` descrivono anche vincoli compositi;
-l'ereditarieta pubblicata e la forma concrete esplicita. `OrmMetadata` compila
-e applica create/drop table nei dialetti qualificati. `MigrationRunner` e la
-variante async eseguono catene lineari, una revisione per transazione, mentre
+mixin astratti e forma concrete esplicita conservano colonne, vincoli e
+relationship ereditati. `OrmMetadata` compila e applica create/drop table nei
+dialetti qualificati. `MigrationRunner` e la variante async ordinano un DAG di
+revisioni con branch e merge ed eseguono una revisione per transazione, mentre
 `OrmSession.listen` registra hook locali sul lifecycle del flush.
 
 `AsyncOrmSession` espone lo stesso mapping, identity map, planner del flush e
@@ -414,6 +450,14 @@ server una sola riga sentinella oltre il limite e fallisce con
 e opzioni come parametri PostgreSQL. La forma async usa gli stessi nomi come
 coroutine. `cascade=False` e intenzionale: la cancellazione dei dati dipendenti
 richiede una scelta esplicita.
+
+`vertex_model` ed `edge_model` associano dataclass o classi tipizzate a label,
+identita ed estremi senza introdurre lazy I/O. `bulk_vertices`/`bulk_edges` e
+le varianti async inviano batch tramite `UNWIND` con payload separato; gli edge
+risolvono gli endpoint tramite business key. `graph_property_index_sql` e
+`graph_unique_constraint_sql` producono DDL PostgreSQL qualificato sulle
+proprieta AGE. Label, proprieta e parole chiave usate come nomi sono sempre
+validate e quotate.
 
 La stessa firma e disponibile su `Transaction`, `AsyncSession` e
 `AsyncTransaction`. Le scritture Cypher partecipano a commit, rollback e
@@ -680,17 +724,18 @@ versioni Python ≥ 3.10.
   factory distinte; non esiste selezione automatica dal server raggiunto.
 - **macOS** — non fa parte della matrice di distribuzione ufficiale dalla
   major 1.0; Db2 non dispone inoltre di una matrice client IBM qualificata.
-- **Ripresa dello stream** — la lettura e incrementale, ma nessun provider
-  pubblica un cursore riapribile da una seconda sessione.
+- **Cursore server-side riapribile** — non viene pubblicata un'identita di
+  cursore lato server. La ripresa supportata e keyset e usa `ReadCheckpoint`;
+  e qualificata live sui cinque provider.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
 - **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
-  composite richiedono ancora un mapping FK esplicito e restano fail-closed;
-  `joinedload` non accetta collezioni. L'ereditarieta e solo concrete, le
-  migrazioni sono lineari e il runner Db2 non e ancora qualificato. Geometry
-  ORM e qualificata sui cinque provider nei limiti dichiarati sopra; tipi,
-  dimensioni o semantiche fuori da quella matrice restano chiusi.
+  composite richiedono un mapping FK esplicito. L'ereditarieta mappata resta
+  concrete (con mixin astratti); single-table e joined-table inheritance non
+  sono pubblicate. Geometry ORM e qualificata sui cinque provider nei limiti
+  dichiarati sopra; tipi, dimensioni o semantiche fuori da quella matrice
+  restano chiusi.
 
 ## Sviluppo
 

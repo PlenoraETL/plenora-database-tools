@@ -20,7 +20,9 @@ pub enum ProviderKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     pub object: String,
 }

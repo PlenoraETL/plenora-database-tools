@@ -1,7 +1,9 @@
 use crate::{Db2Column, Db2ObjectDescription, Db2ReadPlan};
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{DeclaredCrs, ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::protocol;
-use plenora_database_core::ErrorCategory;
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::{ErrorCategory, ReadCheckpoint};
 
 fn description() -> Db2ObjectDescription {
     Db2ObjectDescription {
@@ -66,6 +68,29 @@ fn read_plan_quotes_identifiers_and_preserves_projection_order() {
         plan.sql,
         "SELECT \"LABEL\", \"ID\" FROM \"PLENORA_TEST\".\"READ_PROBE\" ORDER BY \"ID\" ASC OFFSET 2 ROWS FETCH FIRST 10 ROWS ONLY"
     );
+}
+
+#[test]
+fn qualified_checkpoint_renders_as_a_bound_db2_keyset() {
+    let mut operation = operation();
+    operation.projection = vec!["ID".to_owned()];
+    operation.row_offset = None;
+    let checkpoint = ReadCheckpoint::new(
+        ProviderKind::Db2,
+        &operation,
+        &ParameterBag::default(),
+        vec![ParameterValue::I32(41)],
+    )
+    .expect("checkpoint");
+    let (resumed, _) = checkpoint
+        .resume(ProviderKind::Db2, &operation, &ParameterBag::default())
+        .expect("resume");
+    let plan = Db2ReadPlan::compile(&description(), &resumed, 1024).expect("piano ripreso");
+    assert_eq!(
+        plan.sql,
+        "SELECT \"ID\" FROM \"PLENORA_TEST\".\"READ_PROBE\" WHERE \"ID\" > ? ORDER BY \"ID\" ASC FETCH FIRST 10 ROWS ONLY"
+    );
+    assert_eq!(plan.bind_names, ["__plenora_resume_0"]);
 }
 
 #[test]

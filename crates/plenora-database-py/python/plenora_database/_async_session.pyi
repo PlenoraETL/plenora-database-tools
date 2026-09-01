@@ -2,7 +2,7 @@
 from typing import Any, Mapping, overload
 
 from ._async_transaction import AsyncTransaction
-from ._native import AsyncSession as _NativeAsyncSession, SessionContext
+from ._native import AsyncSession as _NativeAsyncSession, ReadCheckpoint, SessionContext
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -81,6 +81,8 @@ class AsyncSession:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...
     async def acopy_from(
         self,

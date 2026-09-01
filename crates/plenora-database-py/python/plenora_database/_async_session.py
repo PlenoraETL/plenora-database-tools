@@ -157,6 +157,8 @@ class AsyncSession(_AsyncBuilderFactory):
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint=None,
     ):
         """Async equivalente di `Session.read()`. Accetta gli stessi
         parametri opzionali `projection` / `order_by` / `limit`.
@@ -165,7 +167,13 @@ class AsyncSession(_AsyncBuilderFactory):
         (async iterator protocol: `async for chunk in reader`).
         """
         return await self._native.aread(
-            schema, object, projection, order_by, limit
+            schema,
+            object,
+            projection,
+            order_by,
+            limit,
+            catalog=catalog,
+            checkpoint=checkpoint,
         )
 
     # ------------------------ Arrow bulk write -------------------------

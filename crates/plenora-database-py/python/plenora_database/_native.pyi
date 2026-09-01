@@ -234,6 +234,9 @@ class DatabaseSession:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        *,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> BatchReader: ...
     def copy_from(
         self,
@@ -287,6 +290,9 @@ class AsyncDatabaseSession:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        *,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...  # awaitable → AsyncBatchReader
     def execute_portable_rows(self, ast_json: str) -> Any: ...  # awaitable → list[dict]
     def execute_portable_count(self, ast_json: str) -> Any: ...  # awaitable → int
@@ -363,6 +369,9 @@ class Session:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        *,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> BatchReader: ...
     def copy_from(
         self,
@@ -478,6 +487,9 @@ class AsyncSession:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        *,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...  # awaitable → AsyncBatchReader
     def acopy_from(
         self,
@@ -490,6 +502,34 @@ class AsyncSession:
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> Any: ...  # awaitable → dict
+
+
+class ReadCheckpoint:
+    def __init__(
+        self,
+        provider: str,
+        schema: str,
+        object: str,
+        order_by: list[tuple[str, str]],
+        values: list,
+        projection: list[str] | None = None,
+        *,
+        catalog: str | None = None,
+    ) -> None: ...
+    @staticmethod
+    def from_json(document: str) -> ReadCheckpoint: ...
+    def to_json(self) -> str: ...
+    @property
+    def provider(self) -> str: ...
+    @property
+    def catalog(self) -> str | None: ...
+    @property
+    def schema(self) -> str | None: ...
+    @property
+    def object(self) -> str: ...
+    @property
+    def order_by(self) -> list[tuple[str, str]]: ...
+    def __repr__(self) -> str: ...
 
 
 class BatchReader:

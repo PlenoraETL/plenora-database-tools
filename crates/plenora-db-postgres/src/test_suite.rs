@@ -716,6 +716,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps() {
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let provider = PostgresProvider::insecure_local_with_batch_rows(100);
+        let secret = SecretString::new(dsn);
+        let operation = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "events".to_owned(),
+            },
+            projection: vec!["event_id".to_owned()],
+            order_by: vec![OrderBy {
+                field: "event_id".to_owned(),
+                direction: SortDirection::Asc,
+            }],
+            row_limit: Some(3),
+            row_offset: None,
+            filter: None,
+            declared_crs: Vec::new(),
+        };
+        let parameters = ParameterBag::default();
+        let mut first = provider
+            .read_with_test_budget(&secret, &operation, &parameters, &NeverCancelled)
+            .await
+            .expect("prima pagina checkpoint PostgreSQL");
+        let batch = first
+            .next_batch(&NeverCancelled)
+            .await
+            .expect("batch checkpoint PostgreSQL")
+            .expect("righe checkpoint PostgreSQL");
+        let ids = batch
+            .column_by_name("event_id")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .expect("event_id checkpoint PostgreSQL");
+        assert_eq!(ids.values(), &[1, 2, 3]);
+        let token = plenora_database_core::ReadCheckpoint::new(
+            ProviderKind::Postgres,
+            &operation,
+            &parameters,
+            vec![ParameterValue::I64(ids.value(ids.len() - 1))],
+        )
+        .expect("token checkpoint PostgreSQL")
+        .to_json()
+        .expect("persistenza checkpoint PostgreSQL");
+        drop(first);
+
+        let checkpoint = plenora_database_core::ReadCheckpoint::from_json(&token)
+            .expect("riapertura checkpoint PostgreSQL");
+        let mut next_page = operation.clone();
+        next_page.row_limit = Some(4);
+        let (resumed, resumed_parameters) = checkpoint
+            .resume(ProviderKind::Postgres, &next_page, &parameters)
+            .expect("piano ripreso PostgreSQL");
+        let mut second = provider
+            .read_with_test_budget(&secret, &resumed, &resumed_parameters, &NeverCancelled)
+            .await
+            .expect("seconda pagina checkpoint PostgreSQL");
+        let batch = second
+            .next_batch(&NeverCancelled)
+            .await
+            .expect("batch ripreso PostgreSQL")
+            .expect("righe riprese PostgreSQL");
+        let ids = batch
+            .column_by_name("event_id")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .expect("event_id ripreso PostgreSQL");
+        assert_eq!(ids.values(), &[4, 5, 6, 7]);
+    }
+
+    #[tokio::test]
     async fn live_read_budget_fails_closed_before_exceeding_rows() {
         let Some(dsn) = live_dsn_or_skip() else {
             return;

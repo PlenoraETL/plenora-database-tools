@@ -30,15 +30,18 @@
     clippy::too_many_arguments
 )]
 
-use crate::arrow_reader::{default_budget as reader_default_budget, make_read_operation};
+use crate::arrow_reader::{
+    default_budget as reader_default_budget, make_qualified_read_operation, prepare_resumable_read,
+};
 use crate::async_session_ops::{SharedEngineSession, TransactionBackend};
+use crate::checkpoint::PyReadCheckpoint;
 use crate::errors::to_py_err;
 use crate::py_convert::{portable_from_json, statement_from_python};
 use crate::session_family::ProviderBuilder;
 use plenora_database_core::plan::Operation;
 #[cfg(not(feature = "db2"))]
 use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::CancellationToken;
 #[cfg(not(feature = "db2"))]
 use plenora_database_core::{DatabaseError, ErrorPhase};
@@ -378,7 +381,16 @@ impl AsyncDatabaseSession {
     }
 
     /// Streaming Arrow read async. Ritorna awaitable → `AsyncBatchReader`.
-    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
+    #[pyo3(signature = (
+        schema,
+        object,
+        projection=None,
+        order_by=None,
+        limit=None,
+        *,
+        catalog=None,
+        checkpoint=None,
+    ))]
     fn aread<'py>(
         &self,
         py: Python<'py>,
@@ -387,6 +399,8 @@ impl AsyncDatabaseSession {
         projection: Option<Vec<String>>,
         order_by: Option<Vec<(String, String)>>,
         limit: Option<u64>,
+        catalog: Option<&str>,
+        checkpoint: Option<PyRef<'_, PyReadCheckpoint>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -395,15 +409,28 @@ impl AsyncDatabaseSession {
         let object = object.to_owned();
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
+        let catalog = catalog.map(str::to_owned);
+        let checkpoint = checkpoint.map(|value| value.inner().clone());
+        let resumable = self.capabilities.reads.resumable;
         let cancel = self.cancellation();
         future_into_py(py, async move {
-            let operation = make_read_operation(&schema, &object, projection, order_by, limit)
-                .map_err(to_py_err)?;
+            let operation = make_qualified_read_operation(
+                catalog.as_deref(),
+                &schema,
+                &object,
+                projection,
+                order_by,
+                limit,
+            )
+            .map_err(to_py_err)?;
+            let (operation, parameters) =
+                prepare_resumable_read(provider.kind(), resumable, operation, checkpoint.as_ref())
+                    .map_err(to_py_err)?;
             let stream = provider
                 .read(
                     &secret,
                     &operation,
-                    &ParameterBag::default(),
+                    &parameters,
                     &reader_default_budget(),
                     &cancel,
                 )

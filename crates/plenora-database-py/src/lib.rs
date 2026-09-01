@@ -18,6 +18,7 @@ mod async_session_family;
 mod async_session_ops;
 mod async_transaction;
 mod budget;
+mod checkpoint;
 mod engine;
 mod errors;
 mod errors_commit;
@@ -38,6 +39,7 @@ use async_session_family::{
     aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
 };
 use async_transaction::AsyncTransaction;
+use checkpoint::PyReadCheckpoint;
 use engine::{
     create_async_db2_engine, create_async_engine, create_async_mariadb_engine,
     create_async_mysql_engine, create_async_sqlserver_engine, create_db2_engine, create_engine,
@@ -336,6 +338,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AsyncBatchReader>()?;
     m.add_class::<DatabaseSession>()?;
     m.add_class::<AsyncDatabaseSession>()?;
+    m.add_class::<PyReadCheckpoint>()?;
     m.add_class::<session_context_py::PySessionContext>()?;
     errors::register(m)?;
     Ok(())

@@ -27,9 +27,12 @@
     clippy::redundant_pub_crate
 )]
 
-use crate::arrow_reader::{default_budget, make_read_operation, BatchReader};
+use crate::arrow_reader::{
+    default_budget, make_qualified_read_operation, prepare_resumable_read, BatchReader,
+};
 use crate::runtime;
-use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::checkpoint::ReadCheckpoint;
+use plenora_database_core::provider::{Provider, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError};
 use std::sync::Arc;
 
@@ -50,9 +53,15 @@ pub(crate) fn open_family_reader(
     projection: Vec<String>,
     order_by: Vec<(String, String)>,
     limit: Option<u64>,
+    catalog: Option<&str>,
+    resumable: bool,
+    checkpoint: Option<&ReadCheckpoint>,
     cancellation: CancellationToken,
 ) -> Result<BatchReader, DatabaseError> {
-    let operation = make_read_operation(schema, object, projection, order_by, limit)?;
+    let operation =
+        make_qualified_read_operation(catalog, schema, object, projection, order_by, limit)?;
+    let (operation, parameters) =
+        prepare_resumable_read(provider.kind(), resumable, operation, checkpoint)?;
     let provider_arc = Arc::clone(provider);
     let secret_owned = secret.clone();
     let stream_cancellation = cancellation.clone();
@@ -61,7 +70,7 @@ pub(crate) fn open_family_reader(
             .read(
                 &secret_owned,
                 &operation,
-                &ParameterBag::default(),
+                &parameters,
                 &default_budget(),
                 &stream_cancellation,
             )

@@ -26,8 +26,8 @@ use plenora_database_core::query::{
     QuerySetOperation, QuerySetOperator, QuerySource, ScalarFunction, SpatialFunction,
 };
 use plenora_database_core::{
-    CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
-    RetryDisposition,
+    CancellationToken, ErrorCategory, ErrorPhase, ReadCheckpoint, RemoteEffect, ResourceBudget,
+    ResourceLimits, RetryDisposition,
 };
 use plenora_database_engine::{Engine, Observation};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -802,6 +802,90 @@ async fn live_provider_execute_ddl_creates_and_drops_table() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e prova persistenza/ripresa"]
+async fn live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps() {
+    let provider = live_provider();
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget checkpoint TDS");
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "stream_probe".to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(2),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let parameters = ParameterBag::default();
+    let mut first = provider
+        .read(&secret, &operation, &parameters, &budget, &cancellation)
+        .await
+        .expect("prima pagina checkpoint TDS");
+    let batch = first
+        .next_batch(&cancellation)
+        .await
+        .expect("batch checkpoint TDS")
+        .expect("righe checkpoint TDS");
+    let ids = batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("id checkpoint TDS");
+    assert_eq!(ids.values(), &[1, 2]);
+    let token = ReadCheckpoint::new(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        &operation,
+        &parameters,
+        vec![ParameterValue::I32(ids.value(ids.len() - 1))],
+    )
+    .expect("token checkpoint TDS")
+    .to_json()
+    .expect("persistenza checkpoint TDS");
+    drop(first);
+
+    let checkpoint = ReadCheckpoint::from_json(&token).expect("riapertura checkpoint TDS");
+    let mut next_page = operation.clone();
+    next_page.row_limit = Some(3);
+    let (resumed, resumed_parameters) = checkpoint
+        .resume(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            &next_page,
+            &parameters,
+        )
+        .expect("piano ripreso TDS");
+    let mut second = provider
+        .read(
+            &secret,
+            &resumed,
+            &resumed_parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("seconda pagina checkpoint TDS");
+    let mut resumed_ids = Vec::new();
+    while let Some(batch) = second
+        .next_batch(&cancellation)
+        .await
+        .expect("batch ripreso TDS")
+    {
+        let ids = batch
+            .column_by_name("id")
+            .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+            .expect("id ripreso TDS");
+        resumed_ids.extend_from_slice(ids.values());
+    }
+    assert_eq!(resumed_ids, [3, 4, 5]);
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta la fixture write"]
 #[allow(clippy::too_many_lines)]
 async fn live_common_provider_contract_read_and_write() {
@@ -847,7 +931,7 @@ async fn live_common_provider_contract_read_and_write() {
         .await
         .expect("provider capabilities");
     assert!(!capabilities.reads.server_cursor);
-    assert!(!capabilities.reads.resumable);
+    assert!(capabilities.reads.resumable);
     assert!(!capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
     // Lo scope transazionale deve pubblicare anche i savepoint che implementa.

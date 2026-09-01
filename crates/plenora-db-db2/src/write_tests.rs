@@ -90,8 +90,17 @@ fn point_xy() -> Vec<u8> {
 
 #[test]
 fn append_plan_accepts_the_qualified_scalar_subset() {
-    Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
+    let plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
         .expect("piano append Db2");
+    assert_eq!(
+        plan.array_insert_sql(),
+        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (?, ?)"
+    );
+    assert_eq!(
+        plan.array_insert_sql().matches('?').count(),
+        2,
+        "il numero di placeholder resta quello delle colonne, non delle righe"
+    );
 }
 
 #[test]

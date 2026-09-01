@@ -483,6 +483,7 @@ fn the_capability_table_is_built_only_by_the_profile() {
     assert_eq!(published.provider, MYSQL_PROFILE.kind());
     assert!(published.spatial.read_wkb && published.spatial.write_wkb);
     assert!(published.spatial.spatial_index);
+    assert!(published.reads.resumable);
     assert_eq!(
         published.limits.max_bind_parameters,
         Some(crate::MAX_BIND_PARAMETERS as u64)
@@ -1710,18 +1711,15 @@ fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
     assert_eq!(published.provider, ProviderKind::Mariadb);
     assert_eq!(published.provider_version, "11.8.8-MariaDB");
 
-    // La lettura e aperta, e ognuna delle quattro ha una sonda che la
-    // sostiene: valori, streaming, proiezione, filtro, ordinamento. Le
-    // altre quattro restano chiuse perche il crate non le offre a
-    // nessuno dei due prodotti — non perche siano state provate e
-    // fallite.
+    // La lettura e aperta dove una sonda dedicata la sostiene: valori,
+    // streaming, proiezione, filtro, ordinamento e checkpoint persistito.
     let reads = &published.reads;
     assert!(reads.streaming && reads.projection && reads.filter && reads.ordering);
     // `pagination` è sostenuta da `ReadOperation::row_offset`, compilato
     // dal piano di lettura e verificato dall'engine.
     assert!(reads.pagination);
     assert!(!reads.server_cursor);
-    assert!(!reads.resumable);
+    assert!(reads.resumable);
     // E dove il crate non offre niente, i due prodotti dicono la stessa
     // cosa: una bandiera chiusa qui non e una divergenza di prodotto.
     let mysql_reads = &MYSQL_PROFILE.capabilities("9.7.2".to_owned()).reads;
@@ -1940,11 +1938,11 @@ fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
 
     // E il confronto che rende la chiusura osservabile: dove MySQL
     // dichiara qualificata la scrittura e lo spatial, MariaDB non lo fa.
-    // La lettura invece ora coincide, ed e il primo punto in cui i due
-    // prodotti dichiarano la stessa cosa perche entrambi l'hanno provata.
+    // La lettura coincide perche ogni prodotto l'ha provata sul proprio gate.
     let mysql = MYSQL_PROFILE.capabilities("9.7.2".to_owned());
     assert!(mysql.writes.append && mysql.spatial.read_wkb);
     assert!(!mysql.spatial.functions.is_empty());
+    assert!(mysql.reads.resumable);
     assert_eq!(mysql.reads, published.reads);
 }
 

@@ -4,6 +4,7 @@
 
 pub mod cancellation;
 pub mod capabilities;
+pub mod checkpoint;
 pub mod conformance;
 pub mod error;
 pub mod ewkb;
@@ -35,6 +36,7 @@ pub mod spatial_predicate;
 pub mod transaction;
 
 pub use cancellation::{CancellationReason, CancellationToken};
+pub use checkpoint::{ReadCheckpoint, READ_CHECKPOINT_SCHEMA_VERSION};
 pub use conformance::{
     check_profile, probe_application_oltp_v1, probe_pfm_core_v1, probe_pfm_gis_v1, Capability,
     CapabilityEvidence, ConformanceProfile, EvidenceKind, ProfileReport, ProfileStatus,

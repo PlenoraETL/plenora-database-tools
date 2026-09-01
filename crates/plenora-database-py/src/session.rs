@@ -33,7 +33,10 @@
     clippy::needless_pass_by_value
 )]
 
-use crate::arrow_reader::{make_read_operation, open_reader, BatchReader};
+use crate::arrow_reader::{
+    make_qualified_read_operation, open_reader, prepare_resumable_read, BatchReader,
+};
+use crate::checkpoint::PyReadCheckpoint;
 use crate::errors::to_py_err;
 use crate::py_convert::{
     graph_rows_to_pylist, graph_statement_from_python, portable_from_json, rows_to_pylist,
@@ -515,7 +518,17 @@ impl Session {
     /// Non carica tutto il dataset in memoria: legge batch-by-batch
     /// dal cursor server-side. Sblocca la migrazione dal CLI
     /// `postgres-read-ipc` per query >1M righe.
-    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
+    #[pyo3(signature = (
+        schema,
+        object,
+        projection=None,
+        order_by=None,
+        limit=None,
+        *,
+        catalog=None,
+        checkpoint=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         py: Python<'_>,
@@ -524,14 +537,32 @@ impl Session {
         projection: Option<Vec<String>>,
         order_by: Option<Vec<(String, String)>>,
         limit: Option<u64>,
+        catalog: Option<&str>,
+        checkpoint: Option<PyRef<'_, PyReadCheckpoint>>,
     ) -> PyResult<BatchReader> {
         self.ensure_open()?;
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
         let operation =
-            make_read_operation(schema, object, projection, order_by, limit).map_err(to_py_err)?;
-        py.detach(|| open_reader(&self.provider, &self.secret, operation, self.cancellation()))
-            .map_err(to_py_err)
+            make_qualified_read_operation(catalog, schema, object, projection, order_by, limit)
+                .map_err(to_py_err)?;
+        let (operation, parameters) = prepare_resumable_read(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            self.capabilities.reads.resumable,
+            operation,
+            checkpoint.as_deref().map(PyReadCheckpoint::inner),
+        )
+        .map_err(to_py_err)?;
+        py.detach(|| {
+            open_reader(
+                &self.provider,
+                &self.secret,
+                operation,
+                parameters,
+                self.cancellation(),
+            )
+        })
+        .map_err(to_py_err)
     }
 
     /// Bulk write via `prepare_write` + `write` del provider Postgres

@@ -46,6 +46,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_native_query_policy_guards_every_transaction_entrypoint",
         "live_provider_execute_ddl_creates_and_drops_table",
         "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+        "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
     }
 )
 

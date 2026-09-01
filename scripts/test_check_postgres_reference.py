@@ -18,10 +18,11 @@ from scripts import compose_network as compose_network_module
 from scripts import live_inventory
 
 
-ROW_DIAGNOSTICS = (
+REQUIRED_LIVE = (
     "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
     "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
     "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
+    "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
 )
 
 
@@ -31,31 +32,31 @@ def output(names: tuple[str, ...]) -> str:
 
 class RequiredLiveTests(unittest.TestCase):
     def test_the_three_row_diagnostics_tests_are_pinned(self) -> None:
-        self.assertEqual(set(gate.REQUIRED_LIVE_TESTS), set(ROW_DIAGNOSTICS))
+        self.assertEqual(set(gate.REQUIRED_LIVE_TESTS), set(REQUIRED_LIVE))
 
     def test_a_complete_run_passes(self) -> None:
-        gate.validate_live_row_diagnostics(output(ROW_DIAGNOSTICS))
+        gate.validate_live_row_diagnostics(output(REQUIRED_LIVE))
 
     def test_a_silently_skipped_test_fails_the_gate(self) -> None:
         """Il caso che il gate deve impedire: DSN assente, early-return."""
         with self.assertRaises(RuntimeError) as raised:
             gate.validate_live_row_diagnostics("")
-        for name in ROW_DIAGNOSTICS:
+        for name in REQUIRED_LIVE:
             self.assertIn(name, str(raised.exception))
 
     def test_a_partial_run_names_the_missing_tests(self) -> None:
         with self.assertRaises(RuntimeError) as raised:
-            gate.validate_live_row_diagnostics(output(ROW_DIAGNOSTICS[:2]))
+            gate.validate_live_row_diagnostics(output(REQUIRED_LIVE[:2]))
         message = str(raised.exception)
-        self.assertIn(ROW_DIAGNOSTICS[2], message)
-        self.assertNotIn(ROW_DIAGNOSTICS[0], message)
+        self.assertIn(REQUIRED_LIVE[2], message)
+        self.assertNotIn(REQUIRED_LIVE[0], message)
 
     def test_a_failed_test_is_not_counted_as_executed(self) -> None:
         failed = "\n".join(
             [
-                f"test test_suite::tests::{ROW_DIAGNOSTICS[0]} ... ok",
-                f"test test_suite::tests::{ROW_DIAGNOSTICS[1]} ... ok",
-                f"test test_suite::tests::{ROW_DIAGNOSTICS[2]} ... FAILED",
+                f"test test_suite::tests::{REQUIRED_LIVE[0]} ... ok",
+                f"test test_suite::tests::{REQUIRED_LIVE[1]} ... ok",
+                f"test test_suite::tests::{REQUIRED_LIVE[2]} ... FAILED",
             ]
         )
         with self.assertRaises(RuntimeError):

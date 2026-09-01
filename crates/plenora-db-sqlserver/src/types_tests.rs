@@ -1,5 +1,8 @@
 use super::*;
 use crate::SqlServerSchemaToken;
+use plenora_database_core::plan::{ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::ReadCheckpoint;
 use std::collections::HashMap;
 
 fn description(native_type: &str, precision: u8, scale: u8) -> SqlServerObjectDescription {
@@ -95,6 +98,47 @@ fn the_ceiling_changes_shape_when_a_window_is_asked() {
         "il tetto deve viaggiare come FETCH NEXT: {}",
         plan.sql
     );
+}
+
+#[test]
+fn qualified_checkpoint_renders_as_a_bound_sql_server_keyset() {
+    let target = description("int", 10, 0);
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dbo".to_owned()),
+            object: "fixture".to_owned(),
+        },
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "value".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(100),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let checkpoint = ReadCheckpoint::new(
+        ProviderKind::Sqlserver,
+        &operation,
+        &ParameterBag::default(),
+        vec![ParameterValue::I32(41)],
+    )
+    .expect("checkpoint");
+    let (resumed, _) = checkpoint
+        .resume(
+            ProviderKind::Sqlserver,
+            &operation,
+            &ParameterBag::default(),
+        )
+        .expect("resume");
+    let plan = SqlServerReadPlan::compile_operation(&target, &resumed).expect("piano ripreso");
+    assert_eq!(
+        plan.sql,
+        "SELECT TOP (100) [value] AS [value] FROM [dbo].[fixture] WHERE [value] > @p1 ORDER BY [value] ASC;"
+    );
+    assert_eq!(plan.bind_names, ["__plenora_resume_0"]);
 }
 
 #[test]

@@ -17,7 +17,7 @@ python scripts\render_state.py
 | `plenora-database-cli` | 2.0.0 |
 | `plenora-database-core` | 2.0.0 |
 | `plenora-database-engine` | 2.0.0 |
-| `plenora-database-py` | 1.0.0 |
+| `plenora-database-py` | 1.1.0 |
 | `plenora-database-sql` | 2.0.0 |
 | `plenora-database-testkit` | 2.0.0 |
 | `plenora-db-db2` | 2.0.0 |
@@ -36,6 +36,7 @@ La major attiva e `contracts/v2/`, e contiene:
 - `golden-manifest.schema.json`
 - `loss-report.schema.json`
 - `plan.schema.json`
+- `read-checkpoint.schema.json`
 - `write-outcome.schema.json`
 
 E l'unica nel worktree: le major precedenti stanno in Git, e nessun
@@ -59,7 +60,7 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `projection` | `true` | `true` | `true` | `true` | `true` |
 | `filter` | `true` | `true` | `true` | `true` | `true` |
 | `ordering` | `true` | `true` | `true` | `true` | `true` |
-| `resumable` | `false` | `false` | `false` | `false` | `false` |
+| `resumable` | `true` | `true` | `true` | `true` | `true` |
 
 ### `writes`
 
@@ -72,8 +73,8 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `upsert` | `true` | `true` | `true` | `true` | `true` |
 | `replace` | `true` | `true` | `true` | `true` | `true` |
 | `delete_by_keys` | `true` | `true` | `true` | `true` | `true` |
-| `bulk` | `true` | `true` | `true` | `true` | `false` |
-| `array_binding` | `false` | `false` | `false` | `false` | `false` |
+| `bulk` | `true` | `true` | `true` | `true` | `true` |
+| `array_binding` | `false` | `false` | `false` | `false` | `true` |
 | `returning` | `false` | `false` | `false` | `false` | `false` |
 | `rollback_on_failure` | `true` | `true` | `true` | `true` | `true` |
 
@@ -84,7 +85,7 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `single_transaction` | `true` | `true` | `true` | `true` | `true` |
 | `savepoints` | `true` | `true` | `true` | `true` | `true` |
 | `transactional_ddl` | `true` | `false` | `false` | `true` | `true` |
-| `staged_swap` | `true` | `false` | `false` | `true` | `false` |
+| `staged_swap` | `false` | `false` | `false` | `true` | `false` |
 | `scope` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` |
 
 ## Sub-comandi del CLI
@@ -162,10 +163,10 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 300 |
-| MySQL + MariaDB | 297 |
-| SQL Server | 149 |
-| IBM Db2 LUW | 56 |
+| PostgreSQL | 302 |
+| MySQL + MariaDB | 299 |
+| SQL Server | 151 |
+| IBM Db2 LUW | 61 |
 
 ### Famiglie del gate MySQL
 
@@ -174,5 +175,5 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | famiglia | test |
 | --- | --- |
 | `live_default` | 39 |
-| `live_reference` | 33 |
-| `unit` | 223 |
+| `live_reference` | 34 |
+| `unit` | 224 |

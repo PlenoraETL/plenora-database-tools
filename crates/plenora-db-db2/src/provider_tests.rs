@@ -35,7 +35,7 @@ fn qualified_surfaces_are_open_and_unmeasured_features_stay_fail_closed() {
     assert!(capabilities.reads.filter);
     assert!(capabilities.reads.ordering);
     assert!(!capabilities.reads.server_cursor);
-    assert!(!capabilities.reads.resumable);
+    assert!(capabilities.reads.resumable);
     assert!(capabilities.writes.create);
     assert!(capabilities.writes.append);
     assert!(capabilities.writes.update);
@@ -44,8 +44,8 @@ fn qualified_surfaces_are_open_and_unmeasured_features_stay_fail_closed() {
     assert!(capabilities.writes.delete_by_keys);
     assert!(capabilities.writes.rollback_on_failure);
     assert!(!capabilities.writes.truncate_insert);
-    assert!(!capabilities.writes.bulk);
-    assert!(!capabilities.writes.array_binding);
+    assert!(capabilities.writes.bulk);
+    assert!(capabilities.writes.array_binding);
     assert!(!capabilities.writes.returning);
     assert!(capabilities.transactions.single_transaction);
     assert!(capabilities.transactions.savepoints);

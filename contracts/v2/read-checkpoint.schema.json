@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/read-checkpoint.schema.json",
+  "title": "Provider-qualified keyset read checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "provider", "source", "order_by", "scope_fingerprint", "values"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "provider": {"$ref": "common.schema.json#/$defs/provider_kind"},
+    "source": {"$ref": "common.schema.json#/$defs/object_ref"},
+    "order_by": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "direction"],
+        "properties": {
+          "field": {"$ref": "common.schema.json#/$defs/identifier"},
+          "direction": {"enum": ["asc", "desc"]}
+        }
+      }
+    },
+    "scope_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "values": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/comparable_value"}
+    }
+  },
+  "$defs": {
+    "comparable_value": {
+      "oneOf": [
+        {"$ref": "#/$defs/bool_value"},
+        {"$ref": "#/$defs/i32_value"},
+        {"$ref": "#/$defs/i64_value"},
+        {"$ref": "#/$defs/f64_value"},
+        {"$ref": "#/$defs/string_value"},
+        {"$ref": "#/$defs/bytes_value"},
+        {"$ref": "#/$defs/date_value"},
+        {"$ref": "#/$defs/timestamp_value"},
+        {"$ref": "#/$defs/timestamp_tz_value"},
+        {"$ref": "#/$defs/decimal_value"},
+        {"$ref": "#/$defs/uuid_value"},
+        {"$ref": "#/$defs/enum_value"}
+      ]
+    },
+    "bool_value": {"$ref": "#/$defs/tagged_boolean", "properties": {"type": {"const": "bool"}}},
+    "i32_value": {"$ref": "#/$defs/tagged_integer", "properties": {"type": {"const": "i32"}, "value": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647}}},
+    "i64_value": {"$ref": "#/$defs/tagged_integer", "properties": {"type": {"const": "i64"}}},
+    "f64_value": {"$ref": "#/$defs/tagged_number", "properties": {"type": {"const": "f64"}}},
+    "string_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "string"}}},
+    "date_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "date"}}},
+    "timestamp_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "timestamp"}}},
+    "timestamp_tz_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "timestamp_tz"}}},
+    "decimal_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "decimal"}}},
+    "uuid_value": {"$ref": "#/$defs/tagged_string", "properties": {"type": {"const": "uuid"}}},
+    "bytes_value": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {"type": {"const": "bytes"}, "value": {"type": "array", "maxItems": 16777216, "items": {"type": "integer", "minimum": 0, "maximum": 255}}}
+    },
+    "enum_value": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {
+        "type": {"const": "enum"},
+        "value": {
+          "type": "object", "additionalProperties": false, "required": ["type_name", "label"],
+          "properties": {"type_name": {"type": "string", "minLength": 1}, "label": {"type": "string"}}
+        }
+      }
+    },
+    "tagged_boolean": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {"type": {"type": "string"}, "value": {"type": "boolean"}}
+    },
+    "tagged_integer": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {"type": {"type": "string"}, "value": {"type": "integer"}}
+    },
+    "tagged_number": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {"type": {"type": "string"}, "value": {"type": "number"}}
+    },
+    "tagged_string": {
+      "type": "object", "additionalProperties": false, "required": ["type", "value"],
+      "properties": {"type": {"type": "string"}, "value": {"type": "string", "maxLength": 16777216}}
+    }
+  }
+}

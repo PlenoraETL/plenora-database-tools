@@ -49,7 +49,7 @@ la complessita degli altri due.
 
 La diagnosi iniziale che collocava mapper, identity map e flush planner fra le
 assenze non descrive piu il punto di partenza. Quelle fondamenta, insieme al
-lifecycle di sessione, al mapping dichiarativo e alle migrazioni lineari, sono
+lifecycle di sessione, al mapping dichiarativo e alle migrazioni a DAG, sono
 ora parte dell'API applicativa. Lo stato preciso resta quello generato in
 [`STATO.md`](STATO.md); questa roadmap ordina il lavoro residuo.
 
@@ -68,7 +68,8 @@ Le aree da consolidare sono:
 - implementazioni sync e async esposte in superfici parallele;
 - qualifica ORM provider per provider, con Geometry chiusa sulle righe sostenute
   dai gate live e ancora negata fuori dalla matrice misurata;
-- migrazioni non lineari, inheritance avanzata e loader di collezione con join.
+- inheritance single-table/joined-table e pianificazione di migrazioni da diff
+  di metadata; il runner esplicito a DAG e gia disponibile.
 
 La prima riduzione di complessita non arriva comprimendo funzioni, ma eliminando
 queste rappresentazioni e orchestrazioni duplicate.
@@ -376,9 +377,11 @@ Point, LineString, Polygon, `NULL`, SRID, EWKB invalido, dimensionalita
 qualificate, insert, update, query, round trip e predicati spatial. I verdetti
 VM e Db2 sono registrati in [`sdk/VM-EVIDENCE.md`](sdk/VM-EVIDENCE.md).
 
-Niente lazy loading implicito e niente `joinedload` sulle collezioni restano
-scelte intenzionali; inheritance avanzata e migrazioni non lineari non erano
-bloccanti per questo macro-blocco.
+Niente lazy loading implicito resta una scelta intenzionale. `joinedload` sulle
+collezioni, relationship composite, mixin astratti, ereditarieta concrete e
+migrazioni esplicite a DAG sono ora implementati; single-table/joined-table
+inheritance e la generazione di revisioni da diff restano fuori dalla
+superficie pubblicata.
 
 ## Prossimo macro-blocco eseguibile
 

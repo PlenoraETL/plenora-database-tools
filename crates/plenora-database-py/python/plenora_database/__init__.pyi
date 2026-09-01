@@ -29,6 +29,7 @@ from ._native import (
     PlenoraTimeoutError,
     PlenoraTransientError,
     PlenoraUnsupportedError,
+    ReadCheckpoint,
     SessionContext,
 )
 from ._session import Session
@@ -74,7 +75,22 @@ from .async_query import (
 )
 from .query import Delete, Insert, Select, Update, Upsert
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
-from .graph import Edge, GraphValue, Path, Vertex
+from .graph import (
+    Edge,
+    GraphValue,
+    Path,
+    Vertex,
+    abulk_edges,
+    abulk_vertices,
+    bulk_edges,
+    bulk_vertices,
+    edge_model,
+    graph_entity_to_model,
+    graph_model_properties,
+    graph_property_index_sql,
+    graph_unique_constraint_sql,
+    vertex_model,
+)
 from .metadata import (
     ColumnMetadata,
     Constraint,
@@ -194,6 +210,8 @@ class _DatabaseSessionWrapper:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...
     def select(self, table: str, schema: str | None = None) -> Select: ...
     def insert(self, table: str, schema: str | None = None) -> Insert: ...
@@ -264,6 +282,8 @@ class _AsyncDatabaseSessionWrapper:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...
     def select(self, table: str, schema: str | None = None) -> AsyncSelect: ...
     def insert(self, table: str, schema: str | None = None) -> AsyncInsert: ...

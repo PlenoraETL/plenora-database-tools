@@ -9,6 +9,7 @@ mod connection;
 mod error;
 mod provider;
 mod read;
+mod row_diagnostics;
 mod transaction;
 mod types;
 mod write;

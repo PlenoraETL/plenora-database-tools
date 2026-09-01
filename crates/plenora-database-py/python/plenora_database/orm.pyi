@@ -138,7 +138,7 @@ class Mapper:
     def relationship(self, name: str) -> Relationship[Any]: ...
 
 class Relationship(Generic[T]):
-    foreign_key: str | None
+    foreign_key: str | tuple[str, ...] | None
     uselist: bool
     back_populates: str | None
     cascade: frozenset[str]
@@ -148,18 +148,24 @@ class Relationship(Generic[T]):
         self,
         target: type[T] | str,
         *,
-        foreign_key: str | None = None,
+        foreign_key: str | tuple[str, ...] | None = None,
         uselist: bool = False,
         back_populates: str | None = None,
         cascade: str | Iterable[str] = (),
         secondary: Table | None = None,
-        secondary_local_key: str | None = None,
-        secondary_remote_key: str | None = None,
+        secondary_local_key: str | tuple[str, ...] | None = None,
+        secondary_remote_key: str | tuple[str, ...] | None = None,
     ) -> None: ...
     @property
     def target(self) -> type[T]: ...
     @property
     def direction(self) -> str: ...
+    @property
+    def foreign_keys(self) -> tuple[str, ...]: ...
+    @property
+    def secondary_local_keys(self) -> tuple[str, ...]: ...
+    @property
+    def secondary_remote_keys(self) -> tuple[str, ...]: ...
     @overload
     def __get__(self, instance: None, owner: type | None = None) -> Relationship[T]: ...
     @overload
@@ -171,13 +177,13 @@ class Relationship(Generic[T]):
 def relationship(
     target: type[T] | str,
     *,
-    foreign_key: str | None = None,
+    foreign_key: str | tuple[str, ...] | None = None,
     uselist: bool = False,
     back_populates: str | None = None,
     cascade: str | Iterable[str] = (),
     secondary: Table | None = None,
-    secondary_local_key: str | None = None,
-    secondary_remote_key: str | None = None,
+    secondary_local_key: str | tuple[str, ...] | None = None,
+    secondary_remote_key: str | tuple[str, ...] | None = None,
 ) -> Relationship[T]: ...
 
 class Registry:
@@ -209,7 +215,7 @@ class OrmMetadata:
 @dataclass(frozen=True, slots=True)
 class Migration:
     revision: str
-    down_revision: str | None
+    down_revision: str | tuple[str, ...] | None
     upgrade: Any
     downgrade: Any | None = None
     def __post_init__(self) -> None: ...

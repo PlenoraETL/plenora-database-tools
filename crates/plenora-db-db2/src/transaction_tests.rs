@@ -1,5 +1,6 @@
 use crate::transaction::{
-    canonical_timestamp, decode_value, encode_parameters, isolation_statement, validate_options,
+    canonical_timestamp, db2_statement_requires_row_count, decode_value, encode_parameters,
+    isolation_statement, validate_options,
 };
 use odbc_api::DataType;
 use plenora_database_core::provider::ParameterValue;
@@ -68,6 +69,32 @@ fn null_parameters_remain_null_instead_of_becoming_text() {
         .expect("bind NULL Db2"),
         vec![None]
     );
+}
+
+#[test]
+fn only_confirmed_db2_ddl_may_omit_the_affected_row_count() {
+    for sql in [
+        "CREATE TABLE t (id INTEGER)",
+        "-- migration\nDROP TABLE t",
+        "/* migration */ ALTER TABLE t ADD COLUMN name VARCHAR(20)",
+        "RENAME TABLE t TO t_old",
+        "TRUNCATE TABLE t IMMEDIATE",
+        "COMMENT ON TABLE t IS 'test'",
+        "GRANT SELECT ON TABLE t TO USER test",
+        "REVOKE SELECT ON TABLE t FROM USER test",
+    ] {
+        assert!(!db2_statement_requires_row_count(sql), "{sql}");
+    }
+    for sql in [
+        "INSERT INTO t (id) VALUES (1)",
+        "UPDATE t SET id = 2",
+        "DELETE FROM t",
+        "MERGE INTO t USING source ON t.id = source.id WHEN MATCHED THEN UPDATE SET id = source.id",
+        "WITH source AS (SELECT 1 AS id FROM sysibm.sysdummy1) UPDATE t SET id = 1",
+        "CALL procedure()",
+    ] {
+        assert!(db2_statement_requires_row_count(sql), "{sql}");
+    }
 }
 
 #[test]

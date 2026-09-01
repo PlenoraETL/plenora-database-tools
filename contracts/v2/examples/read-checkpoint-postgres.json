@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "provider": "postgres",
+  "source": {"schema": "app", "object": "events"},
+  "order_by": [
+    {"field": "tenant_id", "direction": "asc"},
+    {"field": "event_id", "direction": "asc"}
+  ],
+  "scope_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "values": [
+    {"type": "i64", "value": 7},
+    {"type": "i64", "value": 42}
+  ]
+}

@@ -1,5 +1,7 @@
 use super::*;
 use plenora_database_core::plan::{ObjectRef, OrderBy, SortDirection};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::ReadCheckpoint;
 
 fn column(name: &str) -> ColumnSpec {
     ColumnSpec {
@@ -71,4 +73,45 @@ fn the_window_renders_bare_on_postgres() {
         "il tetto precede la finestra: {}",
         plan.sql
     );
+}
+
+#[test]
+fn qualified_checkpoint_renders_as_a_bound_postgres_keyset() {
+    let columns = vec![column("id")];
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("public".to_owned()),
+            object: "events".to_owned(),
+        },
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(100),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let checkpoint = ReadCheckpoint::new(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &operation,
+        &ParameterBag::default(),
+        vec![ParameterValue::I32(41)],
+    )
+    .expect("checkpoint");
+    let (resumed, _) = checkpoint
+        .resume(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            &operation,
+            &ParameterBag::default(),
+        )
+        .expect("resume");
+    let plan = plan_read(&resumed, &columns).expect("piano ripreso");
+    assert_eq!(
+        plan.sql,
+        "SELECT \"id\" AS \"id\" FROM \"public\".\"events\" WHERE \"id\" > $1 ORDER BY \"id\" ASC LIMIT 100"
+    );
+    assert_eq!(plan.bind_names, ["__plenora_resume_0"]);
 }

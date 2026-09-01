@@ -12,7 +12,7 @@
     "projection": true,
     "filter": true,
     "ordering": true,
-    "resumable": false
+    "resumable": true
   },
   "writes": {
     "create": true,
@@ -31,7 +31,7 @@
     "single_transaction": true,
     "savepoints": true,
     "transactional_ddl": true,
-    "staged_swap": true,
+    "staged_swap": false,
     "scope": "transaction"
   },
   "spatial": {
