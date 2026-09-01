@@ -414,7 +414,7 @@ def get_user_by_id(uid):
    ignoto richiede recovery esplicita e non viene ritentato automaticamente.
 
 **Q**: Il SDK funziona su Windows?
-**A**: Sì — il wheel abi3 è built per Linux/macOS/Windows via CI. Il
+**A**: Sì — il wheel abi3 è costruito per Linux e Windows via CI. Il
    PFM in dev su Windows non ha problemi.
 
 **Q**: Posso mescolare sync e async nello stesso processo?

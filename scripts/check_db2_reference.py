@@ -34,6 +34,7 @@ PYTHON_LIVE_SOURCE = (
     / "tests"
     / "test_db2_session.py"
 )
+WHEEL_NAMER = ROOT / "scripts" / "name_db2_wheel.py"
 RESULT = ROOT / "assurance-results" / "db2-reference.json"
 TIMEOUT = 20 * 60
 DB2_ENV = {
@@ -138,10 +139,24 @@ def validate_build_contract() -> dict[str, str]:
         "python3.12 -m maturin build",
         "--features db2",
         "--auditwheel skip",
+        "name_db2_wheel.py /opt/plenora-wheel",
+        "*-1db2-cp310-abi3-linux_x86_64.whl",
         'ENTRYPOINT ["/usr/local/bin/plenora-db2-entrypoint"]',
     ):
         if required not in source:
             raise RuntimeError(f"contratto build Db2 assente: {required}")
+
+    wheel_namer = WHEEL_NAMER.read_text(encoding="utf-8")
+    for required in (
+        "1db2",
+        "cp310",
+        "abi3",
+        "linux_x86_64",
+        "GITHUB_EVENT_NAME",
+        "GITHUB_REF_NAME",
+    ):
+        if required not in wheel_namer:
+            raise RuntimeError(f"contratto naming wheel Db2 assente: {required}")
 
     entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
     healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
@@ -245,7 +260,7 @@ def main() -> int:
     steps: list[str] = []
     try:
         bases = validate_build_contract()
-        steps.append("immutable_base_images_and_db2_wheel_contract")
+        steps.append("immutable_base_images_and_distinct_db2_wheel_contract")
         container = container_identity()
         steps.append("container_health")
         compose_exec(

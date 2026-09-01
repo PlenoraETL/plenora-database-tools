@@ -82,6 +82,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         for expected in (
             "python3 scripts/test_check_db2_reference.py",
+            "python3 scripts/test_name_db2_wheel.py",
             "python3 scripts/check_db2_reference.py",
             "docker-compose.db2.yml",
             "db2-windows-build:",

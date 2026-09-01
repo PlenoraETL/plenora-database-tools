@@ -52,6 +52,17 @@ SOURCE_MARKERS = (
 # non si vede nel risultato.
 CHECKOUT_OVERRIDES = ("ref", "repository")
 
+# Release verificate nei rispettivi repository ufficiali: tutte dichiarano
+# `runs.using: node24` nel proprio action.yml. I commit, non i tag, entrano nei
+# workflow; questa mappa rende rosso un ritorno accidentale alle major Node 20.
+NODE24_ACTIONS = {
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "softprops/action-gh-release": "efb35369e0ad2afab669f228072c1b0d510eae64",
+}
+
 
 def workflow_files() -> list[Path]:
     """I workflow presenti, scoperti dalla directory."""
@@ -464,6 +475,28 @@ class CiWorkflowTests(unittest.TestCase):
                                 "action Rust pinnata senza toolchain esplicita",
                             )
 
+    def test_javascript_actions_use_the_verified_node24_commits(self) -> None:
+        """Le action che GitHub segnalava come Node 20 restano aggiornate."""
+
+        observed: set[str] = set()
+        for path in workflow_files():
+            workflow = path.read_text(encoding="utf-8")
+            for job in parsed_jobs(workflow).values():
+                for step in job.get("steps", []):
+                    reference = step.get("uses")
+                    if not isinstance(reference, str) or "@" not in reference:
+                        continue
+                    action, commit = reference.split("@", 1)
+                    if action not in NODE24_ACTIONS:
+                        continue
+                    observed.add(action)
+                    self.assertEqual(
+                        commit,
+                        NODE24_ACTIONS[action],
+                        f"{path.name}: {action} non usa il commit Node 24 verificato",
+                    )
+        self.assertEqual(observed, set(NODE24_ACTIONS))
+
     def test_every_job_that_uses_the_sources_checks_them_out(self) -> None:
         """Chi legge i file versionati deve prenderli, non presumerli.
 
@@ -596,6 +629,7 @@ class CiWorkflowTests(unittest.TestCase):
         for suite in (
             "scripts/test_ci_workflows.py",
             "scripts/test_check_mariadb_reference.py",
+            "scripts/test_name_db2_wheel.py",
             "-m unittest scripts.test_live_inventory",
             "scripts/test_check_postgres_reference.py",
             "scripts/test_check_postgres_hardening.py",
@@ -655,7 +689,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
     """`python-wheel`: cosa costruisce, e cosa verifica prima di pubblicarlo.
 
     Il workflow e l'unico percorso con cui il SDK esce dal repository, e le
-    sue garanzie non hanno un test che le esercita: girano su tre runner, a
+    sue garanzie non hanno un test che le esercita: girano su piu runner, a
     mano, il giorno del rilascio. Una riga tolta da questo YAML non fa
     fallire niente finche qualcuno non pubblica un wheel rotto — quindi le
     guardie stanno qui, e questa suite gira in CI a ogni push.
@@ -663,7 +697,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
 
     WORKFLOW = WORKFLOW_DIRECTORY / "python-wheel.yml"
     VERIFIER = ROOT / ".github" / "scripts" / "verify_wheel.py"
-    BUILD_JOBS = ("linux", "macos", "windows")
+    STANDARD_BUILD_JOBS = ("linux", "windows")
 
     def jobs(self) -> dict[str, str]:
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
@@ -672,7 +706,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         }
 
     def test_every_maturin_build_is_locked(self) -> None:
-        """`--locked` su tutti e tre: senza, il lock non vincola la release.
+        """`--locked` su ogni build maturin: senza, il lock non vincola.
 
         `maturin build` senza `--locked` risolve le dipendenze al momento
         della build. Il wheel pubblicato conterrebbe versioni che nessun
@@ -681,7 +715,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         """
 
         blocks = self.jobs()
-        for name in self.BUILD_JOBS:
+        for name in self.STANDARD_BUILD_JOBS:
             block = blocks[name]
             self.assertIn("command: build", block, f"{name}: non costruisce")
             self.assertIn("--locked", block, f"{name}: build senza --locked")
@@ -695,14 +729,14 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         """Installa e verifica sul runner che ha costruito, prima dell'upload.
 
         Il caricamento del modulo nativo si prova solo dove e stato
-        compilato: verificare il solo wheel Linux lasciava macOS e Windows
-        senza nessuna prova che il `.dylib`/`.pyd` si carichi. E la verifica
+        compilato: verificare il solo wheel Linux lasciava Windows senza
+        nessuna prova che il `.pyd` si carichi. E la verifica
         sta prima dell'upload perche un artefatto rotto non deve nemmeno
         diventare scaricabile.
         """
 
         blocks = self.jobs()
-        for name in self.BUILD_JOBS:
+        for name in self.STANDARD_BUILD_JOBS:
             block = blocks[name]
             self.assertIn("actions/setup-python", block, f"{name}: senza Python")
             self.assertIn(
@@ -726,7 +760,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             self.assertIn("shell: bash", block, f"{name}: senza shell esplicita")
 
     def test_the_verifier_pins_version_identity_and_the_release_tag(self) -> None:
-        """Le tre verifiche che il wheel deve superare, in un posto solo."""
+        """Le verifiche che il wheel deve superare, in un posto solo."""
 
         source = self.VERIFIER.read_text(encoding="utf-8")
         self.assertIn("import plenora_database as p", source)
@@ -756,8 +790,8 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(
             workflow.count("python .github/scripts/verify_wheel.py"),
-            4,
-            "tre build piu lo smoke test dell'artefatto scaricato",
+            3,
+            "due build standard piu lo smoke test dell'artefatto scaricato",
         )
         self.assertNotIn(
             "python -c",
@@ -814,14 +848,36 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         # conta e *quale* action consegna, non a quale commit.
         self.assertIn("softprops/action-gh-release@", workflow)
 
-    def test_the_header_does_not_promise_an_intel_mac_wheel(self) -> None:
-        """L'intestazione deve promettere solo gli artifact prodotti."""
+    def test_macos_is_not_part_of_the_distribution_matrix(self) -> None:
+        """La major successiva non deve continuare a produrre asset macOS."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        self.assertNotIn("arm64 + x86_64", workflow)
-        self.assertIn("macOS (arm64)", workflow)
-        self.assertIn("macOS produce solo l'artefatto ARM", workflow)
-        self.assertNotIn("macos-13", workflow.split("# Nota:")[0])
+        self.assertNotIn("  macos:", workflow)
+        self.assertNotIn("macos-latest", workflow)
+        self.assertNotIn("aarch64-apple-darwin", workflow)
+        self.assertNotIn("wheel-macos", workflow)
+        self.assertIn("rimozione della\n# distribuzione macOS ARM", workflow)
+
+    def test_db2_linux_wheel_is_live_qualified_before_upload(self) -> None:
+        """L'asset Db2 esiste solo sulla piattaforma provata live."""
+
+        block = self.jobs()["db2-linux"]
+        self.assertIn("scripts/test_name_db2_wheel.py", block)
+        self.assertIn("scripts/check_db2_reference.py", block)
+        self.assertIn("db2:/opt/plenora-wheel/.", block)
+        self.assertIn("scripts/name_db2_wheel.py --check", block)
+        self.assertIn("*-1db2-cp310-abi3-linux_x86_64.whl", block)
+        self.assertLess(
+            block.index("scripts/check_db2_reference.py 2>&1"),
+            block.index("actions/upload-artifact@"),
+            "il wheel Db2 viene caricato prima della qualifica live",
+        )
+
+    def test_release_waits_for_the_db2_wheel_and_not_for_macos(self) -> None:
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        needs = parsed_jobs(workflow)["attach-to-release"]["needs"]
+        self.assertEqual(needs, ["linux", "windows", "db2-linux", "smoke-test"])
+        self.assertNotIn("macos", needs)
 
 
 class EveryGateIsExecutedBySomebody(unittest.TestCase):

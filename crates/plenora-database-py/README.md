@@ -28,8 +28,23 @@ copre 3.10 / 3.11 / 3.12 / 3.13 per la stessa piattaforma.
 ### Da wheel pre-costruito (produzione)
 
 ```bash
-pip install plenora-database
+pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
 ```
+
+Gli asset standard ufficiali sono pubblicati nelle release GitHub per Linux
+x86_64 e Windows x86_64. Db2 usa invece l'asset Linux x86_64 con build tag
+`1db2`, installabile esplicitamente:
+
+```bash
+pip install ./plenora_database-<version>-1db2-cp310-abi3-linux_x86_64.whl
+```
+
+Il runtime Db2 richiede unixODBC e il client IBM Db2 12.1 sul sistema. Il
+driver `libdb2o` deve essere registrato in `odbcinst.ini` con il nome
+`IBM DB2 ODBC DRIVER`, che e il default usato dall'adapter; `DB2DIR`,
+`IBM_DB_HOME` e il percorso delle librerie devono puntare all'installazione
+IBM. La qualifica live dell'asset avviene prima che il workflow lo alleghi alla
+release; Windows resta build-only e non e distribuito come runtime Db2.
 
 ### Da sorgenti (dev)
 
@@ -653,8 +668,8 @@ registrato dal runner, non copiato qui come se valesse per ogni macchina.
 |---|---|---|
 | Python ABI | 3.10+ | import e suite wheel su Python 3.12; assurance SDK su 3.13 |
 | Rust | 1.98 | 1.98 |
-| piattaforme wheel standard | Linux x86_64, macOS arm64, Windows x86_64 | una suite offline per ciascun artefatto; DB2 fail-closed |
-| artefatto DB2 | Linux x86_64 live; Windows x86_64 build-only | gate Db2 Linux; build, import e profilo nativo Windows |
+| piattaforme wheel standard | Linux x86_64, Windows x86_64 | una suite offline per ciascun artefatto; DB2 fail-closed |
+| artefatto DB2 | Linux x86_64 live; Windows x86_64 build-only | wheel Linux `1db2` pubblicato solo dopo il gate live; build e import Windows senza distribuzione runtime |
 
 Wheel: `abi3-py310` → un solo wheel per platform copre tutte le
 versioni Python ≥ 3.10.
@@ -663,8 +678,8 @@ versioni Python ≥ 3.10.
 
 - **Selezione del prodotto** — PostgreSQL, MySQL, MariaDB, SQL Server e Db2 hanno
   factory distinte; non esiste selezione automatica dal server raggiunto.
-- **Db2 su macOS** — non viene compilato nel wheel standard: manca una matrice
-  client IBM supportata da qualificare, quindi la factory resta fail-closed.
+- **macOS** — non fa parte della matrice di distribuzione ufficiale dalla
+  major 1.0; Db2 non dispone inoltre di una matrice client IBM qualificata.
 - **Ripresa dello stream** — la lettura e incrementale, ma nessun provider
   pubblica un cursore riapribile da una seconda sessione.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
@@ -685,6 +700,7 @@ versioni Python ≥ 3.10.
 python scripts/check_sdk_tests.py                  # i quattro provider del wheel standard
 python scripts/check_sdk_tests.py --offline        # solo i test senza server
 python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
+python scripts/check_sdk_tests.py --stabilization-only # 10 cicli runtime sensibili
 python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 python scripts/check_db2_reference.py              # wheel DB2 e provider live dedicati
 ```
@@ -782,6 +798,17 @@ dedicata:
 
 ```bash
 python scripts/check_sdk_tests.py --benchmark-only
+```
+
+### Stabilizzazione ripetuta
+
+La campagna schedulata esegue anche uno scope dedicato sul wheel installato:
+dieci cicli di cancellazione tramite statement timeout, recupero della
+sessione, rollback esplicito e venti query async concorrenti. Lo scope si puo
+eseguire da solo, sempre con i riferimenti live accesi:
+
+```bash
+python scripts/check_sdk_tests.py --stabilization-only
 ```
 
 ### Struttura

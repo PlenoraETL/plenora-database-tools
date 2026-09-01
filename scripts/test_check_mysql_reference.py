@@ -2141,6 +2141,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("--benchmark-only", readme)
+        self.assertIn("--stabilization-only", readme)
         self.assertNotIn(
             "-k benchmark",
             readme,
@@ -2385,26 +2386,36 @@ class PythonSdkRunnerTests(unittest.TestCase):
             )
 
     def test_every_scope_declares_what_a_correct_run_looks_like(self) -> None:
-        """I tre contratti stanno in una struttura sola, e sono coerenti.
+        """I quattro contratti stanno in una struttura sola, e sono coerenti.
 
         Un conteggio di soli `passed` non descrive una corsa: gli stessi 24
         escono da una suite che ne salta 195 e da una che ne deseleziona 195.
         """
 
         self.assertEqual(
-            set(sdk.SCOPE_CONTRACTS), {"live", "offline", "benchmark"}
+            set(sdk.SCOPE_CONTRACTS),
+            {"live", "offline", "stabilization", "benchmark"},
         )
         live = sdk.SCOPE_CONTRACTS["live"]
         offline = sdk.SCOPE_CONTRACTS["offline"]
+        stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (342, 7, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (372, 7, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (108, 241, 0)
+            (offline.passed, offline.skipped, offline.deselected), (108, 271, 0)
+        )
+        self.assertEqual(
+            (
+                stabilization.passed,
+                stabilization.skipped,
+                stabilization.deselected,
+            ),
+            (30, 0, 0),
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 347),
+            (2, 0, 377),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 anche live, e nessuno deseleziona.
