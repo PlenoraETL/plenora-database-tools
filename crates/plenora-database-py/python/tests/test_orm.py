@@ -1380,9 +1380,9 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
         with p.OrmSession(session) as orm:
             loaded = orm.get(LiveMysqlGeometry, 1)
             assert loaded is not None
-            _assert_portable_wkb(loaded.point.ewkb, _root_wkb(point), provider)
-            _assert_portable_wkb(loaded.line.ewkb, _root_wkb(line), provider)
-            _assert_portable_wkb(loaded.polygon.ewkb, _root_wkb(polygon), provider)
+            assert loaded.point.ewkb == _root_wkb(point)
+            assert loaded.line.ewkb == _root_wkb(line)
+            assert loaded.polygon.ewkb == _root_wkb(polygon)
             assert loaded.optional_point is None
             assert loaded.point.srid == 4326
             loaded.point = moved_point
@@ -1469,9 +1469,9 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             loaded = orm.get(LivePortableGeometry, 1)
             loaded_xyz = orm.get(LivePortableGeometryXyz, 1)
             assert loaded is not None and loaded_xyz is not None
-            assert loaded.point.ewkb == _root_wkb(point)
-            assert loaded.line.ewkb == _root_wkb(line)
-            assert loaded.polygon.ewkb == _root_wkb(polygon)
+            _assert_portable_wkb(loaded.point.ewkb, _root_wkb(point), provider)
+            _assert_portable_wkb(loaded.line.ewkb, _root_wkb(line), provider)
+            _assert_portable_wkb(loaded.polygon.ewkb, _root_wkb(polygon), provider)
             assert loaded.optional_point is None
             assert loaded.point.srid == 4326
             _assert_portable_wkb(loaded_xyz.shape.ewkb, _root_wkb(point_xyz), provider)
