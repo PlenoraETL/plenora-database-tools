@@ -23,19 +23,109 @@ Le API spatial, transazionali e asincrone sono esposte da `spatial`,
 `Transaction` / `AsyncTransaction` e dalle factory `aconnect*`.
 """
 
-from ._native import version
-from ._session import Session, _Inspector
-from ._transaction import Transaction
+from . import spatial
 from ._async_session import AsyncSession, _AsyncInspector
 from ._async_transaction import AsyncTransaction
 from ._engine import AsyncEngine, Engine
+from ._native import (
+    AsyncDatabaseSession,
+    DatabaseSession,
+    ReadCheckpoint,
+    SessionContext,  # PFM CHG-002
+    version,
+)
+from ._native import aconnect as _native_aconnect
+from ._native import (
+    aconnect_db2 as _native_aconnect_db2,
+)
+from ._native import (
+    aconnect_mariadb as _native_aconnect_mariadb,
+)
+from ._native import (
+    aconnect_mysql as _native_aconnect_mysql,
+)
+from ._native import (
+    aconnect_sqlserver as _native_aconnect_sqlserver,
+)
+from ._native import connect as _native_connect
+from ._native import (
+    connect_db2 as _native_connect_db2,
+)
+from ._native import (
+    connect_mariadb as _native_connect_mariadb,
+)
+from ._native import (
+    connect_mysql as _native_connect_mysql,
+)
+from ._native import (
+    connect_sqlserver as _native_connect_sqlserver,
+)
+from ._native import (
+    create_async_db2_engine as _native_create_async_db2_engine,
+)
+from ._native import create_async_engine as _native_create_async_engine
+from ._native import (
+    create_async_mariadb_engine as _native_create_async_mariadb_engine,
+)
+from ._native import (
+    create_async_mysql_engine as _native_create_async_mysql_engine,
+)
+from ._native import (
+    create_async_sqlserver_engine as _native_create_async_sqlserver_engine,
+)
+from ._native import (
+    create_db2_engine as _native_create_db2_engine,
+)
+from ._native import create_engine as _native_create_engine
+from ._native import (
+    create_mariadb_engine as _native_create_mariadb_engine,
+)
+from ._native import (
+    create_mysql_engine as _native_create_mysql_engine,
+)
+from ._native import (
+    create_sqlserver_engine as _native_create_sqlserver_engine,
+)
+from ._session import Session, _Inspector
+from ._transaction import Transaction
+from .async_query import (
+    AsyncDelete,
+    AsyncInsert,
+    AsyncSelect,
+    AsyncUpdate,
+    AsyncUpsert,
+    _AsyncBuilderFactory,
+)
+from .errors import (
+    PlenoraAuthenticationError,
+    PlenoraAuthorizationError,
+    PlenoraCancelledError,
+    PlenoraCommitOutcomeUnknownError,
+    PlenoraConcurrentModificationError,
+    PlenoraConflictError,
+    PlenoraCrsError,
+    PlenoraDataMappingError,
+    PlenoraError,
+    PlenoraExecutionError,
+    PlenoraInternalError,
+    PlenoraInvalidConfigurationError,
+    PlenoraInvalidPlanError,
+    PlenoraIoError,
+    PlenoraNotFoundError,
+    PlenoraProtocolError,
+    PlenoraResourceLimitError,
+    PlenoraSchemaError,
+    PlenoraTimeoutError,
+    PlenoraTransientError,
+    PlenoraUnsupportedError,
+)
 from .expression import (
     BindParameter,
     BindType,
     Column,
     CommonTable,
-    DerivedTable,
     DeleteStatement,
+    DerivedTable,
     ExecutableStatement,
     Expression,
     FunctionExpression,
@@ -60,8 +150,29 @@ from .expression import (
     update,
     upsert,
 )
-from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
-from .graph import Edge, GraphValue, Path, Vertex
+from .graph import (
+    Edge,
+    GraphValue,
+    Path,
+    Vertex,
+    abulk_edges,
+    abulk_vertices,
+    bulk_edges,
+    bulk_vertices,
+    edge_model,
+    graph_entity_to_model,
+    graph_model_properties,
+    graph_property_index_sql,
+    graph_unique_constraint_sql,
+    vertex_model,
+)
+from .json_input import (
+    JsonField,
+    JsonGeometry,
+    JsonInput,
+    JsonInputError,
+    JsonSchema,
+)
 from .metadata import (
     ColumnMetadata,
     Constraint,
@@ -74,23 +185,6 @@ from .metadata import (
     SchemaToken,
     SpatialColumnMetadata,
     TableMetadata,
-)
-from .async_query import (
-    AsyncDelete,
-    AsyncInsert,
-    AsyncSelect,
-    AsyncUpdate,
-    AsyncUpsert,
-    _AsyncBuilderFactory,
-)
-from . import spatial
-from .spatial import SpatialReference
-from .json_input import (
-    JsonField,
-    JsonGeometry,
-    JsonInput,
-    JsonInputError,
-    JsonSchema,
 )
 from .orm import (
     AsyncMigrationRunner,
@@ -130,6 +224,9 @@ from .orm import (
     relationship,
     selectinload,
 )
+from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
+from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .spatial import SpatialReference
 from .types import (
     TypedValue,
     date,
@@ -140,55 +237,6 @@ from .types import (
     timestamp,
     timestamptz,
     uuid,
-)
-from .errors import (
-    PlenoraAuthenticationError,
-    PlenoraAuthorizationError,
-    PlenoraCancelledError,
-    PlenoraCommitOutcomeUnknownError,
-    PlenoraConcurrentModificationError,
-    PlenoraConflictError,
-    PlenoraCrsError,
-    PlenoraDataMappingError,
-    PlenoraError,
-    PlenoraExecutionError,
-    PlenoraInternalError,
-    PlenoraInvalidConfigurationError,
-    PlenoraInvalidPlanError,
-    PlenoraIoError,
-    PlenoraNotFoundError,
-    PlenoraProtocolError,
-    PlenoraResourceLimitError,
-    PlenoraSchemaError,
-    PlenoraTimeoutError,
-    PlenoraTransientError,
-    PlenoraUnsupportedError,
-)
-from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
-from ._native import SessionContext  # PFM CHG-002
-from ._native import aconnect as _native_aconnect
-from ._native import create_async_engine as _native_create_async_engine
-from ._native import create_engine as _native_create_engine
-from ._native import connect as _native_connect
-from ._native import (
-    AsyncDatabaseSession,
-    DatabaseSession,
-    aconnect_db2 as _native_aconnect_db2,
-    aconnect_mariadb as _native_aconnect_mariadb,
-    aconnect_mysql as _native_aconnect_mysql,
-    aconnect_sqlserver as _native_aconnect_sqlserver,
-    connect_mariadb as _native_connect_mariadb,
-    connect_db2 as _native_connect_db2,
-    connect_mysql as _native_connect_mysql,
-    connect_sqlserver as _native_connect_sqlserver,
-    create_async_db2_engine as _native_create_async_db2_engine,
-    create_async_mariadb_engine as _native_create_async_mariadb_engine,
-    create_async_mysql_engine as _native_create_async_mysql_engine,
-    create_async_sqlserver_engine as _native_create_async_sqlserver_engine,
-    create_db2_engine as _native_create_db2_engine,
-    create_mariadb_engine as _native_create_mariadb_engine,
-    create_mysql_engine as _native_create_mysql_engine,
-    create_sqlserver_engine as _native_create_sqlserver_engine,
 )
 
 # Compatibilita con i nomi privati pubblicati dagli stub della famiglia.
@@ -220,9 +268,7 @@ def create_engine(dsn: str, tls_mode: str = "require") -> Engine:
     return Engine(_native_create_engine(dsn, tls_mode))
 
 
-async def create_async_engine(
-    dsn: str, tls_mode: str = "require"
-) -> AsyncEngine:
+async def create_async_engine(dsn: str, tls_mode: str = "require") -> AsyncEngine:
     """Crea un Engine PostgreSQL asyncio condivisibile fra richieste."""
     native = await _native_create_async_engine(dsn, tls_mode)
     return AsyncEngine(native)
@@ -487,7 +533,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: "SessionContext | None" = None,  # noqa: F821
+        context: "SessionContext | None" = None,
         native_query_policy: str | None = None,
     ):
         """Apre una tx MySQL user-managed.
@@ -515,6 +561,8 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ):
         """Apre uno stream Arrow IPC su una tabella/vista MySQL.
 
@@ -536,7 +584,15 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         Non carica l'intero dataset in memoria — legge batch-by-batch
         dal cursor `mysql_async`.
         """
-        return self._native.read(schema, object, projection, order_by, limit)
+        return self._native.read(
+            schema,
+            object,
+            projection,
+            order_by,
+            limit,
+            catalog=catalog,
+            checkpoint=checkpoint,
+        )
 
     def _execute_portable_rows(self, ast_json: str) -> list[dict]:
         return self._native.execute_portable_rows(ast_json)
@@ -595,10 +651,17 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         Vedi Session.copy_from docstring per parametri completi.
         """
         from ._arrow_io import _to_ipc_bytes
+
         ipc_bytes = _to_ipc_bytes(source)
         return self._native.copy_from(
-            schema, table, ipc_bytes, mode, transaction_profile,
-            mapping_policy, keys, update_columns,
+            schema,
+            table,
+            ipc_bytes,
+            mode,
+            transaction_profile,
+            mapping_policy,
+            keys,
+            update_columns,
         )
 
 
@@ -767,7 +830,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: "SessionContext | None" = None,  # noqa: F821
+        context: "SessionContext | None" = None,
         native_query_policy: str | None = None,
     ):
         """Come `_DatabaseSessionWrapper.begin` sync — vedi docstring per
@@ -789,8 +852,18 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ):
-        return await self._native.aread(schema, object, projection, order_by, limit)
+        return await self._native.aread(
+            schema,
+            object,
+            projection,
+            order_by,
+            limit,
+            catalog=catalog,
+            checkpoint=checkpoint,
+        )
 
     async def acopy_from(
         self,
@@ -814,10 +887,17 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         `source` accetta pyarrow/pandas/list-of-dict/bytes.
         """
         from ._arrow_io import _to_ipc_bytes
+
         ipc_bytes = _to_ipc_bytes(source)
         return await self._native.acopy_from(
-            schema, table, ipc_bytes, mode, transaction_profile,
-            mapping_policy, keys, update_columns,
+            schema,
+            table,
+            ipc_bytes,
+            mode,
+            transaction_profile,
+            mapping_policy,
+            keys,
+            update_columns,
         )
 
     async def _execute_portable_rows(self, ast_json: str) -> list[dict]:
@@ -982,7 +1062,7 @@ async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
 MysqlSession = DatabaseSession
 AsyncMysqlSession = AsyncDatabaseSession
 
-__all__ = [
+__all__ = [  # noqa: RUF022 - grouped by public API surface
     "create_engine",
     "create_async_engine",
     "create_mysql_engine",
@@ -1051,6 +1131,7 @@ __all__ = [
     "connect_db2",
     "aconnect_db2",
     "DatabaseSession",
+    "ReadCheckpoint",
     "AsyncDatabaseSession",
     "MysqlSession",
     "AsyncMysqlSession",
@@ -1076,6 +1157,16 @@ __all__ = [
     "Edge",
     "Path",
     "GraphValue",
+    "abulk_edges",
+    "abulk_vertices",
+    "bulk_edges",
+    "bulk_vertices",
+    "edge_model",
+    "graph_entity_to_model",
+    "graph_model_properties",
+    "graph_property_index_sql",
+    "graph_unique_constraint_sql",
+    "vertex_model",
     # JSON ingress: bordo Python verso ORM / Arrow
     "JsonField",
     "JsonGeometry",

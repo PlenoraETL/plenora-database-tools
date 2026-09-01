@@ -1,7 +1,7 @@
 """Type stubs per il wrapper Session Python."""
 from typing import Any, Mapping, overload
 
-from ._native import Session as _NativeSession, SessionContext
+from ._native import ReadCheckpoint, Session as _NativeSession, SessionContext
 from ._transaction import Transaction
 from .expression import ExecutableStatement
 from .query import Delete, Insert, Select, Update, Upsert
@@ -77,6 +77,8 @@ class Session:
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint: ReadCheckpoint | None = None,
     ) -> Any: ...
     def copy_from(
         self,

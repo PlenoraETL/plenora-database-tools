@@ -110,18 +110,14 @@ class LiveMysqlGeometry(p.DeclarativeBase):
     __tablename__ = "_plenora_orm_mysql_geometry"
 
     id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
-    point: p.Mapped[p.SpatialReference] = p.mapped_column(
-        _MYSQL_POINT, nullable=False
-    )
+    point: p.Mapped[p.SpatialReference] = p.mapped_column(_MYSQL_POINT, nullable=False)
     line: p.Mapped[p.SpatialReference] = p.mapped_column(
         _MYSQL_LINESTRING, nullable=False
     )
     polygon: p.Mapped[p.SpatialReference] = p.mapped_column(
         _MYSQL_POLYGON, nullable=False
     )
-    optional_point: p.Mapped[p.SpatialReference | None] = p.mapped_column(
-        _MYSQL_POINT
-    )
+    optional_point: p.Mapped[p.SpatialReference | None] = p.mapped_column(_MYSQL_POINT)
 
 
 class LiveMysqlGeometryXyz(p.DeclarativeBase):
@@ -254,8 +250,110 @@ class CompositeRecord(p.DeclarativeBase):
     label: p.Mapped[str] = p.mapped_column(str, nullable=False)
 
 
+class CompositeChild(p.DeclarativeBase):
+    __tablename__ = "orm_composite_children"
+
+    tenant_id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    child_id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    parent_tenant_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+    parent_code: p.Mapped[str] = p.mapped_column(str, nullable=False)
+    label: p.Mapped[str] = p.mapped_column(str, nullable=False)
+    parent: p.Relationship[CompositeParent] = p.relationship(
+        "CompositeParent",
+        foreign_key=("parent_tenant_id", "parent_code"),
+        back_populates="children",
+    )
+
+
+class CompositeParent(p.DeclarativeBase):
+    __tablename__ = "orm_composite_parents"
+
+    tenant_id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    code: p.Mapped[str] = p.mapped_column(str, primary_key=True)
+    label: p.Mapped[str] = p.mapped_column(str, nullable=False)
+    children: p.Relationship[CompositeChild] = p.relationship(
+        CompositeChild,
+        foreign_key=("parent_tenant_id", "parent_code"),
+        uselist=True,
+        back_populates="parent",
+        cascade="save-update",
+    )
+
+
+composite_links = p.table(
+    "orm_composite_links", "owner_tenant", "owner_code", "tag_tenant", "tag_code"
+)
+
+
+class CompositeTag(p.DeclarativeBase):
+    __tablename__ = "orm_composite_tags"
+
+    tenant_id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    code: p.Mapped[str] = p.mapped_column(str, primary_key=True)
+    owners: p.Relationship[CompositeOwner] = p.relationship(
+        "CompositeOwner",
+        uselist=True,
+        back_populates="tags",
+        secondary=composite_links,
+        secondary_local_key=("tag_tenant", "tag_code"),
+        secondary_remote_key=("owner_tenant", "owner_code"),
+    )
+
+
+class CompositeOwner(p.DeclarativeBase):
+    __tablename__ = "orm_composite_owners"
+
+    tenant_id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    code: p.Mapped[str] = p.mapped_column(str, primary_key=True)
+    tags: p.Relationship[CompositeTag] = p.relationship(
+        CompositeTag,
+        uselist=True,
+        back_populates="owners",
+        cascade="save-update",
+        secondary=composite_links,
+        secondary_local_key=("owner_tenant", "owner_code"),
+        secondary_remote_key=("tag_tenant", "tag_code"),
+    )
+
+
 class ConcreteAccount(Account):
     __tablename__ = "orm_concrete_accounts"
+    __mapper_args__: ClassVar[dict[str, bool]] = {"concrete": True}
+
+    category: p.Mapped[str] = p.mapped_column(str, nullable=False)
+
+
+class AuditMixin(p.DeclarativeBase):
+    __abstract__ = True
+
+    created_by: p.Mapped[str] = p.mapped_column(str, nullable=False)
+
+
+class MixinRecord(AuditMixin):
+    __tablename__ = "orm_mixin_records"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    label: p.Mapped[str] = p.mapped_column(str, nullable=False)
+
+
+class InheritedGroup(p.DeclarativeBase):
+    __tablename__ = "orm_inherited_groups"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+
+
+class RelatedAccount(p.DeclarativeBase):
+    __tablename__ = "orm_related_accounts"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    group_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+    group: p.Relationship[InheritedGroup] = p.relationship(
+        InheritedGroup, foreign_key="group_id"
+    )
+
+
+class ConcreteRelatedAccount(RelatedAccount):
+    __tablename__ = "orm_concrete_related_accounts"
     __mapper_args__: ClassVar[dict[str, bool]] = {"concrete": True}
 
     category: p.Mapped[str] = p.mapped_column(str, nullable=False)
@@ -313,7 +411,9 @@ def _ewkb_point_xyz(x: float, y: float, z: float, srid: int = 4326) -> bytes:
     )
 
 
-def _ewkb_linestring(points: tuple[tuple[float, float], ...], srid: int = 4326) -> bytes:
+def _ewkb_linestring(
+    points: tuple[tuple[float, float], ...], srid: int = 4326
+) -> bytes:
     return (
         b"\x01"
         + (0x2000_0002).to_bytes(4, "little")
@@ -323,9 +423,7 @@ def _ewkb_linestring(points: tuple[tuple[float, float], ...], srid: int = 4326) 
     )
 
 
-def _ewkb_polygon(
-    ring: tuple[tuple[float, float], ...], srid: int = 4326
-) -> bytes:
+def _ewkb_polygon(ring: tuple[tuple[float, float], ...], srid: int = 4326) -> bytes:
     return (
         b"\x01"
         + (0x2000_0003).to_bytes(4, "little")
@@ -347,7 +445,9 @@ def _root_wkb(ewkb: bytes) -> bytes:
     return ewkb[:1] + iso_type.to_bytes(4, "little") + ewkb[offset:]
 
 
-def _wkb_structure_and_coordinates(value: bytes) -> tuple[tuple[int, ...], tuple[float, ...]]:
+def _wkb_structure_and_coordinates(
+    value: bytes,
+) -> tuple[tuple[int, ...], tuple[float, ...]]:
     assert value[:1] == b"\x01"
     geometry_type = int.from_bytes(value[1:5], "little")
     dimensions = 3 if geometry_type // 1000 in {1, 3} else 2
@@ -391,9 +491,7 @@ def _assert_portable_wkb(actual: bytes, expected: bytes, provider: str) -> None:
     actual_structure, actual_coordinates = _wkb_structure_and_coordinates(actual)
     expected_structure, expected_coordinates = _wkb_structure_and_coordinates(expected)
     assert actual_structure == expected_structure
-    assert actual_coordinates == pytest.approx(
-        expected_coordinates, rel=0.0, abs=1e-12
-    )
+    assert actual_coordinates == pytest.approx(expected_coordinates, rel=0.0, abs=1e-12)
 
 
 class _FakeTransaction:
@@ -602,7 +700,9 @@ def test_rollback_after_successful_flush_restores_entry_snapshot() -> None:
     assert p.inspect_instance(account).state is p.ObjectState.DETACHED
 
 
-def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_closed() -> None:
+def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_closed() -> (
+    None
+):
     with pytest.raises(ValueError, match="geometry_type"):
         p.Geometry(srid=4326, geometry_type="not-a-geometry")
 
@@ -672,9 +772,7 @@ def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_clo
         missing_srid.rollback()
 
     rejected_transaction = _FakeTransaction()
-    rejected = p.OrmSession(
-        _FakeSession(rejected_transaction, provider="sqlserver")
-    )
+    rejected = p.OrmSession(_FakeSession(rejected_transaction, provider="sqlserver"))
     rejected.add(Place(id=4, shape=ewkb))
     with pytest.raises(p.OrmUnsupportedError, match="Geometry ORM"):
         rejected.flush()
@@ -955,6 +1053,34 @@ def test_selectinload_batches_collection_and_sets_backref() -> None:
     assert parents[0].children[0].parent is parents[0]
 
 
+def test_joinedload_collection_deduplicates_roots_and_accumulates_children() -> None:
+    transaction = _FakeTransaction(
+        [
+            {
+                "id": 1,
+                "name": "parent",
+                "orm_eager_children_id": 2,
+                "orm_eager_children_parent_id": 1,
+                "orm_eager_children_label": "first",
+            },
+            {
+                "id": 1,
+                "name": "parent",
+                "orm_eager_children_id": 3,
+                "orm_eager_children_parent_id": 1,
+                "orm_eager_children_label": "second",
+            },
+        ]
+    )
+    orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
+
+    parents = orm.query(OrmParent).options(p.joinedload(OrmParent.children)).all()
+
+    assert len(parents) == 1
+    assert [item.label for item in parents[0].children] == ["first", "second"]
+    assert all(item.parent is parents[0] for item in parents[0].children)
+
+
 def test_many_to_many_flushes_each_association_once() -> None:
     transaction = _FakeTransaction()
     orm = p.OrmSession(_FakeSession(transaction))
@@ -967,6 +1093,57 @@ def test_many_to_many_flushes_each_association_once() -> None:
     assert list(tag.articles) == [article]
     targets = [statement.target.name for statement, _ in transaction.executed]
     assert targets == ["orm_articles", "orm_tags", "orm_article_tags"]
+
+
+def test_composite_many_to_many_flushes_all_key_components_once() -> None:
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction))
+    tag = CompositeTag(tenant_id=7, code="etl")
+    owner = CompositeOwner(tenant_id=7, code="source", tags=[tag])
+
+    orm.add(owner)
+    orm.flush()
+
+    assert list(tag.owners) == [owner]
+    assert [statement.target.name for statement, _ in transaction.executed] == [
+        "orm_composite_owners",
+        "orm_composite_tags",
+        "orm_composite_links",
+    ]
+    _, parameters = transaction.executed[-1]
+    assert parameters == {
+        "orm_link_local_0": 7,
+        "orm_link_local_1": "source",
+        "orm_link_remote_0": 7,
+        "orm_link_remote_1": "etl",
+    }
+
+
+def test_composite_many_to_many_selectinload_groups_by_full_owner_identity() -> None:
+    transaction = _FakeTransaction()
+    transaction.result_batches = [
+        [{"tenant_id": 7, "code": "source"}],
+        [
+            {
+                "tenant_id": 7,
+                "code": "etl",
+                "orm_eager_owner_0": 7,
+                "orm_eager_owner_1": "source",
+            }
+        ],
+    ]
+    orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
+
+    owners = (
+        orm.query(CompositeOwner)
+        .options(p.selectinload(CompositeOwner.tags))
+        .all()
+    )
+
+    assert [(item.tenant_id, item.code) for item in owners[0].tags] == [(7, "etl")]
+    statement, parameters = transaction.executed[1]
+    assert len(statement.joins) == 1
+    assert set(parameters.values()) == {7, "source"}
 
 
 def test_query_join_eager_projection_and_multiple_entities() -> None:
@@ -1038,6 +1215,98 @@ def test_composite_identity_concrete_inheritance_and_strong_types() -> None:
         CompositeRecord(tenant_id="wrong", record_id=1, label="record")
     with pytest.raises(ValueError, match="SQL INTEGER"):
         CompositeRecord(tenant_id=2**31, record_id=1, label="record")
+
+
+def test_abstract_mixin_and_concrete_inheritance_preserve_relationship_mapping() -> (
+    None
+):
+    record = MixinRecord(id=1, label="mixed", created_by="system")
+    assert record.created_by == "system"
+    assert {item.name for item in MixinRecord.__mapper__.attributes} == {
+        "created_by",
+        "id",
+        "label",
+    }
+
+    group = InheritedGroup(id=7)
+    account = ConcreteRelatedAccount(id=1, category="staff", group=group)
+    assert account.group_id == 7
+    assert ConcreteRelatedAccount.__mapper__.inherits is RelatedAccount.__mapper__
+    inherited = ConcreteRelatedAccount.__mapper__.relationship("group")
+    assert inherited.owner is ConcreteRelatedAccount
+    assert inherited is not RelatedAccount.__mapper__.relationship("group")
+
+
+def test_composite_relationship_synchronizes_flushes_and_loads_as_one_identity() -> (
+    None
+):
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
+    parent = CompositeParent(tenant_id=7, code="root", label="parent")
+    child = CompositeChild(tenant_id=7, child_id=9, label="child")
+    parent.children = [child]
+
+    assert child.parent is parent
+    assert (child.parent_tenant_id, child.parent_code) == (7, "root")
+    orm.add(parent)
+    orm.flush()
+    assert [statement.target.name for statement, _ in transaction.executed] == [
+        "orm_composite_parents",
+        "orm_composite_children",
+    ]
+
+    transaction.rows = [
+        {
+            "tenant_id": 7,
+            "child_id": 9,
+            "parent_tenant_id": 7,
+            "parent_code": "root",
+            "label": "child",
+        }
+    ]
+    loaded = orm.load(parent, CompositeParent.children)
+    assert list(loaded) == [child]
+    _, parameters = transaction.executed[-1]
+    assert set(parameters.values()) == {7, "root"}
+
+
+def test_selectinload_composite_relationship_uses_all_key_components() -> None:
+    transaction = _FakeTransaction()
+    transaction.result_batches = [
+        [
+            {"tenant_id": 7, "code": "a", "label": "first"},
+            {"tenant_id": 7, "code": "b", "label": "second"},
+        ],
+        [
+            {
+                "tenant_id": 7,
+                "child_id": 1,
+                "parent_tenant_id": 7,
+                "parent_code": "a",
+                "label": "child-a",
+            },
+            {
+                "tenant_id": 7,
+                "child_id": 2,
+                "parent_tenant_id": 7,
+                "parent_code": "b",
+                "label": "child-b",
+            },
+        ],
+    ]
+    orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
+    parents = (
+        orm.query(CompositeParent)
+        .options(p.selectinload(CompositeParent.children))
+        .all()
+    )
+
+    assert [[child.label for child in parent.children] for parent in parents] == [
+        ["child-a"],
+        ["child-b"],
+    ]
+    _, parameters = transaction.executed[-1]
+    assert set(parameters.values()) == {7, "a", "b"}
 
 
 def test_nullable_fk_cycle_uses_two_phase_insert() -> None:
@@ -1152,8 +1421,74 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
     )
     runner = p.MigrationRunner(migrations)
     assert [item.revision for item in runner.migrations] == ["001", "002"]
-    with pytest.raises(p.OrmMappingError, match="catena lineare"):
+    with pytest.raises(p.OrmMappingError, match="genitore assente"):
         p.MigrationRunner((p.Migration("002", "missing", lambda tx: None),))
+
+
+def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history() -> (
+    None
+):
+    noop = lambda tx: None
+    runner = p.MigrationRunner(
+        (
+            p.Migration("merge", ("left", "right"), noop, noop),
+            p.Migration("root", None, noop, noop),
+            p.Migration("right", "root", noop, noop),
+            p.Migration("left", "root", noop, noop),
+        )
+    )
+    assert [item.revision for item in runner.migrations] == [
+        "root",
+        "right",
+        "left",
+        "merge",
+    ]
+
+    class BrokenHistory:
+        capabilities: ClassVar[dict[str, str]] = {"provider": "postgres"}
+
+        def execute_ddl(self, statement: str) -> None:
+            pass
+
+        def execute_returning_rows(self, statement: str) -> list[dict[str, str]]:
+            return [{"revision": "merge"}]
+
+    with pytest.raises(p.OrmStateError, match="antenati"):
+        runner.apply(BrokenHistory())
+
+    with pytest.raises(p.OrmMappingError, match="ciclico"):
+        p.MigrationRunner(
+            (
+                p.Migration("a", "b", noop),
+                p.Migration("b", "a", noop),
+            )
+        )
+
+
+def test_db2_migration_history_ddl_is_idempotent_and_uses_the_ddl_channel() -> None:
+    class Db2Session:
+        capabilities: ClassVar[dict[str, str]] = {"provider": "db2"}
+
+        def __init__(self) -> None:
+            self.ddl: list[str] = []
+            self.exists = False
+
+        def execute_ddl(self, statement: str) -> None:
+            self.ddl.append(statement)
+            self.exists = True
+
+        def execute_returning_rows(self, statement: str) -> list[dict[str, str]]:
+            return []
+
+        def execute_scalar(self, statement: str) -> int:
+            return int(self.exists)
+
+    session = Db2Session()
+    assert p.MigrationRunner(()).apply(session) == ()
+    assert p.MigrationRunner(()).apply(session) == ()
+    assert len(session.ddl) == 1
+    assert session.ddl[0].startswith('CREATE TABLE "_plenora_orm_migrations"')
+    assert "CURRENT TIMESTAMP" in session.ddl[0]
 
 
 def test_migration_runner_applies_and_rolls_back_transactionally() -> None:
@@ -1310,13 +1645,56 @@ def test_live_db2_generated_defaults_and_ddl() -> None:
         session.close()
 
 
+def test_live_db2_migration_dag_is_idempotent_and_reversible() -> None:
+    session = connect_db2_reference()
+
+    def existing_tables() -> set[str]:
+        schema = session.execute_scalar("VALUES CURRENT SCHEMA")
+        return {item.get("name", "").lower() for item in session.inspect.tables(schema)}
+
+    def cleanup() -> None:
+        existing = existing_tables()
+        for table_name in ("_plenora_migration_probe", "_plenora_orm_migrations"):
+            if table_name in existing:
+                session.execute_ddl(f'DROP TABLE "{table_name}"')
+
+    migrations = (
+        p.Migration(
+            "root",
+            None,
+            lambda tx: tx.execute(
+                'CREATE TABLE "_plenora_migration_probe" '
+                '("id" INTEGER NOT NULL PRIMARY KEY)'
+            ),
+            lambda tx: tx.execute('DROP TABLE "_plenora_migration_probe"'),
+        ),
+        p.Migration("left", "root", lambda tx: None, lambda tx: None),
+        p.Migration("right", "root", lambda tx: None, lambda tx: None),
+        p.Migration("merge", ("left", "right"), lambda tx: None, lambda tx: None),
+    )
+    runner = p.MigrationRunner(migrations)
+    try:
+        cleanup()
+        assert runner.apply(session) == ("root", "left", "right", "merge")
+        assert runner.apply(session) == ()
+        assert "_plenora_migration_probe" in existing_tables()
+        assert runner.rollback(session, steps=4) == (
+            "merge",
+            "right",
+            "left",
+            "root",
+        )
+        assert "_plenora_migration_probe" not in existing_tables()
+    finally:
+        cleanup()
+        session.close()
+
+
 def _drop_db2_models_if_present(
     session: p.DatabaseSession, *models: type[p.DeclarativeBase]
 ) -> None:
     schema = session.execute_scalar("VALUES CURRENT SCHEMA")
-    existing = {
-        item.get("name", "").lower() for item in session.inspect.tables(schema)
-    }
+    existing = {item.get("name", "").lower() for item in session.inspect.tables(schema)}
     for model in reversed(models):
         if model.__table__.name.lower() in existing:
             p.OrmMetadata(models=(model,)).drop_all(session, checkfirst=False)
@@ -1392,8 +1770,10 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
             "intersects", LiveMysqlGeometry.point, _MYSQL_POINT.bind("reference")
         )
         with p.OrmSession(session) as orm:
-            [queried] = orm.query(LiveMysqlGeometry).where(predicate).all(
-                {"reference": moved_point}
+            [queried] = (
+                orm.query(LiveMysqlGeometry)
+                .where(predicate)
+                .all({"reference": moved_point})
             )
             assert queried.point.ewkb == _root_wkb(moved_point)
             assert queried.optional_point is not None
@@ -1401,9 +1781,7 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
             orm.delete(queried)
 
         assert (
-            session.execute_scalar(
-                "SELECT COUNT(*) FROM _plenora_orm_mysql_geometry"
-            )
+            session.execute_scalar("SELECT COUNT(*) FROM _plenora_orm_mysql_geometry")
             == 0
         )
     finally:
@@ -1414,9 +1792,7 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
 def _exercise_live_portable_geometry(provider: str, connector) -> None:
     session = connector()
     assert session.capabilities["provider"] == provider
-    metadata = p.OrmMetadata(
-        models=(LivePortableGeometry, LivePortableGeometryXyz)
-    )
+    metadata = p.OrmMetadata(models=(LivePortableGeometry, LivePortableGeometryXyz))
     point = _ewkb_point(9.19, 45.46)
     moved_point = _ewkb_point(9.20, 45.47)
     point_xyz = _ewkb_point_xyz(9.19, 45.46, 120.0)
@@ -1485,8 +1861,10 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             _PORTABLE_POINT.bind("reference"),
         )
         with p.OrmSession(session) as orm:
-            [queried] = orm.query(LivePortableGeometry).where(predicate).all(
-                {"reference": moved_point}
+            [queried] = (
+                orm.query(LivePortableGeometry)
+                .where(predicate)
+                .all({"reference": moved_point})
             )
             _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
             assert queried.optional_point is not None
@@ -1536,13 +1914,15 @@ def test_live_sqlserver_geometry_orm_qualification() -> None:
         ).predicate(
             "intersects",
             LiveSqlServerGeography.shape,
-            p.Geometry(
-                srid=4326, semantics="geography", geometry_type="point"
-            ).bind("reference"),
+            p.Geometry(srid=4326, semantics="geography", geometry_type="point").bind(
+                "reference"
+            ),
         )
         with p.OrmSession(session) as orm:
-            [loaded] = orm.query(LiveSqlServerGeography).where(predicate).all(
-                {"reference": point}
+            [loaded] = (
+                orm.query(LiveSqlServerGeography)
+                .where(predicate)
+                .all({"reference": point})
             )
             assert loaded.shape.ewkb == _root_wkb(point)
             assert loaded.shape.semantics == "geography"

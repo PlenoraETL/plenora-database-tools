@@ -1,7 +1,9 @@
 use super::*;
 use crate::profile::ProductProfile;
 use plenora_database_core::field_contract::validate_schema_contract;
-use plenora_database_core::plan::{ObjectRef, OrderBy};
+use plenora_database_core::plan::{ObjectRef, OrderBy, ProviderKind};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::ReadCheckpoint;
 
 fn column(name: &str, data_type: &str, declaration: &str) -> MysqlColumn {
     MysqlColumn {
@@ -182,6 +184,53 @@ fn limit_without_order_is_rejected_fail_closed() {
         plan.sql,
         "SELECT `id` FROM `data`.`items` ORDER BY `id` ASC LIMIT 1;"
     );
+}
+
+#[test]
+fn qualified_checkpoint_renders_as_a_bound_mysql_keyset() {
+    let description = MysqlObjectDescription {
+        schema: "data".to_owned(),
+        name: "items".to_owned(),
+        kind: "BASE TABLE".to_owned(),
+        engine: Some("InnoDB".to_owned()),
+        columns: vec![column("id", "bigint", "bigint")],
+        indexes: Vec::new(),
+        token: crate::MysqlSchemaToken("token".to_owned()),
+    };
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("data".to_owned()),
+            object: "items".to_owned(),
+        },
+        projection: Vec::new(),
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(100),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let checkpoint = ReadCheckpoint::new(
+            provider,
+            &operation,
+            &ParameterBag::default(),
+            vec![ParameterValue::I64(41)],
+        )
+        .expect("checkpoint");
+        let (resumed, _) = checkpoint
+            .resume(provider, &operation, &ParameterBag::default())
+            .expect("resume");
+        let plan = MysqlReadPlan::compile(&description, &resumed).expect("piano ripreso");
+        assert_eq!(
+            plan.sql,
+            "SELECT `id` FROM `data`.`items` WHERE `id` > ? ORDER BY `id` ASC LIMIT 100;"
+        );
+        assert_eq!(plan.bind_names, ["__plenora_resume_0"]);
+    }
 }
 
 /// La finestra si rende, e da sola porta con se il tetto del tipo.

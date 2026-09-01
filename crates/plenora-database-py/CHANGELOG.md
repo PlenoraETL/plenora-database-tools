@@ -5,6 +5,40 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-01
+
+### Aggiunto
+
+- Checkpoint keyset persistenti e provider-qualified per letture Arrow sync e
+  async. Il token verifica provider, sorgente, proiezione, ordinamento, filtro,
+  parametri e CRS; PostgreSQL, MySQL, MariaDB, SQL Server e Db2 hanno prove live
+  separate di ripresa senza duplicati o salti.
+- Diagnostica row-scoped Db2 con indici sorgente assoluti e cause redatte,
+  scritture bulk mediante parameter array e capability `array_binding`
+  qualificata sul riferimento Db2 LUW 12.1.
+- Migrazioni ORM sync/async ordinate come DAG, con branch, merge, validazione
+  della history e runner Db2 idempotente e reversibile.
+- DML relazionale portabile con righe restituite: `RETURNING` sui provider
+  qualificati e lowering `OUTPUT` per SQL Server; i dialetti privi della forma
+  richiesta restano fail-closed.
+- `joinedload` delle collezioni con deduplicazione delle entita root,
+  relationship e many-to-many con chiavi composite, mixin astratti ed
+  ereditarieta concrete che conserva colonne, vincoli e relazioni.
+- Superficie Apache AGE per mapping dichiarativo di vertex/edge, inserimenti
+  bulk sync/async a batch, risoluzione degli endpoint per business key e DDL
+  di indici o vincoli unique sulle proprieta. La prova live usa AGE 1.7.0 su
+  PostgreSQL 18.
+
+### Corretto
+
+- Gli identificatori Cypher e gli accessi alle mappe dei batch AGE sono
+  quotati anche quando coincidono con parole chiave come `end`.
+- Le capability `truncate_insert` e `staged_swap` restano aperte soltanto dove
+  la semantica e realmente atomica; una sequenza `DELETE` + `INSERT` non viene
+  piu descritta come swap di un oggetto staging.
+- I messaggi pubblici dei nuovi percorsi non includono valori di riga, token,
+  DSN o SQL bindato.
+
 ## [1.0.0] — 2026-09-01
 
 ### Breaking

@@ -27,9 +27,11 @@ from .expression import (
     _spatial_output,
     _spatial_predicate,
     _spatial_value,
+    and_,
     bind,
     delete,
     insert,
+    or_,
     select,
     update,
 )
@@ -553,13 +555,13 @@ class Relationship(Generic[T]):
         self,
         target: type[T] | str,
         *,
-        foreign_key: str | None = None,
+        foreign_key: str | tuple[str, ...] | None = None,
         uselist: bool = False,
         back_populates: str | None = None,
         cascade: str | Iterable[str] = (),
         secondary: Table | None = None,
-        secondary_local_key: str | None = None,
-        secondary_remote_key: str | None = None,
+        secondary_local_key: str | tuple[str, ...] | None = None,
+        secondary_remote_key: str | tuple[str, ...] | None = None,
     ) -> None:
         if (
             not isinstance(target, (type, str))
@@ -567,10 +569,17 @@ class Relationship(Generic[T]):
             and not target
         ):
             raise TypeError("relationship target richiede una classe o il suo nome")
-        if foreign_key is not None and (
-            not isinstance(foreign_key, str) or not foreign_key
-        ):
-            raise OrmMappingError("relationship foreign_key non valida")
+        if foreign_key is not None:
+            foreign_keys = (
+                (foreign_key,) if isinstance(foreign_key, str) else foreign_key
+            )
+            if (
+                not isinstance(foreign_keys, tuple)
+                or not foreign_keys
+                or any(not isinstance(item, str) or not item for item in foreign_keys)
+                or len(set(foreign_keys)) != len(foreign_keys)
+            ):
+                raise OrmMappingError("relationship foreign_key non valida")
         if back_populates is not None and (
             not isinstance(back_populates, str) or not back_populates
         ):
@@ -594,13 +603,16 @@ class Relationship(Generic[T]):
                 raise OrmMappingError("secondary non accetta foreign_key")
             if "delete-orphan" in cascades:
                 raise OrmMappingError("delete-orphan non e valido su many-to-many")
-            for key in (secondary_local_key, secondary_remote_key):
-                if not isinstance(key, str) or not key:
+            secondary_local_keys = _relationship_keys(secondary_local_key)
+            secondary_remote_keys = _relationship_keys(secondary_remote_key)
+            for keys in (secondary_local_keys, secondary_remote_keys):
+                if not keys:
                     raise OrmMappingError("secondary richiede entrambe le chiavi")
-                try:
-                    secondary.c[key]
-                except KeyError as error:
-                    raise OrmMappingError("chiave secondary non presente") from error
+                for key in keys:
+                    try:
+                        secondary.c[key]
+                    except KeyError as error:
+                        raise OrmMappingError("chiave secondary non presente") from error
         elif foreign_key is None:
             raise OrmMappingError("relationship richiede foreign_key")
         self._target_ref = target
@@ -631,26 +643,80 @@ class Relationship(Generic[T]):
         if self.owner is None or self.foreign_key is None:
             raise OrmMappingError("relationship non configurata")
         owner_mapper = _mapper(self.owner)
-        if any(item.name == self.foreign_key for item in owner_mapper.attributes):
+        foreign_keys = self.foreign_keys
+        if all(
+            any(item.name == key for item in owner_mapper.attributes)
+            for key in foreign_keys
+        ):
             return "many-to-one"
         target_mapper = _mapper(self.target)  # type: ignore[arg-type]
-        if any(item.name == self.foreign_key for item in target_mapper.attributes):
+        if all(
+            any(item.name == key for item in target_mapper.attributes)
+            for key in foreign_keys
+        ):
             return "one-to-one"
         raise OrmMappingError("relationship riferisce una foreign key non mappata")
+
+    @property
+    def foreign_keys(self) -> tuple[str, ...]:
+        if self.foreign_key is None:
+            return ()
+        return (
+            (self.foreign_key,)
+            if isinstance(self.foreign_key, str)
+            else self.foreign_key
+        )
+
+    @property
+    def secondary_local_keys(self) -> tuple[str, ...]:
+        return _relationship_keys(self.secondary_local_key)
+
+    @property
+    def secondary_remote_keys(self) -> tuple[str, ...]:
+        return _relationship_keys(self.secondary_remote_key)
 
     def _bind(self, name: str, owner: type[DeclarativeBase]) -> None:
         self.name = name
         self.owner = owner
 
+    def _clone(self) -> Relationship[T]:
+        return Relationship(
+            self._target_ref,
+            foreign_key=self.foreign_key,
+            uselist=self.uselist,
+            back_populates=self.back_populates,
+            cascade=self.cascade,
+            secondary=self.secondary,
+            secondary_local_key=self.secondary_local_key,
+            secondary_remote_key=self.secondary_remote_key,
+        )
+
     def _validate_configuration(self) -> None:
         target_mapper = _mapper(self.target)  # type: ignore[arg-type]
         if self.owner is None:
             raise OrmMappingError("relationship non associata a un mapper")
-        _single_primary(_mapper(self.owner))
-        _single_primary(target_mapper)
         direction = self.direction
-        if direction == "one-to-many" and self.foreign_key is not None:
-            target_mapper.attribute(self.foreign_key)
+        owner_mapper = _mapper(self.owner)
+        if direction == "many-to-one":
+            primary_keys = target_mapper.primary_keys
+            foreign_mapper = owner_mapper
+        else:
+            primary_keys = owner_mapper.primary_keys
+            foreign_mapper = target_mapper
+        if self.secondary is None:
+            if len(self.foreign_keys) != len(primary_keys):
+                raise OrmMappingError(
+                    "relationship richiede una foreign key per ogni colonna primaria"
+                )
+            for foreign_key in self.foreign_keys:
+                foreign_mapper.attribute(foreign_key)
+        elif (
+            len(self.secondary_local_keys) != len(owner_mapper.primary_keys)
+            or len(self.secondary_remote_keys) != len(target_mapper.primary_keys)
+        ):
+            raise OrmMappingError(
+                "secondary richiede una chiave per ogni colonna primaria"
+            )
         if self.back_populates is not None:
             inverse = target_mapper.relationship(self.back_populates)
             if inverse.target is not self.owner or inverse.back_populates != self.name:
@@ -766,14 +832,16 @@ class Relationship(Generic[T]):
     ) -> None:
         if self.direction != "many-to-one" or self.foreign_key is None:
             return
-        primary_name = _single_primary(_mapper(self.target)).name  # type: ignore[arg-type]
-        primary = (
+        primary_keys = _mapper(self.target).primary_keys  # type: ignore[arg-type]
+        primary = tuple(
             None
-            if value is None or primary_name is None
-            else value.__dict__.get(primary_name)
+            if value is None or item.name is None
+            else value.__dict__.get(item.name)
+            for item in primary_keys
         )
-        if value is None or primary is not None:
-            setattr(instance, self.foreign_key, primary)
+        if value is None or all(item is not None for item in primary):
+            for foreign_key, item in zip(self.foreign_keys, primary, strict=True):
+                setattr(instance, foreign_key, item)
 
     def _synchronize_child_foreign_key(self, owner: DeclarativeBase, value: T) -> None:
         if (
@@ -781,10 +849,13 @@ class Relationship(Generic[T]):
             or self.foreign_key is None
         ):
             return
-        primary_name = _single_primary(_mapper(type(owner))).name
-        primary = None if primary_name is None else owner.__dict__.get(primary_name)
-        if primary is not None:
-            setattr(value, self.foreign_key, primary)
+        primary = tuple(
+            None if item.name is None else owner.__dict__.get(item.name)
+            for item in _mapper(type(owner)).primary_keys
+        )
+        if all(item is not None for item in primary):
+            for foreign_key, item in zip(self.foreign_keys, primary, strict=True):
+                setattr(value, foreign_key, item)
 
     def _synchronize_inverse(
         self, instance: DeclarativeBase, previous: T | None, value: T | None
@@ -807,13 +878,13 @@ class Relationship(Generic[T]):
 def relationship(
     target: type[T] | str,
     *,
-    foreign_key: str | None = None,
+    foreign_key: str | tuple[str, ...] | None = None,
     uselist: bool = False,
     back_populates: str | None = None,
     cascade: str | Iterable[str] = (),
     secondary: Table | None = None,
-    secondary_local_key: str | None = None,
-    secondary_remote_key: str | None = None,
+    secondary_local_key: str | tuple[str, ...] | None = None,
+    secondary_remote_key: str | tuple[str, ...] | None = None,
 ) -> Relationship[T]:
     return Relationship(
         target,
@@ -964,17 +1035,16 @@ class OrmMetadata:
 @dataclass(frozen=True, slots=True)
 class Migration:
     revision: str
-    down_revision: str | None
+    down_revision: str | tuple[str, ...] | None
     upgrade: Any
     downgrade: Any | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision, str) or not self.revision:
             raise ValueError("migration revision non valida")
-        if self.down_revision is not None and (
-            not isinstance(self.down_revision, str) or not self.down_revision
-        ):
-            raise ValueError("migration down_revision non valida")
+        parents = _migration_parents(self.down_revision)
+        if len(set(parents)) != len(parents) or self.revision in parents:
+            raise ValueError("migration down_revision duplicata o autoriferita")
         if not callable(self.upgrade) or (
             self.downgrade is not None and not callable(self.downgrade)
         ):
@@ -982,24 +1052,17 @@ class Migration:
 
 
 class MigrationRunner:
-    """Runner lineare e transazionale di migrazioni esplicite."""
+    """Runner DAG e transazionale di migrazioni esplicite."""
 
     def __init__(self, migrations: Iterable[Migration]) -> None:
-        self.migrations = tuple(migrations)
-        _validate_migration_chain(self.migrations)
+        self.migrations = _order_migrations(tuple(migrations))
 
     def apply(self, session: Any) -> tuple[str, ...]:
         provider = _session_provider(session)
-        session.execute(_migration_table_ddl(provider))
-        rows = session.execute_returning_rows(
-            "SELECT revision FROM _plenora_orm_migrations"
-        )
+        _ensure_migration_table(session, provider)
+        rows = session.execute_returning_rows(_migration_history_select(provider))
         applied = {row["revision"] for row in rows}
-        expected = {item.revision for item in self.migrations[: len(applied)]}
-        if applied != expected:
-            raise OrmStateError(
-                "storia migrazioni non coerente con la catena registrata"
-            )
+        _validate_applied_migrations(self.migrations, applied)
         completed: list[str] = []
         history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         for migration in self.migrations:
@@ -1022,14 +1085,26 @@ class MigrationRunner:
     def rollback(self, session: Any, *, steps: int = 1) -> tuple[str, ...]:
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
             raise ValueError("migration rollback steps non valido")
-        rows = session.execute_returning_rows(
-            "SELECT revision FROM _plenora_orm_migrations ORDER BY applied_at DESC"
-        )
+        provider = _session_provider(session)
+        rows = session.execute_returning_rows(_migration_history_select(provider))
         by_revision = {item.revision: item for item in self.migrations}
+        applied = {row["revision"] for row in rows}
+        _validate_applied_migrations(self.migrations, applied)
         history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         completed: list[str] = []
-        for row in rows[:steps]:
-            migration = by_revision.get(row["revision"])
+        candidates = [
+            item.revision
+            for item in reversed(self.migrations)
+            if item.revision in applied
+        ]
+        for revision in candidates[:steps]:
+            if any(
+                revision in _migration_parents(item.down_revision)
+                and item.revision in applied
+                for item in self.migrations
+            ):
+                raise OrmStateError("rollback migrazione non foglia del grafo")
+            migration = by_revision.get(revision)
             if migration is None or migration.downgrade is None:
                 raise OrmStateError("migration applicata priva di downgrade registrato")
             transaction = session.begin()
@@ -1043,6 +1118,7 @@ class MigrationRunner:
             except BaseException:
                 transaction.rollback()
                 raise
+            applied.remove(migration.revision)
             completed.append(migration.revision)
         return tuple(completed)
 
@@ -1050,16 +1126,12 @@ class MigrationRunner:
 class AsyncMigrationRunner(MigrationRunner):
     async def apply(self, session: Any) -> tuple[str, ...]:  # type: ignore[override]
         provider = _session_provider(session)
-        await session.execute(_migration_table_ddl(provider))
+        await _ensure_migration_table_async(session, provider)
         rows = await session.execute_returning_rows(
-            "SELECT revision FROM _plenora_orm_migrations"
+            _migration_history_select(provider)
         )
         applied = {row["revision"] for row in rows}
-        expected = {item.revision for item in self.migrations[: len(applied)]}
-        if applied != expected:
-            raise OrmStateError(
-                "storia migrazioni non coerente con la catena registrata"
-            )
+        _validate_applied_migrations(self.migrations, applied)
         completed: list[str] = []
         history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         for migration in self.migrations:
@@ -1086,14 +1158,28 @@ class AsyncMigrationRunner(MigrationRunner):
     ) -> tuple[str, ...]:
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
             raise ValueError("migration rollback steps non valido")
+        provider = _session_provider(session)
         rows = await session.execute_returning_rows(
-            "SELECT revision FROM _plenora_orm_migrations ORDER BY applied_at DESC"
+            _migration_history_select(provider)
         )
         by_revision = {item.revision: item for item in self.migrations}
+        applied = {row["revision"] for row in rows}
+        _validate_applied_migrations(self.migrations, applied)
         history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         completed: list[str] = []
-        for row in rows[:steps]:
-            migration = by_revision.get(row["revision"])
+        candidates = [
+            item.revision
+            for item in reversed(self.migrations)
+            if item.revision in applied
+        ]
+        for revision in candidates[:steps]:
+            if any(
+                revision in _migration_parents(item.down_revision)
+                and item.revision in applied
+                for item in self.migrations
+            ):
+                raise OrmStateError("rollback migrazione non foglia del grafo")
+            migration = by_revision.get(revision)
             if migration is None or migration.downgrade is None:
                 raise OrmStateError("migration applicata priva di downgrade registrato")
             transaction = await session.begin()
@@ -1109,6 +1195,7 @@ class AsyncMigrationRunner(MigrationRunner):
             except BaseException:
                 await transaction.rollback()
                 raise
+            applied.remove(migration.revision)
             completed.append(migration.revision)
         return tuple(completed)
 
@@ -1121,6 +1208,22 @@ class _DeclarativeMeta(type):
             for base in bases
             if isinstance((mapper := getattr(base, "__mapper__", None)), Mapper)
         )
+        if table_name is not None:
+            mixin_bases = tuple(
+                base
+                for base in bases
+                if getattr(base, "__mapper__", None) is None
+                and getattr(base, "__abstract__", False)
+                and base.__name__ != "DeclarativeBase"
+            )
+            if mixin_bases:
+                namespace = dict(namespace)
+                for base in reversed(mixin_bases):
+                    for attribute_name, value in vars(base).items():
+                        if attribute_name in namespace:
+                            continue
+                        if isinstance(value, (MappedColumn, Relationship)):
+                            namespace[attribute_name] = value._clone()
         if inherited_mappers and table_name is not None:
             mapper_args = namespace.get("__mapper_args__", {})
             if not isinstance(mapper_args, Mapping) or not mapper_args.get("concrete"):
@@ -1131,14 +1234,13 @@ class _DeclarativeMeta(type):
                 raise OrmUnsupportedError(
                     "ereditarieta multipla mappata non supportata"
                 )
-            if inherited_mappers[0].relationships:
-                raise OrmUnsupportedError(
-                    "ereditarieta concreta di relationship richiede una rimappatura esplicita"
-                )
             namespace = dict(namespace)
             for attribute in inherited_mappers[0].attributes:
                 if attribute.name is not None and attribute.name not in namespace:
                     namespace[attribute.name] = attribute._clone()
+            for relation in inherited_mappers[0].relationships:
+                if relation.name is not None and relation.name not in namespace:
+                    namespace[relation.name] = relation._clone()
         cls = super().__new__(mcls, name, bases, namespace)
         if table_name is None:
             if inherited_mappers and not namespace.get("__abstract__", False):
@@ -1322,10 +1424,6 @@ class OrmQuery(Generic[T]):
             relation = _query_relationship(self._mapper, loader.relationship)
             relation._validate_configuration()
             if loader.strategy == "joined":
-                if relation.uselist:
-                    raise OrmUnsupportedError(
-                        "joinedload di collezioni richiede una strategia di deduplicazione"
-                    )
                 statement = _joinedload_statement(
                     self._mapper, statement, relation, self._session._provider
                 )
@@ -1432,10 +1530,6 @@ class AsyncOrmQuery(Generic[T]):
             relation = _query_relationship(self._mapper, loader.relationship)
             relation._validate_configuration()
             if loader.strategy == "joined":
-                if relation.uselist:
-                    raise OrmUnsupportedError(
-                        "joinedload di collezioni richiede una strategia di deduplicazione"
-                    )
                 statement = _joinedload_statement(
                     self._mapper, statement, relation, self._session._provider
                 )
@@ -1517,9 +1611,7 @@ class OrmRowsQuery:
     ) -> list[Mapping[str, Any]]:
         self._session._require_active()
         self._session._autoflush_now()
-        _validate_spatial_statement(
-            self._statement, self._session._spatial_functions
-        )
+        _validate_spatial_statement(self._statement, self._session._spatial_functions)
         parameters = _geometry_query_parameters(
             self._statement, parameters, self._session._provider
         )
@@ -1547,9 +1639,7 @@ class OrmEntityTupleQuery:
     def all(self, parameters: Mapping[str, Any] | None = None) -> list[tuple[Any, ...]]:
         self._session._require_active()
         self._session._autoflush_now()
-        _validate_spatial_statement(
-            self._statement, self._session._spatial_functions
-        )
+        _validate_spatial_statement(self._statement, self._session._spatial_functions)
         parameters = _geometry_query_parameters(
             self._statement, parameters, self._session._provider
         )
@@ -1591,9 +1681,7 @@ class AsyncOrmRowsQuery:
     ) -> list[Mapping[str, Any]]:
         await self._session._autoflush_async()
         transaction = await self._session._ensure_started()
-        _validate_spatial_statement(
-            self._statement, self._session._spatial_functions
-        )
+        _validate_spatial_statement(self._statement, self._session._spatial_functions)
         parameters = _geometry_query_parameters(
             self._statement, parameters, self._session._provider
         )
@@ -1623,9 +1711,7 @@ class AsyncOrmEntityTupleQuery:
     ) -> list[tuple[Any, ...]]:
         await self._session._autoflush_async()
         transaction = await self._session._ensure_started()
-        _validate_spatial_statement(
-            self._statement, self._session._spatial_functions
-        )
+        _validate_spatial_statement(self._statement, self._session._spatial_functions)
         parameters = _geometry_query_parameters(
             self._statement, parameters, self._session._provider
         )
@@ -1707,8 +1793,7 @@ def _geometry_query_parameters(
                 semantics = value.get("semantics")
                 if (
                     not isinstance(expression, Mapping)
-                    or expression.get("kind")
-                    not in {"parameter", "typed_parameter"}
+                    or expression.get("kind") not in {"parameter", "typed_parameter"}
                     or not isinstance(expression.get("name"), str)
                     or not isinstance(srid, int)
                     or isinstance(srid, bool)
@@ -1735,10 +1820,7 @@ def _geometry_query_parameters(
     for name, (srid, semantics) in spatial_binds.items():
         if name not in normalized:
             continue
-        if (
-            provider in _GEOMETRY_ONLY_ORM_PROVIDERS
-            and semantics != "geometry"
-        ):
+        if provider in _GEOMETRY_ONLY_ORM_PROVIDERS and semantics != "geometry":
             raise OrmUnsupportedError(
                 "il provider non qualifica la semantica geography ORM"
             )
@@ -1763,15 +1845,10 @@ def _geometry_query_parameters(
 
 def _require_geometry_mapping(type_: Geometry, provider: str) -> None:
     if provider not in _GEOMETRY_ORM_PROVIDERS:
-        raise OrmUnsupportedError(
-            "Geometry ORM non e qualificata per il provider"
-        )
+        raise OrmUnsupportedError("Geometry ORM non e qualificata per il provider")
     if provider == "postgres":
         return
-    if (
-        provider in _GEOMETRY_ONLY_ORM_PROVIDERS
-        and type_.semantics != "geometry"
-    ):
+    if provider in _GEOMETRY_ONLY_ORM_PROVIDERS and type_.semantics != "geometry":
         raise OrmUnsupportedError(
             "il provider non qualifica la semantica geography ORM"
         )
@@ -1787,15 +1864,11 @@ def _require_geometry_mapping(type_: Geometry, provider: str) -> None:
         type_.geometry_type is not None
         and type_.geometry_type not in _MYSQL_GEOMETRY_TYPES
     ):
-        raise OrmUnsupportedError(
-            "tipo Geometry ORM non qualificato per MySQL/MariaDB"
-        )
+        raise OrmUnsupportedError("tipo Geometry ORM non qualificato per MySQL/MariaDB")
     if provider in _XY_XYZ_ORM_PROVIDERS and (
         type_.geometry_type not in _QUALIFIED_ORM_GEOMETRY_TYPES
     ):
-        raise OrmUnsupportedError(
-            "tipo Geometry ORM non qualificato per il provider"
-        )
+        raise OrmUnsupportedError("tipo Geometry ORM non qualificato per il provider")
 
 
 def _require_geometry_mapper(mapper: Mapper, provider: str) -> None:
@@ -1818,18 +1891,14 @@ def _geometry_bind_value(value: SpatialReference, provider: str) -> bytes:
     )
     converter = getattr(_native, converter_name, None)
     if converter is None:
-        raise RuntimeError(
-            "estensione nativa incompatibile con Geometry ORM"
-        )
+        raise RuntimeError("estensione nativa incompatibile con Geometry ORM")
     converted = converter(value.ewkb)
     if not isinstance(converted, bytes):
-        raise RuntimeError("conversione Geometry ORM non ha restituito bytes")
+        raise TypeError("conversione Geometry ORM non ha restituito bytes")
     return converted
 
 
-def _geometry_parameter_value(
-    value: SpatialReference | None, provider: str
-) -> Any:
+def _geometry_parameter_value(value: SpatialReference | None, provider: str) -> Any:
     if value is None:
         if provider in _SQLSERVER_ORM_PROVIDERS:
             return typed_null("varbinary")
@@ -1943,7 +2012,7 @@ class OrmSession:
         self._deleted: list[DeclarativeBase] = []
         self._flushed_deleted: list[DeclarativeBase] = []
         self._deferred_foreign_keys: list[
-            tuple[DeclarativeBase, DeclarativeBase, str]
+            tuple[DeclarativeBase, DeclarativeBase, tuple[str, ...]]
         ] = []
         self._autoflush_enabled = bool(autoflush)
         self._in_flush = False
@@ -2247,25 +2316,31 @@ class OrmSession:
         target_mapper = _mapper(descriptor.target)
         direction = descriptor.direction
         if direction == "many-to-one":
-            foreign_value = instance.__dict__.get(descriptor.foreign_key)
+            foreign_value = tuple(
+                instance.__dict__.get(name) for name in descriptor.foreign_keys
+            )
             return (
                 None
-                if foreign_value is None
-                else self.get(descriptor.target, foreign_value)
+                if any(value is None for value in foreign_value)
+                else self.get(
+                    descriptor.target,
+                    foreign_value[0] if len(foreign_value) == 1 else foreign_value,
+                )
             )
         owner_mapper = _mapper(type(instance))
-        _single_primary(owner_mapper)
-        _single_primary(target_mapper)
-        owner_identity = _identity(owner_mapper, instance)[0]
+        owner_identity = _identity(owner_mapper, instance)
         if direction in {"one-to-many", "one-to-one"}:
-            foreign = target_mapper.attribute(descriptor.foreign_key or "").column
-            if foreign is None:
-                raise OrmMappingError("foreign key relationship senza colonna")
-            rows = (
-                self.query(descriptor.target)
-                .where(foreign == bind("orm_relationship_identity"))
-                .all({"orm_relationship_identity": owner_identity})
+            foreign = tuple(
+                target_mapper.attribute(name).column for name in descriptor.foreign_keys
             )
+            if any(column is None for column in foreign):
+                raise OrmMappingError("foreign key relationship senza colonna")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in foreign if column is not None),
+                (owner_identity,),
+                "orm_relationship",
+            )
+            rows = self.query(descriptor.target).where(predicate).all(parameters)
             if direction == "one-to-one":
                 if len(rows) > 1:
                     raise MultipleResultsFound("relationship one-to-one non univoca")
@@ -2274,24 +2349,22 @@ class OrmSession:
         secondary = descriptor.secondary
         if secondary is None:
             raise OrmMappingError("relationship many-to-many senza secondary")
-        target_primary = _single_primary(target_mapper).column
-        if target_primary is None:
-            raise OrmMappingError("target relationship senza chiave")
+        local_columns = _secondary_columns(descriptor, remote=False)
+        remote_columns = _secondary_columns(descriptor, remote=True)
+        target_primary = _primary_columns(target_mapper)
+        predicate, parameters = _identity_disjunction(
+            local_columns, (owner_identity,), "orm_relationship"
+        )
         statement = (
             select(*_orm_projections(target_mapper, provider=self._provider))
             .select_from(target_mapper.table)
             .join(
                 secondary,
-                secondary.c[descriptor.secondary_remote_key or ""] == target_primary,
+                _column_equality(remote_columns, target_primary),
             )
-            .where(
-                secondary.c[descriptor.secondary_local_key or ""]
-                == bind("orm_relationship_identity")
-            )
+            .where(predicate)
         )
-        return self._execute_entities(
-            target_mapper, statement, {"orm_relationship_identity": owner_identity}
-        )
+        return self._execute_entities(target_mapper, statement, parameters)
 
     def delete(self, instance: DeclarativeBase) -> None:
         self._delete_graph(instance, set())
@@ -2336,11 +2409,11 @@ class OrmSession:
                 self._synchronize_relationships(instance)
                 self._preflight((instance,))
                 self._insert(instance)
-            for instance, related, foreign_key in self._deferred_foreign_keys:
-                instance.__dict__[foreign_key] = _identity(
-                    _mapper(type(related)), related
-                )[0]
-                _state(instance).dirty.add(foreign_key)
+            for instance, related, foreign_keys in self._deferred_foreign_keys:
+                identity = _identity(_mapper(type(related)), related)
+                for foreign_key, value in zip(foreign_keys, identity, strict=True):
+                    instance.__dict__[foreign_key] = value
+                    _state(instance).dirty.add(foreign_key)
                 self._update(instance)
             for instance in dirty:
                 if _state(instance).status is ObjectState.PERSISTENT:
@@ -2425,11 +2498,20 @@ class OrmSession:
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
         rows = result.all()
-        instances = [self._hydrate(mapper, row) for row in rows]
+        row_instances = [self._hydrate(mapper, row) for row in rows]
+        joined_collection = any(
+            loader.strategy == "joined"
+            and _query_relationship(mapper, loader.relationship).uselist
+            for loader in loaders
+        )
+        if joined_collection:
+            instances = list(dict.fromkeys(row_instances))
+        else:
+            instances = row_instances
         for loader in loaders:
             relation = _query_relationship(mapper, loader.relationship)
             if loader.strategy == "joined":
-                for instance, row in zip(instances, rows, strict=True):
+                for instance, row in zip(row_instances, rows, strict=True):
                     self._hydrate_joined(instance, relation, row)
             else:
                 self._selectin_load(instances, relation)
@@ -2451,11 +2533,12 @@ class OrmSession:
         )
         related = None
         if all(value is not None for value in identity_values):
-            values = _mapped_row_values(
-                target_mapper, row, prefix, self._provider
-            )
+            values = _mapped_row_values(target_mapper, row, prefix, self._provider)
             related = self._hydrate(target_mapper, values)
-        _assign_loaded_relationship(instance, relation, related)
+        if relation.uselist:
+            _append_joined_relationship(instance, relation, related)
+        else:
+            _assign_loaded_relationship(instance, relation, related)
 
     def _selectin_load(
         self,
@@ -2469,35 +2552,71 @@ class OrmSession:
         if direction == "many-to-one":
             values = tuple(
                 dict.fromkeys(
-                    instance.__dict__.get(relation.foreign_key)
+                    tuple(instance.__dict__.get(name) for name in relation.foreign_keys)
                     for instance in instances
-                    if instance.__dict__.get(relation.foreign_key) is not None
+                    if all(
+                        instance.__dict__.get(name) is not None
+                        for name in relation.foreign_keys
+                    )
                 )
             )
-            related = self._selectin_entities(
-                target_mapper, _single_primary(target_mapper).column, values
+            if not values:
+                for instance in instances:
+                    _assign_loaded_relationship(instance, relation, None)
+                return
+            columns = tuple(item.column for item in target_mapper.primary_keys)
+            if any(column is None for column in columns):
+                raise OrmMappingError("selectinload privo di chiave primaria")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in columns if column is not None),
+                values,
+                "orm_eager",
             )
-            by_identity = {_identity(target_mapper, item)[0]: item for item in related}
+            related = self._execute_entities(
+                target_mapper,
+                select(*_orm_projections(target_mapper, provider=self._provider)).where(
+                    predicate
+                ),
+                parameters,
+            )
+            by_identity = {_identity(target_mapper, item): item for item in related}
             for instance in instances:
+                identity = tuple(
+                    instance.__dict__.get(name) for name in relation.foreign_keys
+                )
                 _assign_loaded_relationship(
                     instance,
                     relation,
-                    by_identity.get(instance.__dict__.get(relation.foreign_key)),
+                    by_identity.get(identity),
                 )
             return
         owner_mapper = _mapper(type(instances[0]))
-        _single_primary(owner_mapper)
-        _single_primary(target_mapper)
-        owner_ids = tuple(_identity(owner_mapper, item)[0] for item in instances)
+        owner_identities = tuple(_identity(owner_mapper, item) for item in instances)
         if direction in {"one-to-many", "one-to-one"}:
-            foreign = target_mapper.attribute(relation.foreign_key or "").column
-            related = self._selectin_entities(target_mapper, foreign, owner_ids)
-            grouped: dict[Any, list[DeclarativeBase]] = {key: [] for key in owner_ids}
+            foreign = tuple(
+                target_mapper.attribute(name).column for name in relation.foreign_keys
+            )
+            if any(column is None for column in foreign):
+                raise OrmMappingError("selectinload privo di foreign key")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in foreign if column is not None),
+                owner_identities,
+                "orm_eager",
+            )
+            related = self._execute_entities(
+                target_mapper,
+                select(*_orm_projections(target_mapper, provider=self._provider)).where(
+                    predicate
+                ),
+                parameters,
+            )
+            grouped: dict[Any, list[DeclarativeBase]] = {
+                key: [] for key in owner_identities
+            }
             for item in related:
-                grouped.setdefault(item.__dict__.get(relation.foreign_key), []).append(
-                    item
-                )
-            for instance, identity in zip(instances, owner_ids, strict=True):
+                key = tuple(item.__dict__.get(name) for name in relation.foreign_keys)
+                grouped.setdefault(key, []).append(item)
+            for instance, identity in zip(instances, owner_identities, strict=True):
                 values = grouped.get(identity, [])
                 if direction == "one-to-one" and len(values) > 1:
                     raise MultipleResultsFound("relationship one-to-one non univoca")
@@ -2509,7 +2628,7 @@ class OrmSession:
                     else values,
                 )
             return
-        self._selectin_many_to_many(instances, relation, owner_ids)
+        self._selectin_many_to_many(instances, relation, owner_identities)
 
     def _selectin_entities(
         self,
@@ -2523,44 +2642,52 @@ class OrmSession:
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
         predicate = column.in_(*(bind(name) for name in parameters))
-        statement = select(
-            *_orm_projections(mapper, provider=self._provider)
-        ).where(predicate)
+        statement = select(*_orm_projections(mapper, provider=self._provider)).where(
+            predicate
+        )
         return self._execute_entities(mapper, statement, parameters)
 
     def _selectin_many_to_many(
         self,
         instances: list[DeclarativeBase],
         relation: Relationship[Any],
-        owner_ids: tuple[Any, ...],
+        owner_ids: tuple[tuple[Any, ...], ...],
     ) -> None:
         secondary = relation.secondary
         target_mapper = _mapper(relation.target)
-        target_primary = _single_primary(target_mapper).column
-        if secondary is None or target_primary is None:
+        if secondary is None:
             raise OrmMappingError("many-to-many non configurata")
-        parameters = {
-            f"orm_eager_{index}": value for index, value in enumerate(owner_ids)
-        }
-        local_column = secondary.c[relation.secondary_local_key or ""]
+        local_columns = _secondary_columns(relation, remote=False)
+        remote_columns = _secondary_columns(relation, remote=True)
+        predicate, parameters = _identity_disjunction(
+            local_columns, owner_ids, "orm_eager"
+        )
+        owner_projections = tuple(
+            column.label(f"orm_eager_owner_{index}")
+            for index, column in enumerate(local_columns)
+        )
         statement = (
             select(
                 *_orm_projections(target_mapper, provider=self._provider),
-                local_column.label("orm_eager_owner"),
+                *owner_projections,
             )
             .select_from(target_mapper.table)
             .join(
                 secondary,
-                secondary.c[relation.secondary_remote_key or ""] == target_primary,
+                _column_equality(remote_columns, _primary_columns(target_mapper)),
             )
-            .where(local_column.in_(*(bind(name) for name in parameters)))
+            .where(predicate)
         )
         result = self._transaction.execute(statement, parameters)
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM eager senza risultato relazionale")
         grouped: dict[Any, list[DeclarativeBase]] = {key: [] for key in owner_ids}
         for row in result.all():
-            grouped.setdefault(row["orm_eager_owner"], []).append(
+            owner_identity = tuple(
+                row[f"orm_eager_owner_{index}"]
+                for index in range(len(local_columns))
+            )
+            grouped.setdefault(owner_identity, []).append(
                 self._hydrate(target_mapper, row)
             )
         for instance, identity in zip(instances, owner_ids, strict=True):
@@ -2610,7 +2737,10 @@ class OrmSession:
         self._deferred_foreign_keys.clear()
         by_id = {id(instance): instance for instance in pending}
         dependencies: dict[int, set[int]] = {key: set() for key in by_id}
-        edges: dict[tuple[int, int], tuple[DeclarativeBase, DeclarativeBase, str]] = {}
+        edges: dict[
+            tuple[int, int],
+            tuple[DeclarativeBase, DeclarativeBase, tuple[str, ...]],
+        ] = {}
         for instance in pending:
             mapper = _mapper(type(instance))
             for relation in mapper.relationships:
@@ -2629,14 +2759,14 @@ class OrmSession:
                             edges[(id(instance), id(related))] = (
                                 instance,
                                 related,
-                                relation.foreign_key or "",
+                                relation.foreign_keys,
                             )
                         elif relation.direction in {"one-to-many", "one-to-one"}:
                             dependencies[id(related)].add(id(instance))
                             edges[(id(related), id(instance))] = (
                                 related,
                                 instance,
-                                relation.foreign_key or "",
+                                relation.foreign_keys,
                             )
                     elif state.status is not ObjectState.PERSISTENT:
                         raise OrmStateError(
@@ -2651,7 +2781,10 @@ class OrmSession:
                 for child_id, parents in remaining.items():
                     for parent_id in parents:
                         child, parent, foreign_key = edges[(child_id, parent_id)]
-                        if _mapper(type(child)).attribute(foreign_key).nullable:
+                        if all(
+                            _mapper(type(child)).attribute(name).nullable
+                            for name in foreign_key
+                        ):
                             deferred = (child_id, parent_id, child, parent, foreign_key)
                             break
                     if deferred is not None:
@@ -2678,11 +2811,17 @@ class OrmSession:
                 continue
             for related in _loaded_relationship_values(instance, relation):
                 if relation.direction == "many-to-one":
-                    value = _identity(_mapper(relation.target), related)[0]
-                    setattr(instance, relation.foreign_key or "", value)
+                    identity = _identity(_mapper(relation.target), related)
+                    for foreign_key, value in zip(
+                        relation.foreign_keys, identity, strict=True
+                    ):
+                        setattr(instance, foreign_key, value)
                 elif relation.direction in {"one-to-many", "one-to-one"}:
-                    value = _identity(mapper, instance)[0]
-                    setattr(related, relation.foreign_key or "", value)
+                    identity = _identity(mapper, instance)
+                    for foreign_key, value in zip(
+                        relation.foreign_keys, identity, strict=True
+                    ):
+                        setattr(related, foreign_key, value)
 
     def _flush_many_to_many(self) -> None:
         seen: set[tuple[Any, ...]] = set()
@@ -2692,82 +2831,70 @@ class OrmSession:
             for relation in mapper.relationships:
                 if relation.secondary is None or relation.name not in instance.__dict__:
                     continue
-                local_value = _identity(mapper, instance)[0]
+                local_value = _identity(mapper, instance)
                 current = {
                     _identity(_mapper(relation.target), related)
                     for related in _loaded_relationship_values(instance, relation)
                 }
                 original = set(state.relationship_original.get(relation.name or "", ()))
                 for remote_identity in current - original:
-                    remote_value = remote_identity[0]
+                    remote_value = remote_identity
                     signature = _association_signature(
                         relation, local_value, remote_value
                     )
                     if signature in seen:
                         continue
                     seen.add(signature)
+                    assignments, parameters = _association_values(
+                        relation, local_value, remote_value
+                    )
                     self._transaction.execute(
-                        insert(relation.secondary).values(
-                            **{
-                                relation.secondary_local_key or "": bind(
-                                    "orm_link_local"
-                                ),
-                                relation.secondary_remote_key or "": bind(
-                                    "orm_link_remote"
-                                ),
-                            }
-                        ),
-                        {
-                            "orm_link_local": local_value,
-                            "orm_link_remote": remote_value,
-                        },
+                        insert(relation.secondary).values(**assignments), parameters
                     )
                 for remote_identity in original - current:
-                    remote_value = remote_identity[0]
+                    remote_value = remote_identity
                     signature = _association_signature(
                         relation, local_value, remote_value
                     )
                     if signature in seen:
                         continue
                     seen.add(signature)
-                    predicate = (
-                        relation.secondary.c[relation.secondary_local_key or ""]
-                        == bind("orm_link_local")
-                    ) & (
-                        relation.secondary.c[relation.secondary_remote_key or ""]
-                        == bind("orm_link_remote")
+                    predicate, parameters = _association_predicate(
+                        relation, local_value, remote_value
                     )
                     self._transaction.execute(
                         delete(relation.secondary).where(predicate),
-                        {
-                            "orm_link_local": local_value,
-                            "orm_link_remote": remote_value,
-                        },
+                        parameters,
                     )
                 _remember_relationship(instance, relation)
 
     def _remove_deleted_associations(self) -> None:
-        seen: set[tuple[int, str, Any]] = set()
+        seen: set[tuple[Any, ...]] = set()
         for instance in self._deleted:
             mapper = _mapper(type(instance))
-            local_value = _identity(mapper, instance)[0]
+            local_value = _identity(mapper, instance)
             for relation in mapper.relationships:
                 if relation.secondary is None:
                     continue
                 signature = (
                     id(relation.secondary),
-                    relation.secondary_local_key or "",
-                    local_value,
+                    *sorted(
+                        zip(
+                            relation.secondary_local_keys,
+                            local_value,
+                            strict=True,
+                        ),
+                        key=lambda item: item[0],
+                    ),
                 )
                 if signature in seen:
                     continue
                 seen.add(signature)
+                predicate, parameters = _association_owner_predicate(
+                    relation, local_value
+                )
                 self._transaction.execute(
-                    delete(relation.secondary).where(
-                        relation.secondary.c[relation.secondary_local_key or ""]
-                        == bind("orm_link_owner")
-                    ),
-                    {"orm_link_owner": local_value},
+                    delete(relation.secondary).where(predicate), parameters
                 )
 
     def _preflight(self, instances: tuple[DeclarativeBase, ...]) -> None:
@@ -2816,7 +2943,7 @@ class OrmSession:
                             or attribute.generated
                             or attribute.server_default
                             or any(
-                                relation.foreign_key == name
+                                name in relation.foreign_keys
                                 and relation.name in instance.__dict__
                                 and instance.__dict__[relation.name] is not None
                                 for relation in mapper.relationships
@@ -2854,8 +2981,8 @@ class OrmSession:
         for index, attribute in enumerate(mapper.attributes):
             name = attribute.name
             if any(
-                deferred is instance and foreign_key == name
-                for deferred, _, foreign_key in self._deferred_foreign_keys
+                deferred is instance and name in foreign_keys
+                for deferred, _, foreign_keys in self._deferred_foreign_keys
             ):
                 continue
             if name is not None and name in instance.__dict__:
@@ -2966,13 +3093,15 @@ class OrmSession:
 
     def _propagate_primary_key(self, instance: DeclarativeBase) -> None:
         mapper = _mapper(type(instance))
-        _single_primary(mapper)
-        primary = _identity(mapper, instance)[0]
+        identity = _identity(mapper, instance)
         for relation in mapper.relationships:
             if relation.direction not in {"one-to-many", "one-to-one"}:
                 continue
             for related in _loaded_relationship_values(instance, relation):
-                setattr(related, relation.foreign_key or "", primary)
+                for foreign_key, value in zip(
+                    relation.foreign_keys, identity, strict=True
+                ):
+                    setattr(related, foreign_key, value)
 
     def _update(self, instance: DeclarativeBase) -> None:
         mapper = _mapper(type(instance))
@@ -2988,17 +3117,14 @@ class OrmSession:
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
             if isinstance(attribute.type_, Geometry) and (
-                value is not None
-                or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+                value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
                     bind(bind_name),
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
-                parameters[bind_name] = _geometry_parameter_value(
-                    value, self._provider
-                )
+                parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -3381,25 +3507,31 @@ class AsyncOrmSession(OrmSession):
         target_mapper = _mapper(descriptor.target)
         direction = descriptor.direction
         if direction == "many-to-one":
-            foreign_value = instance.__dict__.get(descriptor.foreign_key)
+            foreign_value = tuple(
+                instance.__dict__.get(name) for name in descriptor.foreign_keys
+            )
             return (
                 None
-                if foreign_value is None
-                else await self.get(descriptor.target, foreign_value)
+                if any(value is None for value in foreign_value)
+                else await self.get(
+                    descriptor.target,
+                    foreign_value[0] if len(foreign_value) == 1 else foreign_value,
+                )
             )
         owner_mapper = _mapper(type(instance))
-        _single_primary(owner_mapper)
-        _single_primary(target_mapper)
-        owner_identity = _identity(owner_mapper, instance)[0]
+        owner_identity = _identity(owner_mapper, instance)
         if direction in {"one-to-many", "one-to-one"}:
-            foreign = target_mapper.attribute(descriptor.foreign_key or "").column
-            if foreign is None:
-                raise OrmMappingError("foreign key relationship senza colonna")
-            rows = (
-                await self.query(descriptor.target)
-                .where(foreign == bind("orm_relationship_identity"))
-                .all({"orm_relationship_identity": owner_identity})
+            foreign = tuple(
+                target_mapper.attribute(name).column for name in descriptor.foreign_keys
             )
+            if any(column is None for column in foreign):
+                raise OrmMappingError("foreign key relationship senza colonna")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in foreign if column is not None),
+                (owner_identity,),
+                "orm_relationship",
+            )
+            rows = await self.query(descriptor.target).where(predicate).all(parameters)
             if direction == "one-to-one":
                 if len(rows) > 1:
                     raise MultipleResultsFound("relationship one-to-one non univoca")
@@ -3408,24 +3540,22 @@ class AsyncOrmSession(OrmSession):
         secondary = descriptor.secondary
         if secondary is None:
             raise OrmMappingError("relationship many-to-many senza secondary")
-        target_primary = _single_primary(target_mapper).column
-        if target_primary is None:
-            raise OrmMappingError("target relationship senza chiave")
+        local_columns = _secondary_columns(descriptor, remote=False)
+        remote_columns = _secondary_columns(descriptor, remote=True)
+        target_primary = _primary_columns(target_mapper)
+        predicate, parameters = _identity_disjunction(
+            local_columns, (owner_identity,), "orm_relationship"
+        )
         statement = (
             select(*_orm_projections(target_mapper, provider=self._provider))
             .select_from(target_mapper.table)
             .join(
                 secondary,
-                secondary.c[descriptor.secondary_remote_key or ""] == target_primary,
+                _column_equality(remote_columns, target_primary),
             )
-            .where(
-                secondary.c[descriptor.secondary_local_key or ""]
-                == bind("orm_relationship_identity")
-            )
+            .where(predicate)
         )
-        return await self._execute_entities_async(
-            target_mapper, statement, {"orm_relationship_identity": owner_identity}
-        )
+        return await self._execute_entities_async(target_mapper, statement, parameters)
 
     async def _execute_entities_async(
         self,
@@ -3442,11 +3572,20 @@ class AsyncOrmSession(OrmSession):
         if not isinstance(result, Result):
             raise OrmStateError("SELECT ORM senza risultato relazionale")
         rows = result.all()
-        instances = [await self._hydrate_row_async(mapper, row) for row in rows]
+        row_instances = [await self._hydrate_row_async(mapper, row) for row in rows]
+        joined_collection = any(
+            loader.strategy == "joined"
+            and _query_relationship(mapper, loader.relationship).uselist
+            for loader in loaders
+        )
+        if joined_collection:
+            instances = list(dict.fromkeys(row_instances))
+        else:
+            instances = row_instances
         for loader in loaders:
             relation = _query_relationship(mapper, loader.relationship)
             if loader.strategy == "joined":
-                for instance, row in zip(instances, rows, strict=True):
+                for instance, row in zip(row_instances, rows, strict=True):
                     await self._hydrate_joined_async(instance, relation, row)
             else:
                 await self._selectin_load_async(instances, relation)
@@ -3468,11 +3607,12 @@ class AsyncOrmSession(OrmSession):
         )
         related = None
         if all(value is not None for value in identity_values):
-            values = _mapped_row_values(
-                target_mapper, row, prefix, self._provider
-            )
+            values = _mapped_row_values(target_mapper, row, prefix, self._provider)
             related = await self._hydrate_row_async(target_mapper, values)
-        _assign_loaded_relationship(instance, relation, related)
+        if relation.uselist:
+            _append_joined_relationship(instance, relation, related)
+        else:
+            _assign_loaded_relationship(instance, relation, related)
 
     async def _selectin_load_async(
         self,
@@ -3486,37 +3626,71 @@ class AsyncOrmSession(OrmSession):
         if direction == "many-to-one":
             values = tuple(
                 dict.fromkeys(
-                    instance.__dict__.get(relation.foreign_key)
+                    tuple(instance.__dict__.get(name) for name in relation.foreign_keys)
                     for instance in instances
-                    if instance.__dict__.get(relation.foreign_key) is not None
+                    if all(
+                        instance.__dict__.get(name) is not None
+                        for name in relation.foreign_keys
+                    )
                 )
             )
-            related = await self._selectin_entities_async(
-                target_mapper, _single_primary(target_mapper).column, values
+            if not values:
+                for instance in instances:
+                    _assign_loaded_relationship(instance, relation, None)
+                return
+            columns = tuple(item.column for item in target_mapper.primary_keys)
+            if any(column is None for column in columns):
+                raise OrmMappingError("selectinload privo di chiave primaria")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in columns if column is not None),
+                values,
+                "orm_eager",
             )
-            by_identity = {_identity(target_mapper, item)[0]: item for item in related}
+            related = await self._execute_entities_async(
+                target_mapper,
+                select(*_orm_projections(target_mapper, provider=self._provider)).where(
+                    predicate
+                ),
+                parameters,
+            )
+            by_identity = {_identity(target_mapper, item): item for item in related}
             for instance in instances:
+                identity = tuple(
+                    instance.__dict__.get(name) for name in relation.foreign_keys
+                )
                 _assign_loaded_relationship(
                     instance,
                     relation,
-                    by_identity.get(instance.__dict__.get(relation.foreign_key)),
+                    by_identity.get(identity),
                 )
             return
         owner_mapper = _mapper(type(instances[0]))
-        _single_primary(owner_mapper)
-        _single_primary(target_mapper)
-        owner_ids = tuple(_identity(owner_mapper, item)[0] for item in instances)
+        owner_identities = tuple(_identity(owner_mapper, item) for item in instances)
         if direction in {"one-to-many", "one-to-one"}:
-            foreign = target_mapper.attribute(relation.foreign_key or "").column
-            related = await self._selectin_entities_async(
-                target_mapper, foreign, owner_ids
+            foreign = tuple(
+                target_mapper.attribute(name).column for name in relation.foreign_keys
             )
-            grouped: dict[Any, list[DeclarativeBase]] = {key: [] for key in owner_ids}
+            if any(column is None for column in foreign):
+                raise OrmMappingError("selectinload privo di foreign key")
+            predicate, parameters = _identity_disjunction(
+                tuple(column for column in foreign if column is not None),
+                owner_identities,
+                "orm_eager",
+            )
+            related = await self._execute_entities_async(
+                target_mapper,
+                select(*_orm_projections(target_mapper, provider=self._provider)).where(
+                    predicate
+                ),
+                parameters,
+            )
+            grouped: dict[Any, list[DeclarativeBase]] = {
+                key: [] for key in owner_identities
+            }
             for item in related:
-                grouped.setdefault(item.__dict__.get(relation.foreign_key), []).append(
-                    item
-                )
-            for instance, identity in zip(instances, owner_ids, strict=True):
+                key = tuple(item.__dict__.get(name) for name in relation.foreign_keys)
+                grouped.setdefault(key, []).append(item)
+            for instance, identity in zip(instances, owner_identities, strict=True):
                 values = grouped.get(identity, [])
                 if direction == "one-to-one" and len(values) > 1:
                     raise MultipleResultsFound("relationship one-to-one non univoca")
@@ -3528,7 +3702,7 @@ class AsyncOrmSession(OrmSession):
                     else values,
                 )
             return
-        await self._selectin_many_to_many_async(instances, relation, owner_ids)
+        await self._selectin_many_to_many_async(instances, relation, owner_identities)
 
     async def _selectin_entities_async(
         self,
@@ -3541,37 +3715,41 @@ class AsyncOrmSession(OrmSession):
         if column is None:
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
-        statement = select(
-            *_orm_projections(mapper, provider=self._provider)
-        ).where(column.in_(*(bind(name) for name in parameters)))
+        statement = select(*_orm_projections(mapper, provider=self._provider)).where(
+            column.in_(*(bind(name) for name in parameters))
+        )
         return await self._execute_entities_async(mapper, statement, parameters)
 
     async def _selectin_many_to_many_async(
         self,
         instances: list[DeclarativeBase],
         relation: Relationship[Any],
-        owner_ids: tuple[Any, ...],
+        owner_ids: tuple[tuple[Any, ...], ...],
     ) -> None:
         secondary = relation.secondary
         target_mapper = _mapper(relation.target)
-        target_primary = _single_primary(target_mapper).column
-        if secondary is None or target_primary is None:
+        if secondary is None:
             raise OrmMappingError("many-to-many non configurata")
-        parameters = {
-            f"orm_eager_{index}": value for index, value in enumerate(owner_ids)
-        }
-        local_column = secondary.c[relation.secondary_local_key or ""]
+        local_columns = _secondary_columns(relation, remote=False)
+        remote_columns = _secondary_columns(relation, remote=True)
+        predicate, parameters = _identity_disjunction(
+            local_columns, owner_ids, "orm_eager"
+        )
+        owner_projections = tuple(
+            column.label(f"orm_eager_owner_{index}")
+            for index, column in enumerate(local_columns)
+        )
         statement = (
             select(
                 *_orm_projections(target_mapper, provider=self._provider),
-                local_column.label("orm_eager_owner"),
+                *owner_projections,
             )
             .select_from(target_mapper.table)
             .join(
                 secondary,
-                secondary.c[relation.secondary_remote_key or ""] == target_primary,
+                _column_equality(remote_columns, _primary_columns(target_mapper)),
             )
-            .where(local_column.in_(*(bind(name) for name in parameters)))
+            .where(predicate)
         )
         transaction = await self._ensure_started()
         result = await transaction.execute(statement, parameters)
@@ -3579,7 +3757,11 @@ class AsyncOrmSession(OrmSession):
             raise OrmStateError("SELECT ORM eager senza risultato relazionale")
         grouped: dict[Any, list[DeclarativeBase]] = {key: [] for key in owner_ids}
         for row in result.all():
-            grouped.setdefault(row["orm_eager_owner"], []).append(
+            owner_identity = tuple(
+                row[f"orm_eager_owner_{index}"]
+                for index in range(len(local_columns))
+            )
+            grouped.setdefault(owner_identity, []).append(
                 await self._hydrate_row_async(target_mapper, row)
             )
         for instance, identity in zip(instances, owner_ids, strict=True):
@@ -3610,11 +3792,11 @@ class AsyncOrmSession(OrmSession):
                 self._synchronize_relationships(instance)
                 self._preflight((instance,))
                 await self._insert_async(instance)
-            for instance, related, foreign_key in self._deferred_foreign_keys:
-                instance.__dict__[foreign_key] = _identity(
-                    _mapper(type(related)), related
-                )[0]
-                _state(instance).dirty.add(foreign_key)
+            for instance, related, foreign_keys in self._deferred_foreign_keys:
+                identity = _identity(_mapper(type(related)), related)
+                for foreign_key, value in zip(foreign_keys, identity, strict=True):
+                    instance.__dict__[foreign_key] = value
+                    _state(instance).dirty.add(foreign_key)
                 await self._update_async(instance)
             for instance in dirty:
                 if _state(instance).status is ObjectState.PERSISTENT:
@@ -3681,8 +3863,8 @@ class AsyncOrmSession(OrmSession):
         for index, attribute in enumerate(mapper.attributes):
             name = attribute.name
             if any(
-                deferred is instance and foreign_key == name
-                for deferred, _, foreign_key in self._deferred_foreign_keys
+                deferred is instance and name in foreign_keys
+                for deferred, _, foreign_keys in self._deferred_foreign_keys
             ):
                 continue
             if name is not None and name in instance.__dict__:
@@ -3797,82 +3979,70 @@ class AsyncOrmSession(OrmSession):
             for relation in mapper.relationships:
                 if relation.secondary is None or relation.name not in instance.__dict__:
                     continue
-                local_value = _identity(mapper, instance)[0]
+                local_value = _identity(mapper, instance)
                 current = {
                     _identity(_mapper(relation.target), related)
                     for related in _loaded_relationship_values(instance, relation)
                 }
                 original = set(state.relationship_original.get(relation.name or "", ()))
                 for remote_identity in current - original:
-                    remote_value = remote_identity[0]
+                    remote_value = remote_identity
                     signature = _association_signature(
                         relation, local_value, remote_value
                     )
                     if signature in seen:
                         continue
                     seen.add(signature)
+                    assignments, parameters = _association_values(
+                        relation, local_value, remote_value
+                    )
                     await self._transaction.execute(
-                        insert(relation.secondary).values(
-                            **{
-                                relation.secondary_local_key or "": bind(
-                                    "orm_link_local"
-                                ),
-                                relation.secondary_remote_key or "": bind(
-                                    "orm_link_remote"
-                                ),
-                            }
-                        ),
-                        {
-                            "orm_link_local": local_value,
-                            "orm_link_remote": remote_value,
-                        },
+                        insert(relation.secondary).values(**assignments), parameters
                     )
                 for remote_identity in original - current:
-                    remote_value = remote_identity[0]
+                    remote_value = remote_identity
                     signature = _association_signature(
                         relation, local_value, remote_value
                     )
                     if signature in seen:
                         continue
                     seen.add(signature)
-                    predicate = (
-                        relation.secondary.c[relation.secondary_local_key or ""]
-                        == bind("orm_link_local")
-                    ) & (
-                        relation.secondary.c[relation.secondary_remote_key or ""]
-                        == bind("orm_link_remote")
+                    predicate, parameters = _association_predicate(
+                        relation, local_value, remote_value
                     )
                     await self._transaction.execute(
                         delete(relation.secondary).where(predicate),
-                        {
-                            "orm_link_local": local_value,
-                            "orm_link_remote": remote_value,
-                        },
+                        parameters,
                     )
                 _remember_relationship(instance, relation)
 
     async def _remove_deleted_associations_async(self) -> None:
-        seen: set[tuple[int, str, Any]] = set()
+        seen: set[tuple[Any, ...]] = set()
         for instance in self._deleted:
             mapper = _mapper(type(instance))
-            local_value = _identity(mapper, instance)[0]
+            local_value = _identity(mapper, instance)
             for relation in mapper.relationships:
                 if relation.secondary is None:
                     continue
                 signature = (
                     id(relation.secondary),
-                    relation.secondary_local_key or "",
-                    local_value,
+                    *sorted(
+                        zip(
+                            relation.secondary_local_keys,
+                            local_value,
+                            strict=True,
+                        ),
+                        key=lambda item: item[0],
+                    ),
                 )
                 if signature in seen:
                     continue
                 seen.add(signature)
+                predicate, parameters = _association_owner_predicate(
+                    relation, local_value
+                )
                 await self._transaction.execute(
-                    delete(relation.secondary).where(
-                        relation.secondary.c[relation.secondary_local_key or ""]
-                        == bind("orm_link_owner")
-                    ),
-                    {"orm_link_owner": local_value},
+                    delete(relation.secondary).where(predicate), parameters
                 )
 
     async def _update_async(self, instance: DeclarativeBase) -> None:
@@ -3889,17 +4059,14 @@ class AsyncOrmSession(OrmSession):
             attribute = mapper.attribute(name)
             value = instance.__dict__[name]
             if isinstance(attribute.type_, Geometry) and (
-                value is not None
-                or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+                value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
                     bind(bind_name),
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
-                parameters[bind_name] = _geometry_parameter_value(
-                    value, self._provider
-                )
+                parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
                 assignments[name] = bind(bind_name)
                 parameters[bind_name] = value
@@ -4069,9 +4236,7 @@ def _validate_geometry_row(
             or isinstance(observed, bool)
             or observed != type_.srid
         ):
-            raise OrmMappingError(
-                "SRID Geometry ORM diverso dal mapping dichiarato"
-            )
+            raise OrmMappingError("SRID Geometry ORM diverso dal mapping dichiarato")
 
 
 def _projected_entity_is_null(mapper: Mapper, values: Mapping[str, Any]) -> bool:
@@ -4084,14 +4249,97 @@ def _relationship_join_predicate(
     target_mapper = _mapper(relation.target)
     direction = relation.direction
     if direction == "many-to-one":
-        foreign = mapper.attribute(relation.foreign_key or "").column
-        primary = _single_primary(target_mapper).column
+        foreign = tuple(mapper.attribute(name).column for name in relation.foreign_keys)
+        primary = tuple(item.column for item in target_mapper.primary_keys)
     else:
-        foreign = target_mapper.attribute(relation.foreign_key or "").column
-        primary = _single_primary(mapper).column
-    if foreign is None or primary is None:
+        foreign = tuple(
+            target_mapper.attribute(name).column for name in relation.foreign_keys
+        )
+        primary = tuple(item.column for item in mapper.primary_keys)
+    if any(item is None for item in (*foreign, *primary)) or len(foreign) != len(
+        primary
+    ):
         raise OrmMappingError("relationship priva delle colonne di join")
-    return foreign == primary
+    predicates = tuple(
+        left == right
+        for left, right in zip(foreign, primary, strict=True)
+        if left is not None and right is not None
+    )
+    return predicates[0] if len(predicates) == 1 else and_(*predicates)
+
+
+def _relationship_keys(
+    value: str | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    values = (value,) if isinstance(value, str) else value
+    if (
+        not isinstance(values, tuple)
+        or not values
+        or any(not isinstance(item, str) or not item for item in values)
+        or len(set(values)) != len(values)
+    ):
+        raise OrmMappingError("chiavi secondary non valide")
+    return values
+
+
+def _primary_columns(mapper: Mapper) -> tuple[Column, ...]:
+    columns = tuple(item.column for item in mapper.primary_keys)
+    if any(column is None for column in columns):
+        raise OrmMappingError("mapper privo delle colonne primary key")
+    return tuple(column for column in columns if column is not None)
+
+
+def _secondary_columns(
+    relation: Relationship[Any], *, remote: bool
+) -> tuple[Column, ...]:
+    secondary = relation.secondary
+    if secondary is None:
+        raise OrmMappingError("relationship many-to-many senza secondary")
+    keys = (
+        relation.secondary_remote_keys if remote else relation.secondary_local_keys
+    )
+    return tuple(secondary.c[key] for key in keys)
+
+
+def _column_equality(
+    left: tuple[Column, ...], right: tuple[Column, ...]
+) -> Predicate:
+    if not left or len(left) != len(right):
+        raise OrmMappingError("join many-to-many con arita incoerente")
+    predicates = tuple(
+        one == two for one, two in zip(left, right, strict=True)
+    )
+    return predicates[0] if len(predicates) == 1 else and_(*predicates)
+
+
+def _identity_disjunction(
+    columns: tuple[Column, ...],
+    identities: tuple[tuple[Any, ...], ...],
+    prefix: str,
+) -> tuple[Predicate, dict[str, Any]]:
+    if (
+        not columns
+        or not identities
+        or any(len(identity) != len(columns) for identity in identities)
+    ):
+        raise OrmMappingError("identita composita non coerente con le colonne")
+    parameters: dict[str, Any] = {}
+    alternatives: list[Predicate] = []
+    for row_index, identity in enumerate(identities):
+        terms: list[Predicate] = []
+        for column_index, (column, value) in enumerate(
+            zip(columns, identity, strict=True)
+        ):
+            name = f"{prefix}_{row_index}_{column_index}"
+            parameters[name] = value
+            terms.append(column == bind(name))
+        alternatives.append(terms[0] if len(terms) == 1 else and_(*terms))
+    return (
+        alternatives[0] if len(alternatives) == 1 else or_(*alternatives),
+        parameters,
+    )
 
 
 def _join_statement(
@@ -4114,21 +4362,23 @@ def _join_statement(
     if relation.secondary is not None:
         if on is not None:
             raise OrmMappingError("join many-to-many non accetta on esplicito")
-        local_primary = _single_primary(mapper).column
-        target_primary = _single_primary(target_mapper).column
-        if local_primary is None or target_primary is None:
-            raise OrmMappingError("join relationship privo di chiave")
         secondary = relation.secondary
         return (
             statement.select_from(mapper.table)
             .join(
                 secondary,
-                local_primary == secondary.c[relation.secondary_local_key or ""],
+                _column_equality(
+                    _primary_columns(mapper),
+                    _secondary_columns(relation, remote=False),
+                ),
                 kind=kind,
             )
             .join(
                 target_mapper.table,
-                secondary.c[relation.secondary_remote_key or ""] == target_primary,
+                _column_equality(
+                    _secondary_columns(relation, remote=True),
+                    _primary_columns(target_mapper),
+                ),
                 kind=kind,
             )
         )
@@ -4153,9 +4403,7 @@ def _joinedload_statement(
     joined = _join_statement(mapper, statement, relation, None, "left")
     projections = (
         *joined.projections,
-        *_orm_projections(
-            _mapper(relation.target), _loader_prefix(relation), provider
-        ),
+        *_orm_projections(_mapper(relation.target), _loader_prefix(relation), provider),
     )
     return replace(joined, projections=projections)
 
@@ -4183,6 +4431,25 @@ def _assign_loaded_relationship(
         inverse._assign_from_backref(value, instance)
 
 
+def _append_joined_relationship(
+    instance: DeclarativeBase,
+    relation: Relationship[Any],
+    value: DeclarativeBase | None,
+) -> None:
+    if relation.name is None or not relation.uselist:
+        raise OrmMappingError("accumulo joinedload richiede una collezione")
+    collection = instance.__dict__.get(relation.name)
+    if not isinstance(collection, _RelationshipCollection):
+        collection = _RelationshipCollection(instance, relation)
+        instance.__dict__[relation.name] = collection
+    if value is not None:
+        collection._append_from_backref(value)
+        if relation.back_populates is not None:
+            inverse = _mapper(relation.target).relationship(relation.back_populates)
+            inverse._assign_from_backref(value, instance)
+    _remember_relationship(instance, relation)
+
+
 def _loaded_relationship_values(
     instance: DeclarativeBase, relation: Relationship[Any]
 ) -> tuple[DeclarativeBase, ...]:
@@ -4208,16 +4475,67 @@ def _remember_relationship(
 
 
 def _association_signature(
-    relation: Relationship[Any], local_value: Any, remote_value: Any
+    relation: Relationship[Any],
+    local_value: tuple[Any, ...],
+    remote_value: tuple[Any, ...],
 ) -> tuple[Any, ...]:
-    pairs = sorted(
-        (
-            (relation.secondary_local_key or "", local_value),
-            (relation.secondary_remote_key or "", remote_value),
-        ),
-        key=lambda item: item[0],
+    pairs = tuple(
+        zip(relation.secondary_local_keys, local_value, strict=True)
+    ) + tuple(zip(relation.secondary_remote_keys, remote_value, strict=True))
+    return (id(relation.secondary), *sorted(pairs, key=lambda item: item[0]))
+
+
+def _association_values(
+    relation: Relationship[Any],
+    local_identity: tuple[Any, ...],
+    remote_identity: tuple[Any, ...],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    assignments: dict[str, Any] = {}
+    parameters: dict[str, Any] = {}
+    for role, keys, identity in (
+        ("local", relation.secondary_local_keys, local_identity),
+        ("remote", relation.secondary_remote_keys, remote_identity),
+    ):
+        if len(keys) != len(identity):
+            raise OrmMappingError("identita many-to-many con arita incoerente")
+        for index, (key, value) in enumerate(zip(keys, identity, strict=True)):
+            name = f"orm_link_{role}_{index}"
+            assignments[key] = bind(name)
+            parameters[name] = value
+    return assignments, parameters
+
+
+def _association_predicate(
+    relation: Relationship[Any],
+    local_identity: tuple[Any, ...],
+    remote_identity: tuple[Any, ...],
+) -> tuple[Predicate, dict[str, Any]]:
+    assignments, parameters = _association_values(
+        relation, local_identity, remote_identity
     )
-    return (id(relation.secondary), *pairs[0], *pairs[1])
+    secondary = relation.secondary
+    if secondary is None:
+        raise OrmMappingError("relationship many-to-many senza secondary")
+    terms = tuple(
+        secondary.c[key] == expression for key, expression in assignments.items()
+    )
+    return (terms[0] if len(terms) == 1 else and_(*terms), parameters)
+
+
+def _association_owner_predicate(
+    relation: Relationship[Any], owner_identity: tuple[Any, ...]
+) -> tuple[Predicate, dict[str, Any]]:
+    secondary = relation.secondary
+    keys = relation.secondary_local_keys
+    if secondary is None or len(keys) != len(owner_identity):
+        raise OrmMappingError("identita owner many-to-many con arita incoerente")
+    parameters: dict[str, Any] = {}
+    terms: list[Predicate] = []
+    for index, (key, value) in enumerate(zip(keys, owner_identity, strict=True)):
+        name = f"orm_link_owner_{index}"
+        parameters[name] = value
+        terms.append(secondary.c[key] == bind(name))
+    return (terms[0] if len(terms) == 1 else and_(*terms), parameters)
 
 
 def _snapshot(mapper: Mapper, instance: DeclarativeBase) -> dict[str, Any]:
@@ -4509,19 +4827,77 @@ def _create_table_ddl(
     return f"CREATE TABLE{clause} {target} ({body})"
 
 
-def _validate_migration_chain(migrations: tuple[Migration, ...]) -> None:
-    seen: set[str] = set()
-    previous: str | None = None
+def _migration_parents(value: str | tuple[str, ...] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("migration down_revision non valida")
+        return (value,)
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ValueError("migration down_revision non valida")
+    return value
+
+
+def _order_migrations(migrations: tuple[Migration, ...]) -> tuple[Migration, ...]:
+    by_revision: dict[str, Migration] = {}
+    positions: dict[str, int] = {}
+    for position, migration in enumerate(migrations):
+        if migration.revision in by_revision:
+            raise OrmMappingError("grafo migrazioni con revisione duplicata")
+        by_revision[migration.revision] = migration
+        positions[migration.revision] = position
     for migration in migrations:
-        if migration.revision in seen or migration.down_revision != previous:
-            raise OrmMappingError("le migrazioni devono formare una catena lineare")
-        seen.add(migration.revision)
-        previous = migration.revision
+        if any(
+            parent not in by_revision
+            for parent in _migration_parents(migration.down_revision)
+        ):
+            raise OrmMappingError("grafo migrazioni con revisione genitore assente")
+
+    pending = dict(by_revision)
+    ordered: list[Migration] = []
+    emitted: set[str] = set()
+    while pending:
+        ready = [
+            item
+            for item in pending.values()
+            if set(_migration_parents(item.down_revision)) <= emitted
+        ]
+        if not ready:
+            raise OrmMappingError("grafo migrazioni ciclico")
+        ready.sort(key=lambda item: (positions[item.revision], item.revision))
+        for item in ready:
+            ordered.append(item)
+            emitted.add(item.revision)
+            del pending[item.revision]
+    return tuple(ordered)
+
+
+def _validate_applied_migrations(
+    migrations: tuple[Migration, ...], applied: set[str]
+) -> None:
+    registered = {item.revision for item in migrations}
+    if not applied <= registered:
+        raise OrmStateError("storia migrazioni contiene revisioni non registrate")
+    for migration in migrations:
+        if (
+            migration.revision in applied
+            and not set(_migration_parents(migration.down_revision)) <= applied
+        ):
+            raise OrmStateError("storia migrazioni non chiusa sugli antenati")
 
 
 def _migration_table_ddl(provider: str) -> str:
     if provider == "db2":
-        raise OrmUnsupportedError("runner migrazioni Db2 non qualificato")
+        return (
+            'CREATE TABLE "_plenora_orm_migrations" ('
+            '"revision" VARCHAR(255) NOT NULL PRIMARY KEY, '
+            '"applied_at" TIMESTAMP NOT NULL DEFAULT CURRENT TIMESTAMP)'
+        )
     if provider == "sqlserver":
         return (
             "IF OBJECT_ID(N'_plenora_orm_migrations', N'U') IS NULL "
@@ -4535,6 +4911,74 @@ def _migration_table_ddl(provider: str) -> str:
         f"{quote}revision{quote} VARCHAR(255) PRIMARY KEY, "
         f"{quote}applied_at{quote} TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
     )
+
+
+def _migration_history_select(provider: str) -> str:
+    if provider == "db2":
+        return 'SELECT "revision" AS "revision" FROM "_plenora_orm_migrations"'
+    return "SELECT revision FROM _plenora_orm_migrations"
+
+
+def _db2_migration_table_exists(session: Any) -> bool:
+    scalar = getattr(session, "execute_scalar", None)
+    if not callable(scalar):
+        raise TypeError("sessione Db2 priva di execute_scalar")
+    value = scalar(
+        "SELECT COUNT_BIG(*) FROM SYSCAT.TABLES "
+        "WHERE TABSCHEMA = CURRENT SCHEMA "
+        "AND TABNAME = '_plenora_orm_migrations'"
+    )
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError) as error:
+        raise OrmStateError("catalogo migrazioni Db2 con conteggio non valido") from error
+
+
+def _ensure_migration_table(session: Any, provider: str) -> None:
+    if provider != "db2":
+        _execute_ddl(session, _migration_table_ddl(provider))
+        return
+    if _db2_migration_table_exists(session):
+        return
+    try:
+        _execute_ddl(session, _migration_table_ddl(provider))
+    except Exception:
+        # Due runner possono osservare insieme l'assenza. Il perdente accetta
+        # soltanto il caso in cui il catalogo dimostri che l'altro ha creato
+        # esattamente la tabella attesa; ogni altro errore resta pubblico.
+        if not _db2_migration_table_exists(session):
+            raise
+
+
+async def _ensure_migration_table_async(session: Any, provider: str) -> None:
+    if provider != "db2":
+        await _execute_ddl_async(session, _migration_table_ddl(provider))
+        return
+    scalar = getattr(session, "execute_scalar", None)
+    if not callable(scalar):
+        raise TypeError("sessione Db2 priva di execute_scalar")
+
+    async def exists() -> bool:
+        outcome = scalar(
+            "SELECT COUNT_BIG(*) FROM SYSCAT.TABLES "
+            "WHERE TABSCHEMA = CURRENT SCHEMA "
+            "AND TABNAME = '_plenora_orm_migrations'"
+        )
+        value = await outcome if isawaitable(outcome) else outcome
+        try:
+            return int(value) > 0
+        except (TypeError, ValueError) as error:
+            raise OrmStateError(
+                "catalogo migrazioni Db2 con conteggio non valido"
+            ) from error
+
+    if await exists():
+        return
+    try:
+        await _execute_ddl_async(session, _migration_table_ddl(provider))
+    except Exception:
+        if not await exists():
+            raise
 
 
 def _require_one_row(affected: Any) -> None:

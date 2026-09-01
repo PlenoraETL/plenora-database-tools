@@ -44,8 +44,8 @@ use mysql_async::prelude::Queryable;
 use plenora_database_core::arrow::array::{Array, Int32Array, Int64Array};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::{
-    FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection, TransactionProfile,
-    WriteMode, WriteOperation,
+    FilterExpression, ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection,
+    TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::protocol;
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider};
@@ -54,8 +54,8 @@ use plenora_database_core::query::{
 };
 use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
 use plenora_database_core::{
-    CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect, ResourceBudget, ResourceLimits,
-    RetryDisposition,
+    CancellationToken, ErrorCategory, ErrorPhase, ReadCheckpoint, RemoteEffect, ResourceBudget,
+    ResourceLimits, RetryDisposition,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -2267,7 +2267,14 @@ async fn streaming_read_probes(
     )
     .await;
 
-    transaction_stream_probes(recorder, provider, &mut connection, cancellation).await;
+    transaction_stream_probes(
+        recorder,
+        provider,
+        &mut connection,
+        schema_name,
+        cancellation,
+    )
+    .await;
 
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_ROWS}"))
@@ -2294,10 +2301,141 @@ async fn transaction_stream_probes(
     recorder: &mut Recorder,
     provider: &MysqlProvider,
     connection: &mut mysql_async::Conn,
+    schema_name: &str,
     cancellation: &CancellationToken,
 ) {
     paginating_stream_probe(recorder, provider, cancellation).await;
+    checkpoint_resume_probe(recorder, provider, schema_name, cancellation).await;
     abandoned_stream_probe(recorder, provider, connection, cancellation).await;
+}
+
+/// Un checkpoint serializzato riapre la lettura dalla riga strettamente
+/// successiva, anche quando cambia soltanto la dimensione della pagina.
+#[allow(clippy::too_many_lines)]
+async fn checkpoint_resume_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    schema_name: &str,
+    cancellation: &CancellationToken,
+) {
+    let question = "un checkpoint persistito riprende senza duplicati ne salti";
+    let measured = async {
+        let budget = read_budget();
+        let operation = ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some(schema_name.to_owned()),
+                object: SCRATCH_ROWS.to_owned(),
+            },
+            projection: vec!["id".to_owned()],
+            order_by: vec![OrderBy {
+                field: "id".to_owned(),
+                direction: SortDirection::Asc,
+            }],
+            row_limit: Some(3),
+            row_offset: None,
+            filter: None,
+            declared_crs: Vec::new(),
+        };
+        let parameters = ParameterBag::default();
+        let mut first = provider
+            .read(&secret(), &operation, &parameters, &budget, cancellation)
+            .await?;
+        let mut first_ids = Vec::new();
+        while let Some(batch) = first.next_batch(cancellation).await? {
+            let column = batch.column_by_name("id").ok_or_else(|| {
+                plenora_database_core::DatabaseError::invalid_plan(
+                    "la misura checkpoint non ha ricevuto la colonna ordinata",
+                )
+            })?;
+            if let Some(values) = column.as_any().downcast_ref::<Int32Array>() {
+                first_ids.extend(values.values().iter().map(|value| i64::from(*value)));
+            } else if let Some(values) = column.as_any().downcast_ref::<Int64Array>() {
+                first_ids.extend(values.values().iter().copied());
+            } else {
+                return Err(plenora_database_core::DatabaseError::invalid_plan(
+                    "la misura checkpoint ha ricevuto un tipo non intero",
+                ));
+            }
+        }
+        drop(first);
+        let last = first_ids.last().copied().ok_or_else(|| {
+            plenora_database_core::DatabaseError::invalid_plan(
+                "la prima pagina della misura checkpoint e vuota",
+            )
+        })?;
+        let persisted = ReadCheckpoint::new(
+            ProviderKind::Mariadb,
+            &operation,
+            &parameters,
+            vec![ParameterValue::I64(last)],
+        )?
+        .to_json()?;
+        let checkpoint = ReadCheckpoint::from_json(&persisted)?;
+
+        let mut next_page = operation.clone();
+        next_page.row_limit = Some(4);
+        let (resumed, resumed_parameters) =
+            checkpoint.resume(ProviderKind::Mariadb, &next_page, &parameters)?;
+        let mut second = provider
+            .read(
+                &secret(),
+                &resumed,
+                &resumed_parameters,
+                &budget,
+                cancellation,
+            )
+            .await?;
+        let mut second_ids = Vec::new();
+        while let Some(batch) = second.next_batch(cancellation).await? {
+            let column = batch.column_by_name("id").ok_or_else(|| {
+                plenora_database_core::DatabaseError::invalid_plan(
+                    "la ripresa checkpoint non ha ricevuto la colonna ordinata",
+                )
+            })?;
+            if let Some(values) = column.as_any().downcast_ref::<Int32Array>() {
+                second_ids.extend(values.values().iter().map(|value| i64::from(*value)));
+            } else if let Some(values) = column.as_any().downcast_ref::<Int64Array>() {
+                second_ids.extend(values.values().iter().copied());
+            } else {
+                return Err(plenora_database_core::DatabaseError::invalid_plan(
+                    "la ripresa checkpoint ha ricevuto un tipo non intero",
+                ));
+            }
+        }
+        Ok::<_, plenora_database_core::DatabaseError>((first_ids, second_ids))
+    }
+    .await;
+
+    match measured {
+        Ok((first, second)) if first == [1, 2, 3] && second == [4, 5, 6, 7] => recorder.accepted(
+            "provider.profile_read_resumable",
+            "provider",
+            "profilo",
+            question,
+            "checkpoint JSON riaperto; prima=3 ripresa=4 contiguita=true".to_owned(),
+        ),
+        Ok((first, second)) => recorder.rejected(
+            "provider.profile_read_resumable",
+            "provider",
+            "profilo",
+            question,
+            format!(
+                "sequenza non contigua: prima={} ripresa={}",
+                first.len(),
+                second.len()
+            ),
+            None,
+        ),
+        Err(error) => recorder.rejected(
+            "provider.profile_read_resumable",
+            "provider",
+            "profilo",
+            question,
+            condense(&format!("{:?}: {}", error.category, error.message)),
+            None,
+        ),
+    }
 }
 
 /// Lo stream consegna i batch della misura dichiarata, e poi la transazione

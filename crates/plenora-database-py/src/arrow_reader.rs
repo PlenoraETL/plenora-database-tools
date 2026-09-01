@@ -29,7 +29,7 @@ use crate::runtime;
 use arrow_ipc::writer::StreamWriter;
 use plenora_database_core::plan::{ObjectRef, OrderBy, ReadOperation, SortDirection};
 use plenora_database_core::provider::{BatchStream, ParameterBag, Provider, SecretString};
-use plenora_database_core::{CancellationToken, DatabaseError};
+use plenora_database_core::{CancellationToken, DatabaseError, ReadCheckpoint};
 use plenora_db_postgres::PostgresProvider;
 use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyStopIteration};
 use pyo3::prelude::*;
@@ -147,7 +147,8 @@ impl BatchReader {
 ///
 /// `PlenoraError::invalid_plan` se la direzione ORDER BY non è
 /// `"asc"` o `"desc"`.
-pub(crate) fn make_read_operation(
+pub(crate) fn make_qualified_read_operation(
+    catalog: Option<&str>,
     schema: &str,
     object: &str,
     projection: Vec<String>,
@@ -171,7 +172,7 @@ pub(crate) fn make_read_operation(
         .collect::<Result<Vec<_>, DatabaseError>>()?;
     Ok(ReadOperation {
         source: ObjectRef {
-            catalog: None,
+            catalog: catalog.map(str::to_owned),
             schema: Some(schema.to_owned()),
             object: object.to_owned(),
         },
@@ -182,6 +183,24 @@ pub(crate) fn make_read_operation(
         filter: None,
         declared_crs: Vec::new(),
     })
+}
+
+pub(crate) fn prepare_resumable_read(
+    provider: plenora_database_core::plan::ProviderKind,
+    resumable: bool,
+    operation: ReadOperation,
+    checkpoint: Option<&ReadCheckpoint>,
+) -> Result<(ReadOperation, ParameterBag), DatabaseError> {
+    let parameters = ParameterBag::default();
+    match checkpoint {
+        None => Ok((operation, parameters)),
+        Some(_) if !resumable => Err(DatabaseError::unsupported(
+            provider,
+            plenora_database_core::ErrorPhase::Read,
+            "lettura riprendibile non qualificata per questo provider",
+        )),
+        Some(checkpoint) => checkpoint.resume(provider, &operation, &parameters),
+    }
 }
 
 /// Apre un BatchReader su una tabella/vista Postgres.
@@ -196,6 +215,7 @@ pub(crate) fn open_reader(
     provider: &Arc<PostgresProvider>,
     secret: &SecretString,
     operation: ReadOperation,
+    parameters: ParameterBag,
     cancellation: CancellationToken,
 ) -> Result<BatchReader, DatabaseError> {
     let stream_cancellation = cancellation.clone();
@@ -204,7 +224,7 @@ pub(crate) fn open_reader(
             .read(
                 secret,
                 &operation,
-                &ParameterBag::default(),
+                &parameters,
                 &default_budget(),
                 &stream_cancellation,
             )
@@ -297,13 +317,14 @@ pub(crate) async fn open_reader_async(
     provider: Arc<PostgresProvider>,
     secret: SecretString,
     operation: ReadOperation,
+    parameters: ParameterBag,
     cancellation: CancellationToken,
 ) -> Result<AsyncBatchReader, DatabaseError> {
     let stream = provider
         .read(
             &secret,
             &operation,
-            &ParameterBag::default(),
+            &parameters,
             &default_budget(),
             &cancellation,
         )

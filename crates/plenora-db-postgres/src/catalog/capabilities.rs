@@ -48,15 +48,15 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         extension_versions: extensions,
         reads: ReadCapabilities {
             streaming: true,
-            // Il data path usa RowStream con backpressure, ma non espone un
-            // cursore server nominato o riprendibile.
+            // Il checkpoint keyset ricostruisce una lettura qualificata su
+            // una nuova sessione; non promette un cursore server nominato.
             server_cursor: false,
             // Il piano rende `OFFSET n` e l'engine lega la bandiera al campo.
             pagination: true,
             projection: true,
             filter: true,
             ordering: true,
-            resumable: false,
+            resumable: true,
         },
         writes: WriteCapabilities {
             create: true,
@@ -80,7 +80,9 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
             // SAVEPOINT, ROLLBACK TO e RELEASE attraverso lo scope pubblico.
             savepoints: true,
             transactional_ddl: true,
-            staged_swap: true,
+            // Replace conserva l'oggetto target con DELETE + INSERT: non
+            // esiste uno scambio di un oggetto di staging.
+            staged_swap: false,
             scope: TransactionScope::Transaction,
         },
         spatial: if spatial {

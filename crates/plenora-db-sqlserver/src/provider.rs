@@ -283,7 +283,9 @@ impl Provider for SqlServerProvider {
                     projection: true,
                     filter: true,
                     ordering: true,
-                    resumable: false,
+                    // Qualificato dal gate live SQL Server: checkpoint
+                    // persistito, nuova sessione e ripresa keyset completa.
+                    resumable: true,
                 },
                 writes: WriteCapabilities {
                     create: true,

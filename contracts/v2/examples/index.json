@@ -14,6 +14,10 @@
       "schema": "../capabilities.schema.json"
     },
     {
+      "file": "read-checkpoint-postgres.json",
+      "schema": "../read-checkpoint.schema.json"
+    },
+    {
       "file": "age-capabilities-qualified.json",
       "schema": "../age-capabilities.schema.json"
     },

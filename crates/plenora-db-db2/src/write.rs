@@ -31,7 +31,7 @@ use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName,
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MAX_PARAMETERS_PER_STATEMENT: usize = 2_000;
+const ARRAY_BIND_ROWS: usize = 4_096;
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -311,6 +311,25 @@ impl Db2WritePlan {
         .with_params(rows.iter().flatten().cloned().collect())
     }
 
+    pub(crate) fn array_insert_sql(&self) -> String {
+        let columns = self
+            .columns
+            .iter()
+            .map(|column| column.quoted.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = self
+            .columns
+            .iter()
+            .map(WriteColumn::placeholder)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO {} ({columns}) VALUES ({placeholders})",
+            self.target
+        )
+    }
+
     fn update_statement(&self, row: &[ParameterValue]) -> Statement {
         let assignments = self
             .updates
@@ -507,6 +526,12 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<Db2WritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Db2 assente"))?;
+    let diagnostic_policy = input.row_diagnostics_policy();
+    let diagnostic = (plan.mode == WriteMode::Append
+        && diagnostic_policy
+            != plenora_database_core::row_diagnostics::RowDiagnosticsPolicy::default())
+    .then(|| validate_diagnostic_input(&prepared.input_schema, declared_rows, diagnostic_policy))
+    .transpose()?;
     let mut transaction = Db2Transaction::begin(
         config,
         secret,
@@ -515,6 +540,24 @@ pub async fn execute_write(
         cancellation,
     )
     .await?;
+    let execution_id = format!(
+        "db2-write-{}",
+        EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    if let Some(policy) = diagnostic {
+        return execute_diagnostic_write(
+            transaction,
+            &plan,
+            &prepared.input_schema,
+            input.as_mut(),
+            budget,
+            cancellation,
+            declared_rows,
+            policy,
+            execution_id,
+        )
+        .await;
+    }
     let execution = execute_input(
         &mut transaction,
         &plan,
@@ -529,12 +572,27 @@ pub async fn execute_write(
         Ok(counts) => counts,
         Err(error) => return Err(rollback_and_shape(Box::new(transaction), error).await),
     };
-    let execution_id = format!(
-        "db2-write-{}",
-        EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    finish_commit(
+        transaction,
+        cancellation,
+        execution_id,
+        &plan,
+        received,
+        affected,
+    )
+    .await
+}
+
+async fn finish_commit(
+    transaction: Db2Transaction,
+    cancellation: &CancellationToken,
+    execution_id: String,
+    plan: &Db2WritePlan,
+    received: u64,
+    affected: u64,
+) -> Result<WriteOutcome> {
     match Box::new(transaction).commit(cancellation).await? {
-        CommitOutcome::Committed => committed_outcome(execution_id, &plan, received, affected),
+        CommitOutcome::Committed => committed_outcome(execution_id, plan, received, affected),
         CommitOutcome::OutcomeUnknown { recovery } => {
             let outcome = WriteOutcome {
                 schema_version: 2,
@@ -555,6 +613,85 @@ pub async fn execute_write(
             outcome.validate()?;
             Ok(outcome)
         }
+    }
+}
+
+fn validate_diagnostic_input(
+    schema: &SchemaRef,
+    declared_rows: u64,
+    policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+) -> Result<plenora_database_core::row_diagnostics::RowDiagnosticsPolicy> {
+    plenora_database_core::row_diagnostics::WriteDiagnosticsTracker::new(
+        declared_rows,
+        policy.clone(),
+    )?;
+    for field in [
+        policy.key_field.as_deref(),
+        policy.constraint_column.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if schema.field_with_name(field).is_err() {
+            return Err(prepare_error(
+                ErrorCategory::InvalidPlan,
+                "policy row-scoped Db2 riferita a un campo assente dallo schema preparato",
+            ));
+        }
+    }
+    Ok(policy)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_diagnostic_write(
+    mut transaction: Db2Transaction,
+    plan: &Db2WritePlan,
+    schema: &SchemaRef,
+    input: &mut dyn BatchStream,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    declared_rows: u64,
+    policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
+    execution_id: String,
+) -> Result<WriteOutcome> {
+    let constraint_column = policy.constraint_column.clone();
+    let mut tracker = plenora_database_core::row_diagnostics::WriteDiagnosticsTracker::new(
+        declared_rows,
+        policy,
+    )?;
+    let applied;
+    let diagnosed = {
+        let mut writer = crate::row_diagnostics::Db2RowWriter::new(
+            &mut transaction,
+            plan,
+            input,
+            schema,
+            budget,
+            cancellation,
+            constraint_column,
+        );
+        let diagnosed = plenora_database_core::row_diagnostics::diagnose_row_scoped_write(
+            &mut writer,
+            &mut tracker,
+        )
+        .await;
+        applied = writer.applied();
+        diagnosed
+    };
+    match diagnosed {
+        Ok(Some(outcome)) => Err(outcome.into_error(Some(ProviderKind::Db2), Some(execution_id))?),
+        Ok(None) => {
+            finish_commit(
+                transaction,
+                cancellation,
+                execution_id,
+                plan,
+                declared_rows,
+                applied,
+            )
+            .await
+        }
+        Err(error) => Err(rollback_and_shape(Box::new(transaction), error).await),
     }
 }
 
@@ -621,12 +758,13 @@ async fn execute_batch(
 ) -> Result<u64> {
     match plan.mode {
         WriteMode::Append | WriteMode::Create | WriteMode::Replace => {
-            let chunk_rows = (MAX_PARAMETERS_PER_STATEMENT / plan.columns.len()).max(1);
             let mut affected = 0_u64;
-            for chunk in rows.chunks(chunk_rows) {
+            let sql = plan.array_insert_sql();
+            for chunk in rows.chunks(ARRAY_BIND_ROWS) {
                 affected = affected
                     .checked_add(
-                        execute_statement(transaction, plan.insert_statement(chunk), cancellation)
+                        transaction
+                            .execute_parameter_array(sql.clone(), chunk.to_vec(), cancellation)
                             .await?,
                     )
                     .ok_or_else(|| {
@@ -753,7 +891,7 @@ pub fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Resul
     }
 }
 
-fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<ParameterValue>>> {
+pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<ParameterValue>>> {
     (0..batch.num_rows())
         .map(|row| {
             batch

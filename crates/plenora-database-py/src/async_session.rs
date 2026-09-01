@@ -13,8 +13,11 @@
     clippy::too_many_lines
 )]
 
-use crate::arrow_reader::{make_read_operation, open_reader_async};
+use crate::arrow_reader::{
+    make_qualified_read_operation, open_reader_async, prepare_resumable_read,
+};
 use crate::async_session_ops::{SharedEngineSession, TransactionBackend};
+use crate::checkpoint::PyReadCheckpoint;
 use crate::errors::to_py_err;
 use crate::py_convert::{graph_statement_from_python, portable_from_json, statement_from_python};
 use plenora_database_core::plan::Operation;
@@ -415,7 +418,17 @@ impl AsyncSession {
     ///
     /// Non carica tutto in memoria; legge batch-by-batch dal cursor
     /// server-side sul runtime tokio (non blocca l'event loop).
-    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
+    #[pyo3(signature = (
+        schema,
+        object,
+        projection=None,
+        order_by=None,
+        limit=None,
+        *,
+        catalog=None,
+        checkpoint=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn aread<'py>(
         &self,
         py: Python<'py>,
@@ -424,6 +437,8 @@ impl AsyncSession {
         projection: Option<Vec<String>>,
         order_by: Option<Vec<(String, String)>>,
         limit: Option<u64>,
+        catalog: Option<&str>,
+        checkpoint: Option<PyRef<'_, PyReadCheckpoint>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -431,10 +446,18 @@ impl AsyncSession {
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
         let operation =
-            make_read_operation(schema, object, projection, order_by, limit).map_err(to_py_err)?;
+            make_qualified_read_operation(catalog, schema, object, projection, order_by, limit)
+                .map_err(to_py_err)?;
+        let (operation, parameters) = prepare_resumable_read(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            self.capabilities.reads.resumable,
+            operation,
+            checkpoint.as_deref().map(PyReadCheckpoint::inner),
+        )
+        .map_err(to_py_err)?;
         let cancellation = self.cancellation();
         future_into_py(py, async move {
-            let reader = open_reader_async(provider, secret, operation, cancellation)
+            let reader = open_reader_async(provider, secret, operation, parameters, cancellation)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| {

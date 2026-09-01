@@ -21,10 +21,10 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 | superficie | ruolo |
 | --- | --- |
 | Core relazionale | expression language immutabile, query e DML con bind separati, risultati tipizzati e transazioni esplicite |
-| ORM-like | mapping dichiarativo sync/async, identity map, unit of work, relazioni, eager loading, concorrenza ottimistica, DDL e migrazioni lineari |
+| ORM-like | mapping dichiarativo sync/async, identity map, unit of work, relazioni, eager loading, concorrenza ottimistica, DDL e migrazioni a DAG |
 | Data plane | lettura streaming e scritture bulk basate su Arrow |
 | Spatial | metadati GeoArrow, geometrie WKB/EWKB, validazione CRS e operazioni spatial qualificate per provider |
-| Graph | Cypher parametrizzato e valori `agtype` tipizzati tramite Apache AGE su PostgreSQL |
+| Graph | Cypher parametrizzato, mapping tipizzato, bulk e indici/vincoli per Apache AGE su PostgreSQL |
 | SDK Python | API applicativa, engine/session lifecycle, factory per provider, stub PEP 561 e binding PyO3 |
 | CLI | inspect, probe, read, write e diagnostica sugli stessi contratti del core |
 | Assurance | contratti JSON Schema, golden test, fixture reali, matrici live, benchmark e fuzzing |

@@ -548,7 +548,10 @@ impl ProductProfile for MysqlProfile {
                 projection: true,
                 filter: true,
                 ordering: true,
-                resumable: false,
+                // Qualificato dal gate MySQL live: il checkpoint keyset
+                // persiste, riapre una nuova sessione e riprende senza
+                // duplicati ne buchi.
+                resumable: true,
             },
             // Sei mode qualificate su sette. `TruncateInsert` resta
             // fail-closed e non ha un flag proprio nel contratto: il
@@ -996,10 +999,6 @@ impl ProductProfile for MariadbProfile {
             provider_version,
             extension_versions: BTreeMap::new(),
             reads: ReadCapabilities {
-                // `server_cursor` e `resumable` restano false perche il crate
-                // non li offre a nessuno dei due prodotti. Le altre bandiere
-                // mantengono una decisione indipendente e la propria evidenza.
-                //
                 // `streaming` significa che le righe arrivano a blocchi, non
                 // che esista un cursore: `query_stream` fa scorrere il result
                 // set sul filo, ed e per questo che la bandiera accanto dice
@@ -1016,7 +1015,10 @@ impl ProductProfile for MariadbProfile {
                 projection: true,
                 filter: true,
                 ordering: true,
-                resumable: false,
+                // Qualificato dal gate MariaDB dedicato su 10.11, 11.8 e
+                // 12.3: il token JSON viene riaperto e la seconda pagina e
+                // contigua alla prima.
+                resumable: true,
             },
             // Le prove live verificano righe, rollback e cancellazione da una
             // seconda sessione. Su questi due motori

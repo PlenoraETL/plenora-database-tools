@@ -7,7 +7,9 @@ use crate::{
 use mysql_async::prelude::Queryable;
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
-use plenora_database_core::{CancellationToken, ErrorCategory, ResourceBudget, ResourceLimits};
+use plenora_database_core::{
+    CancellationToken, ErrorCategory, ReadCheckpoint, ResourceBudget, ResourceLimits,
+};
 use plenora_database_engine::{Engine, Observation};
 
 const DEFAULT_PASSWORD: &str = "DataFlow_Test_2026!";
@@ -849,6 +851,87 @@ async fn live_read_projection_filter_order_and_default_schema() {
             .value(0),
         "reference"
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e prova persistenza/ripresa"]
+async fn live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps() {
+    use plenora_database_core::arrow::array::Int64Array;
+    use plenora_database_core::plan::{OrderBy, SortDirection};
+    use plenora_database_core::provider::ParameterValue;
+
+    let cancellation = CancellationToken::new();
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider checkpoint MySQL");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget checkpoint MySQL");
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: "stream_probe".to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(3),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let parameters = ParameterBag::default();
+    let secret = live_secret();
+    let mut first = provider
+        .read(&secret, &operation, &parameters, &budget, &cancellation)
+        .await
+        .expect("prima pagina checkpoint MySQL");
+    let batch = first
+        .next_batch(&cancellation)
+        .await
+        .expect("batch checkpoint MySQL")
+        .expect("righe checkpoint MySQL");
+    let ids = batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+        .expect("id checkpoint MySQL");
+    assert_eq!(ids.values(), &[1, 2, 3]);
+    let token = ReadCheckpoint::new(
+        ProviderKind::Mysql,
+        &operation,
+        &parameters,
+        vec![ParameterValue::I64(ids.value(ids.len() - 1))],
+    )
+    .expect("token checkpoint MySQL")
+    .to_json()
+    .expect("persistenza checkpoint MySQL");
+    drop(first);
+
+    let checkpoint = ReadCheckpoint::from_json(&token).expect("riapertura checkpoint MySQL");
+    let mut next_page = operation.clone();
+    next_page.row_limit = Some(4);
+    let (resumed, resumed_parameters) = checkpoint
+        .resume(ProviderKind::Mysql, &next_page, &parameters)
+        .expect("piano ripreso MySQL");
+    let mut second = provider
+        .read(
+            &secret,
+            &resumed,
+            &resumed_parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("seconda pagina checkpoint MySQL");
+    let batch = second
+        .next_batch(&cancellation)
+        .await
+        .expect("batch ripreso MySQL")
+        .expect("righe riprese MySQL");
+    let ids = batch
+        .column_by_name("id")
+        .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+        .expect("id ripreso MySQL");
+    assert_eq!(ids.values(), &[4, 5, 6, 7]);
 }
 
 #[tokio::test]

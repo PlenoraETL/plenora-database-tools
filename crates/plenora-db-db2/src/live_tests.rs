@@ -23,7 +23,7 @@ use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{
     CommitOutcome, IsolationLevel, Statement, TransactionOptions, TransactionScope,
 };
-use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
+use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase, ReadCheckpoint};
 use plenora_database_engine::{Engine, Observation};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -266,7 +266,7 @@ async fn live_reference_probe_catalog_and_capabilities() {
     assert!(capabilities.reads.filter);
     assert!(capabilities.reads.ordering);
     assert!(!capabilities.reads.server_cursor);
-    assert!(!capabilities.reads.resumable);
+    assert!(capabilities.reads.resumable);
     assert!(capabilities.writes.create);
     assert!(capabilities.writes.append);
     assert!(capabilities.writes.update);
@@ -275,7 +275,8 @@ async fn live_reference_probe_catalog_and_capabilities() {
     assert!(capabilities.writes.delete_by_keys);
     assert!(capabilities.writes.rollback_on_failure);
     assert!(!capabilities.writes.truncate_insert);
-    assert!(!capabilities.writes.bulk);
+    assert!(capabilities.writes.bulk);
+    assert!(capabilities.writes.array_binding);
     assert!(capabilities.transactions.single_transaction);
     assert!(capabilities.transactions.savepoints);
     assert!(capabilities.transactions.transactional_ddl);
@@ -427,6 +428,81 @@ async fn live_filter_and_deterministic_pagination_are_bound_and_exact() {
         .await
         .expect("fine stream Db2 filtrato")
         .is_none());
+}
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito e prova persistenza/ripresa"]
+async fn live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget checkpoint Db2");
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: Some("PLENORA".to_owned()),
+            schema: Some("PLENORA_TEST".to_owned()),
+            object: "READ_PROBE".to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(1),
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let parameters = ParameterBag::default();
+    let mut first = provider
+        .read(&secret, &operation, &parameters, &budget, &cancellation)
+        .await
+        .expect("prima pagina checkpoint Db2");
+    let batch = first
+        .next_batch(&cancellation)
+        .await
+        .expect("batch checkpoint Db2")
+        .expect("riga checkpoint Db2");
+    let ids = batch
+        .column_by_name("ID")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("ID checkpoint Db2");
+    assert_eq!(ids.values(), &[1]);
+    let token = ReadCheckpoint::new(
+        ProviderKind::Db2,
+        &operation,
+        &parameters,
+        vec![ParameterValue::I32(ids.value(ids.len() - 1))],
+    )
+    .expect("token checkpoint Db2")
+    .to_json()
+    .expect("persistenza checkpoint Db2");
+    drop(first);
+
+    let checkpoint = ReadCheckpoint::from_json(&token).expect("riapertura checkpoint Db2");
+    let (resumed, resumed_parameters) = checkpoint
+        .resume(ProviderKind::Db2, &operation, &parameters)
+        .expect("piano ripreso Db2");
+    let mut second = provider
+        .read(
+            &secret,
+            &resumed,
+            &resumed_parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("seconda pagina checkpoint Db2");
+    let batch = second
+        .next_batch(&cancellation)
+        .await
+        .expect("batch ripreso Db2")
+        .expect("riga ripresa Db2");
+    let ids = batch
+        .column_by_name("ID")
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .expect("ID ripreso Db2");
+    assert_eq!(ids.values(), &[2]);
 }
 
 async fn exercise_commit_and_savepoint(
@@ -888,6 +964,32 @@ impl BatchStream for VecBatchStream {
     }
 }
 
+struct DiagnosticBatchStream {
+    inner: VecBatchStream,
+    policy: plenora_database_core::RowDiagnosticsPolicy,
+}
+
+impl BatchStream for DiagnosticBatchStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        self.inner.next_batch(cancellation)
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.inner.declared_input_rows()
+    }
+
+    fn row_diagnostics_policy(&self) -> plenora_database_core::RowDiagnosticsPolicy {
+        self.policy.clone()
+    }
+}
+
 fn write_operation(mode: WriteMode, schema: &SchemaRef) -> WriteOperation {
     let keys = match mode {
         WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys => vec!["ID".to_owned()],
@@ -1136,6 +1238,217 @@ async fn live_arrow_write_modes_are_atomic_and_accounted() {
     exercise_append_and_atomic_rollback(&provider, &secret, &budget, &cancellation).await;
     exercise_keyed_write_modes(&provider, &secret, &budget, &cancellation).await;
     exercise_replace_and_verify(&provider, &secret, &budget, &cancellation).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_parameter_array_binding_crosses_chunks_and_rolls_back_atomically() {
+    const ROWS: i32 = 4_097;
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget Db2 live");
+    reset_write_probe(&provider, &secret, &budget, &cancellation).await;
+
+    let mut failing_ids = (10_000..10_000 + ROWS).collect::<Vec<_>>();
+    failing_ids[usize::try_from(ROWS - 1).expect("indice fixture")] = 10_000;
+    let failing = write_batch(
+        failing_ids,
+        vec![Some("array"); usize::try_from(ROWS).expect("righe fixture")],
+        vec![1; usize::try_from(ROWS).expect("righe fixture")],
+    );
+    let error = run_write(
+        &provider,
+        &secret,
+        &budget,
+        write_operation(WriteMode::Append, &failing.schema()),
+        failing,
+        &cancellation,
+    )
+    .await
+    .expect_err("il secondo chunk deve annullare anche il primo");
+    assert_eq!(error.category, ErrorCategory::Conflict);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::RolledBack
+    );
+
+    let successful = write_batch(
+        (20_000..20_000 + ROWS).collect(),
+        vec![Some("array"); usize::try_from(ROWS).expect("righe fixture")],
+        vec![1; usize::try_from(ROWS).expect("righe fixture")],
+    );
+    let outcome = run_write(
+        &provider,
+        &secret,
+        &budget,
+        write_operation(WriteMode::Append, &successful.schema()),
+        successful,
+        &cancellation,
+    )
+    .await
+    .expect("parameter array Db2 oltre il confine del chunk");
+    assert_eq!(
+        outcome.rows.inserted,
+        Some(u64::try_from(ROWS).expect("conteggio"))
+    );
+
+    let mut verification = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica parameter array Db2");
+    let rows = verification
+        .query(
+            &Statement::new(
+                "SELECT COUNT_BIG(*) AS N, MIN(ID) AS MIN_ID, MAX(ID) AS MAX_ID \
+                 FROM PLENORA_TEST.WRITE_PROBE",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio parameter array Db2");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("N"),
+        Some(&ParameterValue::Decimal(ROWS.to_string()))
+    );
+    assert_eq!(rows[0].get("MIN_ID"), Some(&ParameterValue::I32(20_000)));
+    assert_eq!(
+        rows[0].get("MAX_ID"),
+        Some(&ParameterValue::I32(20_000 + ROWS - 1))
+    );
+    verification
+        .rollback(&cancellation)
+        .await
+        .expect("rollback verifica parameter array Db2");
+    reset_write_probe(&provider, &secret, &budget, &cancellation).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito per l'oracolo row diagnostics"]
+#[allow(clippy::too_many_lines)]
+async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
+    const INPUT_TOTAL: usize = 5_200;
+    const REJECTED_INDEX: usize = 4_999;
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits {
+        rows: u64::try_from(INPUT_TOTAL).expect("righe fixture"),
+        memory_bytes: 8 * 1_024 * 1_024,
+        output_bytes: 8 * 1_024 * 1_024,
+        cell_bytes: 1_024,
+        ..ResourceLimits::default()
+    })
+    .expect("budget row diagnostics Db2 live");
+    reset_write_probe(&provider, &secret, &budget, &cancellation).await;
+
+    let mut ids =
+        (0..i32::try_from(INPUT_TOTAL).expect("fixture rappresentabile")).collect::<Vec<_>>();
+    ids[REJECTED_INDEX] = 0;
+    let batch = write_batch(
+        ids,
+        vec![Some("diagnostic"); INPUT_TOTAL],
+        vec![1; INPUT_TOTAL],
+    );
+    let operation = write_operation(WriteMode::Append, &batch.schema());
+    let prepared = provider
+        .prepare_write(&secret, &operation, batch.schema(), &budget, &cancellation)
+        .await
+        .expect("prepare row diagnostics Db2 live");
+    let input = DiagnosticBatchStream {
+        inner: VecBatchStream::new(vec![batch]),
+        policy: plenora_database_core::RowDiagnosticsPolicy {
+            key_field: Some("ID".to_owned()),
+            constraint_column: Some("ID".to_owned()),
+            examples_limit: 10,
+        },
+    };
+    let error = provider
+        .write(&secret, prepared, Box::new(input), &budget, &cancellation)
+        .await
+        .expect_err("duplicato row-scoped Db2 live");
+
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::RolledBack
+    );
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
+    assert_eq!(error.provider, Some(ProviderKind::Db2));
+    assert_eq!(error.message, "riga sorgente rifiutata dal database");
+    for forbidden in ["4999", "diagnostic", "ID"] {
+        assert!(!error.message.contains(forbidden));
+    }
+    let diagnostics = error.row_diagnostics().expect("diagnostica Db2 live");
+    diagnostics
+        .validate()
+        .expect("documento row diagnostics Db2");
+    assert_eq!(
+        serde_json::to_value(diagnostics).expect("diagnostica serializzabile"),
+        serde_json::json!({
+            "contract": "plenora-row-diagnostics-v1",
+            "scope": "write",
+            "index_basis": "source_row_zero_based",
+            "completeness": "complete",
+            "observed_total": 1,
+            "total": 1,
+            "input_total": 5200,
+            "counts": {"database.constraint_violation": 1},
+            "examples_limit": 10,
+            "examples_truncated": false,
+            "examples": [{
+                "source_index": REJECTED_INDEX,
+                "cause": "database.constraint_violation",
+                "column": "ID",
+                "key": {"field": "ID", "state": "redacted"},
+                "write_state": "certainly_rejected"
+            }],
+            "diagnostic_state_counts": {
+                "certainly_rejected": 1,
+                "certainly_not_attempted": 0,
+                "certainly_rolled_back": 0,
+                "effect_unknown": 0
+            },
+            "write_outcome": {
+                "certainly_rejected": {"state": "known", "value": 1},
+                "certainly_not_attempted": {"state": "known", "value": 200},
+                "certainly_rolled_back": {"state": "known", "value": 4999},
+                "effect_unknown": {"state": "known", "value": 0}
+            }
+        })
+    );
+
+    let mut verification = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica rollback row diagnostics Db2");
+    let rows = verification
+        .query(
+            &Statement::new("SELECT COUNT_BIG(*) AS N FROM PLENORA_TEST.WRITE_PROBE"),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio dopo rollback row diagnostics Db2");
+    assert_eq!(
+        rows[0].get("N"),
+        Some(&ParameterValue::Decimal("0".to_owned()))
+    );
+    verification
+        .rollback(&cancellation)
+        .await
+        .expect("chiusura verifica row diagnostics Db2");
 }
 
 fn create_operation(object: &str) -> WriteOperation {

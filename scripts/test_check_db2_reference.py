@@ -21,19 +21,20 @@ def qualified(names: set[str]) -> set[str]:
 
 class Db2ReferenceGateTests(unittest.TestCase):
     def test_python_live_inventory_includes_the_orm_gate(self) -> None:
-        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 7)
+        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 8)
         self.assertEqual(
             gate.PYTHON_LIVE_TARGETS,
             (
                 "db2_sdk_gate_tests/test_db2_session.py",
                 "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
                 "db2_sdk_gate_tests/test_orm.py::test_live_db2_geometry_orm_qualification",
+                "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
             ),
         )
 
-    def test_inventory_has_all_twelve_named_live_tests(self) -> None:
+    def test_inventory_has_all_fifteen_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 12)
+        self.assertEqual(len(inventory), 15)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:

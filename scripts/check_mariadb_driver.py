@@ -100,6 +100,7 @@ REQUIRED_ACCEPTED_PROBES: dict[str, str] = {
     "provider.profile_read_ordering_asc": "reads.ordering, verso ascendente",
     "provider.profile_read_ordering_desc": "reads.ordering, verso discendente",
     "provider.profile_read_streaming": "reads.streaming",
+    "provider.profile_read_resumable": "reads.resumable: checkpoint persistito e ripreso",
     # Il percorso Arrow e `TransactionScope::query_stream` sono due superfici
     # diverse dietro la stessa bandiera: la prima consegna batch a un lettore,
     # la seconda fa scorrere un result set mentre la transazione e aperta.
@@ -394,6 +395,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_read_ordering_desc",
     "provider.profile_read_streaming",
     "provider.transaction_row_stream",
+    "provider.profile_read_resumable",
     "provider.transaction_row_stream_abandoned",
     "raw.generated_column_catalog",
     "provider.profile_generated_index",

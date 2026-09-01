@@ -59,6 +59,9 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_transaction_commit_rollback_savepoint_and_typed_query",
         "live_concurrent_users_keep_connections_and_rows_isolated",
         "live_arrow_write_modes_are_atomic_and_accounted",
+        "live_parameter_array_binding_crosses_chunks_and_rolls_back_atomically",
+        "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
+        "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
         "live_spatial_capabilities_and_streaming_wkb_are_evidence_backed",
         "live_spatial_write_round_trips_and_invalid_wkb_rolls_back",
         "live_spatial_portable_predicates_execute_with_bound_wkb_and_srid",
@@ -237,8 +240,9 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_db2_session.py",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_geometry_orm_qualification",
+    "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
 )
-PYTHON_LIVE_EXPECTED = 7
+PYTHON_LIVE_EXPECTED = 8
 
 
 def run_python_live() -> None:

@@ -144,6 +144,8 @@ class Session(_BuilderFactory):
         projection: list[str] | None = None,
         order_by: list[tuple[str, str]] | None = None,
         limit: int | None = None,
+        catalog: str | None = None,
+        checkpoint=None,
     ):
         """Apre uno stream Arrow IPC su una tabella/vista Postgres.
 
@@ -174,7 +176,15 @@ class Session(_BuilderFactory):
         Nota: per filter WHERE, usa il builder pythonic
         `s.select(table).where_eq(...).all()` (path OLTP portable AST).
         """
-        return self._native.read(schema, object, projection, order_by, limit)
+        return self._native.read(
+            schema,
+            object,
+            projection,
+            order_by,
+            limit,
+            catalog=catalog,
+            checkpoint=checkpoint,
+        )
 
     # ------------------------ Arrow bulk write -------------------------
 

@@ -4,7 +4,9 @@ use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
 use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
-use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
+use plenora_database_core::native_query_policy::{
+    enforce_policy, statement_head, NativeQueryPolicy,
+};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
@@ -141,6 +143,110 @@ impl Db2Transaction {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         self.control(sql, ErrorPhase::Write, cancellation).await
+    }
+
+    /// Esegue un DML con parameter-array ODBC/CLI. Ogni placeholder e legato
+    /// una volta a una colonna di valori e l'intero gruppo parte con una sola
+    /// esecuzione dello statement preparato.
+    pub(crate) async fn execute_parameter_array(
+        &mut self,
+        sql: String,
+        rows: Vec<Vec<ParameterValue>>,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let columns = rows[0].len();
+        if columns == 0 || rows.iter().any(|row| row.len() != columns) {
+            return Err(transaction_error(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Write,
+                "parameter-array Db2 con arita incoerente",
+            ));
+        }
+        let encoded = rows
+            .iter()
+            .map(|row| encode_parameters(row))
+            .collect::<Result<Vec<_>>>()?;
+        let expected = u64::try_from(encoded.len()).map_err(|_| {
+            transaction_error(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Write,
+                "righe parameter-array Db2 non rappresentabili",
+            )
+        })?;
+        self.run(
+            ErrorPhase::Write,
+            cancellation,
+            move |connection, timeout| {
+                let mut prepared = connection
+                    .prepare(&sql)
+                    .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+                prepared
+                    .set_query_timeout_sec(timeout)
+                    .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+                let lengths = (0..columns).map(|column| {
+                    encoded
+                        .iter()
+                        .filter_map(|row| row[column].as_ref().map(String::len))
+                        .max()
+                        .unwrap_or(1)
+                        .max(1)
+                });
+                let mut inserter = prepared
+                    .into_text_inserter(encoded.len(), lengths)
+                    .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+                for row in &encoded {
+                    inserter
+                        .append(row.iter().map(|value| value.as_deref().map(str::as_bytes)))
+                        .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+                }
+                if inserter
+                    .execute()
+                    .map_err(|error| driver_error(&error, ErrorPhase::Write))?
+                    .is_some()
+                {
+                    return Err(transaction_error(
+                        ErrorCategory::Protocol,
+                        ErrorPhase::Write,
+                        "parameter-array Db2 ha restituito un result set",
+                    ));
+                }
+                Ok(expected)
+            },
+        )
+        .await
+    }
+
+    /// Annulla la transazione mantenendo disponibile l'oggetto al seam
+    /// row-scoped, che deve distinguere un acknowledgement confermato da uno
+    /// perso senza consumare un `Box<Self>`.
+    pub(crate) async fn rollback_in_place(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if !self.open {
+            return Ok(());
+        }
+        if cancellation.is_cancelled() {
+            return Err(interruption_error(cancellation, ErrorPhase::Rollback));
+        }
+        self.open = false;
+        let connection = self.connection.take().ok_or_else(|| {
+            transaction_error(
+                ErrorCategory::Internal,
+                ErrorPhase::Rollback,
+                "connessione Db2 assente al rollback",
+            )
+        })?;
+        tokio::task::spawn_blocking(move || {
+            connection
+                .rollback()
+                .map_err(|error| driver_error(&error, ErrorPhase::Rollback))
+        })
+        .await
+        .map_err(|_| task_error(ErrorPhase::Rollback))?
     }
 }
 
@@ -281,6 +387,7 @@ fn execute_statement(
     timeout: usize,
     sql: &str,
     parameters: &[Option<String>],
+    requires_row_count: bool,
 ) -> Result<u64> {
     let parameters: Vec<_> = parameters
         .iter()
@@ -300,20 +407,28 @@ fn execute_statement(
         return Err(transaction_error(
             ErrorCategory::Protocol,
             ErrorPhase::Write,
-            "statement DML Db2 ha restituito un result set",
+            "statement Db2 senza righe attese ha restituito un result set",
         ));
     }
-    statement
+    let row_count = statement
         .row_count()
-        .map_err(|error| driver_error(&error, ErrorPhase::Write))?
-        .map(|rows| u64::try_from(rows).unwrap_or(u64::MAX))
-        .ok_or_else(|| {
-            transaction_error(
-                ErrorCategory::Protocol,
-                ErrorPhase::Write,
-                "driver Db2 senza conteggio righe DML",
-            )
-        })
+        .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+    match row_count {
+        Some(rows) => Ok(u64::try_from(rows).unwrap_or(u64::MAX)),
+        None if !requires_row_count => Ok(0),
+        None => Err(transaction_error(
+            ErrorCategory::Protocol,
+            ErrorPhase::Write,
+            "driver Db2 senza conteggio righe DML",
+        )),
+    }
+}
+
+pub fn db2_statement_requires_row_count(sql: &str) -> bool {
+    !matches!(
+        statement_head(sql).as_str(),
+        "ALTER" | "COMMENT" | "CREATE" | "DROP" | "GRANT" | "RENAME" | "REVOKE" | "TRUNCATE"
+    )
 }
 
 fn query_rows(
@@ -535,11 +650,12 @@ impl TransactionScope for Db2Transaction {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
+            let requires_row_count = db2_statement_requires_row_count(&sql);
             self.run(
                 ErrorPhase::Write,
                 cancellation,
                 move |connection, timeout| {
-                    execute_statement(connection, timeout, &sql, &parameters)
+                    execute_statement(connection, timeout, &sql, &parameters, requires_row_count)
                 },
             )
             .await
@@ -684,28 +800,6 @@ impl TransactionScope for Db2Transaction {
     }
 
     fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
-        Box::pin(async move {
-            if !self.open {
-                return Ok(());
-            }
-            if cancellation.is_cancelled() {
-                return Err(interruption_error(cancellation, ErrorPhase::Rollback));
-            }
-            self.open = false;
-            let connection = self.connection.take().ok_or_else(|| {
-                transaction_error(
-                    ErrorCategory::Internal,
-                    ErrorPhase::Rollback,
-                    "connessione Db2 assente al rollback",
-                )
-            })?;
-            tokio::task::spawn_blocking(move || {
-                connection
-                    .rollback()
-                    .map_err(|error| driver_error(&error, ErrorPhase::Rollback))
-            })
-            .await
-            .map_err(|_| task_error(ErrorPhase::Rollback))?
-        })
+        Box::pin(async move { self.rollback_in_place(cancellation).await })
     }
 }

@@ -5,6 +5,7 @@ in Git, che e dove sta la storia.
 
 - `plan.schema.json`: input validato per test, inspect, read e write;
 - `capabilities.schema.json`: capability scoperte sul target;
+- `read-checkpoint.schema.json`: checkpoint keyset persistente, qualificato per provider, sorgente e ordinamento;
 - `age-capabilities.schema.json`: capability AGE v1, separate dal provider relazionale;
 - `age-admin-capabilities.schema.json`: capability amministrative AGE additive;
 - `loss-report.schema.json`: perdite di mapping esplicite;

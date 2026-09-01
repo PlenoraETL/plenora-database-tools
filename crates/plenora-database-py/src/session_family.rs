@@ -39,6 +39,7 @@
 )]
 
 use crate::arrow_reader::BatchReader;
+use crate::checkpoint::PyReadCheckpoint;
 use crate::errors::to_py_err;
 use crate::family_arrow_reader::open_family_reader;
 use crate::py_convert::{
@@ -428,7 +429,17 @@ impl DatabaseSession {
     ///
     /// La size dei batch è decisa dal provider (MySQL: bounded dal
     /// buffer del cursor `mysql_async`).
-    #[pyo3(signature = (schema, object, projection=None, order_by=None, limit=None))]
+    #[pyo3(signature = (
+        schema,
+        object,
+        projection=None,
+        order_by=None,
+        limit=None,
+        *,
+        catalog=None,
+        checkpoint=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         py: Python<'_>,
@@ -437,10 +448,14 @@ impl DatabaseSession {
         projection: Option<Vec<String>>,
         order_by: Option<Vec<(String, String)>>,
         limit: Option<u64>,
+        catalog: Option<&str>,
+        checkpoint: Option<PyRef<'_, PyReadCheckpoint>>,
     ) -> PyResult<BatchReader> {
         self.ensure_open()?;
         let projection = projection.unwrap_or_default();
         let order_by = order_by.unwrap_or_default();
+        let catalog = catalog.map(str::to_owned);
+        let checkpoint = checkpoint.map(|value| value.inner().clone());
         py.detach(|| {
             open_family_reader(
                 &self.provider,
@@ -450,6 +465,9 @@ impl DatabaseSession {
                 projection,
                 order_by,
                 limit,
+                catalog.as_deref(),
+                self.capabilities.reads.resumable,
+                checkpoint.as_ref(),
                 self.cancellation(),
             )
         })

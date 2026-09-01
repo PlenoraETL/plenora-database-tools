@@ -412,7 +412,14 @@ fn the_same_shapes_without_the_contradiction_still_prepare() {
         ("single_transaction", false, true, "create"),
     ] {
         let plan = write_plan_with_mode(profile, allow_partial, spatial_index, mode);
-        prepare_plan(&plan, postgres_capabilities())
+        let mut capabilities = postgres_capabilities();
+        // L'esempio PostgreSQL pubblicato resta fedele all'implementazione e
+        // non dichiara uno swap fisico. Qui si misura il validatore con una
+        // capability sintetica esplicitamente aperta.
+        if profile == "staged_swap" {
+            capabilities.transactions.staged_swap = true;
+        }
+        prepare_plan(&plan, capabilities)
             .unwrap_or_else(|error| panic!("{profile}/{mode} respinto: {error:?}"));
     }
 }
@@ -454,7 +461,9 @@ fn staged_swap_requires_the_staged_swap_capability() {
     // `replace`: lo staged swap sostituisce il contenuto del target, e su
     // una mode che non lo sostituisce e una contraddizione del piano.
     let plan = write_plan_with_mode("staged_swap", true, false, "replace");
-    prepare_plan(&plan, postgres_capabilities()).expect("capability complete");
+    let mut capabilities = postgres_capabilities();
+    capabilities.transactions.staged_swap = true;
+    prepare_plan(&plan, capabilities).expect("capability sintetica completa");
 
     let mut capabilities = postgres_capabilities();
     capabilities.transactions.staged_swap = false;
