@@ -214,14 +214,17 @@ def run(
 
 
 def quiet(command: list[str]) -> int:
-    return subprocess.run(
-        command,
-        cwd=ROOT,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=120,
-    ).returncode
+    try:
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        ).returncode
+    except OSError:
+        return 127
 
 
 def ensure_network() -> None:
