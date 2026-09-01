@@ -1,5 +1,6 @@
 use crate::connection::open_connection;
 use crate::error::{driver_error, interruption_error, task_error};
+use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
 use odbc_api::{Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
@@ -447,6 +448,9 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
         }
         DataType::Date => Ok(ParameterValue::Date(text.to_owned())),
         DataType::Timestamp { .. } => Ok(ParameterValue::Timestamp(canonical_timestamp(text)?)),
+        DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
+            decode_hex_binary(value).map(ParameterValue::Bytes)
+        }
         DataType::Char { .. }
         | DataType::WChar { .. }
         | DataType::Varchar { .. }

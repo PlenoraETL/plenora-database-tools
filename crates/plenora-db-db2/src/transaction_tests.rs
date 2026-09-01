@@ -95,3 +95,17 @@ fn transaction_text_decoder_preserves_significant_spaces() {
         ParameterValue::String("  significant text  ".to_owned())
     );
 }
+
+#[test]
+fn transaction_binary_decoder_recovers_the_driver_hex_representation() {
+    let data_type = DataType::LongVarbinary {
+        length: std::num::NonZeroUsize::new(2_147_483_647),
+    };
+    assert_eq!(
+        decode_value(Some(b"010203FEFF"), data_type).expect("BLOB Db2"),
+        ParameterValue::Bytes(vec![1, 2, 3, 0xfe, 0xff])
+    );
+    let error = decode_value(Some(b"01GG"), data_type).expect_err("BLOB Db2 non valido");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(!error.message.contains("01GG"));
+}
