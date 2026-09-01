@@ -127,10 +127,11 @@ fn postgres_spatial_output_encodes_a_column_as_ewkb() {
     .expect("projection WKB Db2");
     assert!(
         db2.sql
-            .contains("HEX(ST_ASBINARY(\"e\".\"shape\")) AS \"shape\""),
+            .contains("ST_ASBINARY(\"e\".\"shape\") AS \"shape\""),
         "{}",
         db2.sql
     );
+    assert!(!db2.sql.contains("HEX("), "{}", db2.sql);
 }
 
 #[test]

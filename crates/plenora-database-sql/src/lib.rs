@@ -1144,10 +1144,9 @@ impl Renderer {
             }
             (Dialect::SqlServer, _) => Ok(format!("({value}).AsBinaryZM()")),
             (Dialect::Db2, SpatialSemantics::Geometry) => {
-                // Il percorso transazionale Db2 legge result set testuali:
-                // HEX rende il WKB senza affidarsi alla conversione binaria
-                // implicita del driver ODBC.
-                Ok(format!("HEX(ST_ASBINARY({value}))"))
+                // Il percorso transazionale Db2 lega il BLOB come testo e il
+                // driver CLI lo converte nella rappresentazione esadecimale.
+                Ok(format!("ST_ASBINARY({value})"))
             }
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
