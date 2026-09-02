@@ -184,7 +184,7 @@ def engine_from_url(value: str | EngineConfig) -> Any:
         return _create_mysql_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
@@ -192,7 +192,7 @@ def engine_from_url(value: str | EngineConfig) -> Any:
         return _create_mariadb_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
@@ -200,14 +200,14 @@ def engine_from_url(value: str | EngineConfig) -> Any:
         return _create_sqlserver_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
     return _create_db2_engine(
         *args,
         tls_ca_path=config.tls_ca,
-        tls_mode=config.tls_mode,
+        tls_mode="require" if config.tls_mode == "require" else "disable",
     )
 
 
@@ -239,7 +239,7 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
         return await _create_async_mysql_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
@@ -247,7 +247,7 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
         return await _create_async_mariadb_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
@@ -255,14 +255,14 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
         return await _create_async_sqlserver_engine(
             *args,
             tls_ca_pem=_ca_bytes(config),
-            tls_mode=config.tls_mode,
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
     return await _create_async_db2_engine(
         *args,
         tls_ca_path=config.tls_ca,
-        tls_mode=config.tls_mode,
+        tls_mode="require" if config.tls_mode == "require" else "disable",
     )
 
 

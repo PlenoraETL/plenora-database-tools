@@ -44,7 +44,7 @@ PYTHON_ENV = {
     "PLENORA_TEST_DB2_USER": "db2inst1",
     "PLENORA_TEST_DB2_PASSWORD": "plenora_test",
     "PLENORA_TEST_DB2_PORT": "50000",
-    "PLENORA_TEST_DB2_TLS_MODE": "disable",
+    "PLENORA_TEST_DB2_TLS_MODE": "insecure_local",
 }
 REQUIRED_LIVE_TESTS = frozenset(
     {

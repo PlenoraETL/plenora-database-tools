@@ -52,6 +52,9 @@ def test_pool_config_is_explicit_validated_and_forwarded(monkeypatch) -> None:
             p.PoolConfig(acquire_timeout_ms=invalid)
     with pytest.raises(ValueError, match="Db2"):
         p.EngineConfig("db2", pool=pool)
+    monkeypatch.setattr(p, "_create_db2_engine", lambda *args, **kwargs: kwargs)
+    config = p.EngineConfig("db2", "host", "db", "user", "password", tls_mode="insecure_local")
+    assert p.engine_from_url(config)["tls_mode"] == "disable"
 
 
 def test_pool_url_options_are_control_fields_not_provider_dsn_content() -> None:
