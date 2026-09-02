@@ -5,6 +5,33 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-02
+
+### Aggiunto
+
+- Query ORM con `offset`, `distinct`, `group_by`, `having`, `count` ed
+  `exists`, oltre a update e delete bulk sync/async che rifiutano le forme
+  non traducibili senza eseguire DML parziale.
+- Percorsi eager annidati per `selectinload`, savepoint ORM sync/async con
+  ripristino dello stato della unit of work e alias `begin_nested`.
+- Tipo pubblico `BIGINT` / `BigInteger`, coercizione signed a 64 bit e bind
+  tipizzati portabili per DDL, DML e identita ORM.
+- Ereditarieta single-table multilivello con campi e relazioni dei sottotipi,
+  e joined-table multilivello con select e CRUD sull'intera lineage.
+
+### Corretto
+
+- `count()` conserva la sorgente della query originale.
+- I bind `BIGINT` della famiglia MySQL usano il cast `SIGNED` supportato dal
+  server invece della forma non valida `CAST(... AS BIGINT)`.
+- La generazione DDL evita colonne duplicate nelle gerarchie e mantiene
+  nullable e server default necessari ai sottotipi single-table.
+
+### Prove
+
+- Le nuove superfici ORM sono qualificate live su PostgreSQL, MySQL, MariaDB,
+  SQL Server e Db2; i gate restano separati per provider.
+
 ## [1.2.0] — 2026-09-02
 
 ### Aggiunto
