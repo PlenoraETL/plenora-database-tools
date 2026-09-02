@@ -1,7 +1,7 @@
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from collections.abc import Iterable, Mapping
-from typing import Any, Callable, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar
 
 _Model = TypeVar("_Model")
 
@@ -24,6 +24,39 @@ class Path:
     elements: tuple[GraphValue, ...]
 
 GraphValue: TypeAlias = None | bool | int | float | Decimal | str | list[Any] | dict[str, Any] | Vertex | Edge | Path
+
+@dataclass(frozen=True)
+class GraphNode:
+    alias: str
+    label: str | None = None
+    def __post_init__(self) -> None: ...
+    def property(self, name: str) -> GraphProperty: ...
+
+@dataclass(frozen=True)
+class GraphProperty:
+    alias: str
+    name: str
+    def equals(self, parameter: str) -> GraphCondition: ...
+
+@dataclass(frozen=True)
+class GraphCondition:
+    property: GraphProperty
+    operator: str
+    parameter: str
+
+@dataclass(frozen=True)
+class CypherQuery:
+    graph: str
+    def __post_init__(self) -> None: ...
+    def match(self, *nodes: GraphNode) -> CypherQuery: ...
+    def where(self, *conditions: GraphCondition) -> CypherQuery: ...
+    def returning(self, *values: GraphNode | GraphProperty, names: Iterable[str] | None = None) -> CypherQuery: ...
+    def limit(self, value: int) -> CypherQuery: ...
+    def compile(self) -> tuple[str, list[str]]: ...
+    def execute(self, executor: Any, parameters: Mapping[str, GraphValue] | None = None, *, max_rows: int = 10_000) -> list[dict[str, GraphValue]]: ...
+    async def execute_async(self, executor: Any, parameters: Mapping[str, GraphValue] | None = None, *, max_rows: int = 10_000) -> list[dict[str, GraphValue]]: ...
+
+def graph_query(graph: str) -> CypherQuery: ...
 
 def vertex_model(label: str, *, id_field: str | None = None) -> Callable[[type[_Model]], type[_Model]]: ...
 def edge_model(

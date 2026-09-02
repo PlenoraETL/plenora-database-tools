@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import MISSING, dataclass, fields, is_dataclass
+from dataclasses import MISSING, dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 from typing import Any, TypeAlias, TypeVar
 
@@ -44,6 +44,167 @@ GraphValue: TypeAlias = (
 )
 
 _Model = TypeVar("_Model")
+
+
+@dataclass(frozen=True, slots=True)
+class GraphNode:
+    """Riferimento tipizzato a un nodo usato dal builder Cypher."""
+
+    alias: str
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.alias, "alias graph")
+        if self.label is not None:
+            _identifier(self.label, "label graph")
+
+    def property(self, name: str) -> GraphProperty:
+        return GraphProperty(self.alias, _identifier(name, "proprieta graph"))
+
+
+@dataclass(frozen=True, slots=True)
+class GraphProperty:
+    alias: str
+    name: str
+
+    def equals(self, parameter: str) -> GraphCondition:
+        return GraphCondition(self, "=", _identifier(parameter, "parametro graph"))
+
+
+@dataclass(frozen=True, slots=True)
+class GraphCondition:
+    property: GraphProperty
+    operator: str
+    parameter: str
+
+
+@dataclass(frozen=True, slots=True)
+class CypherQuery:
+    """Sottoinsieme Cypher immutabile con soli valori bindati."""
+
+    graph: str
+    nodes: tuple[GraphNode, ...] = ()
+    conditions: tuple[GraphCondition, ...] = ()
+    returns: tuple[GraphNode | GraphProperty, ...] = ()
+    return_names: tuple[str, ...] = ()
+    row_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.graph, "nome graph")
+
+    def match(self, *nodes: GraphNode) -> CypherQuery:
+        if not nodes or not all(isinstance(item, GraphNode) for item in nodes):
+            raise TypeError("match richiede nodi graph")
+        aliases = {item.alias for item in (*self.nodes, *nodes)}
+        if len(aliases) != len((*self.nodes, *nodes)):
+            raise ValueError("alias graph duplicato")
+        return replace(self, nodes=(*self.nodes, *nodes))
+
+    def where(self, *conditions: GraphCondition) -> CypherQuery:
+        if not conditions or not all(
+            isinstance(item, GraphCondition) for item in conditions
+        ):
+            raise TypeError("where richiede condizioni graph")
+        return replace(self, conditions=(*self.conditions, *conditions))
+
+    def returning(
+        self,
+        *values: GraphNode | GraphProperty,
+        names: Iterable[str] | None = None,
+    ) -> CypherQuery:
+        if not values or not all(
+            isinstance(item, (GraphNode, GraphProperty)) for item in values
+        ):
+            raise TypeError("returning richiede espressioni graph")
+        resolved = (
+            tuple(names)
+            if names is not None
+            else tuple(
+                item.alias if isinstance(item, GraphNode) else item.name
+                for item in values
+            )
+        )
+        if len(resolved) != len(values):
+            raise ValueError("nomi risultato graph con arita incoerente")
+        for name in resolved:
+            _identifier(name, "colonna risultato graph")
+        if len(set(resolved)) != len(resolved):
+            raise ValueError("nomi risultato graph duplicati")
+        return replace(self, returns=tuple(values), return_names=resolved)
+
+    def limit(self, value: int) -> CypherQuery:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError("limit graph deve essere positivo")
+        return replace(self, row_limit=value)
+
+    def compile(self) -> tuple[str, list[str]]:
+        if not self.nodes or not self.returns:
+            raise ValueError("query graph richiede MATCH e RETURN")
+        known = {item.alias for item in self.nodes}
+        referenced = {condition.property.alias for condition in self.conditions} | {
+            item.alias for item in self.returns
+        }
+        if not referenced <= known:
+            raise ValueError("query graph riferisce un alias non dichiarato")
+        patterns = ", ".join(
+            f"({_cypher_identifier(node.alias)}"
+            + (f":{_cypher_identifier(node.label)}" if node.label is not None else "")
+            + ")"
+            for node in self.nodes
+        )
+        query = f"MATCH {patterns}"
+        if self.conditions:
+            query += " WHERE " + " AND ".join(
+                f"{_cypher_identifier(item.property.alias)}."
+                f"{_cypher_identifier(item.property.name)} {item.operator} "
+                f"${item.parameter}"
+                for item in self.conditions
+            )
+        query += " RETURN " + ", ".join(
+            _cypher_identifier(item.alias)
+            if isinstance(item, GraphNode)
+            else (f"{_cypher_identifier(item.alias)}.{_cypher_identifier(item.name)}")
+            for item in self.returns
+        )
+        if self.row_limit is not None:
+            query += f" LIMIT {self.row_limit}"
+        return query, list(self.return_names)
+
+    def execute(
+        self,
+        executor: Any,
+        parameters: Mapping[str, GraphValue] | None = None,
+        *,
+        max_rows: int = 10_000,
+    ) -> list[dict[str, GraphValue]]:
+        query, columns = self.compile()
+        required = {item.parameter for item in self.conditions}
+        supplied = set(parameters or {})
+        if supplied != required:
+            raise ValueError("parametri graph incompleti o inattesi")
+        return executor.cypher(
+            self.graph, query, columns, dict(parameters or {}), max_rows=max_rows
+        )
+
+    async def execute_async(
+        self,
+        executor: Any,
+        parameters: Mapping[str, GraphValue] | None = None,
+        *,
+        max_rows: int = 10_000,
+    ) -> list[dict[str, GraphValue]]:
+        query, columns = self.compile()
+        required = {item.parameter for item in self.conditions}
+        supplied = set(parameters or {})
+        if supplied != required:
+            raise ValueError("parametri graph incompleti o inattesi")
+        return await executor.cypher(
+            self.graph, query, columns, dict(parameters or {}), max_rows=max_rows
+        )
+
+
+def graph_query(graph: str) -> CypherQuery:
+    return CypherQuery(graph)
 
 
 def _identifier(value: str, role: str) -> str:
@@ -522,7 +683,11 @@ def _decode_rows(rows: list[dict[str, dict[str, Any]]]) -> list[dict[str, GraphV
 
 
 __all__ = [
+    "CypherQuery",
     "Edge",
+    "GraphCondition",
+    "GraphNode",
+    "GraphProperty",
     "GraphValue",
     "Path",
     "Vertex",
@@ -534,6 +699,7 @@ __all__ = [
     "graph_entity_to_model",
     "graph_model_properties",
     "graph_property_index_sql",
+    "graph_query",
     "graph_unique_constraint_sql",
     "vertex_model",
 ]

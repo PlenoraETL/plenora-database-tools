@@ -5,6 +5,33 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-02
+
+### Aggiunto
+
+- Diff dichiarativo fra metadata ORM e reflection, con fingerprint stabile,
+  dry-run, classificazione `safe` / `requires-lock` / `lossy` / `unsupported`
+  e migrazioni generate. I rename non vengono inferiti e l'intero piano viene
+  autorizzato prima del primo DDL.
+- Ereditarieta ORM single-table e joined-table esplicita. La prima usa un
+  discriminatore bindato; la seconda genera PK/FK verso la base, join di
+  lettura e CRUD sync/async sulle due tabelle.
+- Builder Cypher tipizzato e immutabile, mapping di parametri separato dal
+  testo, schema AGE dichiarativo con diff, indici, lifecycle e migrazioni
+  reversibili sync/async.
+- `EngineConfig`, `engine_from_url` e `async_engine_from_url` per selezionare
+  esplicitamente PostgreSQL/AGE, MySQL, MariaDB, SQL Server o Db2 senza
+  includere credenziali nella rappresentazione pubblica.
+- Risultato `ExplainPlan`, probe applicative strutturate, middleware ASGI con
+  sessione per request, dependency compatibile FastAPI e hook OpenTelemetry
+  opt-in che non registrano SQL, parametri o DSN.
+
+### Sicurezza
+
+- I nuovi errori pubblici descrivono soltanto fase e classe del problema; i
+  test sentinella verificano che telemetria e configurazione non trasportino
+  query, credenziali o payload.
+
 ## [1.1.0] — 2026-09-01
 
 ### Aggiunto
