@@ -600,6 +600,36 @@ pyarrow tipici (dove i campi sono nullable per default).
 L'outcome è un dict con struttura `WriteOutcome` del core (status,
 rows.confirmed / .inserted / .failed / .skipped, recovery).
 
+## Application extensions 1.2
+
+La configurazione provider-neutral conserva comunque una scelta esplicita del
+prodotto nel protocollo URL:
+
+```python
+engine = p.engine_from_url(
+    "mysql://app:password@db.internal/app?tls_mode=require"
+)
+```
+
+`repr(EngineConfig)` non include utente, password o URL. Per asyncio usare
+`await p.async_engine_from_url(...)`.
+
+`compare_schema(OrmMetadata(...), reflected_metadata)` restituisce un piano
+immutabile con fingerprint e rischio per operazione. `apply()` pre-valida
+l'intero piano prima di eseguire DDL; `migration()` lo inserisce nel runner
+esistente. Le strategie ORM `single` e `joined` si dichiarano in
+`__mapper_args__`; la gerarchia qualificata in 1.2 e intenzionalmente limitata
+a un livello.
+
+Per AGE, `graph_query()` costruisce MATCH, predicati e RETURN con parametri
+separati, mentre `GraphSchema` / `compare_graph_schema()` gestiscono creazione
+del grafo e indici dichiarati. Le label AGE non osservate non sono mai dedotte.
+
+`DatabaseASGIMiddleware` e `session_dependency()` offrono una sessione async
+per request. `explain()` restituisce `ExplainPlan`, `probe_engine()` un
+`ProbeReport`, e `instrument_engine()` integra un tracer OpenTelemetry senza
+registrare testo SQL, parametri o DSN.
+
 ## Observability
 
 `Session.metrics()` restituisce un dizionario piatto di contatori interi,

@@ -88,6 +88,7 @@ from ._native import (
 )
 from ._session import Session, _Inspector
 from ._transaction import Transaction
+from .asgi import DatabaseASGIMiddleware, session_dependency
 from .async_query import (
     AsyncDelete,
     AsyncInsert,
@@ -95,6 +96,15 @@ from .async_query import (
     AsyncUpdate,
     AsyncUpsert,
     _AsyncBuilderFactory,
+)
+from .config import EngineConfig, async_engine_from_url, engine_from_url
+from .diagnostics import (
+    ExplainPlan,
+    ProbeReport,
+    ProbeResult,
+    explain,
+    explain_async,
+    probe_engine,
 )
 from .errors import (
     PlenoraAuthenticationError,
@@ -151,7 +161,11 @@ from .expression import (
     upsert,
 )
 from .graph import (
+    CypherQuery,
     Edge,
+    GraphCondition,
+    GraphNode,
+    GraphProperty,
     GraphValue,
     Path,
     Vertex,
@@ -163,8 +177,19 @@ from .graph import (
     graph_entity_to_model,
     graph_model_properties,
     graph_property_index_sql,
+    graph_query,
     graph_unique_constraint_sql,
     vertex_model,
+)
+from .graph_schema import (
+    GraphEdgeType,
+    GraphIndex,
+    GraphSchema,
+    GraphSchemaDiff,
+    GraphSchemaMigration,
+    GraphSchemaOperation,
+    GraphSchemaRisk,
+    compare_graph_schema,
 )
 from .json_input import (
     JsonField,
@@ -226,7 +251,9 @@ from .orm import (
 )
 from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .schema import SchemaDiff, SchemaOperation, SchemaRisk, compare_schema
 from .spatial import SpatialReference
+from .telemetry import InstrumentedEngine, instrument_engine
 from .types import (
     TypedValue,
     date,
@@ -1075,6 +1102,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "create_async_db2_engine",
     "Engine",
     "AsyncEngine",
+    "EngineConfig",
+    "engine_from_url",
+    "async_engine_from_url",
     "table",
     "column",
     "bind",
@@ -1120,6 +1150,16 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "IndexElement",
     "Constraint",
     "ForeignKey",
+    "SchemaDiff",
+    "SchemaOperation",
+    "SchemaRisk",
+    "compare_schema",
+    "ExplainPlan",
+    "ProbeReport",
+    "ProbeResult",
+    "explain",
+    "explain_async",
+    "probe_engine",
     "connect",
     "aconnect",
     "connect_mysql",
@@ -1157,6 +1197,10 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "Edge",
     "Path",
     "GraphValue",
+    "CypherQuery",
+    "GraphCondition",
+    "GraphNode",
+    "GraphProperty",
     "abulk_edges",
     "abulk_vertices",
     "bulk_edges",
@@ -1165,8 +1209,22 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "graph_entity_to_model",
     "graph_model_properties",
     "graph_property_index_sql",
+    "graph_query",
     "graph_unique_constraint_sql",
     "vertex_model",
+    "GraphEdgeType",
+    "GraphIndex",
+    "GraphSchema",
+    "GraphSchemaDiff",
+    "GraphSchemaMigration",
+    "GraphSchemaOperation",
+    "GraphSchemaRisk",
+    "compare_graph_schema",
+    # Application integration
+    "DatabaseASGIMiddleware",
+    "session_dependency",
+    "InstrumentedEngine",
+    "instrument_engine",
     # JSON ingress: bordo Python verso ORM / Arrow
     "JsonField",
     "JsonGeometry",

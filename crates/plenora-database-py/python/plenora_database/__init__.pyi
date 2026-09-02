@@ -34,6 +34,16 @@ from ._native import (
 )
 from ._session import Session
 from ._transaction import Transaction
+from .asgi import DatabaseASGIMiddleware, session_dependency
+from .config import EngineConfig, async_engine_from_url, engine_from_url
+from .diagnostics import (
+    ExplainPlan,
+    ProbeReport,
+    ProbeResult,
+    explain,
+    explain_async,
+    probe_engine,
+)
 from .json_input import JsonField, JsonGeometry, JsonInput, JsonInputError, JsonSchema
 from .expression import (
     BindParameter,
@@ -76,7 +86,11 @@ from .async_query import (
 from .query import Delete, Insert, Select, Update, Upsert
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
 from .graph import (
+    CypherQuery,
     Edge,
+    GraphCondition,
+    GraphNode,
+    GraphProperty,
     GraphValue,
     Path,
     Vertex,
@@ -88,8 +102,19 @@ from .graph import (
     graph_entity_to_model,
     graph_model_properties,
     graph_property_index_sql,
+    graph_query,
     graph_unique_constraint_sql,
     vertex_model,
+)
+from .graph_schema import (
+    GraphEdgeType,
+    GraphIndex,
+    GraphSchema,
+    GraphSchemaDiff,
+    GraphSchemaMigration,
+    GraphSchemaOperation,
+    GraphSchemaRisk,
+    compare_graph_schema,
 )
 from .metadata import (
     ColumnMetadata,
@@ -105,6 +130,8 @@ from .metadata import (
     TableMetadata,
 )
 from .spatial import SpatialReference
+from .schema import SchemaDiff, SchemaOperation, SchemaRisk, compare_schema
+from .telemetry import InstrumentedEngine, instrument_engine
 from .orm import (
     AsyncMigrationRunner,
     AsyncOrmEntityTupleQuery,

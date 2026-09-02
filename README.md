@@ -129,6 +129,31 @@ finally:
 Per un esempio completo con repository e lifecycle sync/async, vedere
 [`core_v3_repository.py`](crates/plenora-database-py/examples/core_v3_repository.py).
 
+## Integrazione applicativa
+
+La superficie applicativa mantiene l'Engine longevo e rende espliciti
+configurazione, sessione per request, diagnostica e telemetria:
+
+```python
+import os
+
+import plenora_database as p
+
+engine = p.engine_from_url(os.environ["DATABASE_URL"])
+report = p.probe_engine(engine)
+assert report.healthy
+```
+
+Per ASGI/FastAPI si usa un `AsyncEngine`: `DatabaseASGIMiddleware` inserisce
+una sessione in `scope["state"]["database"]`, mentre
+`session_dependency(engine)` restituisce una dependency async generator. Gli
+hook `instrument_engine` sono opt-in e aggiungono agli span soltanto provider,
+nome operazione, durata ed esito: SQL, parametri e DSN non vengono raccolti.
+
+Il diff schema relazionale e quello AGE sono fail-closed: un'operazione
+rischiosa richiede approvazione esplicita e un'osservazione non misurata non
+viene trasformata in un fatto.
+
 ## Quickstart ORM-like
 
 Il mapping dichiarativo riusa le stesse `Table`, `Column`, espressioni e
