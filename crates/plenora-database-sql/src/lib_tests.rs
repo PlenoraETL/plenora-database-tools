@@ -282,6 +282,29 @@ fn db2_renders_a_typed_parameter_projection_with_a_type_context() {
 }
 
 #[test]
+fn mysql_renders_a_big_integer_parameter_with_its_supported_cast_type() {
+    let mut query = simple_query();
+    query.source = None;
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::TypedParameter {
+            name: "identity".to_owned(),
+            parameter_type: QueryParameterType::BigInteger,
+        },
+        alias: None,
+    }];
+    let rendered = Renderer::new(
+        Dialect::Mysql,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("MySQL qualifica BIGINT con CAST AS SIGNED");
+    assert_eq!(rendered.sql, "SELECT CAST(? AS SIGNED)");
+    assert_eq!(rendered.binds[0].name, "identity");
+}
+
+#[test]
 fn db2_correlates_an_unaliased_schema_qualified_table() {
     let mut query = simple_query();
     query.source = Some(QuerySource {

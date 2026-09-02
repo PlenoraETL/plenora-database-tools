@@ -13,6 +13,8 @@ from .test_orm import (
     _AsyncFakeTransaction,
     _FakeSession,
     _FakeTransaction,
+    OrmBigRecord,
+    OrmLoaderRoot,
 )
 
 registry = p.Registry()
@@ -37,6 +39,20 @@ class Animal(Base):
 class Cat(Animal):
     __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "cat"}
 
+    lives: p.Mapped[int] = p.mapped_column(int)
+
+
+class Dog(Animal):
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "dog"}
+
+    bark_pitch: p.Mapped[int] = p.mapped_column(int)
+
+
+class Tiger(Cat):
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "tiger"}
+
+    stripe_count: p.Mapped[int] = p.mapped_column(int)
+
 
 class Asset(Base):
     __tablename__ = "inherit_assets"
@@ -60,8 +76,20 @@ class Server(Asset):
     cores: p.Mapped[int] = p.mapped_column(int, nullable=False)
 
 
+class RackServer(Server):
+    __tablename__ = "inherit_rack_servers"
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "inheritance": "joined",
+        "polymorphic_identity": "rack-server",
+    }
+
+    rack_units: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+
 def test_single_table_inheritance_filters_and_hydrates_subtype() -> None:
-    transaction = _FakeTransaction([{"id": 1, "kind": "cat", "name": "Milo"}])
+    transaction = _FakeTransaction(
+        [{"id": 1, "kind": "cat", "name": "Milo", "lives": 9}]
+    )
     orm = p.OrmSession(_FakeSession(transaction))
 
     cat = orm.query(Cat).one()
@@ -69,6 +97,33 @@ def test_single_table_inheritance_filters_and_hydrates_subtype() -> None:
     assert isinstance(cat, Cat)
     assert transaction.executed[0][1]["orm_polymorphic_identity"] == "cat"
     assert Cat.__table__ is Animal.__table__
+
+
+def test_single_table_subtype_fields_and_multilevel_hydration() -> None:
+    ddl = p.OrmMetadata(registry, models=(Animal, Cat, Dog, Tiger)).ddl("postgres")
+    assert len(ddl) == 1
+    assert '"lives" INTEGER' in ddl[0]
+    assert '"bark_pitch" INTEGER' in ddl[0]
+    assert '"stripe_count" INTEGER' in ddl[0]
+    assert Animal.__table__ is Cat.__table__ is Dog.__table__ is Tiger.__table__
+
+    transaction = _FakeTransaction(
+        [
+            {
+                "id": 2,
+                "kind": "tiger",
+                "name": "Shere Khan",
+                "lives": 9,
+                "stripe_count": 42,
+            }
+        ]
+    )
+    orm = p.OrmSession(_FakeSession(transaction))
+    animal = orm.query(Animal).one()
+
+    assert isinstance(animal, Tiger)
+    assert animal.lives == 9
+    assert animal.stripe_count == 42
 
 
 def test_joined_table_inheritance_ddl_query_and_insert_are_two_table() -> None:
@@ -91,6 +146,30 @@ def test_joined_table_inheritance_ddl_query_and_insert_are_two_table() -> None:
     query = orm.query(Server)
     assert query._statement.source.name == "inherit_assets"
     assert query._statement.joins[0].table.name == "inherit_servers"
+
+
+def test_joined_table_multilevel_query_and_insert_cover_every_fragment() -> None:
+    ddl = p.OrmMetadata(registry, models=(Asset, Server, RackServer)).ddl("postgres")
+    assert len(ddl) == 3
+    assert 'REFERENCES "inherit_servers" ("id") ON DELETE CASCADE' in ddl[2]
+
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction))
+    server = RackServer(id=11, name="db", cores=32, rack_units=2)
+    orm.add(server)
+    orm.flush()
+
+    assert [item[0].target.name for item in transaction.executed] == [
+        "inherit_assets",
+        "inherit_servers",
+        "inherit_rack_servers",
+    ]
+    query = orm.query(RackServer)
+    assert query._statement.source.name == "inherit_assets"
+    assert [join.table.name for join in query._statement.joins] == [
+        "inherit_servers",
+        "inherit_rack_servers",
+    ]
 
 
 def test_typed_cypher_builder_binds_values_and_rejects_missing_parameters() -> None:
@@ -261,5 +340,41 @@ def test_async_joined_graph_and_asgi_lifecycle() -> None:
         middleware = p.DatabaseASGIMiddleware(app, RequestEngine())
         await middleware({"type": "http"}, None, None)
         assert lifecycle == ["enter", "app", "exit"]
+
+    asyncio.run(scenario())
+
+
+def test_async_advanced_orm_surfaces_match_sync_contract() -> None:
+    async def scenario() -> None:
+        transaction = _AsyncFakeTransaction()
+        orm = p.AsyncOrmSession(_AsyncFakeSession(transaction))
+        record = OrmBigRecord(id=2**40, counter=7)
+        orm.add(record)
+        await orm.flush()
+        await orm.savepoint("async_edit")
+        record.counter = 8
+        await orm.flush()
+        await orm.rollback_to_savepoint("async_edit")
+        assert record.counter == 7
+        await orm.release_savepoint("async_edit")
+
+        transaction.rows = [{"count": 1}]
+        assert await orm.query(OrmBigRecord).count() == 1
+        transaction.affected = [1]
+        assert await orm.query(OrmBigRecord).update({"counter": 9}) == 1
+
+        loader_transaction = _AsyncFakeTransaction()
+        loader_transaction.result_batches = [
+            [{"id": 1}],
+            [{"id": 2, "root_id": 1}],
+            [{"id": 3, "middle_id": 2}],
+        ]
+        loader_orm = p.AsyncOrmSession(_AsyncFakeSession(loader_transaction))
+        roots = (
+            await loader_orm.query(OrmLoaderRoot)
+            .options(p.selectinload("middles.leaves"))
+            .all()
+        )
+        assert roots[0].middles[0].leaves[0].id == 3
 
     asyncio.run(scenario())

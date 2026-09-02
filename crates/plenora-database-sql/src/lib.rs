@@ -1203,6 +1203,7 @@ impl Renderer {
                 _ => "INTEGER",
             },
             QueryParameterType::BigInteger => match self.dialect {
+                Dialect::Mysql => "SIGNED",
                 Dialect::Oracle => "NUMBER(19)",
                 _ => "BIGINT",
             },

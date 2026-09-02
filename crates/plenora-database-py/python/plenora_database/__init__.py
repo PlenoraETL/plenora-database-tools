@@ -212,11 +212,13 @@ from .metadata import (
     TableMetadata,
 )
 from .orm import (
+    BIGINT,
     AsyncMigrationRunner,
     AsyncOrmEntityTupleQuery,
     AsyncOrmQuery,
     AsyncOrmRowsQuery,
     AsyncOrmSession,
+    BigInteger,
     DeclarativeBase,
     ForeignKeyConstraint,
     Geometry,
@@ -1232,6 +1234,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "JsonInputError",
     "JsonSchema",
     # ORM sync verticale
+    "BIGINT",
+    "BigInteger",
     "DeclarativeBase",
     "AsyncMigrationRunner",
     "AsyncOrmEntityTupleQuery",

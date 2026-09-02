@@ -17,6 +17,7 @@ from types import TracebackType
 from typing import Any, Generic, TypeVar, overload
 
 from .expression import (
+    BindType,
     Column,
     Expression,
     Ordering,
@@ -30,6 +31,7 @@ from .expression import (
     and_,
     bind,
     delete,
+    func,
     insert,
     or_,
     select,
@@ -37,6 +39,7 @@ from .expression import (
 )
 from .result import MultipleResultsFound, NoResultFound, Result
 from .spatial import SpatialReference
+from .types import int64 as typed_int64
 from .types import null as typed_null
 
 T = TypeVar("T")
@@ -245,6 +248,14 @@ class Geometry:
         return _spatial_function(function, column, *arguments)
 
 
+@dataclass(frozen=True, slots=True)
+class BigInteger:
+    """Tipo ORM portabile per un intero SQL signed a 64 bit."""
+
+
+BIGINT = BigInteger()
+
+
 class _InstanceState:
     __slots__ = (
         "dirty",
@@ -275,6 +286,26 @@ class InstanceInspection:
     state: ObjectState
     identity: tuple[Any, ...] | None
     dirty: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class _SavepointInstance:
+    values: dict[str, Any]
+    relationships: dict[str, Any]
+    status: ObjectState
+    original: dict[str, Any]
+    dirty: set[str]
+    expired: set[str]
+    relationship_original: dict[str, tuple[tuple[Any, ...], ...]]
+
+
+@dataclass(slots=True)
+class _SavepointSnapshot:
+    identity_map: dict[Any, DeclarativeBase]
+    pending: list[DeclarativeBase]
+    deleted: list[DeclarativeBase]
+    flushed_deleted: list[DeclarativeBase]
+    instances: dict[DeclarativeBase, _SavepointInstance]
 
 
 class MappedColumn(Generic[T]):
@@ -363,6 +394,12 @@ class MappedColumn(Generic[T]):
             return None
         if isinstance(self.type_, Geometry):
             return self.type_.validate(value)
+        if isinstance(self.type_, BigInteger):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError("la colonna BIGINT richiede un int Python")
+            if not -(2**63) <= value < 2**63:
+                raise ValueError("la colonna BIGINT richiede un intero signed 64-bit")
+            return value
         if isinstance(self.type_, type):
             if self.type_ is int and isinstance(value, bool):
                 raise TypeError("la colonna int non accetta bool")
@@ -961,10 +998,12 @@ class Registry:
         return tuple(self._by_model.values())
 
     def polymorphic_mapper(self, mapper: Mapper, identity: Any) -> Mapper:
+        root = _inheritance_root(mapper)
         matches = tuple(
             candidate
             for candidate in self._by_model.values()
-            if candidate.inherits is mapper
+            if _inheritance_root(candidate) is root
+            and candidate is not root
             and candidate.inheritance == "single"
             and candidate.polymorphic_identity == identity
         )
@@ -1001,9 +1040,15 @@ class OrmMetadata:
 
     def ddl(self, provider: str, *, checkfirst: bool = False) -> tuple[str, ...]:
         ordered = _ddl_mapper_order(self.mappers, self.registry)
+        unique: list[Mapper] = []
+        seen: set[int] = set()
+        for mapper in ordered:
+            if id(mapper.table) not in seen:
+                seen.add(id(mapper.table))
+                unique.append(mapper)
         return tuple(
             _create_table_ddl(mapper, provider, self.registry, checkfirst=checkfirst)
-            for mapper in ordered
+            for mapper in unique
         )
 
     def create_all(self, session: Any, *, checkfirst: bool = False) -> None:
@@ -1020,7 +1065,8 @@ class OrmMetadata:
         provider = _session_provider(session)
         if checkfirst and provider == "db2":
             raise OrmUnsupportedError("Db2 non qualifica DROP TABLE IF EXISTS")
-        for mapper in reversed(_ddl_mapper_order(self.mappers, self.registry)):
+        ordered = _unique_table_mappers(_ddl_mapper_order(self.mappers, self.registry))
+        for mapper in reversed(ordered):
             target = _qualified_table(mapper.table, provider)
             clause = " IF EXISTS" if checkfirst and provider != "sqlserver" else ""
             if checkfirst and provider == "sqlserver":
@@ -1036,7 +1082,8 @@ class OrmMetadata:
         provider = _session_provider(session)
         if checkfirst and provider == "db2":
             raise OrmUnsupportedError("Db2 non qualifica DROP TABLE IF EXISTS")
-        for mapper in reversed(_ddl_mapper_order(self.mappers, self.registry)):
+        ordered = _unique_table_mappers(_ddl_mapper_order(self.mappers, self.registry))
+        for mapper in reversed(ordered):
             target = _qualified_table(mapper.table, provider)
             clause = " IF EXISTS" if checkfirst and provider != "sqlserver" else ""
             if checkfirst and provider == "sqlserver":
@@ -1246,43 +1293,91 @@ class _DeclarativeMeta(type):
                 raise OrmMappingError(
                     "single-table richiede polymorphic_on sul mapper base"
                 )
-            if inherited.inherits is not None:
-                raise OrmUnsupportedError(
-                    "gerarchia single-table oltre un livello non qualificata"
-                )
-            declared = tuple(
-                value
-                for value in namespace.values()
-                if isinstance(value, (MappedColumn, Relationship))
+            declared_attributes = tuple(
+                value for value in namespace.values() if isinstance(value, MappedColumn)
             )
-            if declared:
-                raise OrmUnsupportedError(
-                    "single-table richiede colonne e relationship dichiarate sulla base"
+            declared_relationships = tuple(
+                value for value in namespace.values() if isinstance(value, Relationship)
+            )
+            if any(
+                attribute.primary_key or attribute.version
+                for attribute in declared_attributes
+            ):
+                raise OrmMappingError(
+                    "single-table eredita chiave primaria e versione dalla base"
                 )
+            if any(
+                not attribute.nullable and not attribute.server_default
+                for attribute in declared_attributes
+            ):
+                raise OrmMappingError(
+                    "una colonna single-table di sottotipo deve essere nullable o avere server default"
+                )
+            if namespace.get("__table_args__"):
+                raise OrmUnsupportedError("vincoli locali single-table non qualificati")
             cls = super().__new__(mcls, name, bases, namespace)
             identity = mapper_args.get("polymorphic_identity")
             if identity is None:
                 raise OrmMappingError("single-table richiede polymorphic_identity")
+            registry = inherited.model.__registry__
+            root = _inheritance_root(inherited)
+            if any(
+                candidate.polymorphic_identity == identity
+                for candidate in registry.mappers()
+                if candidate is not root
+                and candidate.inheritance == "single"
+                and _inheritance_root(candidate) is root
+            ):
+                raise OrmMappingError("identita polimorfica duplicata nel registry")
+            previous_table = inherited.table
+            names = tuple(column.name for column in previous_table.columns)
+            declared_names = tuple(
+                key for key, value in namespace.items() if value in declared_attributes
+            )
+            if set(names) & set(declared_names):
+                raise OrmMappingError("colonna single-table duplicata nella gerarchia")
+            target = Table(
+                previous_table.name,
+                (*names, *declared_names),
+                schema=previous_table.schema,
+                catalog=previous_table.catalog,
+            )
+            for candidate in registry.mappers():
+                if candidate.table is previous_table:
+                    object.__setattr__(candidate, "table", target)
+                    candidate.model.__table__ = target
+                    for attribute in candidate.attributes:
+                        if attribute.name is not None:
+                            attribute._bind(attribute.name, target.c[attribute.name])
+            for attribute, column_name in zip(
+                declared_attributes, declared_names, strict=True
+            ):
+                attribute._bind(column_name, target.c[column_name])
             mapper = Mapper(
                 cls,
-                inherited.table,
-                inherited.attributes,
+                target,
+                (*inherited.attributes, *declared_attributes),
                 inherited.primary_key,
                 inherited.primary_keys,
                 inherited.version,
-                inherited.relationships,
+                (*inherited.relationships, *declared_relationships),
                 inherited.constraints,
                 inherited,
                 "single",
-                (),
+                declared_attributes,
                 identity,
                 inherited.polymorphic_on,
             )
-            registry = inherited.model.__registry__
-            cls.__table__ = inherited.table
+            cls.__table__ = target
             cls.__mapper__ = mapper
             cls.__registry__ = registry
             registry._register(mapper)
+            for relation_name, relation in (
+                (key, value)
+                for key, value in namespace.items()
+                if isinstance(value, Relationship)
+            ):
+                relation._bind(relation_name, cls)
             return cls
         if table_name is not None:
             mixin_bases = tuple(
@@ -1326,10 +1421,6 @@ class _DeclarativeMeta(type):
             value for value in namespace.values() if isinstance(value, Relationship)
         )
         if strategy == "joined" and inherited is not None:
-            if inherited.inherits is not None:
-                raise OrmUnsupportedError(
-                    "gerarchia joined-table oltre un livello non qualificata"
-                )
             if any(attribute.primary_key for attribute in declared_attributes):
                 raise OrmMappingError(
                     "joined-table eredita la chiave primaria dalla base"
@@ -1521,6 +1612,18 @@ class OrmQuery(Generic[T]):
     def limit(self, value: int) -> OrmQuery[T]:
         return replace(self, _statement=self._statement.limit(value))
 
+    def offset(self, value: int) -> OrmQuery[T]:
+        return replace(self, _statement=self._statement.offset(value))
+
+    def distinct(self) -> OrmQuery[T]:
+        return replace(self, _statement=self._statement.distinct())
+
+    def group_by(self, *expressions: Expression) -> OrmQuery[T]:
+        return replace(self, _statement=self._statement.group_by(*expressions))
+
+    def having(self, predicate: Predicate) -> OrmQuery[T]:
+        return replace(self, _statement=self._statement.having(predicate))
+
     def join(
         self,
         relation: str | Relationship[Any] | type[DeclarativeBase],
@@ -1546,7 +1649,7 @@ class OrmQuery(Generic[T]):
         for loader in loaders:
             if not isinstance(loader, LoaderOption):
                 raise TypeError("options accetta soltanto loader ORM")
-            relation = _query_relationship(self._mapper, loader.relationship)
+            relation = _query_loader_path(self._mapper, loader.relationship)[0]
             relation._validate_configuration()
             if loader.strategy == "joined":
                 statement = _joinedload_statement(
@@ -1611,6 +1714,61 @@ class OrmQuery(Generic[T]):
             raise MultipleResultsFound("la query ORM ha restituito piu di una riga")
         return None if not rows else rows[0]
 
+    def count(self, parameters: Mapping[str, Any] | None = None) -> int:
+        source = self._statement._resolved_source()
+        if source is None:
+            raise OrmMappingError("COUNT ORM privo di source relazionale")
+        statement = replace(
+            self._statement,
+            projections=(func.count(),),
+            source=source,
+            orderings=(),
+            row_limit=None,
+            row_offset=None,
+        )
+        value = self._session._execute_scalar_query(
+            statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise OrmStateError("COUNT ORM non ha restituito un intero")
+        return value
+
+    def exists(self, parameters: Mapping[str, Any] | None = None) -> bool:
+        primary = self._mapper.primary_key.column
+        if primary is None:
+            raise OrmMappingError("mapper privo di chiave primaria")
+        statement = replace(
+            self._statement,
+            projections=(primary,),
+            orderings=(),
+            row_limit=1,
+            row_offset=None,
+        )
+        return self._session._execute_exists_query(
+            statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+
+    def update(
+        self,
+        values: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None = None,
+    ) -> int:
+        return self._session._execute_bulk_update(
+            self._mapper,
+            self._statement,
+            values,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+
+    def delete(self, parameters: Mapping[str, Any] | None = None) -> int:
+        return self._session._execute_bulk_delete(
+            self._mapper,
+            self._statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AsyncOrmQuery(Generic[T]):
@@ -1630,6 +1788,18 @@ class AsyncOrmQuery(Generic[T]):
 
     def limit(self, value: int) -> AsyncOrmQuery[T]:
         return replace(self, _statement=self._statement.limit(value))
+
+    def offset(self, value: int) -> AsyncOrmQuery[T]:
+        return replace(self, _statement=self._statement.offset(value))
+
+    def distinct(self) -> AsyncOrmQuery[T]:
+        return replace(self, _statement=self._statement.distinct())
+
+    def group_by(self, *expressions: Expression) -> AsyncOrmQuery[T]:
+        return replace(self, _statement=self._statement.group_by(*expressions))
+
+    def having(self, predicate: Predicate) -> AsyncOrmQuery[T]:
+        return replace(self, _statement=self._statement.having(predicate))
 
     def join(
         self,
@@ -1656,7 +1826,7 @@ class AsyncOrmQuery(Generic[T]):
         for loader in loaders:
             if not isinstance(loader, LoaderOption):
                 raise TypeError("options accetta soltanto loader ORM")
-            relation = _query_relationship(self._mapper, loader.relationship)
+            relation = _query_loader_path(self._mapper, loader.relationship)[0]
             relation._validate_configuration()
             if loader.strategy == "joined":
                 statement = _joinedload_statement(
@@ -1722,6 +1892,61 @@ class AsyncOrmQuery(Generic[T]):
         if len(rows) > 1:
             raise MultipleResultsFound("la query ORM ha restituito piu di una riga")
         return None if not rows else rows[0]
+
+    async def count(self, parameters: Mapping[str, Any] | None = None) -> int:
+        source = self._statement._resolved_source()
+        if source is None:
+            raise OrmMappingError("COUNT ORM privo di source relazionale")
+        statement = replace(
+            self._statement,
+            projections=(func.count(),),
+            source=source,
+            orderings=(),
+            row_limit=None,
+            row_offset=None,
+        )
+        value = await self._session._execute_scalar_query_async(
+            statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise OrmStateError("COUNT ORM non ha restituito un intero")
+        return value
+
+    async def exists(self, parameters: Mapping[str, Any] | None = None) -> bool:
+        primary = self._mapper.primary_key.column
+        if primary is None:
+            raise OrmMappingError("mapper privo di chiave primaria")
+        statement = replace(
+            self._statement,
+            projections=(primary,),
+            orderings=(),
+            row_limit=1,
+            row_offset=None,
+        )
+        return await self._session._execute_exists_query_async(
+            statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+
+    async def update(
+        self,
+        values: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None = None,
+    ) -> int:
+        return await self._session._execute_bulk_update_async(
+            self._mapper,
+            self._statement,
+            values,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
+
+    async def delete(self, parameters: Mapping[str, Any] | None = None) -> int:
+        return await self._session._execute_bulk_delete_async(
+            self._mapper,
+            self._statement,
+            _merge_query_parameters(self._fixed_parameters, parameters),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2149,6 +2374,7 @@ class OrmSession:
         self._autoflush_enabled = bool(autoflush)
         self._in_flush = False
         self._listeners: dict[str, list[Any]] = {}
+        self._savepoints: dict[str, _SavepointSnapshot] = {}
         self._active = True
 
     @property
@@ -2577,6 +2803,47 @@ class OrmSession:
         self._active = False
         self._emit("after_commit")
 
+    def savepoint(self, name: str) -> None:
+        self._require_active()
+        _validate_savepoint_name(name)
+        if name in self._savepoints:
+            raise OrmStateError("savepoint ORM gia attivo")
+        self.flush()
+        operation = getattr(self._transaction, "savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        operation(name)
+        self._savepoints[name] = _capture_savepoint(self)
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        self._require_active()
+        snapshot = self._savepoints.get(name)
+        if snapshot is None:
+            raise OrmStateError("savepoint ORM non attivo")
+        operation = getattr(self._transaction, "rollback_to_savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        operation(name)
+        _restore_savepoint(self, snapshot)
+        names = tuple(self._savepoints)
+        position = names.index(name)
+        for nested in names[position + 1 :]:
+            self._savepoints.pop(nested, None)
+
+    def release_savepoint(self, name: str) -> None:
+        self._require_active()
+        if name not in self._savepoints:
+            raise OrmStateError("savepoint ORM non attivo")
+        operation = getattr(self._transaction, "release_savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        operation(name)
+        self._savepoints.pop(name)
+
+    def begin_nested(self, name: str) -> _OrmNestedTransaction:
+        self._require_active()
+        return _OrmNestedTransaction(self, name)
+
     def rollback(self) -> None:
         self._require_active()
         try:
@@ -2628,7 +2895,7 @@ class OrmSession:
         row_instances = [self._hydrate(mapper, row) for row in rows]
         joined_collection = any(
             loader.strategy == "joined"
-            and _query_relationship(mapper, loader.relationship).uselist
+            and _query_loader_path(mapper, loader.relationship)[0].uselist
             for loader in loaders
         )
         if joined_collection:
@@ -2636,13 +2903,101 @@ class OrmSession:
         else:
             instances = row_instances
         for loader in loaders:
-            relation = _query_relationship(mapper, loader.relationship)
+            relation = _query_loader_path(mapper, loader.relationship)[0]
             if loader.strategy == "joined":
                 for instance, row in zip(row_instances, rows, strict=True):
                     self._hydrate_joined(instance, relation, row)
             else:
                 self._selectin_load(instances, relation)
+        for loader in loaders:
+            path = _query_loader_path(mapper, loader.relationship)
+            self._load_nested_path(instances, path)
         return instances
+
+    def _execute_scalar_query(
+        self,
+        statement: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> Any:
+        self._require_active()
+        self._autoflush_now()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
+        result = self._transaction.execute(statement, parameters)
+        if not isinstance(result, Result):
+            raise OrmStateError("query scalare ORM senza risultato relazionale")
+        return result.scalar_one()
+
+    def _execute_exists_query(
+        self,
+        statement: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> bool:
+        self._require_active()
+        self._autoflush_now()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
+        result = self._transaction.execute(statement, parameters)
+        if not isinstance(result, Result):
+            raise OrmStateError("EXISTS ORM senza risultato relazionale")
+        return result.first() is not None
+
+    def _execute_bulk_update(
+        self,
+        mapper: Mapper,
+        query: SelectStatement,
+        values: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None,
+    ) -> int:
+        self._require_active()
+        self._autoflush_now()
+        statement, mutation_parameters = _bulk_update_statement(
+            mapper, query, values, self._provider
+        )
+        parameters = _geometry_query_parameters(query, parameters, self._provider)
+        merged = _merge_query_parameters(parameters, mutation_parameters)
+        _validate_spatial_statement(statement, self._spatial_functions)  # type: ignore[arg-type]
+        affected = _affected_rows(self._transaction.execute(statement, merged))
+        self._expire_mapper_instances(mapper, detach=False)
+        return affected
+
+    def _execute_bulk_delete(
+        self,
+        mapper: Mapper,
+        query: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> int:
+        self._require_active()
+        self._autoflush_now()
+        statement = _bulk_delete_statement(mapper, query)
+        _validate_spatial_statement(statement, self._spatial_functions)  # type: ignore[arg-type]
+        parameters = _geometry_query_parameters(query, parameters, self._provider)
+        affected = _affected_rows(self._transaction.execute(statement, parameters))
+        self._expire_mapper_instances(mapper, detach=True)
+        return affected
+
+    def _expire_mapper_instances(self, mapper: Mapper, *, detach: bool) -> None:
+        root = _inheritance_root(mapper)
+        for instance in tuple(dict.fromkeys(self._identity_map.values())):
+            instance_mapper = _mapper(type(instance))
+            if _inheritance_root(instance_mapper) is not root:
+                continue
+            if detach:
+                self.expunge(instance)
+            else:
+                self.expire(instance)
+
+    def _load_nested_path(
+        self,
+        instances: list[DeclarativeBase],
+        path: tuple[Relationship[Any], ...],
+    ) -> None:
+        if len(path) < 2:
+            return
+        related = _loaded_relationship_instances(instances, path[0])
+        for relation in path[1:]:
+            self._selectin_load(related, relation)
+            related = _loaded_relationship_instances(related, relation)
 
     def _hydrate_joined(
         self,
@@ -3144,8 +3499,8 @@ class OrmSession:
                         value, self._provider
                     )
                 else:
-                    assignments[name] = bind(bind_name)
-                    parameters[bind_name] = value
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
             elif (
                 attribute.generated or attribute.server_default
             ) and attribute.column is not None:
@@ -3189,20 +3544,21 @@ class OrmSession:
         self._emit("after_insert", instance)
 
     def _insert_joined(self, instance: DeclarativeBase, mapper: Mapper) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         self._emit("before_insert", instance)
         if mapper.version is not None and mapper.version.name not in instance.__dict__:
             instance.__dict__[mapper.version.name] = 1
-        self._insert_fragment(base, base.table, base.attributes, instance, "base")
-        self._insert_fragment(
-            mapper,
-            mapper.table,
-            (*mapper.primary_keys, *mapper.local_attributes),
-            instance,
-            "child",
-        )
+        for index, fragment in enumerate(lineage):
+            attributes = (
+                fragment.attributes
+                if index == 0
+                else (*mapper.primary_keys, *fragment.local_attributes)
+            )
+            self._insert_fragment(
+                mapper, fragment.table, attributes, instance, f"level_{index}"
+            )
         state = _state(instance)
         state.status = ObjectState.PERSISTENT
         state.original = _snapshot(mapper, instance)
@@ -3247,8 +3603,8 @@ class OrmSession:
                         value, self._provider
                     )
                 else:
-                    assignments[name] = bind(bind_name)
-                    parameters[bind_name] = value
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
             elif attribute.generated or attribute.server_default:
                 returning.append(attribute)
         statement = insert(table).values(**assignments)
@@ -3404,8 +3760,8 @@ class OrmSession:
                 )
                 parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
-                assignments[name] = bind(bind_name)
-                parameters[bind_name] = value
+                assignments[name] = _attribute_bind(attribute, bind_name)
+                parameters[bind_name] = _attribute_parameter(attribute, value)
         predicate, identity_parameters = _identity_predicate(mapper, instance)
         parameters.update(identity_parameters)
         if mapper.version is not None:
@@ -3433,39 +3789,37 @@ class OrmSession:
         self._emit("after_update", instance)
 
     def _update_joined(self, instance: DeclarativeBase, mapper: Mapper) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         state = _state(instance)
         dirty = set(state.dirty)
         if not dirty:
             return
         self._emit("before_update", instance)
-        base_names = tuple(
-            sorted(
-                name
-                for name in dirty
-                if any(attribute.name == name for attribute in base.attributes)
-                and (base.version is None or name != base.version.name)
+        root = lineage[0]
+        identity = _identity(mapper, instance)
+        for index, fragment in enumerate(lineage):
+            local = fragment.attributes if index == 0 else fragment.local_attributes
+            names = tuple(
+                sorted(
+                    name
+                    for name in dirty
+                    if any(attribute.name == name for attribute in local)
+                    and (root.version is None or name != root.version.name)
+                )
             )
-        )
-        child_names = tuple(
-            sorted(
-                name
-                for name in dirty
-                if any(attribute.name == name for attribute in mapper.local_attributes)
-            )
-        )
-        if base_names or base.version is not None:
+            if not names and not (index == 0 and root.version is not None):
+                continue
             assignments, parameters = self._update_assignments(
-                mapper, base_names, "base", instance
+                mapper, names, f"level_{index}", instance
             )
             predicate, identity_parameters = _table_identity_predicate(
-                mapper, base.table, _identity(mapper, instance)
+                mapper, fragment.table, identity
             )
             parameters.update(identity_parameters)
-            if base.version is not None:
-                version_name = base.version.name
+            if index == 0 and root.version is not None:
+                version_name = root.version.name
                 current = (
                     None if version_name is None else state.original.get(version_name)
                 )
@@ -3480,31 +3834,21 @@ class OrmSession:
                 assignments[version_name] = bind("orm_version_next")
                 parameters["orm_version_next"] = current + 1
                 predicate = predicate & (
-                    base.table.c[version_name] == bind("orm_version_current")
+                    root.table.c[version_name] == bind("orm_version_current")
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
                 self._transaction.execute(
-                    update(base.table).values(**assignments).where(predicate),
+                    update(fragment.table).values(**assignments).where(predicate),
                     parameters,
                 )
             )
-            if base.version is not None and base.version.name is not None:
-                instance.__dict__[base.version.name] = parameters["orm_version_next"]
-        if child_names:
-            assignments, parameters = self._update_assignments(
-                mapper, child_names, "child", instance
-            )
-            predicate, identity_parameters = _table_identity_predicate(
-                mapper, mapper.table, _identity(mapper, instance)
-            )
-            parameters.update(identity_parameters)
-            _require_one_row(
-                self._transaction.execute(
-                    update(mapper.table).values(**assignments).where(predicate),
-                    parameters,
-                )
-            )
+            if (
+                index == 0
+                and root.version is not None
+                and root.version.name is not None
+            ):
+                instance.__dict__[root.version.name] = parameters["orm_version_next"]
         state.original = _snapshot(mapper, instance)
         state.dirty.clear()
         self._emit("after_update", instance)
@@ -3530,8 +3874,8 @@ class OrmSession:
                 )
                 parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
-                assignments[name] = bind(bind_name)
-                parameters[bind_name] = value
+                assignments[name] = _attribute_bind(attribute, bind_name)
+                parameters[bind_name] = _attribute_parameter(attribute, value)
         return assignments, parameters
 
     def _delete(self, instance: DeclarativeBase) -> None:
@@ -3566,41 +3910,35 @@ class OrmSession:
         self._emit("after_delete", instance)
 
     def _delete_joined(self, instance: DeclarativeBase, mapper: Mapper) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         self._emit("before_delete", instance)
         identity = _identity(mapper, instance)
-        child_predicate, child_parameters = _table_identity_predicate(
-            mapper, mapper.table, identity
-        )
-        _require_one_row(
-            self._transaction.execute(
-                delete(mapper.table).where(child_predicate), child_parameters
-            )
-        )
-        base_predicate, base_parameters = _table_identity_predicate(
-            mapper, base.table, identity
-        )
         state = _state(instance)
-        if base.version is not None:
-            name = base.version.name
-            current = None if name is None else state.original.get(name)
-            if (
-                not isinstance(current, int)
-                or isinstance(current, bool)
-                or name is None
-            ):
-                raise OrmStateError("versione ottimistica non valida")
-            base_predicate = base_predicate & (
-                base.table.c[name] == bind("orm_version_current")
+        root = lineage[0]
+        for fragment in reversed(lineage):
+            predicate, parameters = _table_identity_predicate(
+                mapper, fragment.table, identity
             )
-            base_parameters["orm_version_current"] = current
-        _require_one_row(
-            self._transaction.execute(
-                delete(base.table).where(base_predicate), base_parameters
+            if fragment is root and root.version is not None:
+                name = root.version.name
+                current = None if name is None else state.original.get(name)
+                if (
+                    not isinstance(current, int)
+                    or isinstance(current, bool)
+                    or name is None
+                ):
+                    raise OrmStateError("versione ottimistica non valida")
+                predicate = predicate & (
+                    root.table.c[name] == bind("orm_version_current")
+                )
+                parameters["orm_version_current"] = current
+            _require_one_row(
+                self._transaction.execute(
+                    delete(fragment.table).where(predicate), parameters
+                )
             )
-        )
         self._identity_map.pop((type(instance), identity), None)
         self._deleted.remove(instance)
         self._flushed_deleted.append(instance)
@@ -3657,6 +3995,7 @@ class OrmSession:
         self._deleted.clear()
         self._flushed_deleted.clear()
         self._deferred_foreign_keys.clear()
+        self._savepoints.clear()
 
 
 class AsyncOrmSession(OrmSession):
@@ -3684,6 +4023,7 @@ class AsyncOrmSession(OrmSession):
         self._autoflush_enabled = bool(autoflush)
         self._in_flush = False
         self._listeners = {}
+        self._savepoints = {}
         self._active = True
 
     async def _emit_async(
@@ -3995,7 +4335,7 @@ class AsyncOrmSession(OrmSession):
         row_instances = [await self._hydrate_row_async(mapper, row) for row in rows]
         joined_collection = any(
             loader.strategy == "joined"
-            and _query_relationship(mapper, loader.relationship).uselist
+            and _query_loader_path(mapper, loader.relationship)[0].uselist
             for loader in loaders
         )
         if joined_collection:
@@ -4003,13 +4343,90 @@ class AsyncOrmSession(OrmSession):
         else:
             instances = row_instances
         for loader in loaders:
-            relation = _query_relationship(mapper, loader.relationship)
+            relation = _query_loader_path(mapper, loader.relationship)[0]
             if loader.strategy == "joined":
                 for instance, row in zip(row_instances, rows, strict=True):
                     await self._hydrate_joined_async(instance, relation, row)
             else:
                 await self._selectin_load_async(instances, relation)
+        for loader in loaders:
+            path = _query_loader_path(mapper, loader.relationship)
+            await self._load_nested_path_async(instances, path)
         return instances
+
+    async def _execute_scalar_query_async(
+        self,
+        statement: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> Any:
+        await self._autoflush_async()
+        transaction = await self._ensure_started()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
+        result = await transaction.execute(statement, parameters)
+        if not isinstance(result, Result):
+            raise OrmStateError("query scalare ORM senza risultato relazionale")
+        return result.scalar_one()
+
+    async def _execute_exists_query_async(
+        self,
+        statement: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> bool:
+        await self._autoflush_async()
+        transaction = await self._ensure_started()
+        _validate_spatial_statement(statement, self._spatial_functions)
+        parameters = _geometry_query_parameters(statement, parameters, self._provider)
+        result = await transaction.execute(statement, parameters)
+        if not isinstance(result, Result):
+            raise OrmStateError("EXISTS ORM senza risultato relazionale")
+        return result.first() is not None
+
+    async def _execute_bulk_update_async(
+        self,
+        mapper: Mapper,
+        query: SelectStatement,
+        values: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None,
+    ) -> int:
+        await self._autoflush_async()
+        transaction = await self._ensure_started()
+        statement, mutation_parameters = _bulk_update_statement(
+            mapper, query, values, self._provider
+        )
+        parameters = _geometry_query_parameters(query, parameters, self._provider)
+        merged = _merge_query_parameters(parameters, mutation_parameters)
+        _validate_spatial_statement(statement, self._spatial_functions)  # type: ignore[arg-type]
+        affected = _affected_rows(await transaction.execute(statement, merged))
+        self._expire_mapper_instances(mapper, detach=False)
+        return affected
+
+    async def _execute_bulk_delete_async(
+        self,
+        mapper: Mapper,
+        query: SelectStatement,
+        parameters: Mapping[str, Any] | None,
+    ) -> int:
+        await self._autoflush_async()
+        transaction = await self._ensure_started()
+        statement = _bulk_delete_statement(mapper, query)
+        _validate_spatial_statement(statement, self._spatial_functions)  # type: ignore[arg-type]
+        parameters = _geometry_query_parameters(query, parameters, self._provider)
+        affected = _affected_rows(await transaction.execute(statement, parameters))
+        self._expire_mapper_instances(mapper, detach=True)
+        return affected
+
+    async def _load_nested_path_async(
+        self,
+        instances: list[DeclarativeBase],
+        path: tuple[Relationship[Any], ...],
+    ) -> None:
+        if len(path) < 2:
+            return
+        related = _loaded_relationship_instances(instances, path[0])
+        for relation in path[1:]:
+            await self._selectin_load_async(related, relation)
+            related = _loaded_relationship_instances(related, relation)
 
     async def _hydrate_joined_async(
         self,
@@ -4256,6 +4673,50 @@ class AsyncOrmSession(OrmSession):
         self._active = False
         await self._emit_async("after_commit")
 
+    async def savepoint(self, name: str) -> None:
+        self._require_active()
+        _validate_savepoint_name(name)
+        if name in self._savepoints:
+            raise OrmStateError("savepoint ORM gia attivo")
+        await self.flush()
+        transaction = await self._ensure_started()
+        operation = getattr(transaction, "savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        await operation(name)
+        self._savepoints[name] = _capture_savepoint(self)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        self._require_active()
+        snapshot = self._savepoints.get(name)
+        if snapshot is None:
+            raise OrmStateError("savepoint ORM non attivo")
+        transaction = await self._ensure_started()
+        operation = getattr(transaction, "rollback_to_savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        await operation(name)
+        _restore_savepoint(self, snapshot)
+        names = tuple(self._savepoints)
+        position = names.index(name)
+        for nested in names[position + 1 :]:
+            self._savepoints.pop(nested, None)
+
+    async def release_savepoint(self, name: str) -> None:
+        self._require_active()
+        if name not in self._savepoints:
+            raise OrmStateError("savepoint ORM non attivo")
+        transaction = await self._ensure_started()
+        operation = getattr(transaction, "release_savepoint", None)
+        if not callable(operation):
+            raise OrmUnsupportedError("la transazione Core non espone savepoint")
+        await operation(name)
+        self._savepoints.pop(name)
+
+    def begin_nested(self, name: str) -> _AsyncOrmNestedTransaction:
+        self._require_active()
+        return _AsyncOrmNestedTransaction(self, name)
+
     async def rollback(self) -> None:
         self._require_active()
         try:
@@ -4305,8 +4766,8 @@ class AsyncOrmSession(OrmSession):
                         value, self._provider
                     )
                 else:
-                    assignments[name] = bind(bind_name)
-                    parameters[bind_name] = value
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
             elif (
                 attribute.generated or attribute.server_default
             ) and attribute.column is not None:
@@ -4354,22 +4815,21 @@ class AsyncOrmSession(OrmSession):
     async def _insert_joined_async(
         self, instance: DeclarativeBase, mapper: Mapper
     ) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         await self._emit_async("before_insert", instance)
         if mapper.version is not None and mapper.version.name not in instance.__dict__:
             instance.__dict__[mapper.version.name] = 1
-        await self._insert_fragment_async(
-            base, base.table, base.attributes, instance, "base"
-        )
-        await self._insert_fragment_async(
-            mapper,
-            mapper.table,
-            (*mapper.primary_keys, *mapper.local_attributes),
-            instance,
-            "child",
-        )
+        for index, fragment in enumerate(lineage):
+            attributes = (
+                fragment.attributes
+                if index == 0
+                else (*mapper.primary_keys, *fragment.local_attributes)
+            )
+            await self._insert_fragment_async(
+                mapper, fragment.table, attributes, instance, f"level_{index}"
+            )
         state = _state(instance)
         state.status = ObjectState.PERSISTENT
         state.original = _snapshot(mapper, instance)
@@ -4414,8 +4874,8 @@ class AsyncOrmSession(OrmSession):
                         value, self._provider
                     )
                 else:
-                    assignments[name] = bind(bind_name)
-                    parameters[bind_name] = value
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
             elif attribute.generated or attribute.server_default:
                 returning.append(attribute)
         statement = insert(table).values(**assignments)
@@ -4632,8 +5092,8 @@ class AsyncOrmSession(OrmSession):
                 )
                 parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
-                assignments[name] = bind(bind_name)
-                parameters[bind_name] = value
+                assignments[name] = _attribute_bind(attribute, bind_name)
+                parameters[bind_name] = _attribute_parameter(attribute, value)
         predicate, identity_parameters = _identity_predicate(mapper, instance)
         parameters.update(identity_parameters)
         if mapper.version is not None:
@@ -4663,39 +5123,37 @@ class AsyncOrmSession(OrmSession):
     async def _update_joined_async(
         self, instance: DeclarativeBase, mapper: Mapper
     ) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         state = _state(instance)
         dirty = set(state.dirty)
         if not dirty:
             return
         await self._emit_async("before_update", instance)
-        base_names = tuple(
-            sorted(
-                name
-                for name in dirty
-                if any(attribute.name == name for attribute in base.attributes)
-                and (base.version is None or name != base.version.name)
+        root = lineage[0]
+        identity = _identity(mapper, instance)
+        for index, fragment in enumerate(lineage):
+            local = fragment.attributes if index == 0 else fragment.local_attributes
+            names = tuple(
+                sorted(
+                    name
+                    for name in dirty
+                    if any(attribute.name == name for attribute in local)
+                    and (root.version is None or name != root.version.name)
+                )
             )
-        )
-        child_names = tuple(
-            sorted(
-                name
-                for name in dirty
-                if any(attribute.name == name for attribute in mapper.local_attributes)
-            )
-        )
-        if base_names or base.version is not None:
+            if not names and not (index == 0 and root.version is not None):
+                continue
             assignments, parameters = self._update_assignments(
-                mapper, base_names, "base", instance
+                mapper, names, f"level_{index}", instance
             )
             predicate, identity_parameters = _table_identity_predicate(
-                mapper, base.table, _identity(mapper, instance)
+                mapper, fragment.table, identity
             )
             parameters.update(identity_parameters)
-            if base.version is not None:
-                name = base.version.name
+            if index == 0 and root.version is not None:
+                name = root.version.name
                 current = None if name is None else state.original.get(name)
                 if (
                     not isinstance(current, int)
@@ -4706,31 +5164,21 @@ class AsyncOrmSession(OrmSession):
                 assignments[name] = bind("orm_version_next")
                 parameters["orm_version_next"] = current + 1
                 predicate = predicate & (
-                    base.table.c[name] == bind("orm_version_current")
+                    root.table.c[name] == bind("orm_version_current")
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
                 await self._transaction.execute(
-                    update(base.table).values(**assignments).where(predicate),
+                    update(fragment.table).values(**assignments).where(predicate),
                     parameters,
                 )
             )
-            if base.version is not None and base.version.name is not None:
-                instance.__dict__[base.version.name] = parameters["orm_version_next"]
-        if child_names:
-            assignments, parameters = self._update_assignments(
-                mapper, child_names, "child", instance
-            )
-            predicate, identity_parameters = _table_identity_predicate(
-                mapper, mapper.table, _identity(mapper, instance)
-            )
-            parameters.update(identity_parameters)
-            _require_one_row(
-                await self._transaction.execute(
-                    update(mapper.table).values(**assignments).where(predicate),
-                    parameters,
-                )
-            )
+            if (
+                index == 0
+                and root.version is not None
+                and root.version.name is not None
+            ):
+                instance.__dict__[root.version.name] = parameters["orm_version_next"]
         state.original = _snapshot(mapper, instance)
         state.dirty.clear()
         await self._emit_async("after_update", instance)
@@ -4769,46 +5217,88 @@ class AsyncOrmSession(OrmSession):
     async def _delete_joined_async(
         self, instance: DeclarativeBase, mapper: Mapper
     ) -> None:
-        base = mapper.inherits
-        if base is None:
+        lineage = _inheritance_lineage(mapper)
+        if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         await self._emit_async("before_delete", instance)
         identity = _identity(mapper, instance)
-        child_predicate, child_parameters = _table_identity_predicate(
-            mapper, mapper.table, identity
-        )
-        _require_one_row(
-            await self._transaction.execute(
-                delete(mapper.table).where(child_predicate), child_parameters
-            )
-        )
-        base_predicate, base_parameters = _table_identity_predicate(
-            mapper, base.table, identity
-        )
         state = _state(instance)
-        if base.version is not None:
-            name = base.version.name
-            current = None if name is None else state.original.get(name)
-            if (
-                not isinstance(current, int)
-                or isinstance(current, bool)
-                or name is None
-            ):
-                raise OrmStateError("versione ottimistica non valida")
-            base_predicate = base_predicate & (
-                base.table.c[name] == bind("orm_version_current")
+        root = lineage[0]
+        for fragment in reversed(lineage):
+            predicate, parameters = _table_identity_predicate(
+                mapper, fragment.table, identity
             )
-            base_parameters["orm_version_current"] = current
-        _require_one_row(
-            await self._transaction.execute(
-                delete(base.table).where(base_predicate), base_parameters
+            if fragment is root and root.version is not None:
+                name = root.version.name
+                current = None if name is None else state.original.get(name)
+                if (
+                    not isinstance(current, int)
+                    or isinstance(current, bool)
+                    or name is None
+                ):
+                    raise OrmStateError("versione ottimistica non valida")
+                predicate = predicate & (
+                    root.table.c[name] == bind("orm_version_current")
+                )
+                parameters["orm_version_current"] = current
+            _require_one_row(
+                await self._transaction.execute(
+                    delete(fragment.table).where(predicate), parameters
+                )
             )
-        )
         self._identity_map.pop((type(instance), identity), None)
         self._deleted.remove(instance)
         self._flushed_deleted.append(instance)
         state.dirty.clear()
         await self._emit_async("after_delete", instance)
+
+
+class _OrmNestedTransaction:
+    def __init__(self, session: OrmSession, name: str) -> None:
+        _validate_savepoint_name(name)
+        self._session = session
+        self._name = name
+
+    def __enter__(self) -> _OrmNestedTransaction:  # noqa: PYI034
+        self._session.savepoint(self._name)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        if exc_type is None:
+            self._session.release_savepoint(self._name)
+        else:
+            self._session.rollback_to_savepoint(self._name)
+            self._session.release_savepoint(self._name)
+        return False
+
+
+class _AsyncOrmNestedTransaction:
+    def __init__(self, session: AsyncOrmSession, name: str) -> None:
+        _validate_savepoint_name(name)
+        self._session = session
+        self._name = name
+
+    async def __aenter__(self) -> _AsyncOrmNestedTransaction:  # noqa: PYI034
+        await self._session.savepoint(self._name)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        if exc_type is None:
+            await self._session.release_savepoint(self._name)
+        else:
+            await self._session.rollback_to_savepoint(self._name)
+            await self._session.release_savepoint(self._name)
+        return False
 
 
 def _geometry_srid_alias(projected_name: str) -> str:
@@ -4819,7 +5309,12 @@ def _orm_projections(
     mapper: Mapper, prefix: str = "", provider: str = "postgres"
 ) -> tuple[Expression, ...]:
     projections: list[Expression] = []
-    for attribute in mapper.attributes:
+    attributes = (
+        _single_table_attributes(mapper)
+        if mapper.inherits is None
+        else mapper.attributes
+    )
+    for attribute in attributes:
         name = attribute.name
         column = attribute.column
         if name is None or column is None:
@@ -4875,17 +5370,47 @@ def _inheritance_predicate(mapper: Mapper) -> Predicate:
     return predicate
 
 
+def _inheritance_root(mapper: Mapper) -> Mapper:
+    current = mapper
+    while current.inherits is not None:
+        current = current.inherits
+    return current
+
+
+def _inheritance_lineage(mapper: Mapper) -> tuple[Mapper, ...]:
+    lineage: list[Mapper] = []
+    current: Mapper | None = mapper
+    while current is not None:
+        lineage.append(current)
+        current = current.inherits
+    return tuple(reversed(lineage))
+
+
+def _single_table_attributes(mapper: Mapper) -> tuple[MappedColumn[Any], ...]:
+    root = _inheritance_root(mapper)
+    if mapper is not root or root.polymorphic_on is None:
+        return mapper.attributes
+    attributes: list[MappedColumn[Any]] = list(root.attributes)
+    seen = {attribute.name for attribute in attributes}
+    for candidate in root.model.__registry__.mappers():
+        if candidate.inheritance == "single" and _inheritance_root(candidate) is root:
+            for attribute in candidate.local_attributes:
+                if attribute.name not in seen:
+                    attributes.append(attribute)
+                    seen.add(attribute.name)
+    return tuple(attributes)
+
+
 def _entity_select(
     mapper: Mapper, provider: str
 ) -> tuple[SelectStatement, dict[str, Any] | None]:
     statement = select(*_orm_projections(mapper, provider=provider))
     parameters: dict[str, Any] | None = None
     if mapper.inheritance == "joined":
-        if mapper.inherits is None:
-            raise OrmMappingError("mapper joined privo di base")
-        statement = statement.select_from(mapper.inherits.table).join(
-            mapper.table, _inheritance_predicate(mapper)
-        )
+        lineage = _inheritance_lineage(mapper)
+        statement = statement.select_from(lineage[0].table)
+        for child in lineage[1:]:
+            statement = statement.join(child.table, _inheritance_predicate(child))
     if mapper.inheritance == "single":
         if mapper.polymorphic_on is None:
             raise OrmMappingError("mapper single privo di discriminatore")
@@ -4898,6 +5423,81 @@ def _entity_select(
     return statement, parameters
 
 
+def _validate_bulk_query(mapper: Mapper, query: SelectStatement) -> None:
+    if mapper.inheritance == "joined":
+        raise OrmUnsupportedError("bulk DML joined-table non qualificato atomicamente")
+    if (
+        query.joins
+        or query.groupings
+        or query.having_predicate is not None
+        or query.orderings
+        or query.set_operations
+        or query.row_limit is not None
+        or query.row_offset is not None
+        or query.is_distinct
+    ):
+        raise OrmUnsupportedError(
+            "bulk DML ORM non supporta join, grouping, ordering o paginazione"
+        )
+
+
+def _bulk_update_statement(
+    mapper: Mapper,
+    query: SelectStatement,
+    values: Mapping[str, Any],
+    provider: str,
+) -> tuple[Any, dict[str, Any]]:
+    _validate_bulk_query(mapper, query)
+    if not isinstance(values, Mapping) or not values:
+        raise TypeError("bulk update ORM richiede un mapping non vuoto")
+    assignments: dict[str, Expression] = {}
+    parameters: dict[str, Any] = {}
+    for index, (name, value) in enumerate(values.items()):
+        if not isinstance(name, str):
+            raise TypeError("bulk update ORM richiede nomi attributo stringa")
+        try:
+            attribute = mapper.attribute(name)
+        except KeyError as error:
+            raise OrmMappingError(
+                "bulk update riferisce un attributo non mappato"
+            ) from error
+        if attribute.primary_key or attribute.version or attribute.generated:
+            raise OrmStateError(
+                "bulk update non puo mutare chiave, versione o colonna generated"
+            )
+        coerced = attribute._coerce(value)
+        bind_name = f"orm_bulk_update_{index}"
+        if isinstance(attribute.type_, Geometry) and (
+            coerced is not None or provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+        ):
+            _require_geometry_mapping(attribute.type_, provider)
+            assignments[name] = _spatial_value(
+                bind(bind_name), attribute.type_.srid, attribute.type_.semantics
+            )
+            parameters[bind_name] = _geometry_parameter_value(coerced, provider)
+        else:
+            assignments[name] = _attribute_bind(attribute, bind_name)
+            parameters[bind_name] = _attribute_parameter(attribute, coerced)
+    statement = update(mapper.table).values(**assignments)
+    if query.predicate is not None:
+        statement = statement.where(query.predicate)
+    return statement, parameters
+
+
+def _bulk_delete_statement(mapper: Mapper, query: SelectStatement) -> Any:
+    _validate_bulk_query(mapper, query)
+    statement = delete(mapper.table)
+    if query.predicate is not None:
+        statement = statement.where(query.predicate)
+    return statement
+
+
+def _affected_rows(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise OrmStateError("bulk DML ORM non ha restituito un row count valido")
+    return value
+
+
 def _query_relationship(
     mapper: Mapper, value: str | Relationship[Any]
 ) -> Relationship[Any]:
@@ -4905,6 +5505,44 @@ def _query_relationship(
     if relation not in mapper.relationships:
         raise OrmMappingError("relationship appartenente a un altro mapper")
     return relation
+
+
+def _query_loader_path(
+    mapper: Mapper, value: str | Relationship[Any]
+) -> tuple[Relationship[Any], ...]:
+    if isinstance(value, Relationship):
+        return (_query_relationship(mapper, value),)
+    if not isinstance(value, str):
+        raise TypeError("loader ORM richiede una relationship o un percorso")
+    names = tuple(value.split("."))
+    if not names or any(not name for name in names):
+        raise OrmMappingError("percorso loader ORM non valido")
+    path: list[Relationship[Any]] = []
+    current = mapper
+    for name in names:
+        relation = current.relationship(name)
+        relation._validate_configuration()
+        path.append(relation)
+        current = _mapper(relation.target)
+    return tuple(path)
+
+
+def _loaded_relationship_instances(
+    instances: list[DeclarativeBase], relation: Relationship[Any]
+) -> list[DeclarativeBase]:
+    name = relation.name
+    if name is None:
+        raise OrmMappingError("relationship senza nome")
+    related: list[DeclarativeBase] = []
+    seen: set[int] = set()
+    for instance in instances:
+        value = instance.__dict__.get(name)
+        values = tuple(value) if relation.uselist and value is not None else (value,)
+        for item in values:
+            if item is not None and id(item) not in seen:
+                seen.add(id(item))
+                related.append(item)
+    return related
 
 
 def _mapped_row_values(
@@ -5272,6 +5910,19 @@ def _association_owner_predicate(
     return (terms[0] if len(terms) == 1 else and_(*terms), parameters)
 
 
+def _attribute_bind(attribute: MappedColumn[Any], name: str) -> Expression:
+    return bind(
+        name,
+        BindType.BIG_INTEGER if isinstance(attribute.type_, BigInteger) else None,
+    )
+
+
+def _attribute_parameter(attribute: MappedColumn[Any], value: Any) -> Any:
+    if isinstance(attribute.type_, BigInteger) and value is not None:
+        return typed_int64(value)
+    return value
+
+
 def _snapshot(mapper: Mapper, instance: DeclarativeBase) -> dict[str, Any]:
     return {
         attribute.name: instance.__dict__.get(attribute.name)
@@ -5288,6 +5939,103 @@ def _relationship_snapshot(mapper: Mapper, instance: DeclarativeBase) -> dict[st
         value = instance.__dict__[relation.name]
         snapshot[relation.name] = tuple(value) if relation.uselist else value
     return snapshot
+
+
+def _validate_savepoint_name(name: str) -> None:
+    if not isinstance(name, str) or not name:
+        raise ValueError("nome savepoint ORM non valido")
+
+
+def _tracked_instances(session: OrmSession) -> tuple[DeclarativeBase, ...]:
+    values = (
+        *session._identity_map.values(),
+        *session._pending,
+        *session._deleted,
+        *session._flushed_deleted,
+    )
+    return tuple(dict.fromkeys(values))
+
+
+def _capture_savepoint(session: OrmSession) -> _SavepointSnapshot:
+    instances: dict[DeclarativeBase, _SavepointInstance] = {}
+    for instance in _tracked_instances(session):
+        mapper = _mapper(type(instance))
+        state = _state(instance)
+        instances[instance] = _SavepointInstance(
+            values={
+                attribute.name: instance.__dict__[attribute.name]
+                for attribute in mapper.attributes
+                if attribute.name is not None and attribute.name in instance.__dict__
+            },
+            relationships=_relationship_snapshot(mapper, instance),
+            status=state.status,
+            original=dict(state.original),
+            dirty=set(state.dirty),
+            expired=set(state.expired),
+            relationship_original=dict(state.relationship_original),
+        )
+    return _SavepointSnapshot(
+        identity_map=dict(session._identity_map),
+        pending=list(session._pending),
+        deleted=list(session._deleted),
+        flushed_deleted=list(session._flushed_deleted),
+        instances=instances,
+    )
+
+
+def _restore_savepoint(session: OrmSession, snapshot: _SavepointSnapshot) -> None:
+    captured = set(snapshot.instances)
+    for instance in _tracked_instances(session):
+        if instance in captured:
+            continue
+        state = _state(instance)
+        state.status = (
+            ObjectState.TRANSIENT
+            if state.status is ObjectState.PENDING
+            else ObjectState.DETACHED
+        )
+        state.session = None
+        state.dirty.clear()
+        state.expired.clear()
+    for instance, saved in snapshot.instances.items():
+        mapper = _mapper(type(instance))
+        mapped_names = {
+            attribute.name
+            for attribute in mapper.attributes
+            if attribute.name is not None
+        }
+        relationship_names = {
+            relation.name
+            for relation in mapper.relationships
+            if relation.name is not None
+        }
+        for name in (*mapped_names, *relationship_names):
+            instance.__dict__.pop(name, None)
+        instance.__dict__.update(saved.values)
+        for relation in mapper.relationships:
+            name = relation.name
+            if name is None or name not in saved.relationships:
+                continue
+            value = saved.relationships[name]
+            if relation.uselist:
+                collection = _RelationshipCollection(instance, relation)
+                for item in value:
+                    collection._append_from_backref(item)
+                instance.__dict__[name] = collection
+            else:
+                instance.__dict__[name] = value
+        state = _state(instance)
+        state.status = saved.status
+        state.session = session
+        state.original = dict(saved.original)
+        state.dirty = set(saved.dirty)
+        state.expired = set(saved.expired)
+        state.relationship_original = dict(saved.relationship_original)
+    session._identity_map = dict(snapshot.identity_map)
+    session._pending = list(snapshot.pending)
+    session._deleted = list(snapshot.deleted)
+    session._flushed_deleted = list(snapshot.flushed_deleted)
+    session._deferred_foreign_keys.clear()
 
 
 def _capture_loaded_relationship(
@@ -5322,9 +6070,9 @@ def _identity_values_predicate(
         if column is None:
             raise OrmMappingError("chiave primaria non associata")
         name = f"orm_primary_key_{index}"
-        current = column == bind(name)
+        current = column == _attribute_bind(attribute, name)
         predicate = current if predicate is None else predicate & current
-        parameters[name] = value
+        parameters[name] = _attribute_parameter(attribute, value)
     if predicate is None:
         raise OrmMappingError("mapper privo di chiave primaria")
     return predicate, parameters
@@ -5341,9 +6089,9 @@ def _table_identity_predicate(
         if attribute.name is None:
             raise OrmMappingError("chiave primaria senza nome")
         name = f"orm_primary_key_{index}"
-        current = table.c[attribute.name] == bind(name)
+        current = table.c[attribute.name] == _attribute_bind(attribute, name)
         predicate = current if predicate is None else predicate & current
-        parameters[name] = value
+        parameters[name] = _attribute_parameter(attribute, value)
     if predicate is None:
         raise OrmMappingError("mapper privo di chiave primaria")
     return predicate, parameters
@@ -5405,6 +6153,8 @@ def _qualified_table(table: Table, provider: str) -> str:
 
 def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
     type_ = attribute.type_
+    if isinstance(type_, BigInteger):
+        return "BIGINT"
     if isinstance(type_, Geometry):
         _require_geometry_mapping(type_, provider)
         base = type_.semantics
@@ -5518,6 +6268,16 @@ def _ddl_mapper_order(
     return tuple(ordered)
 
 
+def _unique_table_mappers(mappers: tuple[Mapper, ...]) -> tuple[Mapper, ...]:
+    unique: list[Mapper] = []
+    seen: set[int] = set()
+    for mapper in mappers:
+        if id(mapper.table) not in seen:
+            seen.add(id(mapper.table))
+            unique.append(mapper)
+    return tuple(unique)
+
+
 def _create_table_ddl(
     mapper: Mapper,
     provider: str,
@@ -5529,7 +6289,7 @@ def _create_table_ddl(
     ddl_attributes = (
         (*mapper.primary_keys, *mapper.local_attributes)
         if mapper.inheritance == "joined"
-        else mapper.attributes
+        else _single_table_attributes(_inheritance_root(mapper))
     )
     for attribute in ddl_attributes:
         if attribute.name is None:
@@ -5767,11 +6527,13 @@ def _require_one_row(affected: Any) -> None:
 
 
 __all__ = [
+    "BIGINT",
     "AsyncMigrationRunner",
     "AsyncOrmEntityTupleQuery",
     "AsyncOrmQuery",
     "AsyncOrmRowsQuery",
     "AsyncOrmSession",
+    "BigInteger",
     "DeclarativeBase",
     "ForeignKeyConstraint",
     "Geometry",
