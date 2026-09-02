@@ -780,6 +780,10 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("if reference != expected:", source)
         # Ogni verifica fallita deve fermare il job.
         self.assertIn("raise SystemExit(main())", source)
+        # Il profilo Db2 si verifica senza ripubblicare la factory rimossa
+        # dal contratto 2.0.
+        self.assertIn("package._create_db2_engine(", source)
+        self.assertNotIn("package.connect_db2(", source)
 
     def test_the_verifier_is_the_only_definition_of_verified(self) -> None:
         """Nessun job ricopia le verifiche invece di eseguirle.

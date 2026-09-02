@@ -91,22 +91,24 @@ def assert_installed(name: str, origin: Path, directories: list[Path]) -> None:
 
 
 def assert_standard_wheel_excludes_db2_runtime() -> None:
-    """Il wheel generale espone DB2 ma non deve collegare ODBC di nascosto.
+    """Il wheel generale dichiara DB2 ma non deve collegare ODBC di nascosto.
 
-    Un TLS mode volutamente invalido impedisce alla variante DB2 reale di
-    arrivare alla rete. La variante standard deve invece fermarsi prima con
-    l'errore pubblico `Unsupported`: e il contratto che rende distinguibile
-    un wheel generale dall'artefatto DB2 dedicato.
+    Il contratto 2.0 espone solo ``engine_from_url``; il probe dell'artefatto
+    usa quindi l'hook interno dell'Engine, non reintroduce una factory provider
+    pubblica. Un TLS mode volutamente invalido impedisce alla variante DB2
+    reale di arrivare alla rete. La variante standard deve invece fermarsi
+    prima con l'errore pubblico `Unsupported`: e il contratto che rende
+    distinguibile un wheel generale dall'artefatto DB2 dedicato.
 
     # Raises
 
-    `RuntimeError` se la factory manca, accetta la chiamata o restituisce una
+    `RuntimeError` se l'hook manca, accetta la chiamata o restituisce una
     categoria diversa.
     """
 
     package = importlib.import_module(PACKAGE)
     try:
-        package.connect_db2(
+        package._create_db2_engine(
             "localhost",
             "probe",
             "probe",
@@ -117,9 +119,9 @@ def assert_standard_wheel_excludes_db2_runtime() -> None:
         return
     except package.PlenoraError as error:
         raise RuntimeError(
-            "la factory DB2 del wheel standard non ha fallito come Unsupported"
+            "l'hook DB2 del wheel standard non ha fallito come Unsupported"
         ) from error
-    raise RuntimeError("la factory DB2 del wheel standard ha accettato la chiamata")
+    raise RuntimeError("l'hook DB2 del wheel standard ha accettato la chiamata")
 
 
 def main() -> int:

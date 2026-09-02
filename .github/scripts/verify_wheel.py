@@ -36,13 +36,15 @@ def fail(message: str) -> int:
 def verify_db2_profile(package: object) -> str | None:
     """Distingue il wheel standard dallo specifico artefatto DB2.
 
-    Un valore TLS invalido ferma la feature reale prima di aprire ODBC. Lo
-    stub standard deve invece rispondere con l'errore Unsupported tipizzato.
+    La superficie 2.0 resta provider-neutral; questa verifica interna
+    dell'artefatto usa l'hook privato dell'Engine. Un valore TLS invalido ferma
+    la feature reale prima di aprire ODBC. Lo stub standard deve invece
+    rispondere con l'errore Unsupported tipizzato.
     """
 
     expect_runtime = os.environ.get(DB2_RUNTIME_ENV) == "1"
     try:
-        package.connect_db2(
+        package._create_db2_engine(
             "localhost",
             "wheel_probe",
             "wheel_probe",

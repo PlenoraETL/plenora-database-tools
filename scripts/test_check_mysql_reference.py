@@ -2029,6 +2029,11 @@ class PythonSdkRunnerTests(unittest.TestCase):
         # scrivono: sono due, e in un venv non sono quelle di sistema.
         self.assertTrue(probe.site_directories())
 
+    def test_the_wheel_probe_does_not_restore_a_public_db2_factory(self) -> None:
+        source = Path(probe.__file__).read_text(encoding="utf-8")
+        self.assertIn("package._create_db2_engine(", source)
+        self.assertNotIn("package.connect_db2(", source)
+
     def test_the_runner_rejects_a_verdict_built_on_a_source_import(self) -> None:
         """Il runner ricontrolla l'origine invece di fidarsi del probe.
 
